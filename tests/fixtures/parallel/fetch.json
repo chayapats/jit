@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0", "id": 3,
+  "result": {
+    "structuredContent": {
+      "extract_id": "fixture_extract",
+      "results": [{"url":"https://example.com/article","title":"Public article","excerpts":["Relevant excerpt"],"full_content":"Returned full markdown from the requested page.","cache_status":"cached","cached_at":"2026-10-01T00:00:00Z"}],
+      "errors": [], "session_id": "parallel_fixture_conversation"
+    }
+  }
+}

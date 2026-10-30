@@ -8,20 +8,23 @@ import type { Bot, BotProposal, Conversation, Message, Reply, Route } from "./ty
 import { s14AssetUrl } from "./web-assets";
 import type { S14Page } from "./web";
 import { defaultWorkLimits, workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
+import type { S14WorkResearch } from "./web-product-memory";
+import { renderMemorySurface } from "./web-memory";
+import { evidenceTab, researchNotice, webSettingsPage } from "./web-research";
 
-const e = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-const k = (key: string) => key as MessageKey;
+export const e = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+export const k = (key: string) => key as MessageKey;
 const paths = {
   chat: '<path d="M20 11.5a8 8 0 0 1-8 8H5l-3 2 1.5-5A8 8 0 1 1 20 11.5Z"/>', arrow: '<path d="M12 19V5m-6 6 6-6 6 6"/>', back: '<path d="M15 6l-6 6 6 6"/>',
   work: '<path d="M4 6h1.5M4 12h1.5M4 18h1.5M9 6h11M9 12h11M9 18h11"/>', team: '<circle cx="9" cy="9" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M16 6.5a3 3 0 0 1 0 5.5M18 20v-1a6 6 0 0 0-2.5-4.9"/>',
   more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>', home: '<path d="M4 11l8-7 8 7v9H4Z"/>',
-  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
+  memory: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3Z"/><path d="M9 9h6M9 13h4"/>', lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
   alert: '<path d="M12 4 2.5 20h19Z"/><path d="M12 10v5m0 2.5v.5"/>', check: '<path d="m5 12 4 4L19 6"/>', close: '<path d="M6 6l12 12M18 6 6 18"/>', stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
-const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
-const rid = () => crypto.randomUUID().replaceAll("-", "");
+export const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+export const rid = () => crypto.randomUUID().replaceAll("-", "");
 
-function when(value: number): string {
+export function when(value: number): string {
   const date = new Date(value); if (!Number.isFinite(date.valueOf())) return tr("s14.unknown");
   const format = new Intl.DateTimeFormat(currentLocale() === "en" ? "en-GB" : "th-TH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
   return `<time datetime="${date.toISOString()}">${e(format.format(date))} UTC</time>`;
@@ -31,8 +34,8 @@ function remaining(until: number, now: number): string {
   const minutes = Math.ceil((until - now) / 60000);
   return `${tr("s14.time.in")} ${minutes} ${tr("s14.time.minutes")}`;
 }
-const size = (bytes: number) => bytes >= 1024 ? `${Math.floor(bytes / 1024)} KiB` : `${bytes} B`;
-const short = (id: string) => id.slice(0, 8);
+export const size = (bytes: number) => bytes >= 1024 ? `${Math.floor(bytes / 1024)} KiB` : `${bytes} B`;
+export const short = (id: string) => id.slice(0, 8);
 
 function documentPage(title: string, body: string): string {
   const meta = (theme: "dark" | "light") => `<meta name="theme-color" content="${colorTokens[theme].bg}" media="(prefers-color-scheme: ${theme})">`;
@@ -44,9 +47,9 @@ function documentPage(title: string, body: string): string {
 
 /** Plain stateless page used before a session exists or when a post is refused. */
 const standalone = (title: string, content: string) => documentPage(title, `<main class="s-page" id="main-content">${content}</main>`);
-const banner = (tone: "" | "warn" | "danger" | "ok", title: string, detail = "", extra = "") => `<div class="s-banner ${tone}">${icon(tone === "ok" ? "check" : tone ? "alert" : "info")}<div><p><b>${e(title)}</b></p>${detail ? `<p class="s-sub">${e(detail)}</p>` : ""}${extra}</div></div>`;
-const noticeText = (code: string) => trMaybe(`s14.error.${code}`) ?? tr("s14.error.generic");
-const notice = (code: string | null) => code ? banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "") : "";
+export const banner = (tone: "" | "warn" | "danger" | "ok", title: string, detail = "", extra = "") => `<div class="s-banner ${tone}">${icon(tone === "ok" ? "check" : tone ? "alert" : "info")}<div><p><b>${e(title)}</b></p>${detail ? `<p class="s-sub">${e(detail)}</p>` : ""}${extra}</div></div>`;
+export const noticeText = (code: string) => trMaybe(`s14.error.${code}`) ?? tr("s14.error.generic");
+export const notice = (code: string | null) => code ? banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "") : "";
 
 /** Sign-in page; before an owner exists it shows the one local step that creates the credential instead of a dead form. */
 export function renderLogin(locale: Locale, code: string | null, provisioned: boolean): string {
@@ -69,15 +72,15 @@ JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts serve --s14
     <section class="s-stack" aria-labelledby="s14-back"><h2 id="s14-back">${tr("s14.legacy.back_title")}</h2><p class="s-sub">${tr("s14.legacy.back_detail")}</p><pre class="s-exact">bun src/main.ts serve</pre></section></div>`));
 }
 
-const hidden = (name: string, value: string | number) => `<input type="hidden" name="${name}" value="${e(value)}">`;
-const flat = (csrf: string, revision: number) => `${hidden("csrf", csrf)}${hidden("requestId", rid())}${hidden("expectedRevision", revision)}`;
+export const hidden = (name: string, value: string | number) => `<input type="hidden" name="${name}" value="${e(value)}">`;
+export const flat = (csrf: string, revision: number) => `${hidden("csrf", csrf)}${hidden("requestId", rid())}${hidden("expectedRevision", revision)}`;
 /** Fixed-content decision: the exact typed envelope is carried by the seam's no-script path. */
-const commandForm = (csrf: string, kind: S14Command["kind"], expectedRevision: number, payload: object, label: string, cls = "s-btn", extra = "") => `<form method="post" action="/s14/commands"${extra}>${hidden("csrf", csrf)}${hidden("command", JSON.stringify({ kind, requestId: rid(), expectedRevision, payload }))}<button class="${cls}">${e(label)}</button></form>`;
+export const commandForm = (csrf: string, kind: S14Command["kind"], expectedRevision: number, payload: object, label: string, cls = "s-btn", extra = "") => `<form method="post" action="/s14/commands"${extra}>${hidden("csrf", csrf)}${hidden("command", JSON.stringify({ kind, requestId: rid(), expectedRevision, payload }))}<button class="${cls}">${e(label)}</button></form>`;
 /** The only host for authority buttons. Labels come from the dictionary and typed revisions, never from model text. */
-const ownerStrip = (actions: string, note = "", before = "", after = "") => `<div class="s-strip"><div class="s-strip-label">${icon("lock")}${tr("s14.strip.label")}</div>${before}<div class="s-strip-acts">${actions}</div>${note ? `<p class="s-note">${e(note)}</p>` : ""}${after}</div>`;
+export const ownerStrip = (actions: string, note = "", before = "", after = "") => `<div class="s-strip"><div class="s-strip-label">${icon("lock")}${tr("s14.strip.label")}</div>${before}<div class="s-strip-acts">${actions}</div>${note ? `<p class="s-note">${e(note)}</p>` : ""}${after}</div>`;
 /** Plain text only: no links, no Markdown and no controls can come out of this frame. */
-const untrusted = (body: string, label = tr("s14.untrusted.bot")) => `<div class="s-untrusted"><div class="s-untrusted-tag">${e(label)}</div>${body}</div>`;
-const pill = (label: string, tone = "", glyph = "", id = "") => `<span${id ? ` id="${id}"` : ""} class="s-pill ${tone}">${glyph ? `<span aria-hidden="true">${glyph}</span>` : ""}${e(label)}</span>`;
+export const untrusted = (body: string, label = tr("s14.untrusted.bot")) => `<div class="s-untrusted"><div class="s-untrusted-tag">${e(label)}</div>${body}</div>`;
+export const pill = (label: string, tone = "", glyph = "", id = "") => `<span${id ? ` id="${id}"` : ""} class="s-pill ${tone}">${glyph ? `<span aria-hidden="true">${glyph}</span>` : ""}${e(label)}</span>`;
 
 const workTone: Record<Work["state"], [string, string]> = { proposed: ["strong", ""], accepted: ["", ""], queued: ["", ""], running: ["strong", ""], waiting: ["warn", "!"], ready: ["ok", "✓"], blocked: ["warn", "!"], stopping: ["", ""], stopped: ["", ""] };
 const workPill = (state: Work["state"], id = "") => pill(tr(k(`s14.work_state.${state}`)), ...workTone[state], id);
@@ -86,11 +89,11 @@ const effectPill = (state: Effect["state"]) => pill(tr(k(`s14.effect_state.${sta
 const workDot: Partial<Record<Work["state"], string>> = { queued: "hollow", running: "working", waiting: "waiting", ready: "ready", blocked: "waiting", stopping: "hollow" };
 const attemptDot: Partial<Record<Attempt["state"], string>> = { running: "working", waiting: "waiting", committed: "ready", interrupted: "failed" };
 
-const botName = (bot: Pick<Bot, "id" | "name">) => bot.id === "jit" ? tr("s14.jit") : bot.name;
+export const botName = (bot: Pick<Bot, "id" | "name">) => bot.id === "jit" ? tr("s14.jit") : bot.name;
 const botDuty = (bot: Pick<Bot, "id" | "responsibility">) => bot.id === "jit" ? tr("s14.jit_duty") : bot.responsibility;
 function initial(name: string): string { return [...new Intl.Segmenter(currentLocale(), { granularity: "grapheme" }).segment(name)][0]?.segment ?? "?"; }
 /** Tile plus dot. Decorative: the state always appears as a word beside it. */
-function tile(bot: Pick<Bot, "id" | "name">, dot = "", scale = ""): string {
+export function tile(bot: Pick<Bot, "id" | "name">, dot = "", scale = ""): string {
   if (bot.id === "jit") return `<span class="s-tile jit ${scale}" aria-hidden="true"${dot ? ` data-dot="${dot}"` : ""}>${logoMark({ size: scale === "large" ? 56 : 32 })}</span>`;
   return `<span class="s-tile ${scale}" aria-hidden="true"${dot ? ` data-dot="${dot}"` : ""}><i></i>${e(initial(bot.name))}</span>`;
 }
@@ -112,15 +115,15 @@ function attentionList(page: S14Page): string {
   return items.length ? `<ul class="s-attention">${items.join("")}</ul>` : `<p class="s-sub">${tr("s14.attention.none")}</p>`;
 }
 
-interface ShellOptions { current?: "home" | "work" | "team" | "more" | `chat:${string}`; subtitle?: string; dock?: string; pane?: string; inChat?: boolean; live?: boolean; bot?: Bot }
-function shell(page: S14Page, title: string, content: string, options: ShellOptions = {}): string {
+interface ShellOptions { current?: "home" | "work" | "team" | "memory" | "more" | `chat:${string}`; subtitle?: string; dock?: string; pane?: string; inChat?: boolean; live?: boolean; bot?: Bot }
+export function shell(page: S14Page, title: string, content: string, options: ShellOptions = {}): string {
   const here = (name: string) => options.current === name ? ' aria-current="page"' : "", count = attentionCount(page);
   const badge = count ? `<span class="s-count">${pill(`${tr("s14.nav.waiting")} ${count}`, "warn")}</span>` : "";
   const chats = page.state.conversations.map(conversation => { const bot = page.state.bots.find(b => b.id === conversation.botId); return bot ? `<li><a class="s-link" href="/chats/${e(conversation.id)}#latest"${here(`chat:${conversation.id}`)}>${tile(bot, "", "small")}<span class="s-label">${e(botName(bot))}</span></a></li>` : ""; }).join("");
   const nav = `<aside class="s-nav" aria-label="${tr("s14.nav.label")}"><a class="s-lockup" href="/" aria-label="${tr("s14.nav.home")}">${logoLockup({ height: 36, label: "Jit" })}<span class="s-rail-mark">${logoMark({ size: 32 })}</span></a>
-    <ul><li><a class="s-link" href="/"${here("home")}>${icon("home")}<span class="s-label">${tr("s14.nav.home")}</span></a></li><li><a class="s-link" href="/work"${here("work")}>${icon("work")}<span class="s-label">${tr("s14.nav.work")}</span>${badge}</a></li><li><a class="s-link" href="/team"${here("team")}>${icon("team")}<span class="s-label">${tr("s14.nav.team")}</span></a></li></ul>
+    <ul><li><a class="s-link" href="/"${here("home")}>${icon("home")}<span class="s-label">${tr("s14.nav.home")}</span></a></li><li><a class="s-link" href="/work"${here("work")}>${icon("work")}<span class="s-label">${tr("s14.nav.work")}</span>${badge}</a></li><li><a class="s-link" href="/team"${here("team")}>${icon("team")}<span class="s-label">${tr("s14.nav.team")}</span></a></li><li><a class="s-link" href="/memory"${here("memory")}>${icon("memory")}<span class="s-label">${tr("s14.nav.memory")}</span></a></li></ul>
     <p class="s-nav-sec">${tr("s14.nav.chats")}</p><ul>${chats}</ul><div class="s-nav-foot"><a class="s-link" href="/more"${here("more")}>${icon("more")}<span class="s-label">${tr("s14.nav.more")}</span></a></div></aside>`;
-  const tabs = `<nav class="s-tabs" aria-label="${tr("s14.nav.tabs")}"><a href="/"${here("home")}>${icon("chat")}<span>${tr("s14.nav.chat_tab")}</span></a><a href="/work"${here("work")}>${icon("work")}<span>${tr("s14.nav.work")}</span>${count ? `<span class="s-pill warn"><span class="sr-only">${tr("s14.nav.waiting")} </span>${count}</span>` : ""}</a><a href="/team"${here("team")}>${icon("team")}<span>${tr("s14.nav.team")}</span></a><a href="/more"${here("more")}>${icon("more")}<span>${tr("s14.nav.more")}</span></a></nav>`;
+  const tabs = `<nav class="s-tabs" aria-label="${tr("s14.nav.tabs")}"><a href="/"${here("home")}>${icon("chat")}<span>${tr("s14.nav.chat_tab")}</span></a><a href="/work"${here("work")}>${icon("work")}<span>${tr("s14.nav.work")}</span>${count ? `<span class="s-pill warn"><span class="sr-only">${tr("s14.nav.waiting")} </span>${count}</span>` : ""}</a><a href="/team"${here("team")}>${icon("team")}<span>${tr("s14.nav.team")}</span></a><a href="/more"${options.current === "more" || options.current === "memory" ? ' aria-current="page"' : ""}>${icon("more")}<span>${tr("s14.nav.more")}</span></a></nav>`;
   const back = options.inChat ? `<a class="s-btn s-back" href="/" aria-label="${tr("s14.nav.home")}">${icon("back")}</a>` : "";
   return documentPage(title, `<div class="s-app">${nav}<main class="s-main" id="main-content"${options.pane ? ' data-pane="open"' : ""}${options.inChat ? " data-in-chat" : ""}><div class="s-chatcol"><header class="s-hdr">${back}${options.bot ? tile(options.bot, "") : ""}<div class="s-hdr-t"><h1>${e(title)}</h1>${options.subtitle ? `<small>${e(options.subtitle)}</small>` : ""}</div></header>
     <div class="s-scroll"${options.live ? ' data-live="true"' : ""}>${content}</div>${options.dock ?? ""}</div>${options.pane ?? ""}</main>${tabs}<p class="sr-only" role="status" id="s-phase" data-reply="${tr("s14.live.reply")}"></p></div>`);
@@ -201,7 +204,8 @@ function proposalHistory(history: BotProposal[], current: BotProposal): string {
 }
 
 const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${trMaybe(`s14.reason.${reply.reason}`) ?? ""} ${tr("s14.reply.blocked_next")}`.trim()) : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
-const message = (item: Message, bot: Bot, extra: string) => item.role === "owner" ? `<div class="s-owner-msg">${e(item.text)}</div>` : `<div class="s-bot-msg">${tile(bot)}<div><p class="s-who">${e(botName(bot))}</p><p class="s-bot-text">${e(item.text)}</p>${extra}</div></div>`;
+const messageText = (item: Message) => item.text === "[deleted]" ? tr("s14.memory.message_deleted") : `${e(item.text)}${item.contextState === "withdrawn" ? ` <span class="s-note">${tr("s14.memory.withdrawn")}</span>` : ""}`;
+const message = (item: Message, bot: Bot, extra: string) => item.role === "owner" ? `<div class="s-owner-msg">${messageText(item)}</div>` : `<div class="s-bot-msg">${tile(bot)}<div><p class="s-who">${e(botName(bot))}</p><p class="s-bot-text">${messageText(item)}</p>${extra}</div></div>`;
 /** Messages, typed cards and work in commit order. Cards are built from typed records, never parsed from message text. */
 function thread(page: S14Page, chat: S14Chat, bot: Bot): string {
   const work = page.work.filter(item => item.conversationId === chat.conversation.id).sort((a, b) => a.createdAt - b.createdAt), direct = work.filter(item => !item.sourceMessageId);
@@ -247,12 +251,13 @@ function attemptLane(page: S14Page, attempt: Attempt): string {
   const bot = page.state.bots.find(b => b.id === attempt.snapshot.bot.id) ?? attempt.snapshot.bot;
   return `<div class="s-lane">${tile(bot, attemptDot[attempt.state] ?? "")}<div><p><b>${e(botName(bot))}</b> · ${tr(k(`s14.attempt_state.${attempt.state}`))}</p>${attempt.reason ? `<p class="s-meta">${e(trMaybe(`s14.reason.${attempt.reason}`) ?? attempt.reason)}</p>` : ""}<p class="s-meta">${when(attempt.createdAt)}</p>${attempt.snapshot.tools.includes("computer") ? `<p><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.work.view_computer")}</a></p>` : ""}</div></div>`;
 }
-function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot): string {
+function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, base: string): string {
   const { work } = view;
   if (work.state === "proposed" || work.state === "accepted") return taskSlip(page, work, conversation, bot);
   const resultText = view.results.map(result => result.text).join("\n\n");
   const result = resultText ? `<section class="s-stack" aria-labelledby="s14-result"><h3 class="s-section-t" id="s14-result">${tr("s14.work.result")}</h3>${untrusted(`<p>${e(resultText)}</p>`, tr("s14.untrusted.result"))}<p class="s-note">${tr("s14.work.completion_rule")}: ${e(work.completionRule)}</p></section>` : "";
-  return `${workStateBanner(view)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${view.attempts.length ? `<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${view.attempts.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usage(view)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
+  const evidenceHref = `${base}${base.includes("?") ? "&amp;" : "?"}tab=evidence`;
+  return `${workStateBanner(view)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${view.attempts.length ? `<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${view.attempts.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usage(view)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
 function grantTab(page: S14Page, view: WorkView): string {
   const { grant, authority, work } = view;
@@ -267,16 +272,18 @@ function grantTab(page: S14Page, view: WorkView): string {
     <dt>${tr("s14.grant.time")}</dt><dd>${Math.round(grant.limits.wallMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.grant.reads")}</dt><dd>${grant.limits.calls}</dd><dt>${tr("s14.grant.concurrency")}</dt><dd>${tr("s14.grant.concurrency_detail")}</dd><dt>${tr("s14.grant.output")}</dt><dd>${size(grant.limits.outputBytes)}</dd></dl>
     <p class="s-note">${tr("s14.grant.enforced_note")}</p>${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
-function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot): string {
+function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, base: string): string {
   if (tab === "computer" && usesComputer(view)) return computerTab(page, view);
-  return tab === "grant" ? grantTab(page, view) : progressTab(page, view, conversation, bot);
+  return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, base);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
+  if (tab === "computer" && !usesComputer(view)) tab = "progress";
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${usesComputer(view) ? link("computer") : ""}${link("evidence")}</nav>` : "";
 }
-function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot): string {
-  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, `/chats/${e(conversation.id)}?work=${e(view.work.id)}`)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot)}</div></section>`;
+function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null): string {
+  const base = `/chats/${e(conversation.id)}?work=${e(view.work.id)}`;
+  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, base)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot, research, base)}</div></section>`;
 }
 
 const reasonOf = (effect: Effect) => effect.reason ? trMaybe(`s14.reason.${effect.reason}`) ?? "" : "";
@@ -314,6 +321,12 @@ function effectHistory(history: Effect[], current: Effect): string {
   return old.length ? `<section class="s-card" aria-labelledby="s14-effect-history"><h2 id="s14-effect-history">${tr("s14.effect.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${effectPill(item.state)}</p><p class="s-mono s-meta">${e(item.actionHash)}</p></li>`).join("")}</ul></section>` : "";
 }
 
+const researchTools = (page: S14Page) => (["web_search", "web_fetch"] as const).filter(tool => page.policy.tools.includes(tool));
+/** Public research works from the first message: both tools are ticked, named in words and the owner can untick them. */
+function researchChoice(page: S14Page): string {
+  const tools = researchTools(page); if (!tools.length) return "";
+  return `<fieldset class="s-field"><legend>${tr("s14.setup.research")}</legend>${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${tool}" value="on" checked><span>${tr(k(`s14.setup.research_${tool}`))}</span></label>`).join("")}<p class="s-note">${tr("s14.setup.research_note")}</p><p class="s-note">${tr("s14.setup.nothing_else")}</p></fieldset>`;
+}
 /* Bot computer (BOX14-01, F11). The lease bar reads the lease, never local state, and every word here comes from typed query data. */
 const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
 const usesComputer = (view: WorkView) => !!view.grant?.tools.includes("computer");
@@ -443,9 +456,9 @@ function setupPage(page: S14Page, view: Extract<S14View, { kind: "setup" }>): st
   const row = (tone: "ok" | "warn" | "danger", title: string, detail: string, extra = "") => `<li>${icon(tone === "ok" ? "check" : "alert")}<div><p class="${tone}">${e(title)}</p><p class="s-meta">${e(detail)}</p>${extra}</div></li>`;
   const route = routes.length ? row("warn", tr("s14.setup.route_configured"), tr("s14.setup.route_configured_detail"), single ? `<p>${routeText(single)}</p>` : "") : row("danger", tr("s14.setup.route_missing"), tr("s14.setup.route_missing_detail"), `<pre class="s-exact">JIT_S14_ROUTES='[{"id":"selected","provider":"codex","model":"&lt;exact-model&gt;"}]'</pre>`);
   const form = routes.length ? `<form class="s-stack" data-ceremony-form method="post" action="/s14/forms/setup">${flat(page.csrf, page.state.revision)}<div class="s-field"><label for="s14-name">${tr("s14.setup.name")}</label><input id="s14-name" name="ownerName" required maxlength="60" autocomplete="name" value="${e(view.draft?.ownerName ?? "")}"></div>
-    <fieldset class="s-field"><legend>${tr("s14.setup.language")}</legend><label class="s-check"><input type="radio" name="language" value="th"${language === "th" ? " checked" : ""}><span lang="th">ไทย</span></label><label class="s-check"><input type="radio" name="language" value="en"${language === "en" ? " checked" : ""}><span lang="en">English</span></label></fieldset>${routeChoice(routes, null)}<div><button class="s-btn primary">${tr("s14.setup.submit")}</button></div></form>` : "";
+    <fieldset class="s-field"><legend>${tr("s14.setup.language")}</legend><label class="s-check"><input type="radio" name="language" value="th"${language === "th" ? " checked" : ""}><span lang="th">ไทย</span></label><label class="s-check"><input type="radio" name="language" value="en"${language === "en" ? " checked" : ""}><span lang="en">English</span></label></fieldset>${routeChoice(routes, null)}${researchChoice(page)}<div><button class="s-btn primary">${tr("s14.setup.submit")}</button></div></form>` : "";
   return standalone(tr("s14.setup.title"), `<ol class="s-steps"><li data-step="done">${tr("s14.setup.step_wake")}</li><li data-step="current">${tr("s14.setup.step_know")}</li><li>${tr("s14.setup.step_set")}</li></ol><div class="s-setup-card"><div class="s-ceremony ceremony" data-ceremony="idle">${logoMark({ size: 96 })}</div><h1>${tr("s14.setup.title")}</h1><p class="s-sub">${tr("s14.setup.lead")}</p>${notice(view.notice)}
-    <ul class="s-ready">${row("ok", tr("s14.setup.store_ok"), tr("s14.setup.store_ok_detail"))}${route}${row("warn", tr("s14.setup.capacity"), tr("s14.setup.capacity_detail"))}${row("ok", tr("s14.setup.nothing_granted"), tr("s14.setup.nothing_granted_detail"))}</ul>${form}</div>`);
+    <ul class="s-ready">${row("ok", tr("s14.setup.store_ok"), tr("s14.setup.store_ok_detail"))}${route}${row("warn", tr("s14.setup.capacity"), tr("s14.setup.capacity_detail"))}${researchTools(page).length ? "" : row("ok", tr("s14.setup.nothing_granted"), tr("s14.setup.nothing_granted_detail"))}</ul>${form}</div>`);
 }
 function homePage(page: S14Page, view: Extract<S14View, { kind: "home" }>): string {
   const first = !page.state.replies.length && !page.work.length, name = page.state.owner?.name ?? "";
@@ -459,7 +472,7 @@ function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): stri
   const live = chat.replies.some(reply => reply.state === "queued" || reply.state === "running") || work.some(liveWork);
   const body = chat.messages.length || work.length ? thread(page, chat, bot) : emptyThread(bot);
   const content = `<div class="s-col"><div id="s14-live" class="s-thread" data-revision="${chat.conversation.revision}">${bot.id === "jit" ? "" : banner("", tr("s14.chat.direct"), tr("s14.chat.direct_detail"))}${body}</div><span id="latest"></span>${live ? `<p class="s-note"><a class="s-link-text" href="/chats/${e(chat.conversation.id)}#latest">${tr("s14.refresh")}</a></p>` : ""}</div>`;
-  return shell(page, botName(bot), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot) } : {}) });
+  return shell(page, botName(bot), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research) } : {}) });
 }
 function workListPage(page: S14Page): string {
   const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span>${workPill(item.state)}</a>`).join("")}</section>` : "";
@@ -468,7 +481,7 @@ function workListPage(page: S14Page): string {
 }
 function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): string {
   const work = view.view.work;
-  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
+  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot, view.research, `/work/${e(work.id)}`)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
 }
 function teamPage(page: S14Page): string {
   const row = (bot: Bot) => `<a class="s-work-row" href="/team/${e(bot.id)}"><span class="s-row">${tile(bot, ({ working: "working", queued: "hollow", waiting: "waiting", idle: "" })[page.overview.botStates[bot.id] ?? "idle"])}<span><b>${e(botName(bot))}</b><small>${e(botDuty(bot))}</small>${page.overview.computers[bot.id]?.computer ? `<small>${tr("s14.proposal.computer")} · ${computerWord(page.overview.computers[bot.id]!)}</small>` : ""}</span></span>${pill(tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`)))}</a>`;
@@ -478,12 +491,13 @@ function botPage(page: S14Page, view: Extract<S14View, { kind: "bot" }>): string
   const { bot, conversation, computer } = view, route = page.state.routes.find(r => r.id === bot.routeId), current = page.overview.computers[bot.id] ?? { computer: null, lease: null };
   const list = (items: string[]) => items.length ? items.map(item => `<span class="s-mono">${e(item)}</span>`).join(" · ") : tr("s14.bot.none");
   const tabs = `<nav class="s-worktabs" aria-label="${tr("s14.bot.tab_label")}"><a href="/team/${e(bot.id)}"${computer ? "" : ' aria-current="page"'}>${tr("s14.bot.tab_overview")}</a><a href="${computerPath(bot)}"${computer ? ' aria-current="page"' : ""}>${tr("s14.tab.computer")}</a></nav>`;
-  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p>${conversation ? `<p><a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a></p>` : ""}`;
+  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p><p class="s-row">${conversation ? `<a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a>` : ""}<a class="s-btn" href="/memory?scope=${e(bot.id)}">${tr("s14.bot.memory")}</a></p>`;
   return shell(page, botName(bot), `<div class="s-col${computer ? " s-col-wide" : ""}">${tabs}${computer ? computerPanel(page, bot, computer) : overview()}</div>`, { current: "team", bot, ...(computer ? { subtitle: tr("s14.computer.title") } : {}) });
 }
 function morePage(page: S14Page): string {
-  const planned = (["report", "memory", "routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
+  const planned = (["report", "routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
   return shell(page, tr("s14.nav.more"), `<div class="s-col"><section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.setup.language")}</dt><dd>${page.state.owner?.language === "en" ? "English" : "ไทย"}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li>${page.state.bots.map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
     <section class="s-card" aria-labelledby="s14-planned"><h2 id="s14-planned">${tr("s14.more.planned")}</h2><ul class="s-history">${planned}</ul></section><form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
@@ -502,6 +516,8 @@ export function renderS14(page: S14Page): string {
       case "proposal": return shell(page, `${tr("s14.proposal.title")} r${view.proposal.revision}`, `<div class="s-col">${proposalCard(page, view.proposal, view.history, "h2")}${proposalHistory(view.history, view.proposal)}<p><a class="s-link-text" href="/chats/${e(page.state.conversations.find(c => c.id === view.proposal.conversationId)?.id ?? "")}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "team" });
       case "effect": return shell(page, tr("s14.effect.card"), `<div class="s-col">${effectSlip(page, view.effect, view.history, "h2")}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
       case "more": return morePage(page);
+      case "settings-web": return webSettingsPage(page, view);
+      default: return renderMemorySurface(page, view);
     }
   });
 }

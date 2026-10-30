@@ -289,7 +289,7 @@ test("hostile Bot text is escaped, stays out of every button and cannot borrow a
   expect(html).toContain("$&amp;");
 });
 
-test("work with the computer tool gets a Computer tab; the lane links to the Bot's page; work without it does not", async () => {
+test("computer work keeps four tabs; other work hides Computer and cannot gain computer access", async () => {
   const f = await fixture(), work = await f.open();
   let html = await f.page(`/work/${work.id}`); expect(html).toContain(`/work/${work.id}?tab=computer`);
   html = await f.page(`/work/${work.id}?tab=computer`); expect(html).toContain('/team/jit?tab=computer'); expect(html).toContain("Running"); expect(html).toContain("Nobody is driving"); expect(html).not.toContain("<form method=\"post\" action=\"/s14/bots"); strict(html);
@@ -297,8 +297,11 @@ test("work with the computer tool gets a Computer tab; the lane links to the Bot
   f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Write", calls: 6, outputBytes: 1024 });
   expect(await f.page(`/work/${work.id}`)).toContain("View the computer of this Bot");
   const plain = await fixture(), other = plain.startWork("Plain", []);
-  expect(await plain.page(`/work/${other.id}`)).not.toContain("tab=computer");
+  const plainPage = await plain.page(`/work/${other.id}`);
+  for (const tab of ["progress", "grant", "evidence"]) expect(plainPage).toContain(`/work/${other.id}?tab=${tab}`);
+  expect(plainPage).not.toContain(`/work/${other.id}?tab=computer`);
   expect(await plain.page(`/work/${other.id}?tab=computer`)).not.toContain("Viewing and takeover");
+  expect(() => plain.app.execute(plain.auth.actor, { kind: "computer.open", requestId: rid(), expectedRevision: 0, payload: { botId: "jit", workId: other.id } })).toThrow("computer_outside_grant");
 });
 
 test("Bot overview, Team and More read the computer honestly", async () => {
@@ -307,6 +310,8 @@ test("Bot overview, Team and More read the computer honestly", async () => {
   const overview = await f.page("/team/jit"); expect(overview).toContain("Running"); expect(overview).toContain('href="/team/jit?tab=computer"'); strict(overview);
   expect(await f.page("/team")).toContain("Computer · Running");
   expect(await f.page("/more")).not.toContain("Bot computers");
+  const more = await f.page("/more");
+  for (const path of ["/memory", "/team/jit?tab=computer", "/settings/web"]) expect(more).toContain(`href="${path}"`);
 });
 
 test("Thai renders every state with no raw keys, and both dictionaries define the same computer keys", async () => {

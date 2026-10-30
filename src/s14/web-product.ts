@@ -7,6 +7,7 @@ import type { ComputerActivity, ComputerInputReceipt, ComputerReceipt, ComputerV
 import type { Bot, BotProposal, Conversation, Home, Message, OwnerActor, Reply } from "./types";
 import { lookupS14Asset } from "./web-assets";
 import { renderFailure, renderLogin } from "./web-pages";
+import { memoryCommand, memoryNext, memoryRecover, memorySurface, memoryView, workResearch, type S14MemorySurface, type S14WorkResearch } from "./web-product-memory";
 
 /** Owner-confirmed research defaults, shown as editable values on every start form; they are not measured host capacity. */
 export const defaultWorkLimits = Object.freeze({ concurrent: 2, minutes: 30, reads: 40 });
@@ -18,7 +19,7 @@ export const workLimitBounds = Object.freeze({ concurrent: [1, 8], minutes: [1, 
 /** Composer content preserved across a refused post, so a stale revision never costs the owner their text. */
 export interface S14Draft { text: string; work: boolean; concurrent: number; minutes: number; reads: number; completion: string; bots: string[] }
 /** Work pane tabs that have real data in this slice; later slices add theirs when their data exists. */
-export type S14WorkTab = "progress" | "grant" | "computer";
+export type S14WorkTab = "progress" | "grant" | "computer" | "evidence";
 /** Query data only the Bot computer tab needs. `runtime` says one is configured, never that it is ready. */
 export interface S14ComputerSurface { activity: ComputerActivity[]; runtime: boolean; confirm: "reset" | "delete" | null; input: ComputerInputReceipt | null }
 /** One conversation query as rendered, with open proposal history for the exact-revision diff. */
@@ -27,14 +28,15 @@ export interface S14Chat { conversation: Conversation; messages: Message[]; prop
 export type S14View =
   | { kind: "setup"; draft: { ownerName: string; language: Locale } | null; notice: string | null }
   | { kind: "home"; conversation: Conversation; bot: Bot; draft: S14Draft | null; notice: string | null }
-  | { kind: "chat"; chat: S14Chat; bot: Bot; draft: S14Draft | null; notice: string | null; pane: { view: WorkView; tab: S14WorkTab } | null }
+  | { kind: "chat"; chat: S14Chat; bot: Bot; draft: S14Draft | null; notice: string | null; pane: { view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null } | null }
   | { kind: "work-list" }
-  | { kind: "work"; view: WorkView; tab: S14WorkTab; conversation: Conversation; bot: Bot }
+  | { kind: "work"; view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null; conversation: Conversation; bot: Bot }
   | { kind: "team" }
   | { kind: "bot"; bot: Bot; conversation: Conversation | null; computer: S14ComputerSurface | null }
   | { kind: "proposal"; proposal: BotProposal; history: BotProposal[] }
   | { kind: "effect"; effect: Effect; history: Effect[] }
-  | { kind: "more" };
+  | { kind: "more" }
+  | S14MemorySurface;
 /** Query projections every signed-in page needs for attention counts and Bot state; never a proof of authority. */
 export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView> }
 /** Product routes behind the authenticated handler; every state change still goes through S14Application.execute. */
@@ -46,7 +48,7 @@ export interface S14Product {
   view(url: URL, actor: OwnerActor, state: Home, locale: Locale): S14View;
   command(form: string, fields: Record<string, unknown>, actor: OwnerActor, state: Home, locale: Locale): S14Command;
   recover(form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor, state: Home): S14View | null;
-  surface(receipt: S14Receipt): string;
+  surface(receipt: S14Receipt, fields?: Record<string, unknown>): string;
   /** Owner-facing page for one no-script input outcome, replacing the JSON redirect of the bare seam. */
   inputSurface(botId: string, requestId: string): string;
   next(form: string | null, value: unknown): string;
@@ -97,7 +99,7 @@ const draftOf = (fields: Record<string, unknown>, keepText: boolean): S14Draft =
   const number = (key: "concurrent" | "minutes" | "reads") => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : defaultWorkLimits[key]; };
   return { text: keepText ? single(fields, "text") : "", work: single(fields, "work") === "on", concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), completion: single(fields, "completion"), bots: prefixed(fields, "bot:") };
 };
-const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "grant" || name === "computer" ? name : "progress"; };
+const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "grant" || name === "computer" || name === "evidence" ? name : "progress"; };
 const computerPath = (botId: string, suffix = "") => `/team/${botId}?tab=computer${suffix}`;
 const example = (locale: Locale, url: URL): S14Draft | null => {
   const key = ({ "1": "s14.home.example_1", "2": "s14.home.example_2" } as Record<string, MessageKey>)[url.searchParams.get("example") ?? ""];
@@ -142,28 +144,30 @@ export function createS14Product(app: S14Application): S14Product {
       if (path === "/work") return { kind: "work-list" };
       if (path === "/team") return { kind: "team" };
       if (path === "/more") return { kind: "more" };
+      const surface = memoryView(app, url, actor, state); if (surface) return surface;
       const match = /^\/(chats|work|team|proposals|effects)\/([a-zA-Z0-9_-]+)$/.exec(path);
       if (!match) throw new AppError("not_found", 404);
-      const [, surface, id] = match as unknown as [string, string, string];
-      if (surface === "chats") {
+      const [, area, id] = match as unknown as [string, string, string];
+      if (area === "chats") {
         const read = chat(actor, id), workId = url.searchParams.get("work"), source = read.messages.find(m => m.id === url.searchParams.get("start") && m.role === "owner");
         const pane = workId ? app.authority.view(actor, workId) : null;
         if (pane && pane.work.conversationId !== id) throw new AppError("not_found", 404);
-        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...defaultWorkLimits, text: source.text, work: true, completion: "", bots: [] } : null, notice: null, pane: pane ? { view: pane, tab: tab(url) } : null };
+        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...defaultWorkLimits, text: source.text, work: true, completion: "", bots: [] } : null, notice: null, pane: pane ? { view: pane, tab: tab(url), research: workResearch(app, actor, pane) } : null };
       }
-      if (surface === "work") {
+      if (area === "work") {
         const view = app.authority.view(actor, id), conversation = app.conversation(actor, view.work.conversationId).conversation;
-        return { kind: "work", view, tab: tab(url), conversation, bot: botOf(state, conversation.botId) };
+        return { kind: "work", view, tab: tab(url), research: workResearch(app, actor, view), conversation, bot: botOf(state, conversation.botId) };
       }
-      if (surface === "team") {
+      if (area === "team") {
         const confirm = url.searchParams.get("confirm"), computer = url.searchParams.get("tab") === "computer";
         return { kind: "bot", bot: botOf(state, id), conversation: state.conversations.find(c => c.botId === id) ?? null, computer: computer ? { activity: app.computers.activity(actor, id), runtime: !!app.computers.options.runtime, confirm: confirm === "reset" || confirm === "delete" ? confirm : null, input: inputOutcome(actor, id, url.searchParams.get("input")) } : null };
       }
-      if (surface === "proposals") return { kind: "proposal", ...app.proposal(actor, id) };
+      if (area === "proposals") return { kind: "proposal", ...app.proposal(actor, id) };
       return { kind: "effect", ...app.authority.effect(actor, id) };
     },
     command(form, fields, actor, state, locale) {
       const requestId = single(fields, "requestId"), expectedRevision = Number(single(fields, "expectedRevision"));
+      const extended = memoryCommand(app, form, fields, actor); if (extended) return extended;
       if (form === "setup") {
         checked(fields, ["csrf", "requestId", "expectedRevision", "ownerName", "language", "routeId"], ["tool:", "resource:"]);
         return { kind: "setup", requestId, expectedRevision, payload: { ownerName: single(fields, "ownerName"), language: single(fields, "language") as Locale, routeId: route(fields, state), capabilities: capabilities(fields) } };
@@ -191,14 +195,15 @@ export function createS14Product(app: S14Application): S14Product {
     },
     recover(form, fields, code, actor, state) {
       if (form === "setup" && state.owner === null) return { kind: "setup", draft: { ownerName: single(fields, "ownerName"), language: single(fields, "language") === "en" ? "en" : "th" }, notice: code };
-      if (form !== "compose") return null;
+      if (form !== "compose") return memoryRecover(app, form, fields, code, actor, state);
       // Credential-shaped text is not echoed back into the page.
       const draft = draftOf(fields, code !== "credential_content_refused"), conversationId = single(fields, "conversationId");
       if (single(fields, "from") === "home") return { kind: "home", ...main(state), draft, notice: code };
       const read = chat(actor, conversationId);
       return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft, notice: code, pane: null };
     },
-    surface(receipt) {
+    surface(receipt, fields) {
+      const extended = memorySurface(receipt, fields); if (extended) return extended;
       if (receipt.kind === "setup") return "/";
       if (receipt.kind === "message.post") return `/chats/${receipt.conversation!.id}#latest`;
       if (receipt.kind === "bot.proposal.accept") return `/team/${receipt.bot!.id}`;
@@ -210,6 +215,7 @@ export function createS14Product(app: S14Application): S14Product {
     },
     inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
     next(form, value) {
+      const extended = memoryNext(form, value); if (extended) return extended;
       const data = value as { kind?: string; payload?: Record<string, string>; proposalId?: string; taskId?: string; conversationId?: string } | null;
       if (form === "proposal-accept" || form === "proposal-revise") return `/proposals/${data?.proposalId ?? ""}`;
       if (form === "task-start") return `/work/${data?.taskId ?? ""}`;

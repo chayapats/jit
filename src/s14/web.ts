@@ -90,7 +90,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const form = product && request.method === "POST" ? /^\/s14\/forms\/([a-z-]+)$/.exec(url.pathname)?.[1] : undefined;
       if (form) {
         const p = await body(request), state = app.home(auth.actor); app.verifyCsrf(auth.csrf, p.csrf); next = product!.next(form, p);
-        try { return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))))); }
+        try { return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p)); }
         catch (error) {
           const recovered = error instanceof AppError ? product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
           if (recovered) return view(app.home(auth.actor), recovered, (error as AppError).status);
@@ -122,6 +122,17 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(state);
       }
       if (url.pathname === "/api/s14/work") return json({ items: app.authority.list(auth.actor) });
+      const memory = /^\/api\/s14\/memory\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (memory) return json(app.memory.inspect(auth.actor, memory[1]!, url.searchParams.get("q") ?? ""));
+      const memoryClaim = /^\/api\/s14\/memory\/([a-zA-Z0-9_-]+)\/claims\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (memoryClaim) return json(app.memory.claim(auth.actor, memoryClaim[1]!, { id: memoryClaim[2]!, revision: Number(url.searchParams.get("revision")), generation: Number(url.searchParams.get("generation")) }));
+      const impact = /^\/api\/s14\/memory-impact\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (impact) return json(app.memory.preview(auth.actor, { id: impact[1]!, revision: Number(url.searchParams.get("revision")), generation: Number(url.searchParams.get("generation")) }));
+      const context = /^\/api\/s14\/memory-contexts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (context) return json(app.memory.context(auth.actor, context[1]!));
+      if (url.pathname === "/api/s14/parallel") return json(app.parallel.settings(auth.actor));
+      const evidence = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/evidence$/.exec(url.pathname);
+      if (evidence) return json(app.parallel.inspect(auth.actor, evidence[1]!));
       const work = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (work) return json(app.authority.view(auth.actor, work[1]!));
       const effect = /^\/api\/s14\/effects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

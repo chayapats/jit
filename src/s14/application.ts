@@ -5,20 +5,24 @@ import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
 import { canonical, canonicalByteLimit, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { ParallelWeb, type ParallelWebOptions } from "./parallel";
+import type { ParallelCommand, ParallelReceipt } from "./parallel-types";
+import { S14Memory } from "./memory";
+import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | ComputerCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | ComputerReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
 /** Service-owned JSON tables; request/model input never selects a SQL identifier. */
-export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects";
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions" | "parallel_settings" | "parallel_connections" | "web_reads" | "external_evidence";
 /** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
 export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
   const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
@@ -30,13 +34,15 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
   readonly policy: Policy;
   readonly now: () => number;
   readonly authority: S14Authority;
+  readonly memory: S14Memory;
+  readonly parallel: ParallelWeb;
   readonly computers: S14Computers;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
@@ -48,7 +54,13 @@ export class S14Application {
       if (!["codex", "grok"].includes(r.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new AppError("invalid_route");
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
-    this.authority = new S14Authority(this, options.authority);
+    this.memory = new S14Memory(this);
+    const externalScopes = options.authority?.scopes;
+    this.authority = new S14Authority(this, { ...options.authority, scopes: {
+      current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+    } });
+    this.parallel = new ParallelWeb(this, options.parallel);
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
@@ -86,7 +98,10 @@ export class S14Application {
     if (!tokenPattern.test(token)) throw new AppError("authentication_required", 401);
     const actor: OwnerActor = Object.freeze({ ownerId: "owner" }); this.#actors.set(actor, digest(token));
     this.store.read(tx => this.requireOwner(tx, actor));
-    return { actor, csrf: digest(`s14.csrf.v1:${token}`) };
+    const csrf = digest(`s14.csrf.v1:${token}`);
+    registerSecretFingerprint(token);
+    registerSecretFingerprint(csrf);
+    return { actor, csrf };
   }
   /** Rejects forged, expired and revoked actors even after a command has waited for the writer lock. */
   requireOwner(tx: AppTransaction, actor: OwnerActor): void {
@@ -111,7 +126,10 @@ export class S14Application {
     identity(conversationId);
     return this.store.read(tx => {
       this.requireOwner(tx, actor); const conversation = this.readConversation(tx, conversationId);
-      return { conversation, messages: tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 100) ORDER BY sequence", conversationId).map(r => JSON.parse(r.record_json)),
+      return { conversation, messages: tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 100) ORDER BY sequence", conversationId).map(r => {
+        const message = JSON.parse(r.record_json) as Message;
+        return this.memory.sourceCurrent(tx, { id: message.id, revision: 1, generation: 1 }) ? message : { ...message, contextState: "withdrawn" as const };
+      }),
         proposals: records<BotProposal>(tx, "bot_proposals").filter(p => p.conversationId === conversationId), replies: records<Reply>(tx, "reply_outbox").filter(r => r.conversationId === conversationId) };
     });
   }
@@ -124,22 +142,39 @@ export class S14Application {
   execute(actor: OwnerActor, command: BotCommand): BotReceipt;
   /** Executes obligation, work-start, stop and exact approval decisions under the same owner receipt boundary. */
   execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
+  /** Executes revisioned memory publication and lifecycle decisions under authenticated owner authority. */
+  execute(actor: OwnerActor, command: MemoryCommand): MemoryReceipt;
+  /** Executes explicit optional Parallel mode and write-only key commands under the same owner receipt boundary. */
+  execute(actor: OwnerActor, command: ParallelCommand): ParallelReceipt;
   /** Executes exact computer lifecycle and input ownership intents without embedding transient browser input. */
   execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
-    const encoded = canonical(command); exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
+    let encoded = canonical(command);
+    if (command.kind === "web.parallel.key.set") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
+    exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
       this.requireOwner(tx, actor);
       if (tx.get("SELECT request_id FROM computer_inputs WHERE request_id=?", command.requestId)) throw new AppError("request_id_conflict", 409);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
-      const result = ["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)
-        ? this.computers.apply(tx, command as ComputerCommand)
-        : ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)
-          ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
+      let result: S14Receipt;
+      if (command.kind.startsWith("web.parallel.")) {
+        result = this.parallel.apply(tx, command as ParallelCommand);
+      } else if (command.kind.startsWith("memory.")) {
+        result = this.memory.apply(tx, command as MemoryCommand);
+        this.memory.reconcile(tx);
+        this.memory.fence(tx);
+        this.parallel.reconcile(tx);
+      } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)) {
+        result = this.computers.apply(tx, command as ComputerCommand);
+      } else if (["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)) {
+        result = this.authority.apply(tx, command as AuthorityCommand);
+      } else {
+        result = this.applyBot(tx, command as BotCommand);
+      }
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);
@@ -181,17 +216,27 @@ export class S14Application {
       const message: Message = { id: id(), conversationId: conversation.id, role: "owner", text: text(p.text), createdAt: this.now() };
       tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, conversation.id, canonical(message));
       const owner = JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" };
-      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: [message] };
+      const source = this.memory.source(tx, { id: message.id, botId: bot.id, conversationId: conversation.id, attribution: "owner", text: message.text, derived: [] });
+      const memory = this.memory.assemble(tx, { botId: bot.id, conversationId: conversation.id, purpose: message.text,
+        sources: [{ id: source.id, revision: source.revision, generation: source.generation }] });
+      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: [message], memory };
       const reply: Reply = { id: id(), conversationId: conversation.id, messageId: message.id, state: "queued", reason: null, snapshot };
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id); conversation.revision++;
       const receipt = { ...result, conversation, message, reply };
-      // Budget the complete receipt: it duplicates the new message and also contains the outbox record.
+      // Reserve the complete receipt, including pinned memory and the duplicated new message.
       let remaining = canonicalByteLimit - Buffer.byteLength(canonical(receipt));
-      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
-        const prior = JSON.parse(row.record_json) as Message, bytes = Buffer.byteLength(canonical(prior)) + 1;
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? AND NOT EXISTS (SELECT 1 FROM lifecycle.withdrawals WHERE kind='source' AND id=messages.id) ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
+        const prior = JSON.parse(row.record_json) as Message;
+        if (!this.memory.sourceCurrent(tx, { id: prior.id, revision: 1, generation: 1 })) continue;
+        const candidate = { ...memory, sources: [{ id: prior.id, revision: 1, generation: 1 }, ...memory.sources] };
+        candidate.bytes = Buffer.byteLength(canonical(candidate));
+        const bytes = Buffer.byteLength(canonical(prior)) + 1 + Buffer.byteLength(canonical(candidate)) - Buffer.byteLength(canonical(memory));
         if (bytes > remaining) break;
+        this.memory.source(tx, { id: prior.id, botId: bot.id, conversationId: conversation.id, attribution: prior.role === "owner" ? "owner" : "bot", text: prior.text, derived: [] });
+        memory.sources = candidate.sources; memory.bytes = candidate.bytes;
         snapshot.messages.unshift(prior); remaining -= bytes;
       }
+      save(tx, "memory_contexts", memory);
       tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
       return receipt;
     }
@@ -224,6 +269,9 @@ export class S14Application {
       const reply = this.store.transaction(tx => {
         const row = tx.get<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' ORDER BY rowid LIMIT 1"); if (!row) return null;
         const next = JSON.parse(row.record_json) as Reply;
+        if (next.snapshot.memory && !this.memory.current(tx, next.snapshot.memory)) {
+          next.state = "blocked"; next.reason = "memory_context_stale"; save(tx, "reply_outbox", next); return null;
+        }
         next.state = "running"; save(tx, "reply_outbox", next); return next;
       });
       if (!reply) return;
@@ -233,12 +281,22 @@ export class S14Application {
       finally { clearTimeout(timer); }
       this.store.transaction(tx => {
         const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
+        if (reply.snapshot.memory && !this.memory.current(tx, reply.snapshot.memory)) {
+          current.state = "blocked"; current.reason = "memory_context_stale"; save(tx, "reply_outbox", current); return;
+        }
         let content: string | null = null; try { if (output && !abort.signal.aborted) content = text(output.text); } catch { /* Invalid output remains blocked. */ }
         current.state = content ? "succeeded" : "blocked"; current.reason = content ? null : "reply_unavailable";
         if (content) {
           const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
           tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));
           tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", message.conversationId);
+          const packet = reply.snapshot.memory;
+          this.memory.source(tx, { id: message.id, botId: reply.snapshot.bot.id, conversationId: message.conversationId, attribution: "bot", text: content,
+            ...(packet ? this.memory.derive(tx, packet) : { derived: [], access: [] }) });
+          if (packet && output?.memory !== undefined) {
+            try { this.memory.extract(tx, packet.id, { id: reply.messageId, revision: 1, generation: 1 }, output.memory); }
+            catch { /* Unsupported extraction stays untrusted data and never publishes globally. */ }
+          }
           if (output?.task !== undefined) suggestTask(tx, message.conversationId, message.id, output.task, this.now());
           const item = output?.proposal;
           if (item && typeof item === "object" && !Array.isArray(item)) {

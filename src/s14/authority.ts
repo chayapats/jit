@@ -51,6 +51,7 @@ export class S14Authority {
       exact(c.payload, ["taskId"]); identity(c.payload.taskId);
       const work = record<Work>(tx, "work_items", c.payload.taskId);
       if (work.revision !== c.expectedRevision || work.state !== "proposed") throw new AppError("stale_revision", 409);
+      const source = this.app.memory.workSources(tx, work)[0]; if (source) work.source = source;
       work.state = "accepted"; work.revision++; save(tx, "work_items", work); return { ...receipt, work };
     }
     if (c.kind === "work.start") {
@@ -76,6 +77,7 @@ export class S14Authority {
         work = record<Work>(tx, "work_items", p.task.id);
         if (work.conversationId !== conversation.id || work.revision !== p.task.revision || work.state !== "accepted" || work.grantId) throw new AppError("stale_revision", 409);
         if (work.title !== p.title || work.purpose !== p.purpose || work.completionRule !== p.completionRule) throw new AppError("task_changed", 409);
+        const source = this.app.memory.workSources(tx, work)[0]; if (source) work.source = source;
       } else work = { id: id(), revision: 0, conversationId: conversation.id, sourceMessageId: null, title: text(p.title, 200), purpose: text(p.purpose), completionRule: text(p.completionRule, 4000), state: "accepted", reason: null, grantId: null, result: null, createdAt: this.app.now() };
       if (!Array.isArray(p.scopes) || p.scopes.length > 64) throw new AppError("invalid_scope");
       for (const ref of p.scopes) scopeRef(ref);
@@ -152,6 +154,7 @@ export class S14Authority {
     if (work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state)) throw new AppError("grant_revoked", 403);
     if (this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
+    this.app.memory.workSources(tx, work);
     return work;
   }
   /** Rechecks the explicit computer tool and captured/current Bot ceiling under the caller's transaction. */
@@ -175,6 +178,7 @@ export class S14Authority {
   }
   private live(tx: AppTransaction, attempt: Attempt): Work {
     if (attempt.state !== "running" && attempt.state !== "waiting") throw new AppError("attempt_fenced", 403);
+    if (!this.app.memory.attemptCurrent(tx, attempt.id)) throw new AppError("memory_context_stale", 403);
     const computer = tx.get<{ generation: number; record_json: string }>("SELECT a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attempt.id);
     if (computer) {
       const current = JSON.parse(computer.record_json) as { generation: number; state: string };
@@ -217,6 +221,15 @@ export class S14Authority {
     if (usage.attempts + 1 > grant.limits.attempts || usage.steps + 1 > grant.limits.steps || usage.calls + 1 > grant.limits.calls || usage.output_bytes + input.outputBytes > grant.limits.outputBytes || input.calls > grant.limits.calls) throw new AppError("budget_exhausted", 409);
     const attempt: Attempt = { id: id(), workId, requestId, parentId, snapshot: { grant, bot, route, tools: structuredClone(input.tools), scopes: structuredClone(scopes), input: purpose, calls: input.calls, outputBytes: input.outputBytes }, state: "running", reason: null, createdAt: this.app.now() };
     tx.run("INSERT INTO work_attempts VALUES (?,?,?,?,?)", attempt.id, workId, requestId, payloadHash, canonical(attempt));
+    const sources = this.app.memory.workSources(tx, work);
+    if (parent) {
+      const parentPacket = this.app.memory.attemptPacket(tx, parent.id);
+      const handoff = this.app.memory.source(tx, { id: id(), botId: parent.snapshot.bot.id, conversationId: work.conversationId, attribution: "bot", text: purpose, ...this.app.memory.derive(tx, parentPacket) });
+      sources.push({ id: handoff.id, revision: handoff.revision, generation: handoff.generation });
+    }
+    const packet = this.app.memory.assemble(tx, { botId: bot.id, conversationId: work.conversationId, purpose, sources, attempt });
+    attempt.memoryId = packet.id;
+    save(tx, "work_attempts", attempt);
     tx.run("INSERT INTO attempt_usage VALUES (?,1)", attempt.id);
     tx.run("UPDATE grant_usage SET attempts=attempts+1,steps=steps+1,calls=calls+1,output_bytes=output_bytes+? WHERE grant_id=?", input.outputBytes, grant.id);
     tx.run("UPDATE work_queue SET state='claimed' WHERE work_id=?", workId);
@@ -226,6 +239,20 @@ export class S14Authority {
   delegate(parentAttemptId: string, requestId: string, input: Admission): Attempt {
     const parent = this.app.store.read(tx => record<Attempt>(tx, "work_attempts", parentAttemptId));
     return this.admit(parent.workId, requestId, input, parent.id);
+  }
+  /** Rechecks current attempt/tool authority without reserving another protocol-handshake call. */
+  guard(tx: AppTransaction, attemptId: string, tool?: string): Attempt {
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId);
+    this.live(tx, attempt);
+    if (tool && !attempt.snapshot.tools.includes(tool)) throw new AppError("tool_outside_grant", 403);
+    return attempt;
+  }
+  /** Reserves each later native model turn under the same finite call ceiling as tools. */
+  reserveInference(attemptId: string): void {
+    this.app.store.transaction(tx => {
+      const attempt = this.guard(tx, attemptId);
+      this.chargeCall(tx, attempt);
+    });
   }
   /** Reserves one call at the tool barrier; trusted adapters must use this immediately before their scoped call. */
   reserveTool(attemptId: string, tool: string, ref: ScopeRef | null = null): void {
