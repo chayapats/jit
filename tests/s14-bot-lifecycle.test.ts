@@ -221,6 +221,70 @@ test("retirement retains explicit owner history/report evidence, but reenable is
   expect(start(f, bot(f, b.id), ["web_search"]).grant!.bots[0]!.generation).toBe(3);
 });
 
+test("capability narrowing and widening retain committed evidence past expiry/restart while fencing old execution", async () => {
+  const f = await fixture(), b = await secondBot(f), n = nativeFixture();
+  const work = start(f, b), a = admission(f, work.work!.id, b);
+  f.app.authority.commit(a.id, { state: "ready", text: "Committed before policy change", report: { title: "Retained policy report",
+    claims: [{ id: "c", text: "Unverified inference", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["No source evidence"], artifactIds: [] } });
+  f.app.authority.settle(a.id);
+  const report = f.app.reports.list(f.auth.actor, work.work!.id)[0]!;
+  if (report.state !== "available") throw Error("fixture report missing");
+  const downloads = report.artifacts.map(file => f.app.artifacts.download(f.auth.actor, file.id).bytes);
+  const pending = start(f, b, ["web_search"]), late = admission(f, pending.work!.id, b, ["web_search"]);
+  f.clock.now += 60001;
+  for (const capabilities of [{ tools: [], resources: [] }, b.capabilities]) {
+    f.app.execute(f.auth.actor, accept(f, propose(f, b.id, capabilities)));
+    expect(f.app.authority.view(f.auth.actor, work.work!.id).results[0]!.text).toBe("Committed before policy change");
+    expect(f.app.reports.view(f.auth.actor, report.report.id).state).toBe("available");
+    expect(report.artifacts.map(file => f.app.artifacts.download(f.auth.actor, file.id).bytes)).toEqual(downloads);
+    expect(f.app.memory.context(f.auth.actor, a.memoryId!).state).toBe("retired");
+    expect(() => f.app.authority.reserveTool(late.id, "web_search")).toThrow();
+    expect(() => f.app.authority.commit(late.id, { state: "ready", text: "Late output" })).toThrow();
+    expect(() => admission(f, work.work!.id, bot(f, b.id))).toThrow("grant_revoked");
+    f.app.authority.settle(late.id);
+    await f.app.botLifecycle.drain(n.port);
+    f.reopen();
+  }
+  expect(f.app.reports.view(f.auth.actor, report.report.id).state).toBe("available");
+  expect(bot(f, b.id).generation).toBe(3);
+});
+
+test.each(["forget", "delete", "revoke"] as const)("capability retention still honors %s and widening never restores withdrawn content", async withdrawal => {
+  const f = await fixture(), b = await secondBot(f), n = nativeFixture();
+  const conversation = f.app.home(f.auth.actor).conversations.find(c => c.botId === b.id)!;
+  const remembered = claim(f, withdrawal === "revoke" ? f.conversationId : conversation.id, "Withdraw this evidence");
+  const scopes = withdrawal === "revoke" ? [{ kind: "share" as const, id: "share1", revision: 1 }] : [];
+  if (withdrawal === "revoke") {
+    const lookup = f.app.memory.claim(f.auth.actor, "jit", remembered).claim;
+    if (lookup.state !== "available") throw Error("fixture claim missing");
+    f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: b.revision,
+      payload: { scopeId: "share1", target: { kind: "source", ...lookup.claim.source }, receiverBotId: b.id, workId: null, expiresAt: f.clock.now + 60000 } });
+  }
+  const command = workCommand(f, { conversationId: conversation.id, bots: [{ id: b.id, revision: b.revision }], scopes });
+  command.expectedRevision = f.app.conversation(f.auth.actor, conversation.id).conversation.revision;
+  const work = f.app.execute(f.auth.actor, command).work!;
+  const a = f.app.authority.admit(work.id, retryId(), { botId: b.id, tools: [], scopes, input: "Use pinned evidence", calls: 2, outputBytes: 16384 });
+  f.app.authority.commit(a.id, { state: "ready", text: "Dependent result", report: { title: "Dependent report",
+    claims: [{ id: "c", text: "Inference", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: [], artifactIds: [] } });
+  f.app.authority.settle(a.id);
+  const report = f.app.reports.list(f.auth.actor, work.id)[0]!;
+  if (report.state !== "available") throw Error("fixture report missing");
+  f.app.execute(f.auth.actor, accept(f, propose(f, b.id, { tools: [], resources: b.capabilities.resources })));
+  await f.app.botLifecycle.drain(n.port);
+  expect(f.app.reports.view(f.auth.actor, report.report.id).state).toBe("available");
+  if (withdrawal === "delete") f.app.execute(f.auth.actor, lifecycleCommand(f, b.id, "delete"));
+  else if (withdrawal === "forget") f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: retryId(), expectedRevision: remembered.revision, payload: { claim: remembered } });
+  else f.app.execute(f.auth.actor, { kind: "snapshot.revoke", requestId: retryId(), expectedRevision: 1, payload: { shareId: "share1" } });
+  if (withdrawal !== "delete") {
+    f.app.execute(f.auth.actor, accept(f, propose(f, b.id, b.capabilities)));
+    await f.app.botLifecycle.drain(n.port);
+  }
+  f.reopen();
+  expect(f.app.authority.view(f.auth.actor, work.id).results).toEqual([]);
+  expect(f.app.reports.view(f.auth.actor, report.report.id).state).toBe("unavailable");
+  for (const file of report.artifacts) expect(() => f.app.artifacts.download(f.auth.actor, file.id)).toThrow("artifact_unavailable");
+});
+
 test("retiring a Bot stops every lane of its running team graph through actual settlement while preserving unrelated committed results", async () => {
   const f = await fixture(), b = await secondBot(f), n = nativeFixture(), bothRunning = Promise.withResolvers<void>(), settle = barrier();
   const unrelated = start(f, bot(f));

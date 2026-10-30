@@ -156,22 +156,17 @@ export function routineView(app: S14Application, url: URL, actor: OwnerActor, st
 export const ownerStoppedRun = (run: RoutineOccurrence) => run.reason === "owner_routine_control";
 const failedRun = (run: RoutineOccurrence) => (run.state === "failed" || run.state === "stopped") && !ownerStoppedRun(run);
 /**
- * Groups unresolved notices by routine. The seam has no acknowledge command, so a failure stays in "needs me" until a newer run
+ * Groups actual open decisions by routine, without a recent-notice window. The seam has no acknowledge command, so a failure stays in "needs me" until a newer run
  * of that routine settles without failing, and a blocked routine stays until the owner revokes it. History keeps all of them.
  */
 export function routineAttention(app: S14Application, actor: OwnerActor, work: Work[]): S14RoutineAttention {
-  const views = app.routines.list(actor), read = app.attention.view(actor), needs: S14RoutineNeed[] = [], updates: S14RoutineUpdate[] = [];
-  const waiting = (id: string | null) => work.some(item => item.id === id && item.state === "waiting"), proposed = (id: string) => work.some(item => item.id === id && item.state === "proposed");
-  for (const { routine, history } of views) {
-    const title = routine.capture.command.payload.title, runs = new Map(history.map(run => [run.id, run])), mine = read.items.filter(item => runs.has(item.groupId));
-    const delivery = mine.some(item => item.state === "unknown" || item.remote === "uncertain") ? "unknown" as const : mine.some(item => item.state === "failed") ? "failed" as const : null;
-    const decisions = mine.filter(item => item.resolvedAt === null && item.reason === "owner_decision"), open = decisions.flatMap(item => item.proposalIds).filter(proposed).length + decisions.filter(item => waiting(item.workId)).length;
-    if (open) needs.push({ routineId: routine.id, title, need: "decision", count: open, at: Math.max(...decisions.map(item => item.createdAt)), delivery });
-    const settled = history.find(run => run.state !== "running");
+  const needs: S14RoutineNeed[] = [], updates: S14RoutineUpdate[] = [];
+  for (const { routine, decisions, settled, report, delivery } of app.routines.attention(actor)) {
+    const title = routine.capture.command.payload.title;
+    if (decisions.count) needs.push({ routineId: routine.id, title, need: "decision", count: decisions.count, at: decisions.at!, delivery });
     if (routine.state === "blocked" && routine.occurrencesRemaining > 0) needs.push({ routineId: routine.id, title, need: "blocked", count: 1, at: settled?.createdAt ?? routine.createdAt, delivery });
-    else if (routine.state === "active" && settled && failedRun(settled)) needs.push({ routineId: routine.id, title, need: "failed", count: 1, at: settled.createdAt, delivery });
-    const latest = history.find(run => run.outcome === "report" && mine.some(item => item.groupId === run.id));
-    if (latest) updates.push({ routineId: routine.id, title, at: latest.createdAt, workId: latest.workId });
+    else if (routine.state !== "revoked" && settled && failedRun(settled)) needs.push({ routineId: routine.id, title, need: "failed", count: 1, at: settled.createdAt, delivery });
+    if (report) updates.push({ routineId: routine.id, title, at: report.createdAt, workId: report.workId });
   }
-  return { needs: needs.sort((a, b) => b.at - a.at), updates: updates.sort((a, b) => b.at - a.at), findings: views.flatMap(view => view.history.flatMap(run => run.proposals)) };
+  return { needs: needs.sort((a, b) => b.at - a.at), updates: updates.sort((a, b) => b.at - a.at), findings: work.filter(item => item.reason === "routine_out_of_scope").map(item => item.id) };
 }

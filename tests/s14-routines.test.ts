@@ -113,8 +113,8 @@ test("routine after restart waits for the entire boot reconciliation gate, then 
 
 test.each([
   ['{"outcome":"no_update"}', "no_update", 0],
-  ["There is nothing new", "report", 1],
-  ['{"outcome":"unexpected"}', "report", 1],
+  ["There is nothing new", "failed", 1],
+  ['{"outcome":"unexpected"}', "failed", 1],
   ['{"outcome":false}', "failed", 1],
   ['{"outcome":"failed","reason":"fixture_failure"}', "failed", 1],
 ] as const)("typed quiet/failure %s preserves history and notifies honestly", async (text, outcome, count) => {
@@ -246,6 +246,16 @@ test("once schedules exhaust after one materialization; waiting outcomes and fai
   g.clock.now += 60000; await run(g);
   expect(g.app.routines.view(g.auth.actor, other.id).history[0]!.outcome).toBe("failed");
   expect(notices(g)).toHaveLength(1);
+});
+
+test("an owner-waiting routine needs a decision without pretending prose is a delivered report", async () => {
+  const f = await fixture({ state: "waiting", text: "Owner clarification required" });
+  const routine = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  f.clock.now += 60000; await run(f);
+  const occurrence = f.app.routines.view(f.auth.actor, routine.id).history[0]!;
+  expect(occurrence.outcome).toBe("needs_owner");
+  expect(f.app.reports.list(f.auth.actor, occurrence.workId!)).toEqual([]);
+  expect(f.app.routines.attention(f.auth.actor)[0]!.decisions.count).toBe(1);
 });
 
 test("new proposals in an already resolved work group reopen in-app attention without duplicate or uncertain resend", async () => {

@@ -6,6 +6,7 @@ import type { NativeRecoveryPort } from "../src/s14/recovery-types";
 import { createS14Handler } from "../src/s14/web";
 import { renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
+import { routineAttention } from "../src/s14/web-product-routines";
 import { accessibilityProblems } from "./fixtures/a11y";
 import { domainFixture, retryId, secondBot, type DomainFixture } from "./fixtures/s14-domain";
 
@@ -153,12 +154,47 @@ test.each(["th", "en"] as const)("%s quiet runs make no noise while failures and
 });
 
 test("a run report shows once per routine and is listed without raising the badge", async () => {
-  const g = await fixture("en", { state: "ready", text: "Prices changed" }), { words } = g;
+  const g = await fixture("en", { state: "ready", text: "Prices changed", report: { title: "Price report",
+    claims: [{ id: "price", text: "Unverified price change", kind: "inference", citations: [], covers: [], conflicts: [] }],
+    missing: [], limitations: ["No verified price source"], artifactIds: [] } }), { words } = g;
   await g.enable("Report routine", { schedule: "interval", hours: "1", occurrences: "6" });
   await g.run(61); await g.run(61);
   const home = await g.page("/");
   expect(home).toContain(words["s14.attention.group.updates"]); expect(home.match(new RegExp(words["s14.attention.routine.report"], "g"))).toHaveLength(1);
   expect(home).not.toContain(`${words["s14.nav.waiting"]} 1`);
+});
+
+test.each(["no_update", "failed"] as const)("old open routine decisions survive 150 newer notices and %s escalation on bounded Home/Work", async outcome => {
+  const g = await fixture("en", { state: "ready", text: JSON.stringify({ outcome, reason: "fixture_failure", proposals: [
+    { title: "Old open finding", purpose: "Owner must decide", completionRule: "Owner review" },
+    { title: "Second finding", purpose: "Another owner decision", completionRule: "Owner review" },
+  ] }) });
+  await g.enable("Old decision routine", { schedule: "interval", hours: "1", occurrences: "1" });
+  await g.run(61);
+  const routineId = g.routines()[0]!.routine.id;
+  const before = routineAttention(g.app, g.auth.actor, g.app.authority.list(g.auth.actor));
+  expect(before.needs.find(row => row.need === "decision")).toMatchObject({ routineId, count: 2 });
+  if (outcome === "failed") expect(before.needs.some(row => row.need === "failed")).toBe(true);
+  const groupId = g.app.attention.view(g.auth.actor).items[0]!.groupId;
+  g.store.transaction(tx => {
+    tx.run("UPDATE attention_notices SET record_json=json_set(record_json,'$.state','unknown','$.remote','uncertain') WHERE group_id=?", groupId);
+    for (let i = 0; i < 150; i++) g.app.attention.commit(tx, { groupId: `new_notice_${i}`, class: "needs_owner", reason: "routine_report", workId: null, proposalIds: [] });
+  });
+  expect(g.app.attention.view(g.auth.actor).items).toHaveLength(100);
+  expect(g.app.attention.view(g.auth.actor).items.some(row => row.groupId === groupId)).toBe(false);
+  const summary = routineAttention(g.app, g.auth.actor, g.app.authority.list(g.auth.actor));
+  expect(summary.needs.find(row => row.need === "decision")).toMatchObject({ routineId, count: 2, delivery: "unknown" });
+  expect(summary.needs).toHaveLength(outcome === "failed" ? 2 : 1);
+  expect(() => g.app.routines.attention({ ownerId: "owner" })).toThrow("authentication_required");
+  for (const path of ["/", "/work"]) {
+    const html = await g.page(path);
+    expect(html).toContain(g.words["s14.attention.routine.decision"]);
+    expect(html).toContain(`href="/routines/${routineId}#findings"`);
+    expect(html).toContain(`${g.words["s14.nav.waiting"]} ${summary.needs.length}`);
+  }
+  const proposal = g.app.authority.list(g.auth.actor).find(work => work.title === "Old open finding")!;
+  g.app.execute(g.auth.actor, { kind: "task.accept", requestId: retryId(), expectedRevision: proposal.revision, payload: { taskId: proposal.id } });
+  expect(routineAttention(g.app, g.auth.actor, []).needs.find(row => row.need === "decision")!.count).toBe(1);
 });
 
 test.each(["th", "en"] as const)("%s findings are proposals that grant nothing, and hostile text never reaches a control", async language => {
