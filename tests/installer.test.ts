@@ -14,6 +14,8 @@ const facts: HostFacts = { family: "ubuntu", arch: "x64", ramMb: 8192, cpus: 4, 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
 function fixture(overrides: Partial<HostFacts> = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-installer-")); roots.push(root);
+  mkdirSync(join(root, "proc/self"), { recursive: true });
+  for (const name of ["uid_map", "gid_map"]) writeFileSync(join(root, "proc/self", name), "0 0 4294967295\n");
   const hardware = { ...facts, ...overrides }; writeFileSync(join(root, "host.json"), JSON.stringify(hardware));
   const lines: string[] = [], calls: string[][] = [];
   const options: InstallerOptions = { root, facts: hardware, source, bunPath: process.execPath, dryRun: true, out: line => lines.push(line),
@@ -184,6 +186,45 @@ test("subuid/gid allocation avoids every existing range and is idempotent", () =
   expect(ranges.subuid).toBe(`${before}jit:265536:65536\n`); expect(ranges.subgid).toBe(`${gid}jit:265536:65536\n`);
   expect(subordinateIds(ranges.subuid, ranges.subgid, "jit")).toEqual(ranges);
   expect(() => subordinateIds("broken\n", "", "jit")).toThrow("invalid-subordinate-ids");
+});
+
+test("parent mappings gate allocation without shrinking or replacing existing ranges", () => {
+  const full = { uid: "0 0 4294967295\n", gid: "0 0 4294967295\n" };
+  const nested = { uid: "0 100000 65536\n", gid: "0 100000 65536\n" };
+  const larger = { uid: "0 1000000 300000\n", gid: "0 2000000 300000\n" };
+  const normal = subordinateIds("", "", "jit", full);
+  expect(normal).toEqual({ subuid: "jit:100000:65536\n", subgid: "jit:100000:65536\n" });
+  expect(subordinateIds("", "", "jit", larger)).toEqual(normal);
+  for (const maps of [nested, { uid: full.uid, gid: nested.gid }, { uid: "", gid: full.gid },
+    { uid: "0 0 130000\n130001 130001 100000\n", gid: full.gid }]) {
+    const blocked = subordinateIds("", "", "jit", maps);
+    expect(blocked.unavailable).toContain("parent host");
+    expect(blocked.subuid).toBe(""); expect(blocked.subgid).toBe("");
+  }
+  const old = "jit:100000:65536\n", manual = "jit:1001:64535\n";
+  for (const text of [old, manual]) {
+    const blocked = subordinateIds(text, text, "jit", nested);
+    expect(blocked.unavailable).toBeDefined();
+    expect(blocked.subuid).toBe(text); expect(blocked.subgid).toBe(text);
+  }
+  expect(subordinateIds(normal.subuid, normal.subgid, "jit", larger)).toEqual(normal);
+});
+
+test("nested fake-root mapping keeps chat available and preserves files on re-run", async () => {
+  const f = fixture();
+  for (const name of ["uid_map", "gid_map"]) writeFileSync(f.at(`proc/self/${name}`), "0 100000 65536\n");
+  mkdirSync(f.at("etc"), { recursive: true });
+  for (const name of ["subuid", "subgid"]) writeFileSync(f.at(`etc/${name}`), "jit:100000:65536\n");
+  for (let run = 0; run < 2; run++) {
+    const result = await runInstaller(f.options);
+    expect(result.events.at(-1)).toBe("owner-link");
+    expect(JSON.parse(readFileSync(f.at("etc/jit/installer-state.json"), "utf8")).containers).toBe("unavailable");
+    expect(f.lines.join("\n")).toContain("subordinate IDs are outside the parent mapping");
+    expect(f.lines.join("\n")).not.toContain("Podman is absent");
+    for (const name of ["subuid", "subgid"]) expect(readFileSync(f.at(`etc/${name}`), "utf8")).toBe("jit:100000:65536\n");
+  }
+  expect(f.lines.join("\n")).toContain("expand the container's UID and GID mappings");
+  expect(f.lines.join("\n")).toContain("Restart the container, then re-run the installer");
 });
 
 test("low disk reserve fails before provisioning and names the step and next action", async () => {

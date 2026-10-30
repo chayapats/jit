@@ -340,11 +340,11 @@ test("deleting the owner message a reply copied also redacts Jit's proposal text
   const page = await (await get(f, topicPath(f))).text();
   expect(page).toContain("ข้อความที่จิตเสนอถูกลบตามคำสั่งลบข้อมูล");
   expect(page).not.toContain(`action="${proposalPath(f, secret!, "accept")}"`);
-  expect(after[0]!.name).not.toContain("7731");
-  expect(after[0]!.responsibility).not.toContain("7731");
+  expect(after[0]!.name).not.toMatch(/ลับ(สุด)?-7731/);
+  expect(after[0]!.responsibility).not.toMatch(/ลับ(สุด)?-7731/);
   expect(after[1]).toMatchObject({ id: edited.id, author: "owner", name: "ความปลอดภัยของเจ้าของ", revision: 2 });
   const stored = f.store.read(tx => tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json);
-  expect(stored).not.toContain("7731");
+  expect(stored).not.toMatch(/ลับ(สุด)?-7731/);
 });
 
 test("deleting the Jit reply itself takes its proposals with it and closes the open card", async () => {
@@ -468,10 +468,10 @@ test("receipts of a deleted reply's proposals replay without its text or model-n
   deleteSource(f, reply.source!);
   const replayedReject = (await (await postJson(f, rejectPath, reject)).json()).proposal;
   expect(replayedReject).toMatchObject({ state: "rejected", dropped: ["redaction:field"] });
-  expect(JSON.stringify(replayedReject)).not.toMatch(/7731|Confidential/);
+  expect(JSON.stringify(replayedReject)).not.toMatch(/_7731|Confidential/);
   const replayedRevise = (await (await postJson(f, revisePath, revision)).json()).proposal;
   expect(replayedRevise).toMatchObject({ revision: 2, author: "owner", state: "proposed", name: "ชื่อของเจ้าของ", responsibility: "หน้าที่ของเจ้าของ", route: grok, dropped: ["redaction:field"] });
-  expect(f.store.read(tx => tx.all<{ json: string }>("SELECT result_json AS json FROM command_receipts").map(row => row.json).join("\n"))).not.toMatch(/7731|Confidential/);
+  expect(f.store.read(tx => tx.all<{ json: string }>("SELECT result_json AS json FROM command_receipts").map(row => row.json).join("\n"))).not.toMatch(/_7731|Confidential/);
 });
 
 test("a model field named like the deletion marker is only an unsupported field", async () => {

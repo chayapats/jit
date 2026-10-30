@@ -75,7 +75,20 @@ Podman, uidmap and slirp4netns installation is best effort. An absent Podman
 produces a successful chat-only install and an explicit container-unavailable
 message. For an available runtime, subordinate-ID allocation considers both
 files, preserves existing usable service ranges, and appends an unused 65536-ID
-range. Linger, the user manager and `/var/lib/cni` follow the operational runbooks.
+range only when every existing service range and the proposed allocation are
+reachable through `/proc/self/uid_map` and `/proc/self/gid_map` (inside/first
+column, including gaps). Missing, unreadable or malformed maps fail closed for
+container features. An unreachable range leaves both subordinate files unchanged,
+records containers as unavailable and continues core chat/setup. The next action
+names the required range: expand the container's parent-host UID and GID mappings
+to cover the existing entries and required 65536-ID allocation, restart the
+container and re-run the installer. The installer never edits parent-host/LXC
+configuration or silently reduces the allocation. A 65536-ID LXC cannot supply
+that allocation at 100000; a manually selected `jit:1001:64535` is not a normal
+65536-ID allocation and does not prove image compatibility (UID 65534 can remain
+unavailable). Existing entries are preserved on every re-run. Dry-run mappings
+come from `<root>/proc/self/{uid_map,gid_map}`, never the actual host.
+Linger, the user manager and `/var/lib/cni` follow the operational runbooks.
 
 ### 2026-10-29 — OPS09 user API contract (#224)
 
