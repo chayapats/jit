@@ -2,6 +2,13 @@ import type { MessageKey } from "./index";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "attachments.image_probe_refused": "The provider refused the image probe.",
+  "attachments.image_probe_reason_sign_in": "Sign-in is required.",
+  "attachments.image_probe_reason_plan_or_credits": "The provider restricted access for this account.",
+  "attachments.image_probe_reason_quota": "The provider quota or rate limit was reached.",
+  "attachments.image_probe_next_sign_in": "Sign in again",
+  "attachments.image_probe_next_plan_or_credits": "Check the account’s access, plan or credits with the provider.",
+  "attachments.image_probe_next_quota": "Try again later.",
   "attachments.image_probe_result_pass": "Passed",
   "attachments.image_probe_result_unsupported": "Unsupported",
   "attachments.image_probe_result_inconclusive": "Inconclusive",

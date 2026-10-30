@@ -144,7 +144,7 @@ test(`explicit public-host probe checks both formats and replay (${correct})`, a
   const fixture: Model = { provider: "scripted", id: "fixture-grok-exact", async *stream(request) {
     captures.push(request); yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: correct ? captures.length === 1 ? "582731" : "914026" : "wrong" }] } };
   } };
-  const record = await runImageProbe({ route: "grok", model: "fixture-grok-exact", revision: SCHWAY_PINNED_REVISION, databasePath: f.store.path,
+  const { record } = await runImageProbe({ route: "grok", model: "fixture-grok-exact", revision: SCHWAY_PINNED_REVISION, databasePath: f.store.path,
     signal: new AbortController().signal, assertCurrent: () => {}, now: () => f.clock.now }, { model: fixture });
   expect(record.verdict).toBe(correct ? "pass" : "inconclusive");
   expect(captures).toHaveLength(correct ? 2 : 1);
@@ -206,7 +206,7 @@ test(`${route} public subscription adapter emits input_image derivatives and pro
   expect(JSON.stringify(wire[0])).toContain('"type":"input_image"'); expect(wire[0].store).toBe(false);
   expect(JSON.stringify(wire[0])).not.toContain("ORIGINAL_UNSANITIZED_IMAGE_SENTINEL_196");
   wire.length = 0;
-  const record = await runImageProbe({ route, model: "fixture-grok-exact", revision: SCHWAY_PINNED_REVISION, databasePath: f.store.path, signal: new AbortController().signal, assertCurrent: () => {}, now: () => f.clock.now },
+  const { record } = await runImageProbe({ route, model: "fixture-grok-exact", revision: SCHWAY_PINNED_REVISION, databasePath: f.store.path, signal: new AbortController().signal, assertCurrent: () => {}, now: () => f.clock.now },
     { store, fetch: async (_target, init) => { wire.push(JSON.parse(String(init?.body))); return sse(wire.length === 1 ? "582731" : "914026"); } });
   expect(record.verdict).toBe("pass"); expect(wire).toHaveLength(2);
   expect(JSON.stringify(wire[1])).toContain("data:image/png;base64,"); expect(JSON.stringify(wire[1])).toContain("data:image/jpeg;base64,");
@@ -362,8 +362,54 @@ test(`${route} probe bounds: ${scenario} stops without durable passing evidence`
     if (scenario === "oversized") { expect(inference).toBe(1); expect(pulls).toBe(5); expect(cancelled).toBe(1); expect(responseBytes).toBeGreaterThan(256 * 1024); }
     if (scenario === "cumulative") { expect(inference).toBe(2); expect(responseBytes).toBeGreaterThan(256 * 1024); }
     if (scenario === "retry") expect(inference).toBe(1);
-    if (scenario === "refresh-pressure") { expect(inference).toBe(4); expect(tokens).toBe(3); expect(writes).toBe(3); }
+    // An expired access token is refreshed, not reported as a sign-in refusal.
+    if (scenario === "refresh-pressure") { expect(inference).toBe(4); expect(tokens).toBe(3); expect(writes).toBe(3); expect(result.imageProbe.reason).toBeNull(); }
     if (scenario === "refresh-rejected") { expect(tokens).toBe(1); expect(inference).toBe(0); expect(writes).toBe(0); }
     if (scenario === "mid-probe-refresh") { expect(inference).toBe(2); expect(tokens).toBe(1); expect(writes).toBe(1); }
+  } finally { await app.closeDeviceSignIns(); }
+});
+
+for (const route of ["grok", "codex"] as const)
+for (const [endpoint, status, reason] of [
+  ["inference", 403, "plan_or_credits"], ["inference", 401, "sign_in"], ["inference", 429, "quota"],
+  ["inference", 400, null], ["inference", 404, null], ["inference", 415, null], ["inference", 422, null],
+  ["token", 400, "sign_in"], ["token", 401, "sign_in"],
+] as const)
+test(`${route} ${endpoint} ${status} stores only a closed refusal reason and stops sends`, async () => {
+  const f = await world(); let inference = 0, tokens = 0;
+  const providerText = "personal-team-blocked:spending-limit PROVIDER_PRIVATE_ERROR_SENTINEL";
+  const store: HostCredentialStore = { get: async () => JSON.stringify({ accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: endpoint === "token" ? 1 : 4_000_000_000_000, obtainedAt: 0 }), set: async () => {}, delete: async () => true };
+  const app = new Application(f.store, f.config, { now: () => f.clock.now, imageProbe: { store, fetch: async target => {
+    if (String(target).toLowerCase().includes("token")) tokens++; else inference++;
+    return Response.json({ code: providerText, error: providerText }, { status });
+  } } });
+  try {
+    const token = await app.login("fixture-exe07-owner-password"), auth = app.authenticate(token);
+    if (route === "codex") app.execute(auth.actor, { kind: "route.save", requestId: rid(), projectId: null,
+      expectedRevision: app.team(auth.actor).ownerRevision, payload: { roleId: null, route: { provider: route, model: "fixture-grok-exact", authRoute: "owner-codex" } } });
+    const command = { requestId: rid(), projectId: null, expectedRevision: app.team(auth.actor).ownerRevision, provider: route, model: "fixture-grok-exact", confirmed: true as const };
+    const result = await app.probeImages(auth.actor, command);
+    expect(result.imageProbe).toMatchObject({ state: "failed", reason, record: { verdict: reason ? "inconclusive" : "unsupported" } });
+    // An inference 401 first gets Schway's native refresh where the adapter has one (Grok), which the fixture also refuses.
+    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : status === 401 && route === "grok" ? [1, 1] : [1, 0]);
+    expect(result.imageProbe.record).not.toHaveProperty("reason");
+    const { imageProbeCards } = await import("../src/web-image-probes"), { withLocale, dictionaries } = await import("../src/i18n");
+    for (const locale of ["en", "th"] as const) {
+      const state = app.imageProbeState(auth.actor), html = withLocale(locale, () => imageProbeCards({ ...state, routes: state.routes.filter(row => row.route.provider === route) }, auth.csrf, null));
+      expect(state.routes.find(row => row.route.provider === route)!.reason).toBe(reason);
+      expect(html).not.toContain(providerText);
+      if (reason) {
+        expect(html).toContain(`role="status"`);
+        expect(html).toContain(dictionaries[locale][`attachments.image_probe_reason_${reason}`]);
+        expect(html).toContain(dictionaries[locale][`attachments.image_probe_next_${reason}`]);
+        expect(html).not.toContain(dictionaries[locale]["attachments.route_cannot_see_images"]);
+        if (reason === "sign_in") expect(html).toContain(`/settings/team#sign-in-${route}`);
+      }
+    }
+    const persisted = f.store.read(tx => JSON.stringify({ receipts: tx.all("SELECT result_json FROM command_receipts"), audit: tx.all("SELECT * FROM audit") }));
+    expect(persisted).not.toContain(providerText);
+    expect(await app.probeImages(auth.actor, command)).toEqual(result);
+    // An inference 401 first gets Schway's native refresh where the adapter has one (Grok), which the fixture also refuses.
+    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : status === 401 && route === "grok" ? [1, 1] : [1, 0]);
   } finally { await app.closeDeviceSignIns(); }
 });

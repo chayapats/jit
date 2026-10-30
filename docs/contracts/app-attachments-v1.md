@@ -379,7 +379,7 @@ required confirmation checkbox per exact route/model.
 `POST` to the same path accepts `{ requestId, expectedRevision, provider, model,
 confirmed: true }` plus CSRF. It is genuine-Web-owner only, with the normal
 session/Origin/body bounds and the displayed team revision. It returns
-`{ imageProbe: { state: running | complete | failed, record: HostImageProbeRecord } }`.
+`{ imageProbe: { state: running | complete | failed, record: HostImageProbeRecord, reason?: sign_in | plan_or_credits | quota | null } }`.
 Plain forms redirect back to Team settings. Unconfirmed, unconfigured or stale
 actions never probe. A durable receipt/audit precedes dispatch; request-id
 replay never calls the provider again. A running or failed latest record
@@ -387,6 +387,17 @@ supersedes an older pass. Records match exact route/model and the current
 Schway revision and are validated by `hostCapabilities(records)`; absent,
 malformed, old-pin and non-passing records never enable images. No records ship
 with this build and no login/text probe grants image support.
+
+ATT07-F2 (#241) stores the optional Jit-owned `reason` beside the unchanged
+Schway record in the existing receipt; legacy receipts read as no reason. No
+schema migration is needed. Inference HTTP 401 means `sign_in`, 403 means
+`plan_or_credits` (an account/plan refusal, not a parsed diagnosis), and 429 means
+`quota`. Token-endpoint 400/401 means `sign_in`; inference 400/404/415/422 remains
+`unsupported` with no reason. These refusals discard the provider body and
+fence further transport sends, including native refresh. Team cards show a
+localized reason and next step; sign-in links the provider's existing settings
+form. Provider error text never enters a receipt, audit or card. This metadata
+never grants image capability.
 
 The opt-in probe sends only bundled synthetic PNG/JPEG challenges using the
 public Schway host API, with exact answer checks and replay on the second call.

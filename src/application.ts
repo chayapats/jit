@@ -1,6 +1,6 @@
 import { cachedReadiness, type ReadinessView } from "./exec/readiness-cache";
 import { RouteCatalog, type RouteCatalogs } from "./team/route-catalog";
-import { readImageProbes, imageRoutePassed, type ImageProbeReceipt } from "./attachments/image-probes";
+import { readImageProbeEvidence, imageRoutePassed, type ImageProbeReceipt } from "./attachments/image-probes";
 import { runImageProbe, type ImageProbeOptions } from "./evidence/image-probe";
 import { SCHWAY_PINNED_REVISION } from "./team/schway-port";
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
@@ -875,9 +875,10 @@ export class Application {
       this.#requireOwner(tx, actor);
       if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403);
       if (projectId) this.#project(tx, projectId);
-      const team = readTeam(tx, projectId, this.config.team), probes = readImageProbes(tx, SCHWAY_PINNED_REVISION);
+      const team = readTeam(tx, projectId, this.config.team), evidence = readImageProbeEvidence(tx, SCHWAY_PINNED_REVISION), probes = evidence.map(probe => probe.record);
       return { revision: projectId ? team.projectRevision : team.ownerRevision, routes: routesOf(team).map(route => ({ route,
-        passed: imageRoutePassed(probes, route), record: probes.find(record => record.route === route.provider && record.model === route.model) ?? null })) };
+        passed: imageRoutePassed(probes, route), record: probes.find(record => record.route === route.provider && record.model === route.model) ?? null,
+        reason: evidence.find(probe => probe.record.route === route.provider && probe.record.model === route.model)?.reason ?? null })) };
     });
   }
 
@@ -909,10 +910,10 @@ export class Application {
     const controller = new AbortController(); this.#imageProbeControllers.set(command.requestId, controller);
     const task = (async (): Promise<ImageProbeReceipt> => {
       try {
-        let record = await runImageProbe({ route: command.provider, model: command.model, revision: SCHWAY_PINNED_REVISION, databasePath: this.store.path,
+        let { record, reason } = await runImageProbe({ route: command.provider, model: command.model, revision: SCHWAY_PINNED_REVISION, databasePath: this.store.path,
           signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal, assertCurrent, now: this.#now }, this.#imageProbeOptions);
-        try { assertCurrent(); if (signal?.aborted || controller.signal.aborted) throw new Error(); } catch { record = { ...record, verdict: "inconclusive" }; }
-        const result: ImageProbeReceipt = { imageProbe: { state: record.verdict === "pass" ? "complete" : "failed", record } };
+        try { assertCurrent(); if (signal?.aborted || controller.signal.aborted) throw new Error(); } catch { record = { ...record, verdict: "inconclusive" }; reason = null; }
+        const result: ImageProbeReceipt = { imageProbe: { state: record.verdict === "pass" ? "complete" : "failed", record, reason } };
         this.store.transaction(tx => tx.run("UPDATE command_receipts SET result_json = ? WHERE actor_id = 'owner' AND request_id = ?", JSON.stringify(result), command.requestId));
         return result;
       } finally { this.#imageProbeControllers.delete(command.requestId); }
