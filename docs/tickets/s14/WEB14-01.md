@@ -4,7 +4,7 @@
 https://github.com/chayapats/jit/issues/244
 
 ## Model tier
-Frontier: this slice changes domain, authority, isolation, lifecycle, cross-repository integration or evidence semantics and requires engineering judgment. 
+Frontier: this slice changes domain, authority, isolation, lifecycle, cross-repository integration or evidence semantics and requires engineering judgment.
 
 ## Status
 Prepared scoped ticket, needs triage. Phase A (research MVP). Not ready-for-agent: required contract/schema choices and blockers must be verified in the pinned base first.
