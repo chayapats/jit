@@ -204,7 +204,7 @@ function proposalHistory(history: BotProposal[], current: BotProposal): string {
 }
 
 const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${trMaybe(`s14.reason.${reply.reason}`) ?? ""} ${tr("s14.reply.blocked_next")}`.trim()) : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
-const messageText = (item: Message) => item.text === "[deleted]" ? tr("s14.memory.message_deleted") : e(item.text);
+const messageText = (item: Message) => item.text === "[deleted]" ? tr("s14.memory.message_deleted") : `${e(item.text)}${item.contextState === "withdrawn" ? ` <span class="s-note">${tr("s14.memory.withdrawn")}</span>` : ""}`;
 const message = (item: Message, bot: Bot, extra: string) => item.role === "owner" ? `<div class="s-owner-msg">${messageText(item)}</div>` : `<div class="s-bot-msg">${tile(bot)}<div><p class="s-who">${e(botName(bot))}</p><p class="s-bot-text">${messageText(item)}</p>${extra}</div></div>`;
 /** Messages, typed cards and work in commit order. Cards are built from typed records, never parsed from message text. */
 function thread(page: S14Page, chat: S14Chat, bot: Bot): string {
@@ -277,8 +277,9 @@ function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: 
   return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, base);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
+  if (tab === "computer" && !usesComputer(view)) tab = "progress";
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${link("computer")}${link("evidence")}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${usesComputer(view) ? link("computer") : ""}${link("evidence")}</nav>` : "";
 }
 function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null): string {
   const base = `/chats/${e(conversation.id)}?work=${e(view.work.id)}`;

@@ -19,10 +19,17 @@ function reference(value: unknown): asserts value is MemoryRef {
   integer(value.revision, 1);
   integer(value.generation, 1);
 }
-function rows<T>(tx: AppTransaction, table: "memory_claims" | "memory_sources" | "memory_contexts" | "memory_decisions"): T[] {
-  const count = tx.get<{ n: number }>(`SELECT count(*) AS n FROM ${table}`)!.n;
-  if (count > 20_000) throw new AppError("memory_lineage_limit", 409);
-  return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid`).map(r => JSON.parse(r.record_json) as T);
+type MemoryTable = "memory_claims" | "memory_sources" | "memory_contexts" | "memory_decisions";
+function* scan<T>(tx: AppTransaction, table: MemoryTable): Generator<T> {
+  let after = 0;
+  for (;;) {
+    const batch = tx.all<{ rowid: number; record_json: string }>(`SELECT rowid,record_json FROM ${table} WHERE rowid>? ORDER BY rowid LIMIT 256`, after);
+    if (!batch.length) return;
+    for (const row of batch) { after = row.rowid; yield JSON.parse(row.record_json) as T; }
+  }
+}
+function rows<T>(tx: AppTransaction, table: MemoryTable): T[] {
+  return [...scan<T>(tx, table)];
 }
 
 /** Bot-first memory authority, conservative lineage, owner publication and fresh bounded context packets. */
@@ -43,15 +50,62 @@ export class S14Memory {
     return source;
   }
 
-  private sourceCurrent(tx: AppTransaction, source: MemoryRef): boolean {
-    let available = true;
-    lineageClosure([source], r => `${r.id}:${r.revision}:${r.generation}`, r => {
+  /** Checks source ancestry and its original access revisions without a lifetime record-count cutoff. */
+  sourceCurrent(tx: AppTransaction, source: MemoryRef): boolean {
+    const pending = [source], seen = new Set<string>();
+    while (pending.length) {
+      const r = pending.pop()!, key = `${r.id}:${r.revision}:${r.generation}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
-      if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id)) available = false;
-      return item?.derived ?? [];
+      if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      pending.push(...item.derived);
+    }
+    return true;
+  }
+
+  private accessCurrent(tx: AppTransaction, botId: string, pins: MemoryPacket["access"]): boolean {
+    return pins.every(pin => {
+      const claim = record<MemoryClaim>(tx, "memory_claims", pin.id), policy = record<MemoryAccess>(tx, "memory_access", pin.id);
+      if (policy.revision !== pin.revision || this.withdrawn(tx, "claim", pin.id)) return false;
+      if (pin.shareId === null) return claim.botId === botId || policy.shared;
+      const share = record<MemoryShare>(tx, "memory_shares", pin.shareId);
+      return share.active && share.revision === pin.shareRevision && share.receiverBotId === botId && same(share.claim, claim) && share.expiresAt > this.app.now();
     });
-    return available;
+  }
+
+  /** Captures every admitted claim's source/access ancestry for generated text and external evidence. */
+  derive(tx: AppTransaction, packet: MemoryPacket): { derived: MemoryRef[]; access: MemoryPacket["access"] } {
+    const claims = lineageClosure(packet.claims, c => c.id, c => unique([...c.dependencies, ...c.conflicts]).map(r => record<MemoryClaim>(tx, "memory_claims", r.id)));
+    return { derived: unique([...packet.sources, ...claims.map(c => c.source), ...packet.decisions.map(d => d.source)]),
+      access: claims.map(claim => {
+        const used = this.access(tx, claim, packet.botId, this.packetAttempt(tx, packet));
+        if (!used) throw new AppError("memory_context_stale", 409);
+        return { id: claim.id, revision: used.policy.revision, shareId: used.share?.id ?? null, shareRevision: used.share?.revision ?? null };
+      }) };
+  }
+
+  /** Pins a suggested task to its committed message; withdrawn text cannot become a new obligation or handoff. */
+  workSources(tx: AppTransaction, work: Work): MemoryRef[] {
+    if (!work.sourceMessageId) return [];
+    const source = record<MemorySource>(tx, "memory_sources", work.sourceMessageId);
+    if (source.conversationId !== work.conversationId || work.source && !same(work.source, source) || !this.sourceCurrent(tx, source)) throw new AppError("memory_source_unavailable", 409);
+    return [ref(source)];
+  }
+
+  // Completed chat packets are disposable: output sources retain their own lineage/access pins.
+  // Keep recent inspector/extractor records; work and live chat packets remain lifecycle barriers.
+  private prune(tx: AppTransaction): void {
+    tx.run(`DELETE FROM memory_contexts WHERE rowid IN (
+      SELECT p.rowid FROM memory_contexts p
+      WHERE json_extract(p.record_json,'$.workId') IS NULL
+      AND p.id NOT IN (SELECT json_extract(r.record_json,'$.snapshot.memory.id') FROM reply_outbox r
+        WHERE json_extract(r.record_json,'$.state') IN ('queued','running') AND json_type(r.record_json,'$.snapshot.memory.id')='text')
+      ORDER BY p.rowid DESC LIMIT -1 OFFSET 256)`);
+    tx.run(`UPDATE reply_outbox SET record_json=json_set(json_remove(record_json,'$.snapshot.memory'),'$.snapshot.messages',json('[]'))
+      WHERE json_extract(record_json,'$.state') NOT IN ('queued','running') AND json_extract(record_json,'$.snapshot.memory.id') IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM memory_contexts p WHERE p.id=json_extract(reply_outbox.record_json,'$.snapshot.memory.id'))`);
   }
 
   private access(tx: AppTransaction, claim: MemoryClaim, botId: string, attempt: Attempt | null): { policy: MemoryAccess; share: MemoryShare | null } | null {
@@ -76,7 +130,7 @@ export class S14Memory {
       const claim = row ? JSON.parse(row.record_json) as MemoryClaim : null;
       const access = claim && same(claim, r) ? this.access(tx, claim, botId, attempt) : null;
       if (!claim || !access) return { value: unavailable(r, "memory_unavailable"), key: r.id, children: [], available: false };
-      if (this.withdrawn(tx, "claim", r.id) || !this.sourceCurrent(tx, claim.source)) return { value: unavailable(r, "memory_withdrawn"), key: r.id, children: [], available: false };
+      if (this.withdrawn(tx, "claim", r.id) || !this.sourceCurrent(tx, claim.source) || claim.dependencies.length > 0 && claim.access === undefined || !this.accessCurrent(tx, claim.botId, claim.access ?? [])) return { value: unavailable(r, "memory_withdrawn"), key: r.id, children: [], available: false };
       return { value: { state: "available", claim, access: access.policy } as MemoryLookup, key: r.id,
         children: unique([...claim.dependencies, ...claim.conflicts]), available: true };
     }, unavailable);
@@ -94,7 +148,7 @@ export class S14Memory {
       tools: [...this.app.policy.tools], snapshot: { id: claim.id, revision: claim.revision, hash: digest(canonical(claim)) } };
   }
 
-  private createClaim(tx: AppTransaction, source: MemorySource, value: { kind: "fact" | "inference"; text: string; quote: string; dependencies: MemoryRef[]; conflicts: MemoryRef[] }): MemoryClaim {
+  private createClaim(tx: AppTransaction, source: MemorySource, value: { kind: "fact" | "inference"; text: string; quote: string; dependencies: MemoryRef[]; conflicts: MemoryRef[]; access?: MemoryPacket["access"] }): MemoryClaim {
     const claim: MemoryClaim = { id: id(), revision: 1, generation: 1, botId: source.botId, conversationId: source.conversationId, source: ref(source), createdAt: this.app.now(), ...structuredClone(value) };
     tx.run("INSERT INTO memory_claims VALUES (?,?,?)", claim.id, claim.botId, canonical(claim));
     const access: MemoryAccess = { id: claim.id, revision: 1, shared: false, publishedBy: null, changedAt: this.app.now() };
@@ -135,7 +189,7 @@ export class S14Memory {
           }, () => false, options);
           if (!valid) throw new AppError("memory_lineage_limit");
         }
-        claims.push(ref(this.createClaim(tx, source, { kind: assertion.kind, text: content, quote, dependencies, conflicts: assertion.conflicts as MemoryRef[] })));
+        claims.push(ref(this.createClaim(tx, source, { kind: assertion.kind, text: content, quote, dependencies, conflicts: assertion.conflicts as MemoryRef[], access: this.derive(tx, packet).access })));
       } catch { rejected++; }
     }
     return { claims, rejected };
@@ -147,6 +201,7 @@ export class S14Memory {
 
   /** Assembles a finite packet after access filtering; every live decision is pinned or admission refuses. */
   assemble(tx: AppTransaction, input: { botId: string; conversationId: string; purpose: string; sources: MemoryRef[]; attempt?: Attempt; bytes?: number }): MemoryPacket {
+    this.prune(tx);
     const bot = record<Bot>(tx, "bots", input.botId);
     if (!bot.enabled) throw new AppError("bot_disabled", 403);
     const conversation = this.app.readConversation(tx, input.conversationId);
@@ -183,8 +238,8 @@ export class S14Memory {
   /** Rechecks live decisions, access revisions, source lineage and owner/Bot generations before use or publication. */
   current(tx: AppTransaction, packet: MemoryPacket): boolean {
     if (packet.state !== "current") return false;
-    const stored = record<MemoryPacket>(tx, "memory_contexts", packet.id);
-    if (stored.state !== "current") return false;
+    const stored = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id=?", packet.id);
+    if (!stored || (JSON.parse(stored.record_json) as MemoryPacket).state !== "current") return false;
     const bot = record<Bot>(tx, "bots", packet.botId);
     if (!bot.enabled || bot.revision !== packet.botRevision || bot.generation !== packet.botGeneration || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== packet.ownerGeneration) return false;
     if (packet.sources.some(r => !this.sourceCurrent(tx, r))) return false;
@@ -240,16 +295,15 @@ export class S14Memory {
     if (!same(claim, requested)) throw new AppError("stale_revision", 409);
     const claims = rows<MemoryClaim>(tx, "memory_claims"), sources = rows<MemorySource>(tx, "memory_sources");
     type Node = { kind: "claim" | "source"; ref: MemoryRef };
-    const closure = lineageClosure<Node>([{ kind: "claim", ref: requested }, { kind: "source", ref: claim.source }], n => `${n.kind}:${n.ref.id}`, node => {
-      const children: Node[] = [];
-      for (const candidate of claims) {
-        if (node.kind === "source" ? same(candidate.source, node.ref) : [...candidate.dependencies, ...candidate.conflicts].some(r => same(r, node.ref))) {
-          children.push({ kind: "claim", ref: ref(candidate) }, { kind: "source", ref: candidate.source });
-        }
-      }
-      if (node.kind === "source") for (const candidate of sources) if (candidate.derived.some(r => same(r, node.ref))) children.push({ kind: "source", ref: ref(candidate) });
-      return children;
-    });
+    const key = (node: Node) => `${node.kind}:${node.ref.id}:${node.ref.revision}:${node.ref.generation}`, descendants = new Map<string, Node[]>();
+    const edge = (parent: Node, children: Node[]) => { const list = descendants.get(key(parent)) ?? []; list.push(...children); descendants.set(key(parent), list); };
+    for (const candidate of claims) {
+      const children: Node[] = [{ kind: "claim", ref: ref(candidate) }, { kind: "source", ref: candidate.source }];
+      edge({ kind: "source", ref: candidate.source }, children);
+      for (const dependency of unique([...candidate.dependencies, ...candidate.conflicts])) edge({ kind: "claim", ref: dependency }, children);
+    }
+    for (const candidate of sources) for (const parent of candidate.derived) edge({ kind: "source", ref: parent }, [{ kind: "source", ref: ref(candidate) }]);
+    const closure = lineageClosure<Node>([{ kind: "claim", ref: requested }, { kind: "source", ref: claim.source }], key, node => descendants.get(key(node)) ?? [], claims.length + sources.length);
     const affectedClaims = closure.filter(n => n.kind === "claim").map(n => n.ref), affectedSources = closure.filter(n => n.kind === "source").map(n => n.ref);
     const contexts = rows<MemoryPacket>(tx, "memory_contexts").filter(p => p.claims.some(c => affectedClaims.some(r => same(r, c))) || [...p.sources, ...p.decisions.map(d => d.source)].some(s => affectedSources.some(r => same(r, s)))).map(p => p.id);
     return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts, nativePolicy: "fresh_sessions_retire_on_close" };
@@ -381,31 +435,31 @@ export class S14Memory {
 
   /** Fences stored chat inputs and work contexts after committed changes; retained private snapshots are scrubbed. */
   fence(tx: AppTransaction): void {
-    const packets = rows<MemoryPacket>(tx, "memory_contexts");
-    const stale = new Set<string>();
-    for (const packet of packets) if (!this.current(tx, packet)) {
-      stale.add(packet.id);
+    this.prune(tx);
+    for (const packet of scan<MemoryPacket>(tx, "memory_contexts")) if (!this.current(tx, packet)) {
       packet.state = "retired"; packet.claims = []; packet.decisions = [];
       save(tx, "memory_contexts", packet);
+      if (packet.workId) {
+        const work = record<Work>(tx, "work_items", packet.workId);
+        if (work.result !== null) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
+        tx.run("DELETE FROM work_results WHERE work_id=?", packet.workId);
+      }
     }
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox")) {
       const reply = JSON.parse(row.record_json) as Reply;
-      if (!reply.snapshot.memory || !stale.has(reply.snapshot.memory.id)) continue;
+      if (!reply.snapshot.memory || this.current(tx, reply.snapshot.memory)) continue;
       reply.snapshot.messages = []; delete reply.snapshot.memory;
       if (reply.state === "queued" || reply.state === "running") { reply.state = "blocked"; reply.reason = "memory_context_stale"; }
       save(tx, "reply_outbox", reply);
-    }
-    for (const packet of packets) if (stale.has(packet.id) && packet.workId) {
-      const work = record<Work>(tx, "work_items", packet.workId);
-      if (work.result !== null) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
-      tx.run("DELETE FROM work_results WHERE work_id=?", packet.workId);
     }
   }
 
   /** Retrieves a current packet for a running attempt; stale or retired contexts never enter another tool or result. */
   attemptCurrent(tx: AppTransaction, attemptId: string): boolean {
-    const packets = tx.all<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE json_extract(record_json,'$.attemptId')=?", attemptId);
-    return packets.every(row => this.current(tx, JSON.parse(row.record_json) as MemoryPacket));
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId);
+    if (!attempt.memoryId) return false;
+    const packet = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id=?", attempt.memoryId);
+    return !!packet && this.current(tx, JSON.parse(packet.record_json) as MemoryPacket);
   }
 
   /** Loads the immutable packet captured for a live attempt without relying on native history. */

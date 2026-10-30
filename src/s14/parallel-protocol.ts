@@ -95,6 +95,8 @@ export class ParallelMcp implements SearchProvider {
   constructor(readonly options: {
     mode: ParallelSetting["mode"]; secret: string | null; sessionId: string | null; model: string;
     transport?: ParallelTransport; maxBytes?: number; beforeRequest?: (method: string) => void;
+    /** Persist validated vendor correlation independently of evidence acceptance. */
+    onSessionId?: (sessionId: string) => void;
   }) {}
 
   private async rpc(method: string, params: unknown, signal: AbortSignal, requestId: number | null): Promise<Record<string, unknown>> {
@@ -120,10 +122,11 @@ export class ParallelMcp implements SearchProvider {
     if (!response.body) throw new ParallelFailure("schema_changed");
     const reader = response.body.getReader(), chunks: Uint8Array[] = [];
     const cap = this.options.maxBytes ?? 262144;
-    let size = 0, stream = "";
+    let size = 0, stream = "", consumed = 0;
     const sse = response.headers.get("content-type")?.split(";")[0] === "text/event-stream";
     const result = (value: unknown) => {
       const message = object(value);
+      if (message.jsonrpc === "2.0" && !Object.hasOwn(message, "id") && typeof message.method === "string" && !Object.hasOwn(message, "result") && !Object.hasOwn(message, "error")) return null;
       if (message.jsonrpc !== "2.0" || message.id !== requestId) throw new ParallelFailure("schema_changed");
       if (message.error) throw new ParallelFailure("service_error");
       return object(message.result);
@@ -137,14 +140,18 @@ export class ParallelMcp implements SearchProvider {
         chunks.push(chunk.value);
         if (sse) {
           stream = Buffer.concat(chunks).toString("utf8").replaceAll("\r\n", "\n");
-          for (const event of stream.split("\n\n").slice(0, -1)) {
+          const events = stream.split("\n\n").slice(0, -1);
+          for (const event of events.slice(consumed)) {
             const data = event.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-            if (data) return result(JSON.parse(data));
+            if (data) { const response = result(JSON.parse(data)); if (response) return response; }
           }
+          consumed = events.length;
         }
       }
       if (sse) throw new ParallelFailure("schema_changed");
-      return result(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const response = result(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      if (!response) throw new ParallelFailure("schema_changed");
+      return response;
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
 
@@ -189,6 +196,12 @@ export class ParallelMcp implements SearchProvider {
   }
 
   private normalize(tool: "web_search" | "web_fetch", input: { url?: string; fullContent?: boolean }, data: Record<string, unknown>, meta: unknown): ParallelResult {
+    let sessionId: string | null = null;
+    if (data.session_id !== undefined) {
+      sessionId = string(data.session_id, 1000);
+      if (!sessionId || /[\s\u0000-\u001f\u007f]/.test(sessionId) || containsCredential(sessionId) || this.options.sessionId !== null && this.options.sessionId !== sessionId) throw new ParallelFailure("schema_changed");
+      if (this.options.mode === "anonymous") this.options.onSessionId?.(sessionId);
+    }
     if (!Array.isArray(data.results) || data.results.length > 100) throw new ParallelFailure("schema_changed");
     const evidence: ParallelResult["evidence"] = [];
     let partial = data.results.length > 20;
@@ -243,11 +256,6 @@ export class ParallelMcp implements SearchProvider {
         if (typeof row.count !== "number" || !Number.isFinite(row.count) || row.count < 0 || typeof row.cost_usd !== "number" || !Number.isFinite(row.cost_usd) || row.cost_usd < 0) throw new ParallelFailure("schema_changed");
         return { name: redactCredentials(string(row.name, 100)), count: row.count, costUsd: row.cost_usd };
       });
-    }
-    let sessionId: string | null = null;
-    if (data.session_id !== undefined) {
-      sessionId = string(data.session_id, 1000);
-      if (!sessionId || /[\s\u0000-\u001f\u007f]/.test(sessionId) || containsCredential(sessionId) || this.options.sessionId !== null && this.options.sessionId !== sessionId) throw new ParallelFailure("schema_changed");
     }
     return { evidence, missing, failures, usage, sessionId, omittedResults: Math.max(0, data.results.length - evidence.length), partial: partial || missing.length > 0 };
   }

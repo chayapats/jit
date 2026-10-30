@@ -9,7 +9,7 @@ export interface Bot { id: string; revision: number; generation: number; enabled
 /** Durable conversational scope whose membership confers no execution authority. */
 export interface Conversation { id: string; revision: number; botId: string }
 /** One immutable conversational message; untrusted text never renders authority controls. */
-export interface Message { id: string; conversationId: string; role: "owner" | "bot"; text: string; createdAt: number }
+export interface Message { id: string; conversationId: string; role: "owner" | "bot"; text: string; createdAt: number; /** Owner projection only; retained text is excluded from future model context. */ contextState?: "withdrawn" }
 /** Revisioned service-validated suggestion anchored to an actual Bot reply, with no granted capabilities. */
 export interface BotProposal { id: string; conversationId: string; messageId: string; revision: number; author: "bot" | "owner"; proposerBotId: string; state: "proposed" | "accepted" | "rejected"; name: string; responsibility: string; routeId: string | null; dropped: string[]; botId: string | null }
 /** Bounded chat outbox entry; interrupted inference is visible and never automatically replayed. */

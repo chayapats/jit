@@ -6,11 +6,15 @@ export interface MemoryRef { id: string; revision: number; generation: number }
 export interface MemorySource extends MemoryRef {
   botId: string; conversationId: string; attribution: "owner" | "bot" | "external";
   text: string | null; derived: MemoryRef[]; createdAt: number;
+  /** Access revisions used by this source's Bot, including transitive claim dependencies. */
+  access?: MemoryPacket["access"];
 }
 /** Retained assertion with conservative dependencies; a fact records an owner statement rather than objective truth. */
 export interface MemoryClaim extends MemoryRef {
   botId: string; conversationId: string; source: MemoryRef; kind: "fact" | "inference";
   text: string; quote: string; dependencies: MemoryRef[]; conflicts: MemoryRef[]; createdAt: number;
+  /** Original extractor access revisions; republication cannot revive a revoked derivative. */
+  access?: MemoryPacket["access"];
 }
 /** Revisioned owner publication policy, separate from the immutable claim content revision. */
 export interface MemoryAccess { id: string; revision: number; shared: boolean; publishedBy: "owner" | null; changedAt: number }

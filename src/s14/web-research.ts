@@ -93,8 +93,8 @@ function stateBanner(view: S14WebSettings): string {
   return banner("danger", tr(keyState === "unsafe" ? "s14.web.key_unsafe" : "s14.web.key_gone"), tr("s14.web.key_gone_detail"));
 }
 function capabilityRow(page: S14Page): string {
-  const bots = page.state.bots.filter(bot => bot.enabled), allowed = bots.filter(bot => webTools.every(tool => bot.capabilities.tools.includes(tool))), other = bots.filter(bot => !allowed.includes(bot));
-  const names = (items: typeof bots) => items.map(botName).map(e).join(" · ");
+  const bots = page.state.bots.filter(bot => bot.enabled), allowed = bots.filter(bot => webTools.some(tool => bot.capabilities.tools.includes(tool))), other = bots.filter(bot => !allowed.includes(bot));
+  const names = (items: typeof bots) => items.map(bot => `${e(botName(bot))}${allowed.includes(bot) ? ` <span class="s-note">${webTools.filter(tool => bot.capabilities.tools.includes(tool)).map(e).join(" · ")}</span>` : ""}`).join(" · ");
   return `<dt>${tr("s14.web.can_research")}</dt><dd>${allowed.length ? names(allowed) : tr("s14.web.nobody")}</dd>${other.length ? `<dt>${tr("s14.web.cannot_research")}</dt><dd>${names(other)}<br><span class="s-note">${tr("s14.web.cannot_research_note")}</span></dd>` : ""}`;
 }
 function receiptBanner(view: S14WebSettings): string {

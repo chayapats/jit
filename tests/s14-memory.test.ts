@@ -6,7 +6,8 @@ import { S14Application, type S14Options } from "../src/s14/application";
 import { S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
 import type { Bot, ChatInput, ChatOutput, Policy } from "../src/s14/types";
-import type { MemoryClaim, MemoryPacket, MemoryRef } from "../src/s14/memory-types";
+import type { MemoryClaim, MemoryPacket, MemoryRef, MemorySource } from "../src/s14/memory-types";
+import type { Work } from "../src/s14/authority-types";
 import { canonical, canonicalByteLimit } from "../src/s14/validation";
 
 const roots: string[] = [], stores = new Set<S14Store>();
@@ -231,4 +232,103 @@ test("memory mutation and independent lifecycle ledger roll back together with r
   const command = { kind: "memory.forget", requestId: rid(), expectedRevision: 1, payload: { claim: reference } };
   const response = await handler(new Request("http://localhost:3001/s14/commands", { method: "POST", headers: { ...headers, origin: "http://localhost:3001", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: f.auth.csrf, command: JSON.stringify(command) }) }));
   expect(response.status).toBe(303); expect(claim(f, reference).state).toBe("unavailable");
+});
+
+test("revocation excludes old replies, derived claims and packets after republication while preserving the original", async () => {
+  const f = await fixture(async input => ({ text: "Reply derived from published memory", memory: [{ kind: "inference", text: "Derived receiver preference", quote: input.messages.at(-1)!.text, conflicts: [] }] }));
+  const original = remember(f); publish(f, original);
+  post(f, "อาหารไทย", "otherchat"); await f.app.drainReplies();
+  const reply = f.app.conversation(f.auth.actor, "otherchat").messages.find(m => m.role === "bot")!;
+  const derived = f.app.memory.inspect(f.auth.actor, "other").claims.find(c => c.state === "available" && c.claim.kind === "inference")!;
+  expect(derived.state).toBe("available");
+  const queued = post(f, "Follow up", "otherchat");
+  expect(queued.reply!.snapshot.messages.some(m => m.id === reply.id)).toBe(true);
+  publish(f, original, 2, "memory.revoke");
+  expect(claim(f, original).state).toBe("available");
+  expect(f.app.memory.context(f.auth.actor, queued.reply!.snapshot.memory!.id).state).toBe("retired");
+  expect(f.app.conversation(f.auth.actor, "otherchat").messages.find(m => m.id === reply.id)).toMatchObject({ text: reply.text, contextState: "withdrawn" });
+  post(f, "Fresh receiver question", "otherchat"); await f.app.drainReplies();
+  expect(f.seen.at(-1)!.messages.some(m => m.id === reply.id)).toBe(false);
+  publish(f, original, 3);
+  expect(f.store.read(tx => f.app.memory.sourceCurrent(tx, { id: reply.id, revision: 1, generation: 1 }))).toBe(false);
+  if (derived.state !== "available") throw Error("fixture");
+  expect(claim(f, derived.claim, "other").state).toBe("unavailable");
+  expect(claim(f, original).state).toBe("available");
+});
+
+test("receiver-share evidence and work handoffs retain original access revisions after revoke", async () => {
+  const f = await fixture(), original = remember(f, "Private receiver snapshot");
+  const shared = f.app.execute(f.auth.actor, { kind: "memory.share", requestId: rid(), expectedRevision: 1, payload: { claim: original, scopeId: "memshare", receiverBotId: "other", expiresAt: epoch + 60000 } }).share!;
+  const scope = { kind: "share" as const, id: shared.id, revision: 1 };
+  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
+    payload: { conversationId: "otherchat", task: null, title: "Receiver research", purpose: "receiver snapshot", completionRule: "Evidence", bots: [{ id: "other", revision: 1 }, { id: "jit", revision: 1 }], tools: [], scopes: [scope], limits: { attempts: 2, steps: 2, calls: 6, outputBytes: 4096, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+  const parent = f.app.authority.admit(work.id, rid(), { botId: "other", tools: [], scopes: [scope], input: "receiver snapshot", calls: 3, outputBytes: 2048 });
+  const evidence = f.store.transaction(tx => f.app.memory.source(tx, { id: rid(), botId: "other", conversationId: "otherchat", attribution: "external", text: "Derived evidence", ...f.app.memory.derive(tx, f.app.memory.attemptPacket(tx, parent.id)) }));
+  f.app.authority.commit(parent.id, { state: "waiting", text: "Derived handoff text" });
+  const child = f.app.authority.delegate(parent.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Derived handoff text", calls: 3, outputBytes: 2048 });
+  const childPacket = f.store.read(tx => f.app.memory.attemptPacket(tx, child.id));
+  expect(childPacket.sources.length).toBeGreaterThan(0);
+  publish(f, original, 1, "memory.revoke");
+  expect(f.store.read(tx => f.app.memory.sourceCurrent(tx, evidence))).toBe(false);
+  expect(f.app.memory.context(f.auth.actor, childPacket.id).state).toBe("retired");
+  expect(() => f.app.authority.commit(child.id, { state: "ready", text: "Late handoff result" })).toThrow("memory_context_stale");
+  expect(claim(f, original).state).toBe("available");
+});
+
+test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("task source is pinned on accept and fenced at start, admission and publication after %s", async kind => {
+  const f = await fixture(async () => ({ text: "Memory-derived task suggestion", task: { title: "Derived task", purpose: "Task text derived from memory", completionRule: "Owner review" } }));
+  const original = remember(f); publish(f, original);
+  post(f, "Suggest a task", "otherchat"); await f.app.drainReplies();
+  const task = f.app.authority.list(f.auth.actor)[0]!;
+  const accept = () => f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), expectedRevision: 1, payload: { taskId: task.id } });
+  // A second suggestion is left unaccepted to check the acceptance barrier too.
+  post(f, "Suggest another task", "otherchat"); await f.app.drainReplies();
+  const proposed = f.app.authority.list(f.auth.actor).find(w => w.id !== task.id)!;
+  const accepted = accept().work!;
+  expect(accepted.source).toEqual({ id: task.sourceMessageId!, revision: 1, generation: 1 });
+  const start = (work: Work) => f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, "otherchat").conversation.revision,
+    payload: { conversationId: "otherchat", task: { id: work.id, revision: work.revision }, title: work.title, purpose: work.purpose, completionRule: work.completionRule, bots: [{ id: "other", revision: 1 }], tools: ["web_search"], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } });
+  // A separate accepted clone lets us test both a pre-start and an already-running work item.
+  const copy = { ...accepted, id: rid() }, queuedCopy = { ...accepted, id: rid() };
+  f.store.transaction(tx => { for (const item of [copy, queuedCopy]) tx.run("INSERT INTO work_items VALUES (?,?,?)", item.id, item.conversationId, canonical(item)); });
+  const running = start(accepted).work!, queued = start(queuedCopy).work!;
+  const attempt = f.app.authority.admit(running.id, rid(), { botId: "other", tools: ["web_search"], scopes: [], input: accepted.purpose, calls: 3, outputBytes: 2048 });
+  expect(f.store.read(tx => f.app.memory.attemptPacket(tx, attempt.id)).sources).toContainEqual(accepted.source!);
+  f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: kind === "memory.revoke" ? 2 : 1, payload: { claim: original } });
+  expect(() => f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), expectedRevision: 1, payload: { taskId: proposed.id } })).toThrow("memory_source_unavailable");
+  expect(() => start(copy)).toThrow("memory_source_unavailable");
+  expect(() => f.app.authority.admit(queued.id, rid(), { botId: "other", tools: [], scopes: [], input: accepted.purpose, calls: 1, outputBytes: 1024 })).toThrow("memory_source_unavailable");
+  expect(() => f.app.authority.reserveTool(attempt.id, "web_search")).toThrow("memory_context_stale");
+  expect(() => f.app.authority.commit(attempt.id, { state: "ready", text: "Late derived task text" })).toThrow("memory_context_stale");
+});
+
+test("ordinary record volume prunes disposable packets, preserves live barriers and reopens without blocking chat", async () => {
+  const f = await fixture(), original = remember(f), live = post(f, "Live context").reply!.snapshot.memory!;
+  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, task: null, title: "Retained work", purpose: "Use memory", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools: [], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+  const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Use memory", calls: 3, outputBytes: 2048 });
+  const found = claim(f, original); if (found.state !== "available") throw Error("fixture");
+  let tail = found.claim.source;
+  f.store.transaction(tx => {
+    for (let i = 0; i < 20001; i++) {
+      const source: MemorySource = { id: `bulk_source_${i}`, botId: "jit", conversationId: f.conversationId, revision: 1, generation: 1, attribution: "bot", text: "Ordinary source", derived: [tail], access: [], createdAt: epoch };
+      tx.run("INSERT INTO memory_sources VALUES (?,?,?)", source.id, "jit", canonical(source));
+      tail = { id: source.id, revision: 1, generation: 1 };
+      tx.run("INSERT INTO memory_contexts VALUES (?,?,?)", `bulk_context_${i}`, "jit", canonical({ ...live, id: `bulk_context_${i}`, sources: [] }));
+    }
+  });
+  f.store.close(); stores.delete(f.store);
+  const store = new S14Store(f.path); stores.add(store);
+  const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM memory_contexts")!.n)).toBeLessThanOrEqual(258);
+  expect(app.memory.context(actor, live.id).state).toBe("current");
+  expect(app.memory.context(actor, attempt.memoryId!).state).toBe("current");
+  expect(store.read(tx => app.memory.sourceCurrent(tx, tail))).toBe(true);
+  app.execute(actor, { kind: "memory.forget", requestId: rid(), expectedRevision: 1, payload: { claim: original } });
+  expect(store.read(tx => app.memory.sourceCurrent(tx, tail))).toBe(false);
+  expect(app.memory.context(actor, live.id).state).toBe("retired");
+  expect(() => app.authority.commit(attempt.id, { state: "ready", text: "Stale result" })).toThrow("memory_context_stale");
+  app.execute(actor, { kind: "message.post", requestId: rid(), expectedRevision: app.conversation(actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: "Chat still works" } });
+  await app.drainReplies();
+  expect(app.conversation(actor, f.conversationId).messages.at(-1)!.role).toBe("bot");
 });

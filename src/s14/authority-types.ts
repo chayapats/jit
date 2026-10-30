@@ -1,5 +1,6 @@
 import type { AppTransaction } from "../store";
 import type { Bot, Envelope, Route } from "./types";
+import type { MemoryRef } from "./memory-types";
 
 /** Scoped immutable identity; neither variant can carry a filesystem path or ambient account. */
 export interface ScopeRef { kind: "resource" | "share"; id: string; revision: number }
@@ -12,7 +13,7 @@ export interface WorkLimits { attempts: number; steps: number; calls: number; ou
 /** Immutable owner grant snapshot; revocation and reservations live in separate rows. */
 export interface WorkGrant { id: string; workId: string; revision: number; generation: number; ownerGeneration: number; requestId: string; command: StartWorkCommand; purpose: string; bots: Bot[]; routes: Route[]; tools: string[]; scopes: ScopePolicy[]; limits: WorkLimits; createdAt: number; expiresAt: number }
 /** Retained obligation; result is the latest committed attempt ID, never an inline result body. Acceptance grants no execution. */
-export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; title: string; purpose: string; completionRule: string; state: "proposed" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number }
+export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; /** Exact committed task source, pinned at acceptance and checked at every start/use. */ source?: MemoryRef; title: string; purpose: string; completionRule: string; state: "proposed" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number }
 /** Explicit start parameters; selected Bot and task revisions are checked in the receipt transaction. */
 export interface StartPayload { conversationId: string; task: { id: string; revision: number } | null; title: string; purpose: string; completionRule: string; bots: { id: string; revision: number }[]; tools: string[]; scopes: ScopeRef[]; limits: WorkLimits; expiresAt: number }
 /** Obligation-only owner acceptance of a typed service proposal. */

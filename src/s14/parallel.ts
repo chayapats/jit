@@ -153,6 +153,11 @@ export class ParallelWeb {
       const work = this.app.store.read(tx => record<Work>(tx, "work_items", attempt.workId));
       const sessionId = this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null);
       client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model,
+        onSessionId: value => this.app.store.transaction(tx => {
+          const previous = tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId);
+          if (previous && previous.vendor_id !== value) throw new ParallelFailure("schema_changed");
+          tx.run("INSERT OR IGNORE INTO parallel_sessions VALUES (?,?)", work.conversationId, value);
+        }),
         ...(this.options.transport ? { transport: this.options.transport } : {}), maxBytes: this.options.responseBytes ?? 262144,
         beforeRequest: method => {
           if (abort.signal.aborted) throw new ParallelFailure(timedOut ? "deadline" : "cancelled");
@@ -185,28 +190,25 @@ export class ParallelWeb {
         this.check(tx, attemptId, tool, setting);
         const packet = this.app.memory.attemptPacket(tx, attemptId);
         if (packet.sources.length + row.evidence.length > 64) throw new ParallelFailure("oversize");
-        const derived = [...packet.sources, ...packet.claims.map(c => c.source), ...packet.decisions.map(d => d.source)];
+        const provenance = this.app.memory.derive(tx, packet);
         for (const evidence of row.evidence) {
           tx.run("INSERT INTO external_evidence VALUES (?,?,?)", evidence.id, attemptId, canonical(evidence));
-          this.app.memory.source(tx, { id: evidence.id, botId: attempt.snapshot.bot.id, conversationId: work.conversationId, attribution: "external", text: evidence.content || "(no returned content)", derived });
+          this.app.memory.source(tx, { id: evidence.id, botId: attempt.snapshot.bot.id, conversationId: work.conversationId, attribution: "external", text: evidence.content || "(no returned content)", ...provenance });
           packet.sources.push({ id: evidence.id, revision: 1, generation: 1 });
         }
         packet.bytes = Buffer.byteLength(canonical(packet));
         save(tx, "memory_contexts", packet);
-        if (result.sessionId !== null && setting.mode === "anonymous") {
-          const previous = tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId);
-          if (previous && previous.vendor_id !== result.sessionId) throw new ParallelFailure("schema_changed");
-          tx.run("INSERT OR IGNORE INTO parallel_sessions VALUES (?,?)", work.conversationId, result.sessionId);
-        }
         save(tx, "web_reads", row);
       });
       return row;
     } catch (error) {
       row.outcome = timedOut ? "deadline" : signal.aborted ? "cancelled" : error instanceof ParallelFailure ? error.outcome : error instanceof AppError && ["grant_revoked", "grant_expired", "attempt_fenced", "computer_attempt_fenced", "memory_context_stale", "scope_revoked_or_stale", "bot_authority_changed", "owner_authority_changed"].includes(error.code) ? "authority_changed" : "service_error";
       row.evidence = [];
+      row.missing = []; row.failures = []; row.usage = null;
       if (row.outcome === "private_context" || row.outcome === "credential_refused") row.subject = "[outbound blocked]";
       row.reason = `parallel_${row.outcome}`;
       row.finishedAt = this.app.now(); row.remoteRequests = client?.requests ?? 0;
+      if (Buffer.byteLength(frame(row)) > Math.min(32768, attempt.snapshot.outputBytes)) row.subject = "[oversize]";
       this.app.store.transaction(tx => {
         const packet = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE json_extract(record_json,'$.attemptId')=?", attemptId);
         if (packet && (JSON.parse(packet.record_json) as MemoryPacket).state === "retired") {
@@ -241,11 +243,13 @@ export class ParallelWeb {
       inputSchema: { type: "object", properties: tool.properties, required: tool.required, additionalProperties: false },
       effect: "read-only",
       execution: "exclusive",
-      execute: async (input, context) => this.toolResult(await this.read(attempt.id, tool.name, input, context.signal)),
+      execute: async (input, context) => this.toolResult(await this.read(attempt.id, tool.name, input, context.signal), Math.min(32768, attempt.snapshot.outputBytes)),
     }));
   }
 
-  private toolResult(read: WebRead): ToolExecutionResult {
+  private toolResult(read: WebRead, maxBytes: number): ToolExecutionResult {
+    // Even a content-free WebRead may exceed a very small explicit output reservation.
+    if (Buffer.byteLength(frame(read)) > maxBytes) return { content: "oversize".slice(0, maxBytes), isError: true };
     return { content: frame(read), isError: read.outcome !== "success" && read.outcome !== "partial", details: { readId: read.id, outcome: read.outcome, evidence: read.evidence.map(e => ({ id: e.id, revision: e.revision, coverage: e.coverage })) } };
   }
 
@@ -280,6 +284,7 @@ export class ParallelWeb {
       const read = JSON.parse(row.record_json) as WebRead;
       const packet = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE json_extract(record_json,'$.attemptId')=?", read.attemptId);
       if (packet && (JSON.parse(packet.record_json) as MemoryPacket).state === "retired" || read.evidence.some(e => unavailable.has(e.id))) {
+        tx.run("DELETE FROM external_evidence WHERE attempt_id=?", read.attemptId);
         read.evidence = []; read.subject = "[withdrawn context]"; read.missing = []; read.failures = []; read.outcome = "authority_changed"; read.reason = "memory_context_stale";
         save(tx, "web_reads", read);
       }

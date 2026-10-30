@@ -89,6 +89,37 @@ function plant(f: F, attemptId: string, workId: string, change: Partial<WebRead>
 }
 const failures: Exclude<WebOutcome, "success">[] = ["partial", "quota", "schema_changed", "service_error", "blocked", "private_context", "credential_refused", "cancelled", "deadline", "oversize", "authority_changed", "key_unavailable"];
 
+test.each(["web_search", "web_fetch"])("settings show the actual single %s capability", async tool => {
+  const f = await fixture("en", { tools: [tool] }), html = await f.page("/settings/web");
+  const capabilities = html.split(f.words["s14.web.can_research"])[1]!.split("</dd>")[0]!;
+  expect(capabilities).toContain("Jit"); expect(capabilities).toContain(tool);
+  expect(capabilities).not.toContain(tool === "web_search" ? "web_fetch" : "web_search");
+  expect(html).not.toContain(f.words["s14.web.cannot_research_note"]);
+  strict(html);
+});
+
+test("work and chat pane hide Computer without its tool and select Progress for a stale Computer URL", async () => {
+  const f = await fixture(), { work } = research(f);
+  for (const path of [`/work/${work.id}?tab=computer`, `/chats/${f.conversationId}?work=${work.id}&tab=computer`]) {
+    const html = await f.page(path), tabs = html.match(/<nav class="s-worktabs"[^>]*>[\s\S]*?<\/nav>/)![0];
+    expect(tabs).not.toContain("tab=computer");
+    expect(tabs).toContain('tab=progress" aria-current="page"');
+    expect(tabs).toContain("tab=grant"); expect(tabs).toContain("tab=evidence"); strict(html);
+  }
+});
+
+test("revoked reply text remains visible with a withdrawn context label", async () => {
+  const f = await fixture();
+  const original = f.remember("Original owner memory");
+  f.app.execute(f.auth.actor, { kind: "memory.publish", requestId: rid(), expectedRevision: 1, payload: { claim: original } });
+  f.app.execute(f.auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: "Use the memory" } });
+  await f.app.drainReplies();
+  f.app.execute(f.auth.actor, { kind: "memory.revoke", requestId: rid(), expectedRevision: 2, payload: { claim: original } });
+  const html = await f.page(`/chats/${f.conversationId}`);
+  expect(html).toContain(`Fixture reply <span class="s-note">${f.words["s14.memory.withdrawn"]}</span>`);
+  strict(html);
+});
+
 test.each(["th", "en"] as const)("every WebOutcome is a word with an honest next line and never implies a fallback (%s)", async language => {
   const f = await fixture(language), { work, attempt } = research(f);
   plant(f, attempt.id, work.id, { outcome: "running", finishedAt: null, remoteRequests: 2 });

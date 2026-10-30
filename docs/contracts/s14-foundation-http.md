@@ -91,6 +91,8 @@ Fixed-content decisions (`task.accept`, `work.stop`, `approval.decide`, `bot.pro
 
 Memory and Parallel forms follow the same rule through `POST /s14/forms/{memory-remember,memory-correct,memory-forget,memory-delete,memory-publish,memory-revoke,memory-share,memory-decision,parallel-key,parallel-enable}`. `src/s14/web-product-memory.ts` translates them and refuses unknown fields. Every memory form carries `botId` only to choose the landing page; authority comes from the typed command. `memory-share` takes `target=<botId>:<scopeId>` and `hours` from 1 to 24; a retried form reuses the committed expiry. `parallel-key` carries the write-only secret, and a refused post rerenders settings without it. `web.parallel.key.remove` and the explicit return to anonymous mode are fixed envelopes through `POST /s14/commands`. `S14Product.surface` now also receives the form fields.
 
+Work detail and chat-pane navigation show Computer only when the grant contains `computer`. An old `?tab=computer` link for other work selects and renders Progress. Conversation messages retain revoked reply text with `contextState:'withdrawn'` and the existing withdrawn label; those messages are excluded from automatic context. Web settings show each enabled Bot's actual public-read tool subset, including a single selected web tool.
+
 HTML responses use `Referrer-Policy: same-origin`. With `no-referrer` a browser sends `Origin: null` on the page's own form posts, which the exact Origin check refuses.
 
 `serve --s14 --refusal-page` adds a read-only explanation page after the refusal. The refusal, its stderr JSON and exit status are unchanged, and no store, lock or worker opens. Plain `serve --s14` still exits.

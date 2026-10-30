@@ -126,7 +126,10 @@ export class S14Application {
     identity(conversationId);
     return this.store.read(tx => {
       this.requireOwner(tx, actor); const conversation = this.readConversation(tx, conversationId);
-      return { conversation, messages: tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 100) ORDER BY sequence", conversationId).map(r => JSON.parse(r.record_json)),
+      return { conversation, messages: tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 100) ORDER BY sequence", conversationId).map(r => {
+        const message = JSON.parse(r.record_json) as Message;
+        return this.memory.sourceCurrent(tx, { id: message.id, revision: 1, generation: 1 }) ? message : { ...message, contextState: "withdrawn" as const };
+      }),
         proposals: records<BotProposal>(tx, "bot_proposals").filter(p => p.conversationId === conversationId), replies: records<Reply>(tx, "reply_outbox").filter(r => r.conversationId === conversationId) };
     });
   }
@@ -224,6 +227,7 @@ export class S14Application {
       let remaining = canonicalByteLimit - Buffer.byteLength(canonical(receipt));
       for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? AND NOT EXISTS (SELECT 1 FROM lifecycle.withdrawals WHERE kind='source' AND id=messages.id) ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
         const prior = JSON.parse(row.record_json) as Message;
+        if (!this.memory.sourceCurrent(tx, { id: prior.id, revision: 1, generation: 1 })) continue;
         const candidate = { ...memory, sources: [{ id: prior.id, revision: 1, generation: 1 }, ...memory.sources] };
         candidate.bytes = Buffer.byteLength(canonical(candidate));
         const bytes = Buffer.byteLength(canonical(prior)) + 1 + Buffer.byteLength(canonical(candidate)) - Buffer.byteLength(canonical(memory));
@@ -288,7 +292,7 @@ export class S14Application {
           tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", message.conversationId);
           const packet = reply.snapshot.memory;
           this.memory.source(tx, { id: message.id, botId: reply.snapshot.bot.id, conversationId: message.conversationId, attribution: "bot", text: content,
-            derived: packet ? [...packet.sources, ...packet.claims.map(c => c.source), ...packet.decisions.map(d => d.source)] : [] });
+            ...(packet ? this.memory.derive(tx, packet) : { derived: [], access: [] }) });
           if (packet && output?.memory !== undefined) {
             try { this.memory.extract(tx, packet.id, { id: reply.messageId, revision: 1, generation: 1 }, output.memory); }
             catch { /* Unsupported extraction stays untrusted data and never publishes globally. */ }

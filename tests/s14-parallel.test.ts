@@ -19,6 +19,7 @@ import anonymous from "./fixtures/parallel/tools-anonymous.json";
 import authenticated from "./fixtures/parallel/tools-authenticated.json";
 import search from "./fixtures/parallel/search.json";
 import fetchResult from "./fixtures/parallel/fetch.json";
+import notification from "./fixtures/parallel/notification.json";
 
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const roots: string[] = [], stores = new Set<S14Store>();
@@ -358,6 +359,52 @@ test("model envelope oversize refuses rather than silently truncating or claimin
   expect(f.app.parallel.inspect(f.auth.actor, f.work.id).evidence).toEqual([]);
 });
 
+test("oversized failure metadata returns a bounded durable oversize outcome to the model", async () => {
+  const errors = Array.from({ length: 30 }, (_, i) => ({ url: `https://example.com/${i}/${"a".repeat(6000)}`, error_type: "fetch_error", http_status_code: 403 }));
+  const wire = protocol(event => event.wire.method === "tools/call" ? Response.json({ jsonrpc: "2.0", id: 3, result: { structuredContent: { results: [], errors } } }) : undefined);
+  const f = await fixture(wire);
+  const tool = f.app.parallel.definitions(f.attempt).find(t => t.name === "web_fetch")!;
+  const result = await tool.execute({ url: "https://example.com/article", fullContent: true }, { signal: new AbortController().signal } as Parameters<typeof tool.execute>[1]);
+  expect(result.isError).toBe(true);
+  expect(Buffer.byteLength(result.content)).toBeLessThanOrEqual(32768);
+  expect(result.content).toContain('"outcome":"oversize"');
+  const read = f.app.parallel.inspect(f.auth.actor, f.work.id).reads[0]!;
+  expect(read).toMatchObject({ outcome: "oversize", evidence: [], missing: [], failures: [], finishedAt: epoch });
+  expect(Buffer.byteLength(canonical(read))).toBeLessThan(canonicalByteLimit);
+});
+
+test.each(["oversize", "blocked"])("a %s first read still preserves validated anonymous correlation for the next read", async outcome => {
+  let calls = 0;
+  const wire = protocol(event => event.wire.method === "tools/call" && calls++ === 0 ? Response.json({ ...fetchResult,
+    result: { structuredContent: { session_id: "parallel_fixture_conversation", results: [{ url: outcome === "blocked" ? "https://127.0.0.1" : "https://example.com/article", full_content: "x".repeat(40000) }] } } }) : undefined);
+  const f = await fixture(wire);
+  expect((await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true })).outcome).toBe(outcome);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  const requests = f.seen.filter(e => e.wire.method === "tools/call");
+  expect(requests[0]!.wire.params.arguments).not.toHaveProperty("session_id");
+  expect(requests[1]!.wire.params.arguments).toHaveProperty("session_id", "parallel_fixture_conversation");
+});
+
+test.each(["same chunk", "split chunks"])("SSE skips notification fixtures before the matching response (%s)", async mode => {
+  let cancelled = false;
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/call") return undefined;
+    const events = [`event: message\r\ndata: ${JSON.stringify(notification)}\r\n\r\n`, `data: ${JSON.stringify(search)}\n\n`];
+    const parts = mode === "same chunk" ? [events.join("")] : [events[0]!, events[1]!.slice(0, 25), events[1]!.slice(25)];
+    let index = 0;
+    return new Response(new ReadableStream<Uint8Array>({ pull(controller) { if (index < parts.length) controller.enqueue(new TextEncoder().encode(parts[index++]!)); }, cancel() { cancelled = true; } }), { headers: { "content-type": "text/event-stream" } });
+  });
+  const f = await fixture(wire);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  expect(cancelled).toBe(true); expect(f.seen).toHaveLength(4);
+});
+
+test("notification-only SSE remains bounded by bytes and the existing whole-read deadline", async () => {
+  const wire = protocol(event => event.wire.method === "tools/call" ? new Response(`data: ${JSON.stringify(notification)}\n\n`.repeat(3000), { headers: { "content-type": "text/event-stream" } }) : undefined);
+  const f = await fixture(wire);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("oversize");
+});
+
 test("body streaming deadline/cancellation cancels its reader and preserves serialized attempt capacity", async () => {
   let fire!: () => void, streaming!: () => void, cancelled = false;
   const gate = new Promise<void>(resolve => { streaming = resolve; });
@@ -393,6 +440,31 @@ test("forget/delete reaches dependent external evidence and audit copies, includ
   expect(app.parallel.inspect(actor, work.id).evidence).toHaveLength(0);
   expect(app.authority.view(actor, work.id).work.result).toBeNull();
   expect(() => store.read(tx => app.parallel.citation(tx, attempt.id, result.evidence[0]!.id, 1))).toThrow("not_found");
+});
+
+test("revoking published memory withdraws a receiver's committed evidence, citations and result without deleting the publisher's source", async () => {
+  const f = await fixture();
+  f.app.authority.settle(f.attempt.id);
+  const original = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "Private report preference" } }).claim!;
+  f.app.execute(f.auth.actor, { kind: "memory.publish", requestId: rid(), expectedRevision: 1, payload: { claim: original } });
+  f.store.transaction(tx => {
+    tx.run("INSERT INTO bots VALUES ('receiver',?)", canonical({ ...f.attempt.snapshot.bot, id: "receiver", name: "Receiver" }));
+    tx.run("INSERT INTO conversations VALUES ('receiverchat','receiver',1)");
+  });
+  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
+    payload: { conversationId: "receiverchat", task: null, title: "Read", purpose: "report preference", completionRule: "Evidence", bots: [{ id: "receiver", revision: 1 }], tools: policy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 32768, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+  const attempt = f.app.authority.admit(work.id, rid(), { botId: "receiver", tools: policy.tools, scopes: [], input: "report preference", calls: 8, outputBytes: 32768 });
+  const read = await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" }), evidence = read.evidence[0]!;
+  expect(read.outcome).toBe("success");
+  expect(f.store.read(tx => f.app.memory.sourceCurrent(tx, evidence))).toBe(true);
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Derived report" });
+  f.app.execute(f.auth.actor, { kind: "memory.revoke", requestId: rid(), expectedRevision: 2, payload: { claim: original } });
+  expect(f.app.parallel.inspect(f.auth.actor, work.id)).toMatchObject({ evidence: [], reads: [{ evidence: [], outcome: "authority_changed" }] });
+  expect(f.app.authority.view(f.auth.actor, work.id).results).toEqual([]);
+  expect(f.store.read(tx => f.app.memory.sourceCurrent(tx, evidence))).toBe(false);
+  expect(() => f.store.read(tx => f.app.parallel.citation(tx, attempt.id, evidence.id, 1))).toThrow("not_found");
+  expect(f.store.read(tx => f.app.memory.lookup(tx, "jit", original)).state).toBe("available");
 });
 
 test("interrupted web reads recover offline with unknown usage, no correlation rotation and no resubmission", async () => {

@@ -289,7 +289,7 @@ test("hostile Bot text is escaped, stays out of every button and cannot borrow a
   expect(html).toContain("$&amp;");
 });
 
-test("work keeps all four tabs; computer lanes link to the Bot page without granting computer access", async () => {
+test("computer work keeps four tabs; other work hides Computer and cannot gain computer access", async () => {
   const f = await fixture(), work = await f.open();
   let html = await f.page(`/work/${work.id}`); expect(html).toContain(`/work/${work.id}?tab=computer`);
   html = await f.page(`/work/${work.id}?tab=computer`); expect(html).toContain('/team/jit?tab=computer'); expect(html).toContain("Running"); expect(html).toContain("Nobody is driving"); expect(html).not.toContain("<form method=\"post\" action=\"/s14/bots"); strict(html);
@@ -298,7 +298,8 @@ test("work keeps all four tabs; computer lanes link to the Bot page without gran
   expect(await f.page(`/work/${work.id}`)).toContain("View the computer of this Bot");
   const plain = await fixture(), other = plain.startWork("Plain", []);
   const plainPage = await plain.page(`/work/${other.id}`);
-  for (const tab of ["progress", "grant", "computer", "evidence"]) expect(plainPage).toContain(`/work/${other.id}?tab=${tab}`);
+  for (const tab of ["progress", "grant", "evidence"]) expect(plainPage).toContain(`/work/${other.id}?tab=${tab}`);
+  expect(plainPage).not.toContain(`/work/${other.id}?tab=computer`);
   expect(await plain.page(`/work/${other.id}?tab=computer`)).not.toContain("Viewing and takeover");
   expect(() => plain.app.execute(plain.auth.actor, { kind: "computer.open", requestId: rid(), expectedRevision: 0, payload: { botId: "jit", workId: other.id } })).toThrow("computer_outside_grant");
 });
