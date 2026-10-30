@@ -554,7 +554,7 @@ const msgOwner = t => `<div class="msg-owner">${esc(t)}</div>`;
 const msgBot = (id, body, st = "idle") => `<div class="msg-bot">${head(id, st)}<div class="b"><div class="msg-who">${bn(id)}</div>${body}</div></div>`;
 
 function workCard() {
-  const st = workState(), ls = ["scout", "analyst", "checker", "jit"].map(lane), n = ls.filter(l => l.st === "working").length;
+  const st = workState(), ls = ["scout", "analyst", "checker", "jit"].map(id => lane(id)), n = ls.filter(l => l.st === "working").length;
   return `<section class="workcard" aria-label="${T("การ์ดงาน", "Work card")}">
     <div class="workcard-hd"><div class="t"><b>${T("เทียบ mini PC สำหรับรัน Jit ที่บ้าน", "Compare mini PCs for running Jit at home")}</b></div>${pill(st)}</div>
     <div class="receipt"><span>${T("เริ่มจากคำสั่งของคุณ", "Started from your command")}</span><span>·</span><span class="mono" style="font-size:12px">wk-0418 · g1</span>${n >= 2 ? `<span>·</span><span>${T(`ทำพร้อมกัน ${n} บอท`, `${n} Bots working at once`)}</span>` : ""}</div>
@@ -655,7 +655,7 @@ function timeline() {
     <details style="margin-top:8px"><summary>${T("ดูเป็นตาราง", "View as table")}</summary><table class="t" style="margin-top:6px"><thead><tr><th>${T("บอท", "Bot")}</th><th>${T("สถานะ", "State")}</th><th>${T("ช่วงเวลา (นาที)", "Interval (min)")}</th></tr></thead><tbody>${rows.flatMap(([id, segs]) => segs.map(([a, b, k]) => `<tr><td>${bn(id)}</td><td>${label[k]}</td><td>${a.toFixed(1)}–${b.toFixed(1)}</td></tr>`)).join("")}</tbody></table></details></figure>`;
 }
 function tabProgress() {
-  const ls = ["scout", "analyst", "checker", "jit"].map(lane), st = workState(), reads = ls.reduce((a, l) => a + (l.read || 0), 0), busy = ls.filter(l => l.st === "working").length;
+  const ls = ["scout", "analyst", "checker", "jit"].map(id => lane(id)), st = workState(), reads = ls.reduce((a, l) => a + (l.read || 0), 0), busy = ls.filter(l => l.st === "working").length;
   return `<div class="stack s16">
     <p aria-live="off"><b style="font-weight:600">${busy >= 2 ? T(`${busy} บอทกำลังทำพร้อมกัน`, `${busy} Bots working at once`) : busy === 1 ? T("1 บอทกำลังทำ", "1 Bot working") : T("ไม่มีบอททำงานอยู่", "No Bot is working")}</b> <span class="sub">· ${T("เพดาน 2", "limit 2")}${ls.some(l => l.st === "queued") ? T(" · 1 รอคิว", " · 1 queued") : ""}</span></p>
     ${fault()}
