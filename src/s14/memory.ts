@@ -6,7 +6,7 @@ import type { S14Application } from "./application";
 import { record, save } from "./application";
 import type { Attempt, ScopePolicy, ScopeRef, Work } from "./authority-types";
 import type { Bot, OwnerActor, Reply } from "./types";
-import type { MemoryAccess, MemoryClaim, MemoryCommand, MemoryDecision, MemoryImpact, MemoryLookup, MemoryPacket, MemoryReceipt, MemoryRef, MemoryShare, MemorySource } from "./memory-types";
+import type { MemoryAccess, MemoryClaim, MemoryCommand, MemoryDecision, MemoryImpact, MemoryLookup, MemoryPacket, MemoryReceipt, MemoryRef, MemoryShare, MemorySource, MemoryWithdrawal } from "./memory-types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -201,7 +201,7 @@ export class S14Memory {
   }
 
   /** Returns an owner-only scoped inspector; query matching runs only after active access validation. */
-  inspect(actor: OwnerActor, botId: string, query = ""): { claims: MemoryLookup[]; decisions: MemoryDecision[]; sources: MemorySource[] } {
+  inspect(actor: OwnerActor, botId: string, query = ""): { claims: MemoryLookup[]; decisions: MemoryDecision[]; sources: MemorySource[]; withdrawals: MemoryWithdrawal[] } {
     identity(botId);
     if (query) text(query, 200);
     return this.app.store.read(tx => {
@@ -209,9 +209,13 @@ export class S14Memory {
       record<Bot>(tx, "bots", botId);
       const terms = lexicalTerms(query);
       const claims = rows<MemoryClaim>(tx, "memory_claims").filter(c => this.access(tx, c, botId, null)).map(c => this.lookup(tx, botId, ref(c)));
-      return { claims: claims.filter(c => !query || c.state === "available" && (lexicalScore(terms, c.claim.text) >= 3 || c.claim.text.toLowerCase().includes(query.toLowerCase()))).slice(-200),
-        decisions: rows<MemoryDecision>(tx, "memory_decisions").filter(d => this.app.readConversation(tx, d.conversationId).botId === botId),
-        sources: rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).slice(-200) };
+      const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => this.app.readConversation(tx, d.conversationId).botId === botId);
+      const sources = rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).slice(-200);
+      const selected = claims.filter(c => !query || c.state === "available" && (lexicalScore(terms, c.claim.text) >= 3 || c.claim.text.toLowerCase().includes(query.toLowerCase()))).slice(-200);
+      const returned = new Set([...selected.map(c => c.state === "available" ? c.claim.id : c.reference.id), ...sources.map(s => s.id), ...decisions.map(d => d.source.id)]);
+      const withdrawals = tx.all<Omit<MemoryWithdrawal, "source">>("SELECT kind,id,mode FROM lifecycle.withdrawals").filter(w => returned.has(w.id))
+        .map(w => ({ ...w, source: w.kind === "claim" ? record<MemoryClaim>(tx, "memory_claims", w.id).source : null }));
+      return { claims: selected, decisions, sources, withdrawals };
     });
   }
 
@@ -221,7 +225,8 @@ export class S14Memory {
       this.app.requireOwner(tx, actor);
       const claim = this.lookup(tx, botId, requested);
       const history = claim.state === "available" ? tx.all<{ record_json: string }>("SELECT record_json FROM memory_access_history WHERE id=? ORDER BY revision", requested.id).map(r => JSON.parse(r.record_json) as MemoryAccess) : [];
-      return { claim, history };
+      const shares = claim.state === "available" ? tx.all<{ record_json: string }>("SELECT record_json FROM memory_shares WHERE json_extract(record_json,'$.claim.id')=?", requested.id).map(r => JSON.parse(r.record_json) as MemoryShare) : [];
+      return { claim, history, shares };
     });
   }
 

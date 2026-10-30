@@ -1,6 +1,6 @@
 # app.parallel-web/v1
 
-WEB14-01 logic delivery; S14-AC07, FR-13/17/18/39/41, NFR-07/09/10. Types: `src/s14/parallel-types.ts`; gateway: `parallel.ts`; protocol: `parallel-protocol.ts`; native executor: `research.ts`. UI acceptance remains for Claude Opus 5.5 at high effort.
+WEB14-01 logic delivery; S14-AC07, FR-13/17/18/39/41, NFR-07/09/10. Types: `src/s14/parallel-types.ts`; gateway: `parallel.ts`; protocol: `parallel-protocol.ts`; native executor: `research.ts`. Product UI: `src/s14/web-research.ts`.
 
 `S14Application.parallel:ParallelWeb` is a service-owned gateway. `definitions(attempt:Attempt):ToolDefinition[]` returns only granted `web_search({query})` and `web_fetch({url,fullContent})`. Both are trusted Jit tools passed through `tools.definitions`, exact policy, hostedLookup off. Search uses `ParallelMcp implements SearchProvider` from the pinned public `schway/host` contract. Fetch is Jit-owned; no FetchProvider or private engine import is assumed. No vendor declaration or advertised readOnlyHint grants a tool.
 

@@ -1,6 +1,6 @@
 # app.memory-scope/v2
 
-MEM14-01 logic delivery; S14-AC05/06, FR-04/05/16/31, NFR-05/07/08/10/11. Types: `src/s14/memory-types.ts`; implementation: `src/s14/memory.ts`. UI acceptance remains pending the Opus agent.
+MEM14-01 logic delivery; S14-AC05/06, FR-04/05/16/31, NFR-05/07/08/10/11. Types: `src/s14/memory-types.ts`; implementation: `src/s14/memory.ts`. Product UI: `src/s14/web-memory.ts`.
 
 `S14Application.memory:S14Memory` owns sourced, private-by-default claims. `MemoryRef` is exactly `{id,revision,generation}`. `MemorySource` records originating Bot/conversation, owner/bot/external attribution, exact content snapshot, derived source references and time. `MemoryClaim` records that origin, source reference, fact/inference, quote, conservative dependencies and conflicts. A fact proves an exact owner statement, not truth or execution authority. No Project identity or mandatory embeddings exist.
 

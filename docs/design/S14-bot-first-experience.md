@@ -556,3 +556,31 @@ Real states required these changes to sections 1–12. Each is **P** and changes
 **Q2 update:** the owner confirmed research defaults of 2 concurrent Bots, 30 minutes and 40 reads per work item on 2026-10-30, shown as editable values.
 
 **Verification:** rendering and form-contract tests in `tests/s14-web-ui.test.ts`. A real headless Chromium run covered the no-script journey (sign-in, setup, chat, proposal, task, start, stop) with real form posts, every approval state, and layouts at 360, 390, 430, 820, 1100, 1280 and 1400 px in both themes. No real phone, Safari, Firefox, screen reader or live model route has been used.
+
+## 17. Product implementation refinements (MEM14-01, WEB14-01)
+
+Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 2026-10-30. Code: `src/s14/web-memory.ts`, `web-research.ts`, `web-product-memory.ts`, `web-style-memory.ts`.
+
+Each change below is **P**. Memory and web authority stay in the existing typed commands.
+
+| Area | Change | Why |
+| --- | --- | --- |
+| Memory default | `/memory` opens the Jit tab, with Shared last. | Everything starts private, so Shared would usually open empty. |
+| Sheets | Correct, Forget, Delete, Publish, Revoke and Share are own pages with a `?action=` preview. | One no-script path, as section 11 already allows. A preview is a read. |
+| Forget and Delete | Two fixed lists, "What this does" and "What this cannot reach", then the live impact. The lists name provider copies, session history on disk, outside backups and the absence of undo. | The owner decides on what the command reaches, not on a reassuring sentence. |
+| Impact | Counts for memories, originals, contexts and work, with readable text for dependents and links to affected work. Contexts are checked for a work name up to 64, and the remainder is counted. | `MemoryImpact` returns IDs. Work is resolved through the existing context query. |
+| Withdrawn | A separate section with a word per case: deleted, forgotten, corrected, withdrawn or unavailable. Delete stays reachable after Forget. | A vanished row would hide what happened. |
+| Gone source | Originals and claim pages explain that the text is gone. A deleted chat message reads as deleted rather than showing `[deleted]`. | The seam nulls the text, and the owner needs the reason. |
+| Originals | A collapsed list that links to a page per source. | Every chat message is a source, so rendering all text would make Memory very long. |
+| Fact wording | A permanent note says a fact is what the owner said, not something checked. | The contract says a fact proves a statement, not truth. |
+| Decisions | No key field: a new decision gets a generated key. Editing shows the next revision. The page says decisions can't be removed yet. | The owner never names internals, and the seam has no removal command. |
+| Share | One radio list of Bot and scope pairs. With no eligible scope the page explains and offers no control. | A dependent second select needs script. Production policy currently has no resources. |
+| Evidence tab | Added between Progress and Grant. A rollup, an exact sent list, then one card per read and one row per source. URLs are plain text, not links. | The rule against activating remote content. |
+| Failure actions | "Retry now" and "Report from what we have" are not offered. Quota and key failures link to settings only. | The seam has no such command. A control that does nothing would imply a fallback. |
+| Success wording | `success` reads "Returned", and the banner says that does not mean the question is covered. | A returned read is not coverage. |
+| Web settings | One route, `/settings/web`, rather than four tabs. The account section is collapsed until a key exists. | Other tabs have no data here, and public research needs nothing on this page. |
+| Billing | The acknowledgement checkbox is `required` rather than a script-disabled button, and the service still refuses without it. | It works without script. |
+| Setup | When the policy offers `web_search` and `web_fetch`, setup shows both ticked, in words, with what leaves the machine. The "Nothing is granted" row becomes "Nothing else is granted". | The form previously granted Jit no tools, so public research could never start. This is a visible owner choice and the owner can untick it. |
+| Settings honesty | The page names Bots that have no web tools. | The seam has no command to widen a Bot's ceiling after setup. |
+
+**Verification:** rendering and form-contract tests are in `tests/s14-web-memory.test.ts`. Headless Chrome on macOS covered the seeded pages at 360, 390, 430, 820 and 1280 px, in both themes and both languages, with no page overflow and no tap target under 44 px outside inline text-link rows. The same browser ran a no-script journey with script disabled: remember, revoke, forget, save key, enable with acknowledgement, remove key and return to free mode. With script on, the pages logged no CSP violation. Parallel reads used fixtures. No real phone, Safari, Firefox, screen reader, live model route or live Parallel service has been used.

@@ -44,5 +44,7 @@ export type SetMemoryDecisionCommand = Envelope<"memory.decision.set", { convers
 export type MemoryCommand = RememberCommand | CorrectMemoryCommand | WithdrawMemoryCommand | PublishMemoryCommand | ShareMemoryCommand | SetMemoryDecisionCommand;
 /** Credential-free mutation receipt; lifecycle commands retain identities rather than withdrawn payload. */
 export interface MemoryReceipt { kind: MemoryCommand["kind"]; requestId: string; claim?: MemoryRef; access?: MemoryAccess; share?: MemoryShare; decision?: MemoryRef; withdrawn?: number }
+/** Owner-only lifecycle label for a returned claim or source; it carries identities and never withdrawn payload. */
+export interface MemoryWithdrawal { kind: "claim" | "source"; id: string; mode: "corrected" | "forgotten" | "deleted"; source: MemoryRef | null }
 /** Owner impact preview with no authority and no mutation. */
 export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; nativePolicy: "fresh_sessions_retire_on_close" }
