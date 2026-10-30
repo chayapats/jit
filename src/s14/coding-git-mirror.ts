@@ -12,17 +12,25 @@ export async function brokerGit(directory: string, args: string[], secret?: stri
   if (secret !== undefined) writeFileSync(askpass, '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" x-access-token;; *) printf "%s\\n" "$JIT_GIT_EFFECT_TOKEN";; esac\n', { mode: 0o700 });
   const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "transfer.fsckObjects=true", ...args], {
     cwd: directory, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: directory, LANG: "C.UTF-8", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0",
-      ...(secret === undefined ? {} : { GIT_ASKPASS: askpass, JIT_GIT_EFFECT_TOKEN: secret }) }, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "ignore", timeout: 60000,
-    ...(options.signal ? { signal: options.signal } : {}),
+      ...(secret === undefined ? {} : { GIT_ASKPASS: askpass, JIT_GIT_EFFECT_TOKEN: secret }) }, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "ignore", detached: true,
   });
+  const kill = () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch { /* Already settled. */ } } };
+  const timer = setTimeout(kill, 60000);
+  options.signal?.addEventListener("abort", kill, { once: true });
+  if (options.signal?.aborted) kill();
   let stdout = "", overflow = false;
   let code: number;
   try {
     for await (const chunk of proc.stdout) {
-      if (Buffer.byteLength(stdout) + chunk.length > 65536) { overflow = true; proc.kill(); break; }
+      if (Buffer.byteLength(stdout) + chunk.length > 65536) { overflow = true; kill(); break; }
       stdout += new TextDecoder().decode(chunk);
     }
-  } finally { code = await proc.exited; }
+  } catch (error) { kill(); throw error; }
+  finally {
+    code = await proc.exited;
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", kill);
+  }
   if (overflow) throw new AppError("git_broker_output_bound", 409);
   return { code, stdout };
 }

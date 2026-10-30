@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, watch, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { brokerGit } from "../src/s14/coding-git-mirror";
+import { codingQuote } from "../src/s14/coding-protocol";
 import { join } from "node:path";
 import { repositoryBundle } from "../src/s14/coding-preload";
 import { codingRegistry } from "../src/s14/coding-protocol";
@@ -88,4 +91,27 @@ test("pinned smart-HTTP request interoperates with Git stateless upload-pack wit
   };
   const bundle = await repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, fetcher);
   expect(bundle.length).toBeGreaterThan(0);
+});
+
+
+test("broker cancellation terminates the whole trusted Git process group, including pack helpers", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-git-cancel-"))); roots.push(root);
+  const controller = new AbortController(), marker = join(root, "child.pid");
+  let ready!: () => void;
+  const reached = new Promise<void>(resolve => { ready = resolve; });
+  const watcher = watch(root, (_event, name) => { if (name === "child.pid") ready(); });
+  // Fixed test-only alias models a Git helper; no repository/config-sourced code is executed.
+  const alias = `!sleep 60 & child=$!; printf '%s' "$child" > ${codingQuote(`${marker}.tmp`)}; mv ${codingQuote(`${marker}.tmp`)} ${codingQuote(marker)}; wait`;
+  const running = brokerGit(root, ["-c", `alias.block=${alias}`, "block"], undefined, { signal: controller.signal });
+  try {
+    await reached;
+    const child = Number(readFileSync(marker, "utf8"));
+    expect(child).toBeGreaterThan(0);
+    controller.abort();
+    expect((await running).code).not.toBe(0);
+    const ps = Bun.spawn(["ps", "-p", String(child), "-o", "stat="], { stdout: "pipe", stderr: "ignore" });
+    const state = (await new Response(ps.stdout).text()).trim();
+    await ps.exited;
+    expect(state === "" || state.startsWith("Z")).toBe(true);
+  } finally { controller.abort(); watcher.close(); await running.catch(() => {}); }
 });
