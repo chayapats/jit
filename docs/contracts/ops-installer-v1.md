@@ -171,8 +171,9 @@ operator must not record/copy the printed URL into shared evidence.
 
 `GET /owner/setup?token=…` validates without consuming, sets a short-lived
 HttpOnly/SameSite=Strict setup cookie (`__Host-` + Secure on HTTPS) and redirects
-to `/owner/setup`. Responses use no-store and no-referrer, including invalid-link
-pages. The clean form renders a separate capability-bound CSRF proof, never the
+to `/owner/setup`. Responses use no-store. The link redirect and invalid-link pages
+use no-referrer; the clean form page uses same-origin, because browsers post a
+no-referrer page's form with `Origin: null` (amended 2026-10-30, #222). The clean form renders a separate capability-bound CSRF proof, never the
 token. POST requires the existing Host/Origin rules, the setup cookie, matching
 CSRF, matching password fields and the existing 12–256-character policy.
 

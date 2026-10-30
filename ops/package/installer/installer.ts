@@ -16,8 +16,26 @@ import pins from "./pinned-images.json";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 
+/**
+ * Restarts the service identity's Podman pause process when it is stuck in a one-ID namespace. That happens when it
+ * started while the identity could not read its subordinate ids, and images owned by other ids then fail to unpack.
+ * A failed repair is reported with its next step; container features stay optional and never block installation.
+ */
+export async function repairPodmanNamespace(
+  call: (argv: string[]) => Promise<{ exitCode: number; stdout: string; timedOut?: boolean }>,
+  asUser: (args: string[]) => string[], out?: (line: string) => void,
+): Promise<"healthy" | "repaired" | "failed" | "unknown"> {
+  const map = await call(asUser(["podman", "unshare", "cat", "/proc/self/uid_map"]));
+  if (map.exitCode !== 0 || map.timedOut) return "unknown";
+  if (map.stdout.trim().split("\n").filter(Boolean).length !== 1) return "healthy";
+  const migrated = await call(asUser(["podman", "system", "migrate"]));
+  if (migrated.exitCode === 0 && !migrated.timedOut) return "repaired";
+  out?.("Podman namespace repair failed; container features stay unavailable. As jit: podman system migrate; then restart jit.service.");
+  return "failed";
+}
+
 function homeDirectories(home: string): string[] {
-  return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings"].map(path => join(home, path));
+  return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway"].map(path => join(home, path));
 }
 
 function keyringUnit(home: string): string {
@@ -140,7 +158,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   const write = (path: string, text: string, mode = 0o600) => {
     safe(path); safe(dirname(path)); mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temp = `${path}.${randomBytes(8).toString("hex")}`;
-    try { writeFileSync(temp, text, { flag: "wx", mode }); renameSync(temp, path); } finally { rmSync(temp, { force: true }); }
+    // install.sh runs under umask 077, which would narrow `mode`; /etc/subuid and /etc/subgid must stay world-readable.
+    try { writeFileSync(temp, text, { flag: "wx", mode }); chmodSync(temp, mode); renameSync(temp, path); } finally { rmSync(temp, { force: true }); }
   };
   const runner = options.run ?? spawnRunner;
   const run: CommandRunner = (argv, settings) => runner(argv, {
@@ -259,6 +278,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     await must(asUser(["systemctl", "--user", "daemon-reload"]));
     await must(asUser(["systemctl", "--user", "enable", "--now", "gnome-keyring-daemon.service"]));
     step("optional-podman-socket", "enable the jit identity's user podman.socket and restart jit.service (docs/runbooks/execution-box.md)");
+    if (available) await repairPodmanNamespace(call, asUser, options.out);
     if (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0) {
       const key = available ? "podman.reason_socket" : "podman.reason_podman";
       options.out?.(`Chat-only: ${en[key]} / ${th[key]}${available ? " As jit: systemctl --user enable --now podman.socket; then restart jit.service." : ""}`);

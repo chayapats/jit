@@ -182,8 +182,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const capability = linked ?? (cookies.length === 1 ? cookies[0]!.slice(setupName.length + 1) : "");
         app.checkOwnerSetup(capability);
         if (linked !== null) return respond(null, 303, { ...setupHeaders, Location: "/owner/setup", "Set-Cookie": setupCookie(capability, 900) });
+        // The clean form page holds no token. Under no-referrer a browser posts the form with `Origin: null`, which the
+        // Origin rule rejects; same-origin still sends no referrer to any other origin.
         if (request.method === "GET") return new Response(renderWith(ui, () => ownerSetupPage(ownerSetupCsrf(capability))), {
-          headers: { ...headers, ...setupHeaders, "Content-Type": "text/html; charset=utf-8", "Content-Language": ui.locale } });
+          headers: { ...headers, "Referrer-Policy": "same-origin", "Content-Type": "text/html; charset=utf-8", "Content-Language": ui.locale } });
         const body = await payload(request);
         app.verifyCsrf(ownerSetupCsrf(capability), body.csrf);
         if (typeof body.password !== "string" || body.password !== body.confirm) throw new AppError("owner_setup_password_mismatch");
@@ -1272,8 +1274,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         };
         const revision = (surface: "setup" | "settings") => surface === "setup" ? app.setup(auth.actor).revision : app.team(auth.actor).ownerRevision;
         const reply = (receipt: Parameters<typeof signInPage>[0], selected: RouteProvider, surface: "setup" | "settings") =>
+          // The page carries the cancel form, so it keeps same-origin: no-referrer makes a browser post `Origin: null`.
+          // same-origin sends no referrer to the provider's verification link either.
           api ? json(receipt) : respond(renderWith(ui, () => signInPage(receipt, selected, surface, auth.csrf, revision(surface))), 200,
-            { "Content-Language": ui.locale, "Referrer-Policy": "no-referrer", "Vary": "Accept-Language, Cookie" });
+            { "Content-Language": ui.locale, "Referrer-Policy": "same-origin", "Vary": "Accept-Language, Cookie" });
         if (request.method === "GET" && provider && id && !signInRoute[3]) {
           const surface = surfaceOf(url.searchParams.get("surface"));
           return reply({ signIn: app.signInStatus(auth.actor, provider, id) }, provider, surface);

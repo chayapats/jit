@@ -156,7 +156,7 @@ It never advances setup, selects another route or changes billing.
 
 - `POST /[api/]setup/sign-in`: form/JSON fields `provider`, `surface`, `requestId`,
   `expectedRevision` and CSRF. Initial HTML returns 200 with the approval page;
-  it uses no-store and no-referrer headers. JSON returns the same ephemeral receipt.
+  it uses no-store and `Referrer-Policy: same-origin`. Under no-referrer, browsers would post the cancel form with `Origin: null` (amended 2026-10-30, #222). JSON returns the same ephemeral receipt.
 - `GET /[api/]setup/sign-in/:provider/:flowId?surface=setup|settings`: safe status,
   a refresh link, cancel form while pending, and retry after terminal outcomes.
 - `POST /[api/]setup/sign-in/:provider/:flowId/cancel`: `surface`, revision,

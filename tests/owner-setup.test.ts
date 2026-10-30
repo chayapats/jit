@@ -62,6 +62,8 @@ test("link GET only sets HttpOnly cookie and clears URL; clean page contains no 
   const page = await f.request("/owner/setup", undefined, { cookie, "accept-language": "en" });
   const html = await page.text();
   expect(page.status).toBe(200); expect(page.headers.get("cache-control")).toBe("no-store");
+  // Under no-referrer a real browser posts this form with `Origin: null`, which the Origin rule rejects.
+  expect(page.headers.get("referrer-policy")).toBe("same-origin");
   expect(html).toContain("Create the Jit owner account"); expect(html).toContain('autocomplete="new-password"');
   expect(html).not.toContain(token); expect(html).toContain(ownerSetupCsrf(token));
   expect(f.store.read(tx => tx.get("SELECT * FROM owner"))).toBeNull();
@@ -72,6 +74,7 @@ test("password creation enforces Origin, CSRF, matching fields and existing pass
   const f = fixture(), token = f.token(f.issue()), cookie = `jit_setup=${token}`, password = crypto.randomUUID();
   const valid = { csrf: ownerSetupCsrf(token), password, confirm: password };
   expect((await f.request("/owner/setup", valid, { cookie, origin: "http://evil.invalid" })).status).toBe(403);
+  expect((await f.request("/owner/setup", valid, { cookie, origin: "null" })).status).toBe(403);
   expect((await f.request("/owner/setup", { ...valid, csrf: "" }, { cookie })).status).toBe(403);
   expect((await f.request("/owner/setup", { ...valid, confirm: "different" }, { cookie })).status).toBe(400);
   expect((await f.request("/owner/setup", { ...valid, password: "short", confirm: "short" }, { cookie })).status).toBe(400);

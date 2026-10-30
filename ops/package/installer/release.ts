@@ -20,7 +20,9 @@ export async function buildInstallerRelease(source: string, output: string, rele
     buildPackage({ srcDir: resolve(source), outDir: join(stage, "artifact"), engineContract: "jit.schway.bridge/v1", engineRevision: null });
     const script = readFileSync(join(resolve(source), "install.sh"), "utf8").replace("release_url=https://github.com/chayapats/jit/releases/latest/download", `release_url=https://github.com/chayapats/jit/releases/download/${releaseTag}`);
     writeFileSync(join(stage, "install.sh"), script, { mode: 0o755 });
-    const result = await run(["tar", "-czf", archive, "-C", stage, "."], { timeoutMs: 120_000 });
+    // macOS tar stores extended attributes as AppleDouble `._*` entries, which GNU tar extracts as files that break
+    // the artifact's content pin. COPYFILE_DISABLE turns them off there and is ignored by GNU tar.
+    const result = await run(["tar", "-czf", archive, "-C", stage, "."], { timeoutMs: 120_000, env: { PATH: process.env.PATH ?? "/usr/bin:/bin", COPYFILE_DISABLE: "1" } });
     if (result.exitCode !== 0) throw new Error("release-archive-failed");
     writeFileSync(checksum, `${createHash("sha256").update(readFileSync(archive)).digest("hex")}  jit-install.tar.gz\n`, { mode: 0o644 });
     copyFileSync(join(stage, "install.sh"), bootstrap); chmodSync(bootstrap, 0o755);

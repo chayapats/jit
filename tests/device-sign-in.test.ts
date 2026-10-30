@@ -97,7 +97,7 @@ test("Codex success displays approval once, checks the exact selected route and 
   expect(receipt.approval).toEqual({ userCode: code, verificationUri: link });
   expect(f.protocol.starts).toBe(1);
   expect(f.requests).toHaveLength(0);
-  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "codex", model: "gpt-6-astra", authRoute: "codex" });
+  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "codex", model: "gpt-6.1-sol", authRoute: "codex" });
   const replay = await f.app.execute(f.auth.actor, command);
   expect(replay.approval).toBeUndefined(); expect(f.protocol.starts).toBe(1);
   f.protocol.result = "success"; await f.clock.advance(1000);
@@ -250,7 +250,9 @@ test("no-JS Web sign-in, status, replay and cancel use session, Origin, CSRF and
   expect((await f.post("/setup/sign-in", fields, { origin: "https://evil.test" })).status).toBe(403);
   expect((await f.post("/setup/sign-in", { ...fields, surprise: "value" })).status).toBe(400);
   const response = await f.post("/setup/sign-in", fields), page = await response.text();
-  expect(response.status).toBe(200); expect(response.headers.get("referrer-policy")).toBe("no-referrer"); expect(response.headers.get("cache-control")).toContain("no-store");
+  // The page holds the cancel form; under no-referrer a real browser would post it with `Origin: null` and be rejected.
+  expect(response.status).toBe(200); expect(response.headers.get("referrer-policy")).toBe("same-origin"); expect(response.headers.get("cache-control")).toContain("no-store");
+  expect((await f.post("/setup/sign-in", { ...fields, requestId: crypto.randomUUID() }, { origin: "null" })).status).toBe(403);
   expect(page).toContain(code); expect(page).toContain(link); expect(page).toContain("data-status-url");
   const path = /data-status-page="([^"]+)"/.exec(page)![1]!.replaceAll("&amp;", "&");
   expect(await (await f.get(path)).text()).not.toContain(code);

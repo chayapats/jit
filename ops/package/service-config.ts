@@ -454,6 +454,9 @@ export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: 
   const template = await Bun.file(templateUrl).text();
   const stopSeconds = serviceDrainTimeoutMs(parsed) / 1000;
   const bus = sessionBusUnit(parsed, exec.uid);
+  // Schway's cross-process credential-store lock lives in the identity's ~/.schway. Under ProtectSystem=strict a
+  // read-only home turns every Web sign-in and token refresh into a store error.
+  const schwayHome = parsed.runPort === "schway" && exec.uid !== undefined ? [`-${join(exec.home ?? "/var/lib/jit", ".schway")}`] : [];
   return template
     .replaceAll("{{UNIT_ORDERING}}", bus.ordering)
     .replaceAll("{{HOME_PROTECTION}}", bus.protection)
@@ -465,7 +468,7 @@ export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: 
     .replaceAll("{{CONFIG_PATH}}", configPath)
     .replaceAll("{{WORKING_DIR}}", parsed.workingDirectory)
     .replaceAll("{{ENVIRONMENT}}", [...serviceEnvironment(parsed), ...bus.environment].map(([k, v]) => `Environment=${k}=${v}`).join("\n"))
-    .replaceAll("{{WRITABLE_PATHS}}", [...serviceWritablePaths(parsed), ...(exec.uid === undefined ? [] : [`-/run/user/${exec.uid}/podman`])].join(" "))
+    .replaceAll("{{WRITABLE_PATHS}}", [...serviceWritablePaths(parsed), ...schwayHome, ...(exec.uid === undefined ? [] : [`-/run/user/${exec.uid}/podman`])].join(" "))
     .replaceAll("{{MEMORY_MAX}}", memoryMax(parsed.resources.memoryMaxBytes))
     .replaceAll("{{STOP_TIMEOUT}}", String(stopSeconds + 15))
     .replaceAll("{{LOG_NAMESPACE}}", serviceLogNamespace)

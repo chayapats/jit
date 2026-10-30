@@ -589,6 +589,7 @@ test("all units expose only the Podman socket directory; schway additionally req
   expect(scripted).not.toContain("DBUS_SESSION_BUS_ADDRESS");
   expect(scripted).toContain(`BindPaths=-/run/user/${uid}/podman\n`);
   expect(scripted).toContain(`After=user@${uid}.service`);
+  expect(scripted).not.toContain(".schway");
 
   const schway = { ...l.service, runPort: "schway" as const };
   writeFileSync(l.source, JSON.stringify(schway), { mode: 0o600 });
@@ -610,6 +611,9 @@ test("all units expose only the Podman socket directory; schway additionally req
   expect(unit).toContain(`Environment=XDG_RUNTIME_DIR=/run/user/${uid}\n`);
   expect(unit).toContain(`Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus\n`);
   expect(unit).toContain("Environment=JIT_RUN_PORT=schway");
+  // Schway's credential-store lock lives in ~/.schway; read-only, every Web sign-in and token refresh is a store error.
+  const withHome = await renderServiceUnit(schway, { bunPath: process.execPath, uid, gid, home: "/var/lib/jit" });
+  expect(withHome.match(/^ReadWritePaths=.*/m)?.[0]).toContain(" -/var/lib/jit/.schway -/run/user/");
   // The rest of the hardening stays as in scripted mode.
   for (const line of ["NoNewPrivileges=true", "PrivateTmp=true", "ProtectSystem=strict", `ReadWritePaths=${l.dirs.state} ${l.dirs.backup}`]) expect(unit).toContain(line);
   await expect(renderServiceUnit(schway, { bunPath: process.execPath, uid: 0 })).rejects.toThrow("invalid_service_config");

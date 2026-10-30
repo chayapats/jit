@@ -32,7 +32,8 @@ afterAll(async () => {
 
 async function installation() {
   const route = JSON.parse(process.env.JIT_LIVE_VOICE_ROUTE ?? "null") as RoleRoute | null;
-  expect(route).toMatchObject({ provider: expect.any(String), model: expect.any(String), authRoute: expect.any(String) });
+  // Bun's toMatchObject writes its asymmetric matchers into the object it checks, so it checks a copy.
+  expect({ ...route }).toMatchObject({ provider: expect.any(String), model: expect.any(String), authRoute: expect.any(String) });
   const path = join(root, "state.sqlite");
   const config = readConfig({ JIT_DATABASE: path, JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "1" });
   store = new TransactionStore(path);

@@ -3,10 +3,11 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { installerDefaults, installerHealth, pinnedImages, prepareInstallerHome, runInstaller, subordinateIds, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
+import { installerDefaults, installerHealth, pinnedImages, prepareInstallerHome, repairPodmanNamespace, runInstaller, subordinateIds, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
 import { buildInstallerRelease } from "../ops/package/installer/release";
 import { artifactContentHash, buildPackage, installArtifactDependencies, validateArtifact } from "../ops/package/bun-build";
 import { assertRootPath, assertRootTree, freezeInstallerArtifact } from "../ops/package/installer/trusted-paths";
+import { spawnRunner } from "../src/ops/supervisor";
 
 const roots: string[] = [], source = resolve(import.meta.dir, ".."), GiB = 1024 ** 3;
 const facts: HostFacts = { family: "ubuntu", arch: "x64", ramMb: 8192, cpus: 4, diskBytes: 100 * GiB, freeBytes: 80 * GiB };
@@ -95,6 +96,8 @@ test("keyring and ledger preparation stays in the service identity and preserves
   const unlock = readFileSync(join(home, "keyring-unlock"), "utf8");
   expect(lstatSync(join(home, "keyring-unlock")).mode & 0o777).toBe(0o600);
   expect(lstatSync(join(home, "ledger/checkpoint.json")).mode & 0o777).toBe(0o600);
+  // Schway's credential-store lock directory; the hardened unit lists it in ReadWritePaths.
+  expect(lstatSync(join(home, ".schway")).mode & 0o777).toBe(0o700);
   prepareInstallerHome(home); expect(readFileSync(join(home, "keyring-unlock"), "utf8")).toBe(unlock);
   rmSync(join(home, "keyring-unlock")); symlinkSync(f.at("missing"), join(home, "keyring-unlock"));
   expect(() => prepareInstallerHome(home)).toThrow("unsafe_unlock_file"); expect(existsSync(f.at("missing"))).toBe(false);
@@ -127,6 +130,32 @@ test("fake-root install creates restricted attachments and units, preserves conf
   expect(readFileSync(configPath, "utf8")).toBe(config); expect(readFileSync(f.at("/var/lib/jit/keyring-unlock"), "utf8")).toBe(unlock);
   expect(readFileSync(f.at("/etc/subuid"), "utf8")).toBe(range); expect(readFileSync(join(first.config.stateDirectory, "keep-data"), "utf8")).toBe("preserve");
   expect(f.lines.join("\n")).not.toContain(unlock); expect(f.lines.join("\n")).not.toContain("?token=");
+});
+
+test("install.sh's umask 077 does not narrow host files that other users must read", async () => {
+  const f = fixture(), previous = process.umask(0o077);
+  try { await runInstaller(f.options); } finally { process.umask(previous); }
+  for (const path of ["/etc/subuid", "/etc/subgid", "/etc/systemd/system/jit.service", "/etc/systemd/journald@jit.conf"]) expect(statSync(f.at(path)).mode & 0o777).toBe(0o644);
+  expect(statSync(f.at("/etc/jit/service-config.json")).mode & 0o777).toBe(0o640);
+});
+
+test("a one-ID Podman namespace is migrated once; a healthy map is left alone and a failed repair is reported", async () => {
+  const asUser = (args: string[]) => ["runuser", "-u", "jit", "--", ...args];
+  const run = (map: { exitCode: number; stdout: string }, migrate = { exitCode: 0, stdout: "" }) => {
+    const calls: string[][] = [], lines: string[] = [];
+    const call = async (argv: string[]) => { calls.push(argv); return argv.includes("migrate") ? migrate : map; };
+    return { calls, lines, result: repairPodmanNamespace(call, asUser, line => lines.push(line)) };
+  };
+  const stuck = run({ exitCode: 0, stdout: "         0        999          1\n" });
+  expect(await stuck.result).toBe("repaired"); expect(stuck.calls.at(-1)).toEqual(asUser(["podman", "system", "migrate"])); expect(stuck.lines).toEqual([]);
+  const healthy = run({ exitCode: 0, stdout: "         0        999          1\n         1 1074266112      65536\n" });
+  expect(await healthy.result).toBe("healthy"); expect(healthy.calls).toHaveLength(1);
+  const failed = run({ exitCode: 0, stdout: "0 999 1\n" }, { exitCode: 125, stdout: "" });
+  expect(await failed.result).toBe("failed"); expect(failed.lines.join("\n")).toContain("podman system migrate");
+  const unreadable = run({ exitCode: 125, stdout: "" });
+  expect(await unreadable.result).toBe("unknown"); expect(unreadable.calls).toHaveLength(1);
+  const simulated = run({ exitCode: 0, stdout: "" });
+  expect(await simulated.result).toBe("healthy"); expect(simulated.calls).toHaveLength(1);
 });
 
 test("missing Podman and unavailable optional images never block core installation", async () => {
@@ -207,7 +236,9 @@ test("POSIX scripted dry run asks once; cancellation makes no changes; --yes rep
 
 test("release tarball carries an intact artifact and can dry-run before installing any dependencies", async () => {
   const f = fixture(), output = f.at("assets"), extracted = f.at("extracted");
-  const release = await buildInstallerRelease(source, output, "test-installer"); mkdirSync(extracted);
+  const tarEnv: (Record<string, string> | undefined)[] = [];
+  const release = await buildInstallerRelease(source, output, "test-installer", (argv, options) => { tarEnv.push(options.env); return spawnRunner(argv, options); }); mkdirSync(extracted);
+  expect(tarEnv).toEqual([expect.objectContaining({ COPYFILE_DISABLE: "1" })]);
   expect(readFileSync(release.bootstrap, "utf8")).toContain("release_url=https://github.com/chayapats/jit/releases/download/test-installer");
   const unpack = Bun.spawn(["tar", "-xzf", release.archive, "-C", extracted], { stdout: "ignore", stderr: "pipe" });
   expect(await unpack.exited).toBe(0);
