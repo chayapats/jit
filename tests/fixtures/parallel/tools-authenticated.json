@@ -1,0 +1,90 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "web_search",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "objective": {
+              "type": "string"
+            },
+            "search_queries": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "objective",
+            "search_queries"
+          ]
+        }
+      },
+      {
+        "name": "web_fetch",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "urls": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20
+            },
+            "objective": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "search_queries": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "full_content": {
+              "type": "boolean",
+              "default": false
+            },
+            "allow_live_fetch": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "urls"
+          ]
+        }
+      },
+      {
+        "name": "web_decisions",
+        "inputSchema": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "web_research",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
+    ]
+  }
+}

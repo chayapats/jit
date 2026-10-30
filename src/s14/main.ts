@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { ConnectionVault } from "../exec/connections";
+import { schwayResearch } from "./research";
 import { AppError } from "../errors";
 import { readHiddenPassword } from "../terminal-password";
 import { S14Application } from "./application";
@@ -14,7 +16,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
-    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: [], resources: [] };
+    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch"], resources: [] };
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lock = `${path}.runtime-lock`;
     if (existsSync(lock)) {
@@ -29,12 +31,9 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     try {
       store = new S14Store(path);
       const chat = schwayChat(join(dirname(path), "native"));
-      const app = new S14Application(store, { policy, chat, authority: { executor: { async run(attempt, signal) {
-        const profile = store!.read(tx => JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" });
-        const result = await chat.reply({ route: attempt.snapshot.route, bot: attempt.snapshot.bot, language: profile.language, ownerName: profile.name,
-          memory: store!.read(tx => app.memory.attemptPacket(tx, attempt.id)),
-          messages: [{ id: attempt.id, conversationId: attempt.workId, role: "owner", text: attempt.snapshot.input, createdAt: attempt.createdAt }] }, signal);
-        return { state: "ready", text: result.text };
+      const vault = new ConnectionVault(resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault")), { forbidden: [dirname(path)] });
+      const app = new S14Application(store, { policy, chat, parallel: { vault }, authority: { executor: { async run(attempt, signal) {
+        return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
       } } } });
       if (command === "setup") {
         if (!process.stdin.isTTY && !args.includes("--password-stdin")) throw new AppError("password_stdin_flag_required");
@@ -44,7 +43,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       }
       const origin = env.JIT_S14_ORIGIN ?? "http://localhost:3001", url = new URL(origin);
       if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash) throw new AppError("s14_loopback_origin_required");
-      app.recoverReplies(); app.authority.recover();
+      app.recoverReplies(); app.authority.recover(); app.parallel.recover();
       // One root pump keeps conversational/work inference serial on the selected credential route.
       let pumping = false;
       const pump = async () => {
@@ -63,7 +62,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       process.once("exit", release);
       process.once("SIGTERM", () => { server.stop(true); process.exit(0); });
       process.once("SIGINT", () => { server.stop(true); process.exit(0); });
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2"], readiness: "configured_unverified" }));
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));

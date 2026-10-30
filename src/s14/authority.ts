@@ -206,6 +206,20 @@ export class S14Authority {
     const parent = this.app.store.read(tx => record<Attempt>(tx, "work_attempts", parentAttemptId));
     return this.admit(parent.workId, requestId, input, parent.id);
   }
+  /** Rechecks current attempt/tool authority without reserving another protocol-handshake call. */
+  guard(tx: AppTransaction, attemptId: string, tool?: string): Attempt {
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId);
+    this.live(tx, attempt);
+    if (tool && !attempt.snapshot.tools.includes(tool)) throw new AppError("tool_outside_grant", 403);
+    return attempt;
+  }
+  /** Reserves each later native model turn under the same finite call ceiling as tools. */
+  reserveInference(attemptId: string): void {
+    this.app.store.transaction(tx => {
+      const attempt = this.guard(tx, attemptId);
+      this.chargeCall(tx, attempt);
+    });
+  }
   /** Reserves one call at the tool barrier; trusted adapters must use this immediately before their scoped call. */
   reserveTool(attemptId: string, tool: string, ref: ScopeRef | null = null): void {
     this.app.store.transaction(tx => {

@@ -1,0 +1,20 @@
+---
+status: accepted
+scope: MEM14-01/WEB14-01 logic delivery only; S14-D05/D06/D07/D12
+---
+
+# Scoped memory packets and service-owned Parallel reads
+
+This implementation continues ADR 0049's opt-in strangler delivery at the pinned Schway artifact. The default legacy composition remains unchanged. ADRs 0045 and 0047 remain broader proposed architectures; this record accepts only the implemented logic slices, not computers, concurrency, reports, full lifecycle recovery or backup support.
+
+Memory uses explicit source/claim identities and a separate revisioned publication policy. Extraction creates only Bot-private assertions; only typed authenticated owner commands publish, share, revoke, correct, forget, delete or pin a decision. Access filtering precedes lexical relevance. Shared pure lineage traversal and lexical helpers retain the legacy MEM01/MEM02 limits and suppression closure without preserving Project authorization. Current decisions are pinned anew; insufficient packet budget refuses instead of trimming them. Every invocation uses fresh native context and supported retirement, avoiding native replay after lifecycle changes.
+
+The current installation's identity-only withdrawal ledger is a separate attached SQLite database, committed atomically with application state under rollback journals. Application-image restore must retain that current ledger. Missing/mismatched ledger refuses; reconciliation suppresses stale claims, sources, packets and dependent evidence before workers. This is a tested stale-image seam, not a replacement for OPS14-01's managed backup, staged upgrade and quarantined restore. Unreleased format changes are refused, not auto-migrated.
+
+Parallel remains an external recipient. Trusted Jit definitions expose only two read tools; SearchProvider and all native/session APIs come from public schway/host. No optional FetchProvider is assumed. The documentation-derived protocol fixture follows the unified endpoint and provider-returned conversation correlation. Current unified discovery has known extra decisions/research tools; neither is exposed. Unknown schemas/tools refuse. No live discovery or quality evidence is claimed.
+
+Anonymous is free-first and keyless. Authenticated mode is a separate revisioned owner selection with billing acknowledgement and a protected optional vault key. Errors cannot switch provider, key, model or billing identity. The existing normalized outbound guard applies before every protocol dispatch. Input URL/literal restrictions are not represented as validation of the vendor's remote DNS or retrieval. No direct-fetch/browser fallback exists.
+
+Evidence preserves actual requested/returned URL identity, snippet/excerpt/full-content-returned coverage, unknown or reported freshness, missing pages, failures and unknown usage. Changed authority discards late output. Direct native work remains serialized by the unchanged execution_capacity_held condition; each later model turn and tool reserves a bounded call. Full report/artifact semantics and true concurrency remain TEAM14-01.
+
+Contracts: app.memory-scope/v2, app.context-provenance/v2, app.parallel-web/v1, app.external-evidence/v2 and the extended s14-foundation-http handoff. Schema4 is a fresh opt-in store; UI/UX and UI acceptance belong to the subsequent Opus agent.

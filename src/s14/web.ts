@@ -62,6 +62,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (impact) return json(app.memory.preview(auth.actor, { id: impact[1]!, revision: Number(url.searchParams.get("revision")), generation: Number(url.searchParams.get("generation")) }));
       const context = /^\/api\/s14\/memory-contexts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (context) return json(app.memory.context(auth.actor, context[1]!));
+      if (url.pathname === "/api/s14/parallel") return json(app.parallel.settings(auth.actor));
+      const evidence = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/evidence$/.exec(url.pathname);
+      if (evidence) return json(app.parallel.inspect(auth.actor, evidence[1]!));
       const work = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (work) return json(app.authority.view(auth.actor, work[1]!));
       const effect = /^\/api\/s14\/effects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

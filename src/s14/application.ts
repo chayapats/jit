@@ -5,20 +5,22 @@ import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
 import { canonical, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { ParallelWeb, type ParallelWebOptions } from "./parallel";
+import type { ParallelCommand, ParallelReceipt } from "./parallel-types";
 import { S14Memory } from "./memory";
 import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
 /** Service-owned JSON tables; request/model input never selects a SQL identifier. */
-export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions";
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions" | "parallel_settings" | "parallel_connections" | "web_reads" | "external_evidence";
 /** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
 export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
   const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
@@ -30,7 +32,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -38,6 +40,7 @@ export class S14Application {
   readonly now: () => number;
   readonly authority: S14Authority;
   readonly memory: S14Memory;
+  readonly parallel: ParallelWeb;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -53,7 +56,8 @@ export class S14Application {
     this.authority = new S14Authority(this, { ...options.authority, scopes: {
       current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); });
+    this.parallel = new ParallelWeb(this, options.parallel);
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); });
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -90,7 +94,10 @@ export class S14Application {
     if (!tokenPattern.test(token)) throw new AppError("authentication_required", 401);
     const actor: OwnerActor = Object.freeze({ ownerId: "owner" }); this.#actors.set(actor, digest(token));
     this.store.read(tx => this.requireOwner(tx, actor));
-    return { actor, csrf: digest(`s14.csrf.v1:${token}`) };
+    const csrf = digest(`s14.csrf.v1:${token}`);
+    registerSecretFingerprint(token);
+    registerSecretFingerprint(csrf);
+    return { actor, csrf };
   }
   /** Rejects forged, expired and revoked actors even after a command has waited for the writer lock. */
   requireOwner(tx: AppTransaction, actor: OwnerActor): void {
@@ -130,17 +137,32 @@ export class S14Application {
   execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
   /** Executes revisioned memory publication and lifecycle decisions under authenticated owner authority. */
   execute(actor: OwnerActor, command: MemoryCommand): MemoryReceipt;
+  /** Executes explicit optional Parallel mode and write-only key commands under the same owner receipt boundary. */
+  execute(actor: OwnerActor, command: ParallelCommand): ParallelReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
-    const encoded = canonical(command); exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
+    let encoded = canonical(command);
+    if (command.kind === "web.parallel.key.set") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
+    exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
       this.requireOwner(tx, actor);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
-      const result = command.kind.startsWith("memory.") ? this.memory.apply(tx, command as MemoryCommand) : ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
-      if (command.kind.startsWith("memory.")) { this.memory.reconcile(tx); this.memory.fence(tx); }
+      let result: S14Receipt;
+      if (command.kind.startsWith("web.parallel.")) {
+        result = this.parallel.apply(tx, command as ParallelCommand);
+      } else if (command.kind.startsWith("memory.")) {
+        result = this.memory.apply(tx, command as MemoryCommand);
+        this.memory.reconcile(tx);
+        this.memory.fence(tx);
+        this.parallel.reconcile(tx);
+      } else if (["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)) {
+        result = this.authority.apply(tx, command as AuthorityCommand);
+      } else {
+        result = this.applyBot(tx, command as BotCommand);
+      }
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);

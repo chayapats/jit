@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 3;
+export const s14SchemaVersion = 4;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -67,6 +67,12 @@ export class S14Store {
         CREATE TABLE memory_shares (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE memory_decisions (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE memory_contexts (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
+        CREATE TABLE parallel_settings (id TEXT PRIMARY KEY CHECK(id='parallel'), record_json TEXT NOT NULL);
+        INSERT INTO parallel_settings VALUES ('parallel','{"id":"parallel","revision":1,"mode":"anonymous","connectionId":null,"billingAcknowledged":false}');
+        CREATE TABLE parallel_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE parallel_sessions (conversation_id TEXT PRIMARY KEY REFERENCES conversations(id), vendor_id TEXT NOT NULL);
+        CREATE TABLE web_reads (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
+        CREATE TABLE external_evidence (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
         CREATE TABLE bots (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE conversations (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), revision INTEGER NOT NULL);
         CREATE TABLE messages (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
