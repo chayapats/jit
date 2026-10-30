@@ -2,6 +2,7 @@ import { AppError } from "../errors";
 import type { S14Application, S14Command } from "./application";
 import type { Home } from "./types";
 import type { Work } from "./authority-types";
+import type { OwnerInputCommand } from "./computer-types";
 
 /** Product rendering seam for the Opus UI agent; baseline forms are a no-style contract exerciser. */
 export interface S14Page { state: Home; work: Work[]; csrf: string; locale: "th" | "en" }
@@ -43,6 +44,26 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const matches = (request.headers.get("cookie") ?? "").split(";").map(s => s.trim()).filter(s => s.startsWith(`${cookieName}=`));
       if (matches.length !== 1) throw new AppError("authentication_required", 401);
       const auth = app.authenticate(matches[0]!.slice(cookieName.length + 1));
+      const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
+      if (request.method === "POST" && input) {
+        const p = await body(request);
+        const isForm = !input[1];
+        app.verifyCsrf(auth.csrf, isForm ? p.csrf : request.headers.get("x-csrf-token"));
+        let command: OwnerInputCommand;
+        if (isForm) {
+          const base = ["csrf", "requestId", "expectedRevision", "computerId", "generation", "leaseRevision", "kind"];
+          const fields = p.kind === "click" ? ["point.x", "point.y"] : p.kind === "text" ? ["text"] : p.kind === "key" ? ["key"] : [];
+          if (!fields.length || Object.keys(p).sort().join() !== [...base, ...fields].sort().join()) throw new AppError("invalid_shape");
+          const number = (value: unknown) => { if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,15})$/.test(value)) throw new AppError("invalid_number"); return Number(value); };
+          const action = p.kind === "click" ? { kind: "click" as const, x: number(p["point.x"]), y: number(p["point.y"]) }
+            : p.kind === "text" ? { kind: "text" as const, text: p.text as string } : { kind: "key" as const, key: p.key as string };
+          command = { kind: "takeover.input", requestId: p.requestId as string, expectedRevision: number(p.expectedRevision),
+            payload: { botId: input[2]!, computerId: p.computerId as string, generation: number(p.generation), leaseRevision: number(p.leaseRevision), input: action } };
+        } else command = p as unknown as OwnerInputCommand;
+        if (command.payload?.botId !== input[2]) throw new AppError("computer_scope_changed", 403);
+        const result = await app.computers.ownerInput(auth.actor, command);
+        return isForm ? respond("", 303, "text/html", { Location: `/api/s14/computer-inputs/${result.requestId}` }) : json(result);
+      }
       if (request.method === "POST" && ["/api/s14/commands", "/s14/commands"].includes(url.pathname)) {
         const p = await body(request); let command: unknown;
         if (url.pathname === "/s14/commands") { if (Object.keys(p).sort().join() !== "command,csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); if (typeof p.command !== "string") throw new AppError("invalid_body"); command = JSON.parse(p.command); }
@@ -53,6 +74,20 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
+      const inputReceipt = /^\/api\/s14\/computer-inputs\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (inputReceipt) return json(app.computers.inputReceipt(auth.actor, inputReceipt[1]!));
+      const computer = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/computer(?:\/(image|events))?$/.exec(url.pathname);
+      if (computer) {
+        if (computer[2] === "image") {
+          const bytes = await app.computers.screenshot(auth.actor, computer[1]!);
+          const headers = new Headers(respond("").headers);
+          headers.set("Content-Type", "image/png");
+          return new Response(new Uint8Array(bytes), { headers });
+        }
+        const state = app.computers.view(auth.actor, computer[1]!);
+        if (computer[2] === "events") return respond(`event: state\ndata: ${JSON.stringify(state)}\n\n`, 200, "text/event-stream", { "X-Accel-Buffering": "no" });
+        return json(state);
+      }
       if (url.pathname === "/api/s14/work") return json({ items: app.authority.list(auth.actor) });
       const work = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (work) return json(app.authority.view(auth.actor, work[1]!));
