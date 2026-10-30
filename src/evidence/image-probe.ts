@@ -15,7 +15,9 @@ export async function runImageProbe(selection: ImageProbeSelection, options: Ima
   let host: HostRuntime | undefined, session: HostSession | undefined;
   let unsupported = false, refused = false;
   let reason: ImageProbeReason | null = null;
-  const finish = (verdict = record.verdict) => ({ record: { ...record, verdict }, reason: verdict === "inconclusive" ? reason : null });
+  // An inference 401 that no refresh repaired before the probe ended also means sign-in.
+  let staleAccess = false;
+  const finish = (verdict = record.verdict) => ({ record: { ...record, verdict }, reason: verdict === "inconclusive" ? reason ?? (staleAccess ? "sign_in" : null) : null });
   const deadline = new AbortController(), signal = AbortSignal.any([selection.signal, deadline.signal]);
   const timers = options.timers ?? { set: (callback: () => void, ms: number) => setTimeout(callback, ms), clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
   const timer = timers.set(() => deadline.abort(), 120_000);
@@ -46,6 +48,13 @@ export async function runImageProbe(selection: ImageProbeSelection, options: Ima
       if (token && [400, 401].includes(response.status)) reason = "sign_in";
       else if (!token) {
         if ([400, 404, 415, 422].includes(response.status)) unsupported = true;
+        // One 401 is an expired access token that Schway's native refresh repairs; a second in a row means sign-in.
+        if (response.status === 401 && !staleAccess) {
+          staleAccess = true;
+          void response.body?.cancel().catch(() => {});
+          return new Response(null, { status: 401, statusText: response.statusText, headers: response.headers });
+        }
+        staleAccess = false;
         if (response.status === 401) reason = "sign_in";
         if (response.status === 403) reason = "plan_or_credits";
         if (response.status === 429) reason = "quota";

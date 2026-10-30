@@ -305,7 +305,7 @@ test(`${route} probe bounds: ${scenario} stops without durable passing evidence`
         return Response.json({ access_token: "fixture-renewed", refresh_token: "fixture-refresh", expires_in: scenario === "refresh-pressure" ? -1 : 3600 });
       }
       inference++; inferenceBodies.push(String(init?.body));
-      if (scenario === "refresh-pressure") return new Response('{}', { status: 401 });
+      if (scenario === "refresh-pressure") return inference % 2 ? new Response('{}', { status: 401 }) : sse(inference === 2 ? "582731" : "wrong");
       if (scenario === "retry") return new Response('{}', { status: 503 });
       if (scenario === "refresh-rejected") return new Response('{}', { status: 401 });
       if (scenario === "never-ending") return new Response(new ReadableStream<Uint8Array>({
@@ -362,7 +362,8 @@ test(`${route} probe bounds: ${scenario} stops without durable passing evidence`
     if (scenario === "oversized") { expect(inference).toBe(1); expect(pulls).toBe(5); expect(cancelled).toBe(1); expect(responseBytes).toBeGreaterThan(256 * 1024); }
     if (scenario === "cumulative") { expect(inference).toBe(2); expect(responseBytes).toBeGreaterThan(256 * 1024); }
     if (scenario === "retry") expect(inference).toBe(1);
-    if (scenario === "refresh-pressure") { expect(inference).toBe(1); expect(tokens).toBe(1); expect(writes).toBe(1); expect(result.imageProbe.reason).toBe("sign_in"); }
+    // An expired access token is refreshed, not reported as a sign-in refusal.
+    if (scenario === "refresh-pressure") { expect(inference).toBe(4); expect(tokens).toBe(3); expect(writes).toBe(3); expect(result.imageProbe.reason).toBeNull(); }
     if (scenario === "refresh-rejected") { expect(tokens).toBe(1); expect(inference).toBe(0); expect(writes).toBe(0); }
     if (scenario === "mid-probe-refresh") { expect(inference).toBe(2); expect(tokens).toBe(1); expect(writes).toBe(1); }
   } finally { await app.closeDeviceSignIns(); }
@@ -389,7 +390,8 @@ test(`${route} ${endpoint} ${status} stores only a closed refusal reason and sto
     const command = { requestId: rid(), projectId: null, expectedRevision: app.team(auth.actor).ownerRevision, provider: route, model: "fixture-grok-exact", confirmed: true as const };
     const result = await app.probeImages(auth.actor, command);
     expect(result.imageProbe).toMatchObject({ state: "failed", reason, record: { verdict: reason ? "inconclusive" : "unsupported" } });
-    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : [1, 0]);
+    // An inference 401 first gets Schway's native refresh where the adapter has one (Grok), which the fixture also refuses.
+    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : status === 401 && route === "grok" ? [1, 1] : [1, 0]);
     expect(result.imageProbe.record).not.toHaveProperty("reason");
     const { imageProbeCards } = await import("../src/web-image-probes"), { withLocale, dictionaries } = await import("../src/i18n");
     for (const locale of ["en", "th"] as const) {
@@ -407,6 +409,7 @@ test(`${route} ${endpoint} ${status} stores only a closed refusal reason and sto
     const persisted = f.store.read(tx => JSON.stringify({ receipts: tx.all("SELECT result_json FROM command_receipts"), audit: tx.all("SELECT * FROM audit") }));
     expect(persisted).not.toContain(providerText);
     expect(await app.probeImages(auth.actor, command)).toEqual(result);
-    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : [1, 0]);
+    // An inference 401 first gets Schway's native refresh where the adapter has one (Grok), which the fixture also refuses.
+    expect([inference, tokens]).toEqual(endpoint === "token" ? [0, 1] : status === 401 && route === "grok" ? [1, 1] : [1, 0]);
   } finally { await app.closeDeviceSignIns(); }
 });
