@@ -96,6 +96,8 @@ test("keyring and ledger preparation stays in the service identity and preserves
   const unlock = readFileSync(join(home, "keyring-unlock"), "utf8");
   expect(lstatSync(join(home, "keyring-unlock")).mode & 0o777).toBe(0o600);
   expect(lstatSync(join(home, "ledger/checkpoint.json")).mode & 0o777).toBe(0o600);
+  // Schway's credential-store lock directory; the hardened unit lists it in ReadWritePaths.
+  expect(lstatSync(join(home, ".schway")).mode & 0o777).toBe(0o700);
   prepareInstallerHome(home); expect(readFileSync(join(home, "keyring-unlock"), "utf8")).toBe(unlock);
   rmSync(join(home, "keyring-unlock")); symlinkSync(f.at("missing"), join(home, "keyring-unlock"));
   expect(() => prepareInstallerHome(home)).toThrow("unsafe_unlock_file"); expect(existsSync(f.at("missing"))).toBe(false);
