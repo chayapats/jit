@@ -7,6 +7,7 @@ import { installerDefaults, installerHealth, pinnedImages, prepareInstallerHome,
 import { buildInstallerRelease } from "../ops/package/installer/release";
 import { artifactContentHash, buildPackage, installArtifactDependencies, validateArtifact } from "../ops/package/bun-build";
 import { assertRootPath, assertRootTree, freezeInstallerArtifact } from "../ops/package/installer/trusted-paths";
+import { spawnRunner } from "../src/ops/supervisor";
 
 const roots: string[] = [], source = resolve(import.meta.dir, ".."), GiB = 1024 ** 3;
 const facts: HostFacts = { family: "ubuntu", arch: "x64", ramMb: 8192, cpus: 4, diskBytes: 100 * GiB, freeBytes: 80 * GiB };
@@ -207,7 +208,9 @@ test("POSIX scripted dry run asks once; cancellation makes no changes; --yes rep
 
 test("release tarball carries an intact artifact and can dry-run before installing any dependencies", async () => {
   const f = fixture(), output = f.at("assets"), extracted = f.at("extracted");
-  const release = await buildInstallerRelease(source, output, "test-installer"); mkdirSync(extracted);
+  const tarEnv: (Record<string, string> | undefined)[] = [];
+  const release = await buildInstallerRelease(source, output, "test-installer", (argv, options) => { tarEnv.push(options.env); return spawnRunner(argv, options); }); mkdirSync(extracted);
+  expect(tarEnv).toEqual([expect.objectContaining({ COPYFILE_DISABLE: "1" })]);
   expect(readFileSync(release.bootstrap, "utf8")).toContain("release_url=https://github.com/chayapats/jit/releases/download/test-installer");
   const unpack = Bun.spawn(["tar", "-xzf", release.archive, "-C", extracted], { stdout: "ignore", stderr: "pipe" });
   expect(await unpack.exited).toBe(0);
