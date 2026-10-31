@@ -17,12 +17,13 @@ const safeReason = (error: unknown) => error instanceof AppError ? error.code : 
 /** Exclusive-boot attempt fencing, public native discovery and trusted replay admission without effect retry. */
 export class S14Recovery {
   #booting = false;
+  #bootComplete: boolean;
   /** Process-local application boot time in epoch milliseconds, stable across repeated reconciliation and read-only queries. */
   readonly bootedAt: number;
-  constructor(readonly app: S14Application) { this.bootedAt = app.now(); }
+  constructor(readonly app: S14Application) { this.bootedAt = app.now(); this.#bootComplete = !app.options.requireBootReconciliation; }
 
   /** Indicates the startup barrier; worker drains cannot admit work while metadata reconciliation is in progress. */
-  get booting(): boolean { return this.#booting; }
+  get booting(): boolean { return this.#booting || !this.#bootComplete; }
 
   private checkpoints(tx: AppTransaction): WorkCheckpoint[] {
     return tx.all<{ record_json: string }>("SELECT record_json FROM work_checkpoints ORDER BY rowid").map(row => JSON.parse(row.record_json));
@@ -298,6 +299,7 @@ export class S14Recovery {
   async boot(port: NativeRecoveryPort): Promise<void> {
     if (this.#booting) throw new AppError("recovery_in_progress", 409);
     this.#booting = true;
+    this.#bootComplete = false;
     try {
       this.app.store.transaction(tx => { this.app.botLifecycle.reconcile(tx); this.reconcileReservations(tx); this.reconcileEffects(tx); });
       this.app.store.transaction(tx => tx.run("UPDATE reply_transports SET active=0"));
@@ -385,6 +387,7 @@ export class S14Recovery {
         }
       });
       this.app.store.transaction(tx => this.app.botLifecycle.reconcile(tx));
+      this.#bootComplete = true;
     } finally { this.#booting = false; }
   }
 

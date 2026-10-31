@@ -146,7 +146,7 @@ export class S14Routines {
 
   /** Advances bounded coalesced schedule cursors and atomically admits only exact captured work through the normal graph. */
   tick(): void {
-    if (this.app.recovery.booting) return;
+    if ((this.app.recovery.booting || this.app.backups.busy)) return;
     this.app.store.transaction(tx => {
       this.reconcile(tx);
       for (const routine of this.all(tx)) {

@@ -60,7 +60,8 @@ const onward = document.querySelector("a[data-go]");
 if (onward) location.replace(onward.href);
 
 for (const button of document.querySelectorAll("[data-copy]")) {
-  const source = button.dataset.copyTarget ? document.getElementById(button.dataset.copyTarget) : document.querySelector("[data-copy-source]");
+  const target = button.dataset.copyTarget || button.dataset.copy;
+  const source = target ? document.getElementById(target) : document.querySelector("[data-copy-source]");
   if (!source || !navigator.clipboard) continue;
   button.hidden = false;
   button.addEventListener("click", async () => {
@@ -70,7 +71,7 @@ for (const button of document.querySelectorAll("[data-copy]")) {
 }
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = [["s14-live"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 let expectedComputerKey = document.querySelector("[data-computer]")?.dataset.key;

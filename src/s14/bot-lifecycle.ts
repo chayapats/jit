@@ -281,6 +281,7 @@ export class S14BotLifecycle {
 
   /** Drains retry-safe local/computer/native cleanup after fencing, retaining stopping until actual transports settle. */
   async drain(port: NativeRecoveryPort): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) return this.#draining;
     this.#draining = this.cleanup(port);
     try { await this.#draining; }

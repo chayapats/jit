@@ -10,6 +10,7 @@ import type { Bot, BotProposal, Conversation, Home, Message, OwnerActor, Reply }
 import { lookupS14Asset } from "./web-assets";
 import type { S14StatementDraft } from "./web-statement";
 import { renderFailure, renderLogin } from "./web-pages";
+import { backupNext, backupSurface, backupView, type S14BackupSurface } from "./web-product-backup";
 import { firstRunCommand, firstRunNext, providerView, redoDraft, setupProviders, type S14FirstRunSurface, type S14SetupProviders } from "./web-product-first-run";
 import { committed, memoryCommand, memoryNext, memoryRecover, memorySurface, memoryView, workResearch, type S14MemorySurface, type S14WorkResearch } from "./web-product-memory";
 import { recoveryCommand, recoveryNext, recoverySummary, recoverySurface, recoveryView, statementRecover, statementSaved, type S14RecoverySummary, type S14RecoverySurface } from "./web-product-recovery";
@@ -55,6 +56,7 @@ export type S14View =
   | S14LifecycleSurface
   | S14PersonalSurface
   | S14RecoverySurface
+  | S14BackupSurface
   | S14WorkSettings;
 /** Query projections every signed-in page needs for attention counts and Bot state; never a proof of authority. */
 export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView>; defaults: WorkDefaults; lanes: Record<string, WorkStep[]>; reports: Record<string, S14ReportHint>; scopes?: S14ScopeChoice[]; recovery?: S14RecoverySummary; routines?: S14RoutineAttention; lifecycles?: Record<string, BotLifecycle>; personal?: S14PersonalOverview }
@@ -73,6 +75,8 @@ export interface S14Product {
   surface(receipt: S14Receipt, fields?: Record<string, unknown>): string;
   /** Owner-facing page for one no-script input outcome, replacing the JSON redirect of the bare seam. */
   inputSurface(botId: string, requestId: string): string;
+  /** Owner-facing page for one no-script backup request, replacing the JSON receipt of the bare seam. */
+  backupSurface(requestId: string): string;
   next(form: string | null, value: unknown): string;
   /** Page after Google's redirect. It needs no session and shows nothing private; `refused` names a callback that could not be used. */
   googleReturn?(locale: Locale, refused: boolean): string;
@@ -175,7 +179,7 @@ export function createS14Product(app: S14Application): S14Product {
       if (path === "/team") return { kind: "team" };
       if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences.") };
       if (path === "/settings/provider") return providerView(app, actor);
-      const surface = memoryView(app, url, actor, state) ?? teamView(app, url, actor) ?? sharingView(app, url, actor, state) ?? recoveryView(app, url, actor) ?? routineView(app, url, actor, state, locale) ?? lifecycleView(app, url, actor) ?? personalView(app, url, actor, state); if (surface) return surface;
+      const surface = memoryView(app, url, actor, state) ?? teamView(app, url, actor) ?? sharingView(app, url, actor, state) ?? recoveryView(app, url, actor) ?? routineView(app, url, actor, state, locale) ?? lifecycleView(app, url, actor) ?? personalView(app, url, actor, state) ?? backupView(app, url, actor); if (surface) return surface;
       const match = /^\/(chats|work|team|proposals|effects)\/([a-zA-Z0-9_-]+)$/.exec(path);
       if (!match) throw new AppError("not_found", 404);
       const [, area, id] = match as unknown as [string, string, string];
@@ -248,8 +252,9 @@ export function createS14Product(app: S14Application): S14Product {
       return `/chats/${work.conversationId}?work=${work.id}#latest`;
     },
     inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
+    backupSurface,
     next(form, value) {
-      const extended = personalNext(form, value) ?? routineNext(form, value) ?? lifecycleNext(form, value) ?? memoryNext(form, value) ?? teamNext(app, form, value) ?? firstRunNext(form, value) ?? sharingNext(form, value) ?? recoveryNext(form, value); if (extended) return extended;
+      const extended = personalNext(form, value) ?? routineNext(form, value) ?? lifecycleNext(form, value) ?? memoryNext(form, value) ?? teamNext(app, form, value) ?? firstRunNext(form, value) ?? sharingNext(form, value) ?? recoveryNext(form, value) ?? backupNext(value); if (extended) return extended;
       const data = value as { kind?: string; payload?: Record<string, string>; proposalId?: string; taskId?: string; conversationId?: string } | null;
       if (form === "proposal-accept" || form === "proposal-revise") return `/proposals/${data?.proposalId ?? ""}`;
       if (form === "task-start") return `/work/${data?.taskId ?? ""}`;

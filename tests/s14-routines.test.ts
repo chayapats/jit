@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextScheduledInstant } from "../src/jobs/schedules";
 import type { WorkOutput } from "../src/s14/authority-types";
@@ -21,6 +21,20 @@ function control(f: DomainFixture, routineId: string, kind: "routine.pause" | "r
   return { kind, requestId: retryId(), expectedRevision: f.app.routines.view(f.auth.actor, routineId).routine.revision, payload: { routineId } };
 }
 async function run(f: DomainFixture) { f.app.routines.tick(); await f.app.authority.drain(); }
+
+test("documented routine and activity ceilings accept their boundary and refuse the next value", async () => {
+  const f = await fixture();
+  const routineContract = readFileSync(new URL("../docs/contracts/app.routine-grants-v1.md", import.meta.url), "utf8");
+  const occurrenceBudget = Number(/occurrenceBudget is 1–([0-9]+)/.exec(routineContract)![1]);
+  expect(occurrenceBudget).toBe(1000);
+  expect(f.app.execute(f.auth.actor, routineCommand(f, { occurrenceBudget })).routine.occurrencesRemaining).toBe(1000);
+  expect(() => f.app.execute(f.auth.actor, routineCommand(f, { occurrenceBudget: occurrenceBudget + 1 }))).toThrow("invalid_number");
+  const computerContract = readFileSync(new URL("../docs/contracts/app.bot-computer-v1.md", import.meta.url), "utf8");
+  const limit = Number(/query limit 1–([0-9]+)/.exec(computerContract)![1]);
+  expect(limit).toBe(100);
+  expect(f.app.computers.activity(f.auth.actor, "jit", limit)).toEqual([]);
+  expect(() => f.app.computers.activity(f.auth.actor, "jit", limit + 1)).toThrow("invalid_number");
+});
 
 test("enable captures exact owner purpose/Bots/resources/tools/finite limits; duplicate and stale owner commands", async () => {
   const f = await fixture(), command = routineCommand(f);

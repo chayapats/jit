@@ -1,4 +1,6 @@
 import { AppError } from "../errors";
+import type { OnlineBackupCommand } from "./ops-types";
+import { readS14Ops } from "./ops-state";
 import { scopeOptions } from "./scope-options";
 import { ownerSetupCsrf } from "../ops/owner-setup";
 import { ownerSetupPage } from "../web-owner-setup";
@@ -20,8 +22,8 @@ const escape = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
 export const s14ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const baseline: S14Renderer = p => `<html lang="${p.locale}"><meta charset="utf-8"><title>S14</title><body><pre>${escape(JSON.stringify({ state: p.state, work: p.work }, null, 2))}</pre><form method="post" action="/s14/commands"><input type="hidden" name="csrf" value="${p.csrf}"><label>Command<textarea name="command" required></textarea></label><button>Submit</button></form></body></html>`;
 
-/** Web command union keeps async device auth separate from synchronous product mutations. */
-export type S14WebCommand = S14Command | S14SignInCommand;
+/** Web command union includes device auth and bounded online backup separately from synchronous product mutations. */
+export type S14WebCommand = S14Command | S14SignInCommand | OnlineBackupCommand;
 
 /** Auth rendering seam for the UI agent; approval data exists only in the initial POST response. */
 export interface S14AuthRenderer {
@@ -199,6 +201,11 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           if (url.pathname === "/s14/commands" && authRender.signIn) return html(authRender.signIn(receipt, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
           return json(receipt);
         }
+        if ((command as { kind?: string })?.kind === "backup.create") {
+          const receipt = app.backups.execute(auth.actor, command as OnlineBackupCommand);
+          return url.pathname === "/s14/commands" && product ? redirect(product.backupSurface(receipt.requestId)) : json(receipt, 202);
+        }
+        if (/^(restore|upgrade)\./.test((command as { kind?: string })?.kind ?? "")) throw new AppError("s14_ops_offline_required", 409);
         const receipt = app.execute(auth.actor, command as S14Command);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
         return json(receipt);
@@ -224,6 +231,12 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (botLifecycle) return json(botLifecycle[2]
         ? app.botLifecycle.preview(auth.actor, botLifecycle[1]!, botLifecycle[2] as "retire" | "delete")
         : app.botLifecycle.view(auth.actor, botLifecycle[1]!));
+      if (url.pathname === "/api/s14/ops") {
+        const control = readS14Ops(app.store.path);
+        return json({ revision: control.revision, backups: control.backups, stage: control.stage ? { id: control.stage.id, mode: control.stage.mode, state: control.stage.state, reason: control.stage.reason } : null, maintenance: "offline_required", workers: app.backups.busy ? "paused" : "running", backup: app.backups.status(auth.actor) });
+      }
+      const backupReceipt = /^\/api\/s14\/backup-receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (backupReceipt) return json(app.backups.receipt(auth.actor, backupReceipt[1]!));
       if (url.pathname === "/api/s14/routines") return json({ items: app.routines.list(auth.actor) });
       if (url.pathname === "/api/s14/attention") return json(app.attention.view(auth.actor));
       const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

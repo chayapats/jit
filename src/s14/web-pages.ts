@@ -15,6 +15,7 @@ import { providerSettingsPage, setupPage } from "./web-first-run";
 import { renderMemorySurface } from "./web-memory";
 import { recoveryNotice, recoveryPanel } from "./web-recovery";
 import { recoveryPage } from "./web-recovery-page";
+import { renderBackupSurface } from "./web-backup";
 import { lifecycleLanding, lifecycleLive, lifecyclePill, lifecycleStatus, renderLifecycleSurface } from "./web-lifecycle";
 import { briefTab } from "./web-personal-brief";
 import { renderPersonalSurface } from "./web-personal";
@@ -574,7 +575,7 @@ function preferences(page: S14Page): string {
 }
 function morePage(page: S14Page, saved: boolean): string {
   return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}
-    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li><li><a class="s-link-text" href="/settings/google">${tr("s14.more.google")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li><li><a class="s-link-text" href="/settings/google">${tr("s14.more.google")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li><li><a class="s-link-text" href="/settings/backup">${tr("s14.more.backup")}</a></li></ul></nav>
     <form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
@@ -597,6 +598,7 @@ export function renderS14(page: S14Page): string {
       case "settings-work": return workSettingsPage(page, view);
       case "settings-provider": return providerSettingsPage(page, view);
       case "recovery": return recoveryPage(page, view);
+      case "settings-backup": return renderBackupSurface(page, view);
       case "shares": case "share-new": case "share": return renderSharingSurface(page, view);
       case "routines": case "routine-new": case "routine": return renderRoutineSurface(page, view);
       case "bot-policy": case "bot-end": return renderLifecycleSurface(page, view);

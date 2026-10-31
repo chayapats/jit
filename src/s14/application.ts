@@ -2,6 +2,8 @@ import type { PersonalEffectCommand, PersonalEffectReceipt } from "./personal-ef
 import { S14Personal, type PersonalOptions } from "./personal";
 import type { PersonalCommand, PersonalReceipt } from "./personal-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
+import { S14Backups } from "./backups";
+import type { OpsNativePort } from "./ops-types";
 import type { BotLifecycleCommand, BotLifecycleOptions, BotLifecycleReceipt } from "./bot-lifecycle-types";
 import { S14Attention } from "./attention";
 import { S14Routines } from "./routines";
@@ -56,7 +58,10 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; personal?: PersonalOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; personal?: PersonalOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions; backups?: OpsNativePort;
+  /** Production composition holds every worker before the first complete REC14 boot, including native close. */
+  requireBootReconciliation?: boolean;
+}
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -76,6 +81,7 @@ export class S14Application {
   readonly attention: S14Attention;
   readonly personal: S14Personal;
   readonly signIns: S14SignIns;
+  readonly backups: S14Backups;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   #replyRunning = new Map<string, AbortController>();
@@ -108,6 +114,7 @@ export class S14Application {
     this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
     this.store.transaction(tx => { this.personal.recover(tx); this.botLifecycle.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
     this.signIns = new S14SignIns(this, options.signIn);
+    this.backups = new S14Backups(this, options.backups);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string, capability?: string): Promise<void> {
@@ -380,7 +387,7 @@ export class S14Application {
   recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
   /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
   async drainReplies(): Promise<void> {
-    if (this.recovery.booting) return;
+    if (this.recovery.booting || this.backups.busy) return;
     if (this.#replyBusy) return; this.#replyBusy = true;
     try { for (;;) {
       const reply = this.store.transaction(tx => {

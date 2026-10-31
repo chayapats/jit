@@ -572,8 +572,9 @@ export class S14Authority {
 
   /** Drains finite DAG lanes under shared capacity, retaining slots until actual transport settlement. */
   drain(): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return Promise.resolve();
     this.expireEffects();
-    if (!this.options.executor || this.#closing || this.app.recovery.booting) return Promise.resolve();
+    if (!this.options.executor || this.#closing) return Promise.resolve();
     if (this.#draining) { this.wake(); return this.#draining; }
     // Install ownership before calling any executor, including synchronously reentrant fixture/host code.
     const completion = Promise.withResolvers<void>();

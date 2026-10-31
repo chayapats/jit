@@ -1,6 +1,10 @@
 import { personalServiceBinding, personalProxyRequest } from "./personal-origin";
 import { PersonalVault } from "./personal-vault";
 import { dirname, join, resolve } from "node:path";
+import { reconcileOnlineBackups } from "./backups";
+import { schwayOpsNative } from "./ops-native";
+import { runS14Ops } from "./ops-cli";
+import { assertS14OpsUnfenced } from "./ops-state";
 import { ConnectionVault } from "../exec/connections";
 import { schwayRecovery } from "./native-recovery";
 import { schwayResearch } from "./research";
@@ -28,6 +32,8 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
+    if (command === "ops") { await runS14Ops(path, args, env); return; }
+    assertS14OpsUnfenced(path);
     const origin = env.JIT_S14_ORIGIN ?? "http://localhost:3001";
     if (command === "owner-link") {
       // This CLI coexists with a running service: only the store's writer lock is needed, never its runtime lock/hosts.
@@ -44,6 +50,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
+      reconcileOnlineBackups(path);
       store = new S14Store(path);
       policy.resources = [...new Set([...store.read(existingResourceCeilings), ...policy.resources])];
       const chat: import("./types").ChatPort = { reply: (input, signal) => schwayChat(join(dirname(path), "native"), undefined, app.recovery).reply(input, signal) };
@@ -51,7 +58,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path), resolve("backups"), env.JIT_S14_COMPUTER_ROOT] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
         protectedPaths: [dirname(path), vaultDirectory, resolve(".local"), resolve("backups")], workspaceImage: env.JIT_BOX_IMAGE_BASE ?? "", browserImage: env.JIT_BOX_IMAGE_BROWSER ?? "" }) : undefined;
-      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, personal: { vault: new PersonalVault(vault), evidenceGuard: env.JIT_S14_PERSONAL_EVIDENCE_GUARD === "1" }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
+      const app: S14Application = new S14Application(store, { policy, chat, requireBootReconciliation: true, backups: schwayOpsNative(join(dirname(path), "native")), parallel: { vault }, personal: { vault: new PersonalVault(vault), evidenceGuard: env.JIT_S14_PERSONAL_EVIDENCE_GUARD === "1" }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
         if (attempt.snapshot.tools.includes("computer")) return runComputerWork(app, join(dirname(path), "native"), attempt, signal);
         return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
       } } } });
@@ -67,9 +74,11 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       // Interactive chat is checked before every bounded graph admission; each run has its own host.
       let pumping: Promise<void> | null = null;
       const pump = (): Promise<void> => {
+        if (app.backups.busy) return Promise.resolve();
         if (pumping) return pumping;
         pumping = (async () => {
           for (;;) {
+            if (app.backups.busy) break;
             app.routines.tick();
             await app.drainReplies(); await app.authority.drain();
             await app.attention.drain();
@@ -83,6 +92,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       const handler = createS14Handler(app, origin, renderS14, createS14Product(app), createS14Auth(app));
       const maintainComputers = () => {
+        if (app.backups.busy) return;
         app.routines.tick();
         void pump().catch(() => {});
         app.computers.sweep();
@@ -101,6 +111,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const shutdown = () => {
         clearInterval(computerTimer); server.stop(true);
         void (async () => {
+          await app.backups.settle();
           await app.authority.shutdown();
           await pumping;
           app.computers.recover(); await app.computers.drain();
