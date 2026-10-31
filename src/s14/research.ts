@@ -6,7 +6,7 @@ import { s14CredentialLifecycle } from "./lifecycle";
 import { AppError } from "../errors";
 import type { S14Application } from "./application";
 import type { ReportProposal } from "./report-types";
-import type { Attempt, WorkExecutor } from "./authority-types";
+import type { Attempt, WorkExecutor, WorkOutput } from "./authority-types";
 
 const reportInstruction = [
   "Return JSON {text,report} for an inspectable report. A report is data, never owner completion.",
@@ -27,6 +27,23 @@ function researchFailure(error: unknown, attempt: Attempt): AppError | null {
   if (["needs-login", "rejected", "invalid-store"].includes(status)) return new AppError("research_auth_required", 503);
   if (["model-unavailable", "integration-unavailable"].includes(status)) return new AppError("research_provider_unavailable", 503);
   return null;
+}
+
+const repairableReport = new Set(["invalid_text", "invalid_report_claims", "invalid_report_list", "invalid_report_citations", "invalid_report_citation", "invalid_report_claim", "invalid_report_conflict", "citation_not_read", "citation_quote_mismatch", "invented_coverage_target", "artifact_not_staged", "report_output_budget_exhausted"]);
+function researchOutput(content: string, routine: boolean): WorkOutput {
+  let proposed: unknown;
+  try { proposed = JSON.parse(content); } catch { /* Free-form output remains inspectable, never a report. */ }
+  if (proposed && typeof proposed === "object" && !Array.isArray(proposed)) {
+    const value = proposed as Record<string, unknown>, keys = Object.keys(value);
+    const envelope = routine ? keys.every(key => ["outcome", "text", "report", "reason", "proposals"].includes(key)) : keys.sort().join() === "report,text";
+    if (routine && !envelope) throw new AppError("invalid_routine_result");
+    if (envelope && typeof value.text === "string" && Object.hasOwn(value, "report")) {
+      const text = routine && Object.hasOwn(value, "outcome") ? JSON.stringify({ outcome: value.outcome, text: value.text, ...(Object.hasOwn(value, "reason") ? { reason: value.reason } : {}) }) : value.text;
+      return { state: "ready", text, report: value.report as ReportProposal, ...(routine && Object.hasOwn(value, "proposals") ? { proposals: value.proposals } : {}) };
+    }
+    if (routine) return { state: "ready", text: content, ...(Object.hasOwn(value, "proposals") ? { proposals: value.proposals } : {}) };
+  }
+  return { state: "ready", text: content };
 }
 
 /** Runs under the remaining owner deadline and call slice; optional model/clock seams keep deterministic tests off live accounts. */
@@ -57,6 +74,7 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
       try { selected = scripted ?? await host.auth!.createModel(); }
       catch (error) { throw researchFailure(error, attempt) ?? new AppError("research_incomplete", 503); }
       let first = true;
+      let repairingReport = false;
       let failure: AppError | null = null;
       const model: Model = { provider: selected.provider, id: selected.id, async *stream(conversation, options) {
         try {
@@ -69,7 +87,7 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
             return Math.max(0, Math.min(attempt.snapshot.calls - own, attempt.snapshot.grant.limits.calls - total));
           });
           // A tool consumes a call and needs a later inference to produce the final report. Never advertise tools on the last turn.
-          const finish = remaining < 2;
+          const finish = repairingReport || remaining < 3;
           const budget = { callsRemainingAfterThisInference: remaining, maximumFurtherToolCalls: Math.floor(remaining / 2), outputBytes: attempt.snapshot.outputBytes,
             instruction: finish ? "No further tools. Return the final report now using only actual evidence; disclose missing coverage." : "Reserve a final inference for your report. Stop reading once sufficient evidence is available; the whole-work limits are shared with sibling runs." };
           yield* selected.stream({ ...conversation, context: [...conversation.context, { name: "remaining-run-budget", content: JSON.stringify(budget) }], ...(finish ? { tools: [] } : {}) }, options);
@@ -82,27 +100,22 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
       try {
         app.recovery.correlate(intent.id, session.reference);
         if (signal.aborted) throw new AppError("work_cancelled");
-        const result = await session.submit({ text: attempt.snapshot.input }, model, { signal, ...(clock ? { clock } : {}) });
-        if (signal.aborted || result.outcome !== "completed") throw failure ?? new AppError(signal.aborted ? "work_cancelled" : result.outcome === "limit_exceeded" ? "research_limit_exceeded" : result.outcome === "max_turns" ? "research_max_turns" : computer ? "computer_work_unavailable" : "research_incomplete");
-        app.store.read(tx => app.authority.guard(tx, attempt.id));
-        const content = session.readResult(result.result).content.filter(p => p.type === "text").map(p => p.text).join("\n");
-        let proposed: unknown;
-        try { proposed = JSON.parse(content); }
-        catch { /* Free-form output stays inspectable result text, never a certified report. */ }
-        if (proposed && typeof proposed === "object" && !Array.isArray(proposed)) {
-          const value = proposed as Record<string, unknown>;
-          const keys = Object.keys(value);
-          const reportEnvelope = routine ? keys.every(key => ["outcome", "text", "report", "reason", "proposals"].includes(key)) : keys.sort().join() === "report,text";
-          if (routine && !reportEnvelope) throw new AppError("invalid_routine_result");
-          if (reportEnvelope && typeof value.text === "string" && Object.hasOwn(value, "report")) {
-            const text = routine && Object.hasOwn(value, "outcome") ? JSON.stringify({ outcome: value.outcome, text: value.text,
-              ...(Object.hasOwn(value, "reason") ? { reason: value.reason } : {}) }) : value.text;
-            return { state: "ready", text,
-              report: value.report as ReportProposal, ...(routine && Object.hasOwn(value, "proposals") ? { proposals: value.proposals } : {}) };
+        let prompt = attempt.snapshot.input;
+        for (let repair = 0; ; repair++) {
+          const result = await session.submit({ text: prompt }, model, { signal, ...(clock ? { clock } : {}) });
+          if (signal.aborted || result.outcome !== "completed") throw failure ?? new AppError(signal.aborted ? "work_cancelled" : result.outcome === "limit_exceeded" ? "research_limit_exceeded" : result.outcome === "max_turns" ? "research_max_turns" : computer ? "computer_work_unavailable" : "research_incomplete");
+          app.store.read(tx => app.authority.guard(tx, attempt.id));
+          const content = session.readResult(result.result).content.filter(p => p.type === "text").map(p => p.text).join("\n");
+          const output = researchOutput(content, routine);
+          try {
+            if (output.report) app.reports.validateCandidate(attempt.id, output);
+            return output;
+          } catch (error) {
+            if (repair !== 0 || !(error instanceof AppError) || !repairableReport.has(error.code)) throw error;
+            repairingReport = true;
+            prompt = `The service rejected your report candidate: ${error.code}. No report or artifact was committed. Return one corrected JSON report using only evidence already read; no further tools. Preserve actual coverage gaps. Use short nonempty text and title, 1-4 concise claims and fewer citations if the expanded report exceeds the output budget. Every citation quote must be an exact substring of its referenced evidence, not a translation, paraphrase or joined excerpt. Remove unsupported citations and disclose the limitation rather than inventing evidence. Do not change the purpose, source identities, owner decisions, route or authority.`;
           }
-          if (routine) return { state: "ready", text: content, ...(Object.hasOwn(value, "proposals") ? { proposals: value.proposals } : {}) };
         }
-        return { state: "ready", text: content };
       } finally { try { await session.retire(); app.recovery.retired(intent.id); } finally { await session.close(); } }
     } finally { try { await host?.close(); } finally { computer?.release(); } }
   } };
