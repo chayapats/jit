@@ -197,3 +197,84 @@ test("the status line carries a pill's word and not its hidden glyph", async () 
   await ticks.shift()!();
   expect(status.textContent).toBe("Ready for review");
 });
+
+/** A form the way the enhancement sees it: named controls, one fold, and hidden fields it must never carry across. */
+function fakeComposer(values: { text?: string; completion?: string; evidence?: string; concurrent?: string; work?: boolean; tools?: Record<string, boolean>; revision?: string; open?: boolean } = {}) {
+  const control = (name: string, type: string, tagName: string, value: string, checked = false) => ({ name, type, tagName, value, checked });
+  const fields = [control("expectedRevision", "hidden", "INPUT", values.revision ?? "4"), control("bot:jit", "hidden", "INPUT", values.revision ?? "4"), control("text", "textarea", "TEXTAREA", values.text ?? ""),
+    control("completion", "text", "INPUT", values.completion ?? ""), control("evidence", "textarea", "TEXTAREA", values.evidence ?? ""), control("concurrent", "number", "INPUT", values.concurrent ?? "2"), control("work", "checkbox", "INPUT", "on", !!values.work),
+    ...Object.entries(values.tools ?? {}).map(([tool, on]) => control(`tool:${tool}`, "checkbox", "INPUT", "on", on)), { name: "", type: "fieldset", tagName: "FIELDSET", value: "", checked: false }, { name: "", type: "submit", tagName: "BUTTON", value: "", checked: false }];
+  const fold = { open: !!values.open };
+  return { fields, fold, dataset: {} as Record<string, string>, elements: fields, field: (name: string) => fields.find(item => item.name === name)!,
+    querySelector: (selector: string) => selector === "textarea" ? { addEventListener() {} } : null, querySelectorAll: (selector: string) => selector === "details" ? [fold] : [] };
+}
+type FakeComposer = ReturnType<typeof fakeComposer>;
+/** One state of the chat foot: a composer, or the closed notice with its hidden held block. */
+interface FakeFoot { sig: string; composer?: FakeComposer }
+const heldBlock = () => { const text = { textContent: "" }; return { hidden: true, text, querySelector: (selector: string) => selector === "[data-draft-text]" ? text : null }; };
+/** Drives the real script over stub pages: each read returns the next foot, so a test walks a Bot closing and reopening. */
+async function dockJourney(start: FakeFoot, reads: FakeFoot[]) {
+  const source = readFileSync(new URL("../src/s14/web-enhance.js", import.meta.url), "utf8");
+  const status = { textContent: "", dataset: { reply: "Reply" } }, held = heldBlock(), foots = new Map<string, FakeFoot>([["start", start], ...reads.map((foot, index) => [`read-${index}`, foot] as const)]);
+  let foot = start;
+  const dock = { className: "s-dock", dataset: { sig: start.sig } as Record<string, string>, contains: () => false,
+    set innerHTML(markup: string) { foot = foots.get(markup)!; }, get innerHTML() { return [...foots].find(([, item]) => item === foot)![0]; },
+    querySelector: (selector: string) => selector === "[data-composer]" ? foot.composer ?? null : selector === "[data-draft-held]" && !foot.composer ? held : null };
+  let index = 0;
+  const parsed = (read: number) => ({ documentElement: { dataset: {} }, body: {}, activeElement: {}, querySelectorAll: () => [], querySelector: (selector: string) => selector === "[data-live]" && read < reads.length - 1 ? {} : null,
+    getElementById: (id: string) => id === "s14-dock" ? { innerHTML: `read-${read}`, className: "s-dock", dataset: { sig: reads[read]!.sig, announce: "Announce", kept: "Kept" } as Record<string, string> } : null });
+  const ticks: Array<() => Promise<void>> = [], stored: unknown[] = [];
+  runInNewContext(source, { document: { documentElement: { dataset: {} }, body: {}, activeElement: {}, getElementById: (id: string) => id === "s14-dock" ? dock : id === "s-phase" ? status : null,
+    querySelectorAll: (selector: string) => selector === "[data-composer]" && foot.composer ? [foot.composer] : [], querySelector: (selector: string) => selector === "[data-live]" ? {} : null },
+    location: { href: "http://localhost:3001/chats/fixture", hash: "" }, DOMParser: class { parseFromString() { return parsed(index++); } },
+    fetch: async (_url: string, init?: { method?: string; body?: unknown }) => { if (init?.method && init.method !== "GET") stored.push(init.body); return { ok: true, text: async () => "fresh page" }; },
+    setTimeout: (tick: () => Promise<void>) => ticks.push(tick), localStorage: new Proxy({}, { get() { throw new Error("draft text must stay in page memory"); } }) });
+  for (const _ of reads) await ticks.shift()!();
+  return { dock, held, status, foot: () => foot, stored };
+}
+
+test("a composer that leaves and returns keeps the draft and selected options, on the fresh form's own revisions", async () => {
+  const typed = fakeComposer({ text: "Compare the two quotes", completion: "A short table", evidence: "https://example.com/a", concurrent: "3", work: true, tools: { web_search: false, web_fetch: true }, open: true });
+  const back = fakeComposer({ revision: "9", tools: { web_search: true, web_fetch: true } });
+  const run = await dockJourney({ sig: "open", composer: typed }, [{ sig: "closed.stopping.active" }, { sig: "open", composer: back }]);
+  expect(run.dock.dataset.sig).toBe("open"); expect(run.foot().composer).toBe(back);
+  expect(back.field("text").value).toBe("Compare the two quotes"); expect(back.field("completion").value).toBe("A short table"); expect(back.field("evidence").value).toBe("https://example.com/a");
+  expect(back.field("concurrent").value).toBe("3"); expect(back.field("work").checked).toBe(true); expect(back.field("tool:web_search").checked).toBe(false); expect(back.field("tool:web_fetch").checked).toBe(true); expect(back.fold.open).toBe(true);
+  expect(back.field("expectedRevision").value).toBe("9"); expect(back.field("bot:jit").value).toBe("9"); // A kept draft never carries a stale revision.
+  expect(run.status.textContent).toBe("Kept"); expect(run.stored).toEqual([]);
+});
+
+test("while the composer is gone the draft stays readable, including when the chat never reopens", async () => {
+  const typed = fakeComposer({ text: "Do not lose this\nsecond line", evidence: "https://example.com/a" });
+  const closing = await dockJourney({ sig: "open", composer: typed }, [{ sig: "closed.stopping.retired" }, { sig: "closed.retired.retired" }]);
+  expect(closing.foot().composer).toBeUndefined(); expect(closing.held.hidden).toBe(false);
+  expect(closing.held.text.textContent).toBe("Do not lose this\nsecond line\n\nhttps://example.com/a"); expect(closing.status.textContent).toBe("Kept"); expect(closing.stored).toEqual([]);
+});
+
+test("an untouched composer shows no held block, and options alone still come back", async () => {
+  const blank = await dockJourney({ sig: "open", composer: fakeComposer() }, [{ sig: "closed.stopping.active" }]);
+  expect(blank.held.hidden).toBe(true); expect(blank.status.textContent).toBe("Announce");
+  const back = fakeComposer();
+  const options = await dockJourney({ sig: "open", composer: fakeComposer({ work: true }) }, [{ sig: "closed.stopping.active" }, { sig: "open", composer: back }]);
+  expect(back.field("work").checked).toBe(true); expect(options.held.hidden).toBe(true); expect(options.status.textContent).toBe("Announce");
+});
+
+test("text the service refused to send survives the reopening read that replaces its composer", async () => {
+  const refused = fakeComposer({ text: "Keep these words", work: true }), back = fakeComposer();
+  await dockJourney({ sig: "closed.stopping.active", composer: refused }, [{ sig: "open", composer: back }]);
+  expect(back.field("text").value).toBe("Keep these words"); expect(back.field("work").checked).toBe(true);
+});
+
+test("a tool the ceiling no longer offers is never ticked back, and the closed foot renders only an empty block", async () => {
+  const back = fakeComposer({ tools: { web_fetch: false } });
+  await dockJourney({ sig: "open", composer: fakeComposer({ text: "Draft", tools: { computer: true, web_fetch: true } }) }, [{ sig: "closed.stopping.active" }, { sig: "open", composer: back }]);
+  expect(back.fields.some(item => item.name === "tool:computer")).toBe(false); expect(back.field("tool:web_fetch").checked).toBe(true);
+  const f = await fixture(); acceptCeiling(f);
+  const html = await f.page("/chats/scoutchat"), block = /<div data-draft-held hidden>[\s\S]*?<\/div>/.exec(html)![0];
+  expect(block).toContain("<pre"); expect(block).toMatch(/data-draft-text[^>]*><\/pre>/); expect(block).toContain(dictionaries.en["s14.life.draft_held_returning"]);
+  expect(html).toContain(`data-kept="${dictionaries.en["s14.life.chat_closed_kept"]}"`); safe(html, "en");
+  await f.app.botLifecycle.drain(noNative);
+  const open = await f.page("/chats/scoutchat"); expect(open).not.toContain("data-draft-held"); expect(open).toContain(`data-kept="${dictionaries.en["s14.life.chat_open_kept"]}"`);
+  const script = readFileSync(new URL("../src/s14/web-enhance.js", import.meta.url), "utf8");
+  expect(script).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
+});

@@ -568,12 +568,15 @@ function chatClosed(bot: Bot, lifecycle: BotLifecycle | undefined): string {
   const returning = lifecycle?.target === "active" && lifecycleLive(lifecycle);
   return banner("", returning ? named("s14.life.chat_returning", bot) : tr("s14.life.chat_closed"), tr(returning ? "s14.life.chat_returning_detail" : "s14.life.chat_closed_detail"), `<p><a class="s-link-text" href="/team/${e(bot.id)}">${tr("s14.life.chat_open_bot")}</a></p>`);
 }
-/** The foot of a chat. `data-sig` changes only when the Bot's ability to take a message does, so live reads never replace text being typed. */
+/** Empty until script fills it from page memory, so a draft held across a closing chat stays readable. The server never sees that text. */
+const heldDraftBlock = (returning: boolean) => `<div data-draft-held hidden><div class="s-stack"><p class="s-exact-label">${tr("s14.life.draft_held")}</p><pre class="s-exact" data-draft-text tabindex="0" role="group" aria-label="${tr("s14.life.draft_held")}"></pre><p class="s-note">${tr(returning ? "s14.life.draft_held_returning" : "s14.life.draft_held_closed")}</p></div></div>`;
+/** The foot of a chat. `data-sig` changes only when the Bot's ability to take a message does; a live read moves any unsent text across that change. */
 function chatDock(page: S14Page, view: Extract<S14View, { kind: "chat" }>): string {
   const { chat, bot } = view, lifecycle = page.overview.lifecycles?.[bot.id];
-  const words = bot.enabled ? tr("s14.life.chat_open") : lifecycle?.target === "active" && lifecycleLive(lifecycle) ? named("s14.life.chat_returning", bot) : tr("s14.life.chat_closed");
+  const returning = lifecycle?.target === "active" && lifecycleLive(lifecycle);
+  const words = bot.enabled ? tr("s14.life.chat_open") : returning ? named("s14.life.chat_returning", bot) : tr("s14.life.chat_closed");
   // Refused text stays in its box, because the page promised to keep it. The service still refuses the send.
-  return `<div class="s-dock" id="s14-dock" data-sig="${bot.enabled ? "open" : `closed.${lifecycle?.state ?? ""}.${lifecycle?.target ?? ""}`}" data-announce="${e(words)}">${notice(view.notice)}${bot.enabled ? "" : chatClosed(bot, lifecycle)}${bot.enabled || view.draft ? composer(page, chat.conversation, bot, "chat", view.draft) : ""}</div>`;
+  return `<div class="s-dock" id="s14-dock" data-sig="${bot.enabled ? "open" : `closed.${lifecycle?.state ?? ""}.${lifecycle?.target ?? ""}`}" data-announce="${e(words)}" data-kept="${e(tr(bot.enabled ? "s14.life.chat_open_kept" : "s14.life.chat_closed_kept"))}">${notice(view.notice)}${bot.enabled ? "" : chatClosed(bot, lifecycle)}${bot.enabled || view.draft ? composer(page, chat.conversation, bot, "chat", view.draft) : heldDraftBlock(returning)}</div>`;
 }
 function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): string {
   const { chat, bot } = view, work = page.work.filter(item => item.conversationId === chat.conversation.id);

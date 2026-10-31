@@ -981,7 +981,7 @@ Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 202
 
 ## 27. Acceptance run refinements (EVID14-01, S14-AC13)
 
-Author: Claude Opus 5.5 (`claude-opus-5-5`), effort high, as the UI/UX delegate for the [EVID14-01](../tickets/s14/EVID14-01.md) live run. Authority, grants and domain logic did not change. Each item is **P** unless marked. Per-engine results stay in the private evidence record.
+From the [EVID14-01](../tickets/s14/EVID14-01.md) live run. Authority, grants and domain logic did not change. Each item is **P** unless marked. Per-engine results stay in the private evidence record.
 
 | Finding | Decision | Label |
 | --- | --- | --- |
@@ -989,6 +989,7 @@ Author: Claude Opus 5.5 (`claude-opus-5-5`), effort high, as the UI/UX delegate 
 | A chat or Bot page opened during a ceiling change stayed closed after the Bot became active again | The foot of a chat and the Bot overview are live regions while a transition settles. A chat reopens by itself, the status region says so, and the page keeps a no-script refresh link. A closed foot always links to the Bot | P |
 | A ceiling change read the same as a retired Bot | "{Bot} is changing its ceiling" says it clears by itself. "This chat can't take new messages now" stays for a Bot that will not come back on its own | P |
 | A post refused during a transition lost its text, though the page promises to keep it | The composer stays with the text beside the closed notice. The service still refuses the send | R (F2 draft rule) + P |
+| A live read that closed a chat replaced the composer and its unsent text | Script holds the text and options in page memory only, shows the text read-only under the closed notice and puts both back on the next composer, on that composer's fresh revisions. A choice no longer offered stays gone. With no script nothing is replaced, so a refused post returns its text on the response. No draft is stored on the server or in the browser, and leaving or reloading the page clears it, as the page says | P |
 | The chat's own Bot was a hidden field, so a person could tick two Bots under a limit of 2 and not see a third run | The Bots group has a legend and a fixed text row for the chat's Bot, which says it takes one place. A note states that every Bot researches, what queues, and who writes the summary. It is words, not a control: the lead stays fixed and no limit is checked in the browser | P |
 | A queued lane named the limit but not who held it | "Places in use: Scout · Analyst" sits under a lane held by this work's limit, from recorded running steps only | P |
 | A vendor reset time existed but the copy said it was unknown | The time appears only when one was recorded. Absent still reads as unknown, never as ready | R (Honest gaps) + P |
