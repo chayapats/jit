@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { buildPackage, validateArtifact } from "../bun-build";
 import { assertRootPath, assertRootTree, freezeInstallerArtifact, giveInstallerStaging } from "./trusted-paths";
-import { parseServiceConfig, renderJournaldConfig, renderServiceUnit, serviceEnvironment, serviceUnit, serviceOrigin, type ServiceConfig } from "../service-config";
+import { parseServiceConfig, renderJournaldConfig, renderServiceUnit, serviceEnvironment, serviceUnit, serviceOrigin, serviceLoginPath, type ServiceConfig } from "../service-config";
 import { spawnRunner, SystemdSupervisor, type CommandRunner } from "../../../src/ops/supervisor";
 import { disableService, installService } from "../../../src/ops/service-package";
 import { TransactionStore } from "../../../src/store";
@@ -79,7 +79,7 @@ export function installerSchemaVersion(home: string): number | null {
 export async function installerHealth(config: ServiceConfig, request: typeof fetch = fetch, timeoutMs = 5000): Promise<boolean> {
   const bind = config.network.bindHost.includes(":") ? `[${config.network.bindHost}]` : config.network.bindHost;
   const origin = config.network.origin ?? `http://${bind}:${config.network.port}`;
-  return (await request(`http://${bind}:${config.network.port}/login`, {
+  return (await request(`http://${bind}:${config.network.port}${serviceLoginPath(config)}`, {
     headers: { host: new URL(origin).host }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
   })).status === 200;
 }

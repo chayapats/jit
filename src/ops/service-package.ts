@@ -11,7 +11,7 @@ import { enableServicePodman, servicePodmanCommands, type ServicePodmanStatus } 
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
-  serviceEnvironment, serviceJournal, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnit,
+  serviceEnvironment, serviceJournal, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnit, serviceLoginPath,
   type ServiceConfig, type ServicePlanChange,
 } from "../../ops/package/service-config";
 
@@ -529,7 +529,7 @@ export function defaultHealth(service: ServiceConfig, supervisor: SystemdSupervi
       if (state.active === "failed") return false;
       if (state.active === "active") {
         try {
-          const response = await fetch(`http://${bind}:${service.network.port}/login`, { headers: { host: hostHeader }, signal: AbortSignal.timeout(5000) });
+          const response = await fetch(`http://${bind}:${service.network.port}${serviceLoginPath(service)}`, { headers: { host: hostHeader }, ...(service.runtime === "s14" ? { redirect: "manual" as const } : {}), signal: AbortSignal.timeout(5000) });
           if (response.status === 200) return true;
         } catch { /* Not listening yet. */ }
       }

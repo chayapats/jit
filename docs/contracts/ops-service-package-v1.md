@@ -155,6 +155,9 @@ silently activate S14 features.
 `serviceUnit` / `serviceJournal` select `jit-s14.service` / `jit-s14`;
 `serviceDatabasePath` selects `application.sqlite`; `serviceEnvironment` emits
 only the S14 database/origin/vault/scratch and optional computer/image settings.
+`serviceLoginPath` selects `/s14/login` for S14 health/existing-owner entry;
+legacy keeps `/login`. S14 health uses manual redirects so another listener's
+redirect cannot satisfy the gate.
 `renderServiceUnit` retains legacy hardening, adds the service-only scratch
 tmpfs with finite size and resolved ownership, `HOME` and Schway lock writes,
 and runs `serve --s14 --no-refusal-page`. Startup failure therefore cannot be

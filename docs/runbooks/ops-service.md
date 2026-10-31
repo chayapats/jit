@@ -32,6 +32,8 @@ provider login, image digest or scratch configuration is required in the shell.
 Open the link once in Web, create the owner password, then follow the existing
 S14 Web setup/provider device sign-in. Account readiness and first inference
 remain separate live evidence.
+Installer and upgrade health probe `/s14/login` with manual redirects. Existing
+owners enter there too; legacy's `/login` response cannot satisfy S14 health.
 
 | Item | Legacy default | Explicit `--s14` |
 | --- | --- | --- |

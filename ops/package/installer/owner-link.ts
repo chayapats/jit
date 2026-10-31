@@ -38,6 +38,6 @@ export async function deliverS14OwnerLink(argv: string[], env: Record<string, st
     const value = await deps.capture(argv, env);
     const prefix = `${origin}/owner/setup?token=`;
     if (value !== "" && (value !== value.trim() + "\n" || !value.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(value.trim().slice(prefix.length)))) throw new Error("owner_link_pipe_invalid");
-    terminal.write(`Open ${value.trim() || `${origin}/login`} to finish setup\n`);
+    terminal.write(`Open ${value.trim() || `${origin}/s14/login`} to finish setup\n`);
   } finally { terminal.close(); }
 }

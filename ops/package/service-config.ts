@@ -332,6 +332,8 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
 export function serviceUnit(config: ServiceConfig): string { return config.runtime === "s14" ? "jit-s14.service" : serviceUnitName; }
 /** S14 logs have their own bounded namespace beside the legacy namespace. */
 export function serviceJournal(config: ServiceConfig): string { return config.runtime === "s14" ? "jit-s14" : serviceLogNamespace; }
+/** Public sign-in route used for local health and existing-owner entry, without creating authority. */
+export function serviceLoginPath(config: ServiceConfig): string { return config.runtime === "s14" ? "/s14/login" : "/login"; }
 
 /** Installation database inside the managed state directory. */
 export function serviceDatabasePath(config: ServiceConfig): string {

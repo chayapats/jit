@@ -259,6 +259,8 @@ writes once there. No terminal means no issuance; the actionable failure asks
 for a terminal re-run. Safe progress/errors use the ordinary output callback;
 capabilities never do. Existing owners receive only the sign-in URL on that
 terminal. Dry runs create no capability.
+S14 health and existing-owner entry use `/s14/login`; the legacy `/login` route
+and redirects cannot count as S14 readiness.
 
 Compatible-code upgrade/rollback uses the S14 service-package contract below;
 schema changes remain owner-authenticated staged OPS14 maintenance, never

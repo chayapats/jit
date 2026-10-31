@@ -2,16 +2,21 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { installerOwnerLink, installerS14Schema, prepareInstallerHome, runInstaller, type InstallerOptions } from "../ops/package/installer/installer";
+import { installerHealth, installerOwnerLink, installerS14Schema, prepareInstallerHome, runInstaller, type InstallerOptions } from "../ops/package/installer/installer";
 import { captureOwnerPipe, deliverS14OwnerLink } from "../ops/package/installer/owner-link";
 import { provisionS14Images } from "../ops/package/installer/s14-images";
 import { buildPackage, installArtifactDependencies, readManifest } from "../ops/package/bun-build";
 import { parseServiceConfig, serviceDatabasePath, serviceEnvironment, type ServiceConfig } from "../ops/package/service-config";
-import { installService, upgradePackage, type OperatorHost } from "../src/ops/service-package";
+import { defaultHealth, installService, upgradePackage, type OperatorHost } from "../src/ops/service-package";
+import { SystemdSupervisor } from "../src/ops/supervisor";
 import { runServiceCommand } from "../src/ops/service-cli";
 import { S14Store, s14SchemaVersion } from "../src/s14/store";
 import { requireOwnerSetup } from "../src/ops/owner-setup";
 import { collectS14ServiceEvidence } from "../ops/package/s14-service-evidence";
+import { S14Application } from "../src/s14/application";
+import { s14Policy } from "../src/s14/policy";
+import { createS14Handler } from "../src/s14/web";
+import { createS14Product } from "../src/s14/web-product";
 
 const roots: string[] = [], source = resolve(import.meta.dir, ".."), GiB = 1024 ** 3;
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -80,6 +85,24 @@ test("S14 schema and home helpers never create a legacy database or ledger seed"
   expect(existsSync(join(home, "state/app.sqlite"))).toBe(false);
 });
 
+test("installer and upgrade health use the actual S14 sign-in route; legacy's route and redirects cannot pass", async () => {
+  const f = fixture(), { config } = await runInstaller(f.options), store = new S14Store(f.at("health.sqlite"));
+  const app = new S14Application(store, { policy: s14Policy(), chat: { async reply() { throw new Error("no model"); } } });
+  const origin = "http://127.0.0.1:3001", handler = createS14Handler(app, origin, undefined, createS14Product(app));
+  const request = (async (url: string | URL | Request, init?: RequestInit) => {
+    expect(String(url)).toBe(`${origin}/s14/login`); expect(init?.redirect).toBe("manual");
+    return handler(new Request(url, init));
+  }) as typeof fetch;
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(request);
+  try {
+    expect((await handler(new Request(`${origin}/login`))).status).toBe(303);
+    expect(await installerHealth(config, request)).toBe(true);
+    const supervisor = new SystemdSupervisor(async () => ({ exitCode: 0, timedOut: false, stdout: "ActiveState=active\n" }), { unit: "jit-s14.service" });
+    expect(await defaultHealth(config, supervisor)()).toBe(true);
+    expect(await installerHealth(config, (async () => new Response(null, { status: 303, headers: { location: "/login" } })) as unknown as typeof fetch)).toBe(false);
+  } finally { fetchSpy.mockRestore(); store.close(); }
+});
+
 test("POSIX --s14 dry-run passes selection through and defaults to legacy without host commands", async () => {
   const f = fixture();
   for (const flags of [["--s14"], []]) {
@@ -106,7 +129,7 @@ test("installer runs the actual owner-link CLI via private fd 3 and terminal-onl
       store.transaction(tx => tx.run("INSERT INTO owner VALUES ('owner','fixture',1)"));
     } finally { store.close(); }
     await deliverS14OwnerLink(argv, env, origin, { capture: captureOwnerPipe, terminal: () => ({ write: text => { terminal.push(text); }, close() {} }) });
-    expect(terminal[1]).toBe(`Open ${origin}/login to finish setup\n`);
+    expect(terminal[1]).toBe(`Open ${origin}/s14/login to finish setup\n`);
     expect(log).not.toHaveBeenCalled(); expect(error).not.toHaveBeenCalled();
   } finally { log.mockRestore(); error.mockRestore(); }
 });
