@@ -1,4 +1,5 @@
 import type { MessageKey } from "./index";
+import { s14CodingEn } from "./s14-coding-en";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
@@ -3843,6 +3844,7 @@ export const en: Record<MessageKey, string> = {
   "s14.error.routine_not_paused": "This routine can’t resume",
   "s14.next.routine_not_paused": "Check the routine’s latest state",
   "s14.error.routine_fenced": "This routine has been stopped",
+  ...s14CodingEn,
   "s14.more.backup": "Backup and restore",
   "s14.backup.title": "Backup and restore",
   "s14.backup.subtitle": "Kept on this computer",

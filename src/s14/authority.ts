@@ -124,6 +124,7 @@ export class S14Authority {
       identity(c.payload.workId);
       const work = record<Work>(tx, "work_items", c.payload.workId);
       if (work.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
+      if (this.app.coding.job(tx, work.id)) throw new AppError("coding_never_replay", 409);
       if (!["blocked", "waiting", "ready"].includes(work.state) || !work.grantId) throw new AppError("work_not_recoverable", 409);
       const attempts = this.attempts(tx, work.id);
       if (attempts.some(a => ["running", "interrupted"].includes(a.state)) ||
@@ -423,6 +424,7 @@ export class S14Authority {
       work.result = attempt.id; save(tx, "work_items", work);
       this.reevaluate(tx, work.id, true);
       this.app.recovery.committed(tx, attempt.id);
+      this.app.coding.committed(tx, attempt.id);
     });
   }
   private reevaluate(tx: AppTransaction, workId: string, resultChanged = false): void {

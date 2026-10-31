@@ -3,6 +3,8 @@
  * This dictionary defines the key set. Every other language must provide every key (see tests/web-i18n.test.ts).
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
+import { s14CodingTh } from "./s14-coding-th";
+
 export const th = {
   "attachments.image_probe_refused": "ผู้ให้บริการปฏิเสธการทดสอบรูป",
   "attachments.image_probe_reason_sign_in": "ต้องลงชื่อเข้าใช้ใหม่",
@@ -3846,6 +3848,7 @@ export const th = {
   "s14.error.routine_not_paused": "กิจวัตรนี้เปิดต่อไม่ได้",
   "s14.next.routine_not_paused": "ตรวจสถานะล่าสุดของกิจวัตร",
   "s14.error.routine_fenced": "กิจวัตรนี้ถูกหยุดแล้ว",
+  ...s14CodingTh,
   "s14.more.backup": "สำรองและกู้คืนข้อมูล",
   "s14.backup.title": "สำรองและกู้คืนข้อมูล",
   "s14.backup.subtitle": "เก็บไว้ในเครื่องนี้",

@@ -11,7 +11,7 @@ export function commitOpsLedger(store: S14Store, bytes: Uint8Array, prior: strin
       const current = opsLedger(tx);
       if (current === target) return;
       if (current !== prior) throw new AppError("s14_ops_live_or_ledger_changed", 409);
-      for (const table of ["withdrawals", "bot_events", "native_intents", "effect_outcomes"]) {
+      for (const table of ["withdrawals", "bot_events", "native_intents", "effect_outcomes", "git_connection_revisions", "git_outcomes"]) {
         for (const row of staged.query(`SELECT * FROM ${table} ORDER BY rowid`).all() as Record<string, SQLQueryBindings>[]) {
           const values = Object.values(row);
           tx.run(`INSERT OR IGNORE INTO lifecycle.${table} VALUES (${values.map(() => "?").join(",")})`, ...values);

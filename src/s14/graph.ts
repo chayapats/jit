@@ -165,10 +165,20 @@ export class S14Graph {
   guard(tx: AppTransaction, attempt: Attempt, heldEffect = false): void {
     if (!attempt.step) return;
     const step = record<WorkStep>(tx, "work_steps", attempt.step.id);
+    // Coding's committed waiting result keeps its original exact-effect seam usable after transport settlement.
+    // It never queues the lane again; all ordinary live Bot/grant/computer checks still apply at every call.
+    const codingReview = step.state === "blocked" && step.reason === "handler_waiting" && step.settledAt !== null &&
+      attempt.state === "waiting" && attempt.snapshot.tools.includes("effect_push") &&
+      !tx.get("SELECT 1 FROM attempt_transports WHERE attempt_id=? AND active=1", attempt.id) &&
+      !!tx.get(`SELECT 1 FROM coding_runs c JOIN reports r ON r.attempt_id=c.attempt_id
+        JOIN work_results w ON w.attempt_id=c.attempt_id
+        WHERE c.attempt_id=? AND w.state='waiting' AND r.content_json IS NOT NULL
+        AND json_extract(c.record_json,'$.reportId')=r.id
+        AND json_extract(c.record_json,'$.state') IN ('reviewable','partial')`, attempt.id);
     const settled = heldEffect && attempt.state === "waiting" && step.settledAt !== null &&
       (step.state === "committed" || step.state === "blocked" && step.reason === "handler_waiting") &&
       !!tx.get("SELECT 1 FROM work_results WHERE attempt_id=?", attempt.id);
-    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id) || step.attemptId !== attempt.id || step.state !== "running" && !settled) throw new AppError("step_fenced", 403);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id) || step.attemptId !== attempt.id || step.state !== "running" && !settled && !codingReview) throw new AppError("step_fenced", 403);
   }
 
   /** Selects dependencies only after actual sibling settlement and committed evidence, retaining explicit gaps. */

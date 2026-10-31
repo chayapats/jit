@@ -1,10 +1,10 @@
 # S14 foundation HTTP handoff
 
-Current combined logic schema: **16**; earlier unreleased 1–15 refuse with `s14_fresh_state_required` before workers. Earlier slice schema numbers below describe their introduction. All commands remain opt-in behind `--s14`.
+Current combined logic schema: **17**; earlier unreleased 1–16 refuse with `s14_fresh_state_required` before workers. Earlier slice schema numbers below describe their introduction. All commands remain opt-in behind `--s14`.
 
 ## BOX14-01 computer/input seam
 
-Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 16 combines result-state evidence, computer storage/activity, memory, Parallel, graphs, reports and owner review; earlier unreleased schemas 1–15 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Computer product layout and forms are in design section 18.
+Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 17 combines result-state evidence, computer storage/activity, memory, Parallel, graphs, reports and owner review; earlier unreleased schemas 1–16 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Computer product layout and forms are in design section 18.
 
 Durable `computer.open`, `computer.stop`, `computer.reset`, `computer.delete`, `takeover.start`, `takeover.end` use the existing JSON/form `/commands` endpoints and exact typed payloads in those contracts. Receipts describe committed intent, while queries describe settled runtime state. UI must fetch current computer and lease revisions before each command. Reset/delete scope is both named workspace and protected profile; exact IDs/generation/revision are mandatory. Do not add a second work-start approval.
 
@@ -114,7 +114,7 @@ Typed states to map onto the existing Opus design:
 
 All core types have one-line TSDoc in `src/s14/types.ts`, `authority-types.ts`, `application.ts` and `web.ts`. Product rendering, Thai/English copy and form contracts are covered by `tests/s14-web-ui.test.ts`; real device and assistive-technology evidence remains open. Follow existing external hashed assets and tokens when wiring the Opus design; the unstyled baseline is not a styling precedent.
 
-Combined contract refinement (schema **6**, retained in final schema **16**): `Work.result` retains a bounded latest-attempt ID; `WorkView.results` supplies separately stored result bodies and original ready/waiting state. JSON detail queries and existing Web result rendering retain full granted output through 1 MiB; command receipts never copy that body. Earlier unreleased schemas 1–15 refuse rather than auto-migrate. The visible work badges refresh with their result regions, retaining the existing design.
+Combined contract refinement (schema **6**, retained in final schema **17**): `Work.result` retains a bounded latest-attempt ID; `WorkView.results` supplies separately stored result bodies and original ready/waiting state. JSON detail queries and existing Web result rendering retain full granted output through 1 MiB; command receipts never copy that body. Earlier unreleased schemas 1–16 refuse rather than auto-migrate. The visible work badges refresh with their result regions, retaining the existing design.
 
 ## MEM14-01 logic seam
 
@@ -159,11 +159,11 @@ Map existing Opus web/evidence/rate/quota/settings states from `WebOutcome`: run
 
 `ExternalEvidence` source IDs/revisions are the citation seam; `app.parallel.citation(tx,attemptId,id,revision)` is the trusted later report handler's validation port. Free-form foundation work output is ready for owner review, not a certified complete report/artifact. Packet source references append evidence actually read, and lifecycle changes fence subsequent tools and final output. Native executor is `schwayResearch` in src/s14/research.ts; UI agent owns rendering/routes/assets and can use the existing renderer/service projections. Do not replace the command/authority boundary.
 
-Final store is schema **16**, combining the reviewed foundation result table with computer, memory and Parallel tables; earlier unreleased schemas 1–15 require a fresh separate path, preserving original data. The current independent lifecycle ledger must accompany this installation and remain current across application-image restore. MEM14-01/WEB14-01 UI evidence is recorded in section 17 of the experience document and `tests/s14-web-memory.test.ts`. Protocol fixtures are documentation-derived (2026-10-30), with live exact serialization/conformance and live quality explicitly pending.
+Final store is schema **17**, combining the reviewed foundation result table with computer, memory and Parallel tables; earlier unreleased schemas 1–16 require a fresh separate path, preserving original data. The current independent lifecycle ledger must accompany this installation and remain current across application-image restore. MEM14-01/WEB14-01 UI evidence is recorded in section 17 of the experience document and `tests/s14-web-memory.test.ts`. Protocol fixtures are documentation-derived (2026-10-30), with live exact serialization/conformance and live quality explicitly pending.
 
 ## TEAM14-01 logic seam
 
-Schema **16** refuses earlier unreleased schemas 1–15 with fresh-state. `app.work-graph/v1` adds `concurrency` and `reads` as required explicit `WorkLimits` fields. Defaults are owner-confirmed **2 / 1800000 ms / 40 reads**; query current defaults rather than assuming fixture counts. Call reservations include inference as well as tools; actual usage remains null.
+Schema **17** refuses earlier unreleased schemas 1–16 with fresh-state. `app.work-graph/v1` adds `concurrency` and `reads` as required explicit `WorkLimits` fields. Defaults are owner-confirmed **2 / 1800000 ms / 40 reads**; query current defaults rather than assuming fixture counts. Call reservations include inference as well as tools; actual usage remains null.
 
 | Command | Exact payload | expectedRevision |
 | --- | --- | --- |
@@ -181,7 +181,7 @@ Lane states are queued, waiting_evidence, running, stopping, committed, failed, 
 
 ## REPORT14-01 logic seam
 
-The final combined store is schema **16**; unreleased schemas 1–15 refuse with the same fresh separate-path action. Contracts: `app.report-artifacts/v1`, `app.artifact-gateway/v1`. There is no report-publish owner endpoint: reports/files are outputs of an already-authorized live attempt, validated and committed by its trusted result handler.
+The final combined store is schema **17**; unreleased schemas 1–16 refuse with the same fresh separate-path action. Contracts: `app.report-artifacts/v1`, `app.artifact-gateway/v1`. There is no report-publish owner endpoint: reports/files are outputs of an already-authorized live attempt, validated and committed by its trusted result handler.
 
 `work.start` optionally accepts `requiredEvidence:EvidenceRequirement[]` (`report-types.ts`). Targets are exactly `{id,label,url:string|null,coverage:'snippet'|'excerpt'|'full_content_returned',freshness:'any'|'live_reported'}`. They are captured owner requirements, not model-created authority. An omitted/empty list leaves completion-rule coverage machine-unverified. Existing typed starts remain valid.
 
@@ -230,7 +230,7 @@ First-owner bootstrap reuses `issueOwnerSetupLink(store,origin,now?)` from `src/
 | `work.retry`, `work.summarize` | `{workId}` | current Work.revision |
 | `takeover.renew` | `{botId,computerId,generation,leaseRevision}` | current computer.revision and exact leaseRevision |
 
-Every command uses `{kind,requestId,expectedRevision,payload}` and the same `/api/s14/commands` or no-script `/s14/commands` `{csrf,command}` ingress. Device commands call async `app.signIns.execute` only from that validated Web boundary; all others call `app.execute`. Keep the same retry key for transport retries. New keys with stale revisions refuse. Changed envelopes under an existing key conflict. Device receipts can advance only their safe flow state; approval never becomes durable. Other receipts retain their original snapshot.
+Every command uses `{kind,requestId,expectedRevision,payload}` and the same `/api/s14/commands` or no-script `/s14/commands` `{csrf,command}` ingress. Device commands call async `app.signIns.execute` only from that validated Web boundary; coding repository grants call async `app.coding.execute`, and other commands call `app.execute`. Keep the same retry key for transport retries. New keys with stale revisions refuse. Changed envelopes under an existing key conflict. Device receipts can advance only their safe flow state; approval never becomes durable. Other receipts retain their original snapshot.
 
 Default exact provider routes come from `supportedS14Routes()` over public `schway/host.authRoutes`, with the existing recommended-model logic (`codex` → `gpt-6.1-sol`). IDs equal provider names. The owner chooses a provider; no model ID/auth alias is required. `setup` still carries internal `routeId`; the UI translator uses the chosen provider's returned route ID. `JIT_S14_ROUTES` is an optional explicit deployment override, never required and never selected after a failure. Local readiness is queried separately and does not change route/model/account/billing or make inference calls.
 
@@ -255,7 +255,7 @@ Computer activity adds only observed categories: first safely observed page open
 
 Production restores the union of existing enabled Bots' explicit resource ceilings using `existingResourceCeilings(tx)` plus configured `JIT_S14_RESOURCES` slots, and preserves current memory-share queries through `scopeOptions`. These ceilings create no source access or share grant. SHARE14-01 below supplies the separate revision-bound source/artifact snapshot gateway and current share policy; its explicit commands and queries coexist with first-run commands. A fresh installation has no source access before owner grant; built-in slot candidates can be selected through the exact capability revision flow below.
 
-Combined schema **16** retains bounded `computer_activity` and its index together with all team graph, report and review tables; first-run commands otherwise use existing revisioned JSON/receipt records. Schemas 1–15 remain unreleased and refuse before writable open, with original database/WAL/SHM/ledger/profile/backup bytes untouched. `serve --s14` now serves the read-only refusal page by default with no store, runtime lock or workers; `--no-refusal-page` retains CLI refuse-and-exit. `--refusal-page` remains a compatibility spelling. No default legacy-runtime cutover or migration is performed.
+Combined schema **17** retains bounded `computer_activity` and its index together with all team graph, report and review tables; first-run commands otherwise use existing revisioned JSON/receipt records. Schemas 1–16 remain unreleased and refuse before writable open, with original database/WAL/SHM/ledger/profile/backup bytes untouched. `serve --s14` now serves the read-only refusal page by default with no store, runtime lock or workers; `--no-refusal-page` retains CLI refuse-and-exit. `--refusal-page` remains a compatibility spelling. No default legacy-runtime cutover or migration is performed.
 
 Evidence: `tests/s14-first-run.test.ts`, existing bootstrap/device/S14 suites, frozen install, typecheck and full suite. No live provider, subscription, paid inference, Linux container or real browser/device acceptance is claimed.
 
@@ -309,15 +309,15 @@ The default provider-derived routes and explicit deployment routes both use the 
 
 ## SHARE14-01 logic seam
 
-`app.snapshot-sharing/v1`, introduced in schema **9**, retained in current combined schema **16** (unreleased 1–15 refuse). Commands through the existing JSON/form ingress are `snapshot.share` with `{scopeId,target:{kind:'source'|'artifact',id,revision,generation},receiverBotId,workId:string|null,expiresAt}` (expectedRevision = receiver Bot revision) and `snapshot.revoke` with `{shareId}` (expectedRevision = share revision). Both return `SharingReceipt {kind,requestId,share}`. `GET /api/s14/shares` / `app.sharing.list(actor)` returns `ShareView[]` with active/revoked/expired/unavailable and `disclosedKnowledge:'cannot_recall'`.
+`app.snapshot-sharing/v1`, introduced in schema **9**, retained in current combined schema **17** (unreleased 1–16 refuse). Commands through the existing JSON/form ingress are `snapshot.share` with `{scopeId,target:{kind:'source'|'artifact',id,revision,generation},receiverBotId,workId:string|null,expiresAt}` (expectedRevision = receiver Bot revision) and `snapshot.revoke` with `{shareId}` (expectedRevision = share revision). Both return `SharingReceipt {kind,requestId,share}`. `GET /api/s14/shares` / `app.sharing.list(actor)` returns `ShareView[]` with active/revoked/expired/unavailable and `disclosedKnowledge:'cannot_recall'`.
 
 Use exact source or delivered artifact metadata, never a path. Artifact content identity is revision/generation 1/1; source uses its MemoryRef. Receiver must have an owner-accepted configured or built-in share slot in its explicit Bot ceiling; share creates no new capability or execution. Pin the current accepted work ID when appropriate before work.start, then include `{kind:'share',id:scopeId,revision:1}` in that start. Null workId explicitly permits subsequent granted work for this receiver. No retarget or slot reuse; source changes need a new explicit share. Copies are at most 32 KiB each/64 KiB aggregate context. Read-only owner metadata queries cannot start a model.
 
 Map existing Opus sharing/revoke states and immutable file metadata. `snapshot_scope_denied`, `scope_revoked_or_stale`, `snapshot_unavailable`, `snapshot_forward_refused`, `snapshot_context_budget_exhausted` and common artifact-validator errors are safe reason codes. A revoked share fences future calls and late results; displayed disclosure must remain honest. UI layout, copy, forms, Thai/English, no-script, accessibility and responsive acceptance are left to the UI agent; no UI box is completed by this logic slice.
 
-## REC14-01 logic seam (current combined schema 16)
+## REC14-01 logic seam (current combined schema 17)
 
-The current combined schema is **16**; all unreleased 1–15 refuse with fresh-state before writable open. Contracts: `app.work-checkpoints/v1`, `app.replay-policy/v1`; sharing remains `app.snapshot-sharing/v1`. No legacy default runtime change.
+The current combined schema is **17**; all unreleased 1–16 refuse with fresh-state before writable open. Contracts: `app.work-checkpoints/v1`, `app.replay-policy/v1`; sharing remains `app.snapshot-sharing/v1`. No legacy default runtime change.
 
 | Command / query | Exact data / state |
 | --- | --- |
@@ -352,7 +352,7 @@ Opus-authored product routes over the seams above. See section 21 of the experie
 
 ## ROUT14-01 logic seam (UI pending)
 
-Contracts: `app.routine-grants/v1`, `app.attention-outbox/v1`; introduced schema 11, current combined schema 16 (unreleased 1–15 refuse fresh-state). No product UI was authored in this slice. All new commands work through the existing JSON and URL-encoded `/commands` endpoints and receipt queries, with the same session/Origin/Host/CSRF/exact-key rules.
+Contracts: `app.routine-grants/v1`, `app.attention-outbox/v1`; introduced schema 11, current combined schema 17 (unreleased 1–16 refuse fresh-state). No product UI was authored in this slice. All new commands work through the existing JSON and URL-encoded `/commands` endpoints and receipt queries, with the same session/Origin/Host/CSRF/exact-key rules.
 
 | Command | Exact payload | expectedRevision |
 | --- | --- | --- |
@@ -368,7 +368,7 @@ In-app attention carries local_dedupe_only and distinct state/remote/resolvedAt.
 
 ## BOT14-02 logic seam (UI pending)
 
-Contract `app.bot-lifecycle/v1` extends `app.bots/v1`; combined schema **16**. Types are in `src/s14/bot-lifecycle-types.ts`, service `app.botLifecycle`. The existing JSON and no-script `/commands` endpoints and receipt queries handle every new command with the same auth/CSRF/retry rules.
+Contract `app.bot-lifecycle/v1` extends `app.bots/v1`; combined schema **17**. Types are in `src/s14/bot-lifecycle-types.ts`, service `app.botLifecycle`. The existing JSON and no-script `/commands` endpoints and receipt queries handle every new command with the same auth/CSRF/retry rules.
 
 | Command | Exact payload | expectedRevision |
 | --- | --- | --- |
@@ -396,7 +396,7 @@ UI agent seam: add Opus-authored lifecycle/capability/routine/history/needs-me s
 
 ## OPS14-01 managed installation seam
 
-Contracts: [app.managed-backup/v1](app.managed-backup-v1.md), [app.restore-activation/v1](app.restore-activation-v1.md); schema remains **16**. Types are `src/s14/ops-types.ts`; logic is `S14Maintenance` in `src/s14/ops.ts`. The Opus-authored Web surface is `/settings/backup` (design section 23).
+Contracts: [app.managed-backup/v1](app.managed-backup-v1.md), [app.restore-activation/v1](app.restore-activation-v1.md); schema remains **17**. Types are `src/s14/ops-types.ts`; logic is `S14Maintenance` in `src/s14/ops.ts`. The Opus-authored Web surface is `/settings/backup` (design section 23).
 
 `GET /api/s14/ops` uses the authenticated Host/session/private-no-store boundary and returns `{revision,backups:string[],stage:null|{id,mode,state,reason},maintenance:'offline_required',workers:'running'|'paused',backup:{revision,latest:OnlineBackupReceipt|null,retention:{limit:9,count,automatic:'oldest_online_only',protected:string[]}}}`. Querying never captures or starts work. `revision` remains the offline maintenance revision; `backup.revision` is the separate online command revision. A restore stage still prevents service boot and ordinary queries with `s14_ops_reconciliation_required`; no candidate is presented as active data.
 
@@ -412,7 +412,7 @@ The offline restore backend seam for the Opus UI agent is `S14Maintenance.status
 | --- | --- |
 | `backup.create` | `{}` |
 | `restore.prepare` | `{backupId}` |
-| `upgrade.prepare` | `{targetSchema:16}` |
+| `upgrade.prepare` | `{targetSchema:17}` |
 | `restore.validate`, `restore.discard`, `upgrade.rollback` | `{stageId}` |
 | `restore.activate` | `{stageId,actionHash}` from the current validated stage |
 
@@ -428,7 +428,7 @@ Additional safe reasons: `s14_backup_in_progress`, `s14_backup_deadline_waiting_
 
 ## PR #275/#278 reconciliation and exact #262 UI seam
 
-Current schema is **16**, retaining all tables from main schema 15 and backup/restore schema 14; unreleased 1–15 refuse with fresh-state, preserving original bytes. The main UI, owner bootstrap, report acceptance, graph scheduling and full boot barrier remain intact. Existing route/command names are unchanged for the stacked PRs.
+Current schema is **17**, retaining all tables from main schema 15 and backup/restore schema 14; unreleased 1–16 refuse with fresh-state, preserving original bytes. The main UI, owner bootstrap, report acceptance, graph scheduling and full boot barrier remain intact. Existing route/command names are unchanged for the stacked PRs.
 
 1. Read `GET /api/s14/share-slots` → `{items:Array<{scopeId:string,receiverBotIds:string[]}>}` (`app.sharing.freeSlots(actor)`). The 64 built-in `share_slot_01`…`share_slot_64` candidates require no `JIT_S14_RESOURCES`. Empty receiver lists describe unused candidates that can be selected in a capability proposal, not permission to share. Used snapshot/memory identities and independent revocation tombstones are excluded. The existing share picker already uses this query. No read reserves a slot.
 2. At the current Bot revision submit `bot.capabilities.propose` with `{botId,capabilities:{tools:[...exact selected tools],resources:[...exact selected resources,scopeId]}}`. Preserve the owner's full selection explicitly; do not infer additions. Display the exact proposal and accept only the returned `{proposalId,proposalHash}` with `expectedRevision=proposal.revision` via `bot.capabilities.accept`. JSON is `POST /api/s14/commands`; the no-script envelope is `POST /s14/commands` with `{csrf,command:JSON.stringify(envelope)}`. Changed/stale hashes refuse; do not auto-accept a refreshed card. Adding web_search/web_fetch after creation uses this same sequence.
@@ -437,9 +437,73 @@ Current schema is **16**, retaining all tables from main schema 15 and backup/re
 
 The Opus Web slice now covers lifecycle/capability controls, receipt landing/redirect mapping and localized boot-time display under `src/s14/web-routines.ts`, `web-lifecycle.ts` and their `web-product-*` translators; see section 22 of the experience document. It adds one optional product hook, `S14Product.review`, a read-only form step that commits nothing. This implementation changes service contracts and existing data adapters, with no new UI/UX design. Deterministic coverage includes fresh no-resource configuration via JSON proposal/no-script acceptance → share → explicit work, post-creation web tool reservations, running multi-Bot graph retirement/settlement, both share kinds across stale-image revocation, and routine dispatch after native-close boot reconciliation.
 
+## CODE14-01 logic handoff — app.coding-work/v1
+
+All coding ingress uses POST `/api/s14/commands` or existing no-script POST `/s14/commands` with the existing authenticated envelope/CSRF/Origin/retry rules. No UI design is supplied in this logic slice.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `coding.repository.grant` | `{id,botId,url,baseCommit,registry?:{hosts:string[]}|null}` or `baseBranch` instead of `baseCommit` | 0 |
+| `coding.repository.revoke` | `{repositoryId}` | repository revision |
+| `coding.start` | `{repository:{id,revision},work:StartPayload,install:CodingCheck|null,tests:CodingCheck[],connection?:{id,revision}|null}` | conversation revision |
+
+`CodingCheck={argv:string[],timeoutMs:number,network:'none'|'registry',coverage:string}`. Select exactly one Bot and repository resource scope; required tools `computer,coding`, optional proposal-only `effect_push`. The trusted service broker fetches the exact grant baseCommit into a <=16 MiB bundle under one 60-second deadline (decoded object stream <=32 MiB, reflected credential bytes refuse), without host checkout/hooks/filters/submodules. An optional explicit current connection selects a repository-scoped write-only credential for that HTTPS read only; omission/null uses public access. No secret/config/remote enters the box. Rotation/removal and resource revoke fence import; no credential fallback. See app.coding-work/v1 for strict protocol/object limits.
+
+Repository queries and grant receipts show normalized `registry:null` (default/off) or `{hosts}`. Allowed hosts are exact subsets of registry.npmjs.org, pypi.org, files.pythonhosted.org, proxy.golang.org and crates.io. This scope is part of the hashed work/resource authority, never derived from repository/model text. `network:'registry'` checks without it remain unrun with coding_registry_scope_required. With it, one ephemeral container uses the existing CONNECT/443 proxy on a verified internal-only DNS-disabled bridge; ordinary commands/model tools/Phase A and protected browsers stay `--network=none`. Missing topology/proxy/limits fail closed without dispatch/direct fallback. Unconfirmed cleanup fences the handle. Explain the residual risk: allowed registries can carry workspace data out through package requests; the proxy cannot inspect TLS content. This is contract data for the future Opus-authored grant experience, not a UI authored in this patch.
+
+GET `/api/s14/coding/repositories` → `{items:CodingRepository[]}`. GET `/api/s14/work/:id/coding` → `CodingView={job,runs,available,checks}`. Exact exported types are in `src/s14/coding-types.ts`. Run states are running/reviewable/partial/interrupted; safe reasons include coding_tests_not_run, coding_check_failed, coding_check_timeout, coding_changed_during_tests, coding_registry_scope_required, coding_registry_proxy_unavailable, coding_registry_boundary_unverified, coding_registry_cleanup_unconfirmed, coding_preload_size_limit, coding_preload_timeout, coding_preload_protocol_refused and coding_interrupted_no_replay. Checks distinguish passed/failed/skipped/unknown and actual exit/timeouts with bounded stdout/stderr excerpts. Declared coverage is not measured coverage. Show tests that were unrun; do not infer success from model text.
+
+`reportId` links to the existing report API/artifact downloads only after immutable publication. Before it exists, diagnostic run metadata is not a delivered artifact. Existing Work stays waiting for review; reviewable evidence alone does not fulfill owner completion or approve any external effect. Existing work.stop fences the run; interrupted coding does not automatically resume. UI acceptance remains unticked for the later Opus high agent.
+
+## CODE14-02 logic handoff — app.git-effects/v2
+
+POST `/api/s14/commands` and no-script `/s14/commands` use the same existing session/CSRF/Origin/receipt rules. Secrets are write-only and omitted from retry digests/receipts. No UI is authored here.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `git.connection.create` | `{repositoryId,label}` | 0 |
+| `git.connection.secret.set` / `git.connection.rotate` | `{connectionId,secret}` | connection revision |
+| `git.connection.remove` / `git.connection.test` | `{connectionId}` | connection revision |
+| `git.propose` | `{attemptId,connection:{id,revision},update:{ref,oldCommit,newCommit},pr:GitPullRequest|null,expiresAt}` | 0 |
+| `approval.decide` | existing `{effectId,actionHash,decision}` | effect revision |
+| `git.reconcile` | `{effectId,actionHash}` | unknown effect revision |
+
+`GitPullRequest={base,baseCommit,title,body,draft}`. `git.propose` requires an actual committed coding report and explicit proposal-only `effect_push` in the original grant/Bot/resource. Show that report/diff/checks before approval, including failed/skipped coverage. Proposal/acceptance is separate from approval. The generic Effect content is canonical `GitAction` from `src/s14/coding-git-types.ts`, including exact repository/connection revision/full old→new commit/ref/PR fields and diffHash/reportId. Submit the displayed actionHash and revision; do not rebuild an action from model prose. Later content needs a new typed proposal/approval.
+
+GET `/api/s14/git/connections` → `{items:GitConnection[]}` (metadata only). GET `/api/s14/git/effects/:id` → `{effect,progress:GitProgress,reconcileRequested}`; existing `/api/s14/effects/:id` retains action history. Progress stages: prepared/verifying/push_dispatching/pushed/pr_dispatching/complete/failed/unknown. Existing approval states remain authoritative. Safe reasons include git_approved_diff_changed, git_remote_ref_changed, git_push_rejected, git_push_unconfirmed, git_pr_rejected_after_push, git_pr_unconfirmed_after_push, git_dispatch_unconfirmed and git_remote_readback_unconfirmed. A failed PR can coexist with an already pushed branch; show both facts. No merge/deploy follows.
+
+Unknown offers explicit read-back through git.reconcile or the existing separately labelled owner-statement effect.reconcile. Read-back never retries push or PR creation. `verification:'remote_readback'` proves matching observed remote state; duplicate/absent/incomplete matches stay unknown. Ordinary owner statements do not become verified. Connection rotation/removal, revoked resource, changed owner/Bot and deleted payload remain concrete blockers. Current schema **17**, app.coding-work/v1 + app.git-effects/v2; earlier unreleased 1–16 refuse. UI acceptance and live GitHub/Linux evidence remain pending.
+
+## PR #276 reconciliation and coding UI seam
+
+Combined schema **17** retains main schema 13 plus coding schema 15; unreleased 1–16 refuse with fresh-state. Existing first-run, capability/lifecycle, graph, recovery, report acceptance and snapshot-share commands/queries remain available alongside every CODE14 command/query above. `coding_never_replay` refuses generic retry/summarize without changing old evidence or queuing another shell. Git-bearing checkpoints remain reconcile-only.
+
+The future Opus-authored coding UI consumes the existing `CodingView`, `ReportView`, report-review and artifact-download gateways. Render diff/check content only when available, use the exact committed `reportId`/revision for review, and use exact Git action hash/revision for approval. A settled graph lane waiting for coding review can propose/export only under its original live `effect_push` grant; stop/retire/policy change/source withdrawal still fence dispatch. Source/access withdrawal also withholds diagnostic check logs. Registry limitations reflect the captured scope and actual observations. No new UI/UX design is supplied; existing main surfaces are retained, and concrete coding UI acceptance remains pending for Claude Opus 5.5 high.
+
+## CODE14 Web wiring
+
+Opus-authored product routes over the coding and Git seams. See section 25 of the experience document for design decisions and evidence. This section supersedes the UI-pending notes in the CODE14 handoffs above; live GitHub, real Linux, device and assistive-technology evidence stay pending.
+
+| Route / form | Use |
+| --- | --- |
+| `GET /coding` | Repositories, coding work and revoked repositories |
+| `GET /coding/new` | Grant form. It offers each enabled Bot with `computer`, `coding` and a free owner-accepted configured/built-in resource. |
+| `GET /coding/repositories/:id` | Exact repository, connections and revoke. `?receipt=` rereads the landing banner. |
+| `GET /coding/repositories/:id/start` | Coding start form |
+| `GET /work/:id?tab=coding`, `GET /chats/:id?work=:id&tab=coding` | Run, commands, diff and push form, shown when the grant holds `coding` |
+| `GET /effects/:id` | For a `git.propose` effect, the exact push card. `?receipt=` rereads a `git.reconcile` receipt. Other effects keep the existing card. |
+| `GET /team/:id/capabilities?add=coding&edit=1` | Draft form with `computer`, `coding` and one free configured/built-in resource ticked; accepting its exact proposal grants the slot. It only opens the form. |
+| `POST /s14/forms/coding-grant` | `{csrf,requestId,expectedRevision,url,baseCommit,receiver}` plus `registry:<host>=on`, to `coding.repository.grant`. `receiver` is `<botId>:<resourceId>`. No ticked host sends `registry:null`. The existing `baseCommit` field accepts a branch or full commit; branch names preserve case and translate to `baseBranch`. |
+| `POST /s14/forms/coding-start` | `{csrf,requestId,expectedRevision,repositoryId,repositoryRevision,botRevision,conversationId,purpose,completion,install,tests,timeout,coverage,minutes,installRegistry,testsRegistry,push,connection}` to `coding.start`. One test per line. `connection` is empty or `<id>:<revision>`. Limits are one attempt, one step, one read and 256 calls; a retried form reuses its committed expiry. |
+| `POST /s14/forms/git-connection` | `{csrf,requestId,expectedRevision,repositoryId,label}` to `git.connection.create` |
+| `POST /s14/forms/git-secret`, `git-rotate` | `{csrf,requestId,expectedRevision,repositoryId,connectionId,secret}` to `git.connection.secret.set` or `git.connection.rotate`. A refused post never renders the value. |
+| `POST /s14/forms/git-propose` | `{csrf,requestId,expectedRevision,workId,attemptId,newCommit,expiresAt,connection,branch,oldCommit,pr,base,baseCommit,title,body,draft}` to `git.propose`. PR fields are ignored unless `pr=on`. `expiresAt` is rendered once, as the earlier of an hour and the grant's end. |
+| `coding.repository.revoke`, `git.connection.remove`, `git.connection.test`, `git.reconcile`, `approval.decide` | Fixed envelopes through `POST /s14/commands` |
+
+`app.sharing.freeSlots` now also leaves out IDs bound to a repository, so the share picker cannot offer one. `codingRegistries` is exported from `coding-protocol.ts`, so forms list exactly what the service accepts. The generic `work.retry`, `work.summarize` and redo links are not rendered for coding work. Approve for a Git effect renders only on its card. `coding.repository.grant`, `receivers()` and `suggested()` use `resourceConfigured` plus the owner-accepted Bot ceiling and current unused-slot policy, so no environment resource override is required. Candidate slots and proposal creation grant nothing. Branch grants use `app.coding.execute` before durable command commit; the broker performs one anonymous fixed GitHub read (64 KiB / 15 seconds, no redirects, credentials or repository execution) and pins its full commit. Failures grant nothing; private repositories retain the full-commit/scoped-preload path. Original command receipts preserve the first pin across retries. `CodingView.checks` includes per-command `coding_install_incomplete` skips. `GitProgress.pullUrl` returns a provider URL only after exact HTTPS GitHub origin/repository/PR-number validation; the existing PR number becomes a link when valid. See the coding/Git contracts for refusal codes and exported signatures.
 ## LIFE14-01 personal connector logic handoff (app.personal-read-connectors/v1)
 
-Types: `src/s14/personal-types.ts`; service: `app.personal`, `app.personal.reads`. Current schema 16 (introduced at 13). No UI layouts/forms/interaction design were authored in this logic slice.
+Types: `src/s14/personal-types.ts`; service: `app.personal`, `app.personal.reads`. Current schema 17 (introduced at 13). No UI layouts/forms/interaction design were authored in this logic slice.
 
 PR #278 retains every main owner command/query and Opus-authored surface. Personal routines now publish through the ordinary validated report path: `ReportEvidence` adds Google/OAuth personal excerpts with opaque source IDs, exact quotes/revisions, source/retrieval timestamps and timezones. Missing/stale/partial account input is a typed service `read` gap with optional `personal:{scopeId,stale,missing}` metadata; the brief query remains its detailed projection. Historical owner-retained evidence is distinct from executable Bot context. See ADR 0057 and `tests/s14-personal-integration.test.ts`; managed backup and new personal UI acceptance remain pending, with broker credentials/key/ciphertext excluded from exports and backup artifacts.
 
@@ -463,7 +527,7 @@ The Opus Web slice is in `src/s14/web-personal.ts`, `web-personal-brief.ts`, `we
 
 ## LIFE14-02 personal exact effects handoff (app.personal-effects/v1)
 
-Current combined schema **16**; LIFE14-01 was introduced at 13. Types: `src/s14/personal-effect-types.ts`; `app.personal.effects` owns drafts, broker dispatch and provider observations. Existing `app.effect-approval/v2` retains single-use card/expiry/unknown/owner-statement behavior, adding the reviewed `calendar` effect class. All other classes/adapters remain unchanged.
+Current combined schema **17**; LIFE14-01 was introduced at 13. Types: `src/s14/personal-effect-types.ts`; `app.personal.effects` owns drafts, broker dispatch and provider observations. Existing `app.effect-approval/v2` retains single-use card/expiry/unknown/owner-statement behavior, adding the reviewed `calendar` effect class. All other classes/adapters remain unchanged.
 
 Trusted worker/tool seam: `propose(attemptId,requestId,scope,content,expiresAt)` returns `{draft,history,effect,observation}`; the `personal_draft` tool is offered only when a captured `effect_send`/`effect_calendar` tool exists. It never executes. The full content union (all recipients, subject/body or operation/eventId/etag/timezone/sendUpdates/start/end/recurrence/attendees) is in `app.personal-effects-v1.md`. Drafts retain exact account/connection revision, configured calendar and hash. A create's generated event ID is part of the displayed approved content. `draft.hash === effect.actionHash`.
 
@@ -479,4 +543,4 @@ Optional owner read-back: POST `/api/s14/personal/drafts/:draftId/readback` with
 
 The Opus exact cards are on `/effects/:id`, and `/effects/:id?edit=1` posts `personal.draft.revise` through form `draft-revise`. Exact fields and hashes are preserved, and no always-send control, consent inference or retry button for unknown writes exists. See section 24 of the experience document.
 
-PR #278 review fixes retain contract versions/schema 16 and existing HTTP/UI routes. Completed draft-producing runs keep work waiting on the owner; card revision/approval/dispatch use live held-effect authority without reopening model tools, including after native boot reconciliation. Calendar evidence retains service-verified `eventEtag`; update/delete may submit `etag:null`, and the broker binds the actually-read source plus exact etag into `draft.hash`. Supplied versions cannot replace it. Unread/foreign-account versions and source withdrawal refuse; preflight/If-Match fence concurrent edits. The outbound guard separately compares raw personal fields after reversing service presentation framing. Every ingestion truncation contributes a visible service gap, partial brief and refusal of quiet no_update. See the personal/effect contracts and `tests/s14-personal-review.test.ts`.
+PR #278 review fixes retain contract versions/schema 17 and existing HTTP/UI routes. Completed draft-producing runs keep work waiting on the owner; card revision/approval/dispatch use live held-effect authority without reopening model tools, including after native boot reconciliation. Calendar evidence retains service-verified `eventEtag`; update/delete may submit `etag:null`, and the broker binds the actually-read source plus exact etag into `draft.hash`. Supplied versions cannot replace it. Unread/foreign-account versions and source withdrawal refuse; preflight/If-Match fence concurrent edits. The outbound guard separately compares raw personal fields after reversing service presentation framing. Every ingestion truncation contributes a visible service gap, partial brief and refusal of quiet no_update. See the personal/effect contracts and `tests/s14-personal-review.test.ts`.

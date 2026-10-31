@@ -4,20 +4,22 @@ import { boxInternalNetwork, pinnedImagePattern, type BoxStream } from "./box-ru
 import { podmanCommandRunner, podmanStreamRunner, type CommandRunner, type StreamRunner } from "./podman-runtime";
 import { dropsAllCapabilities, forwardingDisabled } from "./container-checks";
 
-const egressNetwork = "jit-registry-egress", name = "jit-registry-proxy";
+const egressNetwork = "jit-registry-egress";
 
 /** Remote-compatible registry proxy: a mount-free, non-root container on internal and egress bridges, with IP forwarding disabled. */
 export class ContainerRegistryProxy {
   #tail: Promise<unknown> = Promise.resolve();
   #live: { stream: BoxStream; ip: string; alive: boolean } | null = null;
   constructor(readonly image: string, readonly hosts: readonly string[], readonly run: CommandRunner = podmanCommandRunner(),
-    readonly streams: StreamRunner = podmanStreamRunner(process.env, "podman", "inherit"), readonly bundle: () => Promise<string> = proxyBundle) {
+    readonly streams: StreamRunner = podmanStreamRunner(process.env, "podman", "inherit"), readonly bundle: () => Promise<string> = proxyBundle,
+    readonly topology = { internalNetwork: boxInternalNetwork, name: "jit-registry-proxy" }) {
     if (!pinnedImagePattern.test(image) || !hosts.length) throw new AppError("box_proxy_unavailable", 503);
   }
 
   /** Ensures the proxy before each workspace ensure; returns its current internal IP so stale box environments are replaced. */
   url(): Promise<string> {
     const next = this.#tail.catch(() => {}).then(async () => {
+      const { name, internalNetwork } = this.topology;
       if (this.#live?.alive) return `http://${this.#live.ip}:3128`;
       await this.#remove();
       const exists = await this.run(["network", "exists", egressNetwork], { timeoutMs: 15_000 });
@@ -31,18 +33,18 @@ export class ContainerRegistryProxy {
           "--userns=keep-id:uid=1000,gid=1000", "--user=1000:1000", "--pids-limit=64", "--memory=128m", "--cpus=0.5",
           "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777", "--log-driver=none", "--workdir", "/",
           "--http-proxy=false", "--entrypoint", "/bin/sleep", this.image, "infinity"]);
-        await this.#command(["network", "connect", boxInternalNetwork, name]);
+        await this.#command(["network", "connect", internalNetwork, name]);
         await this.#command(["start", name]);
         const [info] = JSON.parse(new TextDecoder().decode(await this.#command(["container", "inspect", name])));
         const host = info?.HostConfig, networks = info?.NetworkSettings?.Networks ?? {};
-        const ip = networks[boxInternalNetwork]?.IPAddress;
+        const ip = networks[internalNetwork]?.IPAddress;
         // Podman 4.9 lists CapDrop per capability, omits BoundingCaps and has no HostConfig.Sysctls in inspect, so
         // capabilities and forwarding are proven inside the running container when inspect cannot prove them (#224).
         const noCaps = await dropsAllCapabilities(this.run, name, info, 15_000);
         const noForwarding = (host?.Sysctls?.["net.ipv4.ip_forward"] === "0" && host?.Sysctls?.["net.ipv6.conf.all.forwarding"] === "0") ||
           await forwardingDisabled(this.run, name, 15_000);
         if (info?.ImageName !== this.image || info?.State?.Running !== true || info?.Config?.User !== "1000:1000" || typeof ip !== "string" || isIP(ip) !== 4 ||
-            Object.keys(networks).sort().join(",") !== [boxInternalNetwork, egressNetwork].sort().join(",") ||
+            Object.keys(networks).sort().join(",") !== [internalNetwork, egressNetwork].sort().join(",") ||
             host?.Privileged !== false || host?.ReadonlyRootfs !== true || (host?.CapAdd ?? []).length ||
             !noCaps || host?.SecurityOpt?.includes("no-new-privileges") !== true ||
             Object.keys(host?.PortBindings ?? {}).length || (info?.Mounts ?? []).some((m: { Type?: string }) => m.Type !== "tmpfs") ||
@@ -76,7 +78,7 @@ export class ContainerRegistryProxy {
   async close(): Promise<void> { await this.#tail.catch(() => {}); await this.#remove(); }
   async #remove(): Promise<void> {
     this.#live?.stream.close(); this.#live = null;
-    await this.#command(["rm", "--force", "--ignore", name]);
+    await this.#command(["rm", "--force", "--ignore", this.topology.name]);
   }
   async #command(argv: string[]): Promise<Uint8Array> {
     const result = await this.run(argv, { timeoutMs: 30_000 });

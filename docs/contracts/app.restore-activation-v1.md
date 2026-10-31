@@ -1,6 +1,6 @@
 # app.restore-activation/v1
 
-OPS14-01 #263, schema **16**, behind `--s14`. Consumes [app.managed-backup/v1](app.managed-backup-v1.md), app.memory-scope/v2, app.context-provenance/v2, app.snapshot-sharing/v1, app.bot-lifecycle/v1, app.work-checkpoints/v1, app.replay-policy/v1, app.routine-grants/v1 and the independent S14 lifecycle database. ADRs 0025–0027 retain the legacy invariants; ADR 0057 records this separate S14 implementation. FR-15/16/18/31/35/36/38; NFR-05/07/08/10/12/14; S14-AC01/05/06/11/14.
+OPS14-01 #263, schema **17**, behind `--s14`. Consumes [app.managed-backup/v1](app.managed-backup-v1.md), app.memory-scope/v2, app.context-provenance/v2, app.snapshot-sharing/v1, app.bot-lifecycle/v1, app.work-checkpoints/v1, app.replay-policy/v1, app.routine-grants/v1 and the independent S14 lifecycle database. ADRs 0025–0027 retain the legacy invariants; ADR 0057 records this separate S14 implementation. FR-15/16/18/31/35/36/38; NFR-05/07/08/10/12/14; S14-AC01/05/06/11/14.
 
 ## Commands and states
 
@@ -12,7 +12,7 @@ All commands use maintenance `revision`, exact payload keys and durable request 
 | --- | --- | --- |
 | `backup.create` | `{}` | Complete registered credential-free backup |
 | `restore.prepare` | `{backupId}` | Preflight, recovery point, quarantine import, lifecycle/native validation; validated, partial or blocked |
-| `upgrade.prepare` | `{targetSchema:16}` | Same staging path with a new managed recovery point |
+| `upgrade.prepare` | `{targetSchema:17}` | Same staging path with a new managed recovery point |
 | `restore.validate` | `{stageId}` | Rebuild candidate from its immutable image, retry reconciliation and issue a new exact action hash |
 | `restore.activate` | `{stageId,actionHash}` | Exact owner-authorized cutover or resolution of its persisted intent |
 | `restore.discard` | `{stageId}` | Before activation, discard candidate and retain live; also resolves an interrupted capture identified by offline `pendingBackupId` |
@@ -26,8 +26,8 @@ Offline status returns revision, backup IDs, `pendingBackupId`, sanitized stage/
 
 | Input/build | Behavior |
 | --- | --- |
-| Fresh S14 schema 16, `jit/0.1.0`, managed-backup/v1, native snapshot/v1 format 4 | Supported 16→16 staged validation and activation |
-| S14 schemas 1–15 | Unreleased formats refuse with fresh-state; no migration chain invented |
+| Fresh S14 schema 17, `jit/0.1.0`, managed-backup/v1, native snapshot/v1 format 4 | Supported 17→17 staged validation and activation |
+| S14 schemas 1–16 | Unreleased formats refuse with fresh-state; no migration chain invented |
 | Future schema/build, mismatching native version/capability | Refuse before fence/candidate write |
 | Legacy application or legacy ops manifest | Refuse before writes; never convert, erase or reinterpret |
 | Other installation, host or native workspace path | Unsupported; no ledger bootstrap or opaque-native relocation |
@@ -53,3 +53,5 @@ Before rename, an external journal records activation intent, old and target man
 After a crash the owner reauthenticates offline and retries the same exact activate command. Managed-state digests distinguish prior from target despite a new login; prior permits one verified rename, target permits completion of the native pointer switch, neither remains `s14_ops_activation_state_unknown`. No worker can observe a mixed generation. The journal/receipt commits before fence removal; failure keeps the fence. A pre-activation discard never touches live state or current ledger. A post-activation rollback uses quarantine/current tombstones again.
 
 Tests: `tests/s14-ops.test.ts` covers state/artifact/native round trip with real public local Schway storage, credential sentinels, source deletion/forget, share revoke, Bot retire/delete, reservation/effect anti-resurrection, incompatible input, traversal/symlink/bounds, capture/import/reconciliation/cutover fault windows, exact-owner/revision/lock barriers and rollback. Fixtures do not certify Linux host isolation, power-loss durability, live subscriptions or product UI. Those evidence boxes stay pending.
+
+PR #276 reconciliation uses fresh schema **17** (both parents 16; 1–16 refuse). Managed classification includes all coding/Git tables. Git connection metadata is redacted to `vault_id=NULL` and `secret=empty`; tokens/vault files/broker scratch/workspace and repository bundles are excluded, and queued `git_reconciliations` are emptied. Quarantine advances connection revisions beyond the current independent high-water mark, requiring explicit reconnect even with a surviving vault. Pending/approved cards expire, claimed push/PR effects remain unknown/reconcile-only and verified outcomes are preserved without replay. Independent Git revision/outcome tables participate in ledger continuity and activation. Coding evidence/raw checks obey ordinary report/artifact forget/delete/withdrawal rules; bundle export retains the same current authority barriers. Snapshot/memory, personal and repository grants share one slot reservation namespace including tombstones. Existing Opus surfaces remain in design sections 23/24/25. See ADR 0058 and `tests/s14-coding-git.test.ts`.

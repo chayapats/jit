@@ -9,7 +9,7 @@ import { committed } from "./web-product-memory";
 /** Where a slot added from the share sheet leads back to. It is a plain read of that sheet and carries no authority. */
 export type S14ShareReturn = SnapshotTarget;
 /** `/team/:id/capabilities`: the live ceiling, its draft form or one exact proposal, and earlier proposals. `slots` is the free-slot query. */
-export interface S14BotPolicy { kind: "bot-policy"; bot: Bot; lifecycle: BotLifecycle; proposals: CapabilityProposal[]; proposal: CapabilityProposal | null; slots: ReturnType<S14Application["sharing"]["freeSlots"]>; routines: RoutineView[]; addSlot: boolean; back: S14ShareReturn | null; account: string | null; draft: Capabilities | null; notice: string | null }
+export interface S14BotPolicy { kind: "bot-policy"; bot: Bot; lifecycle: BotLifecycle; proposals: CapabilityProposal[]; proposal: CapabilityProposal | null; slots: ReturnType<S14Application["sharing"]["freeSlots"]>; routines: RoutineView[]; addSlot: boolean; addCoding: boolean; back: S14ShareReturn | null; account: string | null; draft: Capabilities | null; notice: string | null }
 /** `/team/:id/retire` and `/team/:id/delete`: the exact preview the single command binds to, by hash. */
 export interface S14BotEnd { kind: "bot-end"; action: "retire" | "delete"; bot: Bot; lifecycle: BotLifecycle; preview: BotLifecyclePreview; routines: RoutineView[] }
 /** Lifecycle surfaces added to the product view union. */
@@ -42,7 +42,7 @@ const routinesOf = (app: S14Application, actor: OwnerActor, botId: string) => ap
 function policy(app: S14Application, actor: OwnerActor, botId: string, search: URLSearchParams, notice: string | null = null, draft: Capabilities | null = null): S14BotPolicy {
   const read = app.botLifecycle.view(actor, botId), wanted = search.get("proposal"), edit = search.get("edit") === "1" || !!notice;
   const proposal = read.proposals.find(item => item.id === wanted) ?? (edit ? null : read.proposals.find(item => item.state === "proposed" && item.botRevision === read.bot.revision)) ?? null;
-  return { kind: "bot-policy", ...read, proposal, slots: app.sharing.freeSlots(actor), routines: routinesOf(app, actor, botId), addSlot: search.get("add") === "slot", back: shareReturn(search), account: accountReturn(search.get("account")), draft: draft ?? accountDraft(read.bot, search), notice };
+  return { kind: "bot-policy", ...read, proposal, slots: app.sharing.freeSlots(actor), routines: routinesOf(app, actor, botId), addSlot: search.get("add") === "slot", addCoding: search.get("add") === "coding", back: shareReturn(search), account: accountReturn(search.get("account")), draft: draft ?? accountDraft(read.bot, search), notice };
 }
 /** Resolves the capability, retire and delete pages; null leaves the path to the other product surfaces. Previews are reads. */
 export function lifecycleView(app: S14Application, url: URL, actor: OwnerActor): S14LifecycleSurface | null {

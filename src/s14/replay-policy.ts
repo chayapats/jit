@@ -8,6 +8,7 @@ const readTools = new Set(["web_search", "web_fetch"]);
 /** Classifies only registered handlers and exact service tools; model intent/readOnlyHint is never consulted. */
 export function replayPolicy(attempt: Attempt): { replay: ReplayClass; handlerVersion: string } {
   const handlerVersion = handlers.get(attempt.step?.handler ?? "") ?? "unregistered/v1";
+  if (attempt.snapshot.tools.some(tool => tool.startsWith("effect_"))) return { replay: "reconcile_only", handlerVersion };
   if (attempt.snapshot.tools.includes("computer")) return { replay: "never_auto", handlerVersion };
   if (handlerVersion === "unregistered/v1" || attempt.snapshot.tools.some(tool => !readTools.has(tool))) return { replay: "reconcile_only", handlerVersion };
   return { replay: "replay_safe", handlerVersion };

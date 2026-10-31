@@ -5,6 +5,7 @@ import type { ScopeRef } from "./authority-types";
 import type { S14Page } from "./web";
 import { accountChoices, banner, botName, commandForm, e, hidden, icon, k, limitFields, notice, ownerStrip, pill, routeText, shareChoices, shell, size, untrusted, when } from "./web-pages";
 import { reach } from "./web-memory";
+import { generalTool } from "./web-product-coding";
 import { ownerStoppedRun, routineBounds, type S14RoutineDetail, type S14RoutineDraft, type S14RoutineFinding, type S14RoutineList, type S14RoutineNew, type S14RoutineReview, type S14RoutineSurface } from "./web-product-routines";
 
 /* Routines (ROUT14-01, F13). A routine is an authorization written as sentences: fixed words and typed data, with the owner's text and anything a run found kept in a frame. Titles never reach a heading, a button or a strip. */
@@ -55,7 +56,7 @@ function botChoices(page: S14Page, draft: S14RoutineDraft): string {
   return `<fieldset class="s-field"><legend>${tr("s14.routine.field.bots")}</legend>${bots.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}<p class="s-note">${tr("s14.routine.bots_note")}</p></fieldset>`;
 }
 function toolChoices(page: S14Page, draft: S14RoutineDraft): string {
-  const bots = page.state.bots.filter(bot => bot.enabled), tools = page.policy.tools.filter(tool => tool !== "personal_read" && bots.some(bot => bot.capabilities.tools.includes(tool)));
+  const bots = page.state.bots.filter(bot => bot.enabled), tools = page.policy.tools.filter(tool => generalTool(tool) && tool !== "personal_read" && bots.some(bot => bot.capabilities.tools.includes(tool)));
   if (!tools.length) return `<div class="s-field"><p class="s-sub">${tr("s14.routine.no_tools")}</p><p><a class="s-link-text" href="/team/jit/capabilities">${tr("s14.routine.add_tools")}</a></p></div>`;
   return `<fieldset class="s-field"><legend>${tr("s14.grant.tools")}</legend>${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${draft.tools.includes(tool) ? " checked" : ""}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}</fieldset>`;
 }

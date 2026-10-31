@@ -184,7 +184,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         try {
           const reviewed = product!.review?.(form, p, auth.actor, state, signedInLocale(state));
           if (reviewed) return view(app.home(auth.actor), reviewed);
-          return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p));
+          const command = product!.command(form, p, auth.actor, state, signedInLocale(state));
+          const receipt = command.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, command) : app.execute(auth.actor, command);
+          return redirect(product!.surface(receipt, p));
         }
         catch (error) {
           const recovered = error instanceof AppError ? await product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
@@ -206,11 +208,18 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           return url.pathname === "/s14/commands" && product ? redirect(product.backupSurface(receipt.requestId)) : json(receipt, 202);
         }
         if (/^(restore|upgrade)\./.test((command as { kind?: string })?.kind ?? "")) throw new AppError("s14_ops_offline_required", 409);
-        const receipt = app.execute(auth.actor, command as S14Command);
+        const typed = command as S14Command;
+        const receipt = typed?.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, typed) : app.execute(auth.actor, typed);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      if (url.pathname === "/api/s14/git/connections") return json({ items: app.git.connections(auth.actor) });
+      const gitEffect = /^\/api\/s14\/git\/effects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (gitEffect) return json(app.git.view(auth.actor, gitEffect[1]!));
+      if (url.pathname === "/api/s14/coding/repositories") return json({ items: app.coding.repositories(auth.actor) });
+      const coding = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/coding$/.exec(url.pathname);
+      if (coding) return json(app.coding.view(auth.actor, coding[1]!));
       const review = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/report-review$/.exec(url.pathname);
       if (review) return json(app.reports.review(auth.actor, review[1]!));
       const reports = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/reports$/.exec(url.pathname);

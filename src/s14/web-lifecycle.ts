@@ -1,4 +1,5 @@
 import { tr, trMaybe, type MessageKey } from "../i18n";
+import { resourceConfigured } from "./share-slots";
 import type { BotLifecycle, BotLifecyclePreview, CapabilityProposal } from "./bot-lifecycle-types";
 import type { RoutineView } from "./routine-types";
 import type { Bot, Capabilities } from "./types";
@@ -66,15 +67,16 @@ function resourceChoices(view: S14BotPolicy, chosen: Capabilities, added: string
   return `<fieldset class="s-field"><legend>${tr("s14.bot.resources")}</legend>${ids.map(row).join("") || `<p class="s-note">${tr("s14.life.no_slots")}</p>`}<p class="s-note">${tr("s14.life.slot_note")}</p></fieldset>`;
 }
 /** The first slot a "needs a slot" link pretick. It is a suggestion in plain sight: the owner still reads the exact proposal. */
-function suggested(view: S14BotPolicy): string | null {
-  if (!view.addSlot) return null;
+function suggested(page: S14Page, view: S14BotPolicy): string | null {
   const held = view.bot.capabilities.resources;
+  if (view.addCoding) return view.slots.find(slot => resourceConfigured(page.policy, slot.scopeId) && !held.includes(slot.scopeId) && !slot.receiverBotIds.includes(view.bot.id))?.scopeId ?? null;
+  if (!view.addSlot) return null;
   return view.slots.filter(slot => !held.includes(slot.scopeId) && !slot.receiverBotIds.includes(view.bot.id)).sort((a, b) => a.receiverBotIds.length - b.receiverBotIds.length)[0]?.scopeId ?? null;
 }
 /** Draft form. Every box is the exact selection sent, including what stays, so nothing is inferred. */
 function draftForm(page: S14Page, view: S14BotPolicy): string {
-  const { bot, lifecycle } = view, reenable = lifecycle.state === "retired", chosen = view.draft ?? bot.capabilities, form = reenable ? "capability-reenable" : "capability-propose";
-  return `<section class="s-card s-stack" aria-labelledby="s14-life-draft"><h2 id="s14-life-draft">${tr(reenable ? "s14.life.reenable_title" : "s14.life.draft_title")}</h2><p class="s-sub">${tr(reenable ? "s14.life.reenable_lead" : "s14.life.draft_lead")}</p><form class="s-stack" method="post" action="/s14/forms/${form}">${flat(page.csrf, bot.revision)}${hidden("botId", bot.id)}${view.back ? hidden("share", shareQuery(view.back)) : ""}${view.account ? hidden("account", view.account) : ""}${toolChoices(page, bot, chosen)}${resourceChoices(view, chosen, suggested(view))}<div><button class="s-btn primary">${tr("s14.life.review")}</button></div></form></section>`;
+  const { bot, lifecycle } = view, reenable = lifecycle.state === "retired", chosen = view.draft ?? (view.addCoding ? { ...bot.capabilities, tools: [...new Set([...bot.capabilities.tools, "computer", "coding"])] } : bot.capabilities), form = reenable ? "capability-reenable" : "capability-propose";
+  return `<section class="s-card s-stack" aria-labelledby="s14-life-draft"><h2 id="s14-life-draft">${tr(reenable ? "s14.life.reenable_title" : "s14.life.draft_title")}</h2><p class="s-sub">${tr(reenable ? "s14.life.reenable_lead" : "s14.life.draft_lead")}</p><form class="s-stack" method="post" action="/s14/forms/${form}">${flat(page.csrf, bot.revision)}${hidden("botId", bot.id)}${view.back ? hidden("share", shareQuery(view.back)) : ""}${view.account ? hidden("account", view.account) : ""}${toolChoices(page, bot, chosen)}${resourceChoices(view, chosen, suggested(page, view))}<div><button class="s-btn primary">${tr("s14.life.review")}</button></div></form></section>`;
 }
 /** One side of the before and after, listing the exact set in mono so a change can be checked by eye. */
 const side = (label: string, value: Capabilities) => `<div><p class="s-exact-label">${e(label)}</p><pre class="s-exact">${e(`${tr("s14.bot.tools")}\n${value.tools.join("\n") || tr("s14.bot.none")}\n\n${tr("s14.bot.resources")}\n${value.resources.join("\n") || tr("s14.bot.none")}`)}</pre></div>`;

@@ -18,10 +18,31 @@ const host = () => ({ os: "linux", security: { rootless: true }, cgroupVersion: 
 function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n", stream?: (index: number) => BoxStream) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-podman-"))); roots.push(root);
   for (const bot of ["jit", "reader"]) for (const role of ["workspace", "profile"]) mkdirSync(join(root, bot, role), { recursive: true, mode: 0o700 });
+  const networks = new Map<string, any>([["jit-registry-egress", { driver: "bridge", internal: false }]]);
+  const runnerInputs: any[] = [];
+  let registryFailure = "";
   const calls: string[][] = [], streamCalls: string[][] = [], infos = new Map<string, any>(), cdp = new FakeCdp();
-  const run: CommandRunner = async argv => {
+  const run: CommandRunner = async (argv, options) => {
     calls.push([...argv]);
     if (argv[0] === "--version") return ok("podman version fixture");
+    if (argv[0] === "network") {
+      const name = argv.at(-1)!;
+      if (argv[1] === "exists") return { ...ok(), exitCode: networks.has(name) ? 0 : 1 };
+      if (argv[1] === "create") { networks.set(name, { internal: argv.includes("--internal"), driver: "bridge", dns_enabled: registryFailure === "dns" }); return ok(); }
+      if (argv[1] === "inspect") return ok([networks.get(name)]);
+      if (argv[1] === "rm") { networks.delete(name); return ok(); }
+      if (argv[1] === "connect") { infos.get(name).NetworkSettings.Networks[argv[2]!] = { IPAddress: "10.89.0.2" }; return ok(); }
+    }
+    if (argv[0] === "create") {
+      if (registryFailure === "proxy") return { ...ok(), exitCode: 1 };
+      const name = argv[argv.indexOf("--name") + 1]!;
+      infos.set(name, { State: { Running: true }, ImageName: image, Config: { User: "1000:1000" }, Mounts: [],
+        NetworkSettings: { Networks: { "jit-registry-egress": { IPAddress: "10.90.0.2" } } },
+        HostConfig: { Privileged: false, ReadonlyRootfs: true, CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"], Sysctls: { "net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0" } } });
+      return ok();
+    }
+    if (argv[0] === "start") return ok();
+    if (argv[0] === "container" && argv[1] === "inspect") return ok([infos.get(argv[2]!)]);
     if (argv[0] === "info") return ok({ host: host() });
     if (argv[0] === "run") {
       const get = (flag: string) => argv[argv.indexOf(flag) + 1]!;
@@ -29,20 +50,35 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       const info = { State: { Running: true }, ImageName: image,
         Config: { User: "1000:1000", Labels: { "jit.s14.computer": get("--label").split("=")[1] } },
         Mounts: [{ Type: "bind", Source: source, Destination: destination }],
-        HostConfig: { Privileged: false, ReadonlyRootfs: true, NetworkMode: "none", PidMode: "private", IpcMode: "private", UTSMode: "private", CgroupnsMode: "private", SecurityOpt: ["no-new-privileges"], CapDrop: ["ALL"],
-          Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=67108864,mode=1777", "/run": "rw,nosuid,nodev,noexec,size=16777216,mode=1777" } } };
+        HostConfig: { Privileged: false, ReadonlyRootfs: true, NetworkMode: argv.find(a => a.startsWith("--network="))!.slice(10), PidMode: "private", IpcMode: "private", UTSMode: "private", CgroupnsMode: "private", SecurityOpt: ["no-new-privileges"], CapDrop: ["ALL"],
+          Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=67108864,mode=1777", "/run": "rw,nosuid,nodev,noexec,size=134217728,mode=1777" } } };
+      Object.assign(info, { NetworkSettings: { Networks: info.HostConfig.NetworkMode === "none" ? {} : { [info.HostConfig.NetworkMode]: { IPAddress: "10.89.0.3" } } } });
       change(info);
       infos.set(get("--name"), info);
       return ok(get("--name"));
     }
     if (argv[0] === "inspect") return ok([infos.get(argv[1]!)]);
+    if (argv[0] === "rm" && registryFailure === "cleanup" && argv.at(-1)!.endsWith("-registry")) return { ...ok(), exitCode: 1 };
     if (argv[0] === "rm") { infos.delete(argv.at(-1)!); return ok(); }
     if (argv[0] === "exec" && argv.includes("/sys/fs/cgroup/cpu.max")) return ok(kernel);
-    if (argv[0] === "exec" && argv.includes("/opt/jit/runner")) return ok({ v: 1, ok: true, result: { type: "file" } });
+    if (argv[0] === "exec" && argv.includes("/proc/net/route")) return ok(registryFailure === "route"
+      ? "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\neth0 00000000 0100590A 0003 0 0 0 00000000 0 0 0\n"
+      : "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\neth0 0000590A 00000000 0001 0 0 0 00FFFFFF 0 0 0\n");
+    if (argv[0] === "exec" && argv.includes("/opt/jit/runner")) {
+      const input = JSON.parse(new TextDecoder().decode(options.stdin)); runnerInputs.push(input);
+      return ok({ v: 1, ok: true, result: input.op === "spawn" ? { stdout: Buffer.from("installed").toString("base64"), stderr: "", exitCode: 0, timedOut: false } : { type: "file" } });
+    }
     throw Error(`unexpected fixture command ${argv[0]}`);
   };
   const options: BotPodmanOptions = { dataRoot: root, protectedPaths: [join(root, "..", "private-state")], workspaceImage: image, browserImage: image, run,
-    streams(argv, extra) { streamCalls.push([...argv]); expect(extra).toEqual({}); return stream ? stream(streamCalls.length) : cdp.stream(); } };
+    streams(argv, extra) {
+      streamCalls.push([...argv]); expect(extra).toEqual({});
+      if (argv.includes("node")) {
+        let output!: ReadableStreamDefaultController<Uint8Array>, exit!: (code: number) => void;
+        return { stdout: new ReadableStream({ start(c) { output = c; c.enqueue(bytes({ ready: true, port: 3128 })); c.enqueue(bytes("\n")); } }),
+          exited: new Promise<number>(resolve => { exit = resolve; }), write() {}, close() { output.close(); exit(0); } };
+      }
+      return stream ? stream(streamCalls.length) : cdp.stream(); } };
   const c: BotComputer = { id: "a".repeat(32), botId: "jit", revision: 1, generation: 1, botGeneration: 1, ownerGeneration: 1, workId: "work1", state: "starting", reason: null,
     limits: { ...defaultComputerLimits }, workspaceId: "workspace1", profileId: "profile1", lastUsedAt: 1800000000000 };
   let disk = "safe";
@@ -53,7 +89,7 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       return JSON.stringify({ filesystems: ["jit", "reader"].flatMap((bot, i) => ["workspace", "profile"].map((role, j) => ({ target: join(root, bot, role), source: `/dev/fixture${i * 2 + j}`, fstype: disk === "wrong-fs" ? "overlay" : "ext4", "maj:min": disk === "shared" ? "1:1" : `1:${i * 2 + j}`, fsroot: "/" }))) });
     }
   }
-  return { root, c, runtime: new Runtime(options), options, calls, streamCalls, cdp, setDisk(value: string) { disk = value; } };
+  return { root, c, runtime: new Runtime(options), options, calls, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
 }
 
 test("rootless workspace/browser use separate mounts, private namespaces, finite limits and no egress/socket/environment inheritance", async () => {
@@ -186,4 +222,38 @@ test.each(["rootless", "subuid", "cgroup", "linux"])("readiness distinguishes mi
 test.each([["/dev/fuse: permission denied", "fuse_device_or_storage_driver_unavailable"], ["/dev/net/tun unavailable", "nested_network_device_unavailable"], ["newuidmap: write to uid_map failed", "subuid_subgid_range_required"], ["cannot clone: operation not permitted", "nested_user_namespace_unavailable"]])("nested diagnostics are safe reason codes (%s)", async (stderr, reason) => {
   const run: CommandRunner = async args => args[0] === "--version" ? ok() : { exitCode: 1, stdout: new Uint8Array(), stderr: bytes(`${stderr} secret=should-not-be-returned`) };
   expect(await probeBotPodman(run)).toEqual({ state: "unavailable", reason });
+});
+
+
+test("registry command reuses CONNECT proxy on its own internal bridge and cleans every descendant without changing ordinary components", async () => {
+  const f = fixture(), handle = await f.runtime.start(f.c, () => {});
+  const result = await f.runtime.registrySpawn(handle, { cwd: "/workspace/coding/work1", command: "'bun' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  expect(result.exitCode).toBe(0);
+  const creates = f.calls.filter(a => a[0] === "run");
+  expect(creates.slice(0, 2).every(a => a.includes("--network=none"))).toBe(true);
+  expect(creates[2]!.find(a => a.startsWith("--network="))).toEndWith("-registry-net");
+  expect(creates[2]!.filter(a => a.startsWith("type=bind"))).toEqual([`type=bind,src=${join(f.root, "jit/workspace")},dst=/workspace,rw`]);
+  expect(f.calls.some(a => a[0] === "network" && a.includes("--internal") && a.includes("--disable-dns"))).toBe(true);
+  expect(f.streamCalls[0]!.at(-1)).toBe('["registry.npmjs.org"]');
+  expect(f.runnerInputs[0].command).toContain("HTTPS_PROXY=http://10.89.0.2:3128");
+  expect(f.runnerInputs[0].command).toContain("'env' '-i'");
+  expect(f.calls.some(a => a[0] === "network" && a[1] === "rm")).toBe(true);
+  await f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/report" }), timeoutMs: 1000 }, () => {});
+  expect(f.calls.at(-1)).toContain(`jit-s14-${f.c.id}-workspace`);
+});
+
+test.each(["proxy", "route", "dns"])("registry boundary unavailable (%s) fails closed before executing a runner command", async failure => {
+  const f = fixture(), handle = await f.runtime.start(f.c, () => {});
+  f.setRegistryFailure(failure);
+  await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'bun' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {})).rejects.toThrow();
+  expect(f.runnerInputs).toHaveLength(0);
+  expect(f.calls.some(a => a[0] === "network" && a[1] === "rm")).toBe(true);
+});
+
+
+test("unconfirmed registry cleanup fences the runtime handle and cannot certify a successful check", async () => {
+  const f = fixture(), handle = await f.runtime.start(f.c, () => {});
+  f.setRegistryFailure("cleanup");
+  await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {})).rejects.toThrow("coding_registry_cleanup_unconfirmed");
+  await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).rejects.toThrow("computer_handle_fenced");
 });

@@ -324,7 +324,7 @@ test("personal graph handoff keeps actually-read excerpts for the same Bot and r
   expect(available(f, work.id).report.claims[0]!.support).toBe("supported");
 });
 
-test.each(["snapshot", "memory"] as const)("personal account slots cannot be reinterpreted by %s sharing, including stale-image restoration", async kind => {
+test.each(["snapshot", "memory", "repository"] as const)("personal account slots cannot be reinterpreted by %s sharing, including stale-image restoration", async kind => {
   const f = await fixture(), c = await connect(f), other = await secondBot(f);
   const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: retryId(),
     expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
@@ -333,29 +333,59 @@ test.each(["snapshot", "memory"] as const)("personal account slots cannot be rei
   if (found.state !== "available") throw Error("Missing owner source");
   const snapshot = join(f.root, "before-personal-slot.sqlite"); copyFileSync(f.path, snapshot);
   grant(f, c.id);
-  const share = () => kind === "snapshot" ? f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: other.revision,
+  const share = () => kind === "repository" ? f.app.execute(f.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0,
+    payload: { id: "mail", botId: other.id, url: "https://github.com/fixture/repo.git", baseCommit: "a".repeat(40) } }) : kind === "snapshot" ? f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: other.revision,
     payload: { scopeId: "mail", target: { kind: "source", ...found.claim.source }, receiverBotId: other.id, workId: null, expiresAt: f.clock.now + 60000 } })
     : f.app.execute(f.auth.actor, { kind: "memory.share", requestId: retryId(), expectedRevision: 1,
       payload: { scopeId: "mail", claim, receiverBotId: other.id, expiresAt: f.clock.now + 60000 } });
   expect(f.app.sharing.freeSlots(f.auth.actor).some(s => s.scopeId === "mail")).toBe(false);
-  expect(share).toThrow(kind === "snapshot" ? "snapshot_share_exists" : "memory_share_exists");
+  expect(share).toThrow(kind === "repository" ? "coding_resource_denied" : kind === "snapshot" ? "snapshot_share_exists" : "memory_share_exists");
   f.app.execute(f.auth.actor, { kind: "personal.grant.set", requestId: retryId(), expectedRevision: 1,
     payload: { scopeId: "mail", connectionId: c.id, botId: "jit", active: false } });
   f.store.close(); copyFileSync(snapshot, f.path); f.reopen();
   expect(f.app.sharing.freeSlots(f.auth.actor).some(s => s.scopeId === "mail")).toBe(false);
-  expect(share).toThrow(kind === "snapshot" ? "snapshot_share_exists" : "memory_share_exists");
+  expect(share).toThrow(kind === "repository" ? "coding_resource_denied" : kind === "snapshot" ? "snapshot_share_exists" : "memory_share_exists");
 });
 
-test.each(["snapshot", "memory"] as const)("an existing %s share slot cannot become a personal account grant", async kind => {
+test.each(["snapshot", "memory", "repository"] as const)("an existing %s share slot cannot become a personal account grant", async kind => {
   const f = await fixture(), c = await connect(f), other = await secondBot(f);
   const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: retryId(),
     expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
     payload: { conversationId: f.conversationId, text: "Owner-authored shared fact" } }).claim!;
   const found = f.store.read(tx => f.app.memory.lookup(tx, "jit", claim));
   if (found.state !== "available") throw Error("Missing owner source");
-  if (kind === "snapshot") f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: other.revision,
+  if (kind === "repository") f.app.execute(f.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0,
+    payload: { id: "other", botId: other.id, url: "https://github.com/fixture/repo.git", baseCommit: "a".repeat(40) } });
+  else if (kind === "snapshot") f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: other.revision,
     payload: { scopeId: "other", target: { kind: "source", ...found.claim.source }, receiverBotId: other.id, workId: null, expiresAt: f.clock.now + 60000 } });
   else f.app.execute(f.auth.actor, { kind: "memory.share", requestId: retryId(), expectedRevision: 1,
     payload: { scopeId: "other", claim, receiverBotId: other.id, expiresAt: f.clock.now + 60000 } });
   expect(() => grant(f, c.id, "other")).toThrow("personal_scope_exists");
+  if (kind !== "repository") expect(() => f.app.execute(f.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0,
+    payload: { id: "other", botId: other.id, url: "https://github.com/fixture/repo.git", baseCommit: "a".repeat(40) } })).toThrow("coding_resource_denied");
+});
+
+test.each(["snapshot", "memory"] as const)("repository slots refuse %s reuse before and after revocation/stale-image restore", async kind => {
+  const f = await fixture(), other = await secondBot(f);
+  const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: retryId(),
+    expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "Owner-authored source" } }).claim!;
+  const found = f.store.read(tx => f.app.memory.lookup(tx, "jit", claim));
+  if (found.state !== "available") throw Error("Missing owner source");
+  const snapshot = join(f.root, "before-repository-slot.sqlite"); copyFileSync(f.path, snapshot);
+  f.app.execute(f.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0,
+    payload: { id: "other", botId: other.id, url: "https://github.com/fixture/repo.git", baseCommit: "a".repeat(40) } });
+  const share = () => kind === "snapshot" ? f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: other.revision,
+    payload: { scopeId: "other", target: { kind: "source", ...found.claim.source }, receiverBotId: other.id, workId: null, expiresAt: f.clock.now + 60000 } })
+    : f.app.execute(f.auth.actor, { kind: "memory.share", requestId: retryId(), expectedRevision: 1,
+      payload: { scopeId: "other", claim, receiverBotId: other.id, expiresAt: f.clock.now + 60000 } });
+  const refuses = () => {
+    expect(f.app.sharing.freeSlots(f.auth.actor).some(slot => slot.scopeId === "other")).toBe(false);
+    expect(share).toThrow(kind === "snapshot" ? "snapshot_share_exists" : "memory_share_exists");
+  };
+  refuses();
+  f.app.execute(f.auth.actor, { kind: "coding.repository.revoke", requestId: retryId(), expectedRevision: 1, payload: { repositoryId: "other" } });
+  refuses();
+  f.store.close(); copyFileSync(snapshot, f.path); f.reopen();
+  refuses();
 });

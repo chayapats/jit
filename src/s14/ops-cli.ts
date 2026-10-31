@@ -6,7 +6,7 @@ import { opsRead } from "./ops-files";
 import { schwayOpsNative } from "./ops-native";
 import { S14Maintenance } from "./ops";
 import { opsGuide, type S14OpsResult } from "./ops-guide";
-import { supportedS14Routes } from "./sign-in";
+import { s14Policy } from "./policy";
 import type { OpsCommand } from "./ops-types";
 
 /** Runs owner maintenance offline under the same exclusive lock as serve; stdin is used only for the owner password. */
@@ -17,7 +17,7 @@ export async function runS14Ops(path: string, args: string[], env: NodeJS.Proces
   if (!process.stdin.isTTY && !args.includes("--password-stdin")) throw new AppError("password_stdin_flag_required");
   // No model, service transport, computer runtime, vault or executor exists in this process.
   const maintenance = new S14Maintenance(path, {
-    policy: { routes: env.JIT_S14_ROUTES ? JSON.parse(env.JIT_S14_ROUTES) : supportedS14Routes(), tools: ["web_search", "web_fetch", "computer"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") },
+    policy: s14Policy(env),
     chat: { async reply() { throw new AppError("s14_ops_workers_fenced", 503); } },
   }, schwayOpsNative(join(dirname(path), "native")));
   try {

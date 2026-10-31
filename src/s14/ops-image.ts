@@ -17,18 +17,20 @@ const included = new Set(`
   effects effect_versions bot_computers computer_operations computer_attempts computer_activity
   personal_clients personal_connections personal_grants personal_sources personal_reads
   personal_drafts personal_draft_versions personal_effect_observations
+  coding_repositories coding_jobs coding_checks coding_runs git_effects git_connection_releases git_preload_releases
 `.trim().split(/\s+/));
-const excluded = new Set(`sessions login_throttle parallel_connections parallel_sessions command_receipts artifact_staging reply_transports attempt_transports input_leases computer_inputs personal_flows
+const redacted = new Set(["owner", "git_connections"]);
+const excluded = new Set(`sessions login_throttle parallel_connections parallel_sessions command_receipts artifact_staging reply_transports attempt_transports input_leases computer_inputs personal_flows git_reconciliations
 `.trim().split(/\s+/));
 
 /** Application tables are retained, emptied, or owner-verifier redacted; unknown tables always block capture. */
-export const opsMainTables = Object.freeze({ retained: Object.freeze([...included].sort()), excluded: Object.freeze([...excluded].sort()), redacted: Object.freeze(["owner"]) });
+export const opsMainTables = Object.freeze({ retained: Object.freeze([...included].sort()), excluded: Object.freeze([...excluded].sort()), redacted: Object.freeze([...redacted].sort()) });
 /** Independent tables are never archived; private quarantine starts from the installation's current ledger. */
-export const opsLedgerTables = Object.freeze(["identity", "withdrawals", "bot_events", "native_intents", "grant_usage", "routine_usage", "effect_outcomes"]);
+export const opsLedgerTables = Object.freeze(["identity", "withdrawals", "bot_events", "native_intents", "grant_usage", "routine_usage", "effect_outcomes", "git_connection_revisions", "git_outcomes"]);
 /** Requires every actual main/ledger table to have an explicit reviewed backup policy. */
 export function assertOpsTableClassification(tx: AppTransaction): void {
   for (const { name } of tx.all<{ name: string }>("SELECT name FROM main.sqlite_master WHERE type='table'")) {
-    if (!included.has(name) && !excluded.has(name) && name !== "owner") throw new AppError("s14_ops_unclassified_table", 409);
+    if (!included.has(name) && !excluded.has(name) && !redacted.has(name)) throw new AppError("s14_ops_unclassified_table", 409);
   }
   for (const { name } of tx.all<{ name: string }>("SELECT name FROM lifecycle.sqlite_master WHERE type='table'")) {
     if (!opsLedgerTables.includes(name)) throw new AppError("s14_ops_unclassified_table", 409);
@@ -68,7 +70,7 @@ export function inspectOpsImage(bytes: Uint8Array, schemaHash: string): void {
     if (opsHash(JSON.stringify(objects)) !== schemaHash || (db.query("PRAGMA integrity_check").get() as { integrity_check: string } | null)?.integrity_check !== "ok") throw new AppError("s14_ops_schema_invalid", 409);
     let rows = 0;
     for (const { name } of db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]) {
-      if (!included.has(name) && !excluded.has(name) && name !== "owner") throw new AppError("s14_ops_unclassified_table", 409);
+      if (!included.has(name) && !excluded.has(name) && !redacted.has(name)) throw new AppError("s14_ops_unclassified_table", 409);
       if (!/^[a-z_]+$/.test(name)) throw new AppError("s14_ops_schema_invalid", 409);
       const count = (db.query(`SELECT count(*) n FROM ${name}`).get() as { n: number }).n;
       rows += count;
@@ -78,6 +80,9 @@ export function inspectOpsImage(bytes: Uint8Array, schemaHash: string): void {
         const text = typeof value === "string" ? value : value instanceof Uint8Array ? Buffer.from(value).toString("utf8") : "";
         if (containsCredential(text)) throw new AppError("s14_ops_credential_excluded", 409);
       }
+    }
+    for (const row of db.query("SELECT record_json,vault_id FROM git_connections").all() as { record_json: string; vault_id: string | null }[]) {
+      if (row.vault_id !== null || JSON.parse(row.record_json).secret !== "empty") throw new AppError("s14_ops_credential_excluded", 409);
     }
     const owner = db.query("SELECT password_hash,generation FROM owner").get() as { password_hash: string; generation: number } | null;
     if (owner && (owner.password_hash !== "[reconnect]" || owner.generation !== 0)) throw new AppError("s14_ops_credential_excluded", 409);
@@ -96,6 +101,7 @@ export function credentialFreeImage(store: S14Store): Uint8Array {
     for (const { name } of names) {
       if (excluded.has(name)) db.exec(`DELETE FROM ${name}`);
       else if (name === "owner") db.exec("UPDATE owner SET password_hash='[reconnect]',generation=0");
+      else if (name === "git_connections") db.exec("UPDATE git_connections SET vault_id=NULL,record_json=json_set(record_json,'$.secret','empty')");
       else if (!included.has(name)) throw new AppError("s14_ops_unclassified_table", 409);
     }
     db.exec(`UPDATE parallel_settings SET record_json='{"id":"parallel","revision":1,"mode":"anonymous","connectionId":null,"billingAcknowledged":false}'`);
@@ -138,7 +144,7 @@ export function opsLiveHash(store: S14Store): string { return store.read(opsMana
 
 /** Records hash-only append-ledger prefixes; an archive can verify continuity but cannot supply authority. */
 export function opsLedgerPosition(store: S14Store): { table: string; count: number; digest: string }[] {
-  return store.read(tx => ["withdrawals", "bot_events", "native_intents", "effect_outcomes"].map(table => {
+  return store.read(tx => ["withdrawals", "bot_events", "native_intents", "effect_outcomes", "git_connection_revisions", "git_outcomes"].map(table => {
     const rows = tx.all(`SELECT * FROM lifecycle.${table} ORDER BY rowid LIMIT ${opsLimits.rows + 1}`);
     if (rows.length > opsLimits.rows) throw new AppError("s14_ops_ledger_bound", 409);
     return { table, count: rows.length, digest: opsHash(JSON.stringify(rows)) };
@@ -146,7 +152,7 @@ export function opsLedgerPosition(store: S14Store): { table: string; count: numb
 }
 /** Rejects an independent ledger older than the archived append-only position without importing any archived row. */
 export function verifyOpsLedgerPosition(store: S14Store, position: { table: string; count: number; digest: string }[]): void {
-  const tables = ["withdrawals", "bot_events", "native_intents", "effect_outcomes"];
+  const tables = ["withdrawals", "bot_events", "native_intents", "effect_outcomes", "git_connection_revisions", "git_outcomes"];
   if (!Array.isArray(position) || position.length !== tables.length) throw new AppError("s14_ops_ledger_position_invalid", 409);
   store.read(tx => {
     for (const [index, entry] of position.entries()) {

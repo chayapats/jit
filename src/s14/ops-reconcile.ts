@@ -41,6 +41,18 @@ export function reconcileOpsImage(app: S14Application): void {
     tx.run(`UPDATE personal_connections SET record_json=json_set(record_json,
       '$.revision',json_extract(record_json,'$.revision')+1,'$.state','reauth_required','$.verifiedAt',null)
       WHERE json_extract(record_json,'$.state') NOT IN ('reauth_required','revoked')`);
+    // Archive metadata never reconnects a surviving Git vault or reissues a requested read-back.
+    for (const row of tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM git_connections")) {
+      const connection = JSON.parse(row.record_json);
+      const latest = tx.get<{ revision: number }>("SELECT max(revision) AS revision FROM lifecycle.git_connection_revisions WHERE connection_id=?", row.id)?.revision ?? 0;
+      connection.revision = Math.max(connection.revision, latest) + 1;
+      connection.secret = "empty";
+      tx.run("UPDATE git_connections SET vault_id=NULL,record_json=? WHERE id=?", canonical(connection), row.id);
+      tx.run("INSERT OR IGNORE INTO lifecycle.git_connection_revisions VALUES (?,?)", row.id, connection.revision);
+    }
+    tx.run("DELETE FROM git_reconciliations");
+    app.coding.recover(tx);
+    app.git.recover(tx);
     app.personal.recover(tx);
     tx.run(`UPDATE personal_connections SET record_json=json_set(record_json,'$.revocation','unknown')
       WHERE json_extract(record_json,'$.revocation')='pending' OR

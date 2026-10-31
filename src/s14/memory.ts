@@ -1,5 +1,5 @@
 import { AppError } from "../errors";
-import { resourceConfigured } from "./share-slots";
+import { resourceConfigured, resourceSlotConflict } from "./share-slots";
 import { activeLineage, lineageClosure } from "../memory/lineage-policy";
 import { lexicalScore, lexicalTerms } from "../memory/lexical";
 import type { AppTransaction } from "../store";
@@ -480,7 +480,7 @@ export class S14Memory {
       identity(s.scopeId); identity(s.receiverBotId); integer(s.expiresAt, this.app.now() + 1, this.app.now() + 86400000);
       const receiver = record<Bot>(tx, "bots", s.receiverBotId);
       if (!receiver.enabled || !resourceConfigured(this.app.policy, s.scopeId) || !receiver.capabilities.resources.includes(s.scopeId)) throw new AppError("memory_scope_denied", 403);
-      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || tx.get("SELECT id FROM snapshot_shares WHERE id=?", s.scopeId) || this.app.personal.owns(tx, { kind: "resource", id: s.scopeId, revision: 1 }) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", s.scopeId)) throw new AppError("memory_share_exists", 409);
+      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || resourceSlotConflict(tx, s.scopeId, "share") || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", s.scopeId)) throw new AppError("memory_share_exists", 409);
       const share: MemoryShare = { id: s.scopeId, revision: 1, claim: ref(claim), receiverBotId: receiver.id, expiresAt: s.expiresAt, active: true };
       tx.run("INSERT INTO memory_shares VALUES (?,?)", share.id, canonical(share));
       return { ...receipt, share };

@@ -55,3 +55,5 @@ The only reader of a value. It has no route, command or read model. `purpose` mu
 - A crash between writing a value file and committing its revision leaves the file ahead of the row; the next `set_secret` or `rotate` overwrites it.
 
 [Web search settings](web-search-settings-v1.md) reuse these one-way vault commands and metadata.
+
+S14 CODE14-02 adaptation (schema 14): app.git-effects/v2 reuses ConnectionVault, normalizeSecret and the same fingerprint/write-only/no-read-back model with typed repository resource scope, not a legacy Project. New S14 git.connection.* commands and tables are separate from the legacy commands above. Revision-specific opaque vault files and an independent connection-revision ledger prevent old approvals using a substituted/restored token. See app.git-effects-v2.md for exact commands, secret-free retry identity, release audit and rollback limitations; no legacy API/schema meaning changes.

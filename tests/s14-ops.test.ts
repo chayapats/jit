@@ -89,7 +89,7 @@ test("credential-free backup commits a consistent bounded manifest, state and op
   await expect(m.execute(actor, { ...c, payload: { forbidden: true } } as never)).rejects.toThrow("invalid_shape");
   const directory = archive(f, result.backupId!);
   const manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")) as ManagedBackupManifest;
-  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 16, credentials: "excluded_reconnect_required" });
+  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 17, credentials: "excluded_reconnect_required" });
   expect(manifest.native).toHaveLength(1);
   const db = Database.deserialize(readFileSync(join(directory, "application.sqlite")));
   expect(db.query("SELECT password_hash FROM owner").get()).toEqual({ password_hash: "[reconnect]" });
@@ -289,9 +289,9 @@ test("changed quarantine ledger bytes refuse activation before any live mutation
 
 test("supported current-schema upgrade has a recovery point and rollback discards only the candidate", async () => {
   const f = await fixture(), { m, actor } = open(f), before = readFileSync(f.path);
-  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 17 }))).rejects.toThrow("s14_ops_version_unsupported");
+  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 18 }))).rejects.toThrow("s14_ops_version_unsupported");
   expect(readFileSync(f.path)).toEqual(before);
-  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 16 }));
+  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 17 }));
   expect(staged.state).toBe("validated");
   expect(m.control.backups).toContain(staged.stage!.recoveryBackupId);
   const discard = await m.execute(actor, command(m, "upgrade.rollback", { stageId: staged.stage!.id }));
