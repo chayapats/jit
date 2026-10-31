@@ -14,8 +14,7 @@ import { createS14Product } from "./web-product";
 import { acquireS14RuntimeLock } from "./runtime-lock";
 import { serveS14Refusal } from "./web-refusal";
 import { existingResourceCeilings } from "./scope-options";
-import { supportedS14Routes } from "./sign-in";
-import type { Policy } from "./types";
+import { s14Policy } from "./policy";
 import { BotPodmanRuntime } from "./computer-podman";
 import { s14CredentialLifecycle } from "./lifecycle";
 import { runComputerWork } from "./computer-work";
@@ -39,7 +38,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page", "--no-refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
     const url = new URL(command === "serve" ? origin : "http://localhost:3001");
     if (command === "serve" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash)) throw new AppError("s14_loopback_origin_required");
-    const policy: Policy = { routes: env.JIT_S14_ROUTES ? JSON.parse(env.JIT_S14_ROUTES) : supportedS14Routes(), tools: ["web_search", "web_fetch", "computer", "coding", "effect_push"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") };
+    const policy = s14Policy(env);
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {

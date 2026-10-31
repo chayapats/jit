@@ -59,19 +59,20 @@ export interface GitProgress {
   stage: "prepared" | "verifying" | "push_dispatching" | "pushed" | "pr_dispatching" | "complete" | "failed" | "unknown";
   reason: string | null;
   pullNumber: number | null;
+  pullUrl?: string | null;
   verification: "none" | "protocol" | "remote_readback";
 }
 /** Remote proof distinguishes verified occurrence from incomplete, ambiguous or contradictory observations. */
 export interface GitRemoteProof {
   headCommit: string | null;
   baseCommit: string | null;
-  prs: { number: number; headCommit: string; baseCommit: string; base: string; head: string; title: string; body: string; draft: boolean }[];
+  prs: { number: number; url?: string | null; headCommit: string; baseCommit: string; base: string; head: string; title: string; body: string; draft: boolean }[];
   complete: boolean;
 }
 /** Trusted transport receives credentials only outside the workspace and guards immediately before each dispatch. */
 export interface GitRemotePort {
   push(mirror: string, action: GitAction, secret: string, allowed: () => void): Promise<"succeeded" | "failed" | "unknown">;
-  createPr(action: GitAction, secret: string, allowed: () => void): Promise<{ outcome: "succeeded" | "failed" | "unknown"; number: number | null }>;
+  createPr(action: GitAction, secret: string, allowed: () => void): Promise<{ outcome: "succeeded" | "failed" | "unknown"; number: number | null; url?: string | null }>;
   readBack(action: GitAction, secret: string, allowed: () => void): Promise<GitRemoteProof>;
 }
 /** Service-owned broker configuration reuses ConnectionVault; deterministic transport/fault seams never come from HTTP. */

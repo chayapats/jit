@@ -18,6 +18,12 @@ export function codingRegistry(value: unknown): asserts value is { hosts: string
 export function codingCommit(value: unknown): asserts value is string {
   if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value) || /^0+$/.test(value)) throw new AppError("coding_commit_invalid");
 }
+/** Accepts one literal branch name, never a revision expression, wildcard or alternate ref namespace. */
+export function codingBranch(value: unknown): asserts value is string {
+  if (typeof value !== "string" || !value.length || value.length > 200 || /[\s\u0000-\u001f\u007f~^:?*\[\\]/.test(value) ||
+      value === "@" || value.includes("..") || value.includes("@{") || value.split("/").some(part => !part || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock")) ||
+      value.startsWith("-") || value.startsWith("refs/") || containsCredential(value)) throw new AppError("coding_branch_invalid");
+}
 /** Restricts repository origins to explicit credential-free GitHub HTTPS identities. */
 export function codingOrigin(value: unknown): asserts value is string {
   if (typeof value !== "string" || !/^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\.git$/.test(value) || containsCredential(value)) throw new AppError("coding_origin_invalid");

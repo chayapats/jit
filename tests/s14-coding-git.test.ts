@@ -10,7 +10,7 @@ import { replayPolicy } from "../src/s14/replay-policy";
 import type { Attempt, Effect } from "../src/s14/authority-types";
 import type { GitAction, GitCommand, GitOptions, GitRemotePort, GitRemoteProof } from "../src/s14/coding-git-types";
 import { CodingGitMirror } from "../src/s14/coding-git-mirror";
-import { GitHubCodingRemote } from "../src/s14/coding-git-remote";
+import { GitHubCodingRemote, gitPullUrl } from "../src/s14/coding-git-remote";
 import { createS14Handler } from "../src/s14/web";
 import { CodingRuntimeFixture, codingScript } from "./fixtures/s14-coding";
 
@@ -44,9 +44,9 @@ class RemoteFixture implements GitRemotePort {
     expect(token).toBe(secret);
     allowed();
     this.creates.push(structuredClone(action));
-    if (this.prOutcome !== "failed") this.prs.push({ number: 17, headCommit: action.headCommit, baseCommit: action.pr!.baseCommit,
+    if (this.prOutcome !== "failed") this.prs.push({ number: 17, url: "https://github.com/fixture/repo/pull/17", headCommit: action.headCommit, baseCommit: action.pr!.baseCommit,
       head: action.update.ref.slice(11), base: action.pr!.base, title: action.pr!.title, body: action.pr!.body, draft: action.pr!.draft });
-    return { outcome: this.prOutcome, number: this.prOutcome === "succeeded" ? 17 : null };
+    return { outcome: this.prOutcome, number: this.prOutcome === "succeeded" ? 17 : null, url: "https://github.com/fixture/repo/pull/17" };
   }
   async readBack(_action: GitAction, token: string, allowed: () => void) {
     expect(token).toBe(secret);
@@ -127,7 +127,7 @@ test("one exact approval verifies broker-owned objects, pushes once and creates 
   expect(f.remote.pushes).toHaveLength(1);
   expect(f.remote.creates).toHaveLength(1);
   expect(f.remote.creates[0]!.pr).toMatchObject({ title: "Exact reviewed change", body: "Exact PR body", draft: true });
-  expect(f.app.git.view(f.auth.actor, effect.id).progress).toMatchObject({ stage: "complete", verification: "remote_readback", pullNumber: 17 });
+  expect(f.app.git.view(f.auth.actor, effect.id).progress).toMatchObject({ stage: "complete", verification: "remote_readback", pullNumber: 17, pullUrl: "https://github.com/fixture/repo/pull/17" });
   await expect(f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).rejects.toThrow("stale_approval");
   expect(f.remote.pushes).toHaveLength(1);
   expect(JSON.stringify(f.runtime.requests)).not.toContain(secret);
@@ -265,13 +265,17 @@ test("GitHub protocol fixes method/endpoint/body, refuses redirects and treats 5
   const calls: { url: string; init: RequestInit }[] = [];
   const remote = new GitHubCodingRemote((async (url: string | URL | Request, init?: RequestInit) => {
     calls.push({ url: String(url), init: init! });
-    return new Response(JSON.stringify({ number: 9 }), { status: calls.length === 1 ? 201 : 502 });
+    return new Response(JSON.stringify({ number: 9, html_url: "https://github.com/fixture/repo/pull/9" }), { status: calls.length === 1 ? 201 : 502 });
   }) as typeof fetch);
-  expect(await remote.createPr(action, secret, () => {})).toEqual({ outcome: "succeeded", number: 9 });
+  expect(await remote.createPr(action, secret, () => {})).toEqual({ outcome: "succeeded", number: 9, url: "https://github.com/fixture/repo/pull/9" });
   expect(calls[0]!.url).toBe("https://api.github.com/repos/fixture/repo/pulls");
   expect(calls[0]!.init.redirect).toBe("error");
   expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ title: "Exact reviewed change", head: "review", base: "main", body: "Exact PR body", draft: true });
   expect((await remote.createPr(action, secret, () => {})).outcome).toBe("unknown");
+});
+
+test.each(["http://github.com/fixture/repo/pull/9", "https://github.com.evil.example/fixture/repo/pull/9", "https://github.com@evil.example/fixture/repo/pull/9", "https://github.com/other/repo/pull/9", "https://github.com/fixture/repo/pull/10", "javascript:alert(1)", "https://github.com/fixture/repo/pull/9?token=secret"])("provider PR URL %j cannot become a trusted link", url => {
+  expect(gitPullUrl(url, "https://github.com/fixture/repo.git", 9)).toBeNull();
 });
 
 test("approved diff and full head are independently verified against exported objects", async () => {

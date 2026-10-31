@@ -7,6 +7,12 @@ const repository = (action: GitAction) => action.repository.url.slice("https://g
 const branch = (action: GitAction) => action.update.ref.slice("refs/heads/".length);
 const endpoint = (action: GitAction) => `https://api.github.com/repos/${repository(action)}/pulls`;
 
+/** Treats provider URLs as untrusted data; links must be the exact credential-free HTTPS GitHub PR for this origin/number. */
+export function gitPullUrl(value: unknown, origin: string, number: number | null): string | null {
+  if (typeof value !== "string" || number === null || !Number.isSafeInteger(number) || number < 1) return null;
+  return value === `${origin.slice(0, -4)}/pull/${number}` && /^https:\/\/github\.com\/[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/.test(value) ? value : null;
+}
+
 /** Fixed GitHub/HTTPS transport supports exact push, PR creation and read-back only; no merge/update endpoint exists. */
 export class GitHubCodingRemote implements GitRemotePort {
   constructor(readonly fetcher: typeof fetch = fetch) {}
@@ -46,12 +52,12 @@ export class GitHubCodingRemote implements GitRemotePort {
   }
 
   /** Creates only the exact approved PR payload once; malformed success responses remain unknown. */
-  async createPr(action: GitAction, secret: string, allowed: () => void): Promise<{ outcome: "succeeded" | "failed" | "unknown"; number: number | null }> {
+  async createPr(action: GitAction, secret: string, allowed: () => void): Promise<{ outcome: "succeeded" | "failed" | "unknown"; number: number | null; url?: string | null }> {
     if (!action.pr) throw new AppError("git_pr_missing");
     const { response, body } = await this.request(action, secret, "POST", endpoint(action), allowed,
       { title: action.pr.title, head: branch(action), base: action.pr.base, body: action.pr.body, draft: action.pr.draft });
     if (response.status === 201 && body && typeof body === "object" && "number" in body && Number.isSafeInteger(body.number) && (body.number as number) > 0) {
-      return { outcome: "succeeded", number: body.number as number };
+      return { outcome: "succeeded", number: body.number as number, url: gitPullUrl("html_url" in body ? body.html_url : null, action.repository.url, body.number as number) };
     }
     // Server/proxy errors may follow a committed mutation. Only explicit client refusals certify rejection.
     return { outcome: [400, 401, 403, 404, 422].includes(response.status) ? "failed" : "unknown", number: null };
@@ -85,7 +91,7 @@ export class GitHubCodingRemote implements GitRemotePort {
           proof.complete = false;
           continue;
         }
-        proof.prs.push({ number: value.number, headCommit: value.head.sha, baseCommit: value.base.sha, base: value.base.ref,
+        proof.prs.push({ number: value.number, url: gitPullUrl(value.html_url, action.repository.url, value.number), headCommit: value.head.sha, baseCommit: value.base.sha, base: value.base.ref,
           head: value.head.ref, title: value.title, body: value.body ?? "", draft: value.draft });
       }
       return proof;

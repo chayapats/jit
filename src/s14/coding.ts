@@ -8,17 +8,20 @@ import { artifactHash } from "./artifacts";
 import { canonical, digest, exact, identity, text } from "./validation";
 import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, codingPath, codingQuote, codingRegistry } from "./coding-protocol";
 import { repositoryBundle } from "./coding-preload";
+import { repositoryCommit } from "./coding-resolve";
+import { resourceConfigured } from "./share-slots";
 import { gitConnection } from "./coding-connections";
 import { codingModel } from "./coding-model";
 import type { ComputerSession } from "./computer-types";
 import type { Bot, OwnerActor } from "./types";
-import type { CodingCheck, CodingCheckResult, CodingCommand, CodingJob, CodingOptions, CodingReceipt, CodingRepository, CodingRun, CodingView } from "./coding-types";
+import type { CodingCheck, CodingCheckResult, CodingCommand, CodingJob, CodingOptions, CodingReceipt, CodingRepository, CodingRepositoryGrant, CodingRun, CodingView } from "./coding-types";
 
 const parse = <T>(row: { record_json: string } | null): T | null => row ? JSON.parse(row.record_json) as T : null;
 const clip = (value: string) => redactRegisteredSecrets(redactCredentials(value)).slice(0, 2000);
 
 /** Repository grants and real execution evidence stay inside the existing owner/Bot/work/computer barriers. */
 export class S14Coding {
+  #resolved = new WeakMap<CodingRepositoryGrant, string>();
   constructor(readonly app: S14Application, readonly options: CodingOptions = {}) {}
 
   /** Supplies only exact current typed repository policies to the ordinary resource intersection. */
@@ -26,26 +29,59 @@ export class S14Coding {
     const repository = parse<CodingRepository>(tx.get("SELECT record_json FROM coding_repositories WHERE id=?", ref.id));
     if (!repository) return null;
     return { ref: { kind: "resource", id: repository.id, revision: repository.revision },
-      active: ref.kind === "resource" && repository.active && !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='coding_repository' AND id=?", repository.id),
+      active: ref.kind === "resource" && repository.active && resourceConfigured(this.app.policy, repository.id) && !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='coding_repository' AND id=?", repository.id),
       ownerBotId: repository.botId, receiverBotId: null, workId: null, tools: ["computer", "coding", "effect_push"],
       snapshot: { id: repository.id, revision: repository.revision, hash: digest(canonical(repository)) } };
+  }
+
+  private grantBot(tx: AppTransaction, command: CodingRepositoryGrant): Bot {
+    const p = command.payload;
+    exact(p, ["id", "botId", "url", "baseBranch" in p ? "baseBranch" : "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : [])]);
+    codingRegistry(p.registry ?? null); identity(p.id); identity(p.botId); codingOrigin(p.url);
+    const bot = record<Bot>(tx, "bots", p.botId);
+    if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
+    if (!bot.enabled || !resourceConfigured(this.app.policy, p.id) || !bot.capabilities.resources.includes(p.id) ||
+        tx.get("SELECT 1 FROM snapshot_shares WHERE id=?", p.id) || tx.get("SELECT 1 FROM memory_shares WHERE id=?", p.id) ||
+        tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share','coding_repository')", p.id)) throw new AppError("coding_resource_denied", 403);
+    return bot;
+  }
+
+  /** Async owner ingress resolves a branch under its accepted slot, rechecks live authority and durably pins the commit; retries reuse the original receipt. */
+  async execute(actor: OwnerActor, command: CodingCommand): Promise<CodingReceipt> {
+    if (command.kind !== "coding.repository.grant" || !("baseBranch" in command.payload)) return this.app.execute(actor, command);
+    const branch = command.payload.baseBranch;
+    command = structuredClone(command);
+    exact(command, ["kind", "requestId", "expectedRevision", "payload"]); identity(command.requestId);
+    const previous = this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      return !!tx.get("SELECT 1 FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
+    });
+    if (previous) return this.app.execute(actor, command);
+    // Capture the exact owner/Bot generation and revision before any remote wait. No slot is created by discovery.
+    const snapshot = this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      return canonical(this.grantBot(tx, command));
+    });
+    const allowed = () => this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      if (canonical(this.grantBot(tx, command)) !== snapshot) throw new AppError("stale_revision", 409);
+    });
+    const commit = await repositoryCommit(command.payload.url, branch, allowed, this.options.repositoryFetch);
+    allowed();
+    this.#resolved.set(command, commit);
+    try { return this.app.execute(actor, command); }
+    finally { this.#resolved.delete(command); }
   }
 
   /** Applies explicit repository grants/revocation or atomic coding start without deriving authority from source text. */
   apply(tx: AppTransaction, command: CodingCommand): CodingReceipt {
     if (command.kind === "coding.repository.grant") {
       const p = command.payload;
-      exact(p, ["id", "botId", "url", "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : [])]);
-      codingRegistry(p.registry ?? null);
-      identity(p.id);
-      identity(p.botId);
-      codingOrigin(p.url);
-      codingCommit(p.baseCommit);
-      const bot = record<Bot>(tx, "bots", p.botId);
-      if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
-      if (!bot.enabled || !this.app.policy.resources.includes(p.id) || !bot.capabilities.resources.includes(p.id) ||
-          tx.get("SELECT 1 FROM snapshot_shares WHERE id=?", p.id) || tx.get("SELECT 1 FROM memory_shares WHERE id=?", p.id)) throw new AppError("coding_resource_denied", 403);
-      const repository: CodingRepository = { ...structuredClone(p), registry: structuredClone(p.registry ?? null), revision: 1, active: true };
+      this.grantBot(tx, command);
+      const baseCommit = "baseCommit" in p ? p.baseCommit : this.#resolved.get(command);
+      if (baseCommit === undefined) throw new AppError("coding_branch_resolution_required", 409);
+      codingCommit(baseCommit);
+      const repository: CodingRepository = { id: p.id, botId: p.botId, url: p.url, baseCommit, registry: structuredClone(p.registry ?? null), revision: 1, active: true };
       tx.run("INSERT INTO coding_repositories VALUES (?,?)", repository.id, canonical(repository));
       return { kind: command.kind, requestId: command.requestId, repository };
     }
@@ -229,8 +265,17 @@ export class S14Coding {
       codingGitOutput(await codingGit(backend, job.path, ["-c", "user.name=Jit Bot", "-c", "user.email=bot@invalid", "commit", "--allow-empty", "--no-verify", "-m", `Coding work ${job.workId}`], signal));
       run.headCommit = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
       codingCommit(run.headCommit);
-      for (const command of job.tests) checks.push(installOk ? await this.check(attempt.id, checks.length, session, command, job, signal)
-        : { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_install_incomplete", stdout: "", stderr: "" });
+      for (const command of job.tests) {
+        if (installOk) checks.push(await this.check(attempt.id, checks.length, session, command, job, signal));
+        else {
+          const result: CodingCheckResult = { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_install_incomplete", stdout: "", stderr: "" };
+          this.app.store.transaction(tx => {
+            this.app.authority.assertTool(tx, attempt.id, "coding");
+            tx.run("INSERT INTO coding_checks VALUES (?,?,?)", attempt.id, checks.length, canonical(result));
+          });
+          checks.push(result);
+        }
+      }
       if (signal.aborted) throw new AppError("coding_cancelled");
       const currentHead = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
       const dirty = codingGitOutput(await codingGit(backend, job.path, ["status", "--porcelain=v1", "--untracked-files=all"], signal));

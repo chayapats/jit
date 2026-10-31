@@ -4,6 +4,7 @@ import { containsCredential } from "../security/credentials";
 import type { S14Application, S14Command, S14Receipt } from "./application";
 import type { Effect, WorkLimits, WorkView } from "./authority-types";
 import { codingRegistries } from "./coding-protocol";
+import { resourceConfigured } from "./share-slots";
 import type { CodingCheck, CodingReceipt, CodingRepository, CodingRun, CodingView } from "./coding-types";
 import type { GitAction, GitConnection, GitProgress, GitReceipt } from "./coding-git-types";
 import type { Artifact, ReportView } from "./report-types";
@@ -77,7 +78,7 @@ const bounded = (value: string, fallback: number, [min, max]: readonly [number, 
 export const codingLimits = (minutes: number): WorkLimits => ({ attempts: 1, steps: 1, calls: 256, concurrency: 1, reads: 1, outputBytes: workOutputBytes, wallMs: minutes * 60000 });
 
 function receivers(app: S14Application, actor: OwnerActor, state: Home) {
-  const used = new Set(app.coding.repositories(actor).map(item => item.id)), slots = app.sharing.freeSlots(actor).filter(slot => app.policy.resources.includes(slot.scopeId) && !used.has(slot.scopeId));
+  const used = new Set(app.coding.repositories(actor).map(item => item.id)), slots = app.sharing.freeSlots(actor).filter(slot => resourceConfigured(app.policy, slot.scopeId) && !used.has(slot.scopeId));
   const eligible: S14CodingReceiver[] = [], others: S14CodingNew["others"] = [];
   for (const bot of state.bots) {
     if (!bot.enabled) { const { state: phase, target } = app.botLifecycle.view(actor, bot.id).lifecycle; if (phase === "stopping" && target === "active") others.push({ bot, why: "stopping" }); continue; }
@@ -172,7 +173,9 @@ export function codingCommand(app: S14Application, form: string, fields: Record<
     only(fields, grantFields, "registry:");
     const [botId, id] = single(fields, "receiver").split(":"), hosts = prefixed(fields, "registry:");
     if (!botId || !id) throw new AppError("coding_receiver_required");
-    return { kind: "coding.repository.grant", requestId, expectedRevision, payload: { id, botId, url: repositoryUrl(single(fields, "url")), baseCommit: single(fields, "baseCommit").trim().toLowerCase(), registry: hosts.length ? { hosts } : null } };
+    const base = single(fields, "baseCommit").trim();
+    return { kind: "coding.repository.grant", requestId, expectedRevision, payload: { id, botId, url: repositoryUrl(single(fields, "url")),
+      ...(/^[a-fA-F0-9]{40}$/.test(base) ? { baseCommit: base.toLowerCase() } : { baseBranch: base }), registry: hosts.length ? { hosts } : null } };
   }
   if (form === "coding-start") return codingStart(app, fields, actor, locale);
   if (form === "git-connection") {

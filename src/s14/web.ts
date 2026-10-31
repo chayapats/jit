@@ -134,7 +134,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         try {
           const reviewed = product!.review?.(form, p, auth.actor, state, signedInLocale(state));
           if (reviewed) return view(app.home(auth.actor), reviewed);
-          return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p));
+          const command = product!.command(form, p, auth.actor, state, signedInLocale(state));
+          const receipt = command.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, command) : app.execute(auth.actor, command);
+          return redirect(product!.surface(receipt, p));
         }
         catch (error) {
           const recovered = error instanceof AppError ? await product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
@@ -151,7 +153,8 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           if (url.pathname === "/s14/commands" && authRender.signIn) return html(authRender.signIn(receipt, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
           return json(receipt);
         }
-        const receipt = app.execute(auth.actor, command as S14Command);
+        const typed = command as S14Command;
+        const receipt = typed?.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, typed) : app.execute(auth.actor, typed);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
         return json(receipt);
       }

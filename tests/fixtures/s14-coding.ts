@@ -53,7 +53,12 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
     return this.git("rev-parse", "HEAD");
   }
   /** Smart-HTTP protocol fixture uses a real full pack, without a network call or host checkout. */
-  repositoryFetch: CodingRepositoryFetch = (async (_url: unknown, _options: unknown) => {
+  repositoryFetch: CodingRepositoryFetch = (async (url, options) => {
+    if (options.method === "GET") {
+      const branch = String(url).split("/git/ref/heads/")[1]!.split("/").map(decodeURIComponent).join("/");
+      const commit = await this.git("rev-parse", "--verify", `refs/heads/${branch}`).catch(() => null);
+      return Response.json(commit ? { ref: `refs/heads/${branch}`, object: { type: "commit", sha: commit } } : { message: "Not Found" }, { status: commit ? 200 : 404 });
+    }
     const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "pack-objects", "--stdout", "--all"], {
       cwd: join(this.workspace, "repositories", "repo"), env: { PATH: process.env.PATH!, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdout: "pipe", stderr: "ignore",
     });

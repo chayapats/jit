@@ -230,7 +230,7 @@ First-owner bootstrap reuses `issueOwnerSetupLink(store,origin,now?)` from `src/
 | `work.retry`, `work.summarize` | `{workId}` | current Work.revision |
 | `takeover.renew` | `{botId,computerId,generation,leaseRevision}` | current computer.revision and exact leaseRevision |
 
-Every command uses `{kind,requestId,expectedRevision,payload}` and the same `/api/s14/commands` or no-script `/s14/commands` `{csrf,command}` ingress. Device commands call async `app.signIns.execute` only from that validated Web boundary; all others call `app.execute`. Keep the same retry key for transport retries. New keys with stale revisions refuse. Changed envelopes under an existing key conflict. Device receipts can advance only their safe flow state; approval never becomes durable. Other receipts retain their original snapshot.
+Every command uses `{kind,requestId,expectedRevision,payload}` and the same `/api/s14/commands` or no-script `/s14/commands` `{csrf,command}` ingress. Device commands call async `app.signIns.execute` only from that validated Web boundary; coding repository grants call async `app.coding.execute`, and other commands call `app.execute`. Keep the same retry key for transport retries. New keys with stale revisions refuse. Changed envelopes under an existing key conflict. Device receipts can advance only their safe flow state; approval never becomes durable. Other receipts retain their original snapshot.
 
 Default exact provider routes come from `supportedS14Routes()` over public `schway/host.authRoutes`, with the existing recommended-model logic (`codex` → `gpt-6.1-sol`). IDs equal provider names. The owner chooses a provider; no model ID/auth alias is required. `setup` still carries internal `routeId`; the UI translator uses the chosen provider's returned route ID. `JIT_S14_ROUTES` is an optional explicit deployment override, never required and never selected after a failure. Local readiness is queried separately and does not change route/model/account/billing or make inference calls.
 
@@ -411,7 +411,7 @@ All coding ingress uses POST `/api/s14/commands` or existing no-script POST `/s1
 
 | Command | Exact payload | expectedRevision |
 | --- | --- | --- |
-| `coding.repository.grant` | `{id,botId,url,baseCommit,registry?:{hosts:string[]}|null}` | 0 |
+| `coding.repository.grant` | `{id,botId,url,baseCommit,registry?:{hosts:string[]}|null}` or `baseBranch` instead of `baseCommit` | 0 |
 | `coding.repository.revoke` | `{repositoryId}` | repository revision |
 | `coding.start` | `{repository:{id,revision},work:StartPayload,install:CodingCheck|null,tests:CodingCheck[],connection?:{id,revision}|null}` | conversation revision |
 
@@ -455,17 +455,17 @@ Opus-authored product routes over the coding and Git seams. See section 23 of th
 | Route / form | Use |
 | --- | --- |
 | `GET /coding` | Repositories, coding work and revoked repositories |
-| `GET /coding/new` | Grant form. It offers each enabled Bot with `computer`, `coding` and a free configured resource. |
+| `GET /coding/new` | Grant form. It offers each enabled Bot with `computer`, `coding` and a free owner-accepted configured/built-in resource. |
 | `GET /coding/repositories/:id` | Exact repository, connections and revoke. `?receipt=` rereads the landing banner. |
 | `GET /coding/repositories/:id/start` | Coding start form |
 | `GET /work/:id?tab=coding`, `GET /chats/:id?work=:id&tab=coding` | Run, commands, diff and push form, shown when the grant holds `coding` |
 | `GET /effects/:id` | For a `git.propose` effect, the exact push card. `?receipt=` rereads a `git.reconcile` receipt. Other effects keep the existing card. |
-| `GET /team/:id/capabilities?add=coding&edit=1` | Draft form with `computer`, `coding` and one free configured resource ticked. It only opens the form. |
-| `POST /s14/forms/coding-grant` | `{csrf,requestId,expectedRevision,url,baseCommit,receiver}` plus `registry:<host>=on`, to `coding.repository.grant`. `receiver` is `<botId>:<resourceId>`. No ticked host sends `registry:null`. |
+| `GET /team/:id/capabilities?add=coding&edit=1` | Draft form with `computer`, `coding` and one free configured/built-in resource ticked; accepting its exact proposal grants the slot. It only opens the form. |
+| `POST /s14/forms/coding-grant` | `{csrf,requestId,expectedRevision,url,baseCommit,receiver}` plus `registry:<host>=on`, to `coding.repository.grant`. `receiver` is `<botId>:<resourceId>`. No ticked host sends `registry:null`. The existing `baseCommit` field accepts a branch or full commit; branch names preserve case and translate to `baseBranch`. |
 | `POST /s14/forms/coding-start` | `{csrf,requestId,expectedRevision,repositoryId,repositoryRevision,botRevision,conversationId,purpose,completion,install,tests,timeout,coverage,minutes,installRegistry,testsRegistry,push,connection}` to `coding.start`. One test per line. `connection` is empty or `<id>:<revision>`. Limits are one attempt, one step, one read and 256 calls; a retried form reuses its committed expiry. |
 | `POST /s14/forms/git-connection` | `{csrf,requestId,expectedRevision,repositoryId,label}` to `git.connection.create` |
 | `POST /s14/forms/git-secret`, `git-rotate` | `{csrf,requestId,expectedRevision,repositoryId,connectionId,secret}` to `git.connection.secret.set` or `git.connection.rotate`. A refused post never renders the value. |
 | `POST /s14/forms/git-propose` | `{csrf,requestId,expectedRevision,workId,attemptId,newCommit,expiresAt,connection,branch,oldCommit,pr,base,baseCommit,title,body,draft}` to `git.propose`. PR fields are ignored unless `pr=on`. `expiresAt` is rendered once, as the earlier of an hour and the grant's end. |
 | `coding.repository.revoke`, `git.connection.remove`, `git.connection.test`, `git.reconcile`, `approval.decide` | Fixed envelopes through `POST /s14/commands` |
 
-`app.sharing.freeSlots` now also leaves out IDs bound to a repository, so the share picker cannot offer one. `codingRegistries` is exported from `coding-protocol.ts`, so forms list exactly what the service accepts. The generic `work.retry`, `work.summarize` and redo links are not rendered for coding work. Approve for a Git effect renders only on its card. `coding.repository.grant` still checks `policy.resources` alone, unlike `resourceConfigured`, so a default install has no grantable slot; the UI filter is `receivers()` in `web-product-coding.ts` and `suggested()` in `web-lifecycle.ts`.
+`app.sharing.freeSlots` now also leaves out IDs bound to a repository, so the share picker cannot offer one. `codingRegistries` is exported from `coding-protocol.ts`, so forms list exactly what the service accepts. The generic `work.retry`, `work.summarize` and redo links are not rendered for coding work. Approve for a Git effect renders only on its card. `coding.repository.grant`, `receivers()` and `suggested()` use `resourceConfigured` plus the owner-accepted Bot ceiling and current unused-slot policy, so no environment resource override is required. Candidate slots and proposal creation grant nothing. Branch grants use `app.coding.execute` before durable command commit; the broker performs one anonymous fixed GitHub read (64 KiB / 15 seconds, no redirects, credentials or repository execution) and pins its full commit. Failures grant nothing; private repositories retain the full-commit/scoped-preload path. Original command receipts preserve the first pin across retries. `CodingView.checks` includes per-command `coding_install_incomplete` skips. `GitProgress.pullUrl` returns a provider URL only after exact HTTPS GitHub origin/repository/PR-number validation; the existing PR number becomes a link when valid. See the coding/Git contracts for refusal codes and exported signatures.

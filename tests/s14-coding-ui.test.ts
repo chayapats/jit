@@ -1,11 +1,12 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "schway/host";
 import { ConnectionVault } from "../src/exec/connections";
 import { dictionaries } from "../src/i18n";
 import { S14Application } from "../src/s14/application";
+import { s14Policy } from "../src/s14/policy";
 import type { GitAction, GitRemotePort, GitRemoteProof } from "../src/s14/coding-git-types";
 import { S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
@@ -34,8 +35,8 @@ class RemoteFixture implements GitRemotePort {
   async push(_mirror: string, action: GitAction, _token: string, allowed: () => void) { allowed(); this.pushes++; if (this.pushOutcome !== "failed") this.head = action.headCommit; return this.pushOutcome; }
   async createPr(action: GitAction, _token: string, allowed: () => void) {
     allowed(); this.creates++;
-    if (this.prOutcome !== "failed") this.prs.push({ number: 17, headCommit: action.headCommit, baseCommit: action.pr!.baseCommit, head: action.update.ref.slice(11), base: action.pr!.base, title: action.pr!.title, body: action.pr!.body, draft: action.pr!.draft });
-    return { outcome: this.prOutcome, number: this.prOutcome === "succeeded" ? 17 : null };
+    if (this.prOutcome !== "failed") this.prs.push({ number: 17, url: "https://github.com/fixture/repo/pull/17", headCommit: action.headCommit, baseCommit: action.pr!.baseCommit, head: action.update.ref.slice(11), base: action.pr!.base, title: action.pr!.title, body: action.pr!.body, draft: action.pr!.draft });
+    return { outcome: this.prOutcome, number: this.prOutcome === "succeeded" ? 17 : null, url: "https://github.com/fixture/repo/pull/17" };
   }
   async readBack(_action: GitAction, _token: string, allowed: () => void) { allowed(); return { headCommit: this.head, baseCommit: this.base, prs: structuredClone(this.prs), complete: !this.incomplete }; }
 }
@@ -47,7 +48,7 @@ function scripted(path: () => string, command: () => string, claim = "All tests 
     yield { type: "message_complete", message: { type: "assistant", id: crypto.randomUUID(), content: turns === 1 ? [{ type: "tool_call", id: crypto.randomUUID(), name: "bash", arguments: { command: command() } }] : [{ type: "text", text: claim }] } };
   } };
 }
-async function fixture(language: "th" | "en" = "en", options: { tools?: string[]; resources?: string[]; ceiling?: string[]; edit?: (path: string) => string } = {}) {
+async function fixture(language: "th" | "en" = "en", options: { tools?: string[]; resources?: string[]; ceiling?: string[]; defaultInstall?: boolean; edit?: (path: string) => string } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-coding-ui-"))); roots.push(root);
   const runtime = new CodingRuntimeFixture(); roots.push(runtime.root);
   const base = await runtime.seed(), remote = new RemoteFixture(); remote.base = base;
@@ -56,10 +57,11 @@ async function fixture(language: "th" | "en" = "en", options: { tools?: string[]
   const clock = { now: 1800000000000 }, tools = options.tools ?? ["computer", "coding", "effect_push"], resources = options.resources ?? ["repo", "other"];
   let path = "";
   const model = options.edit ? scripted(() => path, () => options.edit!(path)) : codingScript(() => path);
-  const app = new S14Application(store, { policy: { routes: [{ id: "route", provider: "codex", model: "scripted" }], tools, resources }, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime }, coding: { repositoryFetch: runtime.repositoryFetch, model }, git: { vault, remote } });
+  const policy = options.defaultInstall ? s14Policy({}) : { routes: [{ id: "route", provider: "codex" as const, model: "scripted" }], tools, resources };
+  const app = new S14Application(store, { policy, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime }, coding: { repositoryFetch: runtime.repositoryFetch, model }, git: { vault, remote } });
   await app.provisionOwner(password);
   const token = await app.login(password), actor = app.authenticate(token).actor;
-  app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language, routeId: "route", capabilities: { tools: options.ceiling ?? tools, resources } } });
+  app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language, routeId: policy.routes[0]!.id, capabilities: { tools: options.ceiling ?? tools, resources } } });
   app.authority.options.executor = { run: (attempt, signal) => { path = `/workspace/coding/${attempt.workId}`; return app.coding.run(join(root, "native"), attempt, signal); } };
   const handler = () => createS14Handler(app, origin, renderS14, createS14Product(app));
   const get = async (route: string) => { const response = await handler()(new Request(`${origin}${route}`, { headers: { cookie: `jit_s14=${token}` } })); return { status: response.status, html: await response.text(), location: response.headers.get("location") }; };
@@ -127,10 +129,10 @@ test("a ticked registry host is the exact scope and stays visible with its risk"
 });
 
 test("a Bot without tools or a free slot gets a reason and a proposal link, and nothing is preselected for it", async () => {
-  const f = await fixture("en", { resources: [], ceiling: [] });
+  const f = await fixture("en", { resources: [], ceiling: [], defaultInstall: true });
   const { html } = await f.get("/coding/new");
   expect(plain(html)).toContain(f.words["s14.coding.why.tools"]);
-  expect(plain(html)).toContain(f.words["s14.coding.no_slot_title"]);
+  expect(plain(html)).not.toContain(f.words["s14.coding.no_slot_title"]);
   expect(html).toContain("/team/jit/capabilities?add=coding&amp;edit=1");
   expect(html).not.toContain('form="s14-coding-grant"');
   const proposal = await f.get("/team/jit/capabilities?add=coding&edit=1");
@@ -145,11 +147,70 @@ test("a refused grant keeps what was typed and names the cause", async () => {
   const html = await response.text();
   expect(plain(html)).toContain(f.words["s14.error.coding_origin_invalid"]);
   expect(html).toContain('value="https://evil.example/a.git"');
-  const short = await f.submit("/coding/new", "/s14/forms/coding-grant", { url: "https://github.com/fixture/repo", baseCommit: "abc" });
-  expect(plain(await short.text())).toContain(f.words["s14.next.coding_commit_invalid"]);
+  const short = await f.submit("/coding/new", "/s14/forms/coding-grant", { url: "https://github.com/fixture/repo", baseCommit: "missing-branch" });
+  expect(short.status).toBe(409);
+  expect(plain(await short.text())).toContain(f.words["s14.next.coding_branch_unavailable"]);
   const extra = await f.submit("/coding/new", "/s14/forms/coding-grant", { url: "https://github.com/fixture/repo", baseCommit: f.base, actor: "owner" });
   expect(extra.status).toBe(400);
   expect(f.app.coding.repositories(f.actor)).toHaveLength(0);
+});
+
+test("default install without environment resource configuration connects, accepts an exact capability slot, grants a branch and runs coding", async () => {
+  // Empty resources is runS14's default with no JIT_S14_RESOURCES; all model/HTTP/computer transports are deterministic.
+  const f = await fixture("en", { resources: [], ceiling: [], defaultInstall: true });
+  expect(f.app.policy.resources).toEqual([]);
+  const slot = "share_slot_01", path = "/team/jit/capabilities?add=coding&edit=1";
+  const draft = await f.get(path);
+  expect(draft.html).toContain(`name="resource:${slot}" value="on" checked`);
+  const grant = { kind: "coding.repository.grant" as const, requestId: rid(), expectedRevision: 0,
+    payload: { id: slot, botId: "jit", url: "https://github.com/fixture/repo.git", baseCommit: f.base } };
+  expect(() => f.app.execute(f.actor, grant)).toThrow("coding_resource_denied");
+  const proposed = await f.landing(await f.submit(path, "/s14/forms/capability-propose"));
+  expect(() => f.app.execute(f.actor, grant)).toThrow("coding_resource_denied");
+  await f.landing(await f.submit(proposed, "/s14/forms/capability-accept"));
+  // The real pump settles the capability-generation fence before enabling the Bot again.
+  await f.app.botLifecycle.drain({ async open() { return {
+    async listSessions() { return { sessions: [] }; }, async retireSession() {},
+    async deleteSession(session) { return { status: "deleted", session, removed: [], nextAction: "none" }; }, async close() {},
+  }; } });
+  expect(f.app.home(f.actor).bots[0]!.capabilities.resources).toEqual([slot]);
+  expect(f.app.policy.resources).toEqual([]);
+  await f.runtime.git("branch", "feature/fix");
+  await f.grant({ baseCommit: "feature/fix" });
+  expect(f.app.coding.repositories(f.actor)[0]).toMatchObject({ id: slot, baseCommit: f.base });
+  await f.connect(slot);
+  const connection = f.app.git.connections(f.actor)[0]!;
+  const { workId, location } = await f.start({ push: null, connection: `${connection.id}:${connection.revision}` }, slot);
+  await f.app.authority.drain();
+  expect(f.app.coding.view(f.actor, workId).runs[0]).toMatchObject({ state: "reviewable", baseCommit: f.base });
+  expect(plain((await f.get(location)).html)).toContain("Passed");
+  expect(JSON.stringify(f.runtime.requests)).not.toContain(secret);
+  expect(existsSync(join(f.runtime.root, "hook-ran"))).toBe(false);
+});
+
+test("branch grant retries retain the first commit and changed live capabilities refuse before grant publication", async () => {
+  const f = await fixture("en");
+  await f.runtime.git("branch", "feature/fix");
+  const command = { kind: "coding.repository.grant" as const, requestId: rid(), expectedRevision: 0,
+    payload: { id: "repo", botId: "jit", url: "https://github.com/fixture/repo.git", baseBranch: "feature/fix" } };
+  const receipt = await f.app.coding.execute(f.actor, command);
+  f.app.coding.options.repositoryFetch = async () => { throw new Error("retry must not read a moving branch"); };
+  expect(await f.app.coding.execute(f.actor, command)).toEqual(receipt);
+  await expect(f.app.coding.execute(f.actor, { ...command, payload: { ...command.payload, baseBranch: "other" } })).rejects.toThrow("request_id_conflict");
+  const reopened = new S14Application(f.store, f.app.options);
+  const owner = reopened.authenticate(await reopened.login(password)).actor;
+  expect(await reopened.coding.execute(owner, command)).toEqual(receipt);
+  const g = await fixture("en");
+  g.app.coding.options.repositoryFetch = async () => {
+    const bot = g.app.home(g.actor).bots[0]!;
+    const proposal = g.app.execute(g.actor, { kind: "bot.capabilities.propose", requestId: rid(), expectedRevision: bot.revision,
+      payload: { botId: bot.id, capabilities: { tools: [], resources: [] } } }).proposal!;
+    g.app.execute(g.actor, { kind: "bot.capabilities.accept", requestId: rid(), expectedRevision: proposal.revision,
+      payload: { proposalId: proposal.id, proposalHash: proposal.hash } });
+    return Response.json({ ref: "refs/heads/feature/fix", object: { type: "commit", sha: g.base } });
+  };
+  await expect(g.app.coding.execute(g.actor, { ...command, requestId: rid() })).rejects.toThrow("coding_resource_denied");
+  expect(g.app.coding.repositories(g.actor)).toEqual([]);
 });
 
 test("a Git token is write-only: stored once, never shown, and a check says it did not contact GitHub", async () => {
@@ -252,11 +313,17 @@ test("a failed test, an unrun test and a missing test stay visible, and none rea
 test("a failed install leaves later commands visibly not run", async () => {
   const f = await fixture("en", { edit: path => `printf 'x\\n' > ${path}/answer.txt` });
   await f.grant();
-  const { location } = await f.run({ install: "sh -c 'exit 7'" });
+  const { location, workId } = await f.run({ install: "sh -c 'exit 7'", tests: "sh -c 'exit 0'\nsh -c 'exit 1'" });
   const text = plain((await f.get(location)).html);
   expect(text).toContain("Failed · exit 7");
-  expect(text).toContain(f.words["s14.coding.check.not_run"]);
-  expect(text).toContain("1 not run");
+  expect(text).toContain(f.words["s14.coding.check.skipped"]);
+  expect(text).toContain(f.words["s14.coding.reason.coding_install_incomplete"]);
+  expect(text).toContain("2 skipped");
+  expect(f.app.coding.view(f.actor, workId).checks.map(item => ({ ordinal: item.ordinal, state: item.result.state, reason: item.result.reason }))).toEqual([
+    { ordinal: 0, state: "failed", reason: "coding_check_failed" },
+    { ordinal: 1, state: "skipped", reason: "coding_install_incomplete" },
+    { ordinal: 2, state: "skipped", reason: "coding_install_incomplete" },
+  ]);
   expect(text).not.toContain("Passed");
 });
 
@@ -336,6 +403,7 @@ test("approving once pushes once, and only a read-back reads as confirmed", asyn
   expect(done).toContain(f.words["s14.git.fact.pushed_read_back"]);
   expect(done).toContain(f.words["s14.git.fact.pr_read_back"]);
   expect(done).toContain("#17");
+  expect((await f.get(location)).html).toContain('href="https://github.com/fixture/repo/pull/17"');
   expect(done).toContain(f.words["s14.git.fact.no_merge"]);
   expect(done).toContain(f.words["s14.git.succeeded_detail"]);
   expect(f.app.authority.effect(f.actor, effect.id).effect.state).toBe("succeeded");
@@ -423,7 +491,7 @@ test("an unknown PR after a push keeps the push fact, and a rotated connection b
   const f = await fixture("en", { edit: path => `printf 'fixed\\n' > ${path}/answer.txt` });
   await f.grant();
   await f.connect();
-  f.remote.prOutcome = "unknown"; 
+  f.remote.prOutcome = "unknown";
   const { workId } = await f.run();
   const location = await f.propose(workId);
   await f.press(location, "Push and open this PR once");

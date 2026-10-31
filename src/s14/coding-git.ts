@@ -10,7 +10,7 @@ import { canonical, digest, exact, identity, integer, text } from "./validation"
 import { codingCommit, codingGit, codingGitOutput, codingPath } from "./coding-protocol";
 import { applyGitConnection, gitConnection } from "./coding-connections";
 import { CodingGitMirror } from "./coding-git-mirror";
-import { GitHubCodingRemote } from "./coding-git-remote";
+import { GitHubCodingRemote, gitPullUrl } from "./coding-git-remote";
 import type { GitAction, GitCommand, GitConnection, GitOptions, GitProgress, GitReceipt, GitRemoteProof } from "./coding-git-types";
 
 /** Rejects options, wildcards, ref expressions and Git path aliases in exact branch identity. */
@@ -126,7 +126,7 @@ export class S14GitEffects {
     this.currentConnection(tx, action);
     const effect = this.app.authority.proposeEffect(p.attemptId, command.requestId, { kind: "push", destination: job.repository.url, content: canonical(action) }, p.expiresAt);
     const progress: GitProgress = { effectId: effect.id, intentId: action.intentId, actionHash: effect.actionHash,
-      stage: "prepared", reason: null, pullNumber: null, verification: "none" };
+      stage: "prepared", reason: null, pullNumber: null, pullUrl: null, verification: "none" };
     tx.run("INSERT INTO git_effects VALUES (?,?,?)", effect.id, action.intentId, canonical(progress));
     return { kind: command.kind, requestId: command.requestId, effect };
   }
@@ -274,6 +274,7 @@ export class S14GitEffects {
         allowed();
         const result = await this.remote.createPr(action, secret, allowed);
         progress.pullNumber = result.number;
+        progress.pullUrl = gitPullUrl(result.url, action.repository.url, result.number);
         if (result.outcome !== "succeeded") {
           await this.stage(progress, result.outcome === "failed" ? "failed" : "unknown", result.outcome === "failed" ? "git_pr_rejected_after_push" : "git_pr_unconfirmed_after_push");
           return result.outcome;
@@ -284,6 +285,7 @@ export class S14GitEffects {
       const number = this.proved(action, proof);
       if (number === false) { await this.stage(progress, "unknown", "git_remote_readback_unconfirmed"); return "unknown"; }
       progress.pullNumber = number;
+      progress.pullUrl = gitPullUrl(proof.prs.find(pr => pr.number === number)?.url, action.repository.url, number) ?? gitPullUrl(progress.pullUrl, action.repository.url, number);
       progress.verification = "remote_readback";
       await this.stage(progress, "complete");
       this.remember(progress);
@@ -338,6 +340,7 @@ export class S14GitEffects {
       const number = this.proved(action, proof);
       if (number === false) { await this.stage(progress, "unknown", "git_remote_readback_unconfirmed"); return; }
       progress.pullNumber = number;
+      progress.pullUrl = gitPullUrl(proof.prs.find(pr => pr.number === number)?.url, action.repository.url, number) ?? gitPullUrl(progress.pullUrl, action.repository.url, number);
       progress.verification = "remote_readback";
       await this.stage(progress, "complete");
       this.remember(progress);

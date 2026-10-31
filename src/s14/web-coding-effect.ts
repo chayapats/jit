@@ -1,6 +1,7 @@
 import { tr, trMaybe } from "../i18n";
 import type { Effect } from "./authority-types";
 import type { GitAction, GitProgress } from "./coding-git-types";
+import { gitPullUrl } from "./coding-git-remote";
 import type { S14Page } from "./web";
 import { banner, botName, commandForm, e, effectHistory, effectPill, k, notice, ownerStrip, pill, remaining, shell, when } from "./web-pages";
 import { checksBlock, diffBlock, exactBlock } from "./web-coding";
@@ -31,7 +32,8 @@ function prFact({ stage, reason }: GitProgress, action: GitAction): Word {
 const factPill = ([word, tone, glyph]: Word) => pill(tr(k(`s14.git.fact.${word}`)), tone, glyph);
 function outcomeFacts(card: S14GitCard): string {
   const { action, progress } = card, row = (label: string, value: string) => `<div><dt>${label}</dt><dd>${value}</dd></div>`;
-  const pullNumber = progress.pullNumber === null ? "" : `<span class="s-mono">#${progress.pullNumber}</span>`;
+  const url = gitPullUrl(progress.pullUrl, action.repository.url, progress.pullNumber);
+  const pullNumber = progress.pullNumber === null ? "" : url ? `<a class="s-link-text s-mono" href="${e(url)}" rel="noreferrer">#${progress.pullNumber}</a>` : `<span class="s-mono">#${progress.pullNumber}</span>`;
   return `<dl class="s-facts" aria-label="${tr("s14.git.facts")}">${row(tr("s14.git.fact_push"), factPill(pushFact(progress)))}${row(tr("s14.git.fact_pr"), `${factPill(prFact(progress, action))}${pullNumber}`)}${row(tr("s14.git.fact_check"), pill(tr(k(`s14.git.verification.${progress.verification}`)), progress.verification === "remote_readback" ? "strong" : ""))}${row(tr("s14.git.fact_merge"), pill(tr("s14.git.fact.no_merge")))}</dl>`;
 }
 const stages: GitProgress["stage"][] = ["prepared", "verifying", "push_dispatching", "pushed", "pr_dispatching", "complete"];

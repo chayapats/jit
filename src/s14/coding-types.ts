@@ -27,8 +27,11 @@ export type CodingStartCommand = Envelope<"coding.start", {
   tests: CodingCheck[];
   connection?: { id: string; revision: number } | null;
 }>;
-/** Repository grants select an explicit configured resource slot without granting work or credentials. */
-export type CodingRepositoryCommand = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active" | "registry"> & { registry?: CodingRepository["registry"] }> |
+/** Exact owner repository grant; a branch is resolved only by the async trusted ingress before committing. */
+export type CodingRepositoryGrant = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active" | "registry" | "baseCommit"> &
+  ({ baseCommit: string } | { baseBranch: string }) & { registry?: CodingRepository["registry"] }>;
+/** Repository grants select an owner-accepted resource slot without granting work or credentials. */
+export type CodingRepositoryCommand = CodingRepositoryGrant |
   Envelope<"coding.repository.revoke", { repositoryId: string }>;
 /** Authenticated coding commands use the common durable receipt boundary. */
 export type CodingCommand = CodingStartCommand | CodingRepositoryCommand;
@@ -83,6 +86,6 @@ export type CodingRepositoryFetch = (url: string, options: RequestInit) => Promi
 /** Deterministic model injection is service-owned and unavailable to HTTP or retrieved repository content. */
 export interface CodingOptions {
   model?: Model;
-  /** Trusted HTTP fixture seam for the bounded repository broker, never owner/model input. */
+  /** Trusted HTTP fixture seam for bounded branch discovery and pack preload, never owner/model input. */
   repositoryFetch?: CodingRepositoryFetch;
 }

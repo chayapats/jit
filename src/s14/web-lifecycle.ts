@@ -1,4 +1,5 @@
 import { tr, trMaybe, type MessageKey } from "../i18n";
+import { resourceConfigured } from "./share-slots";
 import type { BotLifecycle, BotLifecyclePreview, CapabilityProposal } from "./bot-lifecycle-types";
 import type { RoutineView } from "./routine-types";
 import type { Bot, Capabilities } from "./types";
@@ -67,8 +68,7 @@ function resourceChoices(view: S14BotPolicy, chosen: Capabilities, added: string
 /** The first slot a "needs a slot" link pretick. It is a suggestion in plain sight: the owner still reads the exact proposal. */
 function suggested(page: S14Page, view: S14BotPolicy): string | null {
   const held = view.bot.capabilities.resources;
-  // A repository needs a configured resource: `coding.repository.grant` does not accept a built-in slot.
-  if (view.addCoding) return view.slots.find(slot => page.policy.resources.includes(slot.scopeId) && !held.includes(slot.scopeId) && !slot.receiverBotIds.includes(view.bot.id))?.scopeId ?? null;
+  if (view.addCoding) return view.slots.find(slot => resourceConfigured(page.policy, slot.scopeId) && !held.includes(slot.scopeId) && !slot.receiverBotIds.includes(view.bot.id))?.scopeId ?? null;
   if (!view.addSlot) return null;
   return view.slots.filter(slot => !held.includes(slot.scopeId) && !slot.receiverBotIds.includes(view.bot.id)).sort((a, b) => a.receiverBotIds.length - b.receiverBotIds.length)[0]?.scopeId ?? null;
 }
