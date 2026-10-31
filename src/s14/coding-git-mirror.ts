@@ -54,6 +54,19 @@ export class CodingGitMirror {
     return brokerGit(this.directory, args, undefined, { ...options, limits: this.limits });
   }
 
+  /** Refuses oversized decoded object inventories before fsck/diff or credential release, without requesting object bodies. */
+  async verifyObjectBytes(): Promise<void> {
+    const result = await this.git(["-C", this.path, "cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"]);
+    if (result.code !== 0) throw new AppError("git_objects_unverified", 409);
+    let total = 0;
+    for (const line of result.stdout.trim().split("\n")) {
+      if (!/^(0|[1-9][0-9]*)$/.test(line)) throw new AppError("git_objects_unverified", 409);
+      const size = Number(line);
+      if (!Number.isSafeInteger(size) || size > 32 * 1024 * 1024 - total) throw new AppError("git_decoded_objects_bound", 409);
+      total += size;
+    }
+  }
+
   /** Verifies the bundle, full commit identity, reachable objects and exact reviewed diff before credential release. */
   async import(bundle: Uint8Array, action: GitAction): Promise<void> {
     if (!bundle.length || bundle.length > 16777216) throw new AppError("git_bundle_bound", 409);
@@ -69,6 +82,7 @@ export class CodingGitMirror {
     const heads = await git(["-C", this.path, "bundle", "list-heads", file]);
     if (heads.trim() !== `${action.headCommit} HEAD`) throw new AppError("git_bundle_head_mismatch", 409);
     await git(["-c", "protocol.file.allow=always", "-C", this.path, "fetch", "--no-tags", "--no-write-fetch-head", "--", file, `${action.headCommit}:refs/approved/head`]);
+    await this.verifyObjectBytes();
     await git(["-C", this.path, "fsck", "--strict", "--no-reflogs"]);
     const head = await git(["-C", this.path, "rev-parse", "--verify", `${action.headCommit}^{commit}`]);
     if (head.trim() !== action.headCommit) throw new AppError("git_bundle_head_mismatch", 409);
