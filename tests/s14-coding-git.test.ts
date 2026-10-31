@@ -12,7 +12,7 @@ import type { GitAction, GitCommand, GitOptions, GitRemotePort, GitRemoteProof }
 import { CodingGitMirror } from "../src/s14/coding-git-mirror";
 import { GitHubCodingRemote, gitPullUrl } from "../src/s14/coding-git-remote";
 import { createS14Handler } from "../src/s14/web";
-import { CodingRuntimeFixture, codingScript } from "./fixtures/s14-coding";
+import { CodingRuntimeFixture, FixtureGitProcessLimits, codingScript } from "./fixtures/s14-coding";
 
 const roots: string[] = [], stores: S14Store[] = [];
 const rid = () => crypto.randomUUID().replaceAll("-", "");
@@ -66,7 +66,7 @@ async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false,
   const clock = { now: 1800000000000 };
   const policy = { routes: [{ id: "route", provider: "codex" as const, model: "scripted" }], tools: ["computer", "coding", "effect_push"], resources: ["repo", "other"] };
   const options = { policy, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime },
-    coding: { repositoryFetch: runtime.repositoryFetch, model: codingScript(() => path) }, git: { vault, remote, ...(afterStage ? { afterStage } : {}) } };
+    coding: { gitLimits: runtime.gitLimits, repositoryFetch: runtime.repositoryFetch, model: codingScript(() => path) }, git: { vault, remote, ...(afterStage ? { afterStage } : {}) } };
   const app = new S14Application(store, options);
   await app.provisionOwner("git-fixture-owner-password");
   const token = await app.login("git-fixture-owner-password"), auth = app.authenticate(token);
@@ -253,11 +253,43 @@ test("write-only secret retries, scoped metadata and HTTP commands never echo or
 });
 
 test("object verification refuses invalid bundle data before any credential or transport", async () => {
-  const mirror = new CodingGitMirror();
+  const mirror = new CodingGitMirror(new FixtureGitProcessLimits());
   try {
     await expect(mirror.import(new TextEncoder().encode("malicious bundle fixture"), { headCommit: "a".repeat(40) } as GitAction)).rejects.toThrow("git_objects_unverified");
     expect(() => mirror.verifiedPath()).toThrow("git_objects_unverified");
   } finally { mirror.close(); }
+});
+
+test.each([false, true])("legacy draft-tree evidence cannot authorize a push (already approved=%s)", async approved => {
+  const f = await fixture();
+  const effect = approved ? f.propose(false).effect : null;
+  if (effect) f.approve(effect);
+  f.store.transaction(tx => tx.run("UPDATE coding_runs SET record_json=json_remove(record_json,'$.evidenceCheckout') WHERE attempt_id=?", f.attempt.id));
+  expect(f.app.coding.view(f.auth.actor, f.work.id).runs[0]).toMatchObject({ state: "partial", reason: "coding_recorded_checkout_required" });
+  if (!effect) expect(() => f.propose(false)).toThrow("coding_evidence_required");
+  else {
+    expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("failed");
+    expect(f.app.git.view(f.auth.actor, effect.id).progress.reason).toBe("coding_evidence_required");
+  }
+  expect(f.remote.pushes).toHaveLength(0);
+  expect(f.store.read(tx => tx.all("SELECT * FROM git_connection_releases"))).toHaveLength(0);
+});
+
+test.each(["--skip-worktree", "--assume-unchanged", "filter"].flatMap(attack => ["verifying", "push_dispatching"].map(stage => ({ attack, stage }))))("hidden file changes refuse at $stage ($attack)", async ({ attack, stage }) => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(async current => {
+    if (current !== stage) return;
+    const path = f.runtime.local(f.path);
+    if (attack === "filter") {
+      writeFileSync(join(path, ".git", "info", "attributes"), "answer.txt filter=evil\n");
+      await f.runtime.git("-C", path, "config", "filter.evil.clean", "printf 'fixed\\n'");
+    } else await f.runtime.git("-C", path, "update-index", attack, "answer.txt");
+    writeFileSync(join(path, "answer.txt"), "untested mutation\n");
+  });
+  const { effect } = f.propose(false); f.approve(effect);
+  expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("failed");
+  expect(f.app.git.view(f.auth.actor, effect.id).progress.reason).toBe("git_approved_diff_changed");
+  expect(f.remote.pushes).toHaveLength(0);
 });
 
 test("GitHub protocol fixes method/endpoint/body, refuses redirects and treats 5xx as unknown", async () => {
@@ -284,7 +316,7 @@ test("approved diff and full head are independently verified against exported ob
   const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-C", f.runtime.local(f.path), "bundle", "create", bundle, "HEAD"], { stdout: "ignore", stderr: "ignore" });
   expect(await proc.exited).toBe(0);
   for (const changed of [{ ...action, headCommit: "b".repeat(40) }, { ...action, diffHash: "0".repeat(64) }]) {
-    const mirror = new CodingGitMirror();
+    const mirror = new CodingGitMirror(new FixtureGitProcessLimits());
     try {
       await expect(mirror.import(readFileSync(bundle), changed)).rejects.toThrow(changed.headCommit !== action.headCommit ? "git_bundle_head_mismatch" : "git_approved_diff_changed");
     } finally { mirror.close(); }

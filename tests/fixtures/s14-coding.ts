@@ -6,11 +6,25 @@ import { AppError } from "../../src/errors";
 import type { ExecutionSpawnRequest, Model } from "schway/host";
 import type { BoxExecRequest, BoxExecResult } from "../../src/exec/box-runtime";
 import type { ComputerHandle } from "../../src/s14/computer-types";
+import type { GitProcessLimits } from "../../src/s14/coding-git-limits";
 import type { CodingRepositoryFetch } from "../../src/s14/coding-types";
 import { FakeComputerRuntime } from "./s14-computer";
 
+/** Protocol-only fixture: deliberately does not claim Linux resource enforcement. */
+export class FixtureGitProcessLimits implements GitProcessLimits {
+  commands: string[][] = [];
+  beforeCommand: ((argv: string[]) => void) | null = null;
+  createDirectory() { return mkdtempSync(join(tmpdir(), "jit-s14-git-fixture-")); }
+  async command(_directory: string, argv: string[]) {
+    this.commands.push(argv);
+    this.beforeCommand?.(argv);
+    return argv;
+  }
+}
+
 /** Local generated-repository transport fixture; it proves protocol behavior, never container isolation. */
 export class CodingRuntimeFixture extends FakeComputerRuntime {
+  readonly gitLimits = new FixtureGitProcessLimits();
   readonly root = realpathSync(mkdtempSync(join(tmpdir(), "s14-coding-box-")));
   readonly workspace = join(this.root, "workspace");
   escape: string | null = null;
@@ -103,13 +117,13 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
   }
 }
 /** Scripted model edits a generated fixture repository and then makes an intentionally non-authoritative claim. */
-export function codingScript(workPath: () => string, edit = true): Model {
+export function codingScript(workPath: () => string, edit = true, command?: (path: string) => string): Model {
   let turns = 0;
   return { provider: "scripted", id: "coding-fixture", async *stream(request) {
     if (JSON.stringify(request).includes("github_pat_")) throw new Error("credential reached model");
     turns++;
     yield { type: "message_complete", message: { type: "assistant", id: crypto.randomUUID(), content: turns === 1 && edit
-      ? [{ type: "tool_call", id: crypto.randomUUID(), name: "bash", arguments: { command: `printf 'fixed\\n' > ${workPath()}/answer.txt` } }]
+      ? [{ type: "tool_call", id: crypto.randomUUID(), name: "bash", arguments: { command: command ? command(workPath()) : `printf 'fixed\\n' > ${workPath()}/answer.txt` } }]
       : [{ type: "text", text: "All tests passed and pushed! This model claim must not count as evidence." }] } };
   } };
 }

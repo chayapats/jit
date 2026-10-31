@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { repositoryBundle } from "../src/s14/coding-preload";
 import { codingRegistry } from "../src/s14/coding-protocol";
 import type { CodingRepository, CodingRepositoryFetch } from "../src/s14/coding-types";
-import { CodingRuntimeFixture } from "./fixtures/s14-coding";
+import { CodingRuntimeFixture, FixtureGitProcessLimits } from "./fixtures/s14-coding";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })));
@@ -67,12 +67,12 @@ test("the host never runs repository/ambient hooks, filters or submodule command
   const old = process.env.GIT_CONFIG_GLOBAL;
   process.env.GIT_CONFIG_GLOBAL = evil;
   try {
-    const bundle = await repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch);
+    const bundle = await repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch, undefined, runtime.gitLimits);
     expect(Buffer.from(bundle).subarray(0, 20).toString()).toStartWith("# v2 git bundle");
     expect(existsSync(marker)).toBe(false);
     expect(existsSync(join(runtime.root, "hook-ran"))).toBe(false);
     expect(readFileSync(join(source, "answer.txt"), "utf8")).toBe("broken\n");
-    await expect(repositoryBundle(repo(), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch)).rejects.toThrow("coding_preload_objects_refused");
+    await expect(repositoryBundle(repo(), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch, undefined, runtime.gitLimits)).rejects.toThrow("coding_preload_objects_refused");
     expect(base).not.toBe(commit);
   } finally { if (old === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = old; }
 });
@@ -89,7 +89,7 @@ test("pinned smart-HTTP request interoperates with Git stateless upload-pack wit
     expect(await proc.exited).toBe(0);
     return new Response(bytes, { headers: mime });
   };
-  const bundle = await repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, fetcher);
+  const bundle = await repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, fetcher, undefined, runtime.gitLimits);
   expect(bundle.length).toBeGreaterThan(0);
 });
 
@@ -102,7 +102,7 @@ test("broker cancellation terminates the whole trusted Git process group, includ
   const watcher = watch(root, (_event, name) => { if (name === "child.pid") ready(); });
   // Fixed test-only alias models a Git helper; no repository/config-sourced code is executed.
   const alias = `!sleep 60 & child=$!; printf '%s' "$child" > ${codingQuote(`${marker}.tmp`)}; mv ${codingQuote(`${marker}.tmp`)} ${codingQuote(marker)}; wait`;
-  const running = brokerGit(root, ["-c", `alias.block=${alias}`, "block"], undefined, { signal: controller.signal });
+  const running = brokerGit(root, ["-c", `alias.block=${alias}`, "block"], undefined, { signal: controller.signal, limits: new FixtureGitProcessLimits() });
   try {
     await reached;
     const child = Number(readFileSync(marker, "utf8"));
@@ -124,7 +124,7 @@ test.each([false, true])("reflected credential in a compressed Git object refuse
   await runtime.git("add", ".");
   await runtime.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "reflected credential fixture");
   const commit = await runtime.git("rev-parse", "HEAD");
-  await expect(repositoryBundle(repo(commit), secret, new AbortController().signal, () => {}, runtime.repositoryFetch)).rejects.toThrow("coding_preload_credential_refused");
+  await expect(repositoryBundle(repo(commit), secret, new AbortController().signal, () => {}, runtime.repositoryFetch, undefined, runtime.gitLimits)).rejects.toThrow("coding_preload_credential_refused");
 });
 
 test("small compressed packs cannot bypass the decoded object-stream size ceiling", async () => {
@@ -134,5 +134,5 @@ test("small compressed packs cannot bypass the decoded object-stream size ceilin
   await runtime.git("add", ".");
   await runtime.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "compressed size fixture");
   const commit = await runtime.git("rev-parse", "HEAD");
-  await expect(repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch)).rejects.toThrow("coding_preload_size_limit");
+  await expect(repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch, undefined, runtime.gitLimits)).rejects.toThrow("coding_preload_size_limit");
 });

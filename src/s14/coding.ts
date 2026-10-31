@@ -7,6 +7,7 @@ import type { Attempt, ScopePolicy, ScopeRef, WorkOutput } from "./authority-typ
 import { artifactHash } from "./artifacts";
 import { canonical, digest, exact, identity, text } from "./validation";
 import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, codingPath, codingQuote, codingRegistry } from "./coding-protocol";
+import { codingEvidenceCheckout, codingSnapshot } from "./coding-evidence";
 import { repositoryBundle } from "./coding-preload";
 import { repositoryCommit } from "./coding-resolve";
 import { resourceConfigured } from "./share-slots";
@@ -153,9 +154,10 @@ export class S14Coding {
             this.app.authority.retainedEvidence(tx, run.attemptId);
         } catch { return false; }
       });
-      const checks = available ? tx.all<{ attemptId: string; ordinal: number; record_json: string }>("SELECT c.attempt_id AS attemptId,c.ordinal,c.record_json FROM coding_checks c JOIN coding_runs r ON r.attempt_id=c.attempt_id WHERE r.work_id=? ORDER BY c.rowid", workId)
+      const checks = available ? tx.all<{ attemptId: string; ordinal: number; record_json: string }>("SELECT c.attempt_id AS attemptId,c.ordinal,c.record_json FROM coding_checks c JOIN coding_runs r ON r.attempt_id=c.attempt_id WHERE r.work_id=? AND c.ordinal>=0 ORDER BY c.rowid", workId)
         .map(({ record_json, ...row }) => ({ ...row, result: JSON.parse(record_json) as CodingCheckResult })) : [];
-      return { job: available ? this.job(tx, workId) : null, runs: runs.map(run => run.state === "reviewable" && !run.reportId ? { ...run, state: "partial", reason: "coding_evidence_not_committed" } : run), available, checks };
+      return { job: available ? this.job(tx, workId) : null, runs: runs.map(run => run.state === "reviewable" && !run.reportId ? { ...run, state: "partial", reason: "coding_evidence_not_committed" }
+        : run.state === "reviewable" && run.evidenceCheckout !== "recorded-raw/v1" ? { ...run, state: "partial", reason: "coding_recorded_checkout_required" } : run), available, checks };
     });
   }
 
@@ -188,27 +190,35 @@ export class S14Coding {
     tx.run("DELETE FROM coding_jobs WHERE work_id IN (SELECT work_id FROM work_payload_deletions)");
   }
 
-  private async performCheck(attemptId: string, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal): Promise<CodingCheckResult> {
-    if (command.network === "registry" && !job.repository.registry) return { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_registry_scope_required", stdout: "", stderr: "" };
+  private async performCheck(attemptId: string, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal, commit: string | null = null): Promise<CodingCheckResult> {
+    if (command.network === "registry" && !job.repository.registry) return { command, commit: null, state: "skipped", exitCode: null, timedOut: false, reason: "coding_registry_scope_required", stdout: "", stderr: "" };
     try {
       const request = { cwd: job.path, command: (command.network === "registry" ? command.argv :
         ["env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "LANG=C.UTF-8", ...command.argv]).map(codingQuote).join(" "), timeoutMs: command.timeoutMs, signal };
       const allowed = () => { this.app.store.read(tx => this.app.authority.assertTool(tx, attemptId, "coding")); };
       const result = command.network === "registry" ? await session.registrySpawn(request, job.repository.registry!.hosts, allowed) : await session.backend.spawn(request);
-      return { command, state: result.exitCode === 0 && !result.timedOut ? "passed" : "failed", exitCode: result.exitCode,
+      return { command, commit, state: result.exitCode === 0 && !result.timedOut ? "passed" : "failed", exitCode: result.exitCode,
         timedOut: result.timedOut, reason: result.timedOut ? "coding_check_timeout" : result.exitCode === 0 ? null : "coding_check_failed", stdout: clip(result.stdout), stderr: clip(result.stderr) };
     } catch (error) {
-      return { command, state: "unknown", exitCode: null, timedOut: false, reason: error instanceof AppError ? error.code : "coding_check_interrupted", stdout: "", stderr: "" };
+      return { command, commit: null, state: "unknown", exitCode: null, timedOut: false, reason: error instanceof AppError ? error.code : "coding_check_interrupted", stdout: "", stderr: "" };
     }
   }
 
-  private async check(attemptId: string, ordinal: number, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal): Promise<CodingCheckResult> {
-    const pending: CodingCheckResult = { command, state: "unknown", exitCode: null, timedOut: false, reason: "coding_check_dispatch_unconfirmed", stdout: "", stderr: "" };
+  private async check(attemptId: string, ordinal: number, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal, commit: string | null = null): Promise<CodingCheckResult> {
+    const pending: CodingCheckResult = { command, commit: null, state: "unknown", exitCode: null, timedOut: false, reason: "coding_check_dispatch_unconfirmed", stdout: "", stderr: "" };
     this.app.store.transaction(tx => {
       this.app.authority.assertTool(tx, attemptId, "coding");
       tx.run("INSERT INTO coding_checks VALUES (?,?,?)", attemptId, ordinal, canonical(pending));
     });
-    const result = await this.performCheck(attemptId, session, command, job, signal);
+    const clean = () => codingSnapshot(session.backend, job.path, commit!, async (_git, unchanged) => unchanged, signal);
+    const result: CodingCheckResult = commit && !await clean()
+      ? { command, commit: null, state: "skipped", exitCode: null, timedOut: false, reason: "coding_changed_during_tests", stdout: "", stderr: "" }
+      : await this.performCheck(attemptId, session, command, job, signal, commit);
+    if (commit && result.commit && !await clean()) {
+      result.commit = null;
+      result.state = "unknown";
+      result.reason = "coding_changed_during_tests";
+    }
     this.app.store.transaction(tx => tx.run("UPDATE coding_checks SET record_json=? WHERE attempt_id=? AND ordinal=?", canonical(result), attemptId, ordinal));
     return result;
   }
@@ -217,7 +227,7 @@ export class S14Coding {
     const backend = session.backend;
     const allowed = () => { this.app.store.read(tx => this.app.git.assertPreload(tx, attemptId, job)); };
     const secret = this.app.git.preloadSecret(attemptId, job);
-    const bundle = await repositoryBundle(job.repository, secret, signal, allowed, this.options.repositoryFetch);
+    const bundle = await repositoryBundle(job.repository, secret, signal, allowed, this.options.repositoryFetch, undefined, this.options.gitLimits);
     allowed();
     const file = `/workspace/.jit-preload-${job.workId}.bundle`;
     await backend.writeFileAtomically(file, bundle);
@@ -256,8 +266,8 @@ export class S14Coding {
       const backend = session.backend;
       await this.preload(session, attempt.id, job, signal);
       const checks: CodingCheckResult[] = [];
-      if (job.install) checks.push(await this.check(attempt.id, checks.length, session, job.install, job, signal));
-      const installOk = !job.install || checks[0]!.state === "passed";
+      const draftInstall = job.install ? await this.check(attempt.id, -1, session, job.install, job, signal) : null;
+      let installOk = !draftInstall || draftInstall.state === "passed";
       if (installOk) await codingModel(this.app, directory, attempt, backend, job.path, signal, this.options.model);
       if (signal.aborted) throw new AppError("coding_cancelled");
       await codingPath(backend, job.path);
@@ -265,10 +275,23 @@ export class S14Coding {
       codingGitOutput(await codingGit(backend, job.path, ["-c", "user.name=Jit Bot", "-c", "user.email=bot@invalid", "commit", "--allow-empty", "--no-verify", "-m", `Coding work ${job.workId}`], signal));
       run.headCommit = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
       codingCommit(run.headCommit);
-      for (const command of job.tests) {
-        if (installOk) checks.push(await this.check(attempt.id, checks.length, session, command, job, signal));
+      await codingEvidenceCheckout(backend, job.path, run.headCommit, job.branch, signal);
+      run.evidenceCheckout = "recorded-raw/v1";
+      if (job.install) {
+        if (installOk) checks.push(await this.check(attempt.id, 0, session, job.install, job, signal, run.headCommit));
         else {
-          const result: CodingCheckResult = { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_install_incomplete", stdout: "", stderr: "" };
+          checks.push(draftInstall!);
+          this.app.store.transaction(tx => {
+            this.app.authority.assertTool(tx, attempt.id, "coding");
+            tx.run("INSERT INTO coding_checks VALUES (?,?,?)", attempt.id, 0, canonical(draftInstall));
+          });
+        }
+        installOk = checks[0]!.state === "passed";
+      }
+      for (const command of job.tests) {
+        if (installOk) checks.push(await this.check(attempt.id, checks.length, session, command, job, signal, run.headCommit));
+        else {
+          const result: CodingCheckResult = { command, commit: null, state: "skipped", exitCode: null, timedOut: false, reason: "coding_install_incomplete", stdout: "", stderr: "" };
           this.app.store.transaction(tx => {
             this.app.authority.assertTool(tx, attempt.id, "coding");
             tx.run("INSERT INTO coding_checks VALUES (?,?,?)", attempt.id, checks.length, canonical(result));
@@ -277,16 +300,18 @@ export class S14Coding {
         }
       }
       if (signal.aborted) throw new AppError("coding_cancelled");
-      const currentHead = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
-      const dirty = codingGitOutput(await codingGit(backend, job.path, ["status", "--porcelain=v1", "--untracked-files=all"], signal));
-      const diff = codingGitOutput(await codingGit(backend, job.path, ["diff", "--no-ext-diff", "--no-textconv", "--binary", job.repository.baseCommit, run.headCommit, "--"], signal));
+      const snapshot = await codingSnapshot(backend, job.path, run.headCommit, async (git, unchanged) => ({ unchanged,
+        diff: await git(["diff", "--no-ext-diff", "--no-textconv", "--binary", job.repository.baseCommit, run.headCommit!, "--"]) }), signal);
+      const { diff } = snapshot;
+      const unchanged = snapshot.unchanged;
       if (containsCredential(diff) || diff.includes("[credential-redacted]")) throw new AppError("coding_diff_credential_refused", 403);
       run.diffHash = artifactHash(new TextEncoder().encode(diff || "(empty diff)\n"));
-      run.state = !dirty && currentHead === run.headCommit && job.tests.length > 0 && checks.every(check => check.state === "passed") ? "reviewable" : "partial";
-      run.reason = dirty || currentHead !== run.headCommit ? "coding_changed_during_tests" : !job.tests.length ? "coding_tests_not_run" : checks.find(check => check.state !== "passed")?.reason ?? null;
+      run.state = unchanged && job.tests.length > 0 && checks.every(check => check.state === "passed") ? "reviewable" : "partial";
+      run.reason = !unchanged ? "coding_changed_during_tests" : !job.tests.length ? "coding_tests_not_run" : checks.find(check => check.state !== "passed")?.reason ?? null;
       const files: { name: string; mediaType: "text/plain" | "application/json"; content: string }[] = [{ name: "coding-diff.txt", mediaType: "text/plain", content: diff || "(empty diff)\n" },
-        { name: "coding-checks.json", mediaType: "application/json", content: canonical({ baseCommit: run.baseCommit, headCommit: run.headCommit, testedHead: run.headCommit,
-          unchangedAfterTests: !dirty && currentHead === run.headCommit, checks, coverage: "Command output and owner-declared coverage only; no inferred measured coverage.", state: run.state, reason: run.reason }) }];
+        { name: "coding-checks.json", mediaType: "application/json", content: canonical({ baseCommit: run.baseCommit, headCommit: run.headCommit, evidenceCheckout: run.evidenceCheckout,
+          testedHead: checks.some(check => check.commit === run.headCommit && check.state !== "skipped") ? run.headCommit : null, draftInstall,
+          unchangedAfterTests: unchanged, checks, coverage: "Command output and owner-declared coverage only; no inferred measured coverage.", state: run.state, reason: run.reason }) }];
       const artifactIds = this.app.store.transaction(tx => {
         this.app.authority.guard(tx, attempt.id);
         return files.map(file => {

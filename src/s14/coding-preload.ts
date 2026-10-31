@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { AppError } from "../errors";
-import { CodingGitMirror, brokerGit } from "./coding-git-mirror";
+import { CodingGitMirror } from "./coding-git-mirror";
+import type { GitProcessLimits } from "./coding-git-limits";
 import { codingCommit, codingOrigin } from "./coding-protocol";
 import type { CodingRepository, CodingRepositoryFetch } from "./coding-types";
 
@@ -14,7 +15,7 @@ async function inspectObjects(mirror: CodingGitMirror, secret: string | undefine
   const forbidden = secret === undefined ? [] : [secret, Buffer.from(secret).toString("base64"), Buffer.from(`x-access-token:${secret}`).toString("base64")].map(value => Buffer.from(value));
   const overlap = Math.max(0, ...forbidden.map(value => value.length - 1));
   let decoded = 0, tail = Buffer.alloc(0);
-  const inspected = await brokerGit(mirror.directory, ["-C", mirror.path, "cat-file", "--batch-all-objects", "--batch"], undefined, {
+  const inspected = await mirror.git(["-C", mirror.path, "cat-file", "--batch-all-objects", "--batch"], {
     signal, inspect(chunk) {
       allowed();
       decoded += chunk.length;
@@ -30,7 +31,7 @@ async function inspectObjects(mirror: CodingGitMirror, secret: string | undefine
 
 /** Fetches one pinned GitHub commit as bounded data; no checkout, hooks, filters, submodules or remote config run on the host. */
 export async function repositoryBundle(repository: CodingRepository, secret: string | undefined, signal: AbortSignal,
-  allowed: () => void, transport: CodingRepositoryFetch = fetch, limits = { packBytes: 16 * 1024 * 1024, timeoutMs: 60000, schedule }): Promise<Uint8Array> {
+  allowed: () => void, transport: CodingRepositoryFetch = fetch, limits = { packBytes: 16 * 1024 * 1024, timeoutMs: 60000, schedule }, gitLimits?: GitProcessLimits): Promise<Uint8Array> {
   const maximumPack = limits.packBytes;
   codingOrigin(repository.url);
   codingCommit(repository.baseCommit);
@@ -50,7 +51,7 @@ export async function repositoryBundle(repository: CodingRepository, secret: str
       })]);
     } finally { controller.signal.removeEventListener("abort", abort); }
   };
-  const mirror = new CodingGitMirror();
+  let mirror: CodingGitMirror | undefined;
   try {
     allowed();
     // Smart HTTP v0, no side-band/thin pack: exactly NAK followed by one complete pack.
@@ -82,9 +83,10 @@ export async function repositoryBundle(repository: CodingRepository, secret: str
     if (pack.length < 32 || !createHash("sha1").update(pack.subarray(0, -20)).digest().equals(pack.subarray(-20))) throw new AppError("coding_preload_protocol_refused", 409);
     if (bytes.subarray(0, 12).toString("binary") !== "0008NAK\nPACK") throw new AppError("coding_preload_protocol_refused", 409);
     if (secret !== undefined && bytes.includes(Buffer.from(secret))) throw new AppError("coding_preload_credential_refused", 403);
+    const objects = mirror = new CodingGitMirror(gitLimits);
     const git = async (args: string[], input?: Uint8Array) => {
       allowed();
-      const result = await brokerGit(mirror.directory, args, undefined, { signal: controller.signal, ...(input ? { input } : {}) });
+      const result = await objects.git(args, { signal: controller.signal, ...(input ? { input } : {}) });
       allowed();
       if (result.code !== 0) throw new AppError("coding_preload_objects_refused", 409);
       return result.stdout.trim();
@@ -113,6 +115,6 @@ export async function repositoryBundle(repository: CodingRepository, secret: str
     clearDeadline();
     controller.abort();
     signal.removeEventListener("abort", cancel);
-    mirror.close();
+    mirror?.close();
   }
 }

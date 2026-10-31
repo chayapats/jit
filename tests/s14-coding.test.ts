@@ -23,7 +23,7 @@ async function fixture(edit = true, registry: CodingRepository["registry"] = nul
   let path = "";
   const clock = { now: 1800000000000 };
   const policy = { routes: [{ id: "selected", provider: "codex" as const, model: "scripted" }], tools: ["computer", "coding", "effect_push"], resources: ["repo"] };
-  const options = { policy, chat: { async reply() { return { text: "No grant" }; } }, now: () => clock.now, computers: { runtime }, git: { vault }, coding: { repositoryFetch: runtime.repositoryFetch, model: codingScript(() => path, edit) } };
+  const options = { policy, chat: { async reply() { return { text: "No grant" }; } }, now: () => clock.now, computers: { runtime }, git: { vault }, coding: { gitLimits: runtime.gitLimits, repositoryFetch: runtime.repositoryFetch, model: codingScript(() => path, edit) } };
   const app = new S14Application(store, options);
   await app.provisionOwner("coding-fixture-owner-password");
   const token = await app.login("coding-fixture-owner-password"), auth = app.authenticate(token);
@@ -91,6 +91,47 @@ test("test modifications stay partial and bound to the tested commit", async () 
   expect(f.app.coding.view(f.auth.actor, attempt.workId).runs[0]).toMatchObject({ state: "partial", reason: "coding_changed_during_tests" });
 });
 
+test.each(["--skip-worktree", "--assume-unchanged", "filter"])("%s cannot certify draft-only code as a recorded commit", async attack => {
+  const f = await fixture(), { attempt } = f.start();
+  const path = `/workspace/coding/${attempt.workId}`;
+  f.options.coding.model = codingScript(() => path, true, cwd => attack === "filter"
+    ? `cd ${cwd} && printf 'answer.txt filter=evil\\n' > .gitattributes && git config filter.evil.clean 'printf broken' && git config filter.evil.smudge 'printf fixed' && printf fixed > answer.txt`
+    : `git -C ${cwd} update-index ${attack} answer.txt && printf fixed > ${cwd}/answer.txt`);
+  f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
+  const view = f.app.coding.view(f.auth.actor, attempt.workId), run = view.runs[0]!;
+  expect(run).toMatchObject({ state: "partial", reason: "coding_check_failed" });
+  expect(view.checks[0]!.result).toMatchObject({ state: "failed", commit: run.headCommit });
+  expect(await f.runtime.git("-C", f.runtime.local(path), "show", `${run.headCommit}:answer.txt`)).toBe("broken");
+  expect(readFileSync(f.runtime.local(`${path}/answer.txt`), "utf8").trim()).toBe("broken");
+});
+
+test.each(["--skip-worktree", "--assume-unchanged", "filter"])("a %s mutation during tests loses commit attribution", async attack => {
+  const f = await fixture();
+  const mutation = attack === "filter"
+    ? "printf 'answer.txt filter=evil\\n' > .git/info/attributes && git config filter.evil.clean 'printf fixed' && printf mutation > answer.txt"
+    : `git update-index ${attack} answer.txt && printf mutation > answer.txt`;
+  const { attempt } = f.start([{ ...check, argv: ["sh", "-c", mutation] }]);
+  f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
+  const view = f.app.coding.view(f.auth.actor, attempt.workId);
+  expect(view.runs[0]).toMatchObject({ state: "partial", reason: "coding_changed_during_tests" });
+  expect(view.checks[0]!.result).toMatchObject({ commit: null, state: "unknown", exitCode: 0 });
+  const report = f.app.reports.view(f.auth.actor, view.runs[0]!.reportId!);
+  if (report.state !== "available") throw new Error("missing report");
+  const artifact = report.artifacts.find(a => a.name === "coding-checks.json")!;
+  const evidence = JSON.parse(new TextDecoder().decode(f.app.artifacts.download(f.auth.actor, artifact.id).bytes));
+  expect(evidence.testedHead).toBeNull();
+});
+
+test("an install that changes recorded code cannot lend commit evidence to later tests", async () => {
+  const f = await fixture();
+  const { attempt } = f.start([check], { ...check, argv: ["sh", "-c", "if test -e /workspace/install-ran; then printf uncommitted > answer.txt; fi; touch /workspace/install-ran"] });
+  f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
+  const view = f.app.coding.view(f.auth.actor, attempt.workId);
+  expect(view.runs[0]).toMatchObject({ state: "partial", reason: "coding_changed_during_tests" });
+  expect(view.checks.map(item => ({ state: item.result.state, commit: item.result.commit }))).toEqual([{ state: "unknown", commit: null }, { state: "skipped", commit: null }]);
+  expect(f.runtime.requests.some((r: any) => r.op === "spawn" && r.command.includes("actual-test-output"))).toBe(false);
+});
+
 test("stop at runtime barrier fences late evidence and boot never replays coding", async () => {
   const f = await fixture(), { attempt } = f.start(), gate = barrier();
   f.runtime.beforeExec = gate;
@@ -146,7 +187,7 @@ test("owner registry scope is visible, exact and permits install/test dispatch o
   const { attempt } = f.start([{ ...check, network: "registry" }], { ...check, argv: ["sh", "-c", "printf installed > dependency.txt"], network: "registry" });
   f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
   expect(f.app.coding.view(f.auth.actor, attempt.workId).runs[0]!.state).toBe("reviewable");
-  expect(f.runtime.registryRequests).toHaveLength(2);
+  expect(f.runtime.registryRequests).toHaveLength(3);
   const report = f.app.reports.view(f.auth.actor, f.app.coding.view(f.auth.actor, attempt.workId).runs[0]!.reportId!);
   if (report.state !== "available") throw new Error("missing registry report");
   expect(report.report.limitations).toContain("Only explicitly scoped registry checks may use the registry proxy; ordinary workspace/model commands have no network egress.");

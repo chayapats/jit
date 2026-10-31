@@ -1,17 +1,18 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { AppError } from "../errors";
 import { artifactHash } from "./artifacts";
+import { LinuxGitProcessLimits, type GitProcessLimits } from "./coding-git-limits";
 import type { GitAction } from "./coding-git-types";
 
-/** Runs data-only Git with an empty environment and fixed config, never a workspace command or repository hook. */
+/** Runs data-only Git only after kernel memory/disk enforcement, with an empty environment and fixed config. */
 export async function brokerGit(directory: string, args: string[], secret?: string,
-  options: { input?: Uint8Array; signal?: AbortSignal; inspect?: (chunk: Uint8Array) => void } = {}): Promise<{ code: number; stdout: string }> {
+  options: { input?: Uint8Array; signal?: AbortSignal; inspect?: (chunk: Uint8Array) => void; limits?: GitProcessLimits } = {}): Promise<{ code: number; stdout: string }> {
+  const argv = await (options.limits ?? new LinuxGitProcessLimits()).command(directory, ["git", "-c", "pack.threads=1", "-c", "pack.windowMemory=16m", "-c", "pack.deltaCacheSize=16m", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "transfer.fsckObjects=true", ...args]);
   const askpass = join(directory, "askpass.sh");
   if (secret !== undefined) writeFileSync(askpass, '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" x-access-token;; *) printf "%s\\n" "$JIT_GIT_EFFECT_TOKEN";; esac\n', { mode: 0o700 });
-  const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "transfer.fsckObjects=true", ...args], {
-    cwd: directory, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: directory, LANG: "C.UTF-8", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0",
+  const proc = Bun.spawn(argv, {
+    cwd: directory, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: directory, TMPDIR: directory, LANG: "C.UTF-8", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0",
       ...(secret === undefined ? {} : { GIT_ASKPASS: askpass, JIT_GIT_EFFECT_TOKEN: secret }) }, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "ignore", detached: true,
   });
   const kill = () => { try { process.kill(-proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch { /* Already settled. */ } } };
@@ -41,11 +42,16 @@ export class CodingGitMirror {
   readonly directory: string;
   readonly path: string;
   #verified = false;
-  constructor() {
-    this.directory = mkdtempSync(join(tmpdir(), "jit-s14-git-"));
+  constructor(readonly limits: GitProcessLimits = new LinuxGitProcessLimits()) {
+    this.directory = limits.createDirectory();
     chmodSync(this.directory, 0o700);
     this.path = join(this.directory, "mirror.git");
     mkdirSync(join(this.directory, "empty-template"), { mode: 0o700 });
+  }
+
+  /** All object-reading commands, including import, run under the same enforced resource boundary. */
+  git(args: string[], options: Parameters<typeof brokerGit>[3] = {}) {
+    return brokerGit(this.directory, args, undefined, { ...options, limits: this.limits });
   }
 
   /** Verifies the bundle, full commit identity, reachable objects and exact reviewed diff before credential release. */
@@ -54,7 +60,7 @@ export class CodingGitMirror {
     const file = join(this.directory, "objects.bundle");
     writeFileSync(file, bundle, { mode: 0o600 });
     const git = async (args: string[]) => {
-      const result = await brokerGit(this.directory, args);
+      const result = await this.git(args);
       if (result.code !== 0) throw new AppError("git_objects_unverified", 409);
       return result.stdout;
     };

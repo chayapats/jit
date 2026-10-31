@@ -58,7 +58,7 @@ async function fixture(language: "th" | "en" = "en", options: { tools?: string[]
   let path = "";
   const model = options.edit ? scripted(() => path, () => options.edit!(path)) : codingScript(() => path);
   const policy = options.defaultInstall ? s14Policy({}) : { routes: [{ id: "route", provider: "codex" as const, model: "scripted" }], tools, resources };
-  const app = new S14Application(store, { policy, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime }, coding: { repositoryFetch: runtime.repositoryFetch, model }, git: { vault, remote } });
+  const app = new S14Application(store, { policy, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime }, coding: { gitLimits: runtime.gitLimits, repositoryFetch: runtime.repositoryFetch, model }, git: { vault, remote } });
   await app.provisionOwner(password);
   const token = await app.login(password), actor = app.authenticate(token).actor;
   app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language, routeId: policy.routes[0]!.id, capabilities: { tools: options.ceiling ?? tools, resources } } });

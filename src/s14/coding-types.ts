@@ -56,6 +56,8 @@ export interface CodingJob {
 /** Actual command observations never derive success or coverage from model output. */
 export interface CodingCheckResult {
   command: CodingCheck;
+  /** Null for draft/uncommitted or unrun observations; only a fresh recorded checkout supplies a commit. */
+  commit: string | null;
   state: "passed" | "failed" | "skipped" | "unknown";
   exitCode: number | null;
   timedOut: boolean;
@@ -73,6 +75,8 @@ export interface CodingRun {
   headCommit: string | null;
   diffHash: string | null;
   reportId: string | null;
+  /** Absent on legacy runs, whose draft-tree observations cannot authorize a new push. */
+  evidenceCheckout?: "recorded-raw/v1";
 }
 /** Owner query separates retained metadata from currently accessible immutable execution artifacts. */
 export interface CodingView {
@@ -86,6 +90,8 @@ export type CodingRepositoryFetch = (url: string, options: RequestInit) => Promi
 /** Deterministic model injection is service-owned and unavailable to HTTP or retrieved repository content. */
 export interface CodingOptions {
   model?: Model;
+  /** Trusted kernel-limit fixture seam; never accepted from owner/model payloads. */
+  gitLimits?: import("./coding-git-limits").GitProcessLimits;
   /** Trusted HTTP fixture seam for bounded branch discovery and pack preload, never owner/model input. */
   repositoryFetch?: CodingRepositoryFetch;
 }

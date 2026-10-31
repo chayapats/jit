@@ -7,8 +7,9 @@ import type { Attempt, Effect, EffectAction } from "./authority-types";
 import type { CodingJob, CodingRun } from "./coding-types";
 import type { Bot, OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
-import { codingCommit, codingGit, codingGitOutput, codingPath } from "./coding-protocol";
+import { codingCommit, codingGitOutput, codingQuote } from "./coding-protocol";
 import { applyGitConnection, gitConnection } from "./coding-connections";
+import { codingSnapshot } from "./coding-evidence";
 import { CodingGitMirror } from "./coding-git-mirror";
 import { GitHubCodingRemote, gitPullUrl } from "./coding-git-remote";
 import type { GitAction, GitCommand, GitConnection, GitOptions, GitProgress, GitReceipt, GitRemoteProof } from "./coding-git-types";
@@ -118,7 +119,7 @@ export class S14GitEffects {
     if (!row) throw new AppError("coding_evidence_required", 409);
     const run = JSON.parse(row.record_json) as CodingRun;
     const job = this.app.coding.job(tx, run.workId);
-    if (!job || !run.headCommit || !run.diffHash || !run.reportId || !["reviewable", "partial"].includes(run.state) ||
+    if (!job || run.evidenceCheckout !== "recorded-raw/v1" || !run.headCommit || !run.diffHash || !run.reportId || !["reviewable", "partial"].includes(run.state) ||
         run.reason === "coding_changed_during_tests" || run.headCommit !== p.update.newCommit || this.app.reports.read(tx, run.reportId).state !== "available") throw new AppError("coding_evidence_required", 409);
     const action: GitAction = { version: "app.git-effects/v2", intentId: crypto.randomUUID().replaceAll("-", ""), codingAttemptId: p.attemptId,
       ownerGeneration: attempt.snapshot.grant.ownerGeneration, repository: job.repository, connection: structuredClone(p.connection), headCommit: run.headCommit, diffHash: run.diffHash,
@@ -179,26 +180,30 @@ export class S14GitEffects {
     try {
       const backend = session.backend;
       const job = this.app.store.read(tx => this.app.coding.job(tx, this.app.authority.guard(tx, action.codingAttemptId).workId));
+      const run = this.app.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM coding_runs WHERE attempt_id=?", action.codingAttemptId));
+      if (!run || (JSON.parse(run.record_json) as CodingRun).evidenceCheckout !== "recorded-raw/v1") throw new AppError("coding_evidence_required", 409);
       if (!job || canonical(job.repository) !== canonical(action.repository)) throw new AppError("git_approved_diff_changed", 409);
-      await codingPath(backend, job.path);
-      const git = async (args: string[]) => { allowed(); return codingGitOutput(await codingGit(backend, job.path, args)); };
-      if ((await git(["rev-parse", "HEAD"])).trim() !== action.headCommit || await git(["status", "--porcelain=v1", "--untracked-files=all"])) throw new AppError("git_approved_diff_changed", 409);
-      const path = `${job.path}/.jit-${action.intentId}.bundle`;
-      if ((await backend.list(job.path)).some(entry => entry.name === `.jit-${action.intentId}.bundle`)) throw new AppError("git_bundle_path_refused", 403);
-      await git(["bundle", "create", path, "HEAD"]);
-      if (await backend.realpath(path) !== path || (await backend.stat(path)).type !== "file") throw new AppError("git_bundle_path_refused", 403);
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      for await (const chunk of backend.readFile(path)) {
+      return await codingSnapshot(backend, job.path, action.headCommit, async (git, unchanged) => {
+        if (!unchanged) throw new AppError("git_approved_diff_changed", 409);
         allowed();
-        size += chunk.length;
-        if (size > 16777216) throw new AppError("git_bundle_bound", 409);
-        chunks.push(chunk);
-      }
-      const removed = await backend.spawn({ cwd: job.path, command: `rm -- '${path}'`, timeoutMs: 10000 });
-      codingGitOutput(removed);
-      if ((await git(["rev-parse", "HEAD"])).trim() !== action.headCommit || await git(["status", "--porcelain=v1", "--untracked-files=all"])) throw new AppError("git_approved_diff_changed", 409);
-      return new Uint8Array(Buffer.concat(chunks));
+        const path = `/workspace/.jit-${action.intentId}.bundle`;
+        if ((await backend.list("/workspace")).some(entry => entry.name === `.jit-${action.intentId}.bundle`)) throw new AppError("git_bundle_path_refused", 403);
+        try {
+          await git(["bundle", "create", path, "HEAD"]);
+          if (await backend.realpath(path) !== path || (await backend.stat(path)).type !== "file") throw new AppError("git_bundle_path_refused", 403);
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for await (const chunk of backend.readFile(path)) {
+            allowed();
+            size += chunk.length;
+            if (size > 16777216) throw new AppError("git_bundle_bound", 409);
+            chunks.push(chunk);
+          }
+          return new Uint8Array(Buffer.concat(chunks));
+        } finally {
+          codingGitOutput(await backend.spawn({ cwd: "/workspace", command: `rm -f -- ${codingQuote(path)}`, timeoutMs: 10000 }));
+        }
+      });
     } finally { session.release(); }
   }
 
@@ -207,12 +212,10 @@ export class S14GitEffects {
     try {
       const job = this.app.store.read(tx => this.app.coding.job(tx, this.app.authority.guard(tx, action.codingAttemptId).workId));
       if (!job) throw new AppError("git_approved_diff_changed", 409);
-      await codingPath(session.backend, job.path);
-      allowed();
-      const head = codingGitOutput(await codingGit(session.backend, job.path, ["rev-parse", "HEAD"])).trim();
-      const dirty = codingGitOutput(await codingGit(session.backend, job.path, ["status", "--porcelain=v1", "--untracked-files=all"]));
-      if (head !== action.headCommit || dirty) throw new AppError("git_approved_diff_changed", 409);
-      allowed();
+      await codingSnapshot(session.backend, job.path, action.headCommit, async (_git, unchanged) => {
+        allowed();
+        if (!unchanged) throw new AppError("git_approved_diff_changed", 409);
+      });
     } finally { session.release(); }
   }
 
@@ -241,10 +244,11 @@ export class S14GitEffects {
       if (canonical(action) !== value.content) throw new AppError("stale_approval", 409);
       this.app.store.read(tx => this.currentConnection(tx, action));
     };
-    const mirror = new CodingGitMirror();
+    let mirror: CodingGitMirror | undefined;
     let dispatched = false;
     try {
       await this.stage(progress, "verifying");
+      mirror = new CodingGitMirror(this.app.coding.options.gitLimits);
       const bundle = await this.bundle(action, allowed);
       await mirror.import(bundle, action);
       allowed();
@@ -293,7 +297,7 @@ export class S14GitEffects {
     } catch (error) {
       await this.stage(progress, dispatched ? "unknown" : "failed", dispatched ? "git_dispatch_unconfirmed" : error instanceof AppError ? error.code : "git_verification_unavailable");
       return dispatched ? "unknown" : "failed";
-    } finally { mirror.close(); }
+    } finally { mirror?.close(); }
   }
 
   private remember(progress: GitProgress): void {
