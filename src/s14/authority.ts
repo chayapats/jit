@@ -7,6 +7,8 @@ import { record, records, save } from "./application";
 import type { Bot, OwnerActor } from "./types";
 import type { Admission, ApprovalCommand, Attempt, AuthorityCommand, AuthorityOptions, AuthorityReceipt, Effect, EffectAction, ScopePolicy, ScopeRef, Work, WorkGrant, WorkLimits, WorkOutput, WorkView } from "./authority-types";
 import { evidenceRequirements } from "./reports";
+import { researchHandoff, type CommittedHandoff } from "./research-handoff";
+import type { Report } from "./report-types";
 import { assertConcurrentHost } from "./lifecycle";
 import type { QueueCeiling, SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
@@ -662,39 +664,21 @@ export class S14Authority {
               const { id: _id, handler: _handler, dependsOn: _dependsOn, ...input } = node;
               const attempt = this.admitIn(tx, graph.id, `step_${step.id}_${step.revision}`, input, null, digest(canonical({ input, parentId: null })));
               attempt.step = { id: step.id, handler: node.handler, inputs: [], gaps: dependencies.gaps };
+              const handoffs: CommittedHandoff[] = [];
               for (const dependency of dependencies.inputs) {
                 const source = { id: dependency.sourceId, revision: 1, generation: 1 };
                 if (this.app.memory.handoff(tx, source, attempt)) {
                   this.app.memory.appendSource(tx, attempt.id, source);
-                  // Bound the handoff independently of retained sibling output and keep every omission explicit.
-                  if (Buffer.byteLength(dependency.text) > 8192) {
-                    const bytes = Buffer.from(dependency.text);
-                    let end = 8192;
-                    while ((bytes[end]! & 0xc0) === 0x80) end--;
-                    dependency.text = bytes.subarray(0, end).toString("utf8");
-                    attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_excerpt" });
-                  }
-                  if (Buffer.byteLength(JSON.stringify([...attempt.step.inputs, dependency])) > 49152) {
-                    attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_omitted" });
-                    continue;
-                  }
                   const evidenceRows = tx.all<{ id: string }>("SELECT id FROM external_evidence WHERE attempt_id=? ORDER BY rowid", dependency.attemptId);
-                  const app = this.app;
-                  function* evidenceItems() {
-                    for (const row of evidenceRows) yield app.parallel.citation(tx, dependency.attemptId, row.id, 1);
-                    yield* app.personal.reads.evidence(tx, dependency.attemptId);
-                  }
-                  for (const evidence of evidenceItems()) {
-                    const bytes = Buffer.byteLength(JSON.stringify([...attempt.step.inputs, { ...dependency, evidence: [...dependency.evidence, evidence] }]));
-                    if (bytes > 49152) {
-                      attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_evidence_omitted" });
-                      break;
-                    }
-                    dependency.evidence.push(evidence);
-                  }
-                  attempt.step.inputs.push(dependency);
+                  const evidence = evidenceRows.map(row => this.app.parallel.citation(tx, dependency.attemptId, row.id, 1));
+                  const published = tx.get<{ content_json: string }>("SELECT content_json FROM reports WHERE attempt_id=? ORDER BY revision DESC LIMIT 1", dependency.attemptId);
+                  const cited = published ? (JSON.parse(published.content_json) as Report).claims.flatMap(claim => claim.citations)
+                    .filter(citation => citation.attemptId === dependency.attemptId).map(({ id, revision }) => ({ id, revision })) : [];
+                  handoffs.push({ input: dependency, evidence: [...evidence, ...this.app.personal.reads.evidence(tx, dependency.attemptId)], cited });
                 } else attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_not_accessible" });
               }
+              const handoff = researchHandoff(handoffs, attempt.step.gaps);
+              attempt.step.inputs = handoff.inputs; attempt.step.gaps = handoff.gaps;
               save(tx, "work_attempts", attempt);
               step.attemptId = attempt.id; step.state = "running"; step.reason = null; step.queueCeiling = null;
               step.startedAt = this.app.now(); step.revision++;

@@ -261,10 +261,10 @@ test("text-only dependencies respect the complete serialized handoff ceiling and
   expect(synthesis).toBeDefined();
   const inputs = synthesis!.step!.inputs;
   expect(Buffer.byteLength(JSON.stringify(inputs))).toBeLessThanOrEqual(49152);
-  expect(inputs).toHaveLength(5);
+  expect(inputs).toHaveLength(7);
   expect(inputs.every(input => Buffer.byteLength(input.text) <= 8192 && !input.text.includes("�") && input.evidence.length === 0)).toBe(true);
   const gaps = synthesis!.step!.gaps;
-  expect(gaps.filter(g => g.reason === "handoff_result_omitted")).toHaveLength(2);
+  expect(gaps.filter(g => g.reason === "handoff_result_omitted")).toHaveLength(0);
   expect(gaps.filter(g => g.reason === "handoff_result_excerpt")).toHaveLength(7);
 });
 

@@ -34,3 +34,7 @@ Distinct same-provider accounts (#413) are separate from safe concurrency under 
 ## Evidence required
 
 Barrier-driven concurrent Bots; route/credential ceilings; independent contexts; one refresh under overlap; logout/write-guard races; browser/workspace leases; dependency/partial sibling handling; crash windows before/after native creation and evidence commit; stale-authority resume denial; duplicate/unknown effect ledger; finite retry/budget accounting. Requirements: FR-02/06/12–FR-15/26/28/35/37; NFR-02/05/06/10.
+
+## Bounded research handoff selection
+
+Reserve fair summary shares before filling the existing 49,152-byte input envelope, with at most 16,384 bytes for summaries when evidence exists and at most 8,192 bytes per text. Prefer the already-validated citations selected by committed sibling reports, round-robin across accessible siblings, then other retrieved evidence. Skip an oversized candidate rather than stopping at it. Preserve complete evidence snapshots, identities, revisions, coverage, lineage checks and explicit omission/excerpt gaps. This repairs read-order starvation; it does not guarantee source coverage, relax citation validation or add a retrieval/model retry. No persisted old attempt is rewritten.
