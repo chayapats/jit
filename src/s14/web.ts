@@ -153,7 +153,10 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           if (url.pathname === "/s14/commands" && authRender.signIn) return html(authRender.signIn(receipt, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
           return json(receipt);
         }
-        if ((command as { kind?: string })?.kind === "backup.create") return json(app.backups.execute(auth.actor, command as OnlineBackupCommand), 202);
+        if ((command as { kind?: string })?.kind === "backup.create") {
+          const receipt = app.backups.execute(auth.actor, command as OnlineBackupCommand);
+          return url.pathname === "/s14/commands" && product ? redirect(product.backupSurface(receipt.requestId)) : json(receipt, 202);
+        }
         if (/^(restore|upgrade)\./.test((command as { kind?: string })?.kind ?? "")) throw new AppError("s14_ops_offline_required", 409);
         const receipt = app.execute(auth.actor, command as S14Command);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });

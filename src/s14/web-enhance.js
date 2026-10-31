@@ -56,7 +56,7 @@ if (signIn) {
   setTimeout(poll, 3000);
 }
 for (const button of document.querySelectorAll("[data-copy]")) {
-  const source = document.querySelector("[data-copy-source]");
+  const source = button.dataset.copy ? document.getElementById(button.dataset.copy) : document.querySelector("[data-copy-source]");
   if (!source || !navigator.clipboard) continue;
   button.hidden = false;
   button.addEventListener("click", async () => {

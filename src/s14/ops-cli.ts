@@ -5,6 +5,7 @@ import { s14CredentialLifecycle } from "./lifecycle";
 import { opsRead } from "./ops-files";
 import { schwayOpsNative } from "./ops-native";
 import { S14Maintenance } from "./ops";
+import { opsGuide, type S14OpsResult } from "./ops-guide";
 import { supportedS14Routes } from "./sign-in";
 import type { OpsCommand } from "./ops-types";
 
@@ -23,7 +24,11 @@ export async function runS14Ops(path: string, args: string[], env: NodeJS.Proces
     const password = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, "");
     const token = await maintenance.app.login(password);
     const actor = maintenance.app.authenticate(token).actor;
+    // Read first: a completed activation replaces this application and ends every session.
+    const locale = maintenance.app.home(actor).owner?.language;
     const result = index < 0 ? maintenance.status(actor) : await maintenance.execute(actor, JSON.parse(opsRead(resolve(args[index + 1]!), 131072).toString()) as OpsCommand);
     console.log(JSON.stringify(result));
+    // stdout stays the machine-readable result; the owner's next step goes to stderr.
+    const guide = opsGuide(result as S14OpsResult, locale); if (guide) console.error(guide);
   } finally { maintenance.close(); await s14CredentialLifecycle().close(); }
 }
