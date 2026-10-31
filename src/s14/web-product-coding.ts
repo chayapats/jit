@@ -91,8 +91,8 @@ function receivers(app: S14Application, actor: OwnerActor, state: Home) {
   for (const bot of state.bots) {
     if (!bot.enabled) { const { state: phase, target } = app.botLifecycle.view(actor, bot.id).lifecycle; if (phase === "stopping" && target === "active") others.push({ bot, why: "stopping" }); continue; }
     if (!["computer", "coding"].every(tool => bot.capabilities.tools.includes(tool))) { others.push({ bot, why: "tools" }); continue; }
-    // A slot already holding a token waits for its own repository, so another grant takes it only when nothing else is free.
-    const mine = slots.filter(slot => slot.receiverBotIds.includes(bot.id)), scopeId = (mine.find(slot => !held.has(slot.scopeId)) ?? mine[0])?.scopeId;
+    // Pending private connections reserve their slots until explicitly selected or removed.
+    const mine = slots.filter(slot => slot.receiverBotIds.includes(bot.id)), scopeId = mine.find(slot => !held.has(slot.scopeId))?.scopeId;
     if (scopeId) eligible.push({ bot, scopeId }); else others.push({ bot, why: "slot" });
   }
   return { receivers: eligible, others, configured: slots.length > 0 };
@@ -204,9 +204,9 @@ export function codingCommand(app: S14Application, form: string, fields: Record<
     const [botId, id] = single(fields, "receiver").split(":"), hosts = prefixed(fields, "registry:");
     if (!botId || !id) throw new AppError("coding_receiver_required");
     const base = single(fields, "baseCommit").trim(), connection = single(fields, "connection");
-    // A full commit needs no read, so the token is only named when a branch has to be resolved with it.
+    // Selecting a waiting connection explicitly binds its reserved slot even for a full commit.
     return { kind: "coding.repository.grant", requestId, expectedRevision, payload: { id, botId, url: repositoryUrl(single(fields, "url")),
-      ...(/^[a-fA-F0-9]{40}$/.test(base) ? { baseCommit: base.toLowerCase() } : { baseBranch: base, ...(connection ? { connection: pinned(connection) } : {}) }), registry: hosts.length ? { hosts } : null } };
+      ...(/^[a-fA-F0-9]{40}$/.test(base) ? { baseCommit: base.toLowerCase() } : { baseBranch: base }), ...(connection ? { connection: pinned(connection) } : {}), registry: hosts.length ? { hosts } : null } };
   }
   if (form === "coding-repin") {
     only(fields, pinFields);

@@ -39,9 +39,11 @@ export class S14Coding {
     const p = command.payload;
     exact(p, ["id", "botId", "url", "baseBranch" in p ? "baseBranch" : "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : []), ...(Object.hasOwn(p, "connection") ? ["connection"] : [])]);
     if (p.connection) {
-      if (!("baseBranch" in p)) throw new AppError("coding_branch_resolution_required", 409);
       this.branchConnection(tx, p.id, p.connection);
     }
+    const held = tx.get(`SELECT 1 FROM git_connections WHERE json_extract(record_json,'$.repositoryId')=?
+      AND json_extract(record_json,'$.removed')=0 AND id<>? LIMIT 1`, p.id, p.connection?.id ?? "");
+    if (held) throw new AppError("coding_slot_reserved", 409);
     codingRegistry(p.registry ?? null); identity(p.id); identity(p.botId); codingOrigin(p.url);
     const bot = record<Bot>(tx, "bots", p.botId);
     if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);

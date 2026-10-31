@@ -190,6 +190,7 @@ test.each(["th", "en"] as const)("%s run once now restates the captured scope an
   expect(commandOf(html, "routine.run-now")).toMatchObject({ expectedRevision: routine.revision, payload: { routineId: routine.id } });
   expect(Object.keys(commandOf(html, "routine.run-now").payload)).toEqual(["routineId"]);
   const landed = await g.press(html, "routine.run-now");
+  expect(landed.html).toContain(words["s14.routine.trigger.owner"]);
   expect(landed.path).toContain(`/routines/${routine.id}?receipt=`); expect(landed.html).toContain(words["s14.routine.done.run-now"]); expect(landed.html).toContain(words["s14.routine.done.run-now_detail"]);
   expect(g.routines()[0]!.routine.occurrencesRemaining).toBe(4);
   expect(g.routines()[0]!.history).toHaveLength(1);
@@ -394,4 +395,42 @@ test("setup and stage lists no longer share a class, and each page gets its own 
   const stage = text.match(/^\.s-steps \{[^}]*\}$/gm)!;
   expect(stage).toHaveLength(1); expect(stage[0]).toContain("flex-direction: column");
   expect(text).not.toMatch(/^\.s-setup-steps \{[^}]*flex-direction/m);
+});
+
+test("a public grant cannot take the only slot held by a pending private token, including forged JSON", async () => {
+  const g = await fixture("en", undefined, true), { words } = g; broker(g);
+  const stored = await g.submit(await g.page("/coding/connect"), "/s14/forms/git-slot-connection");
+  await g.submit(stored.html, "/s14/forms/git-secret", { secret: token });
+  const before = g.app.git.connections(g.auth.actor);
+  const page = await g.page("/coding/new");
+  expect(page).toContain(words["s14.coding.no_receiver"]);
+  expect(page).not.toContain('value="jit:resource1"');
+  const payload = { id: "resource1", botId: "jit", url: "https://github.com/fixture/public.git", baseCommit: sha };
+  expect(() => g.app.execute(g.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0, payload })).toThrow("coding_slot_reserved");
+  await expect(g.app.coding.execute(g.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0,
+    payload: { id: payload.id, botId: payload.botId, url: payload.url, baseBranch: "main" } })).rejects.toThrow("coding_slot_reserved");
+  expect(g.app.coding.repositories(g.auth.actor)).toHaveLength(0);
+  expect(g.app.git.connections(g.auth.actor)).toEqual(before);
+  g.app.execute(g.auth.actor, { kind: "git.connection.remove", requestId: retryId(), expectedRevision: before[0]!.revision, payload: { connectionId: before[0]!.id } });
+  expect(await g.page("/coding/new")).toContain('value="jit:resource1"');
+  g.app.execute(g.auth.actor, { kind: "coding.repository.grant", requestId: retryId(), expectedRevision: 0, payload });
+  expect(g.app.coding.repositories(g.auth.actor)).toHaveLength(1);
+});
+
+test("an old unresolved failure retains Dismiss after more than 100 resolved notices", async () => {
+  const g = await fixture("en", failing);
+  await g.enable("Old failure", { schedule: "interval", hours: "1", occurrences: "9" });
+  await g.run();
+  const old = g.app.attention.view(g.auth.actor).items[0]!;
+  g.store.transaction(tx => {
+    for (let i = 0; i < 110; i++) {
+      g.app.attention.commit(tx, { groupId: `newer_resolved_${i}`, class: "needs_owner", reason: "routine_failed", workId: null, proposalIds: [] });
+      tx.run("UPDATE attention_notices SET record_json=json_set(record_json,'$.resolvedAt',1) WHERE group_id=?", `newer_resolved_${i}`);
+    }
+  });
+  for (const path of ["/", "/work", `/routines/${g.routines()[0]!.routine.id}`]) {
+    const html = await g.page(path), fields = formFields(html, dismissAction);
+    expect(fields.noticeId).toBe(old.id);
+    if (path.startsWith("/routines/")) expect(html).toContain(g.words["s14.routine.trigger.schedule"]);
+  }
 });

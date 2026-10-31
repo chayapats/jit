@@ -27,6 +27,8 @@ export interface RoutineOccurrence {
   id: string;
   routineId: string;
   generation: number;
+  /** Trusted admission origin; absent in records written before UX14-02 gap closure. */
+  trigger?: "owner" | "schedule";
   scheduledInstant: number;
   missed: { from: number; to: number; count: number } | null;
   resolution: WallResolution;

@@ -93,7 +93,7 @@ function runRow(run: RoutineOccurrence, timezone: string, item: AttentionNotice 
   const quiet = run.outcome === "no_update" && run.state === "complete";
   const missed = run.missed ? `<p class="s-note">${e(tr("s14.routine.missed").replace("{count}", String(run.missed.count)))}</p>` : "", clock = run.resolution === "exact" ? "" : `<p class="s-note">${tr(k(`s14.routine.resolution.${run.resolution}`))}</p>`;
   const why = run.reason && !ownerStoppedRun(run) ? `<p class="s-sub">${e(reasonWord(run.reason))}</p><p class="s-mono s-meta">${e(run.reason)}</p>` : "";
-  return `<li class="s-run${quiet ? " quiet" : ""}"><div class="s-run-hd">${whenIn(run.scheduledInstant, timezone)}<span class="s-grow"></span>${runPill(run)}</div>${why}${missed}${clock}${runDelivery(item)}${run.workId ? `<p><a class="s-link-text" href="/work/${e(run.workId)}">${tr("s14.routine.open_run")}</a></p>` : ""}</li>`;
+  return `<li class="s-run${quiet ? " quiet" : ""}"><div class="s-run-hd">${whenIn(run.scheduledInstant, timezone)}${run.trigger ? ` · ${tr(run.trigger === "owner" ? "s14.routine.trigger.owner" : "s14.routine.trigger.schedule")}` : ""}<span class="s-grow"></span>${runPill(run)}</div>${why}${missed}${clock}${runDelivery(item)}${run.workId ? `<p><a class="s-link-text" href="/work/${e(run.workId)}">${tr("s14.routine.open_run")}</a></p>` : ""}</li>`;
 }
 const listedRuns = 50;
 function history(view: S14RoutineDetail): string {

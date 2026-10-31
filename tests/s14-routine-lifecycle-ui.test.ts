@@ -181,8 +181,8 @@ test.each(["no_update", "failed"] as const)("old open routine decisions survive 
     tx.run("UPDATE attention_notices SET record_json=json_set(record_json,'$.state','unknown','$.remote','uncertain') WHERE group_id=?", groupId);
     for (let i = 0; i < 150; i++) g.app.attention.commit(tx, { groupId: `new_notice_${i}`, class: "needs_owner", reason: "routine_report", workId: null, proposalIds: [] });
   });
-  expect(g.app.attention.view(g.auth.actor).items).toHaveLength(100);
-  expect(g.app.attention.view(g.auth.actor).items.some(row => row.groupId === groupId)).toBe(false);
+  expect(g.app.attention.view(g.auth.actor).items).toHaveLength(151);
+  expect(g.app.attention.view(g.auth.actor).items.some(row => row.groupId === groupId)).toBe(true);
   const summary = routineAttention(g.app, g.auth.actor, g.app.authority.list(g.auth.actor));
   expect(summary.needs.find(row => row.need === "decision")).toMatchObject({ routineId, count: 2, delivery: "unknown" });
   expect(summary.needs).toHaveLength(outcome === "failed" ? 2 : 1);

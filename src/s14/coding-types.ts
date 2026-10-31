@@ -27,7 +27,7 @@ export type CodingStartCommand = Envelope<"coding.start", {
   tests: CodingCheck[];
   connection?: { id: string; revision: number } | null;
 }>;
-/** Exact owner repository grant; a branch is resolved only by the async trusted ingress before committing. */
+/** Exact owner grant; a pending connection reserves its slot and must be selected explicitly. Branches resolve only through async trusted ingress. */
 export type CodingRepositoryGrant = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active" | "registry" | "baseCommit"> &
   ({ baseCommit: string } | { baseBranch: string }) & { registry?: CodingRepository["registry"]; connection?: { id: string; revision: number } }>;
 /** Repository grants select an owner-accepted resource slot without granting work or credentials. */

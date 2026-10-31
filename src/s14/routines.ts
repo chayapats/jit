@@ -117,6 +117,10 @@ export class S14Routines {
     if (routine.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
     if (command.kind === "routine.delete") {
       if (routine.state !== "revoked") throw new AppError("routine_not_revoked", 409);
+      const pending = tx.get(`SELECT 1 FROM routine_occurrences o JOIN work_items w
+        ON w.id=o.work_id OR w.id IN (SELECT value FROM json_each(o.record_json,'$.proposals'))
+        WHERE o.routine_id=? AND json_extract(w.record_json,'$.state') IN ('proposed','waiting') LIMIT 1`, routine.id);
+      if (pending) throw new AppError("routine_decision_pending", 409);
       tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('routine',?,?)", routine.id, `through_generation_${routine.generation}`);
       tx.run("DELETE FROM routine_results WHERE occurrence_id IN (SELECT id FROM routine_occurrences WHERE routine_id=?)", routine.id);
       tx.run("DELETE FROM routine_occurrences WHERE routine_id=?", routine.id);
@@ -185,9 +189,9 @@ export class S14Routines {
     this.app.authority.cancelFenced();
   }
 
-  private dispatch(tx: AppTransaction, routine: Routine, range: { first: number; last: number; count: number; resolution: RoutineOccurrence["resolution"] }, requestId = "scheduled"): void {
-    const occurrence: RoutineOccurrence = { id: digest(`${routine.id}:${routine.generation}:${range.last}${requestId === "scheduled" ? "" : `:${requestId}`}`), routineId: routine.id,
-      generation: routine.generation, scheduledInstant: range.last, missed: range.count > 1 ? { from: range.first, to: range.last, count: range.count - 1 } : null,
+  private dispatch(tx: AppTransaction, routine: Routine, range: { first: number; last: number; count: number; resolution: RoutineOccurrence["resolution"] }, requestId?: string): void {
+    const occurrence: RoutineOccurrence = { id: digest(`${routine.id}:${routine.generation}:${range.last}${requestId === undefined ? "" : `:${requestId}`}`), routineId: routine.id,
+      trigger: requestId === undefined ? "schedule" : "owner", generation: routine.generation, scheduledInstant: range.last, missed: range.count > 1 ? { from: range.first, to: range.last, count: range.count - 1 } : null,
       resolution: range.resolution, workId: null, state: "running", outcome: null, reason: null, proposals: [], createdAt: this.app.now() };
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='routine_occurrence' AND id=?", occurrence.id)) {
       this.fence(tx, routine, "blocked", "restored_occurrence_requires_review");

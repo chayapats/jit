@@ -94,3 +94,53 @@ test("Bot fencing preserves exhausted state and its concrete reason through reco
   f.store.transaction(tx => { f.app.routines.fenceBot(tx, "jit"); f.app.routines.reconcile(tx); });
   expect(f.app.routines.view(f.auth.actor, r.id).routine).toMatchObject({ state: "exhausted", reason: "bot_authority_changed" });
 });
+
+test.each(["proposed", "waiting"])("delete refuses actual %s work across old occurrences even after acknowledgement", async state => {
+  const f = await fixture(), r = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  f.app.execute(f.auth.actor, { kind: "routine.run-now", requestId: retryId(), expectedRevision: 1, payload: { routineId: r.id } });
+  await f.app.authority.drain();
+  const occurrence = f.app.routines.view(f.auth.actor, r.id).history[0]!;
+  f.app.execute(f.auth.actor, { kind: "routine.revoke", requestId: retryId(), expectedRevision: 2, payload: { routineId: r.id } });
+  f.store.transaction(tx => {
+    tx.run("UPDATE work_items SET record_json=json_set(record_json,'$.state',?) WHERE id=?", state, occurrence.workId!);
+    if (state === "proposed") tx.run("UPDATE routine_occurrences SET record_json=json_set(record_json,'$.proposals',json(?)) WHERE id=?", JSON.stringify([occurrence.workId]), occurrence.id);
+    for (let i = 0; i < 101; i++) tx.run("INSERT INTO routine_occurrences VALUES (?,?,NULL,?)", `later_${i}`, r.id, JSON.stringify({ id: `later_${i}`, routineId: r.id, state: "complete", proposals: [] }));
+  });
+  f.store.transaction(tx => f.app.attention.commit(tx, { groupId: occurrence.id, class: "needs_owner", reason: "owner_decision", workId: occurrence.workId, proposalIds: [occurrence.workId!] }));
+  const notice = f.app.attention.view(f.auth.actor).items.find(n => n.groupId === occurrence.id)!;
+  f.app.execute(f.auth.actor, { kind: "attention.acknowledge", requestId: retryId(), expectedRevision: notice.revision, payload: { noticeId: notice.id } });
+  const command = { kind: "routine.delete" as const, requestId: retryId(), expectedRevision: 3, payload: { routineId: r.id } };
+  expect(() => f.app.execute(f.auth.actor, command)).toThrow("routine_decision_pending");
+  expect(f.app.routines.attention(f.auth.actor)[0]!.decisions.count).toBe(1);
+  f.store.transaction(tx => tx.run("UPDATE work_items SET record_json=json_set(record_json,'$.state','ready') WHERE id=?", occurrence.workId!));
+  f.app.execute(f.auth.actor, command);
+  expect(() => f.app.routines.view(f.auth.actor, r.id)).toThrow("not_found");
+});
+
+test("open attention is selected before bounds and resolved recent history cannot bury an older dismiss control", async () => {
+  const f = await fixture();
+  f.store.transaction(tx => {
+    f.app.attention.commit(tx, { groupId: "old_failure", class: "needs_owner", reason: "routine_failed", workId: null, proposalIds: [] });
+    for (let i = 0; i < 110; i++) {
+      f.app.attention.commit(tx, { groupId: `resolved_${i}`, class: "needs_owner", reason: "routine_failed", workId: null, proposalIds: [] });
+      tx.run("UPDATE attention_notices SET record_json=json_set(record_json,'$.resolvedAt',1) WHERE group_id=?", `resolved_${i}`);
+    }
+  });
+  const view = f.app.attention.view(f.auth.actor);
+  expect(view.items).toHaveLength(101);
+  const old = view.items.find(n => n.groupId === "old_failure")!;
+  expect(old.resolvedAt).toBeNull();
+  f.app.execute(f.auth.actor, { kind: "attention.acknowledge", requestId: retryId(), expectedRevision: old.revision, payload: { noticeId: old.id } });
+  expect(f.app.attention.view(f.auth.actor).items.filter(n => n.resolvedAt === null)).toHaveLength(0);
+});
+
+test("run trigger is persisted from trusted admission for owner and schedule without reading request identity", async () => {
+  const f = await fixture(), r = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  f.app.execute(f.auth.actor, { kind: "routine.run-now", requestId: "scheduled", expectedRevision: 1, payload: { routineId: r.id } });
+  await f.app.authority.drain();
+  expect(f.app.routines.view(f.auth.actor, r.id).history[0]!.trigger).toBe("owner");
+  f.clock.now += 86400000;
+  f.auth = f.app.authenticate(await f.app.login("domain-fixture-owner-password"));
+  f.app.routines.tick();
+  expect(f.app.routines.view(f.auth.actor, r.id).history.map(o => o.trigger)).toEqual(["schedule", "owner"]);
+});

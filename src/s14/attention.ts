@@ -107,11 +107,15 @@ export class S14Attention {
     }
   }
 
-  /** Returns durable grouped in-app attention without performing optional transport delivery. */
+  /** Selects at most 1000 open notices plus 100 resolved history rows; history cannot displace open controls. */
   view(actor: OwnerActor): { setting: AttentionSetting; items: AttentionNotice[] } {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return { setting: this.setting(tx), items: tx.all<{ record_json: string }>("SELECT record_json FROM attention_notices ORDER BY rowid DESC LIMIT 100").map(row => JSON.parse(row.record_json)) };
+      return { setting: this.setting(tx), items: tx.all<{ record_json: string }>(`SELECT record_json FROM (
+        SELECT record_json FROM attention_notices WHERE json_extract(record_json,'$.resolvedAt') IS NULL ORDER BY rowid LIMIT 1000
+      ) UNION ALL SELECT record_json FROM (
+        SELECT record_json FROM attention_notices WHERE json_extract(record_json,'$.resolvedAt') IS NOT NULL ORDER BY rowid DESC LIMIT 100
+      )`).map(row => JSON.parse(row.record_json)) };
     });
   }
 
