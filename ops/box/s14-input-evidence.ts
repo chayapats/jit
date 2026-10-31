@@ -27,7 +27,7 @@ async function evidenceMain(totalDeadline: number): Promise<void> {
   let interrupted = false;
   const cancel = () => { interrupted = true; transport.abort(); };
   // Admission stops at 180 s; the final 60 s is cleanup only. A stuck kernel/pipe never earns a pass.
-  const deadline = setTimeout(cancel, 180000);
+  const deadline = setTimeout(cancel, Math.max(1, totalDeadline - performance.now() - 60000));
   process.on("SIGTERM", cancel); process.on("SIGINT", cancel);
   try {
     requireUnusedInputEvidencePool(database);
@@ -72,6 +72,7 @@ async function evidenceMain(totalDeadline: number): Promise<void> {
       }
       catch { reason ??= "input_evidence_cleanup_unconfirmed"; }
       await transport.join();
+      reason ??= interrupted ? "input_evidence_interrupted" : transport.failure;
       if (performance.now() >= totalDeadline) reason ??= "input_evidence_total_deadline";
       const passed = success && cleanup && !interrupted && !transport.failure && !reason;
       const cleaned = cleanupOnly && cleanup && !reason && !interrupted && !transport.failure;
