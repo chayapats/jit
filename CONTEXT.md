@@ -2,7 +2,7 @@
 
 Jit is a single-owner, self-hosted assistant with a team of persistent Bots, durable work and sourced memory. Schway is its execution engine.
 
-**Baseline:** [S14](docs/specs/S14-bot-first-local-assistant.md) is the owner-confirmed target as of 2026-10-30. Its engineering ADRs remain proposed. The current runtime still implements the project-centric S09–S13 store. Do not describe the S14 target as shipped or retain a hidden Project as its authorization root.
+**Baseline:** [S14](docs/specs/S14-bot-first-local-assistant.md) is the owner-confirmed target as of 2026-10-30. Original architecture ADRs 0045–0048 remain proposed and are refined by accepted scoped opt-in implementation ADRs 0049–0060; their status does not certify the live S14 release gate. The current runtime still implements the project-centric S09–S13 store. Do not describe the S14 target as shipped or retain a hidden Project as its authorization root.
 
 ## Product language
 

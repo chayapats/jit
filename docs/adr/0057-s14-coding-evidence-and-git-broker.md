@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted for opt-in implementation
 scope: CODE14-01/CODE14-02; implements S14 Phase B within ADRs 0037, 0046 and 0048
 ---
 
@@ -20,3 +20,7 @@ CODE14-02 consumes that immutable evidence through one exact typed push/optional
 Fresh schema 14 adds scoped Git connection metadata and release audit, durable per-effect stage/read-back intents and independent append-only connection revisions/verified outcomes. It also protects final coding identities/check observations with SQL triggers. Write-only secret values reuse ConnectionVault/normalization/fingerprinting with revision-specific opaque files; rollback may leave an unavailable old credential or an unused new private vault file, never a substituted credential under an old approval. No Project compatibility table or ambient account grant is introduced.
 
 One plan may push then create a PR. Each dispatch has a durable stage first. A known PR refusal retains the already pushed branch; an uncertain stage stays unknown and is never resumed automatically. Explicit reconciliation reads exact refs and complete unique PR matches only. It proves observed state, not causal exactly-once delivery; ambiguous/absent evidence remains unknown. Independent claims and verified hash-only outcome records survive stale application images. A remaining partial action requires a new exact owner approval, never reuse of the old plan.
+
+## Status review — 2026-10-31
+
+The scoped implementation is integrated; associated CODE14-01/02 (#257/#258) issue states were verified CLOSED with `gh issue view`. Acceptance here covers the implemented engineering decision, not every historical proposal or live release gate. Historical schema/availability and unrun-evidence paragraphs above describe their original checkpoints. Current per-build live results and missing cases are in [EVID14-01](../evidence/s14-mvp-evidence.md); no owner report acceptance or complete Git effect proof is inferred.
