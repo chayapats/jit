@@ -74,14 +74,21 @@ async function main() {
       writeFileSync(join(env.JIT_S14_COMPUTER_ROOT, "slots", state.slotId, "profile/evidence-profile"), "synthetic profile persistence", { mode: 0o600 });
       const png = await app.computers.screenshot(actor, "jit");
       check(Buffer.from(png).subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), "evidence_png_failed");
+      const agent = app.computers.open(initialAttempt);
       c = view(); const lease = app.computers.view(actor, "jit").lease!;
       app.execute(actor, { kind: "takeover.start", requestId: rid(), expectedRevision: c.revision, payload: { botId: "jit", computerId: c.id, generation: c.generation, leaseRevision: lease.revision } });
+      let fenced = false;
+      try { await app.computers.agentInput(initialAttempt, agent.lease, { kind: "scroll", deltaY: 1 }); }
+      catch (error) { fenced = error instanceof AppError && error.code === "input_lease_fenced"; }
+      finally { agent.release(); }
+      check(fenced, "evidence_takeover_agent_input_not_fenced");
       const takeover = app.computers.view(actor, "jit");
-      await app.computers.ownerInput(actor, { kind: "takeover.input", requestId: rid(), expectedRevision: takeover.computer!.revision,
+      const input = await app.computers.ownerInput(actor, { kind: "takeover.input", requestId: rid(), expectedRevision: takeover.computer!.revision,
         payload: { botId: "jit", computerId: c.id, generation: c.generation, leaseRevision: takeover.lease!.revision, input: { kind: "key", key: "Tab" } } });
+      check(input.state === "succeeded", "evidence_owner_input_unconfirmed");
       const current = app.computers.view(actor, "jit");
       app.execute(actor, { kind: "takeover.end", requestId: rid(), expectedRevision: current.computer!.revision, payload: { botId: "jit", computerId: c.id, generation: c.generation, leaseRevision: current.lease!.revision } });
-      output({ phase: "running", screenshotBytes: png.length, screenshotSha256: createHash("sha256").update(png).digest("hex"), profileSocketNetworkDenial: true, ownerInputLease: true, realIdleWaitMs: 300100 });
+      output({ phase: "running", screenshotBytes: png.length, screenshotSha256: createHash("sha256").update(png).digest("hex"), profileSocketNetworkDenial: true, ownerInputLease: true, lateAgentInputFenced: true, realIdleWaitMs: 300100 });
       await Bun.sleep(300100);
       app.computers.sweep(); await app.computers.drain();
       check(view().state === "stopped" && view().reason === "computer_idle", "evidence_real_idle_stop_failed");
