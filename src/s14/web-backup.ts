@@ -1,5 +1,6 @@
 import { tr, trMaybe } from "../i18n";
 import type { OnlineBackupReceipt } from "./ops-types";
+import { s14SchemaVersion } from "./store";
 import { restorePrepareStep, s14OpsStatusCommand, s14ServeCommand, type S14OpsStage, type S14OpsStep } from "./ops-guide";
 import { banner, botName, commandForm, e, k, noticeText, ownerStrip, pill, shell, short, when } from "./web-pages";
 import type { S14Page } from "./web";
@@ -95,7 +96,7 @@ function restoreCard(view: S14BackupSurface): string {
 }
 function versionCard(view: S14BackupSurface): string {
   const { stage } = view;
-  return `<section class="s-card s-stack" id="s14-backup-version" aria-labelledby="s14-version"><h2 id="s14-version">${tr("s14.backup.version_title")}</h2><dl class="s-kv"><dt>${tr("s14.backup.data_format")}</dt><dd><span class="s-mono">schema 14 · jit/0.1.0</span></dd><dt>${tr("s14.backup.upgrades")}</dt><dd>${tr("s14.backup.upgrades_detail")}</dd><dt>${tr("s14.backup.workers")}</dt><dd>${tr(k(`s14.backup.workers.${view.workers}`))}</dd><dt>${tr("s14.backup.last_operation")}</dt><dd>${stage ? `${tr(k(`s14.backup.mode.${stage.mode}`))} ${stageState(stage)}` : tr("s14.backup.last_none")}</dd></dl></section>`;
+  return `<section class="s-card s-stack" id="s14-backup-version" aria-labelledby="s14-version"><h2 id="s14-version">${tr("s14.backup.version_title")}</h2><dl class="s-kv"><dt>${tr("s14.backup.data_format")}</dt><dd><span class="s-mono">schema ${s14SchemaVersion} · jit/0.1.0</span></dd><dt>${tr("s14.backup.upgrades")}</dt><dd>${tr("s14.backup.upgrades_detail")}</dd><dt>${tr("s14.backup.workers")}</dt><dd>${tr(k(`s14.backup.workers.${view.workers}`))}</dd><dt>${tr("s14.backup.last_operation")}</dt><dd>${stage ? `${tr(k(`s14.backup.mode.${stage.mode}`))} ${stageState(stage)}` : tr("s14.backup.last_none")}</dd></dl></section>`;
 }
 function overview(page: S14Page, view: S14BackupSurface): string {
   const capturing = view.receipt?.state === "capturing", held = view.refusal === "s14_ops_quiesce_required";

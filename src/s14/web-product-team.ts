@@ -1,3 +1,4 @@
+import type { S14Brief } from "./web-product-personal";
 import { AppError } from "../errors";
 import type { S14Application, S14Command, S14Receipt } from "./application";
 import type { Work, WorkView } from "./authority-types";
@@ -9,7 +10,7 @@ import { workLimitBounds, type S14Overview } from "./web-product";
 /** Owner-facing form values of the stored defaults; a wall limit that is not whole minutes rounds, never to zero. */
 export interface S14LimitValues { concurrent: number; minutes: number; reads: number }
 /** Graph lanes and committed report history of one opened work item, the revision being read and the live review target. */
-export interface S14WorkTeam { graph: GraphView | null; reports: ReportView[]; selected: ReportView | null; review: ReportReview | null }
+export interface S14WorkTeam { graph: GraphView | null; reports: ReportView[]; selected: ReportView | null; review: ReportReview | null; brief?: S14Brief | null }
 /** Latest readable report of a work item, for work lists and cards. It is a link hint and proves nothing. */
 export interface S14ReportHint { id: string; revision: number; coverage: Report["coverage"] }
 /** Settings page for future-work defaults; `limits` are read-only installation ceilings, never owner authority. */

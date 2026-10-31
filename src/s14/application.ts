@@ -1,3 +1,6 @@
+import type { PersonalEffectCommand, PersonalEffectReceipt } from "./personal-effect-types";
+import { S14Personal, type PersonalOptions } from "./personal";
+import type { PersonalCommand, PersonalReceipt } from "./personal-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
 import { S14Backups } from "./backups";
 import type { OpsNativePort } from "./ops-types";
@@ -36,9 +39,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | PersonalCommand | PersonalEffectCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | PersonalReceipt | PersonalEffectReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -55,7 +58,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions; backups?: OpsNativePort;
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; personal?: PersonalOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions; backups?: OpsNativePort;
   /** Production composition holds every worker before the first complete REC14 boot, including native close. */
   requireBootReconciliation?: boolean;
 }
@@ -76,6 +79,7 @@ export class S14Application {
   readonly botLifecycle: S14BotLifecycle;
   readonly routines: S14Routines;
   readonly attention: S14Attention;
+  readonly personal: S14Personal;
   readonly signIns: S14SignIns;
   readonly backups: S14Backups;
   #actors = new WeakMap<OwnerActor, string>();
@@ -91,9 +95,13 @@ export class S14Application {
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
     this.memory = new S14Memory(this);
     this.sharing = new S14Sharing(this);
+    this.personal = new S14Personal(this, options.personal);
     const externalScopes = options.authority?.scopes;
-    this.authority = new S14Authority(this, { ...options.authority, scopes: {
-      current: (tx, scope) => this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+    this.authority = new S14Authority(this, { ...options.authority, effects: {
+      ...(options.personal?.vault ? { send: (action, allowed) => this.personal.effects.perform(action, allowed), calendar: (action, allowed) => this.personal.effects.perform(action, allowed) } : {}),
+      ...options.authority?.effects,
+    }, scopes: {
+      current: (tx, scope) => this.personal.owns(tx, scope) ? this.personal.scope(tx, scope) : this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
@@ -104,7 +112,7 @@ export class S14Application {
     this.routines = new S14Routines(this);
     this.computers = new S14Computers(this, options.computers);
     this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
-    this.store.transaction(tx => { this.botLifecycle.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
+    this.store.transaction(tx => { this.personal.recover(tx); this.botLifecycle.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
     this.signIns = new S14SignIns(this, options.signIn);
     this.backups = new S14Backups(this, options.backups);
   }
@@ -218,6 +226,10 @@ export class S14Application {
   execute(actor: OwnerActor, command: AttentionCommand): AttentionReceipt;
   /** Executes exact Bot policy proposals and lifecycle previews through the authenticated owner boundary. */
   execute(actor: OwnerActor, command: BotLifecycleCommand): BotLifecycleReceipt;
+  /** Revises exact personal drafts through owner receipts, invalidating every earlier approval. */
+  execute(actor: OwnerActor, command: PersonalEffectCommand): PersonalEffectReceipt;
+  /** Executes write-only Google setup and exact per-Bot connection grants under owner receipts. */
+  execute(actor: OwnerActor, command: PersonalCommand): PersonalReceipt;
   /** Accepts an exact report revision separately from coverage, execution and immutable report bytes. */
   execute(actor: OwnerActor, command: ReportCommand): ReportReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
@@ -225,6 +237,7 @@ export class S14Application {
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
     let encoded = canonical(command);
     if (command.kind === "web.parallel.key.set") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
+    if (command.kind === "personal.client.set") encoded = canonical({ ...command, payload: { ...command.payload, clientSecret: "[write-only]" } });
     exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
@@ -233,7 +246,13 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
+      if (command.kind === "personal.draft.revise") {
+        result = this.personal.effects.apply(tx, command);
+      } else if (command.kind.startsWith("personal.")) {
+        result = this.personal.apply(tx, command as PersonalCommand);
+        this.memory.reconcile(tx);
+        this.personal.reconcile(tx);
+      } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
         result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);
         this.botLifecycle.reconcile(tx);
         if (result.bot) result.bot = record<Bot>(tx, "bots", result.bot.id);
@@ -263,6 +282,7 @@ export class S14Application {
       } else {
         result = this.applyBot(tx, command as BotCommand);
       }
+      this.personal.reconcile(tx);
       this.reports.reconcile(tx);
       this.routines.reconcile(tx);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());

@@ -19,6 +19,8 @@ import { schwayOpsNative } from "../src/s14/ops-native";
 import { canonical } from "../src/s14/validation";
 import { record, save } from "../src/s14/application";
 import type { Bot } from "../src/s14/types";
+import { connect, grant, personalAttempt, personalFixture, readInput } from "./fixtures/s14-personal";
+import type { PersonalTokens } from "../src/s14/personal-types";
 
 const fixtures: DomainFixture[] = [], maintenance: S14Maintenance[] = [];
 afterEach(() => { for (const m of maintenance.splice(0)) m.close(); for (const f of fixtures.splice(0)) f.dispose(); });
@@ -87,7 +89,7 @@ test("credential-free backup commits a consistent bounded manifest, state and op
   await expect(m.execute(actor, { ...c, payload: { forbidden: true } } as never)).rejects.toThrow("invalid_shape");
   const directory = archive(f, result.backupId!);
   const manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")) as ManagedBackupManifest;
-  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 14, credentials: "excluded_reconnect_required" });
+  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 16, credentials: "excluded_reconnect_required" });
   expect(manifest.native).toHaveLength(1);
   const db = Database.deserialize(readFileSync(join(directory, "application.sqlite")));
   expect(db.query("SELECT password_hash FROM owner").get()).toEqual({ password_hash: "[reconnect]" });
@@ -287,9 +289,9 @@ test("changed quarantine ledger bytes refuse activation before any live mutation
 
 test("supported current-schema upgrade has a recovery point and rollback discards only the candidate", async () => {
   const f = await fixture(), { m, actor } = open(f), before = readFileSync(f.path);
-  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 15 }))).rejects.toThrow("s14_ops_version_unsupported");
+  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 17 }))).rejects.toThrow("s14_ops_version_unsupported");
   expect(readFileSync(f.path)).toEqual(before);
-  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 14 }));
+  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 16 }));
   expect(staged.state).toBe("validated");
   expect(m.control.backups).toContain(staged.stage!.recoveryBackupId);
   const discard = await m.execute(actor, command(m, "upgrade.rollback", { stageId: staged.stage!.id }));
@@ -521,6 +523,116 @@ test("every actual application and independent ledger table has exactly one back
   expect(f.store.read(tx => tx.all<{ name: string }>("SELECT name FROM main.sqlite_master WHERE type='table' ORDER BY name").map(row => row.name))).toEqual(classified.sort());
   expect(f.store.read(tx => tx.all<{ name: string }>("SELECT name FROM lifecycle.sqlite_master WHERE type='table' ORDER BY name").map(row => row.name))).toEqual([...opsLedgerTables].sort());
   expect(() => f.store.read(assertOpsTableClassification)).not.toThrow();
+});
+
+test("managed personal backup excludes credential sentinels, sealed vault bytes and all OAuth flow state", async () => {
+  const f = await personalFixture(); fixtures.push(f);
+  const connection = await connect(f);
+  const sentinel = "OPS277-refresh-credential-sentinel-0123456789";
+  const tokens = f.vault.read<PersonalTokens>(connection.id);
+  f.vault.write(connection.id, { ...tokens, refreshToken: sentinel });
+  const pending = f.app.execute(f.auth.actor, { kind: "personal.connection.create", requestId: retryId(), expectedRevision: 0,
+    payload: { label: "Pending calendar", service: "calendar", scopes: ["calendar.readonly"], account: "owner@example.test", calendarId: "primary" } }).connection!;
+  const flow = f.app.execute(f.auth.actor, { kind: "personal.oauth.begin", requestId: retryId(), expectedRevision: pending.revision, payload: { connectionId: pending.id } }).flow!;
+  const secret = f.vault.read<{ state: string; verifier: string }>(flow.id);
+  const stateHash = f.store.read(tx => tx.get<{ state_hash: string }>("SELECT state_hash FROM personal_flows WHERE id=?", flow.id)!.state_hash);
+  const { m, actor } = open(f), id = await backup(m, actor), directory = archive(f, id);
+  const secrets = [sentinel, tokens.accessToken, tokens.refreshToken, "fixture-google-client-secret-259", "fixture-authorization-code-259", secret.state, secret.verifier, stateHash,
+    ...readdirSync(f.vault.files.directory).map(name => readFileSync(join(f.vault.files.directory, name), "utf8"))];
+  for (const name of readdirSync(directory)) {
+    const bytes = readFileSync(join(directory, name));
+    for (const value of secrets) expect(bytes.includes(Buffer.from(value))).toBe(false);
+  }
+  const db = Database.deserialize(readFileSync(join(directory, "application.sqlite")));
+  try {
+    expect(db.query("SELECT count(*) n FROM personal_flows").get()).toEqual({ n: 0 });
+    expect(db.query("SELECT count(*) n FROM personal_connections").get()).toEqual({ n: 2 });
+  } finally { db.close(); }
+  // Accidentally placing a credential in a retained connector record must block, never silently export it.
+  m.store.transaction(tx => tx.run("UPDATE personal_clients SET record_json=json_set(record_json,'$.clientSecret',?)", sentinel));
+  expect(() => credentialFreeImage(m.store)).toThrow("s14_ops_credential_excluded");
+});
+
+test.each([["gmail", false], ["gmail", true], ["calendar", false], ["calendar", true]] as const)("restored %s held cards (later claim %s) require reconnection and never dispatch even with the surviving vault", async (service, laterClaim) => {
+  const f = await personalFixture(); fixtures.push(f);
+  const connection = await connect(f, service, service === "gmail" ? ["gmail.send"] : ["calendar.events"]);
+  const slot = service === "gmail" ? "mail" : "calendar", tool = service === "gmail" ? "effect_send" : "effect_calendar";
+  grant(f, connection.id, slot);
+  const a = personalAttempt(f, slot, [tool]);
+  const content = service === "gmail" ? { kind: "mail" as const, to: ["owner@example.test"], cc: [], bcc: [], subject: "Held backup card", body: "Exact held text" }
+    : { kind: "event" as const, operation: "create" as const, eventId: null, etag: null, timezone: "Asia/Bangkok", sendUpdates: "none" as const,
+      event: { summary: "Held backup card", description: "Exact held text", location: "", start: "2026-11-01T10:00:00+07:00", end: "2026-11-01T11:00:00+07:00", recurrence: [], attendees: [] } };
+  const drafts = [0, 1].map(() => f.app.personal.effects.propose(a.id, retryId(), readInput(f, slot).scope, content, f.clock.now + 50000));
+  const approved = drafts[1]!;
+  f.app.execute(f.auth.actor, { kind: "approval.decide", requestId: retryId(), expectedRevision: approved.effect.revision,
+    payload: { effectId: approved.effect.id, actionHash: approved.effect.actionHash, decision: "approve" } });
+  f.app.authority.commit(a.id, { state: "ready", text: "Waiting for exact actions" }); f.app.authority.settle(a.id);
+  expect(f.app.authority.view(f.auth.actor, a.workId).work.state).toBe("waiting");
+  const { m, actor } = open(f), id = await backup(m, actor);
+  if (laterClaim) {
+    // The archive still says approved, while the independent ledger now records an uncertain dispatch.
+    const claimed = await m.app.authority.runEffect(approved.effect.id, approved.effect.revision, approved.effect.actionHash);
+    expect(claimed.state).toBe("unknown");
+  }
+  const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(staged.state).toBe("validated");
+  expect((await m.execute(actor, command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }))).state).toBe("complete");
+  const owner = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  expect(m.app.personal.settings(owner).connections[0]).toMatchObject({ state: "reauth_required", verifiedAt: null });
+  expect(() => m.store.read(tx => m.app.personal.connection(tx, connection.id))).toThrow("personal_connection_unavailable");
+  expect(f.vault.read<PersonalTokens>(connection.id).refreshToken).toBeTruthy();
+  const before = f.google.calls.length;
+  await m.app.recovery.boot({ async open() { throw Error("No native session in fixture"); } });
+  await m.app.authority.drain(); await m.app.personal.drain(); await m.app.personal.effects.drain();
+  expect(f.google.calls.length).toBe(before);
+  expect(m.app.authority.view(owner, a.workId).authority!.revoked).toBe(true);
+  for (const draft of drafts) {
+    const effect = m.app.authority.effect(owner, draft.effect.id).effect;
+    expect(["expired", "denied", "unknown"]).toContain(effect.state);
+    if (laterClaim && draft.effect.id === approved.effect.id) expect(effect.state).toBe("unknown");
+    await expect(m.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).rejects.toThrow();
+  }
+  expect(f.google.calls.length).toBe(before);
+});
+
+test.each(["forget", "delete", "connection_revoke", "consent_revoke", "grant_revoke"] as const)("personal image honours later %s from the current independent lifecycle ledger", async action => {
+  const f = await personalFixture(); fixtures.push(f);
+  const connection = await connect(f); grant(f, connection.id);
+  const a = personalAttempt(f), read = await f.app.personal.reads.read(a.id, readInput(f)), source = read.evidence[0]!.source;
+  const claim = f.store.transaction(tx => f.app.memory.extract(tx, a.memoryId!, source,
+    [{ kind: "inference", text: "Fixture briefing", quote: "Fixture briefing", conflicts: [] }]).claims[0]!);
+  const evidence = f.store.read(tx => f.app.personal.reads.evidence(tx, a.id)[0]!);
+  f.app.authority.commit(a.id, { state: "ready", text: "Personal report", report: { title: "Personal evidence", claims: [{ id: "fact", text: evidence.content, kind: "quote",
+    citations: [{ attemptId: a.id, id: evidence.id, revision: evidence.revision, quote: evidence.content, scope: "excerpt" }], covers: [], conflicts: [] }], missing: [], limitations: [], artifactIds: [] } });
+  f.app.authority.settle(a.id);
+  const report = f.app.reports.list(f.auth.actor, a.workId)[0]!;
+  expect(report.state).toBe("available");
+  if (report.state !== "available") throw Error("Missing committed personal report");
+  const first = open(f), id = await backup(first.m, first.actor);
+  expect(readFileSync(join(archive(f, id), "application.sqlite")).includes(Buffer.from("Fixture briefing"))).toBe(true);
+  first.m.close(); f.reopen();
+  if (action === "forget" || action === "delete") f.app.execute(f.auth.actor, { kind: action === "forget" ? "memory.forget" : "memory.delete", requestId: retryId(), expectedRevision: claim.revision, payload: { claim } });
+  else if (action === "connection_revoke") f.app.execute(f.auth.actor, { kind: "personal.connection.revoke", requestId: retryId(), expectedRevision: connection.revision, payload: { connectionId: connection.id } });
+  else if (action === "consent_revoke") f.app.personal.invalidate(connection.id);
+  else f.app.execute(f.auth.actor, { kind: "personal.grant.set", requestId: retryId(), expectedRevision: 1, payload: { scopeId: "mail", connectionId: connection.id, botId: "jit", active: false } });
+  const { m, actor } = open(f);
+  const ledger = m.store.read(tx => tx.all("SELECT * FROM lifecycle.withdrawals ORDER BY rowid"));
+  expect(ledger.length).toBeGreaterThan(0);
+  const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(staged.state).toBe("validated");
+  expect((await m.execute(actor, command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }))).state).toBe("complete");
+  const owner = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  expect(m.store.read(tx => tx.all("SELECT * FROM lifecycle.withdrawals ORDER BY rowid"))).toEqual(expect.arrayContaining(ledger));
+  expect(m.store.read(tx => m.app.memory.sourceCurrent(tx, source))).toBe(false);
+  expect(m.store.read(tx => m.app.memory.lookup(tx, "jit", claim).state)).not.toBe("available");
+  expect(m.app.personal.reads.brief(owner, a.workId).sections[0]).toMatchObject({ outcome: "withdrawn", evidence: [] });
+  expect(m.app.reports.view(owner, report.report.id).state).toBe("unavailable");
+  expect(m.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM personal_reads WHERE id=?", read.id)!.record_json)).not.toContain("Fixture briefing");
+  if (action === "delete") expect(m.store.read(tx => record<{ text: string | null }>(tx, "memory_sources", source.id).text)).toBeNull();
+  if (action === "connection_revoke") {
+    expect(m.app.personal.settings(owner).connections[0]).toMatchObject({ state: "revoked", revocation: "unknown" });
+    const before = f.google.calls.length; await m.app.personal.drain(); expect(f.google.calls.length).toBe(before);
+  }
 });
 
 test.each(["main", "lifecycle"])("an unclassified new %s table fails closed even when empty", async schema => {

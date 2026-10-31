@@ -37,9 +37,18 @@ export function reconcileOpsComputers(live: S14Store, candidate: S14Store): void
 /** Applies current lifecycle facts and fences every stale execution or delivery authority before native reconciliation. */
 export function reconcileOpsImage(app: S14Application): void {
   app.store.transaction(tx => {
+    // A surviving installation vault cannot reactivate archived consent or replay a queued remote revoke.
+    tx.run(`UPDATE personal_connections SET record_json=json_set(record_json,
+      '$.revision',json_extract(record_json,'$.revision')+1,'$.state','reauth_required','$.verifiedAt',null)
+      WHERE json_extract(record_json,'$.state') NOT IN ('reauth_required','revoked')`);
+    app.personal.recover(tx);
+    tx.run(`UPDATE personal_connections SET record_json=json_set(record_json,'$.revocation','unknown')
+      WHERE json_extract(record_json,'$.revocation')='pending' OR
+      (json_extract(record_json,'$.state')='revoked' AND json_extract(record_json,'$.revocation')='none')`);
     app.botLifecycle.reconcile(tx);
     app.memory.fence(tx);
     app.sharing.fence(tx);
+    app.personal.reconcile(tx);
     app.recovery.reconcileReservations(tx);
     app.recovery.reconcileEffects(tx);
     tx.run("UPDATE grant_state SET generation=generation+1,revoked=1 WHERE revoked=0");

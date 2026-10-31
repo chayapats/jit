@@ -1,6 +1,6 @@
 # app.snapshot-sharing/v1
 
-SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Introduced in opt-in S14 schema 9; current combined schema **14** refuses unreleased 1–13 with fresh-state. UI acceptance remains pending.
+SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Introduced in opt-in S14 schema 9; current combined schema **16** refuses unreleased 1–15 with fresh-state. UI acceptance remains pending.
 
 Types: `src/s14/sharing-types.ts`; service: `S14Application.sharing:S14Sharing`. Owner commands use the existing authenticated receipt/audit/CSRF boundary:
 

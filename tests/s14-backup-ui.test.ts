@@ -12,7 +12,7 @@ import type { OnlineBackupControl, OpsCommand, OpsNativePort } from "../src/s14/
 import { lookupS14Asset, s14AssetUrl } from "../src/s14/web-assets";
 import { createS14Handler } from "../src/s14/web";
 import { renderS14 } from "../src/s14/web-pages";
-import { S14Store } from "../src/s14/store";
+import { s14SchemaVersion, S14Store } from "../src/s14/store";
 import { createS14Product } from "../src/s14/web-product";
 import { accessibilityProblems } from "./fixtures/a11y";
 import { barrier } from "./fixtures/s14-computer";
@@ -125,7 +125,9 @@ test.each(["th", "en"] as const)("%s: the final live read refreshes the list, re
 
 test.each(["th", "en"] as const)("%s: More reaches an honest first page with one press and the fixed lists", async language => {
   const { words, page } = await fixture(language);
-  expect(await page("/more")).toContain('href="/settings/backup"');
+  const more = await page("/more");
+  expect(more).toContain('href="/settings/backup"');
+  expect(more).toContain('href="/settings/google"');
   const html = await page("/settings/backup");
   safe(html, language);
   shown(html, words["s14.backup.first_title"]);
@@ -134,6 +136,7 @@ test.each(["th", "en"] as const)("%s: More reaches an honest first page with one
   shown(html, words["s14.backup.outside.accounts"]);
   shown(html, words["s14.backup.reconnect_note"]);
   shown(html, words["s14.backup.upgrades_detail"]);
+  expect(html).toContain(`schema ${s14SchemaVersion} · jit/0.1.0`);
   expect(html).not.toContain("data-live");
   expect(backupCommand(html)).toMatchObject({ kind: "backup.create", expectedRevision: 0, payload: {} });
 });

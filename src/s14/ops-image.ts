@@ -15,8 +15,10 @@ const included = new Set(`
   work_grants grant_state grant_usage reports report_reviews artifacts snapshot_shares work_defaults work_graphs work_steps
   native_intents work_checkpoints work_queue work_attempts attempt_usage work_results
   effects effect_versions bot_computers computer_operations computer_attempts computer_activity
+  personal_clients personal_connections personal_grants personal_sources personal_reads
+  personal_drafts personal_draft_versions personal_effect_observations
 `.trim().split(/\s+/));
-const excluded = new Set(`sessions login_throttle parallel_connections parallel_sessions command_receipts artifact_staging reply_transports attempt_transports input_leases computer_inputs
+const excluded = new Set(`sessions login_throttle parallel_connections parallel_sessions command_receipts artifact_staging reply_transports attempt_transports input_leases computer_inputs personal_flows
 `.trim().split(/\s+/));
 
 /** Application tables are retained, emptied, or owner-verifier redacted; unknown tables always block capture. */

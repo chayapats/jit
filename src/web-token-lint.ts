@@ -30,7 +30,7 @@ export interface TokenLintViolation {
 }
 
 /** ui.token_lint/v1: files whose text is CSS (or a TS template that renders CSS). */
-export const tokenLintTargets: readonly string[] = Object.freeze(["src/web-style.ts", "src/web-attachments-style.ts", "src/s14/web-style.ts", "src/s14/web-style-memory.ts", "src/s14/web-style-team.ts", "src/s14/web-style-first-run.ts", "src/s14/web-style-sharing.ts", "src/s14/web-style-routines.ts", "src/s14/web-style-backup.ts"]);
+export const tokenLintTargets: readonly string[] = Object.freeze(["src/web-style.ts", "src/web-attachments-style.ts", "src/s14/web-style.ts", "src/s14/web-style-memory.ts", "src/s14/web-style-team.ts", "src/s14/web-style-first-run.ts", "src/s14/web-style-sharing.ts", "src/s14/web-style-routines.ts", "src/s14/web-style-backup.ts", "src/s14/web-style-personal.ts"]);
 
 /** Animations allowed to run longer than 300 ms, each with its reason. */
 export const longMotionAllowlist: Readonly<Record<string, string>> = Object.freeze({

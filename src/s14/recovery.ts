@@ -346,7 +346,8 @@ export class S14Recovery {
           checkpoint.state = reason ? "waiting" : result ? "committed" : "queued";
           if (checkpoint.transport === "settled") {
             tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id);
-            attempt.state = result?.state === "ready" && !reason ? "committed" : "settled";
+            const held = !!tx.get("SELECT 1 FROM effects WHERE attempt_id=? AND json_extract(record_json,'$.state') IN ('pending','approved')", attempt.id);
+            attempt.state = result && !reason && held ? "waiting" : result?.state === "ready" && !reason ? "committed" : "settled";
           }
           attempt.reason = reason; save(tx, "work_attempts", attempt);
           if (attempt.step) {
@@ -379,6 +380,7 @@ export class S14Recovery {
             work.state = "queued";
             work.reason = "replay_safe_requeued";
           }
+          else if (tx.get("SELECT 1 FROM effects WHERE work_id=? AND json_extract(record_json,'$.state') IN ('pending','approved','executing')", workId)) work.state = "waiting";
           else if (steps.some(step => step.state === "committed")) work.state = "ready";
           if (work.state === "ready" && steps.some(step => step.state !== "committed")) work.reason = "partial_graph_evidence";
           save(tx, "work_items", work);

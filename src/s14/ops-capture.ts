@@ -23,6 +23,8 @@ export function assertS14BackupQuiescent(store: S14Store, native: OpsNativePort)
         tx.get("SELECT 1 FROM work_attempts WHERE json_extract(record_json,'$.state') IN ('running','interrupted')") ||
         tx.get("SELECT 1 FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'") ||
         tx.get("SELECT 1 FROM effects WHERE json_extract(record_json,'$.state')='executing'") ||
+        tx.get("SELECT 1 FROM personal_flows WHERE json_extract(record_json,'$.state')='exchanging'") ||
+        tx.get("SELECT 1 FROM personal_reads WHERE json_extract(record_json,'$.outcome')='running'") ||
         tx.get("SELECT 1 FROM bot_computers WHERE json_extract(record_json,'$.state') NOT IN ('stopped','deleted')") ||
         tx.get("SELECT 1 FROM computer_operations WHERE state!='done'") || tx.get("SELECT 1 FROM computer_inputs WHERE state='dispatching'")) throw new AppError("s14_ops_quiesce_required", 409);
   });

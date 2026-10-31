@@ -1,6 +1,6 @@
 # app.restore-activation/v1
 
-OPS14-01 #263, schema **14**, behind `--s14`. Consumes [app.managed-backup/v1](app.managed-backup-v1.md), app.memory-scope/v2, app.context-provenance/v2, app.snapshot-sharing/v1, app.bot-lifecycle/v1, app.work-checkpoints/v1, app.replay-policy/v1, app.routine-grants/v1 and the independent S14 lifecycle database. ADRs 0025–0027 retain the legacy invariants; ADR 0057 records this separate S14 implementation. FR-15/16/18/31/35/36/38; NFR-05/07/08/10/12/14; S14-AC01/05/06/11/14.
+OPS14-01 #263, schema **16**, behind `--s14`. Consumes [app.managed-backup/v1](app.managed-backup-v1.md), app.memory-scope/v2, app.context-provenance/v2, app.snapshot-sharing/v1, app.bot-lifecycle/v1, app.work-checkpoints/v1, app.replay-policy/v1, app.routine-grants/v1 and the independent S14 lifecycle database. ADRs 0025–0027 retain the legacy invariants; ADR 0057 records this separate S14 implementation. FR-15/16/18/31/35/36/38; NFR-05/07/08/10/12/14; S14-AC01/05/06/11/14.
 
 ## Commands and states
 
@@ -12,7 +12,7 @@ All commands use maintenance `revision`, exact payload keys and durable request 
 | --- | --- | --- |
 | `backup.create` | `{}` | Complete registered credential-free backup |
 | `restore.prepare` | `{backupId}` | Preflight, recovery point, quarantine import, lifecycle/native validation; validated, partial or blocked |
-| `upgrade.prepare` | `{targetSchema:14}` | Same staging path with a new managed recovery point |
+| `upgrade.prepare` | `{targetSchema:16}` | Same staging path with a new managed recovery point |
 | `restore.validate` | `{stageId}` | Rebuild candidate from its immutable image, retry reconciliation and issue a new exact action hash |
 | `restore.activate` | `{stageId,actionHash}` | Exact owner-authorized cutover or resolution of its persisted intent |
 | `restore.discard` | `{stageId}` | Before activation, discard candidate and retain live; also resolves an interrupted capture identified by offline `pendingBackupId` |
@@ -26,8 +26,8 @@ Offline status returns revision, backup IDs, `pendingBackupId`, sanitized stage/
 
 | Input/build | Behavior |
 | --- | --- |
-| Fresh S14 schema 14, `jit/0.1.0`, managed-backup/v1, native snapshot/v1 format 4 | Supported 14→14 staged validation and activation |
-| S14 schemas 1–13 | Unreleased formats refuse with fresh-state; no migration chain invented |
+| Fresh S14 schema 16, `jit/0.1.0`, managed-backup/v1, native snapshot/v1 format 4 | Supported 16→16 staged validation and activation |
+| S14 schemas 1–15 | Unreleased formats refuse with fresh-state; no migration chain invented |
 | Future schema/build, mismatching native version/capability | Refuse before fence/candidate write |
 | Legacy application or legacy ops manifest | Refuse before writes; never convert, erase or reinterpret |
 | Other installation, host or native workspace path | Unsupported; no ledger bootstrap or opaque-native relocation |
@@ -42,7 +42,7 @@ Validation checks schema objects against the active known format in memory befor
 
 Every old execution grant is revoked, queued work is parked, pending/approved effects expire, executing/claimed effects remain unknown/reconcile-only, proposed capability changes supersede, routines become blocked pending a new owner enable, queued chat blocks and unsent attention becomes unknown with no retries. Input leases/staging/transient connection metadata do not return. Retained valid reports/artifacts remain evidence rather than execution authority. Current owner generation is preserved for retained-evidence contracts while all old session tokens are removed; grants remain independently revoked. Production composition holds the initial worker gate even before the first REC14 call; an exception keeps it closed. Normal REC14 may reconcile the restored installation again at boot but cannot replay these revoked grants or blocked routines.
 
-Native unresolved/partial/close failures and unresolved computer/Bot cleanup keep the stage fenced. This CLI does not construct a computer runtime: installations retaining computers require their trusted runtime supplied through the maintenance service seam; missing stop/destructive-cleanup evidence blocks activation. Browser profile/workspace volumes are not restored by this contract. Service-account connections must be explicitly reconnected where absent; Parallel restores anonymous. No fallback account/model/billing is selected.
+Native unresolved/partial/close failures and unresolved computer/Bot cleanup keep the stage fenced. This CLI does not construct a computer runtime: installations retaining computers require their trusted runtime supplied through the maintenance service seam; missing stop/destructive-cleanup evidence blocks activation. Browser profile/workspace volumes are not restored by this contract. Personal connections restore as reauth_required with a fresh metadata revision (or revoked when the current ledger requires it), even if their installation vault survives. OAuth flow/state hashes do not return. Pending remote revocation becomes unknown with no automatic request. Current connection/consent/resource/source withdrawals fence personal read caches, claims, reports, artifacts and native context before activation. Held send/Calendar cards expire; independent claims keep uncertain actions unknown/reconcile-only and cannot dispatch from an old approved image. Service-account connections must be explicitly reconnected where absent; Parallel restores anonymous. No fallback account/model/billing is selected.
 
 ## Exact activation and crash recovery
 

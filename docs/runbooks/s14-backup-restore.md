@@ -1,6 +1,6 @@
 # S14 offline backup, upgrade and quarantined restore
 
-OPS14-01 #263. Opt-in fresh S14 only; legacy commands/state are unchanged. Contracts: app.managed-backup/v1 and app.restore-activation/v1, application schema 14, Schway snapshot/v1 format 4. See [compatibility and activation](../contracts/app.restore-activation-v1.md) before operating.
+OPS14-01 #263. Opt-in fresh S14 only; legacy commands/state are unchanged. Contracts: app.managed-backup/v1 and app.restore-activation/v1, application schema 16, Schway snapshot/v1 format 4. See [compatibility and activation](../contracts/app.restore-activation-v1.md) before operating.
 
 ## Routine backup from the running service
 
@@ -28,7 +28,7 @@ Run `bun src/main.ts ops --s14 --command .local/ops-command.json` and retain its
 7. If cutover crashes, run offline status and reauthenticate, then retry the same exact activate request. Do not rename images/pointers or delete fences. Prior/target managed digests resolve one active generation; an unrecognized state remains blocked for investigation. A completed receipt retry can finish its own interrupted fence removal.
 8. After complete, reconnect absent service connections explicitly (Parallel starts anonymous), then explicitly start `serve --s14`. All old sessions/grants/approvals/routines/chat/sends remain fenced/expired/blocked/unknown as described by the contract. The restored report history does not authorize execution. Inspect `/api/s14/recovery`, work/effect/routine history and the normal account/resource controls before starting new work.
 
-Upgrade uses `upgrade.prepare` with `{targetSchema:14}`, then the same validate/exact activate seam. This build supports only 14→14 staging; it refuses all unreleased 1–13, legacy and future schemas/builds rather than invent a conversion. Pre-cutover `upgrade.rollback` discards the candidate. Post-cutover rollback is a new `restore.prepare` of `recoveryBackupId`, followed by current-ledger validation and new exact activation. Never activate private `prior.sqlite` directly. That file and prior native stores contain installation-local recovery state and are not ordinary backup/export artifacts.
+Upgrade uses `upgrade.prepare` with `{targetSchema:16}`, then the same validate/exact activate seam. This build supports only 16→16 staging; it refuses all unreleased 1–15, legacy and future schemas/builds rather than invent a conversion. Pre-cutover `upgrade.rollback` discards the candidate. Post-cutover rollback is a new `restore.prepare` of `recoveryBackupId`, followed by current-ledger validation and new exact activation. Never activate private `prior.sqlite` directly. That file and prior native stores contain installation-local recovery state and are not ordinary backup/export artifacts.
 
 Bounds refuse clearly: 10 backups, 100 durable commands, 64 MiB image+serialized native bytes, 2 MiB manifest/control, 1024 native intents, 200000 rows/ledger entries. Offline capture does not prune; limited online rotation is described above. Journal archival is not implemented. Do not remove registry/control records to bypass these bounds. Schway can allocate one host-bounded capture before Jit enforces its serialized byte limit; caller streaming/budget support is absent upstream.
 
