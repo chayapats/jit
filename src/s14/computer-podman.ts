@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { hostname } from "node:os";
 import type { ExecutionSpawnRequest, ExecutionSpawnResult } from "schway/host";
 import { createBoxBackend } from "../exec/box-backend";
 import { ContainerRegistryProxy } from "../exec/container-registry-proxy";
@@ -10,6 +11,8 @@ import { dropsAllCapabilities } from "../exec/container-checks";
 import { pinnedImagePattern } from "../exec/box-runtime";
 import { podmanCommandRunner, podmanStreamRunner, type CommandRunner, type StreamRunner } from "../exec/podman-runtime";
 import type { AgentInput, BotComputer, ComputerHandle, ComputerRuntime, OwnerInput } from "./computer-types";
+import { readComputerDiskPool } from "./computer-disks";
+import type { PodmanClient } from "../exec/podman-client";
 
 /** Non-secret operator configuration; each Bot needs two independently bounded ext4 mountpoints beneath dataRoot. */
 export interface BotPodmanOptions {
@@ -88,8 +91,42 @@ function podmanFailure(stderr: Uint8Array): string {
   return "podman_runtime_or_nested_namespace_unavailable";
 }
 
-interface MountRow { target: string; source: string; fstype: string; "maj:min": string; fsroot: string; children?: MountRow[] }
+interface MountRow { target: string; source: string; fstype: string; options: string; "maj:min": string; fsroot: string; children?: MountRow[] }
 interface Live { computer: BotComputer; names: string[]; client: CdpClient | null; sessionId: string | null }
+
+function dedicatedDiskMount(rows: MountRow[], path: string): MountRow | null {
+  const layers = rows.filter(row => row.target === path), first = layers[0];
+  if (!first || first.fstype !== "ext4" || first.fsroot !== "/" || !first.source.startsWith("/dev/") || !first["maj:min"]) return null;
+  // ProtectSystem/ReadWritePaths adds an identical mount at the SAME target, not another accessible alias.
+  if (layers.some(row => row["maj:min"] !== first["maj:min"] || row.source !== first.source || row.fstype !== "ext4" || row.fsroot !== "/" ||
+      !["nodev", "nosuid"].every(flag => row.options?.split(",").includes(flag)))) return null;
+  if (rows.some(row => beneath(path, row.target) || row["maj:min"] === first["maj:min"] && row.target !== path)) return null;
+  return first;
+}
+
+/** Proves the selected API is the current service uid's direct local Unix socket; SSH/TCP/foreign sockets refuse. */
+export function localComputerPodman(client: PodmanClient | undefined, uid = process.getuid?.(), stat = lstatSync): boolean {
+  if (!client?.remote) return true;
+  if (!uid || client.argv.length !== 3 || client.argv[0] !== "--remote" || client.argv[1] !== "--url" ||
+      client.argv[2] !== `unix:///run/user/${uid}/podman/podman.sock`) return false;
+  try {
+    for (const path of ["/run", "/run/user", `/run/user/${uid}`, `/run/user/${uid}/podman`, `/run/user/${uid}/podman/podman.sock`]) {
+      const s = stat(path);
+      // ProtectHome=tmpfs synthesizes /run/user as root-owned 1777. Sticky ownership protects its exact child.
+      const stickyParent = path === "/run/user" && s.uid === 0 && (s.mode & 0o1000) !== 0;
+      if (s.isSymbolicLink() || (s.uid !== 0 && s.uid !== uid) || ((s.mode & 0o002) && !stickyParent) ||
+          (path.endsWith(".sock") ? !s.isSocket() || s.uid !== uid : !s.isDirectory() || ((s.mode & 0o020) && !stickyParent))) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+/** Daemon metadata must match this Linux host and service uid before local findmnt/stat can prove its bind sources. */
+export function computerPodmanHostLocal(host: unknown, name = hostname(), uid = process.getuid?.()): boolean {
+  const h = host as { os?: string; hostname?: string; security?: { rootless?: boolean }; idMappings?: { uidmap?: { container_id: number; host_id: number }[] } } | null;
+  return h?.os === "linux" && h.security?.rootless === true && h.hostname === name &&
+    Array.isArray(h.idMappings?.uidmap) && h.idMappings.uidmap.some(m => m.container_id === 0 && m.host_id === uid);
+}
 
 /** Rootless, mount-separated, network-free Linux runtime; unsupported finite limits never degrade to a host shell. */
 export class BotPodmanRuntime implements ComputerRuntime {
@@ -111,9 +148,12 @@ export class BotPodmanRuntime implements ComputerRuntime {
     this.#streams = options.streams ?? podmanStreamRunner();
   }
   private names(c: BotComputer): string[] { return ["workspace", "browser"].map(role => `jit-s14-${c.id}-${role}`); }
+  /** Installer inventory is immutable to the service; claiming it is the application's transactional responsibility. */
+  diskSlots(): readonly string[] { return readComputerDiskPool(this.#root).slots; }
   private path(c: BotComputer, role: "workspace" | "profile"): string {
     if (!/^[a-f0-9]{32}$/.test(c.id) || !/^[a-zA-Z0-9_-]{1,128}$/.test(c.botId)) fail("computer_identity_invalid");
-    const path = join(this.#root, c.botId, role);
+    if (!c.diskSlot || c.diskSlot.generation !== c.generation || !/^slot-\d{4}$/.test(c.diskSlot.id) || !this.diskSlots().includes(c.diskSlot.id)) fail("computer_disk_binding_invalid");
+    const path = join(this.#root, "slots", c.diskSlot.id, role);
     // The operator owns parents; the execution user cannot replace a mountpoint or introduce parent links.
     let current = "/";
     for (const part of path.split("/").filter(Boolean)) {
@@ -137,10 +177,13 @@ export class BotPodmanRuntime implements ComputerRuntime {
     let paths: string[];
     try { paths = [this.path(c, "workspace"), this.path(c, "profile")]; }
     catch (e) { if (e instanceof AppError) throw e; return fail("persistent_disk_mounts_required"); }
-    // findmnt/stat run in the selected Podman host, through an explicit local command runner below.
-    // A remote Podman client cannot prove the local bind source and is refused.
-    if (this.#run.client?.remote) fail("computer_local_podman_required");
-    const mounts = await this.hostProbe(["findmnt", "--json", "--output", "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT"], allowed);
+    // Local API transport is accepted only with the service's real Unix socket and matching daemon host/uid.
+    if (!localComputerPodman(this.#run.client)) fail("computer_local_podman_required");
+    if (this.#run.client?.remote) {
+      const info = JSON.parse(decode(await this.command(["info", "--format", "json"], 5000, allowed))).host;
+      if (!computerPodmanHostLocal(info)) fail("computer_local_podman_required");
+    }
+    const mounts = await this.hostProbe(["findmnt", "--json", "--output", "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT,OPTIONS"], allowed);
     let rows: MountRow[];
     try {
       const flatten = (items: MountRow[]): MountRow[] => items.flatMap(row => [row, ...flatten(row.children ?? [])]);
@@ -148,8 +191,8 @@ export class BotPodmanRuntime implements ComputerRuntime {
     } catch { return fail("persistent_disk_probe_unavailable"); }
     const devices: string[] = [];
     for (const path of paths) {
-      const row = rows.find(row => row.target === path);
-      if (!row || row.fstype !== "ext4" || row.fsroot !== "/" || !row.source.startsWith("/dev/") || !row["maj:min"] || rows.filter(r => r["maj:min"] === row["maj:min"]).length !== 1 || devices.includes(row["maj:min"])) fail("dedicated_ext4_disk_boundary_required");
+      const row = dedicatedDiskMount(rows, path);
+      if (!row || devices.includes(row["maj:min"])) fail("dedicated_ext4_disk_boundary_required");
       devices.push(row["maj:min"]);
       const values = (await this.hostProbe(["stat", "-f", "-c", "%S %b", path], allowed)).trim().split(/\s+/).map(Number);
       const bytes = values[0]! * values[1]!;
@@ -176,6 +219,14 @@ export class BotPodmanRuntime implements ComputerRuntime {
     if (readiness.state !== "ready") fail(readiness.reason!);
     const paths = await this.disks(c, allowed), names = this.names(c);
     await this.stop(c);
+    // A verified stop killed the previous browser. Chromium's hostname/PID links survive SIGKILL on persistent
+    // profiles; unlink only these known symlinks, never their targets or website data, before creating processes.
+    for (const entry of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+      allowed();
+      const path = join(paths[1]!, entry), stat = lstatSync(path, { throwIfNoEntry: false });
+      if (stat && !stat.isSymbolicLink()) fail("protected_browser_lock_unverified");
+      if (stat) rmSync(path);
+    }
     const deadline = Date.now() + c.limits.startupMs;
     try {
       for (let index = 0; index < names.length; index++) {
@@ -204,7 +255,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
       "--pids-limit", String(c.limits.pids), "--log-driver=none", "--no-healthcheck", "--shm-size=64m",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777", "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=134217728,mode=1777",
       "--mount", `type=bind,src=${source},dst=${destination},rw`, "--env", `HOME=${destination}`, "--env", "PATH=/usr/local/bin:/usr/bin:/bin", "--env", "LANG=C.UTF-8", "--env", "TZ=UTC",
-      "--label", `jit.s14.computer=${c.id}`, "--label", `jit.s14.role=${destination === "/workspace" ? "workspace" : "browser"}`, "--name", name, "--entrypoint", "/usr/bin/sleep",
+      "--label", `jit.s14.computer=${c.id}`, "--label", `jit.s14.role=${destination === "/workspace" ? "workspace" : "browser"}`, "--name", name, "--hostname", name, "--entrypoint", "/usr/bin/sleep",
       destination === "/workspace" ? this.options.workspaceImage : this.options.browserImage, "infinity"];
   }
   private async verify(c: BotComputer, name: string, source: string, destination: string, allowed: () => void, network = "none"): Promise<void> {
@@ -215,8 +266,9 @@ export class BotPodmanRuntime implements ComputerRuntime {
     const binds = Array.isArray(mounts) ? mounts.filter((m: { Type: string }) => m.Type === "bind") : [];
     const image = destination === "/workspace" ? this.options.workspaceImage : this.options.browserImage;
     if (!info?.State?.Running || host?.Privileged !== false || host.ReadonlyRootfs !== true || (host.NetworkMode !== network && !(network !== "none" && host.NetworkMode === "bridge")) ||
-        info.ImageName !== image || host.PidMode !== "private" || host.IpcMode !== "private" || host.UTSMode !== "private" || host.CgroupnsMode !== "private" ||
-        info.Config?.User !== "1000:1000" || info.Config?.Labels?.["jit.s14.computer"] !== c.id ||
+        info.ImageName !== image || host.PidMode !== "private" || host.IpcMode !== "private" || host.UTSMode !== "private" ||
+        (host.CgroupnsMode ?? host.CgroupMode) !== "private" || [host.CgroupnsMode, host.CgroupMode].some(mode => mode !== undefined && mode !== "private") ||
+        info.Config?.User !== "1000:1000" || info.Config?.Hostname !== name || info.Config?.Labels?.["jit.s14.computer"] !== c.id ||
         !Array.isArray(mounts) || binds.length !== 1 || binds[0].Source !== source || binds[0].Destination !== destination ||
         mounts.some((m: { Type: string; Destination: string }) => m.Type !== "bind" && !(m.Type === "tmpfs" && ["/tmp", "/run"].includes(m.Destination))) ||
         Object.keys(host.Tmpfs ?? {}).sort().join() !== "/run,/tmp" ||
@@ -253,7 +305,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
     const live = this.#byId.get(c.id);
     live?.client?.close();
     this.#byId.delete(c.id);
-    for (const name of this.names(c)) await this.command(["rm", "--force", "--ignore", name]);
+    for (const name of this.names(c)) await this.command(["rm", "--force", "--time", "0", "--ignore", name]);
   }
   private async removeRegistry(c: BotComputer, proxy?: ContainerRegistryProxy): Promise<void> {
     const prefix = `jit-s14-${c.id}-registry`, network = `${prefix}-net`;
@@ -275,7 +327,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
     for (const path of paths) for (const entry of readdirSync(path)) {
       allowed();
       // rm never follows a symlink; the independently bounded filesystem root itself remains mounted.
-      if (entry !== "lost+found") rmSync(join(path, entry), { recursive: true, force: false });
+      rmSync(join(path, entry), { recursive: true, force: false });
     }
   }
   private current(handle: ComputerHandle): Live {

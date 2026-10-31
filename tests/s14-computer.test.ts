@@ -467,3 +467,54 @@ test("pinned schway/host core-tools/v1 executes a scripted report through this B
   expect(f.app.computers.view(f.auth.actor, "jit").lease?.actor).toBe(null);
   expect(f.store.read(tx => tx.get<{ calls: number }>("SELECT calls FROM attempt_usage WHERE attempt_id=?", a.id)!.calls)).toBe(3);
 });
+
+test("pool claims persist across generations, exhaust without fallback, and return only after verified wipe", async () => {
+  class PoolRuntime extends FakeComputerRuntime {
+    readonly slots = new Map<string, string>();
+    failWipe = false;
+    diskSlots() { return ["slot-0001", "slot-0002"]; }
+    override async destroy(c: BotComputer, allowed: () => void) {
+      allowed();
+      if (this.failWipe) throw new Error("wipe failed");
+      this.slots.delete(c.diskSlot!.id);
+      await super.destroy(c, allowed);
+    }
+    override async start(c: BotComputer, allowed: () => void) {
+      expect(c.diskSlot!.generation).toBe(c.generation);
+      expect(c.diskSlot!.clean).toBe(true);
+      return super.start(c, allowed);
+    }
+  }
+  const runtime = new PoolRuntime();
+  runtime.slots.set("slot-0001", "orphaned previous Bot bytes");
+  const f = await fixture(runtime), a = await running(f);
+  const slot = a.c.diskSlot!.id;
+  expect(runtime.slots.has(slot)).toBe(false);
+  runtime.slots.set(slot, "A private workspace/profile data");
+  lifecycle(f, "computer.stop", a.c); await f.app.computers.drain();
+  const stopped = f.app.computers.view(f.auth.actor, "jit").computer!;
+  expect(stopped.diskSlot).toEqual({ id: slot, generation: stopped.generation, clean: true });
+  for (const name of ["reader", "third"]) f.store.transaction(tx => tx.run("INSERT INTO bots VALUES (?,?)", name, JSON.stringify({ ...f.bot, id: name })));
+  const b = await running(f, "reader");
+  expect(b.c.diskSlot!.id).not.toBe(slot);
+  lifecycle(f, "computer.stop", b.c); await f.app.computers.drain();
+  const work = start(f, "third").work!;
+  expect(() => f.app.execute(f.auth.actor, { kind: "computer.open", requestId: rid(), expectedRevision: 0, payload: { botId: "third", workId: work.id } })).toThrow("computer_disk_pool_full_rerun_installer_to_extend");
+  expect(f.app.computers.view(f.auth.actor, "third").computer).toBeNull();
+  runtime.failWipe = true;
+  lifecycle(f, "computer.delete", stopped); await f.app.computers.drain();
+  let current = f.app.computers.view(f.auth.actor, "jit").computer!;
+  expect(current.state).toBe("unavailable"); expect(current.diskSlot!.id).toBe(slot);
+  expect(runtime.slots.get(slot)).toContain("A private");
+  runtime.failWipe = false;
+  lifecycle(f, "computer.delete", current); await f.app.computers.drain();
+  current = f.app.computers.view(f.auth.actor, "jit").computer!;
+  expect(current.diskSlot).toBeNull(); expect(runtime.slots.has(slot)).toBe(false);
+  const clean = await running(f, "third");
+  expect(clean.c.diskSlot!.id).toBe(slot); expect(runtime.slots.has(slot)).toBe(false);
+  const afterRestart = reopened(f);
+  expect(afterRestart.app.computers.view(afterRestart.actor, "third").computer!.diskSlot!.id).toBe(slot);
+  await afterRestart.app.computers.drain();
+  const restart = afterRestart.app.computers.view(afterRestart.actor, "third").computer!;
+  expect(restart.diskSlot!.generation).toBe(restart.generation);
+});

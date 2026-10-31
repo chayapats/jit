@@ -13,11 +13,10 @@ export function podmanClient(serviceEnv: Record<string, string | undefined> = pr
   if (mode === "local") return { remote: false, argv: ["--remote=false"], env };
   const directory = serviceEnv.XDG_RUNTIME_DIR;
   if (!directory || !/^\/run\/user\/[1-9][0-9]*$/.test(directory)) throw new AppError("invalid_podman_client", 503);
-  // The hardened unit binds only `<runtime>/podman` into its sandbox, so the runtime directory itself appears
-  // root-owned there and the client refuses it ("XDG_RUNTIME_DIR … is not owned by the current user"). With an
-  // explicit --url the remote client needs no runtime directory, so it is not passed (live finding, #224).
-  const { XDG_RUNTIME_DIR: _runtime, ...remoteEnv } = env;
-  return { remote: true, argv: ["--remote", "--url", `unix://${directory}/podman/podman.sock`], env: remoteEnv };
+  // The unit exposes only this service-owned directory; its /run/user/<uid> parent appears root-owned.
+  // Use the bound directory for client bookkeeping too. Removing XDG_RUNTIME_DIR makes Podman 4.9 race
+  // mkdir(/tmp/containers-user-<uid>) across concurrent clients and fall back to a read-only home/rundir.
+  return { remote: true, argv: ["--remote", "--url", `unix://${directory}/podman/podman.sock`], env: { ...env, XDG_RUNTIME_DIR: `${directory}/podman` } };
 }
 
 /** Sanitized availability shared by search, attachments and execution; no raw runtime diagnostic is returned. */

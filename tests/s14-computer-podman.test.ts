@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BotPodmanRuntime, probeBotPodman, type BotPodmanOptions } from "../src/s14/computer-podman";
@@ -17,7 +17,7 @@ const ok = (v: unknown = "") => ({ exitCode: 0, stdout: bytes(v), stderr: new Ui
 const host = () => ({ os: "linux", security: { rootless: true }, cgroupVersion: "v2", cgroupControllers: ["cpu", "memory", "pids"], idMappings: { uidmap: [{ size: 65536 }], gidmap: [{ size: 65536 }] } });
 function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n", stream?: (index: number) => BoxStream) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-podman-"))); roots.push(root);
-  for (const bot of ["jit", "reader"]) for (const role of ["workspace", "profile"]) mkdirSync(join(root, bot, role), { recursive: true, mode: 0o700 });
+  for (const bot of ["slot-0001", "slot-0002"]) for (const role of ["workspace", "profile"]) mkdirSync(join(root, "slots", bot, role), { recursive: true, mode: 0o700 });
   const networks = new Map<string, any>([["jit-registry-egress", { driver: "bridge", internal: false }]]);
   const runnerInputs: any[] = [];
   let registryFailure = "";
@@ -48,7 +48,7 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       const get = (flag: string) => argv[argv.indexOf(flag) + 1]!;
       const mount = get("--mount").split(","), source = mount.find(x => x.startsWith("src="))!.slice(4), destination = mount.find(x => x.startsWith("dst="))!.slice(4);
       const info = { State: { Running: true }, ImageName: image,
-        Config: { User: "1000:1000", Labels: { "jit.s14.computer": get("--label").split("=")[1] } },
+        Config: { User: "1000:1000", Hostname: get("--name"), Labels: { "jit.s14.computer": get("--label").split("=")[1] } },
         Mounts: [{ Type: "bind", Source: source, Destination: destination }],
         HostConfig: { Privileged: false, ReadonlyRootfs: true, NetworkMode: argv.find(a => a.startsWith("--network="))!.slice(10), PidMode: "private", IpcMode: "private", UTSMode: "private", CgroupnsMode: "private", SecurityOpt: ["no-new-privileges"], CapDrop: ["ALL"],
           Tmpfs: { "/tmp": "rw,nosuid,nodev,noexec,size=67108864,mode=1777", "/run": "rw,nosuid,nodev,noexec,size=134217728,mode=1777" } } };
@@ -80,13 +80,19 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       }
       return stream ? stream(streamCalls.length) : cdp.stream(); } };
   const c: BotComputer = { id: "a".repeat(32), botId: "jit", revision: 1, generation: 1, botGeneration: 1, ownerGeneration: 1, workId: "work1", state: "starting", reason: null,
-    limits: { ...defaultComputerLimits }, workspaceId: "workspace1", profileId: "profile1", lastUsedAt: 1800000000000 };
+    limits: { ...defaultComputerLimits }, workspaceId: "workspace1", profileId: "profile1", diskSlot: { id: "slot-0001", generation: 1, clean: true }, lastUsedAt: 1800000000000 };
   let disk = "safe";
   class Runtime extends BotPodmanRuntime {
+    override diskSlots() { return ["slot-0001", "slot-0002"]; }
     protected override async hostProbe(argv: string[], allowed: () => void) {
       allowed();
       if (argv[0] === "stat") return disk === "oversize" ? "4096 999999999" : "4096 1000";
-      return JSON.stringify({ filesystems: ["jit", "reader"].flatMap((bot, i) => ["workspace", "profile"].map((role, j) => ({ target: join(root, bot, role), source: `/dev/fixture${i * 2 + j}`, fstype: disk === "wrong-fs" ? "overlay" : "ext4", "maj:min": disk === "shared" ? "1:1" : `1:${i * 2 + j}`, fsroot: "/" }))) });
+      const filesystems = ["slot-0001", "slot-0002"].flatMap((bot, i) => ["workspace", "profile"].map((role, j) => ({ target: join(root, "slots", bot, role), source: `/dev/fixture${i * 2 + j}`, fstype: disk === "wrong-fs" ? "overlay" : "ext4", "maj:min": disk === "shared" ? "1:1" : `1:${i * 2 + j}`, fsroot: "/", options: disk === "unsafe-flags" ? "rw" : "rw,nodev,nosuid" })));
+      if (disk === "systemd-bind") filesystems.push(...structuredClone(filesystems));
+      if (disk === "alias") filesystems.push({ ...filesystems[0]!, target: join(root, "alias") });
+      if (disk === "hidden-layer") filesystems.push({ ...filesystems[0]!, "maj:min": "9:9" });
+      if (disk === "child-mount") filesystems.push({ ...filesystems[0]!, target: join(filesystems[0]!.target, "child") });
+      return JSON.stringify({ filesystems });
     }
   }
   return { root, c, runtime: new Runtime(options), options, calls, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
@@ -104,9 +110,9 @@ test("rootless workspace/browser use separate mounts, private namespaces, finite
     expect(args[args.indexOf("--memory") + 1]).toBe("536870912");
     expect(args.join(" ")).not.toMatch(/podman\.sock|docker\.sock|API_KEY|TOKEN|\.sqlite|\/home\//);
   }
-  expect(creates[0]!.join(" ")).toContain(`src=${join(f.root, "jit/workspace")},dst=/workspace`);
+  expect(creates[0]!.join(" ")).toContain(`src=${join(f.root, "slots/slot-0001/workspace")},dst=/workspace`);
   expect(creates[0]!.join(" ")).not.toContain("/profile");
-  expect(creates[1]!.join(" ")).toContain(`src=${join(f.root, "jit/profile")},dst=/profile`);
+  expect(creates[1]!.join(" ")).toContain(`src=${join(f.root, "slots/slot-0001/profile")},dst=/profile`);
   expect(creates[1]!.join(" ")).not.toContain("dst=/workspace");
   await expect(f.runtime.exec({ ...handle }, { input: bytes({}), timeoutMs: 1000 }, () => {})).rejects.toThrow("computer_handle_fenced");
   await f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/report" }), timeoutMs: 1000 }, () => {});
@@ -178,7 +184,7 @@ test.each(["max 100000\n536870912\n128\n0", "50000 100000\nmax\n128\n0", "50000 
   await expect(f.runtime.start(f.c, () => {})).rejects.toThrow("computer_cgroup_limits_unenforced");
 });
 
-test.each(["oversize", "shared", "wrong-fs"])("unproven persistent disk (%s) never starts a process", async disk => {
+test.each(["oversize", "shared", "wrong-fs", "unsafe-flags", "alias", "hidden-layer", "child-mount"])("unproven persistent disk (%s) never starts a process", async disk => {
   const f = fixture(); f.setDisk(disk);
   await expect(f.runtime.start(f.c, () => {})).rejects.toThrow();
   expect(f.calls.some(a => a[0] === "run")).toBe(false);
@@ -186,27 +192,27 @@ test.each(["oversize", "shared", "wrong-fs"])("unproven persistent disk (%s) nev
 
 test("symlinked volume boundary, state collision and unpinned image refuse before container creation", async () => {
   const f = fixture();
-  rmSync(join(f.root, "jit/workspace"), { recursive: true });
-  symlinkSync(join(f.root, "reader/workspace"), join(f.root, "jit/workspace"));
+  rmSync(join(f.root, "slots/slot-0001/workspace"), { recursive: true });
+  symlinkSync(join(f.root, "slots/slot-0002/workspace"), join(f.root, "slots/slot-0001/workspace"));
   await expect(f.runtime.start(f.c, () => {})).rejects.toThrow("computer_data_path_unsafe");
   expect(f.calls.some(a => a[0] === "run")).toBe(false);
   expect(() => new BotPodmanRuntime({ ...f.options, protectedPaths: [f.root] })).toThrow("computer_data_state_collision");
-  symlinkSync(join(f.root, "jit"), join(f.root, "state-alias"));
+  symlinkSync(join(f.root, "slots"), join(f.root, "state-alias"));
   expect(() => new BotPodmanRuntime({ ...f.options, protectedPaths: [join(f.root, "state-alias", "future-state")] })).toThrow("computer_data_state_collision");
   expect(() => new BotPodmanRuntime({ ...f.options, workspaceImage: "latest" })).toThrow("computer_image_digest_required");
 });
 
 test("destruction removes only the selected Bot's contents and never follows an internal link into a sibling", async () => {
   const f = fixture();
-  const sibling = join(f.root, "reader/workspace/report");
+  const sibling = join(f.root, "slots/slot-0002/workspace/report");
   writeFileSync(sibling, "B evidence");
-  writeFileSync(join(f.root, "jit/workspace/report"), "A evidence");
-  symlinkSync(join(f.root, "reader/workspace"), join(f.root, "jit/profile/escape"));
+  writeFileSync(join(f.root, "slots/slot-0001/workspace/report"), "A evidence");
+  symlinkSync(join(f.root, "slots/slot-0002/workspace"), join(f.root, "slots/slot-0001/profile/escape"));
   await f.runtime.destroy(f.c, () => {});
   expect(existsSync(sibling)).toBe(true);
-  expect(existsSync(join(f.root, "jit/workspace/report"))).toBe(false);
-  expect(existsSync(join(f.root, "jit/profile/escape"))).toBe(false);
-  expect(existsSync(join(f.root, "jit/profile"))).toBe(true);
+  expect(existsSync(join(f.root, "slots/slot-0001/workspace/report"))).toBe(false);
+  expect(existsSync(join(f.root, "slots/slot-0001/profile/escape"))).toBe(false);
+  expect(existsSync(join(f.root, "slots/slot-0001/profile"))).toBe(true);
 });
 
 test.each(["rootless", "subuid", "cgroup", "linux"])("readiness distinguishes missing %s without starting any container", async change => {
@@ -232,7 +238,7 @@ test("registry command reuses CONNECT proxy on its own internal bridge and clean
   const creates = f.calls.filter(a => a[0] === "run");
   expect(creates.slice(0, 2).every(a => a.includes("--network=none"))).toBe(true);
   expect(creates[2]!.find(a => a.startsWith("--network="))).toEndWith("-registry-net");
-  expect(creates[2]!.filter(a => a.startsWith("type=bind"))).toEqual([`type=bind,src=${join(f.root, "jit/workspace")},dst=/workspace,rw`]);
+  expect(creates[2]!.filter(a => a.startsWith("type=bind"))).toEqual([`type=bind,src=${join(f.root, "slots/slot-0001/workspace")},dst=/workspace,rw`]);
   expect(f.calls.some(a => a[0] === "network" && a.includes("--internal") && a.includes("--disable-dns"))).toBe(true);
   expect(f.streamCalls[0]!.at(-1)).toBe('["registry.npmjs.org"]');
   expect(f.runnerInputs[0].command).toContain("HTTPS_PROXY=http://10.89.0.2:3128");
@@ -256,4 +262,56 @@ test("unconfirmed registry cleanup fences the runtime handle and cannot certify 
   f.setRegistryFailure("cleanup");
   await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {})).rejects.toThrow("coding_registry_cleanup_unconfirmed");
   await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).rejects.toThrow("computer_handle_fenced");
+});
+
+test("Podman 4.9 CgroupMode is accepted only for an exact private namespace; conflicting or missing proof refuses", async () => {
+  const f = fixture(info => { info.HostConfig.CgroupMode = "private"; delete info.HostConfig.CgroupnsMode; });
+  const handle = await f.runtime.start(f.c, () => {}); await f.runtime.stop(f.c);
+  await expect(f.runtime.screenshot(handle, () => {})).rejects.toThrow("computer_handle_fenced");
+  for (const mode of ["host", undefined]) {
+    const bad = fixture(info => { info.HostConfig.CgroupMode = mode; delete info.HostConfig.CgroupnsMode; });
+    await expect(bad.runtime.start(bad.c, () => {})).rejects.toThrow("computer_isolation_unverified");
+  }
+  const conflict = fixture(info => { info.HostConfig.CgroupMode = "host"; });
+  await expect(conflict.runtime.start(conflict.c, () => {})).rejects.toThrow("computer_isolation_unverified");
+});
+
+test("a missing, foreign or stale-generation slot binding cannot start or wipe another disk", async () => {
+  for (const diskSlot of [undefined, { id: "slot-0002", generation: 0, clean: true }, { id: "slot-9999", generation: 1, clean: true }]) {
+    const f = fixture();
+    const c = { ...f.c, ...(diskSlot ? { diskSlot } : { diskSlot: null }) };
+    await expect(f.runtime.start(c, () => {})).rejects.toThrow("computer_disk_binding_invalid");
+    await expect(f.runtime.destroy(c, () => {})).rejects.toThrow("computer_disk_binding_invalid");
+    expect(f.calls.some(a => a[0] === "run")).toBe(false);
+  }
+});
+
+
+test("identical systemd overmounts at the same target retain dedicated filesystem proof", async () => {
+  const f = fixture(); f.setDisk("systemd-bind");
+  const handle = await f.runtime.start(f.c, () => {});
+  expect(handle.generation).toBe(f.c.generation);
+  await f.runtime.stop(f.c);
+});
+
+
+test("confirmed stop clears only stale Chromium singleton links, retaining website data and link targets", async () => {
+  const f = fixture(), profile = join(f.root, "slots/slot-0001/profile");
+  const keep = join(profile, "website-data"); writeFileSync(keep, "synthetic persistent session");
+  for (const entry of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) symlinkSync(keep, join(profile, entry));
+  await f.runtime.start(f.c, () => {});
+  expect(readFileSync(keep, "utf8")).toBe("synthetic persistent session");
+  for (const entry of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) expect(existsSync(join(profile, entry))).toBe(false);
+  for (const args of f.calls.filter(a => a[0] === "run")) expect(args[args.indexOf("--hostname") + 1]).toBe(args[args.indexOf("--name") + 1]);
+  await f.runtime.stop(f.c);
+});
+
+test("an unconfirmed stop cannot remove browser locks or touch persistent website data", async () => {
+  const f = fixture(), profile = join(f.root, "slots/slot-0001/profile"), keep = join(profile, "website-data");
+  writeFileSync(keep, "synthetic session"); symlinkSync(keep, join(profile, "SingletonLock"));
+  f.setRegistryFailure("cleanup");
+  await expect(f.runtime.start(f.c, () => {})).rejects.toThrow("coding_registry_cleanup_unconfirmed");
+  expect(existsSync(join(profile, "SingletonLock"))).toBe(true);
+  expect(readFileSync(keep, "utf8")).toBe("synthetic session");
+  expect(f.calls.some(a => a[0] === "run")).toBe(false);
 });

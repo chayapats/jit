@@ -33,12 +33,7 @@ object readers. Include the existing box build inputs in the content-pinned
 artifact and build both targets as the service identity; record only verified
 manifest digests, never invented registry pins or mutable tags as runtime refs.
 
-The supported S14 computer backend currently requires local disk proof, while
-the hardened unit exposes only remote Podman. Retain that explicit
-`computer_local_podman_required` limitation and the independent ext4/cgroup
-requirements. Do not weaken host hardening or certify computer readiness from
-installed images. A later scoped backend/service contract must close that gap
-before #256 computer evidence can pass.
+ADR 0046's subsequent confirmed disk-pool decision closes this slice's original local-disk-proof gap. The installer creates eight finite ext4 pairs, checks full sparse commitments and enables boot mount units. The service retains all hardening and uses only its verified same-host user Unix API; remote hosts and missing disk/cgroup proof still fail closed. Image installation alone remains insufficient evidence.
 
 Deliver owner setup through the already supported `owner-link --s14
 --output-fd 3` CLI as the service identity with matching database/origin. Open

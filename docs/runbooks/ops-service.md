@@ -72,15 +72,11 @@ Builds may need package/registry access and take up to ten minutes per target.
 Missing Podman, subordinate mappings, socket or image build access leaves chat
 available with a concrete feature-off reason; retrying repairs provisioning.
 
-**Current computer limitation:** BOX14's local mount/capacity proof refuses a
-remote Podman client (`computer_local_podman_required`). This hardened service
-uses only that API, so installing images does not make Bot computers ready.
-The installer cannot establish arbitrary per-Bot dedicated ext4 filesystems or
-outer-host cgroup/user-namespace delegation. Those remain fail-closed, named
-reasons from [s14-bot-computer.md](s14-bot-computer.md). Do not disable service
-hardening or select local Podman to claim an evidence pass. Service chat,
-Parallel research and owner setup remain available; #256's computer evidence
-remains blocked pending a supported disk-proof/service integration.
+The root installer provisions eight dedicated workspace/profile ext4 pairs under the S14 computer root: 16 finite 1 GiB sparse images, loop-mounted at boot with nodev/nosuid. Full remaining growth of existing images, new images and the normal reserve must fit available host capacity; otherwise `s14-disk-pool` refuses with `computer_disk_pool_overcommit` and requires freeing space or enlarging the host disk. Loop devices, e2fsprogs and systemd mount support are required; an unprivileged LXC without loop devices cannot provision this backend.
+
+Re-run `./install.sh --s14 --computer-slots 12` to extend to twelve slots (8..1024). Re-runs preserve all image/slot contents and never shrink/reformat. The S14 home/pool parents and inventory become root-owned; mutable service directories and mounted filesystem roots retain their service ownership. Uninstall preserves images and boot mount units so data remains available for repair/reinstall.
+
+Bots claim a free slot transactionally on first use. Idle stop/restart retains it; reset wipes both mounted contents, and delete returns it after successful wipe. Exhaustion returns `computer_disk_pool_full_rerun_installer_to_extend`. There is no directory fallback. The hardened service's own protected Unix API is verified as local; TCP/SSH/foreign sockets still refuse. Missing disk/cgroup/namespace proof remains fail-closed; see [s14-bot-computer.md](s14-bot-computer.md).
 
 For same-device access use the loopback link. A remote operator can use an
 explicit SSH tunnel forwarding local port 3001 to host loopback 3001, then open
