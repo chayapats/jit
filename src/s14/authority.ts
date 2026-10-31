@@ -744,8 +744,11 @@ export class S14Authority {
     if (steps.some(s => ["queued", "waiting_evidence", "running", "stopping"].includes(s.state))) return;
     const hasEvidence = steps.some(s => s.state === "committed");
     const waiting = this.attempts(tx, workId).some(a => a.state === "waiting") || this.effects(tx, workId).some(e => ["pending", "approved", "executing", "unknown"].includes(e.state));
-    work.state = waiting ? "waiting" : hasEvidence ? "ready" : "blocked";
-    work.reason = steps.some(s => s.state !== "committed") ? "partial_graph_evidence" : null;
+    const state = waiting ? "waiting" : hasEvidence ? "ready" : "blocked";
+    const reason = steps.some(s => s.state !== "committed") ? "partial_graph_evidence" : null;
+    if (work.state === state && work.reason === reason && tx.get<{ state: string }>("SELECT state FROM work_queue WHERE work_id=?", workId)?.state === "claimed") return;
+    work.state = state;
+    work.reason = reason;
     work.revision++;
     save(tx, "work_items", work);
     tx.run("UPDATE work_queue SET state='claimed' WHERE work_id=?", workId);

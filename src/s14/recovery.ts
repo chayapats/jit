@@ -35,7 +35,10 @@ export class S14Recovery {
     tx.run("UPDATE work_checkpoints SET record_json=? WHERE id=?", canonical(checkpoint), checkpoint.id);
   }
   private saveIntent(tx: AppTransaction, intent: NativeIntent): void {
-    tx.run("UPDATE native_intents SET record_json=? WHERE id=?", canonical(intent), intent.id);
+    const value = canonical(intent);
+    if (tx.get<{ record_json: string }>("SELECT record_json FROM native_intents WHERE id=?", intent.id)?.record_json !== value) {
+      tx.run("UPDATE native_intents SET record_json=? WHERE id=?", value, intent.id);
+    }
   }
   private graph(tx: AppTransaction, attempt: Attempt): WorkGraph | null {
     return attempt.step ? record<WorkGraph>(tx, "work_graphs", attempt.workId) : null;

@@ -123,6 +123,87 @@ test("concurrent computers serialize only Podman namespace planning and keep the
   expect(f.calls.filter(a => a[0] === "run").every(a => a.includes("--userns=keep-id:uid=1000,gid=1000"))).toBe(true);
 });
 
+test("registry proxy creation shares namespace planning with another computer's readiness", async () => {
+  const gate = barrier(), entered = Promise.withResolvers<void>();
+  let guarded = false, active = 0, maximum = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!guarded || !["info", "create", "run"].includes(argv[0]!)) return;
+    active++; maximum = Math.max(maximum, active);
+    try { if (argv[0] === "info") { entered.resolve(); await gate.wait(); } else await Promise.resolve(); }
+    finally { active--; }
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  const peer = { ...f.c, id: "b".repeat(32), botId: "peer", diskSlot: { id: "slot-0002", generation: 1, clean: true } };
+  guarded = true;
+  const starting = f.runtime.start(peer, () => {});
+  await entered.promise;
+  const checking = f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  // All unblocked proxy setup can advance while the peer's info request is held.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  gate.release();
+  await Promise.all([starting, checking]);
+  expect(maximum).toBe(1);
+  expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(true);
+});
+
+test.each(["cancel", "revoke"])("registry proxy queued behind another computer refuses %s before dispatch and still cleans up", async cause => {
+  const gate = barrier(), proxyReady = Promise.withResolvers<void>();
+  let held = false, revoked = false;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!held) return;
+    if (argv[0] === "info") await gate.wait();
+    if (argv[0] === "network" && argv[1] === "inspect" && argv[2] === "jit-registry-egress") proxyReady.resolve();
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  const peer = { ...f.c, id: "b".repeat(32), botId: "peer", diskSlot: { id: "slot-0002", generation: 1, clean: true } };
+  const controller = new AbortController();
+  held = true;
+  const starting = f.runtime.start(peer, () => {});
+  await gate.reached;
+  const checking = f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000, signal: controller.signal }, ["registry.npmjs.org"], () => {
+    if (revoked) throw Error("scope_revoked");
+  });
+  const outcome = checking.then(() => null, error => error);
+  try {
+    await proxyReady.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (cause === "cancel") controller.abort(); else revoked = true;
+    gate.release();
+    await starting;
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(false);
+    expect(f.calls.some(argv => argv[0] === "start" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(false);
+    expect(f.streamCalls.some(argv => argv.includes("node"))).toBe(false);
+    expect(f.runnerInputs).toHaveLength(0);
+    for (const name of [`jit-s14-${f.c.id}-registry`, `jit-s14-${f.c.id}-registry-proxy`]) {
+      expect(f.calls.some(argv => argv[0] === "rm" && argv.at(-1) === name)).toBe(true);
+    }
+    expect(f.calls.some(argv => argv[0] === "network" && argv[1] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-net`)).toBe(true);
+  } finally {
+    gate.release();
+    await Promise.allSettled([starting, checking]);
+    await f.runtime.stop(f.c);
+    await f.runtime.stop(peer);
+  }
+});
+
+test("revocation during proxy inspection prevents the exec stream and leaves cleanup available", async () => {
+  let revoked = false;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (argv[0] === "container" && argv[1] === "inspect" && argv.at(-1)!.endsWith("-registry-proxy")) revoked = true;
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {
+    if (revoked) throw Error("scope_revoked");
+  })).rejects.toThrow();
+  expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(true);
+  expect(f.streamCalls.some(argv => argv.includes("node"))).toBe(false);
+  expect(f.runnerInputs).toHaveLength(0);
+  expect(f.calls.some(argv => argv[0] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-proxy`)).toBe(true);
+  expect(f.calls.some(argv => argv[0] === "network" && argv[1] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-net`)).toBe(true);
+  await f.runtime.stop(f.c);
+});
+
 test("concurrent startup shares a fresh slow info probe, reuses its host proof and probes again on a later start", async () => {
   const gate = barrier(); let infos = 0;
   const f = fixture(undefined, undefined, undefined, async argv => {
@@ -303,6 +384,23 @@ test("unconfirmed registry cleanup fences the runtime handle and cannot certify 
   f.setRegistryFailure("cleanup");
   await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {})).rejects.toThrow("coding_registry_cleanup_unconfirmed");
   await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).rejects.toThrow("computer_handle_fenced");
+});
+
+test("registry teardown does not contend on storage by removing both components concurrently", async () => {
+  let guarded = false, active = 0, maximum = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!guarded || argv[0] !== "rm" || !argv.at(-1)!.includes("-registry")) return;
+    active++; maximum = Math.max(maximum, active);
+    const contended = active > 1;
+    try { await new Promise<void>(resolve => setImmediate(resolve)); if (contended) throw Error("slow_storage_cleanup_deadline"); }
+    finally { active--; }
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  guarded = true;
+  const result = await f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  expect(result.exitCode).toBe(0);
+  expect(maximum).toBe(1);
+  expect(f.requests.filter(r => r.argv[0] === "rm" && r.argv.at(-1)!.endsWith("-registry")).every(r => r.timeoutMs === 5000)).toBe(true);
 });
 
 test("Podman 4.9 CgroupMode is accepted only for an exact private namespace; conflicting or missing proof refuses", async () => {
