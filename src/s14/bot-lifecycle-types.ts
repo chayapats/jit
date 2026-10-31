@@ -12,7 +12,7 @@ export interface CapabilityProposal {
   action: "capabilities" | "reenable";
   capabilities: Capabilities;
   hash: string;
-  state: "proposed" | "accepted" | "superseded";
+  state: "proposed" | "accepted" | "superseded" | "discarded";
 }
 /** Durable Bot transition; disabling authority precedes actual transport/computer/native settlement. */
 export interface BotLifecycle {
@@ -46,7 +46,7 @@ export interface BotLifecyclePreview {
 /** Exact owner proposal creation is a draft, with no policy mutation or account grant. */
 export type ProposeCapabilitiesCommand = Envelope<"bot.capabilities.propose" | "bot.reenable.propose", { botId: string; capabilities: Capabilities }>;
 /** Exact current proposal acceptance changes only the named Bot ceiling and fences old authority. */
-export type AcceptCapabilitiesCommand = Envelope<"bot.capabilities.accept", { proposalId: string; proposalHash: string }>;
+export type AcceptCapabilitiesCommand = Envelope<"bot.capabilities.accept" | "bot.capabilities.discard", { proposalId: string; proposalHash: string }>;
 /** Retirement explicitly retains local history/evidence while disabling work and routine dispatch. */
 export type RetireBotCommand = Envelope<"bot.retire", { botId: string; previewHash: string; retain: { history: true; evidence: true } }>;
 /** Destructive Bot-data withdrawal requires the exact current lifecycle preview; computer reset stays separate. */

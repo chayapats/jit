@@ -278,13 +278,13 @@ export class S14Application {
         result = this.personal.apply(tx, command as PersonalCommand);
         this.memory.reconcile(tx);
         this.personal.reconcile(tx);
-      } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
+      } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.capabilities.discard", "bot.retire", "bot.delete"].includes(command.kind)) {
         result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);
         this.botLifecycle.reconcile(tx);
         if (result.bot) result.bot = record<Bot>(tx, "bots", result.bot.id);
       } else if (command.kind.startsWith("routine.")) {
         result = this.routines.apply(tx, command as RoutineCommand);
-      } else if (command.kind === "attention.set") {
+      } else if (command.kind.startsWith("attention.")) {
         result = this.attention.apply(tx, command as AttentionCommand);
       } else if (command.kind === "effect.reconcile") {
         result = this.recovery.apply(tx, command as RecoveryCommand);

@@ -5,11 +5,12 @@ import type { ThemePreference } from "../web-layout";
 import type { Attempt, Effect, Work, WorkView } from "./authority-types";
 import type { BotComputer, ComputerActivity, ComputerView } from "./computer-types";
 import type { Bot, BotProposal, Conversation, Message, Reply, Route } from "./types";
+import type { AttentionSetting } from "./routine-types";
 import { s14AssetUrl } from "./web-assets";
 import type { S14Page, S14WebCommand } from "./web";
 import { workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
 import type { S14WorkResearch } from "./web-product-memory";
-import type { S14RoutineNeed } from "./web-product-routines";
+import type { S14NoticeRef, S14RoutineNeed } from "./web-product-routines";
 import type { S14ScopeChoice } from "./web-product-sharing";
 import { providerSettingsPage, setupPage } from "./web-first-run";
 import { renderMemorySurface } from "./web-memory";
@@ -135,26 +136,37 @@ function attention(page: S14Page) {
   return { effects: page.overview.effects.filter(needsOwner), proposals: page.state.proposals.filter(p => p.state === "proposed"), tasks: page.work.filter(w => w.state === "proposed" && !found.has(w.id)), recovery: page.overview.recovery?.open ?? 0, routines: routines?.needs ?? [], updates: routines?.updates ?? [], accounts: page.overview.personal?.needs ?? [] };
 }
 const attentionCount = (page: S14Page) => { const a = attention(page); return a.effects.length + a.proposals.length + a.tasks.length + a.routines.length + a.accounts.length + (a.recovery ? 1 : 0); };
+/** Clears one notice at its revision. The label is fixed, and it answers nothing: `described` names the row for a screen reader, as a description only. */
+export function dismissForm(page: S14Page, notice: NonNullable<S14NoticeRef>, from: "home" | "work" | "routine", described = "", routineId = ""): string {
+  return `<form method="post" action="/s14/forms/attention-dismiss">${flat(page.csrf, notice.revision)}${hidden("noticeId", notice.id)}${hidden("from", from)}${routineId ? hidden("routineId", routineId) : ""}<button class="s-btn"${described ? ` aria-describedby="${described}"` : ""}>${tr("s14.attention.dismiss")}</button></form>`;
+}
+/** A row with its Dismiss beside the link, never inside it. A row with no notice to clear is the plain row. */
+function noticeRow(page: S14Page, from: "home" | "work", notice: S14NoticeRef, link: (described: string) => string): string {
+  if (!notice) return `<li>${link("")}</li>`;
+  const described = `s14-notice-${e(notice.id)}`;
+  return `<li class="s-attention-row">${link(described)}${dismissForm(page, notice, from, described)}</li>`;
+}
 /** Routine rows carry a fixed heading, with the title as escaped small text beneath. At most one row per routine and kind. */
-function routineRow(item: S14RoutineNeed): string {
+function routineRow(page: S14Page, from: "home" | "work", item: S14RoutineNeed): string {
   const tone: Record<S14RoutineNeed["need"], [string, string, string]> = { decision: ["warn", "!", "#findings"], failed: ["danger", "×", ""], blocked: ["warn", "!", ""] };
   const [cls, glyph, anchor] = tone[item.need], label = tr(k(`s14.attention.routine.${item.need}`));
-  return `<li><a href="/routines/${e(item.routineId)}${anchor}"><span><span>${label}${item.count > 1 ? ` · ${item.count}` : ""}</span><small>${e(item.title)}</small>${item.delivery ? `<small>${tr(k(`s14.routine.delivery.${item.delivery}`))}</small>` : ""}</span>${pill(tr(k(`s14.attention.routine_word.${item.need}`)), cls, glyph)}</a></li>`;
+  return noticeRow(page, from, item.notice, id => `<a href="/routines/${e(item.routineId)}${anchor}"><span${id ? ` id="${id}"` : ""}><span>${label}${item.count > 1 ? ` · ${item.count}` : ""}</span><small>${e(item.title)}</small>${item.delivery ? `<small>${tr(k(`s14.routine.delivery.${item.delivery}`))}</small>` : ""}</span>${pill(tr(k(`s14.attention.routine_word.${item.need}`)), cls, glyph)}</a>`);
 }
 /** Grouped "needs me": one heading per kind of decision, in the order a mistake would cost most. Only groups with rows appear. */
-function attentionList(page: S14Page): string {
+function attentionList(page: S14Page, from: "home" | "work"): string {
   const a = attention(page), botOf = (id: string) => page.state.bots.find(b => b.id === id);
   const group = (name: string, rows: string[]) => rows.length ? `<section class="s-attention-group" aria-label="${tr(k(`s14.attention.group.${name}`))}"><h3>${tr(k(`s14.attention.group.${name}`))}</h3><ul class="s-attention">${rows.join("")}</ul></section>` : "";
   const groups = [
     group("effects", a.effects.map(effect => `<li><a href="/effects/${e(effect.id)}#slip"><span>${e(botName(botOf(effect.botId) ?? { id: effect.botId, name: effect.botId }))} ${tr("s14.effect.asks")} ${e(tr(k(`s14.effect_kind.${effect.action.kind}`)))}</span>${effectPill(effect.state)}</a></li>`)),
-    group("routines", a.routines.map(routineRow)),
+    group("routines", a.routines.map(item => routineRow(page, from, item))),
     group("accounts", a.accounts.map(item => `<li><a href="/settings/google/connections/${e(item.connectionId)}#next"><span><span>${tr(k(`s14.google.need.${item.need}`))}</span><small>${tr(k(`s14.google.service.${item.service}`))} · ${e(item.account)}</small></span>${pill(tr(k(`s14.google.need_word.${item.need}`)), "warn", "!")}</a></li>`)),
     group("proposals", [...a.proposals.map(proposal => `<li><a href="/proposals/${e(proposal.id)}"><span>${tr("s14.proposal.attention")} · r${proposal.revision}</span>${pill(tr("s14.work_state.proposed"), "strong")}</a></li>`),
     ...a.tasks.map(task => `<li><a href="/work/${e(task.id)}"><span>${tr("s14.task.attention")} · r${task.revision}</span>${pill(tr("s14.work_state.proposed"), "strong")}</a></li>`)]),
     group("recovery", a.recovery ? [`<li><a href="/recovery"><span>${tr("s14.recovery.attention")}</span>${pill(`${a.recovery}`, "warn", "!")}</a></li>`] : []),
-    group("updates", a.updates.map(item => `<li><a href="/routines/${e(item.routineId)}"><span><span>${tr("s14.attention.routine.report")}</span><small>${e(item.title)}</small></span><span class="s-meta">${when(item.at)}</span></a></li>`)),
+    group("updates", a.updates.map(item => noticeRow(page, from, item.notice, id => `<a href="/routines/${e(item.routineId)}"><span${id ? ` id="${id}"` : ""}><span>${tr("s14.attention.routine.report")}</span><small>${e(item.title)}</small></span><span class="s-meta">${when(item.at)}</span></a>`))),
   ].join("");
-  return groups ? `<div class="s-attention-groups">${groups}</div>` : `<p class="s-sub">${tr("s14.attention.none")}</p>`;
+  const dismissable = a.routines.some(item => item.notice) || a.updates.some(item => item.notice);
+  return groups ? `<div class="s-attention-groups">${groups}${dismissable ? `<p class="s-note">${tr("s14.attention.dismiss_note")}</p>` : ""}</div>` : `<p class="s-sub">${tr("s14.attention.none")}</p>`;
 }
 
 /** Owner-facing label: the Seam has no chat title, so a Bot's later chats carry their order of creation. Newest comes first in Home. */
@@ -542,7 +554,7 @@ function homePage(page: S14Page, view: Extract<S14View, { kind: "home" }>): stri
   const jit = page.state.bots.find(bot => bot.id === "jit");
   const chats = `<section class="s-home-chats" aria-labelledby="s14-home-chats"><h2 class="s-section-t" id="s14-home-chats">${tr("s14.nav.chats")}</h2><ul>${page.state.conversations.filter(item => !page.state.bots.some(bot => bot.id === item.botId && botGone(bot))).map(item => `<li><a href="/chats/${e(item.id)}#latest">${e(chatLabel(page, item))}</a></li>`).join("")}</ul>${jit ? newChat(page, jit) : ""}</section>`;
   return shell(page, tr("s14.nav.home"), `<div class="s-home"><section class="s-hello"><span>${logoMark({ size: 48 })}</span><h2>${tr("s14.home.greeting")} ${e(name)}</h2><p class="s-sub">${tr("s14.home.prompt")}</p></section>${notice(view.notice)}${view.bot.enabled ? "" : banner("", tr("s14.life.main_paused"), tr("s14.life.main_paused_detail"))}${composer(page, view.conversation, view.bot, "home", view.draft)}${starters}
-    <section aria-labelledby="s14-waiting"><h2 class="s-section-t" id="s14-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section><section aria-labelledby="s14-team-now"><h2 class="s-section-t" id="s14-team-now">${tr("s14.home.team_now")}</h2><div class="s-team-now">${team}</div></section>${chats}</div>`, { current: "home" });
+    <section aria-labelledby="s14-waiting"><h2 class="s-section-t" id="s14-waiting">${tr("s14.attention.title")}</h2>${attentionList(page, "home")}</section><section aria-labelledby="s14-team-now"><h2 class="s-section-t" id="s14-team-now">${tr("s14.home.team_now")}</h2><div class="s-team-now">${team}</div></section>${chats}</div>`, { current: "home" });
 }
 function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): string {
   const { chat, bot } = view, work = page.work.filter(item => item.conversationId === chat.conversation.id);
@@ -554,7 +566,7 @@ function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): stri
 function workListPage(page: S14Page): string {
   const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span><span class="s-row-pills">${reportHintPill(page.overview.reports[item.id])}${workPill(item.state)}</span></a>`).join("")}</section>` : "";
   const by = (...states: Work["state"][]) => page.work.filter(item => states.includes(item.state));
-  return shell(page, tr("s14.nav.work"), `<div class="s-col s-col-wide"><section aria-labelledby="s14-work-waiting"><h2 class="s-section-t" id="s14-work-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section>${group(tr("s14.work_list.needs_you"), by("waiting", "blocked"), "s14-group-you")}${group(tr("s14.work_list.progress"), by("queued", "running", "stopping"), "s14-group-progress")}${group(tr("s14.work_list.unstarted"), by("proposed", "accepted"), "s14-group-unstarted")}${group(tr("s14.work_list.finished"), by("ready", "stopped"), "s14-group-finished")}${group(tr("s14.work_list.rejected"), by("rejected"), "s14-group-rejected")}${page.work.length ? "" : `<p class="s-sub">${tr("s14.work_list.empty")}</p>`}</div>`, { current: "work" });
+  return shell(page, tr("s14.nav.work"), `<div class="s-col s-col-wide"><section aria-labelledby="s14-work-waiting"><h2 class="s-section-t" id="s14-work-waiting">${tr("s14.attention.title")}</h2>${attentionList(page, "work")}</section>${group(tr("s14.work_list.needs_you"), by("waiting", "blocked"), "s14-group-you")}${group(tr("s14.work_list.progress"), by("queued", "running", "stopping"), "s14-group-progress")}${group(tr("s14.work_list.unstarted"), by("proposed", "accepted"), "s14-group-unstarted")}${group(tr("s14.work_list.finished"), by("ready", "stopped"), "s14-group-finished")}${group(tr("s14.work_list.rejected"), by("rejected"), "s14-group-rejected")}${page.work.length ? "" : `<p class="s-sub">${tr("s14.work_list.empty")}</p>`}</div>`, { current: "work" });
 }
 function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): string {
   const work = view.view.work;
@@ -580,8 +592,14 @@ function preferences(page: S14Page): string {
   const owner = page.state.owner, theme = owner?.theme ?? "system", radio = (name: string, value: string, label: string, checked: boolean, lang = "") => `<label class="s-check"><input type="radio" name="${name}" value="${value}"${checked ? " checked" : ""}><span${lang ? ` lang="${lang}"` : ""}>${e(label)}</span></label>`;
   return `<section class="s-card s-stack" aria-labelledby="s14-prefs"><h2 id="s14-prefs">${tr("s14.more.preferences")}</h2><form class="s-stack" method="post" action="/s14/forms/preferences">${flat(page.csrf, page.state.revision)}<div class="s-prefs-grid"><fieldset class="s-field s-prefs"><legend>${tr("s14.setup.language")}</legend>${radio("language", "th", "ไทย", owner?.language === "th", "th")}${radio("language", "en", "English", owner?.language === "en", "en")}</fieldset><fieldset class="s-field s-prefs"><legend>${tr("s14.more.theme")}</legend>${(["system", "light", "dark"] as const).map(value => radio("theme", value, tr(`s14.more.theme_${value}`), theme === value)).join("")}</fieldset></div><div><button class="s-btn">${tr("s14.more.save")}</button></div></form></section>`;
 }
-function morePage(page: S14Page, saved: boolean): string {
-  return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}
+/** What may enter "needs me". Two fixed words, and a note that it reaches forward only: nothing already here moves. */
+function attentionLevel(page: S14Page, setting: AttentionSetting): string {
+  const row = (level: AttentionSetting["level"]) => `<label class="s-check"><input type="radio" name="level" value="${level}"${setting.level === level ? " checked" : ""}><span>${tr(k(`s14.attention.level.${level}`))}<small>${tr(k(`s14.attention.level.${level}_note`))}</small></span></label>`;
+  return `<section class="s-card s-stack" id="s14-attention-level" aria-labelledby="s14-attention-level-t"><h2 id="s14-attention-level-t">${tr("s14.attention.level.title")}</h2><p class="s-sub">${tr("s14.attention.level.lead")}</p><form class="s-stack" method="post" action="/s14/forms/attention-level">${flat(page.csrf, setting.revision)}<fieldset class="s-field"><legend class="sr-only">${tr("s14.attention.level.title")}</legend>${row("needs-me")}${row("all")}</fieldset><p class="s-note">${tr("s14.attention.level.note")}</p><div><button class="s-btn">${tr("s14.more.save")}</button></div></form></section>`;
+}
+function morePage(page: S14Page, view: Extract<S14View, { kind: "more" }>): string {
+  const { saved, attention: setting, attentionSaved } = view;
+  return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}${attentionSaved ? banner("ok", tr("s14.attention.level.saved"), tr("s14.attention.level.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}${setting ? attentionLevel(page, setting) : ""}
     <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/coding">${tr("s14.more.coding")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li><li><a class="s-link-text" href="/settings/google">${tr("s14.more.google")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li><li><a class="s-link-text" href="/settings/backup">${tr("s14.more.backup")}</a></li></ul></nav>
     <form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
@@ -600,7 +618,7 @@ export function renderS14(page: S14Page): string {
       case "bot": return botPage(page, view);
       case "proposal": return shell(page, `${tr("s14.proposal.title")} r${view.proposal.revision}`, `<div class="s-col">${proposalCard(page, view.proposal, view.history, "h2")}${proposalHistory(view.history, view.proposal)}<p><a class="s-link-text" href="/chats/${e(page.state.conversations.find(c => c.id === view.proposal.conversationId)?.id ?? "")}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "team" });
       case "effect": return view.git ? gitEffectPage(page, view, view.git) : shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail")) : ""}${notice(view.notice ?? null)}${effectSlip(page, view.effect, view.history, "h2", view.draft ?? null)}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
-      case "more": return morePage(page, view.saved);
+      case "more": return morePage(page, view);
       case "settings-web": return webSettingsPage(page, view);
       case "settings-work": return workSettingsPage(page, view);
       case "settings-provider": return providerSettingsPage(page, view);
@@ -609,7 +627,7 @@ export function renderS14(page: S14Page): string {
       case "shares": case "share-new": case "share": return renderSharingSurface(page, view);
       case "routines": case "routine-new": case "routine": return renderRoutineSurface(page, view);
       case "bot-policy": case "bot-end": return renderLifecycleSurface(page, view);
-      case "coding": case "coding-new": case "coding-repository": case "coding-start": return renderCodingSurface(page, view);
+      case "coding": case "coding-new": case "coding-connect": case "coding-repository": case "coding-start": return renderCodingSurface(page, view);
       case "google": case "google-guide": case "google-new": case "google-connection": case "google-draft-edit": return renderPersonalSurface(page, view);
       default: return renderMemorySurface(page, view);
     }

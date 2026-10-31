@@ -65,9 +65,9 @@ export function lifecycleCommand(form: string, fields: Record<string, unknown>):
     for (const key of Object.keys(fields)) if (!proposeFields.includes(key) && !key.startsWith("tool:") && !key.startsWith("resource:")) throw new AppError("invalid_body");
     return { kind: form === "capability-reenable" ? "bot.reenable.propose" : "bot.capabilities.propose", requestId: single(fields, "requestId"), expectedRevision: Number(single(fields, "expectedRevision")), payload: { botId: single(fields, "botId"), capabilities: { tools: prefixed(fields, "tool:"), resources: prefixed(fields, "resource:") } } };
   }
-  if (form !== "capability-accept") return null;
+  if (form !== "capability-accept" && form !== "capability-discard") return null;
   for (const key of Object.keys(fields)) if (!acceptFields.includes(key)) throw new AppError("invalid_body");
-  return { kind: "bot.capabilities.accept", requestId: single(fields, "requestId"), expectedRevision: Number(single(fields, "expectedRevision")), payload: { proposalId: single(fields, "proposalId"), proposalHash: single(fields, "proposalHash") } };
+  return { kind: form === "capability-discard" ? "bot.capabilities.discard" : "bot.capabilities.accept", requestId: single(fields, "requestId"), expectedRevision: Number(single(fields, "expectedRevision")), payload: { proposalId: single(fields, "proposalId"), proposalHash: single(fields, "proposalHash") } };
 }
 /** Landing page after a lifecycle receipt; null leaves other receipts to the core product. The share target survives each step. */
 export function lifecycleSurface(receipt: S14Receipt, fields?: Record<string, unknown>): string | null {
@@ -89,7 +89,7 @@ export function lifecycleNext(form: string | null, value: unknown): string | nul
 export function lifecycleRecover(app: S14Application, form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor, state: Home): S14BotPolicy | null {
   if (!form.startsWith("capability-")) return null;
   const botId = single(fields, "botId"); if (!identityPattern.test(botId) || !state.bots.some(bot => bot.id === botId)) return null;
-  const draft = form === "capability-accept" ? null : { tools: prefixed(fields, "tool:"), resources: prefixed(fields, "resource:") };
+  const draft = form === "capability-accept" || form === "capability-discard" ? null : { tools: prefixed(fields, "tool:"), resources: prefixed(fields, "resource:") };
   const search = new URLSearchParams(single(fields, "share")), account = accountReturn(single(fields, "account")); if (account) search.set("account", account);
   return policy(app, actor, botId, search, code, draft);
 }

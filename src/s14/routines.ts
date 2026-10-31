@@ -12,6 +12,15 @@ import type { EnableRoutineCommand, Routine, RoutineAttentionSummary, RoutineCom
 import type { Bot, OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
+// History is bounded independently; live captures and unresolved owner work cannot be evicted.
+const visibleRoutines = `SELECT r.record_json FROM routines r WHERE
+  json_extract(r.record_json,'$.state')<>'revoked'
+  OR EXISTS (SELECT 1 FROM routine_occurrences o JOIN work_items w
+    ON w.id=o.work_id OR w.id IN (SELECT value FROM json_each(o.record_json,'$.proposals'))
+    WHERE o.routine_id=r.id AND json_extract(w.record_json,'$.state') IN ('proposed','waiting'))
+  OR r.id IN (SELECT id FROM routines WHERE json_extract(record_json,'$.state')='revoked' ORDER BY rowid DESC LIMIT 128)
+  ORDER BY r.rowid DESC`;
+
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const equal = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const load = (tx: AppTransaction, key: string): Routine => {
@@ -27,11 +36,11 @@ export class S14Routines {
   constructor(readonly app: S14Application) {}
 
   private all(tx: AppTransaction): Routine[] {
-    return tx.all<{ record_json: string }>("SELECT record_json FROM routines ORDER BY rowid").map(row => JSON.parse(row.record_json));
+    return tx.all<{ record_json: string }>("SELECT record_json FROM routines WHERE json_extract(record_json,'$.state')<>'revoked' ORDER BY rowid LIMIT 128").map(row => JSON.parse(row.record_json));
   }
 
-  private occurrences(tx: AppTransaction, key: string): RoutineOccurrence[] {
-    return tx.all<{ record_json: string }>("SELECT record_json FROM routine_occurrences WHERE routine_id=? ORDER BY rowid DESC", key).map(row => JSON.parse(row.record_json));
+  private occurrences(tx: AppTransaction, key: string, limit = 1000): RoutineOccurrence[] {
+    return tx.all<{ record_json: string }>("SELECT record_json FROM routine_occurrences WHERE routine_id=? ORDER BY rowid DESC LIMIT ?", key, limit).map(row => JSON.parse(row.record_json));
   }
 
   private capture(tx: AppTransaction, command: EnableRoutineCommand): Routine["capture"] {
@@ -49,10 +58,11 @@ export class S14Routines {
     integer(p.endsAt, this.app.now() + 1, this.app.now() + 366 * 86400000);
     if (!validTimezone(p.timezone) || p.misfire !== "coalesce") throw new AppError("invalid_routine_schedule");
     const r = p.recurrence;
-    exact(r, ["kind", r?.kind === "once" ? "at" : r?.kind === "interval" ? "everyMs" : "time"]);
+    exact(r, ["kind", ...(r?.kind === "weekly" ? ["day", "time"] : [r?.kind === "once" ? "at" : r?.kind === "interval" ? "everyMs" : "time"])]);
     if (r.kind === "once") integer(r.at, this.app.now() + 1, p.endsAt);
     else if (r.kind === "interval") integer(r.everyMs, 60000, 2592000000);
-    else if (r.kind !== "daily" || typeof r.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)) throw new AppError("invalid_routine_schedule");
+    else if ((r.kind !== "daily" && r.kind !== "weekly") || typeof r.time !== "string" || !/^([01]\d|2[0-3]):[0-5]\d$/.test(r.time)) throw new AppError("invalid_routine_schedule");
+    if (r.kind === "weekly") integer(r.day, 0, 6);
     if (p.requiredEvidence) evidenceRequirements(p.requiredEvidence);
     if (!Array.isArray(p.bots) || !p.bots.length || p.bots.length > 8 || new Set(p.bots.map(b => b.id)).size !== p.bots.length) throw new AppError("invalid_bots");
     const bots = p.bots.map(ref => {
@@ -100,7 +110,7 @@ export class S14Routines {
     if (command.kind === "routine.enable") {
       const conversation = this.app.readConversation(tx, command.payload.conversationId);
       if (conversation.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      if (tx.get<{ n: number }>("SELECT count(*) n FROM routines")!.n >= 128) throw new AppError("routine_capacity", 409);
+      if (tx.get<{ n: number }>("SELECT count(*) n FROM routines WHERE json_extract(record_json,'$.state')<>'revoked'")!.n >= 128) throw new AppError("routine_capacity", 409);
       const routine: Routine = { id: id(), revision: 1, generation: 1, state: "active", reason: null,
         capture: this.capture(tx, command), occurrencesRemaining: command.payload.occurrenceBudget,
         cursor: { lastInstant: null, lastRevision: null }, createdAt: this.app.now() };
@@ -109,10 +119,34 @@ export class S14Routines {
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id);
       return { kind: command.kind, requestId: command.requestId, routine };
     }
+    if (!["routine.pause", "routine.resume", "routine.revoke", "routine.run-now", "routine.delete"].includes(command.kind)) throw new AppError("unknown_command");
     exact(command.payload, ["routineId"]);
     identity(command.payload.routineId);
     const routine = load(tx, command.payload.routineId);
-    if (routine.revision !== command.expectedRevision || routine.state === "revoked") throw new AppError("stale_revision", 409);
+    if (routine.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    if (command.kind === "routine.delete") {
+      if (routine.state !== "revoked") throw new AppError("routine_not_revoked", 409);
+      const pending = tx.get(`SELECT 1 FROM routine_occurrences o JOIN work_items w
+        ON w.id=o.work_id OR w.id IN (SELECT value FROM json_each(o.record_json,'$.proposals'))
+        WHERE o.routine_id=? AND json_extract(w.record_json,'$.state') IN ('proposed','waiting') LIMIT 1`, routine.id);
+      if (pending) throw new AppError("routine_decision_pending", 409);
+      tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('routine',?,?)", routine.id, `through_generation_${routine.generation}`);
+      tx.run("DELETE FROM routine_results WHERE occurrence_id IN (SELECT id FROM routine_occurrences WHERE routine_id=?)", routine.id);
+      tx.run("DELETE FROM routine_occurrences WHERE routine_id=?", routine.id);
+      tx.run("DELETE FROM routines WHERE id=?", routine.id);
+      return { kind: command.kind, requestId: command.requestId, routine };
+    }
+    if (command.kind === "routine.run-now") {
+      if (this.app.recovery.booting || this.app.backups.busy) throw new AppError("routine_not_ready", 409);
+      this.live(tx, routine);
+      if (routine.state !== "active" || routine.occurrencesRemaining < 1) throw new AppError("routine_fenced", 403);
+      if (this.occurrences(tx, routine.id).some(o => o.state === "running")) throw new AppError("routine_running", 409);
+      this.dispatch(tx, routine, { first: this.app.now(), last: this.app.now(), count: 1, resolution: "exact" }, command.requestId);
+      routine.revision++;
+      storeRoutine(tx, routine);
+      return { kind: command.kind, requestId: command.requestId, routine };
+    }
+    if (routine.state === "revoked") throw new AppError("stale_revision", 409);
     if (command.kind === "routine.resume") {
       if (routine.state !== "paused" || routine.occurrencesRemaining < 1) throw new AppError("routine_not_paused", 409);
       this.live(tx, { ...routine, state: "active" });
@@ -158,47 +192,51 @@ export class S14Routines {
         }
         const range = dueRange(this.schedule(routine), Math.min(this.app.now(), routine.capture.command.payload.endsAt));
         if (!range) continue;
-        const occurrence: RoutineOccurrence = { id: digest(`${routine.id}:${routine.generation}:${range.last}`), routineId: routine.id,
-          generation: routine.generation, scheduledInstant: range.last, missed: range.count > 1 ? { from: range.first, to: range.last, count: range.count - 1 } : null,
-          resolution: range.resolution, workId: null, state: "running", outcome: null, reason: null, proposals: [], createdAt: this.app.now() };
-        if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='routine_occurrence' AND id=?", occurrence.id)) {
-          this.fence(tx, routine, "blocked", "restored_occurrence_requires_review");
-          continue;
-        }
-        tx.run("INSERT INTO routine_occurrences VALUES (?,?,NULL,?)", occurrence.id, routine.id, canonical(occurrence));
-        tx.run("INSERT INTO lifecycle.withdrawals VALUES ('routine_occurrence',?,'consumed')", occurrence.id);
-        try {
-          this.app.store.transaction(() => {
-            this.live(tx, routine);
-            const command = this.startCommand(routine, this.app.now());
-            command.expectedRevision = this.app.readConversation(tx, command.payload.conversationId).revision;
-            const result = this.app.authority.apply(tx, command), grant = result.grant!;
-            if (!equal(grant.bots, routine.capture.bots) || !equal(grant.scopes, routine.capture.scopes) || !equal(grant.routes, routine.capture.routes) || grant.ownerGeneration !== routine.capture.ownerGeneration) throw new AppError("routine_capture_changed", 403);
-            occurrence.workId = result.work!.id;
-            const graph = record<WorkGraph>(tx, "work_graphs", occurrence.workId);
-            graph.priority = "background";
-            save(tx, "work_graphs", graph);
-          });
-        } catch (error) {
-          occurrence.workId = null;
-          occurrence.state = "failed";
-          occurrence.outcome = "failed";
-          occurrence.reason = error instanceof AppError ? error.code : "routine_not_admitted";
-          routine.state = "blocked";
-          routine.reason = occurrence.reason;
-        }
-        tx.run(`INSERT INTO lifecycle.routine_usage VALUES (?,1,?) ON CONFLICT(routine_id)
-          DO UPDATE SET consumed=consumed+1,last_instant=max(last_instant,excluded.last_instant)`, routine.id, range.last);
-        routine.occurrencesRemaining--;
-        routine.cursor = { lastInstant: range.last, lastRevision: routine.revision };
-        const next = nextScheduledInstant(this.schedule(routine), range.last);
-        if (routine.state === "active" && (routine.occurrencesRemaining === 0 || !next || next.utc > routine.capture.command.payload.endsAt)) routine.state = "exhausted";
-        storeRoutine(tx, routine);
-        storeOccurrence(tx, occurrence);
-        this.notify(tx, occurrence);
+        this.dispatch(tx, routine, range);
       }
     });
     this.app.authority.cancelFenced();
+  }
+
+  private dispatch(tx: AppTransaction, routine: Routine, range: { first: number; last: number; count: number; resolution: RoutineOccurrence["resolution"] }, requestId?: string): void {
+    const occurrence: RoutineOccurrence = { id: digest(`${routine.id}:${routine.generation}:${range.last}${requestId === undefined ? "" : `:${requestId}`}`), routineId: routine.id,
+      trigger: requestId === undefined ? "schedule" : "owner", generation: routine.generation, scheduledInstant: range.last, missed: range.count > 1 ? { from: range.first, to: range.last, count: range.count - 1 } : null,
+      resolution: range.resolution, workId: null, state: "running", outcome: null, reason: null, proposals: [], createdAt: this.app.now() };
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='routine_occurrence' AND id=?", occurrence.id)) {
+      this.fence(tx, routine, "blocked", "restored_occurrence_requires_review");
+      return;
+    }
+    tx.run("INSERT INTO routine_occurrences VALUES (?,?,NULL,?)", occurrence.id, routine.id, canonical(occurrence));
+    tx.run("INSERT INTO lifecycle.withdrawals VALUES ('routine_occurrence',?,'consumed')", occurrence.id);
+    try {
+      this.app.store.transaction(() => {
+        this.live(tx, routine);
+        const command = this.startCommand(routine, this.app.now());
+        command.expectedRevision = this.app.readConversation(tx, command.payload.conversationId).revision;
+        const result = this.app.authority.apply(tx, command), grant = result.grant!;
+        if (!equal(grant.bots, routine.capture.bots) || !equal(grant.scopes, routine.capture.scopes) || !equal(grant.routes, routine.capture.routes) || grant.ownerGeneration !== routine.capture.ownerGeneration) throw new AppError("routine_capture_changed", 403);
+        occurrence.workId = result.work!.id;
+        const graph = record<WorkGraph>(tx, "work_graphs", occurrence.workId);
+        graph.priority = "background";
+        save(tx, "work_graphs", graph);
+      });
+    } catch (error) {
+      occurrence.workId = null;
+      occurrence.state = "failed";
+      occurrence.outcome = "failed";
+      occurrence.reason = error instanceof AppError ? error.code : "routine_not_admitted";
+      routine.state = "blocked";
+      routine.reason = occurrence.reason;
+    }
+    tx.run(`INSERT INTO lifecycle.routine_usage VALUES (?,1,?) ON CONFLICT(routine_id)
+      DO UPDATE SET consumed=consumed+1,last_instant=max(last_instant,excluded.last_instant)`, routine.id, range.last);
+    routine.occurrencesRemaining--;
+    routine.cursor = { lastInstant: range.last, lastRevision: routine.revision };
+    const next = nextScheduledInstant(this.schedule(routine), range.last);
+    if (routine.state === "active" && (routine.occurrencesRemaining === 0 || !next || next.utc > routine.capture.command.payload.endsAt)) routine.state = "exhausted";
+    storeRoutine(tx, routine);
+    storeOccurrence(tx, occurrence);
+    this.notify(tx, occurrence);
   }
 
   /** Records untrusted typed quiet outcomes and bounded out-of-scope proposals atomically with fenced result evidence. */
@@ -238,7 +276,7 @@ export class S14Routines {
 
   private notify(tx: AppTransaction, occurrence: RoutineOccurrence): void {
     if (!occurrence.outcome || occurrence.outcome === "no_update") return;
-    this.app.attention.commit(tx, { groupId: occurrence.id, class: "needs_owner",
+    this.app.attention.commit(tx, { groupId: occurrence.id, class: occurrence.outcome === "report" ? "informational" : "needs_owner",
       reason: occurrence.outcome === "failed" || occurrence.state === "stopped" ? "routine_failed" : occurrence.outcome === "needs_owner" ? "owner_decision" : "routine_report",
       workId: occurrence.workId, proposalIds: occurrence.proposals });
   }
@@ -265,7 +303,7 @@ export class S14Routines {
   fenceBot(tx: AppTransaction, botId: string): void {
     for (const routine of this.all(tx)) if (routine.capture.bots.some(b => b.id === botId) && routine.state !== "revoked") {
       tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('routine',?,?)", routine.id, `through_generation_${routine.generation}`);
-      this.fence(tx, routine, "blocked", "bot_authority_changed");
+      this.fence(tx, routine, routine.state === "exhausted" ? "exhausted" : "blocked", "bot_authority_changed");
     }
   }
 
@@ -281,7 +319,7 @@ export class S14Routines {
       }
       const withdrawn = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='routine' AND id=?", routine.id)
         .some(row => Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]) >= routine.generation);
-      if (withdrawn && routine.state !== "revoked") this.fence(tx, routine, "blocked", "routine_generation_withdrawn");
+      if (withdrawn && routine.state !== "revoked") this.fence(tx, routine, routine.state === "exhausted" ? "exhausted" : "blocked", routine.reason === "bot_authority_changed" ? routine.reason : "routine_generation_withdrawn");
       for (const occurrence of this.occurrences(tx, routine.id)) {
         if (occurrence.state !== "running" || !occurrence.workId) continue;
         const work = record<Work>(tx, "work_items", occurrence.workId);
@@ -305,11 +343,11 @@ export class S14Routines {
     this.app.attention.resolve(tx);
   }
 
-  /** Returns at most 128 grouped summaries; open decisions and delivery failures are selected across all history in SQL. */
+  /** Returns live/pending captures plus bounded revoked history; open decisions and delivery failures are selected across all history in SQL. */
   attention(actor: OwnerActor): RoutineAttentionSummary[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return tx.all<{ record_json: string }>("SELECT record_json FROM routines ORDER BY rowid LIMIT 128").map(row => {
+      return tx.all<{ record_json: string }>(visibleRoutines).map(row => {
         const routine = JSON.parse(row.record_json) as Routine;
         const decisions = tx.get<{ count: number; at: number | null }>(`SELECT count(DISTINCT id) AS count,max(at) AS at FROM (
           SELECT w.id,json_extract(o.record_json,'$.createdAt') AS at FROM routine_occurrences o
@@ -323,33 +361,48 @@ export class S14Routines {
         const settled = tx.get<{ record_json: string }>("SELECT record_json FROM routine_occurrences WHERE routine_id=? AND json_extract(record_json,'$.state')<>'running' ORDER BY rowid DESC LIMIT 1", routine.id);
         const report = tx.get<{ record_json: string }>(`SELECT o.record_json FROM routine_occurrences o
           WHERE o.routine_id=? AND json_extract(o.record_json,'$.outcome')='report'
-          AND EXISTS (SELECT 1 FROM attention_notices n WHERE n.group_id=o.id) ORDER BY o.rowid DESC LIMIT 1`, routine.id);
+          AND EXISTS (SELECT 1 FROM attention_notices n WHERE n.group_id=o.id AND json_extract(n.record_json,'$.resolvedAt') IS NULL) ORDER BY o.rowid DESC LIMIT 1`, routine.id);
         const delivery = tx.get<{ severity: number | null }>(`SELECT max(CASE
           WHEN json_extract(n.record_json,'$.state')='unknown' OR json_extract(n.record_json,'$.remote')='uncertain' THEN 2
           WHEN json_extract(n.record_json,'$.state')='failed' THEN 1 ELSE 0 END) AS severity
-          FROM attention_notices n JOIN routine_occurrences o ON o.id=n.group_id WHERE o.routine_id=?`, routine.id)!.severity;
-        return { routine, decisions, settled: settled ? JSON.parse(settled.record_json) : null,
+          FROM attention_notices n JOIN routine_occurrences o ON o.id=n.group_id WHERE o.routine_id=? AND json_extract(n.record_json,'$.resolvedAt') IS NULL`, routine.id)!.severity;
+        const acknowledged = settled && tx.get("SELECT 1 FROM attention_notices WHERE group_id=? AND json_extract(record_json,'$.resolvedAt') IS NOT NULL", (JSON.parse(settled.record_json) as RoutineOccurrence).id);
+        return { routine, decisions, settled: settled && !acknowledged ? JSON.parse(settled.record_json) : null,
           report: report ? JSON.parse(report.record_json) : null, delivery: delivery === 2 ? "unknown" : delivery === 1 ? "failed" : null };
       });
     });
   }
 
-  /** Returns owner-only standing captures and complete quiet/failure history without running a tick. */
-  view(actor: OwnerActor, routineId: string): RoutineView {
+  /** Selects actual open proposals directly, independently of both occurrence and work-list history windows. */
+  findings(actor: OwnerActor, routineId?: string): { work: Work; routineId: string; occurrenceId: string }[] {
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      if (routineId !== undefined) { identity(routineId); load(tx, routineId); }
+      return tx.all<{ record_json: string; routine_id: string; occurrence_id: string }>(`SELECT w.record_json,o.routine_id,o.id AS occurrence_id
+        FROM routine_occurrences o JOIN json_each(o.record_json,'$.proposals') p JOIN work_items w ON w.id=p.value
+        WHERE json_extract(w.record_json,'$.state')='proposed' AND (? IS NULL OR o.routine_id=?)
+        ORDER BY o.rowid DESC`, routineId ?? null, routineId ?? null)
+        .map(row => ({ work: JSON.parse(row.record_json) as Work, routineId: row.routine_id, occurrenceId: row.occurrence_id }));
+    });
+  }
+
+  /** Returns owner-only standing captures and bounded recent quiet/failure history without running a tick. */
+  view(actor: OwnerActor, routineId: string, limit = 50): RoutineView {
+    integer(limit, 1, 1000);
     identity(routineId);
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
       const routine = load(tx, routineId);
       const next = routine.state === "active" && routine.occurrencesRemaining > 0 ? nextScheduledInstant(this.schedule(routine), this.app.now()) : null;
-      return { routine, nextRun: next && next.utc <= routine.capture.command.payload.endsAt ? next.utc : null, history: this.occurrences(tx, routineId) };
+      return { routine, nextRun: next && next.utc <= routine.capture.command.payload.endsAt ? next.utc : null, history: this.occurrences(tx, routineId, limit) };
     });
   }
 
-  /** Lists bounded standing captures; inspection alone does not grant or schedule work. */
+  /** Lists live/pending captures plus at most 128 other revoked captures; inspection alone does not grant or schedule work. */
   list(actor: OwnerActor): RoutineView[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return this.all(tx).map(r => this.view(actor, r.id));
+      return tx.all<{ record_json: string }>(visibleRoutines).map(row => this.view(actor, (JSON.parse(row.record_json) as Routine).id));
     });
   }
 }

@@ -13,17 +13,23 @@ import { committed } from "./web-product-memory";
 import { expiryFor, workLimitBounds, workOutputBytes, inferTitle } from "./web-product";
 
 /** Repository and Git pages added to the product view union. Every field is query data and proves nothing about authority. */
-export type S14CodingSurface = S14CodingHub | S14CodingNew | S14CodingRepositoryPage | S14CodingStart;
+export type S14CodingSurface = S14CodingHub | S14CodingNew | S14CodingConnect | S14CodingRepositoryPage | S14CodingStart;
 /** `/coding`: granted repositories first, revoked ones kept, and the work done on them. */
 export interface S14CodingHub { kind: "coding"; repositories: CodingRepository[]; connections: GitConnection[] }
 /** One Bot this grant form can name and the free configured slot its radio pins, so a retried form stays the same command. */
 export interface S14CodingReceiver { bot: Bot; scopeId: string }
+/** A connection made for a slot before any repository exists there, with the Bots that could take that slot. Empty `receivers` means it can no longer be used. */
+export interface S14SlotConnection { connection: GitConnection; receivers: S14CodingReceiver[] }
 /** Fields kept across a refused grant. */
 export interface S14CodingGrantDraft { url: string; baseCommit: string; hosts: string[]; receiver: string }
-/** `/coding/new`: the owner's exact selection. `configured` says whether this installation has any repository slot at all. */
-export interface S14CodingNew { kind: "coding-new"; receivers: S14CodingReceiver[]; others: { bot: Bot; why: "tools" | "slot" | "stopping" }[]; configured: boolean; draft: S14CodingGrantDraft | null; notice: string | null }
+/** `/coding/new`: the owner's exact selection. `configured` says whether this installation has any repository slot at all. `selected` is the stored token this grant reads the branch with, and `waiting` lists tokens not used yet. */
+export interface S14CodingNew { kind: "coding-new"; receivers: S14CodingReceiver[]; others: { bot: Bot; why: "tools" | "slot" | "stopping" }[]; configured: boolean; draft: S14CodingGrantDraft | null; notice: string | null; selected: S14SlotConnection | null; missing: boolean; waiting: S14SlotConnection[] }
+/** `/coding/connect`: a token stored for a Bot's free slot before the repository is granted. It grants nothing. `connection` is the one being finished, null on the first step. */
+export interface S14CodingConnect { kind: "coding-connect"; receivers: S14CodingReceiver[]; others: S14CodingNew["others"]; configured: boolean; connection: S14SlotConnection | null; missing: boolean; waiting: S14SlotConnection[]; notice: string | null }
+/** Fields kept across a refused branch pin. Never a token. */
+export interface S14CodingPinDraft { branch: string; connection: string }
 /** `/coding/repositories/:id`. `receipt` is reread for the landing banner, so a link cannot fake it. */
-export interface S14CodingRepositoryPage { kind: "coding-repository"; repository: CodingRepository; bot: Bot | null; connections: GitConnection[]; receipt: CodingReceipt | GitReceipt | null; notice: string | null }
+export interface S14CodingRepositoryPage { kind: "coding-repository"; repository: CodingRepository; bot: Bot | null; connections: GitConnection[]; receipt: CodingReceipt | GitReceipt | null; notice: string | null; pin?: S14CodingPinDraft | null }
 /** Fields kept across a refused start. Nothing here is a secret; credential-shaped text is dropped before it gets here. */
 export interface S14CodingStartDraft { purpose: string; completion: string; install: string; tests: string; timeout: number; coverage: string; minutes: number; installRegistry: boolean; testsRegistry: boolean; push: boolean; connection: string }
 /** `/coding/repositories/:id/start`: one Bot, one repository and the real commands to run. */
@@ -77,24 +83,46 @@ const bounded = (value: string, fallback: number, [min, max]: readonly [number, 
 /** Fixed internals of one coding run: one attempt on one Bot, and the most model calls the seam lets a run use. */
 export const codingLimits = (minutes: number): WorkLimits => ({ attempts: 1, steps: 1, calls: 256, concurrency: 1, reads: 1, outputBytes: workOutputBytes, wallMs: minutes * 60000 });
 
+/** Connections on a slot that has no repository yet. Only the service's own records: nothing here is a grant. */
+const slotConnections = (app: S14Application, actor: OwnerActor) => { const used = new Set(app.coding.repositories(actor).map(item => item.id)); return app.git.connections(actor).filter(item => !item.removed && !used.has(item.repositoryId)); };
 function receivers(app: S14Application, actor: OwnerActor, state: Home) {
-  const used = new Set(app.coding.repositories(actor).map(item => item.id)), slots = app.sharing.freeSlots(actor).filter(slot => resourceConfigured(app.policy, slot.scopeId) && !used.has(slot.scopeId));
+  const used = new Set(app.coding.repositories(actor).map(item => item.id)), slots = app.sharing.freeSlots(actor).filter(slot => resourceConfigured(app.policy, slot.scopeId) && !used.has(slot.scopeId)), held = new Set(slotConnections(app, actor).map(item => item.repositoryId));
   const eligible: S14CodingReceiver[] = [], others: S14CodingNew["others"] = [];
   for (const bot of state.bots) {
     if (!bot.enabled) { const { state: phase, target } = app.botLifecycle.view(actor, bot.id).lifecycle; if (phase === "stopping" && target === "active") others.push({ bot, why: "stopping" }); continue; }
     if (!["computer", "coding"].every(tool => bot.capabilities.tools.includes(tool))) { others.push({ bot, why: "tools" }); continue; }
-    const scopeId = slots.find(slot => slot.receiverBotIds.includes(bot.id))?.scopeId;
+    // Pending private connections reserve their slots until explicitly selected or removed.
+    const mine = slots.filter(slot => slot.receiverBotIds.includes(bot.id)), scopeId = mine.find(slot => !held.has(slot.scopeId))?.scopeId;
     if (scopeId) eligible.push({ bot, scopeId }); else others.push({ bot, why: "slot" });
   }
   return { receivers: eligible, others, configured: slots.length > 0 };
 }
+/** Every Bot that could take one slot right now. The service rechecks the Bot, the slot and the connection revision on the press. */
+function slotReceivers(app: S14Application, actor: OwnerActor, state: Home, connection: GitConnection): S14SlotConnection {
+  const slot = app.sharing.freeSlots(actor, connection.id).find(item => item.scopeId === connection.repositoryId), bots = state.bots.filter(bot => bot.enabled && ["computer", "coding"].every(tool => bot.capabilities.tools.includes(tool)) && slot?.receiverBotIds.includes(bot.id));
+  return { connection, receivers: bots.map(bot => ({ bot, scopeId: connection.repositoryId })) };
+}
+const waitingOn = (app: S14Application, actor: OwnerActor, state: Home) => slotConnections(app, actor).map(item => slotReceivers(app, actor, state, item));
+/** Selects one waiting connection. A stale or foreign identity is simply not found, so the page says so and offers a fresh start. `botId` keeps the Bot chosen on the first step; it only narrows the page, and an unknown one shows every Bot. */
+function selectedConnection(app: S14Application, actor: OwnerActor, state: Home, id: string | null, botId: string | null) {
+  const found = id ? slotConnections(app, actor).find(item => item.id === id) : null, read = found ? slotReceivers(app, actor, state, found) : null, chosen = read?.receivers.filter(item => item.bot.id === botId) ?? [];
+  return { selected: read && chosen.length ? { ...read, receivers: chosen } : read, missing: !!id && !found };
+}
+function grantView(app: S14Application, actor: OwnerActor, state: Home, id: string | null, botId: string | null, draft: S14CodingGrantDraft | null = null, notice: string | null = null): S14CodingNew {
+  const { selected, missing } = selectedConnection(app, actor, state, id, botId), usable = selected && selected.connection.secret === "set" && selected.receivers.length ? selected : null;
+  return { kind: "coding-new", ...receivers(app, actor, state), draft, notice, selected: usable, missing: missing || (!!selected && !usable), waiting: waitingOn(app, actor, state) };
+}
+function connectView(app: S14Application, actor: OwnerActor, state: Home, id: string | null, botId: string | null, notice: string | null = null): S14CodingConnect {
+  const { selected, missing } = selectedConnection(app, actor, state, id, botId), held = new Set(slotConnections(app, actor).map(item => item.repositoryId)), read = receivers(app, actor, state);
+  return { kind: "coding-connect", ...read, receivers: read.receivers.filter(item => !held.has(item.scopeId)), connection: selected, missing, waiting: waitingOn(app, actor, state), notice };
+}
 const repositoryOf = (app: S14Application, actor: OwnerActor, id: string) => { const repository = app.coding.repositories(actor).find(item => item.id === id); if (!repository) throw new AppError("coding_repository_not_found", 404); return repository; };
 const connectionsOf = (app: S14Application, actor: OwnerActor, id: string) => app.git.connections(actor).filter(item => item.repositoryId === id);
-function repositoryPage(app: S14Application, actor: OwnerActor, state: Home, id: string, url: URL | null, notice: string | null = null): S14CodingRepositoryPage {
+function repositoryPage(app: S14Application, actor: OwnerActor, state: Home, id: string, url: URL | null, notice: string | null = null, pin: S14CodingPinDraft | null = null): S14CodingRepositoryPage {
   const repository = repositoryOf(app, actor, id), connections = connectionsOf(app, actor, id);
   const read = url ? committed<CodingReceipt | GitReceipt>(app, actor, url, "coding.repository.") ?? committed<GitReceipt>(app, actor, url, "git.connection.") : null;
   const mine = (read as CodingReceipt | null)?.repository?.id === id || (read as GitReceipt | null)?.connection?.repositoryId === id;
-  return { kind: "coding-repository", repository, bot: state.bots.find(bot => bot.id === repository.botId) ?? null, connections, receipt: mine ? read : null, notice };
+  return { kind: "coding-repository", repository, bot: state.bots.find(bot => bot.id === repository.botId) ?? null, connections, receipt: mine ? read : null, notice, pin };
 }
 const emptyStart: S14CodingStartDraft = { purpose: "", completion: "", install: "", tests: "", timeout: codingTimeoutMinutes[1], coverage: "", minutes: codingDefaultMinutes, installRegistry: false, testsRegistry: false, push: false, connection: "" };
 function startPage(app: S14Application, actor: OwnerActor, state: Home, id: string, draft: S14CodingStartDraft = emptyStart, notice: string | null = null): S14CodingStart {
@@ -104,7 +132,8 @@ function startPage(app: S14Application, actor: OwnerActor, state: Home, id: stri
 /** Resolves the repository pages; null leaves the path to the other product surfaces. Every page is a read and starts nothing. */
 export function codingView(app: S14Application, url: URL, actor: OwnerActor, state: Home): S14CodingSurface | null {
   if (url.pathname === "/coding") return { kind: "coding", repositories: app.coding.repositories(actor), connections: app.git.connections(actor) };
-  if (url.pathname === "/coding/new") return { kind: "coding-new", ...receivers(app, actor, state), draft: null, notice: null };
+  if (url.pathname === "/coding/new") return grantView(app, actor, state, url.searchParams.get("connection"), url.searchParams.get("bot"));
+  if (url.pathname === "/coding/connect") return connectView(app, actor, state, url.searchParams.get("connection"), url.searchParams.get("bot"));
   const match = /^\/coding\/repositories\/([a-zA-Z0-9_-]{1,128})(\/start)?$/.exec(url.pathname); if (!match) return null;
   return match[2] ? startPage(app, actor, state, match[1]!) : repositoryPage(app, actor, state, match[1]!, url);
 }
@@ -150,7 +179,8 @@ export function gitCard(app: S14Application, actor: OwnerActor, effect: Effect, 
   return { action, progress: read.progress, reconcileRequested: read.reconcileRequested, coding, connection, repository, readBack, receipt: receipt?.effect?.id === effect.id ? receipt : null };
 }
 
-const grantFields = ["csrf", "requestId", "expectedRevision", "url", "baseCommit", "receiver"], secretFields = ["csrf", "requestId", "expectedRevision", "repositoryId", "connectionId", "secret"];
+const grantFields = ["csrf", "requestId", "expectedRevision", "url", "baseCommit", "receiver", "connection"], secretFields = ["csrf", "requestId", "expectedRevision", "repositoryId", "connectionId", "secret", "waiting", "bot"];
+const pinFields = ["csrf", "requestId", "expectedRevision", "repositoryId", "branch", "connection"], slotFields = ["csrf", "requestId", "expectedRevision", "receiver", "label"];
 const startFields = ["csrf", "requestId", "expectedRevision", "repositoryId", "repositoryRevision", "botRevision", "conversationId", "purpose", "completion", "install", "tests", "timeout", "coverage", "minutes", "installRegistry", "testsRegistry", "push", "connection"];
 const proposeFields = ["csrf", "requestId", "expectedRevision", "workId", "attemptId", "newCommit", "expiresAt", "connection", "branch", "oldCommit", "pr", "base", "baseCommit", "title", "body", "draft"];
 const pinned = (value: string) => { const [id, revision] = value.split(":"); return { id: id ?? "", revision: Number(revision) }; };
@@ -173,14 +203,29 @@ export function codingCommand(app: S14Application, form: string, fields: Record<
     only(fields, grantFields, "registry:");
     const [botId, id] = single(fields, "receiver").split(":"), hosts = prefixed(fields, "registry:");
     if (!botId || !id) throw new AppError("coding_receiver_required");
-    const base = single(fields, "baseCommit").trim();
+    const base = single(fields, "baseCommit").trim(), connection = single(fields, "connection");
+    // Selecting a waiting connection explicitly binds its reserved slot even for a full commit.
     return { kind: "coding.repository.grant", requestId, expectedRevision, payload: { id, botId, url: repositoryUrl(single(fields, "url")),
-      ...(/^[a-fA-F0-9]{40}$/.test(base) ? { baseCommit: base.toLowerCase() } : { baseBranch: base }), registry: hosts.length ? { hosts } : null } };
+      ...(/^[a-fA-F0-9]{40}$/.test(base) ? { baseCommit: base.toLowerCase() } : { baseBranch: base }), ...(connection ? { connection: pinned(connection) } : {}), registry: hosts.length ? { hosts } : null } };
+  }
+  if (form === "coding-repin") {
+    only(fields, pinFields);
+    return { kind: "coding.repository.resolve", requestId, expectedRevision, payload: { repositoryId: single(fields, "repositoryId"), baseBranch: single(fields, "branch").trim(), connection: pinned(single(fields, "connection")) } };
   }
   if (form === "coding-start") return codingStart(app, fields, actor, locale);
   if (form === "git-connection") {
     only(fields, ["csrf", "requestId", "expectedRevision", "repositoryId", "label"]);
     return { kind: "git.connection.create", requestId, expectedRevision, payload: { repositoryId: single(fields, "repositoryId"), label: single(fields, "label").trim() } };
+  }
+  if (form === "git-slot-connection") {
+    only(fields, slotFields);
+    const [botId, id] = single(fields, "receiver").split(":");
+    if (!botId || !id) throw new AppError("coding_receiver_required");
+    return { kind: "git.connection.create", requestId, expectedRevision, payload: { repositoryId: id, botId, label: single(fields, "label").trim() } };
+  }
+  if (form === "git-slot-remove") {
+    only(fields, ["csrf", "requestId", "expectedRevision", "connectionId"]);
+    return { kind: "git.connection.remove", requestId, expectedRevision, payload: { connectionId: single(fields, "connectionId") } };
   }
   if (form === "git-secret" || form === "git-rotate") {
     only(fields, secretFields);
@@ -196,8 +241,13 @@ export function codingCommand(app: S14Application, form: string, fields: Record<
 }
 /** Hidden expiry of a push form: an hour, or the end of the grant if that comes first. It is rendered once, so a retried post stays the same command. */
 export const proposalExpiry = (now: number, grantExpires: number) => Math.min(now + proposalMinutes * 60000, grantExpires);
-/** Landing page after a coding or Git receipt; null leaves other receipts to the core product. */
-export function codingSurface(receipt: S14Receipt): string | null {
+/** Landing page after a coding or Git receipt; null leaves other receipts to the core product. A connection made before its repository has no repository page, so its steps carry their own way forward. */
+export function codingSurface(receipt: S14Receipt, fields?: Record<string, unknown>): string | null {
+  const step = (receipt as GitReceipt).connection, onSlot = !!fields && !("repositoryId" in fields);
+  const bot = encodeURIComponent(fields ? single(fields, "bot") || single(fields, "receiver").split(":")[0]! : "");
+  if (onSlot && receipt.kind === "git.connection.create") return `/coding/connect?connection=${step!.id}&bot=${bot}`;
+  if (onSlot && receipt.kind === "git.connection.remove") return "/coding/new";
+  if (fields && single(fields, "waiting") === "on" && step) return `/coding/new?connection=${step.id}&bot=${bot}`;
   if (receipt.kind === "coding.start") return `/work/${(receipt as CodingReceipt).work!.id}?tab=coding`;
   if (receipt.kind.startsWith("coding.repository.")) return `/coding/repositories/${(receipt as CodingReceipt).repository!.id}?receipt=${receipt.requestId}`;
   if (receipt.kind.startsWith("git.connection.")) return `/coding/repositories/${(receipt as GitReceipt).connection!.repositoryId}?receipt=${receipt.requestId}#connections`;
@@ -209,6 +259,9 @@ export function codingNext(form: string | null, value: unknown): string | null {
   const data = (value ?? {}) as { kind?: string; repositoryId?: unknown; workId?: unknown; payload?: { repositoryId?: unknown } };
   const repository = (id: unknown, tail = "") => typeof id === "string" && identityPattern.test(id) ? `/coding/repositories/${id}${tail}` : "/coding";
   if (form === "coding-grant") return "/coding/new";
+  if (form === "git-slot-connection" || form === "git-slot-remove") return "/coding/connect";
+  if (form === "git-secret" && (value as { waiting?: unknown } | null)?.waiting === "on") return "/coding/connect";
+  if (form === "coding-repin") return repository(data.repositoryId);
   if (form === "coding-start") return repository(data.repositoryId, "/start");
   if (form === "git-connection" || form === "git-secret" || form === "git-rotate") return repository(data.repositoryId);
   if (form === "git-propose") return typeof data.workId === "string" && identityPattern.test(data.workId) ? `/work/${data.workId}?tab=coding` : "/coding";
@@ -216,10 +269,13 @@ export function codingNext(form: string | null, value: unknown): string | null {
   return data.kind === "git.connection.remove" || data.kind === "git.connection.test" ? "/coding" : null;
 }
 /** Brings a form back with the cause in words. The token is never carried, and credential-shaped text is not echoed. */
-export function codingRecover(app: S14Application, form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor, state: Home): S14CodingNew | S14CodingRepositoryPage | S14CodingStart | null {
-  const id = single(fields, "repositoryId");
-  if (form === "coding-grant") return { kind: "coding-new", ...receivers(app, actor, state), notice: code, draft: { url: clean(single(fields, "url")), baseCommit: clean(single(fields, "baseCommit")), hosts: prefixed(fields, "registry:"), receiver: single(fields, "receiver") } };
+export function codingRecover(app: S14Application, form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor, state: Home): S14CodingNew | S14CodingConnect | S14CodingRepositoryPage | S14CodingStart | null {
+  const id = single(fields, "repositoryId"), connectionId = single(fields, "connection").split(":")[0] ?? "";
+  if (form === "coding-grant") return grantView(app, actor, state, connectionId || null, single(fields, "receiver").split(":")[0] ?? null, { url: clean(single(fields, "url")), baseCommit: clean(single(fields, "baseCommit")), hosts: prefixed(fields, "registry:"), receiver: single(fields, "receiver") }, code);
+  if (form === "git-slot-connection") return connectView(app, actor, state, null, null, code);
+  if (form === "git-secret" && single(fields, "waiting") === "on") return connectView(app, actor, state, single(fields, "connectionId"), single(fields, "bot"), code);
   if (!identityPattern.test(id)) return null;
+  if (form === "coding-repin") return repositoryPage(app, actor, state, id, null, code, { branch: clean(single(fields, "branch")), connection: single(fields, "connection") });
   if (form === "git-connection" || form === "git-secret" || form === "git-rotate") return repositoryPage(app, actor, state, id, null, code);
   if (form !== "coding-start") return null;
   const number = (key: string, fallback: number) => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : fallback; };

@@ -6,7 +6,7 @@ import type { Bot } from "./types";
 import type { S14Page } from "./web";
 import { banner, botName, commandForm, e, effectPill, flat, hidden, k, notice, ownerStrip, pill, short, shell, size, untrusted, when, workPill } from "./web-pages";
 import { reach } from "./web-memory";
-import { proposalExpiry, registryHosts, type S14CodingHub, type S14CodingNew, type S14CodingRepositoryPage, type S14CodingStart, type S14CodingSurface, type S14GitDraft, type S14WorkCoding } from "./web-product-coding";
+import { proposalExpiry, registryHosts, type S14CodingConnect, type S14CodingHub, type S14CodingNew, type S14CodingRepositoryPage, type S14CodingStart, type S14CodingSurface, type S14GitDraft, type S14SlotConnection, type S14WorkCoding } from "./web-product-coding";
 
 /* Coding (CODE14-01, CODE14-02). A repository is a resource, not a project. Results come only from commands Jit really ran, and every string a repository, a command or a model wrote is escaped data in an untrusted frame. Forms post without script; the service rechecks everything shown here. */
 const nameOf = (bot: Bot | null, id: string) => e(botName(bot ?? { id, name: id }));
@@ -46,13 +46,56 @@ function receiverChoices(view: S14CodingNew): string {
   const others = view.others.map(({ bot, why }) => `<li><span>${e(botName(bot))}</span><small>${tr(k(`s14.coding.why.${why}`))}</small>${why === "stopping" ? "" : `<a class="s-link-text" href="/team/${e(bot.id)}/capabilities?add=coding&amp;edit=1">${tr("s14.coding.add_tools")}</a>`}</li>`).join("");
   return `<fieldset class="s-field"><legend>${tr("s14.coding.which_bot")}</legend>${radios ? `<div class="s-choices">${radios}</div>` : `<p class="s-note">${tr("s14.coding.no_receiver")}</p>`}${others ? `<ul class="s-coding-others">${others}</ul>` : ""}</fieldset>`;
 }
+const connectionName = (connection: S14SlotConnection["connection"]) => `${e(connection.label)} <span class="s-mono s-meta">r${connection.revision}</span>`;
+/** Tokens stored for a slot and not used yet, each with its one way forward. Removing one lives on its own page. */
+function waitingRows(items: S14SlotConnection[]): string {
+  const row = ({ connection, receivers }: S14SlotConnection) => `<li class="s-slot-row"><span>${connectionName(connection)}<small>${receivers.length ? `${tr("s14.coding.private_for")} ${receivers.map(item => e(botName(item.bot))).join(" · ")}` : tr("s14.coding.connect_gone")}</small></span><a class="s-btn" href="${connection.secret === "set" && receivers.length ? `/coding/new?connection=${e(connection.id)}` : `/coding/connect?connection=${e(connection.id)}`}">${tr(connection.secret === "set" && receivers.length ? "s14.coding.private_use" : "s14.coding.private_finish")}</a></li>`;
+  return items.length ? `<ul class="s-slot-list">${items.map(row).join("")}</ul>` : "";
+}
+/** Without script this is two ordinary pages: a private repository starts here, before its address is typed, so nothing typed can be lost on the way. */
+function privateBlock(view: S14CodingNew): string {
+  return `<section class="s-stack" aria-labelledby="s14-coding-private"><h3 class="s-section-t" id="s14-coding-private">${tr("s14.coding.private_title")}</h3><p class="s-sub">${tr("s14.coding.private_lead")}</p>${waitingRows(view.waiting)}<p><a class="s-btn" href="/coding/connect">${tr("s14.coding.private_connect")}</a></p></section>`;
+}
+/** The Bot and token a private grant is locked to. The Bot radio stays only when two Bots hold the same slot. */
+function selectedBlock(view: S14CodingNew, selected: S14SlotConnection): string {
+  const value = (item: S14SlotConnection["receivers"][number]) => `${item.bot.id}:${item.scopeId}`, only = selected.receivers.length === 1 ? selected.receivers[0]! : null;
+  const bots = only ? `<dt>${tr("s14.grant.bots")}</dt><dd>${e(botName(only.bot))}</dd>` : "", radios = only ? hidden("receiver", value(only)) : `<fieldset class="s-field"><legend>${tr("s14.coding.which_bot")}</legend><div class="s-choices">${selected.receivers.map(item => `<label class="s-choice"><input type="radio" name="receiver" value="${e(value(item))}" required${view.draft?.receiver === value(item) ? " checked" : ""}><span>${e(botName(item.bot))}</span></label>`).join("")}</div></fieldset>`;
+  return `${hidden("connection", `${selected.connection.id}:${selected.connection.revision}`)}<dl class="s-kv"><dt>${tr("s14.coding.connection_fixed")}</dt><dd>${connectionName(selected.connection)}</dd>${bots}</dl>${radios}`;
+}
 /** The owner's exact selection. Nothing here comes from a repository, a model or a chat, and granting starts nothing. */
 function grantPage(page: S14Page, view: S14CodingNew): string {
-  const draft = view.draft, ready = view.receivers.length > 0 && view.configured;
-  const form = `<form class="s-stack" id="s14-coding-grant" method="post" action="/s14/forms/coding-grant">${flat(page.csrf, 0)}<label class="s-field"><span>${tr("s14.coding.url")}</span><input name="url" required maxlength="300" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://github.com/owner/repository" value="${e(draft?.url ?? "")}"><span class="s-note">${tr("s14.coding.url_note")}</span></label><label class="s-field"><span>${tr("s14.coding.base_input")}</span><input class="s-mono" name="baseCommit" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" value="${e(draft?.baseCommit ?? "")}"><span class="s-note">${tr("s14.coding.base_note")}</span></label>${receiverChoices(view)}${registryChoices(draft?.hosts ?? [])}</form>`;
+  const draft = view.draft, selected = view.selected, ready = (view.receivers.length > 0 && view.configured) || !!selected;
+  const base = selected ? ["s14.coding.base_branch", "s14.coding.base_branch_note"] as const : ["s14.coding.base_input", "s14.coding.base_note"] as const;
+  const form = `<form class="s-stack" id="s14-coding-grant" method="post" action="/s14/forms/coding-grant">${flat(page.csrf, 0)}<label class="s-field"><span>${tr("s14.coding.url")}</span><input name="url" required maxlength="300" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://github.com/owner/repository" value="${e(draft?.url ?? "")}"><span class="s-note">${tr("s14.coding.url_note")}</span></label><label class="s-field"><span>${tr(base[0])}</span><input class="s-mono" name="baseCommit" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" value="${e(draft?.baseCommit ?? "")}"><span class="s-note">${tr(base[1])}</span></label>${selected ? selectedBlock(view, selected) : receiverChoices(view)}${registryChoices(draft?.hosts ?? [])}</form>`;
+  const gone = view.missing ? banner("warn", tr("s14.coding.connect_gone"), tr("s14.coding.connect_gone_detail")) : "", ready_ = selected ? banner("", tr("s14.coding.connect_ready"), tr("s14.coding.connect_ready_detail")) : "";
   const strip = ready ? ownerStrip(`<button class="s-btn primary" form="s14-coding-grant">${tr("s14.coding.grant")}</button>`, tr("s14.coding.grant_note")) : "";
   const slots = view.configured ? "" : banner("warn", tr("s14.coding.no_slot_title"), tr("s14.coding.no_slot_detail"));
-  return shell(page, tr("s14.coding.grant"), `<div class="s-col">${notice(view.notice)}${slots}<article class="s-slip" aria-label="${tr("s14.coding.grant")}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${tr("s14.coding.grant")}</h2><p class="s-meta">${tr("s14.coding.grant_meta")}</p></div></div><div class="s-slip-body">${form}${reach(["s14.coding.does_1", "s14.coding.does_2", "s14.coding.does_3"], ["s14.coding.not_1", "s14.coding.not_2", "s14.coding.not_3", "s14.coding.not_4"])}</div>${strip}</article><p><a class="s-link-text" href="/coding">${tr("s14.coding.back")}</a></p></div>`, { current: "more" });
+  const below = selected ? `<p><a class="s-link-text" href="/coding/new">${tr("s14.coding.connection_change")}</a></p>` : privateBlock(view);
+  return shell(page, tr("s14.coding.grant"), `<div class="s-col">${notice(view.notice)}${gone}${ready_}${slots}<article class="s-slip" aria-label="${tr("s14.coding.grant")}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${tr("s14.coding.grant")}</h2><p class="s-meta">${tr("s14.coding.grant_meta")}</p></div></div><div class="s-slip-body">${form}${reach(["s14.coding.does_1", "s14.coding.does_2", "s14.coding.does_3"], ["s14.coding.not_1", "s14.coding.not_2", "s14.coding.not_3", "s14.coding.not_4"])}</div>${strip}</article>${below}<p><a class="s-link-text" href="/coding">${tr("s14.coding.back")}</a></p></div>`, { current: "more" });
+}
+/** Three steps in words, the same stage list as a stopping Bot. It reads the stored connection, so a reload lands on the true step. */
+function connectSteps(view: S14CodingConnect): string {
+  const reached = view.connection ? 1 : 0, word = (index: number) => index < reached ? "done" : index === reached ? "now" : "later";
+  return `<ol class="s-steps">${(["bot", "token", "branch"] as const).map((name, index) => `<li data-step="${word(index)}"${index === reached ? ' aria-current="step"' : ""}><span>${tr(k(`s14.coding.connect.step.${name}`))}</span><small>${tr(k(`s14.life.step_word.${word(index)}`))}</small></li>`).join("")}</ol>`;
+}
+function connectBot(page: S14Page, view: S14CodingConnect): string {
+  const value = (item: S14CodingConnect["receivers"][number]) => `${item.bot.id}:${item.scopeId}`;
+  const radios = view.receivers.map(item => `<label class="s-choice"><input type="radio" name="receiver" value="${e(value(item))}" required${view.receivers.length === 1 ? " checked" : ""}><span>${e(botName(item.bot))}</span></label>`).join("");
+  const others = view.others.map(({ bot, why }) => `<li><span>${e(botName(bot))}</span><small>${tr(k(`s14.coding.why.${why}`))}</small>${why === "stopping" ? "" : `<a class="s-link-text" href="/team/${e(bot.id)}/capabilities?add=coding&amp;edit=1">${tr("s14.coding.add_tools")}</a>`}</li>`).join("");
+  const fields = `<fieldset class="s-field"><legend>${tr("s14.coding.which_bot")}</legend>${radios ? `<div class="s-choices">${radios}</div><p class="s-note">${tr("s14.coding.connect_bot_note")}</p>` : `<p class="s-note">${tr("s14.coding.no_receiver")}</p>`}${others ? `<ul class="s-coding-others">${others}</ul>` : ""}</fieldset>`;
+  return `<form class="s-stack" method="post" action="/s14/forms/git-slot-connection">${flat(page.csrf, 0)}${fields}${radios ? `<label class="s-field"><span>${tr("s14.git.label")}</span><input name="label" required maxlength="80" value="GitHub"></label><div><button class="s-btn primary">${tr("s14.coding.connect_continue")}</button></div>` : ""}</form>`;
+}
+/** Write-only, as on a repository page: the value is never rendered, and a refused post comes back without it. */
+function connectToken(page: S14Page, { connection, receivers }: S14SlotConnection): string {
+  const remove = `<form method="post" action="/s14/forms/git-slot-remove">${flat(page.csrf, connection.revision)}${hidden("connectionId", connection.id)}<button class="s-btn">${tr("s14.git.remove")}</button></form>`;
+  const head = `<dl class="s-kv"><dt>${tr("s14.git.connection")}</dt><dd>${connectionName(connection)}</dd><dt>${tr("s14.grant.bots")}</dt><dd>${receivers.map(item => e(botName(item.bot))).join(" · ") || tr("s14.coding.connect_gone")}</dd></dl>`;
+  if (connection.secret === "set") return `${head}<p class="s-row">${receivers.length ? `<a class="s-btn primary" href="/coding/new?connection=${e(connection.id)}${receivers.length === 1 ? `&amp;bot=${e(receivers[0]!.bot.id)}` : ""}">${tr("s14.coding.private_use")}</a>` : ""}${remove}</p>`;
+  return `${head}<form class="s-stack" method="post" action="/s14/forms/git-secret">${flat(page.csrf, connection.revision)}${hidden("repositoryId", connection.repositoryId)}${hidden("connectionId", connection.id)}${hidden("waiting", "on")}${receivers.length === 1 ? hidden("bot", receivers[0]!.bot.id) : ""}${password(tr("s14.git.token"), tr("s14.coding.connect_token_note"))}<div><button class="s-btn primary">${tr("s14.coding.connect_save")}</button></div></form><p class="s-note">${tr("s14.git.write_only")}</p>${remove}`;
+}
+function connectPage(page: S14Page, view: S14CodingConnect): string {
+  const slots = view.configured || view.connection ? "" : banner("warn", tr("s14.coding.no_slot_title"), tr("s14.coding.no_slot_detail")), gone = view.missing ? banner("warn", tr("s14.coding.connect_gone"), tr("s14.coding.connect_gone_detail")) : "";
+  const others = view.waiting.filter(item => item.connection.id !== view.connection?.connection.id);
+  return shell(page, tr("s14.coding.connect_title"), `<div class="s-col">${notice(view.notice)}${gone}${slots}<article class="s-slip" aria-label="${tr("s14.coding.connect_title")}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${tr("s14.coding.connect_title")}</h2><p class="s-meta">${tr("s14.coding.connect_meta")}</p></div></div><div class="s-slip-body">${connectSteps(view)}${view.connection ? connectToken(page, view.connection) : connectBot(page, view)}</div></article>${waitingRows(others)}<p><a class="s-link-text" href="/coding/new">${tr("s14.coding.back_grant")}</a></p></div>`, { current: "more" });
 }
 
 const password = (label: string, note: string) => `<label class="s-field"><span>${label}</span><input type="password" name="secret" required maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false"><span class="s-note">${note}</span></label>`;
@@ -73,6 +116,14 @@ function landing(view: S14CodingRepositoryPage): string {
   if (receipt.kind === "git.connection.test") return test === "present" ? banner("", tr("s14.git.test_present"), tr("s14.git.test_local")) : banner("warn", tr(k(`s14.git.test_${test ?? "missing"}`)), tr("s14.git.test_local"));
   return banner("", tr(k(`s14.coding.done.${receipt.kind.replaceAll(".", "_")}`)), "");
 }
+/** Repins an active repository from a branch. The stored token is chosen, never typed, and the only thing written is the commit the broker read. */
+function pinBlock(page: S14Page, view: S14CodingRepositoryPage): string {
+  const { repository, connections, pin } = view, stored = connections.filter(item => !item.removed && item.secret === "set");
+  if (!stored.length) return `<p class="s-note">${tr("s14.coding.pin_need_token")}</p>`;
+  const chosen = (item: S14SlotConnection["connection"]) => pin ? pin.connection === `${item.id}:${item.revision}` : stored.length === 1;
+  const form = `<form class="s-stack s-strip-form" method="post" action="/s14/forms/coding-repin">${flat(page.csrf, repository.revision)}${hidden("repositoryId", repository.id)}<label class="s-field"><span>${tr("s14.coding.pin_branch")}</span><input class="s-mono" name="branch" required maxlength="200" autocomplete="off" autocapitalize="off" spellcheck="false" value="${e(pin?.branch ?? "")}"></label><fieldset class="s-field"><legend>${tr("s14.coding.pin_connection")}</legend><div class="s-choices">${stored.map(item => `<label class="s-choice"><input type="radio" name="connection" value="${e(item.id)}:${item.revision}" required${chosen(item) ? " checked" : ""}><span>${connectionName(item)}</span></label>`).join("")}</div></fieldset><div><button class="s-btn">${tr("s14.coding.pin_submit")}</button></div></form>`;
+  return `<article class="s-slip" data-state="closed" aria-labelledby="s14-coding-pin"><div class="s-slip-hd"><div><h3 id="s14-coding-pin">${tr("s14.coding.pin_title")}</h3><p class="s-meta">${tr("s14.coding.pin_meta")}</p></div></div>${ownerStrip(form, tr("s14.coding.pin_note"))}</article>`;
+}
 function repositoryPage(page: S14Page, view: S14CodingRepositoryPage): string {
   const { repository, bot, connections } = view, active = repository.active, work = workOn(page, repository.id);
   const add = active ? `<form class="s-stack" method="post" action="/s14/forms/git-connection">${flat(page.csrf, 0)}${hidden("repositoryId", repository.id)}<label class="s-field"><span>${tr("s14.git.label")}</span><input name="label" required maxlength="80" value="GitHub"></label><div><button class="s-btn">${tr("s14.git.add")}</button></div></form>` : "";
@@ -80,7 +131,7 @@ function repositoryPage(page: S14Page, view: S14CodingRepositoryPage): string {
   const revoke = active ? `<div class="s-slip" data-state="closed">${ownerStrip(commandForm(page.csrf, "coding.repository.revoke", repository.revision, { repositoryId: repository.id }, tr("s14.coding.revoke"), "s-btn danger"), tr("s14.coding.revoke_note"))}</div>` : "";
   return shell(page, tr("s14.coding.repository"), `<div class="s-col">${notice(view.notice)}${landing(view)}${active ? "" : banner("", tr("s14.coding.revoked"), tr("s14.coding.revoked_detail"))}<div class="s-between"><p class="s-mono">${e(repository.url)}</p><span class="s-row-pills">${registryPill(repository)}${repositoryPill(repository)}</span></div>${repositoryFacts(repository, bot)}${start}
     ${work.length ? `<section aria-labelledby="s14-repo-work"><h2 class="s-section-t" id="s14-repo-work">${tr("s14.coding.work_title")}</h2>${workRows(work)}</section>` : ""}
-    <section class="s-stack" id="connections" aria-labelledby="s14-repo-git"><h2 class="s-section-t" id="s14-repo-git">${tr("s14.git.connections")}</h2><p class="s-sub">${tr("s14.git.lead")}</p>${connections.map(item => connectionCard(page, item, active)).join("")}${add}</section>${revoke}<p><a class="s-link-text" href="/coding">${tr("s14.coding.back")}</a></p></div>`, { current: "more" });
+    <section class="s-stack" id="connections" aria-labelledby="s14-repo-git"><h2 class="s-section-t" id="s14-repo-git">${tr("s14.git.connections")}</h2><p class="s-sub">${tr("s14.git.lead")}</p>${connections.map(item => connectionCard(page, item, active)).join("")}${add}${active ? pinBlock(page, view) : ""}</section>${revoke}<p><a class="s-link-text" href="/coding">${tr("s14.coding.back")}</a></p></div>`, { current: "more" });
 }
 
 const tick = (name: string, checked: boolean, label: string, note = "") => `<label class="s-check"><input type="checkbox" name="${name}" value="on"${checked ? " checked" : ""}><span>${e(label)}${note ? `<small>${e(note)}</small>` : ""}</span></label>`;
@@ -183,6 +234,7 @@ export function renderCodingSurface(page: S14Page, view: S14CodingSurface): stri
   switch (view.kind) {
     case "coding": return hubPage(page, view);
     case "coding-new": return grantPage(page, view);
+    case "coding-connect": return connectPage(page, view);
     case "coding-repository": return repositoryPage(page, view);
     default: return startPage(page, view);
   }

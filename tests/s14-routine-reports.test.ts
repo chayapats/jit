@@ -31,6 +31,7 @@ async function fixture() {
 
 test.each(["routine", "ordinary"] as const)("native routine %s envelope commits a cited report and staged download through the ordinary validator", async envelope => {
   const { f, routine } = await fixture();
+  f.app.execute(f.auth.actor, { kind: "attention.set", requestId: retryId(), expectedRevision: 0, payload: { level: "all" } });
   const bytes = new TextEncoder().encode("# Captured routine file\n");
   f.app.authority.options.executor = { run(a, signal) {
     let turns = 0;

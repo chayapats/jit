@@ -38,7 +38,7 @@ export type GitProposeCommand = Envelope<"git.propose", {
   expiresAt: number;
 }>;
 /** Connection values are transient write-only Web input and never occur in a receipt or retry digest. */
-export type GitConnectionCommand = Envelope<"git.connection.create", { repositoryId: string; label: string }> |
+export type GitConnectionCommand = Envelope<"git.connection.create", { repositoryId: string; label: string; botId?: string }> |
   Envelope<"git.connection.secret.set" | "git.connection.rotate", { connectionId: string; secret: string }> |
   Envelope<"git.connection.remove" | "git.connection.test", { connectionId: string }>;
 /** Durable commands either configure a scoped connection or propose one exact external action. */

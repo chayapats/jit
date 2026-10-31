@@ -121,7 +121,7 @@ export class S14BotLifecycle {
       tx.run("INSERT INTO capability_proposals VALUES (?,?,?)", proposal.id, bot.id, canonical(proposal));
       return { ...receipt, proposal };
     }
-    if (command.kind === "bot.capabilities.accept") {
+    if (command.kind === "bot.capabilities.accept" || command.kind === "bot.capabilities.discard") {
       exact(command.payload, ["proposalId", "proposalHash"]);
       identity(command.payload.proposalId);
       const proposal = this.proposal(tx, command.payload.proposalId), bot = record<Bot>(tx, "bots", proposal.botId);
@@ -131,6 +131,12 @@ export class S14BotLifecycle {
           proposal.ownerGeneration !== tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation ||
           proposal.hash !== digest(canonical({ bot, action: proposal.action, capabilities: proposal.capabilities }))) throw new AppError("stale_capability_proposal", 409);
       if (proposal.action === "reenable" ? lifecycle.state !== "retired" : lifecycle.state !== "active") throw new AppError("bot_lifecycle_changed", 409);
+      if (command.kind === "bot.capabilities.discard") {
+        proposal.state = "discarded";
+        proposal.revision++;
+        tx.run("UPDATE capability_proposals SET record_json=? WHERE id=?", canonical(proposal), proposal.id);
+        return { ...receipt, proposal };
+      }
       // Changing a ceiling fences execution, not already committed owner evidence.
       // Capture retention before changing the Bot; withdrawn lineage is never blessed by widening.
       for (const row of tx.all<{ id: string }>("SELECT id FROM work_attempts WHERE json_extract(record_json,'$.snapshot.bot.id')=? AND EXISTS (SELECT 1 FROM work_results WHERE attempt_id=work_attempts.id)", bot.id)) {

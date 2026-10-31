@@ -13,11 +13,11 @@ import { validateArtifact } from "./artifacts";
 export class S14Sharing {
   constructor(readonly app: S14Application) {}
 
-  /** Lists unused configured/built-in slots and current eligible receivers without reserving identities or changing authority. */
-  freeSlots(actor: OwnerActor): FreeShareSlot[] {
+  /** Lists unused configured/built-in slots and eligible receivers; an explicitly selected connection may continue its own slot. Reads grant no authority. */
+  freeSlots(actor: OwnerActor, connectionId?: string): FreeShareSlot[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      const used = reservedResourceSlots(tx);
+      const used = reservedResourceSlots(tx, connectionId);
       const bots = tx.all<{ record_json: string }>("SELECT record_json FROM bots ORDER BY rowid").map(row => JSON.parse(row.record_json) as Bot);
       return [...new Set([...this.app.policy.resources, ...managedShareSlots])].filter(scopeId => !used.has(scopeId)).map(scopeId => ({
         scopeId, receiverBotIds: bots.filter(bot => bot.enabled && bot.capabilities.resources.includes(scopeId)).map(bot => bot.id),

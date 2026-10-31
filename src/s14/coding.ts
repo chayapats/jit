@@ -1,6 +1,6 @@
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
-import { redactRegisteredSecrets } from "../security/secret-fingerprints";
+import { registerSecretFingerprint, redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { containsCredential, redactCredentials } from "../security/credentials";
 import { record, type S14Application } from "./application";
 import type { Attempt, ScopePolicy, ScopeRef, WorkOutput } from "./authority-types";
@@ -9,7 +9,7 @@ import { canonical, digest, exact, identity, text } from "./validation";
 import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, codingPath, codingQuote, codingRegistry } from "./coding-protocol";
 import { codingEvidenceCheckout, codingSnapshot } from "./coding-evidence";
 import { repositoryBundle } from "./coding-preload";
-import { repositoryCommit } from "./coding-resolve";
+import { privateRepositoryCommit, repositoryCommit } from "./coding-resolve";
 import { resourceConfigured, resourceSlotConflict } from "./share-slots";
 import { gitConnection } from "./coding-connections";
 import { codingModel } from "./coding-model";
@@ -22,7 +22,7 @@ const clip = (value: string) => redactRegisteredSecrets(redactCredentials(value)
 
 /** Repository grants and real execution evidence stay inside the existing owner/Bot/work/computer barriers. */
 export class S14Coding {
-  #resolved = new WeakMap<CodingRepositoryGrant, string>();
+  #resolved = new WeakMap<object, string>();
   constructor(readonly app: S14Application, readonly options: CodingOptions = {}) {}
 
   /** Supplies only exact current typed repository policies to the ordinary resource intersection. */
@@ -37,18 +37,51 @@ export class S14Coding {
 
   private grantBot(tx: AppTransaction, command: CodingRepositoryGrant): Bot {
     const p = command.payload;
-    exact(p, ["id", "botId", "url", "baseBranch" in p ? "baseBranch" : "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : [])]);
+    exact(p, ["id", "botId", "url", "baseBranch" in p ? "baseBranch" : "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : []), ...(Object.hasOwn(p, "connection") ? ["connection"] : [])]);
+    if (p.connection) {
+      this.branchConnection(tx, p.id, p.connection);
+    }
+    const held = tx.get(`SELECT 1 FROM git_connections WHERE json_extract(record_json,'$.repositoryId')=?
+      AND json_extract(record_json,'$.removed')=0 AND id<>? LIMIT 1`, p.id, p.connection?.id ?? "");
+    if (held) throw new AppError("coding_slot_reserved", 409);
     codingRegistry(p.registry ?? null); identity(p.id); identity(p.botId); codingOrigin(p.url);
     const bot = record<Bot>(tx, "bots", p.botId);
     if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
     if (!bot.enabled || !resourceConfigured(this.app.policy, p.id) || !bot.capabilities.resources.includes(p.id) ||
-        resourceSlotConflict(tx, p.id, "coding_repository") ||
+        resourceSlotConflict(tx, p.id, "coding_repository", p.connection?.id) ||
         tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share','coding_repository')", p.id)) throw new AppError("coding_resource_denied", 403);
     return bot;
   }
 
   /** Async owner ingress resolves a branch under its accepted slot, rechecks live authority and durably pins the commit; retries reuse the original receipt. */
   async execute(actor: OwnerActor, command: CodingCommand): Promise<CodingReceipt> {
+    if (command.kind === "coding.repository.resolve") {
+      command = structuredClone(command);
+      const selected = command;
+      exact(selected, ["kind", "requestId", "expectedRevision", "payload"]); identity(selected.requestId);
+      const previous = this.app.store.read(tx => {
+        this.app.requireOwner(tx, actor);
+        return !!tx.get("SELECT 1 FROM command_receipts WHERE owner_id='owner' AND request_id=?", selected.requestId);
+      });
+      if (previous) return this.app.execute(actor, selected);
+      const snapshot = this.app.store.read(tx => {
+        this.app.requireOwner(tx, actor);
+        return this.resolveSnapshot(tx, selected);
+      });
+      const allowed = () => this.app.store.read(tx => {
+        this.app.requireOwner(tx, actor);
+        if (canonical(this.resolveSnapshot(tx, selected)) !== canonical(snapshot)) throw new AppError("stale_revision", 409);
+      });
+      const vault = this.app.git.options.vault;
+      if (!vault) throw new AppError("connection_vault_not_configured", 503);
+      this.app.store.transaction(tx => tx.run("INSERT OR IGNORE INTO audit(kind,request_id,committed_at) VALUES ('coding.repository.resolve.credential',?,?)", `resolve_credential_${selected.requestId}`, this.app.now()));
+      const secret = vault.read(snapshot.vaultId);
+      registerSecretFingerprint(secret);
+      const commit = await privateRepositoryCommit(snapshot.repository.url, selected.payload.baseBranch, secret, allowed, this.options.gitLimits);
+      allowed(); this.#resolved.set(selected, commit);
+      try { return this.app.execute(actor, selected); }
+      finally { this.#resolved.delete(selected); }
+    }
     if (command.kind !== "coding.repository.grant" || !("baseBranch" in command.payload)) return this.app.execute(actor, command);
     const branch = command.payload.baseBranch;
     command = structuredClone(command);
@@ -61,21 +94,60 @@ export class S14Coding {
     // Capture the exact owner/Bot generation and revision before any remote wait. No slot is created by discovery.
     const snapshot = this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return canonical(this.grantBot(tx, command));
+      return canonical({ bot: this.grantBot(tx, command), connection: command.payload.connection ? this.branchConnection(tx, command.payload.id, command.payload.connection) : null,
+        owner: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation });
     });
     const allowed = () => this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      if (canonical(this.grantBot(tx, command)) !== snapshot) throw new AppError("stale_revision", 409);
+      if (canonical({ bot: this.grantBot(tx, command), connection: command.payload.connection ? this.branchConnection(tx, command.payload.id, command.payload.connection) : null,
+        owner: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation }) !== snapshot) throw new AppError("stale_revision", 409);
     });
-    const commit = await repositoryCommit(command.payload.url, branch, allowed, this.options.repositoryFetch);
+    let commit: string;
+    if (command.payload.connection) {
+      const { vaultId } = this.app.store.read(tx => this.branchConnection(tx, command.payload.id, command.payload.connection!));
+      const vault = this.app.git.options.vault;
+      if (!vault) throw new AppError("connection_vault_not_configured", 503);
+      const secret = vault.read(vaultId); registerSecretFingerprint(secret);
+      commit = await privateRepositoryCommit(command.payload.url, branch, secret, allowed, this.options.gitLimits);
+    } else commit = await repositoryCommit(command.payload.url, branch, allowed, this.options.repositoryFetch);
     allowed();
     this.#resolved.set(command, commit);
     try { return this.app.execute(actor, command); }
     finally { this.#resolved.delete(command); }
   }
 
+  private branchConnection(tx: AppTransaction, repositoryId: string, ref: { id: string; revision: number }) {
+    exact(ref, ["id", "revision"]);
+    const connection = gitConnection(tx, ref.id);
+    const latest = tx.get<{ revision: number }>("SELECT max(revision) revision FROM lifecycle.git_connection_revisions WHERE connection_id=?", connection.id)?.revision;
+    const vaultId = tx.get<{ vault_id: string }>("SELECT vault_id FROM git_connections WHERE id=?", connection.id)?.vault_id;
+    if (connection.repositoryId !== repositoryId || connection.removed || connection.secret !== "set" ||
+        connection.revision !== ref.revision || connection.revision !== latest || !vaultId) throw new AppError("connection_out_of_scope", 403);
+    return { connection, vaultId };
+  }
+
+  private resolveSnapshot(tx: AppTransaction, command: Extract<CodingCommand, { kind: "coding.repository.resolve" }>) {
+    exact(command.payload, ["repositoryId", "baseBranch", "connection"]);
+    exact(command.payload.connection, ["id", "revision"]);
+    const repository = this.repository(tx, command.payload.repositoryId);
+    const bot = record<Bot>(tx, "bots", repository.botId);
+    if (!repository.active || repository.revision !== command.expectedRevision || !bot.enabled ||
+        !bot.capabilities.resources.includes(repository.id) || !this.scope(tx, { kind: "resource", id: repository.id, revision: repository.revision })?.active) throw new AppError("coding_resource_denied", 403);
+    const { connection, vaultId } = this.branchConnection(tx, repository.id, command.payload.connection);
+    return { repository, bot, route: this.app.route(bot.routeId), connection, vaultId, owner: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation };
+  }
+
   /** Applies explicit repository grants/revocation or atomic coding start without deriving authority from source text. */
   apply(tx: AppTransaction, command: CodingCommand): CodingReceipt {
+    if (command.kind === "coding.repository.resolve") {
+      const { repository } = this.resolveSnapshot(tx, command);
+      const commit = this.#resolved.get(command);
+      if (!commit) throw new AppError("coding_branch_resolution_required", 409);
+      repository.baseCommit = commit;
+      repository.revision++;
+      tx.run("UPDATE coding_repositories SET record_json=? WHERE id=?", canonical(repository), repository.id);
+      return { kind: command.kind, requestId: command.requestId, repository };
+    }
     if (command.kind === "coding.repository.grant") {
       const p = command.payload;
       this.grantBot(tx, command);

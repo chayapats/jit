@@ -5,8 +5,7 @@
 export function s14BackupStyleSheet(): string {
   return `
 .s-backup-health { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.s-backup-progress { max-width: none; margin: 0; }
-.s-backup-progress li { padding-top: 6px; border-top: 0; font-size: var(--size-sm); }
+.s-backup-progress li { font-size: var(--size-sm); }
 .s-backup-sides { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; min-width: 0; }
 .s-backup-sides h3 { margin-bottom: 6px; font-size: var(--size-sm); font-weight: 600; }
 .s-backup-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding-left: 18px; color: var(--fg-2); list-style: disc; overflow-wrap: anywhere; }

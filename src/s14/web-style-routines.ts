@@ -9,10 +9,18 @@ export function s14RoutineStyleSheet(): string {
 .s-attention-group h3 { color: var(--fg-2); font-size: var(--size-xs); font-weight: 500; }
 .s-attention a > span:first-child { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
 .s-attention small { color: var(--fg-3); font-size: var(--size-xs); }
+.s-attention-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-bottom: 8px; min-width: 0; }
+.s-attention-row > a { flex: 1 1 200px; margin-bottom: 0; min-width: 0; }
+.s-attention-row > form { flex: none; margin: 0; }
 .s-sched-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-height: 44px; }
 .s-sched-row .s-check { min-width: 112px; padding: 0; align-items: center; }
 .s-sched-row:not(:has(input:checked)) .s-sched-input, .s-sched-row:not(:has(input:checked)) .s-limit { opacity: .6; }
-.s-field .s-sched-input input { width: auto; max-width: 100%; }
+.s-field .s-sched-input input, .s-field .s-sched-input select { width: auto; max-width: 100%; }
+.s-sched-row:not(:has(input:checked)) .s-sched-word { opacity: .6; }
+.s-sched-pair { display: inline-flex; align-items: center; gap: 8px; }
+.s-sched-word { color: var(--fg-2); font-size: var(--size-sm); font-weight: 400; }
+.s-sched-note { flex: 1 1 100%; }
+.s-sched-row:not(:has(input:checked)) .s-sched-note { display: none; }
 .s-run-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .s-run { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-control); min-width: 0; overflow-wrap: anywhere; }
 .s-run.quiet { padding-block: 4px; background: transparent; border-color: transparent; color: var(--fg-3); }

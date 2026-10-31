@@ -19,7 +19,7 @@ const noSignIn: S14Provider["readiness"][] = ["model-unavailable", "integration-
 
 function steps(current: Step): string {
   const index = stepOrder.indexOf(current);
-  return `<ol class="s-steps">${stepOrder.map((step, i) => `<li${i < index ? ' data-step="done"' : i === index ? ' data-step="current" aria-current="step"' : ""}>${tr(k(`s14.setup.step_${step}`))}</li>`).join("")}</ol>`;
+  return `<ol class="s-setup-steps">${stepOrder.map((step, i) => `<li${i < index ? ' data-step="done"' : i === index ? ' data-step="current" aria-current="step"' : ""}>${tr(k(`s14.setup.step_${step}`))}</li>`).join("")}</ol>`;
 }
 /** A password field and a repeat are the whole step; the capability stays in its cookie and is never rendered. */
 export function renderOwnerSetup(csrf: string, locale: Locale, code: string | null = null): string {

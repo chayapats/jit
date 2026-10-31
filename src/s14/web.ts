@@ -185,7 +185,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           const reviewed = product!.review?.(form, p, auth.actor, state, signedInLocale(state));
           if (reviewed) return view(app.home(auth.actor), reviewed);
           const command = product!.command(form, p, auth.actor, state, signedInLocale(state));
-          const receipt = command.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, command) : app.execute(auth.actor, command);
+          const receipt = (command.kind === "coding.repository.grant" || command.kind === "coding.repository.resolve") ? await app.coding.execute(auth.actor, command) : app.execute(auth.actor, command);
           return redirect(product!.surface(receipt, p));
         }
         catch (error) {
@@ -209,7 +209,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         }
         if (/^(restore|upgrade)\./.test((command as { kind?: string })?.kind ?? "")) throw new AppError("s14_ops_offline_required", 409);
         const typed = command as S14Command;
-        const receipt = typed?.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, typed) : app.execute(auth.actor, typed);
+        const receipt = (typed?.kind === "coding.repository.grant" || typed?.kind === "coding.repository.resolve") ? await app.coding.execute(auth.actor, typed) : app.execute(auth.actor, typed);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
         return json(receipt);
       }
