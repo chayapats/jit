@@ -157,6 +157,7 @@ test("a run report shows once per routine and is listed without raising the badg
   const g = await fixture("en", { state: "ready", text: "Prices changed", report: { title: "Price report",
     claims: [{ id: "price", text: "Unverified price change", kind: "inference", citations: [], covers: [], conflicts: [] }],
     missing: [], limitations: ["No verified price source"], artifactIds: [] } }), { words } = g;
+  g.app.execute(g.auth.actor, { kind: "attention.set", requestId: retryId(), expectedRevision: 0, payload: { level: "all" } });
   await g.enable("Report routine", { schedule: "interval", hours: "1", occurrences: "6" });
   await g.run(61); await g.run(61);
   const home = await g.page("/");
@@ -251,7 +252,7 @@ test("exhausted routines say so and a changed Bot blocks a routine until the own
   expect(landed.html).toContain(words["s14.life.impact_routines"]); expect(landed.html).toContain("Bound routine");
   await g.land(await g.post("/s14/forms/capability-accept", formFields(landed.html, "/s14/forms/capability-accept")));
   const blocked = await g.page(`/routines/${bound.id}`); safe(blocked, "en");
-  expect(blocked).toContain(words["s14.routine.blocked_title"]); expect(blocked).toContain(words["s14.routine.reason.routine_generation_withdrawn"]);
+  expect(blocked).toContain(words["s14.routine.blocked_title"]); expect(blocked).toContain(words["s14.routine.reason.bot_authority_changed"]);
   expect(hasCommand(blocked, "routine.resume")).toBe(false); expect(hasCommand(blocked, "routine.revoke")).toBe(true);
   expect(await g.page("/")).toContain(words["s14.attention.routine.blocked"]);
   await g.press(blocked, "routine.revoke");
