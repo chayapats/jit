@@ -390,7 +390,10 @@ export class BotPodmanRuntime implements ComputerRuntime {
     if (request.signal?.aborted) cancel();
     const guard = () => { this.current(handle); allowed(); if (controller.signal.aborted) fail("coding_registry_cancelled"); };
     const monitor = setInterval(() => { try { guard(); } catch { cancel(); } }, 50);
-    const proxy = new ContainerRegistryProxy(this.options.workspaceImage, hosts, this.#run, this.#streams, undefined,
+    // Proxy creation uses the same keep-id planner as computer starts. Passing
+    // the raw runner here would bypass the private queue under concurrent load.
+    const proxyRun: CommandRunner = (argv, request) => this.plan(argv, () => this.#run(argv, request));
+    const proxy = new ContainerRegistryProxy(this.options.workspaceImage, hosts, proxyRun, this.#streams, undefined,
       { internalNetwork: network, name: `${prefix}-proxy` });
     try {
       guard();

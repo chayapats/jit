@@ -123,6 +123,29 @@ test("concurrent computers serialize only Podman namespace planning and keep the
   expect(f.calls.filter(a => a[0] === "run").every(a => a.includes("--userns=keep-id:uid=1000,gid=1000"))).toBe(true);
 });
 
+test("registry proxy creation shares namespace planning with another computer's readiness", async () => {
+  const gate = barrier(), entered = Promise.withResolvers<void>();
+  let guarded = false, active = 0, maximum = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!guarded || !["info", "create", "run"].includes(argv[0]!)) return;
+    active++; maximum = Math.max(maximum, active);
+    try { if (argv[0] === "info") { entered.resolve(); await gate.wait(); } else await Promise.resolve(); }
+    finally { active--; }
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  const peer = { ...f.c, id: "b".repeat(32), botId: "peer", diskSlot: { id: "slot-0002", generation: 1, clean: true } };
+  guarded = true;
+  const starting = f.runtime.start(peer, () => {});
+  await entered.promise;
+  const checking = f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  // All unblocked proxy setup can advance while the peer's info request is held.
+  await new Promise<void>(resolve => setImmediate(resolve));
+  gate.release();
+  await Promise.all([starting, checking]);
+  expect(maximum).toBe(1);
+  expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(true);
+});
+
 test("concurrent startup shares a fresh slow info probe, reuses its host proof and probes again on a later start", async () => {
   const gate = barrier(); let infos = 0;
   const f = fixture(undefined, undefined, undefined, async argv => {
