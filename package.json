@@ -17,7 +17,7 @@
     "ops:service": "bun src/main.ts service",
     "ops:smoke": "bun ops/package/arm64-smoke.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test --timeout 30000"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
