@@ -18,7 +18,7 @@ jobs:
   deterministic:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -32,6 +32,7 @@ jobs:
       # Fake-runtime parser fixtures use local Pillow/Poppler; no image is built and no Podman is run.
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ripgrep python3-pil poppler-utils
       - run: bun run typecheck
-      - run: bun test
+      # Full-suite parallel load on a shared runner exceeds Bun's default 5 s per test.
+      - run: bun test --timeout 30000
         env:
           JIT_TEST_PYTHON: /usr/bin/python3
