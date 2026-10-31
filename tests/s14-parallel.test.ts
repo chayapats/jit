@@ -86,6 +86,78 @@ test("anonymous MCP discovery/search/fetch needs no key, offers only two trusted
   expect(() => f.store.read(tx => f.app.parallel.citation(tx, "guessed_attempt", evidence.id, 1))).toThrow("not_found");
 });
 
+test("anonymous conversation bootstrap reuses one returned correlation across concurrent first reads", async () => {
+  let created = 0;
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/call") return undefined;
+    const args = event.wire.params.arguments as Record<string, unknown>, response = structuredClone(fetchResult);
+    response.result.structuredContent.session_id = typeof args.session_id === "string" ? args.session_id : `fixture_vendor_${++created}`;
+    return Response.json(response);
+  });
+  const f = await fixture(wire);
+  const reads = await Promise.all([
+    f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false }),
+    f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false }),
+  ]);
+  expect(reads.map(read => read.outcome)).toEqual(["success", "success"]);
+  expect(created).toBe(1);
+  expect(f.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", f.conversationId)?.vendor_id)).toBe("fixture_vendor_1");
+  const calls = wire.seen.filter(event => event.wire.method === "tools/call");
+  expect(calls[0]!.wire.params.arguments).not.toHaveProperty("session_id");
+  expect(calls[1]!.wire.params.arguments).toHaveProperty("session_id", "fixture_vendor_1");
+});
+
+test.each(["cancel", "deadline"])("anonymous conversation bootstrap waiter respects %s without dispatch", async action => {
+  const gate = barrier(), timers: (() => void)[] = [];
+  const wire = protocol(async event => { if (event.wire.method === "tools/call") await gate.wait(); return undefined; });
+  const f = await fixture(wire, { timer(callback) { timers.push(callback); return () => {}; } });
+  const first = f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false });
+  await gate.reached;
+  const stop = new AbortController(), waiting = f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false }, stop.signal);
+  if (action === "cancel") stop.abort(); else timers[1]!();
+  expect(await waiting).toMatchObject({ outcome: action === "cancel" ? "cancelled" : "deadline", remoteRequests: 0, dispatched: false });
+  expect(wire.seen).toHaveLength(4);
+  gate.release();
+  expect((await first).outcome).toBe("success");
+});
+
+test("anonymous conversation bootstrap quota fences the waiting read before discovery", async () => {
+  const gate = barrier();
+  const wire = protocol(async event => {
+    if (event.wire.method !== "tools/call") return undefined;
+    await gate.wait();
+    return new Response(null, { status: 429, headers: { "Retry-After": "3" } });
+  });
+  const f = await fixture(wire);
+  const first = f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false });
+  await gate.reached;
+  const waiting = f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false });
+  gate.release();
+  const reads = await Promise.all([first, waiting]);
+  expect(reads[0]).toMatchObject({ outcome: "quota", remoteRequests: 4, retryAt: epoch + 3000 });
+  expect(reads[1]).toMatchObject({ outcome: "quota", remoteRequests: 0, retryAt: epoch + 3000 });
+  expect(wire.seen).toHaveLength(4);
+});
+
+test("established anonymous conversation correlation keeps independent reads concurrent", async () => {
+  const first = barrier(), second = barrier();
+  let calls = 0;
+  const wire = protocol(async event => {
+    if (event.wire.method === "tools/call") await (++calls === 1 ? first : second).wait();
+    return undefined;
+  });
+  const f = await fixture(wire);
+  f.store.transaction(tx => tx.run("INSERT INTO parallel_sessions VALUES (?,?)", f.conversationId, "parallel_fixture_conversation"));
+  const reads = [
+    f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false }),
+    f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false }),
+  ];
+  await Promise.all([first.reached, second.reached]);
+  expect(calls).toBe(2);
+  first.release(); second.release();
+  expect((await Promise.all(reads)).map(read => read.outcome)).toEqual(["success", "success"]);
+});
+
 test.each(["deny", "succeeded", "unknown", "expired", "waiting"] as const)("1 MiB sourced results retain attempt IDs and citations through effect %s and lifecycle withdrawal", async outcome => {
   const f = await fixture(protocol(), {}, { outputBytes: 1048576, effects: { send: async (_action, allowed) => { allowed(); return outcome === "unknown" ? "unknown" : "succeeded"; } } });
   const memory = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,

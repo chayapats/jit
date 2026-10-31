@@ -22,6 +22,8 @@ const defaultTimer: ParallelTimer = (callback, ms) => { const timer = setTimeout
 
 /** Service-owned Parallel gateway; authority, outbound policy and actual evidence are checked before publication. */
 export class ParallelWeb {
+  #anonymousBootstrap = new Map<string, Promise<void>>();
+
   constructor(readonly app: S14Application, readonly options: ParallelWebOptions = {}) {
     integer(options.deadlineMs ?? 15000, 1, 15000);
     integer(options.responseBytes ?? 262144, 1024, 262144);
@@ -132,6 +134,32 @@ export class ParallelWeb {
     if (entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0) > 2097152 || findVerbatimSpan(buildOutboundCorpus(entries), subject)) throw new ParallelFailure("private_context");
   }
 
+  /** Coordinates only absent anonymous correlation; waiting consumes the existing whole-read deadline. */
+  private async anonymousSessionTurn(conversationId: string, signal: AbortSignal): Promise<() => void> {
+    for (;;) {
+      if (signal.aborted) throw new ParallelFailure("cancelled");
+      if (this.app.store.read(tx => tx.get("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", conversationId))) return () => {};
+      const pending = this.#anonymousBootstrap.get(conversationId);
+      if (!pending) {
+        let finish!: () => void;
+        const done = new Promise<void>(resolve => { finish = resolve; });
+        this.#anonymousBootstrap.set(conversationId, done);
+        return () => {
+          if (this.#anonymousBootstrap.get(conversationId) === done) this.#anonymousBootstrap.delete(conversationId);
+          finish();
+        };
+      }
+      let cancel: (() => void) | undefined;
+      try {
+        await Promise.race([pending, new Promise<never>((_resolve, reject) => {
+          cancel = () => reject(new ParallelFailure("cancelled"));
+          signal.addEventListener("abort", cancel, { once: true });
+          if (signal.aborted) cancel();
+        })]);
+      } finally { if (cancel) signal.removeEventListener("abort", cancel); }
+    }
+  }
+
   /** Performs one grant-budgeted read; every preflight/protocol/late-result failure becomes an inspectable safe outcome. */
   async read(attemptId: string, tool: "web_search" | "web_fetch", input: unknown, signal = new AbortController().signal): Promise<WebRead> {
     if (tool !== "web_search" && tool !== "web_fetch") throw new AppError("tool_outside_grant", 403);
@@ -153,6 +181,7 @@ export class ParallelWeb {
     if (signal.aborted) abort.abort();
     const clear = (this.options.timer ?? defaultTimer)(() => { timedOut = true; abort.abort(); }, Math.min(this.options.deadlineMs ?? 15000, Math.max(1, attempt.snapshot.grant.expiresAt - this.app.now())));
     let client: ParallelMcp | null = null;
+    let releaseBootstrap = () => {};
     try {
       const p = input as Record<string, unknown>;
       exact(p, tool === "web_search" ? ["query"] : ["url", "fullContent"]);
@@ -173,6 +202,7 @@ export class ParallelWeb {
         this.app.store.read(tx => this.guardOutbound(tx, attempt, subject, tool === "web_fetch"));
       }
       const work = this.app.store.read(tx => record<Work>(tx, "work_items", attempt.workId));
+      if (setting.mode === "anonymous") releaseBootstrap = await this.anonymousSessionTurn(work.conversationId, abort.signal);
       const sessionId = this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null);
       client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model, now: () => this.app.now(),
         onSessionId: value => this.app.store.transaction(tx => {
@@ -242,7 +272,7 @@ export class ParallelWeb {
         save(tx, "web_reads", row);
       });
       return row;
-    } finally { clear(); signal.removeEventListener("abort", cancel); }
+    } finally { releaseBootstrap(); clear(); signal.removeEventListener("abort", cancel); }
   }
 
   /** Builds exactly the owner's allowed two trusted application tools, without importing vendor tool declarations. */
