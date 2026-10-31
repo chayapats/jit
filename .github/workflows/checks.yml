@@ -1,4 +1,5 @@
 name: checks
+# Six shards keep a full run near four minutes; this public repository's runners are free.
 # Cost guard: one run per PR head (no duplicate push+pull_request runs), drafts and
 # docs-only changes skip CI, and a newer push cancels the older run. Merges to main are
 # already tested on the PR merge ref; run manually with workflow_dispatch when needed.
@@ -15,10 +16,29 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  deterministic:
+  typecheck:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+  tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -31,8 +51,14 @@ jobs:
       - run: bun install --frozen-lockfile
       # Fake-runtime parser fixtures use local Pillow/Poppler; no image is built and no Podman is run.
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ripgrep python3-pil poppler-utils
-      - run: bun run typecheck
-      # Full-suite parallel load on a shared runner exceeds Bun's default 5 s per test.
-      - run: bun test --timeout 30000
+      # A shared runner under parallel load can exceed Bun's default 5 s per test.
+      - run: bun test --timeout 30000 $(bun ops/ci/test-shard.ts ${{ matrix.shard }} 6)
         env:
           JIT_TEST_PYTHON: /usr/bin/python3
+  deterministic:
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    needs: [typecheck, tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: test "${{ needs.typecheck.result }}" = success && test "${{ needs.tests.result }}" = success

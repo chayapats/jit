@@ -3,5 +3,6 @@
   "triggerOnDrafts": false,
   "disabledLabels": ["documentation"],
   "ignoreKeywords": "no-greptile",
+  "instructions": "Write every review comment, summary and reply in English, even when the pull request text is in another language.",
   "ignorePatterns": "bun.lock\n**/__snapshots__/**\nvendor/**\nresources/**\n*.woff2\n*.png"
 }
