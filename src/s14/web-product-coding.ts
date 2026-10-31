@@ -99,7 +99,7 @@ function receivers(app: S14Application, actor: OwnerActor, state: Home) {
 }
 /** Every Bot that could take one slot right now. The service rechecks the Bot, the slot and the connection revision on the press. */
 function slotReceivers(app: S14Application, actor: OwnerActor, state: Home, connection: GitConnection): S14SlotConnection {
-  const slot = app.sharing.freeSlots(actor).find(item => item.scopeId === connection.repositoryId), bots = state.bots.filter(bot => bot.enabled && ["computer", "coding"].every(tool => bot.capabilities.tools.includes(tool)) && slot?.receiverBotIds.includes(bot.id));
+  const slot = app.sharing.freeSlots(actor, connection.id).find(item => item.scopeId === connection.repositoryId), bots = state.bots.filter(bot => bot.enabled && ["computer", "coding"].every(tool => bot.capabilities.tools.includes(tool)) && slot?.receiverBotIds.includes(bot.id));
   return { connection, receivers: bots.map(bot => ({ bot, scopeId: connection.repositoryId })) };
 }
 const waitingOn = (app: S14Application, actor: OwnerActor, state: Home) => slotConnections(app, actor).map(item => slotReceivers(app, actor, state, item));

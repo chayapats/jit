@@ -144,3 +144,29 @@ test("run trigger is persisted from trusted admission for owner and schedule wit
   f.app.routines.tick();
   expect(f.app.routines.view(f.auth.actor, r.id).history.map(o => o.trigger)).toEqual(["schedule", "owner"]);
 });
+
+test("routine churn cannot evict live captures or unresolved decisions from list and Needs you", async () => {
+  const f = await fixture(), r = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  f.app.execute(f.auth.actor, { kind: "routine.run-now", requestId: retryId(), expectedRevision: 1, payload: { routineId: r.id } });
+  await f.app.authority.drain();
+  const workId = f.app.routines.view(f.auth.actor, r.id).history[0]!.workId!;
+  f.store.transaction(tx => {
+    tx.run("UPDATE work_items SET record_json=json_set(record_json,'$.state','proposed') WHERE id=?", workId);
+    // More pending revoked captures than the old whole-query limit, followed by a full live catalog and recent history.
+    for (let i = 0; i < 130; i++) {
+      const id = `pending_${i}`;
+      tx.run("INSERT INTO routines VALUES (?,?)", id, JSON.stringify({ ...r, id, state: "revoked" }));
+      tx.run("INSERT INTO routine_occurrences VALUES (?,?,NULL,?)", id, id, JSON.stringify({ id, routineId: id, state: "complete", proposals: [workId], createdAt: f.clock.now }));
+    }
+    for (let i = 0; i < 127; i++) tx.run("INSERT INTO routines VALUES (?,?)", `live_${i}`, JSON.stringify({ ...r, id: `live_${i}` }));
+    for (let i = 0; i < 140; i++) tx.run("INSERT INTO routines VALUES (?,?)", `closed_${i}`, JSON.stringify({ ...r, id: `closed_${i}`, state: "revoked" }));
+  });
+  const listed = f.app.routines.list(f.auth.actor), attention = f.app.routines.attention(f.auth.actor);
+  expect(listed.filter(v => v.routine.state !== "revoked")).toHaveLength(128);
+  expect(listed.filter(v => v.routine.id.startsWith("closed_"))).toHaveLength(128);
+  expect(attention.filter(v => v.decisions.count === 1)).toHaveLength(130);
+  expect(listed.filter(v => v.routine.id.startsWith("pending_"))).toHaveLength(130);
+  f.store.transaction(tx => tx.run("UPDATE work_items SET record_json=json_set(record_json,'$.state','rejected') WHERE id=?", workId));
+  expect(f.app.routines.attention(f.auth.actor).some(v => v.decisions.count)).toBe(false);
+  expect(f.app.routines.list(f.auth.actor).some(v => v.routine.id.startsWith("pending_"))).toBe(false);
+});

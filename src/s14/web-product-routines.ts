@@ -165,13 +165,10 @@ export function routineRecover(app: S14Application, form: string, fields: Record
   return { kind: "routine-new", draft: { ...draft, ...kept }, notice: code, fresh: false, review: null };
 }
 
-const findingsOf = (views: RoutineView[], work: Work[]): S14RoutineFinding[] => views.flatMap(({ routine, history }) => history.flatMap(occurrence => occurrence.proposals.flatMap(id => {
-  const item = work.find(entry => entry.id === id); return item ? [{ work: item, routineId: routine.id, occurrenceId: occurrence.id }] : [];
-})));
 /** Resolves `/routines`, `/routines/new` and `/routines/:id`; null leaves the path to the other product surfaces. */
 export function routineView(app: S14Application, url: URL, actor: OwnerActor, state: Home, locale: Locale): S14RoutineSurface | null {
   const path = url.pathname;
-  if (path === "/routines") { const items = app.routines.list(actor); return { kind: "routines", items, findings: findingsOf(items, app.authority.list(actor)).filter(item => item.work.state === "proposed"), receipt: committed<RoutineReceipt>(app, actor, url, "routine.delete"), level: app.attention.view(actor).setting.level }; }
+  if (path === "/routines") { const items = app.routines.list(actor); return { kind: "routines", items, findings: app.routines.findings(actor), receipt: committed<RoutineReceipt>(app, actor, url, "routine.delete"), level: app.attention.view(actor).setting.level }; }
   if (path === "/routines/new") {
     const from = url.searchParams.get("from"), base = fromRoutine(app, actor, state, from);
     if (url.searchParams.get("brief") === "1") { const brief = briefDraft(app, actor, state, locale); return { kind: "routine-new", draft: { ...base, ...brief, bots: brief.bots.length ? brief.bots : base.bots }, notice: null, fresh: true, review: null }; }
@@ -180,7 +177,7 @@ export function routineView(app: S14Application, url: URL, actor: OwnerActor, st
   const match = /^\/routines\/([a-zA-Z0-9_-]{1,128})$/.exec(path); if (!match) return null;
   const view = app.routines.view(actor, match[1]!), notices = Object.fromEntries(app.attention.view(actor).items.filter(item => view.history.some(run => run.id === item.groupId)).map(item => [item.groupId, item]));
   const receipt = committed<RoutineReceipt>(app, actor, url, "routine."), decisions = app.routines.attention(actor).find(item => item.routine.id === view.routine.id)?.decisions.count ?? 0;
-  return { kind: "routine", view, findings: findingsOf([view], app.authority.list(actor)), notices, receipt: receipt?.routine.id === view.routine.id ? receipt : null, decisions, confirm: url.searchParams.get("confirm") === "delete" && view.routine.state === "revoked" };
+  return { kind: "routine", view, findings: app.routines.findings(actor, view.routine.id), notices, receipt: receipt?.routine.id === view.routine.id ? receipt : null, decisions, confirm: url.searchParams.get("confirm") === "delete" && view.routine.state === "revoked" };
 }
 
 /** Stopped by the owner's own pause or revoke: recorded in history, but nothing the owner needs to come back to. */

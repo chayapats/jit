@@ -49,7 +49,7 @@ export type RoutineCommand = EnableRoutineCommand | ControlRoutineCommand;
 export interface RoutineReceipt { kind: RoutineCommand["kind"]; requestId: string; routine: Routine }
 /** Owner history includes quiet, failed and stopped runs without starting any work. */
 export interface RoutineView { routine: Routine; nextRun: number | null; history: RoutineOccurrence[] }
-/** Bounded per-routine attention aggregate over actual open work, independent of recent notice history. */
+/** Per-routine attention aggregate over actual open work, independent of recent notice history. */
 export interface RoutineAttentionSummary {
   routine: Routine;
   decisions: { count: number; at: number | null };

@@ -48,7 +48,7 @@ export class S14Coding {
     const bot = record<Bot>(tx, "bots", p.botId);
     if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
     if (!bot.enabled || !resourceConfigured(this.app.policy, p.id) || !bot.capabilities.resources.includes(p.id) ||
-        resourceSlotConflict(tx, p.id, "coding_repository") ||
+        resourceSlotConflict(tx, p.id, "coding_repository", p.connection?.id) ||
         tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share','coding_repository')", p.id)) throw new AppError("coding_resource_denied", 403);
     return bot;
   }

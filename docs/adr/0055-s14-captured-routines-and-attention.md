@@ -16,3 +16,7 @@ Project-free attention uses the existing dedupe/finite retry/unknown/resolution 
 The native routine path shares ordinary report publication/citation validation. A report candidate without an available committed report is a visible failure, never completion from model prose or an arbitrary JSON object. Home/Work select actual open proposal/waiting Work across all occurrences in SQL and return bounded per-routine aggregates (at most 128 captures), independently of the latest 100 notices. Failure escalation cannot hide an open decision, and finite-budget exhaustion does not dismiss a failure. The existing grouped presentation and owner pause/revoke history rule remain unchanged.
 
 Contracts: app.routine-grants/v1 and app.attention-outbox/v1. Schema 11 is fresh-only; earlier unreleased versions refuse without changing their bytes. UI, managed backup/restore transport and real channel/device evidence remain separate work.
+
+## UX14-02 review refinement (#279 / #280)
+
+The 128-capacity ceiling applies to non-revoked captures. Recent revoked history is separately capped at 128; every live capture and every revoked capture with actual proposed/waiting work remains selected before history limits. Open proposal findings are queried directly from occurrence/work joins, independent of the 50-occurrence display history and the general work list. Resolution removes the decision from that selection; churn and acknowledgement cannot remove it. This refines the earlier retained-capture aggregate bound to preserve S14-AC10 / FR-12, FR-26, FR-28.

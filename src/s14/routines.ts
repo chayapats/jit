@@ -12,6 +12,15 @@ import type { EnableRoutineCommand, Routine, RoutineAttentionSummary, RoutineCom
 import type { Bot, OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
+// History is bounded independently; live captures and unresolved owner work cannot be evicted.
+const visibleRoutines = `SELECT r.record_json FROM routines r WHERE
+  json_extract(r.record_json,'$.state')<>'revoked'
+  OR EXISTS (SELECT 1 FROM routine_occurrences o JOIN work_items w
+    ON w.id=o.work_id OR w.id IN (SELECT value FROM json_each(o.record_json,'$.proposals'))
+    WHERE o.routine_id=r.id AND json_extract(w.record_json,'$.state') IN ('proposed','waiting'))
+  OR r.id IN (SELECT id FROM routines WHERE json_extract(record_json,'$.state')='revoked' ORDER BY rowid DESC LIMIT 128)
+  ORDER BY r.rowid DESC`;
+
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const equal = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const load = (tx: AppTransaction, key: string): Routine => {
@@ -334,11 +343,11 @@ export class S14Routines {
     this.app.attention.resolve(tx);
   }
 
-  /** Returns at most 128 grouped summaries; open decisions and delivery failures are selected across all history in SQL. */
+  /** Returns live/pending captures plus bounded revoked history; open decisions and delivery failures are selected across all history in SQL. */
   attention(actor: OwnerActor): RoutineAttentionSummary[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return tx.all<{ record_json: string }>("SELECT record_json FROM routines ORDER BY (json_extract(record_json,'$.state')='revoked'),rowid DESC LIMIT 128").map(row => {
+      return tx.all<{ record_json: string }>(visibleRoutines).map(row => {
         const routine = JSON.parse(row.record_json) as Routine;
         const decisions = tx.get<{ count: number; at: number | null }>(`SELECT count(DISTINCT id) AS count,max(at) AS at FROM (
           SELECT w.id,json_extract(o.record_json,'$.createdAt') AS at FROM routine_occurrences o
@@ -364,7 +373,20 @@ export class S14Routines {
     });
   }
 
-  /** Returns owner-only standing captures and complete quiet/failure history without running a tick. */
+  /** Selects actual open proposals directly, independently of both occurrence and work-list history windows. */
+  findings(actor: OwnerActor, routineId?: string): { work: Work; routineId: string; occurrenceId: string }[] {
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      if (routineId !== undefined) { identity(routineId); load(tx, routineId); }
+      return tx.all<{ record_json: string; routine_id: string; occurrence_id: string }>(`SELECT w.record_json,o.routine_id,o.id AS occurrence_id
+        FROM routine_occurrences o JOIN json_each(o.record_json,'$.proposals') p JOIN work_items w ON w.id=p.value
+        WHERE json_extract(w.record_json,'$.state')='proposed' AND (? IS NULL OR o.routine_id=?)
+        ORDER BY o.rowid DESC`, routineId ?? null, routineId ?? null)
+        .map(row => ({ work: JSON.parse(row.record_json) as Work, routineId: row.routine_id, occurrenceId: row.occurrence_id }));
+    });
+  }
+
+  /** Returns owner-only standing captures and bounded recent quiet/failure history without running a tick. */
   view(actor: OwnerActor, routineId: string, limit = 50): RoutineView {
     integer(limit, 1, 1000);
     identity(routineId);
@@ -376,11 +398,11 @@ export class S14Routines {
     });
   }
 
-  /** Lists bounded standing captures; inspection alone does not grant or schedule work. */
+  /** Lists live/pending captures plus at most 128 other revoked captures; inspection alone does not grant or schedule work. */
   list(actor: OwnerActor): RoutineView[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      return tx.all<{ record_json: string }>("SELECT record_json FROM routines ORDER BY rowid DESC LIMIT 128").map(row => this.view(actor, (JSON.parse(row.record_json) as Routine).id));
+      return tx.all<{ record_json: string }>(visibleRoutines).map(row => this.view(actor, (JSON.parse(row.record_json) as Routine).id));
     });
   }
 }

@@ -434,3 +434,43 @@ test("an old unresolved failure retains Dismiss after more than 100 resolved not
     if (path.startsWith("/routines/")) expect(html).toContain(g.words["s14.routine.trigger.schedule"]);
   }
 });
+
+test("an old open finding remains actionable on both routine pages beyond the history window", async () => {
+  const g = await fixture("en", { state: "ready", text: '{"outcome":"no_update","proposals":[{"title":"Old open finding","purpose":"Decide this","completionRule":"Owner review"}]}' });
+  await g.enable("Finding routine", { schedule: "interval", hours: "1", occurrences: "9" });
+  await g.run();
+  const id = g.routines()[0]!.routine.id, original = g.app.routines.view(g.auth.actor, id).history[0]!;
+  g.store.transaction(tx => {
+    for (let i = 0; i < 60; i++) tx.run("INSERT INTO routine_occurrences VALUES (?,?,NULL,?)", `quiet_${i}`, id,
+      JSON.stringify({ ...original, id: `quiet_${i}`, routineId: id, state: "complete", outcome: "no_update", proposals: [], createdAt: g.clock.now }));
+  });
+  expect(g.app.routines.view(g.auth.actor, id).history).toHaveLength(50);
+  for (const path of ["/routines", `/routines/${id}`]) {
+    const html = await g.page(path);
+    expect(html).toContain("Old open finding");
+    expect(html).toContain('id="findings"');
+    expect(hasCommand(html, "task.reject")).toBe(true);
+  }
+  const finding = g.app.routines.findings(g.auth.actor, id)[0]!.work;
+  g.app.execute(g.auth.actor, { kind: "task.reject", requestId: retryId(), expectedRevision: finding.revision, payload: { taskId: finding.id } });
+  expect(g.app.routines.findings(g.auth.actor, id)).toHaveLength(0);
+});
+
+test("a pending Git slot blocks every resource claimant while its selected connection can continue", async () => {
+  const g = await fixture("en", undefined, true); broker(g);
+  await g.submit(await g.page("/coding/connect"), "/s14/forms/git-slot-connection");
+  const connection = g.app.git.connections(g.auth.actor)[0]!;
+  expect(g.app.sharing.freeSlots(g.auth.actor).some(slot => slot.scopeId === connection.repositoryId)).toBe(false);
+  const { resourceSlotConflict } = await import("../src/s14/share-slots");
+  g.store.read(tx => {
+    for (const claimant of ["snapshot_share", "share", "personal_grant", "coding_repository"] as const)
+      expect(resourceSlotConflict(tx, connection.repositoryId, claimant)).toBe(true);
+    expect(resourceSlotConflict(tx, connection.repositoryId, "coding_repository", connection.id)).toBe(false);
+    expect(resourceSlotConflict(tx, connection.repositoryId, "coding_repository", "wrong_connection")).toBe(true);
+  });
+  const share = { kind: "snapshot.share" as const, requestId: retryId(), expectedRevision: g.app.home(g.auth.actor).bots[0]!.revision,
+    payload: { scopeId: connection.repositoryId, target: { kind: "source" as const, id: "absent", revision: 1, generation: 1 }, receiverBotId: "jit", workId: null, expiresAt: g.clock.now + 60000 } };
+  expect(() => g.app.execute(g.auth.actor, share)).toThrow("snapshot_share_exists");
+  g.app.execute(g.auth.actor, { kind: "git.connection.remove", requestId: retryId(), expectedRevision: connection.revision, payload: { connectionId: connection.id } });
+  expect(g.app.sharing.freeSlots(g.auth.actor).some(slot => slot.scopeId === connection.repositoryId)).toBe(true);
+});
