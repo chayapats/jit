@@ -90,8 +90,8 @@ export interface SupervisorState {
  * or requests accounts.
  */
 export class SystemdSupervisor {
-  readonly unit = serviceUnitName;
-  constructor(readonly run: CommandRunner, readonly options: { timeoutMs?: number; systemctl?: string } = {}) {}
+  get unit(): string { return this.options.unit ?? serviceUnitName; }
+  constructor(readonly run: CommandRunner, readonly options: { timeoutMs?: number; systemctl?: string; unit?: string } = {}) {}
 
   #call(args: string[], timeoutMs = this.options.timeoutMs ?? 120_000): Promise<CommandResult> {
     return this.run([this.options.systemctl ?? "systemctl", ...args], { timeoutMs });

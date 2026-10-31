@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { safeVersion } from "../../src/evidence/contract";
+import { s14SchemaVersion } from "../../src/s14/store";
 import { schemaVersion } from "../../src/store";
 import type { CommandRunner } from "../../src/ops/supervisor";
 
@@ -20,6 +21,8 @@ export interface BuildManifest {
   bunVersion: string;
   lockHash: string;
   schemaVersion: number;
+  /** Optional pin for the independent opt-in store; older artifacts remain legacy-only. */
+  s14SchemaVersion?: number;
   engineContract: string;
   engineRevision: string;
   /** Actual build host architecture. Never a deployment claim. */
@@ -62,7 +65,7 @@ export interface BuildOptions {
 }
 
 /** Packaged entries. `ops/package` is imported by the service lifecycle; `vendor/` holds the pinned engine tarball. */
-const packagedEntries = ["package.json", "bun.lock", "src", "ops/package", "vendor"] as const;
+const packagedEntries = ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor"] as const;
 const requiredFiles = ["package.json", "bun.lock", "src/main.ts", "ops/package/service-config.ts", "ops/package/systemd/jit.service"] as const;
 const excluded = (path: string) => /(^|\/)(node_modules|\.local|\.git)(\/|$)/.test(path) || /(^|\/)\.DS_Store$/.test(path);
 
@@ -218,7 +221,7 @@ export function buildPackage(options: BuildOptions): BuildManifest {
     canonicalizeModes(outDir);
     const metadata: Omit<BuildManifest, "contentHash"> = { artifact: "jit.service.artifact/v1", artifactId: randomUUID(),
       appVersion: manifest.version as string, bunVersion: Bun.version, lockHash: sha256File(join(srcDir, "bun.lock")),
-      schemaVersion, engineContract: options.engineContract, engineRevision, arch: process.arch,
+      schemaVersion, s14SchemaVersion, engineContract: options.engineContract, engineRevision, arch: process.arch,
       piValidation: { status: "pending", detail: "desktop packaging never certifies ARM64; Pi evidence belongs to OPS05" },
       builtAt: new Date().toISOString() };
     const built: BuildManifest = { ...metadata, contentHash: artifactContentHash(outDir, metadata) };
@@ -240,7 +243,7 @@ const manifestKeys = ["artifact", "artifactId", "appVersion", "bunVersion", "loc
  */
 export function readManifest(outDir: string): BuildManifest {
   const raw = JSON.parse(readFileSync(resolve(outDir, "manifest.json"), "utf8")) as Record<string, unknown>;
-  if (Object.keys(raw).length !== manifestKeys.length || manifestKeys.some(k => !Object.hasOwn(raw, k))) throw new Error("invalid_artifact");
+  if (Object.keys(raw).some(k => !manifestKeys.includes(k) && k !== "s14SchemaVersion") || manifestKeys.some(k => !Object.hasOwn(raw, k)) || raw.s14SchemaVersion !== undefined && (!Number.isSafeInteger(raw.s14SchemaVersion) || (raw.s14SchemaVersion as number) < 1)) throw new Error("invalid_artifact");
   if (raw.artifact !== "jit.service.artifact/v1" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(raw.artifactId as string) ||
       safeVersion(raw.appVersion) !== raw.appVersion || safeVersion(raw.bunVersion) !== raw.bunVersion ||
       typeof raw.lockHash !== "string" || !/^[a-f0-9]{64}$/.test(raw.lockHash) ||

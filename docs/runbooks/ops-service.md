@@ -4,6 +4,143 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 
 ## 0. Host prerequisites (owner, not automated)
 
+### Explicit S14 service beside legacy (CUT14-01, default unchanged)
+
+This installer/service slice prepares #256 live evidence. It does **not** flip
+the default, certify Linux support or install on the owner's existing host.
+Use a fresh, disposable Linux x64/arm64 systemd host for the later authorized
+evidence round. Use an operator terminal: S14 setup capabilities go to
+`/dev/tty` only, never redirected stdout/stderr or journald.
+
+From a reviewed checkout at the tested SHA with Bun 1.4.2:
+
+```sh
+bun install --frozen-lockfile
+bun ops/package/installer/release.ts "$PWD" "$PWD/.local/s14-release" s14-evidence
+tar -xzf .local/s14-release/jit-install.tar.gz -C .local/s14-release
+# Transfer the release assets to the disposable host through the operator's trusted path.
+# In the extracted release directory on that host, as the operator:
+./install.sh --s14
+```
+
+Alternatively, once that **tested release** has been published, fetch its
+tag-pinned `install.sh` from the release and run `sh install.sh --s14`. Do not
+assume `latest` contains this change. `--yes` skips plan confirmation but still
+requires a controlling terminal for link delivery. A headless run stops at
+`owner-link` without issuing a capability; re-run in a terminal. No password,
+provider login, image digest or scratch configuration is required in the shell.
+Open the link once in Web, create the owner password, then follow the existing
+S14 Web setup/provider device sign-in. Account readiness and first inference
+remain separate live evidence.
+Installer and upgrade health probe `/s14/login` with manual redirects. Existing
+owners enter there too; legacy's `/login` response cannot satisfy S14 health.
+
+| Item | Legacy default | Explicit `--s14` |
+| --- | --- | --- |
+| Identity/home | `jit`, `/var/lib/jit` | `jit-s14`, `/var/lib/jit-s14` |
+| Unit/journal namespace | `jit.service`, `jit` | `jit-s14.service`, `jit-s14` |
+| Bun/current/releases | `/opt/jit/` | `/opt/jit-s14/` |
+| Config | `/etc/jit/service-config.json` | `/etc/jit-s14/service-config.json` |
+| Application database | `/var/lib/jit/state/app.sqlite` | `/var/lib/jit-s14/state/application.sqlite` |
+| Listener | `127.0.0.1:3000` | `127.0.0.1:3001` |
+
+Run the same `./install.sh --s14` on a host with legacy already installed to
+add the separate installation. It preserves legacy database/boxes/backups,
+activation link, Bun, config, unit and keyring; only shared OS packages and
+append-only subordinate-ID allocation are host-wide. Never point S14 at legacy
+state. Each identity has its own linger/user manager, Secret Service, unlock
+file, Podman socket and `.schway` lock directory. S14 state includes its own
+independent `application.sqlite.lifecycle.sqlite` and `.ops` maintenance tree;
+no legacy JSON ledger is seeded or interpreted for it.
+
+S14 uses the same `ProtectSystem=strict`, empty protected home trees, socket/bus
+binds, inaccessible container storage, non-root identity, root-owned immutable
+release and bounded journald as legacy. Its extra writable paths are only S14
+state/native/maintenance, vault and computer roots plus Schway's lock directory.
+The unit provisions a **private, disposable 128 MiB tmpfs** at
+`/run/jit-s14-git`, mode 0700 and owned by the resolved service UID/GID through
+`TemporaryFileSystem=`. `JIT_S14_GIT_SCRATCH` matches it. It exists in the service
+mount namespace, disappears on stop and is never a box mount or backup. Host Git
+still independently verifies tmpfs capacity/ownership and util-linux `prlimit`;
+missing enforcement returns `git_resource_limits_required`, never unlimited Git.
+
+The release includes `ops/box/Containerfile`, runner, sanitizer and CDP relay.
+The installer builds both targets through the identity's rootless Podman API,
+captures each actual manifest digest, verifies `image exists name@digest` and
+writes the pins plus `JIT_S14_COMPUTER_ROOT` into the service environment.
+Builds may need package/registry access and take up to ten minutes per target.
+Missing Podman, subordinate mappings, socket or image build access leaves chat
+available with a concrete feature-off reason; retrying repairs provisioning.
+
+**Current computer limitation:** BOX14's local mount/capacity proof refuses a
+remote Podman client (`computer_local_podman_required`). This hardened service
+uses only that API, so installing images does not make Bot computers ready.
+The installer cannot establish arbitrary per-Bot dedicated ext4 filesystems or
+outer-host cgroup/user-namespace delegation. Those remain fail-closed, named
+reasons from [s14-bot-computer.md](s14-bot-computer.md). Do not disable service
+hardening or select local Podman to claim an evidence pass. Service chat,
+Parallel research and owner setup remain available; #256's computer evidence
+remains blocked pending a supported disk-proof/service integration.
+
+For same-device access use the loopback link. A remote operator can use an
+explicit SSH tunnel forwarding local port 3001 to host loopback 3001, then open
+the printed loopback origin locally. For existing private HTTPS ingress, edit
+only S14 `network.origin` in its root-owned config and re-run `--s14`; the local
+listener stays `127.0.0.1:3001`. Never reuse legacy's ingress route accidentally.
+
+Service lifecycle (these commands intentionally select S14 **by config**, with
+no `--s14` on the legacy service CLI):
+
+```sh
+sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service status --config /etc/jit-s14/service-config.json
+sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service stop --config /etc/jit-s14/service-config.json
+sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service start --config /etc/jit-s14/service-config.json
+journalctl --namespace=jit-s14 -u jit-s14.service
+# Remove only S14's units; retain all S14 and legacy data/keyrings/releases:
+./install.sh --s14 --uninstall
+```
+
+Re-run `--s14` for compatible-code repair/update. For an upgrade with automatic
+compatible-code health rollback, prepare the new artifact and a protected
+root-owned snapshot using section 1 below, substituting `/opt/jit-s14` for
+`/opt/jit`. Keep that snapshot outside both service homes. Then:
+
+```sh
+sudo /opt/jit-s14/bin/bun "$snapshot/artifact/src/main.ts" service upgrade \
+  --config /etc/jit-s14/service-config.json --artifact "$snapshot/artifact" \
+  --bun /opt/jit-s14/bin/bun
+```
+
+No password is read for same-schema code activation. The service stops before
+the new protected build inspects state/fences/lifecycle availability under the
+service identity and exclusive S14 runtime lock. Only a matching S14 schema
+activates. Health failure stops the new process, rechecks through the previous
+build, and restores the prior unit/release only when compatible. To roll back
+deliberately, run the same command from the trusted retained release with its
+`--artifact /opt/jit-s14/releases/<prior-artifact-id>`. Do not switch symlinks by
+hand. Schema changes stay blocked: use owner-authenticated S14 OPS14 staged
+maintenance/reconciliation first; the legacy `upgrade --password-stdin` and
+legacy backups are never applied to S14. The installer itself retains its
+existing stop-on-health-failure policy and immutable previous releases.
+
+Later opt-in service observations, **not run by the implementation agent**:
+
+```sh
+(cd / && sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin JIT_S14_SERVICE_EVIDENCE=1 \
+  /opt/jit-s14/bin/bun --no-env-file /opt/jit-s14/current/ops/package/s14-service-evidence.ts)
+```
+
+The command is read-only: it probes the installed systemd unit, identity,
+release pins, private state metadata, the **actual service-namespace** scratch
+tmpfs, Secret Service unlock, socket and image availability. It starts no
+container or provider call and prints only `ops.s14-service-evidence/v1`
+booleans, artifact ID/schema and fixed pending reasons. Keep the summary and
+tested Git SHA in ignored `.local` records. No raw journals, config, origin,
+capability or credentials enter the summary. Reboot, route inference, computer
+isolation, real research coverage/usefulness and backup/restore/lifecycle proof
+still require the full #256 procedure on each architecture. A passing
+observation or deterministic fixture never closes that gate.
+
 ### One-command installation (INST01)
 
 For a fresh default-layout installation, [ops.installer/v1](../contracts/ops-installer-v1.md)

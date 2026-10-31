@@ -3,6 +3,10 @@ import { safeAlias } from "../../src/evidence/contract";
 
 /** Trusted operator configuration for one service installation. No secret values exist here. */
 export interface ServiceConfig {
+  /** Omitted selects the unchanged legacy service; S14 always uses a separate installation. */
+  runtime?: "s14";
+  /** Service-only S14 paths and locally built, digest-pinned Bot images. */
+  s14?: { vaultDirectory: string; computerRoot: string; gitScratch: string; images?: { base: string; browser: string; buildInputsHash?: string } };
   /** Dedicated service identity. Never root and never an interactive login user. */
   serviceUser: string;
   /**
@@ -164,7 +168,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
   const c = raw as Record<string, unknown>;
   keysWithin(c, ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath", "backupDirectory",
-    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"]);
+    "routes", "secretRefs", "network", "resources"], ["runtime", "s14", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"]);
   if (typeof c.serviceUser !== "string" || !userPattern.test(c.serviceUser) || c.serviceUser === "root") fail();
   const executablePath = absolutePath(c.executablePath);
   const workingDirectory = absolutePath(c.workingDirectory);
@@ -297,12 +301,45 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
         : { base: images.base as string, browser: images.browser as string },
       maxBoxes, memoryMb, cpus, pidsLimit, idleMinutes, registryHosts, fullAllowed };
   }
+  if (c.runtime !== undefined || c.s14 !== undefined) {
+    if (c.runtime !== "s14" || !c.s14 || typeof c.s14 !== "object" || Array.isArray(c.s14) || c.execution !== undefined || c.channels && parsed.channels?.telegram !== "disabled") fail();
+    const s = c.s14 as Record<string, unknown>;
+    keysWithin(s, ["vaultDirectory", "computerRoot", "gitScratch"], ["images"]);
+    const paths = [s.vaultDirectory, s.computerRoot, s.gitScratch].map(absolutePath);
+    const protectedPaths = [stateDirectory, backupDirectory, workingDirectory, dirname(ledgerPath), dirname(executablePath)];
+    for (const path of paths) {
+      if (underHome(path) || [...protectedPaths, ...paths.filter(other => other !== path)].some(other => inside(path, other) || inside(other, path))) fail();
+    }
+    if (new Set(paths).size !== 3 || parsed.runPort !== "schway") fail();
+    // S14's listener is derived from its origin, not the legacy bind configuration.
+    const browser = new URL(origin ?? `http://127.0.0.1:${port}`);
+    if (bindHost !== "127.0.0.1" || (browser.protocol === "https:" ? port !== 3001
+      : browser.hostname !== "127.0.0.1" || Number(browser.port || 80) !== port)) fail();
+    parsed.runtime = "s14";
+    parsed.s14 = { vaultDirectory: paths[0]!, computerRoot: paths[1]!, gitScratch: paths[2]! };
+    if (s.images !== undefined) {
+      const images = s.images as Record<string, unknown>;
+      if (!images || typeof images !== "object" || Array.isArray(images)) fail();
+      keysWithin(images, ["base", "browser"], ["buildInputsHash"]);
+      if (images.buildInputsHash !== undefined && (typeof images.buildInputsHash !== "string" || !/^[a-f0-9]{64}$/.test(images.buildInputsHash))) fail();
+      if (![images.base, images.browser].every(image => typeof image === "string" && imagePattern.test(image))) fail();
+      parsed.s14.images = { base: images.base as string, browser: images.browser as string,
+        ...(images.buildInputsHash !== undefined ? { buildInputsHash: images.buildInputsHash as string } : {}) };
+    }
+  }
   return parsed;
 }
 
+/** Unit and journal namespace are selected only by trusted installation configuration. */
+export function serviceUnit(config: ServiceConfig): string { return config.runtime === "s14" ? "jit-s14.service" : serviceUnitName; }
+/** S14 logs have their own bounded namespace beside the legacy namespace. */
+export function serviceJournal(config: ServiceConfig): string { return config.runtime === "s14" ? "jit-s14" : serviceLogNamespace; }
+/** Public sign-in route used for local health and existing-owner entry, without creating authority. */
+export function serviceLoginPath(config: ServiceConfig): string { return config.runtime === "s14" ? "/s14/login" : "/login"; }
+
 /** Installation database inside the managed state directory. */
 export function serviceDatabasePath(config: ServiceConfig): string {
-  return join(config.stateDirectory, "app.sqlite");
+  return join(config.stateDirectory, config.runtime === "s14" ? "application.sqlite" : "app.sqlite");
 }
 
 /** Immutable releases live beside the active-release path, never under state. */
@@ -339,6 +376,12 @@ export function serviceDrainTimeoutMs(config: ServiceConfig): number {
  */
 export function serviceEnvironment(config: ServiceConfig): [string, string][] {
   const parsed = parseServiceConfig(config);
+  if (parsed.runtime === "s14") {
+    const s = parsed.s14!;
+    return [["JIT_S14_DATABASE", serviceDatabasePath(parsed)], ["JIT_S14_ORIGIN", serviceOrigin(parsed)],
+      ["JIT_S14_VAULT_DIRECTORY", s.vaultDirectory], ["JIT_S14_GIT_SCRATCH", s.gitScratch],
+      ...(s.images ? [["JIT_S14_COMPUTER_ROOT", s.computerRoot], ["JIT_BOX_IMAGE_BASE", s.images.base], ["JIT_BOX_IMAGE_BROWSER", s.images.browser]] as [string, string][] : [])];
+  }
   const env: [string, string][] = [
     ["JIT_DATABASE", serviceDatabasePath(parsed)],
     ["JIT_HOST", parsed.network.bindHost],
@@ -375,7 +418,7 @@ export interface ServicePlanChange {
   after: unknown;
 }
 
-const planFields = ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
+const planFields = ["runtime", "s14", "serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
   "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"] as const;
 
 /**
@@ -409,6 +452,7 @@ function memoryMax(bytes: number): string {
 export function serviceWritablePaths(config: ServiceConfig): string[] {
   const parsed = parseServiceConfig(config);
   const paths = [parsed.stateDirectory, parsed.backupDirectory, dirname(parsed.ledgerPath)];
+  if (parsed.runtime === "s14") return [...new Set([...paths, parsed.s14!.vaultDirectory, parsed.s14!.computerRoot])];
   if (parsed.execution) paths.push(parsed.execution.directory, parsed.execution.secretsDirectory);
   else paths.push(`${parsed.stateDirectory}.connections`);
   return [...new Set(paths)];
@@ -458,6 +502,9 @@ export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: 
   // read-only home turns every Web sign-in and token refresh into a store error.
   const schwayHome = parsed.runPort === "schway" && exec.uid !== undefined ? [`-${join(exec.home ?? "/var/lib/jit", ".schway")}`] : [];
   return template
+    .replaceAll("{{RUNTIME_ARGS}}", parsed.runtime === "s14" ? "--s14 --no-refusal-page" : `--service-config ${configPath}`)
+    .replaceAll("{{RUNTIME_FILESYSTEM}}", parsed.runtime === "s14" && exec.uid !== undefined && exec.gid !== undefined
+      ? `TemporaryFileSystem=${parsed.s14!.gitScratch}:rw,nosuid,nodev,noexec,size=128M,mode=0700,uid=${exec.uid},gid=${exec.gid}\nEnvironment=HOME=${exec.home ?? "/var/lib/jit-s14"}` : "")
     .replaceAll("{{UNIT_ORDERING}}", bus.ordering)
     .replaceAll("{{HOME_PROTECTION}}", bus.protection)
     .replaceAll("{{SERVICE_USER}}", parsed.serviceUser)
@@ -471,7 +518,7 @@ export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: 
     .replaceAll("{{WRITABLE_PATHS}}", [...serviceWritablePaths(parsed), ...schwayHome, ...(exec.uid === undefined ? [] : [`-/run/user/${exec.uid}/podman`])].join(" "))
     .replaceAll("{{MEMORY_MAX}}", memoryMax(parsed.resources.memoryMaxBytes))
     .replaceAll("{{STOP_TIMEOUT}}", String(stopSeconds + 15))
-    .replaceAll("{{LOG_NAMESPACE}}", serviceLogNamespace)
+    .replaceAll("{{LOG_NAMESPACE}}", serviceJournal(parsed))
     .replaceAll("{{RESTART_BURST}}", String(parsed.resources.maxRestarts))
     .replaceAll("{{RESTART_WINDOW}}", String(parsed.resources.restartWindowSeconds));
 }

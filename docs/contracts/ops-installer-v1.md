@@ -219,4 +219,51 @@ substitute a dry run or desktop suite for real install/reboot/account evidence.
 `issueOwnerSetupLink` now accepts the minimal `OwnerSetupStore` implemented by both `TransactionStore` and `S14Store`; its capability security and private one-time delivery contract are unchanged. An S14 installation must invoke it against the selected fresh S14 database and display the returned link once, then password setup and provider device sign-in proceed through Web commands without another owner shell command. No public Web route may mint that capability. The existing production installer/service still selects the legacy runtime: switching it to S14 is a later explicit cutover, not an implicit database conversion in this logic slice. Legacy stores remain byte-preserving refusals before S14 locks or workers, with the refusal page enabled by default for browser serve.
 
 
-UX14-01 now supplies the trusted S14 CLI for CUT14-01 (#267): as the service identity run `<trusted-bun> <trusted-release>/src/main.ts owner-link --s14 --output-fd 3` with the exact service `JIT_S14_DATABASE` and browser `JIT_S14_ORIGIN`. Supply fd 3 as a dedicated inherited private pipe; capture/validate it privately and display once on the operator terminal after health. Stdout is empty; existing owner means no link. The CLI refuses regular files and stdout/stderr aliases, uses writer serialization alongside the service runtime lock, and keeps the same hashed/expiring/single-use capability. Do not call legacy `installerOwnerLink` for an S14 store. Non-TTY installer/journald/log output must never receive a capability. The detailed delivery and failure contract is in [s14-foundation-http.md](s14-foundation-http.md#ux14-01-remaining-gap-integration-2026-10-31); the installer itself is still legacy until #267.
+UX14-01 supplies the trusted S14 CLI for CUT14-01 (#267): as the service identity run `<trusted-bun> <trusted-release>/src/main.ts owner-link --s14 --output-fd 3` with the exact service `JIT_S14_DATABASE` and browser `JIT_S14_ORIGIN`. Supply fd 3 as a dedicated inherited private pipe; capture/validate it privately and display once on the operator terminal after health. Stdout is empty; existing owner means no link. The CLI refuses regular files and stdout/stderr aliases, uses writer serialization alongside the service runtime lock, and keeps the same hashed/expiring/single-use capability. Do not call legacy `installerOwnerLink` for an S14 store. Non-TTY installer/journald/log output must never receive a capability. The detailed delivery and failure contract is in [s14-foundation-http.md](s14-foundation-http.md#ux14-01-remaining-gap-integration-2026-10-31).
+
+## CUT14-01 opt-in installer/service delivery
+
+`install.sh --s14` selects an independent `runtime: "s14"` installation;
+omission retains legacy behavior. Its identity is `jit-s14` with home
+`/var/lib/jit-s14`, config `/etc/jit-s14/service-config.json`, Bun/releases/current
+under `/opt/jit-s14`, unit `jit-s14.service`, journal namespace `jit-s14`, database
+`state/application.sqlite` and loopback port 3001. The legacy identity, paths,
+unit, code and data are never used for this installation. Existing service
+configuration/keyring/state survives re-run; image pins are installer-managed.
+Host-wide dependencies and non-overlapping subordinate-ID allocation remain
+shared administrative operations.
+
+The unit selects `serve --s14 --no-refusal-page` and the S14 environment from
+validated config, with the same hardening as legacy. Its independent lifecycle
+SQLite/maintenance/native paths lie in the S14 state tree. No legacy ledger
+seed, initializer, schema migration or box-doctor touches S14. A missing image
+pair omits `JIT_S14_COMPUTER_ROOT` so unavailable computers cannot block chat.
+The installer builds both packaged Containerfile targets as the identity,
+captures and verifies actual manifest-digest references, then stores them in
+`s14.images`. Failed build/socket/ID gates produce feature-off reasons and can
+be repaired by re-running. No fabricated production digest is used.
+
+`s14.gitScratch` is rendered to `JIT_S14_GIT_SCRATCH` and provisioned by systemd
+`TemporaryFileSystem=` as a private disposable 128 MiB tmpfs, mode 0700 with the
+resolved UID/GID. Host Git independently requires its finite tmpfs/prlimit
+boundary. Persistent per-Bot ext4/cgroup enforcement that the installer cannot
+prove stays unavailable. In particular the current S14 computer runtime refuses
+the hardened service's remote API (`computer_local_podman_required`); image
+provisioning never claims that gap has passed.
+
+After health, `captureOwnerPipe` runs the exact trusted S14 CLI as that identity,
+with stdin/stdout/stderr discarded and only fd 3 captured in bounded memory
+(1024 bytes, 20 seconds, process-group termination on failure). The installer
+opens `/dev/tty` before issuing, validates the exact origin/path/token shape and
+writes once there. No terminal means no issuance; the actionable failure asks
+for a terminal re-run. Safe progress/errors use the ordinary output callback;
+capabilities never do. Existing owners receive only the sign-in URL on that
+terminal. Dry runs create no capability.
+S14 health and existing-owner entry use `/s14/login`; the legacy `/login` route
+and redirects cannot count as S14 readiness.
+
+Compatible-code upgrade/rollback uses the S14 service-package contract below;
+schema changes remain owner-authenticated staged OPS14 maintenance, never
+implicit installer migration. This delivers only the installer/service half of
+#267. Default flip, host installation and all #256 evidence remain separate.
+Requirements: S14-AC01/11/14; NFR-06/08/12/14.

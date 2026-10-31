@@ -429,9 +429,13 @@ test("ATT04 ordinary public reads still work with an attachment and deleting the
 
 test("ATT04 verification exhaustion holds repeated attachment text for a single Web owner release without transport", async () => {
   const query = ("a".repeat(23) + "b").repeat(10);
-  const f = await fixture([{ name: "web_search", arguments: { query } }, { name: "web_search", arguments: { query } }]);
+  const time = clockFixture();
+  const f = await fixture([{ name: "web_search", arguments: { query } }, { name: "web_search", arguments: { query } }], undefined, false, 64_000, { clock: time.clock });
   f.select(); f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
-  const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, { body: new Blob(["a".repeat(3 * 1024 * 1024)]).stream(), encodedName: "repeated.txt" });
+  // 64 KiB supplies more candidate comparisons than the 65,536 verification budget.
+  // Keep the multi-MiB indexing/work-bound case in attachment-reading.test.ts; this
+  // integration case checks owner release without coupling it to bulk upload time.
+  const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, { body: new Blob(["a".repeat(64 * 1024)]).stream(), encodedName: "repeated.txt" });
   const reply = await f.send("Read the attached note.", [file.id]);
   expect(reply.state).toBe("answered"); expect(f.searches).toEqual([]); expect(f.fetched).toEqual([]);
   const held = f.app.approvalCards(f.auth.actor, f.project.id);
