@@ -114,7 +114,10 @@ async function refresh() {
   }
   const revision = next.querySelector("[data-composer] input[name=expectedRevision]"), mine = document.querySelector("[data-composer] input[name=expectedRevision]");
   if (revision && mine && mine.value !== revision.value) mine.value = revision.value;
-  const typed = next.querySelector("[data-phase]")?.dataset.phase, phase = typed ?? next.querySelector(".s-pane .s-pill, .s-col > .s-between .s-pill")?.textContent ?? "";
+  // A pill's glyph is hidden from assistive technology, so the announcement carries the word alone.
+  const word = next.querySelector(".s-pane .s-pill, .s-col > .s-between .s-pill");
+  word?.querySelector("[aria-hidden]")?.remove();
+  const typed = next.querySelector("[data-phase]")?.dataset.phase, phase = typed ?? word?.textContent ?? "";
   if (status && phase && status.textContent !== phase) status.textContent = phase;
   else if (status && next.querySelectorAll(".s-bot-text").length > replies) status.textContent = status.dataset.reply;
   replies = next.querySelectorAll(".s-bot-text").length;

@@ -186,3 +186,14 @@ test("a live read reopens the composer and says so, but never replaces it while 
   const typing = await liveRead({ before: "closed.stopping.active", after: "open", focused: true });
   expect(typing.dock.innerHTML).toBe("Closed"); expect(typing.ticks).toHaveLength(1); // Deferred, and tried again.
 });
+
+test("the status line carries a pill's word and not its hidden glyph", async () => {
+  const source = readFileSync(new URL("../src/s14/web-enhance.js", import.meta.url), "utf8");
+  const status = { textContent: "", dataset: { reply: "Reply" } }, glyph = { remove() { pill.textContent = "Ready for review"; } }, pill = { textContent: "✓Ready for review", querySelector: (selector: string) => selector === "[aria-hidden]" ? glyph : null };
+  const page = (live: boolean, word: unknown) => ({ documentElement: { dataset: {} }, body: {}, activeElement: {}, getElementById: (id: string) => id === "s-phase" ? status : null, querySelectorAll: () => [],
+    querySelector: (selector: string) => selector === "[data-live]" && live ? {} : selector.includes(".s-pill") ? word : null });
+  const ticks: Array<() => Promise<void>> = [];
+  runInNewContext(source, { document: page(true, null), location: { href: "http://localhost:3001/work/fixture", hash: "" }, DOMParser: class { parseFromString() { return page(false, pill); } }, fetch: async () => ({ ok: true, text: async () => "fresh page" }), setTimeout: (tick: () => Promise<void>) => ticks.push(tick) });
+  await ticks.shift()!();
+  expect(status.textContent).toBe("Ready for review");
+});
