@@ -29,9 +29,10 @@ export type CodingStartCommand = Envelope<"coding.start", {
 }>;
 /** Exact owner repository grant; a branch is resolved only by the async trusted ingress before committing. */
 export type CodingRepositoryGrant = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active" | "registry" | "baseCommit"> &
-  ({ baseCommit: string } | { baseBranch: string }) & { registry?: CodingRepository["registry"] }>;
+  ({ baseCommit: string } | { baseBranch: string }) & { registry?: CodingRepository["registry"]; connection?: { id: string; revision: number } }>;
 /** Repository grants select an owner-accepted resource slot without granting work or credentials. */
 export type CodingRepositoryCommand = CodingRepositoryGrant |
+  Envelope<"coding.repository.resolve", { repositoryId: string; baseBranch: string; connection: { id: string; revision: number } }> |
   Envelope<"coding.repository.revoke", { repositoryId: string }>;
 /** Authenticated coding commands use the common durable receipt boundary. */
 export type CodingCommand = CodingStartCommand | CodingRepositoryCommand;

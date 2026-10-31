@@ -40,7 +40,7 @@ export interface RoutineOccurrence {
 /** Enables one exact standing capture and finite occurrence budget at the conversation revision. */
 export type EnableRoutineCommand = Envelope<"routine.enable", RoutinePurpose>;
 /** Exact owner dispatch control never changes a captured purpose, resource or budget. */
-export type ControlRoutineCommand = Envelope<"routine.pause" | "routine.resume" | "routine.revoke", { routineId: string }>;
+export type ControlRoutineCommand = Envelope<"routine.pause" | "routine.resume" | "routine.revoke" | "routine.run-now" | "routine.delete", { routineId: string }>;
 /** app.routine-grants/v1 authenticated owner ingress. */
 export type RoutineCommand = EnableRoutineCommand | ControlRoutineCommand;
 /** Atomic standing-authority receipt; queries separately report current occurrence settlement. */
@@ -75,8 +75,8 @@ export interface AttentionNotice {
 /** Deterministic optional transport seam; production uses only the durable in-app surface. */
 export interface AttentionPort { send(notice: AttentionNotice): Promise<"sent" | "unavailable" | "rejected" | "unknown"> }
 /** Owner attention policy changes future intent creation only; existing history is unaffected. */
-export type AttentionCommand = Envelope<"attention.set", { level: "all" | "needs-me" }>;
+export type AttentionCommand = Envelope<"attention.set", { level: "all" | "needs-me" }> | Envelope<"attention.acknowledge", { noticeId: string }>;
 /** Revision-bound in-app attention policy receipt. */
-export interface AttentionReceipt { kind: "attention.set"; requestId: string; setting: AttentionSetting }
+export interface AttentionReceipt { kind: AttentionCommand["kind"]; requestId: string; setting?: AttentionSetting; notice?: AttentionNotice }
 /** In-app attention defaults to needs-me, including explicitly requested routine reports. */
 export interface AttentionSetting { id: "in_app"; revision: number; level: "all" | "needs-me" }

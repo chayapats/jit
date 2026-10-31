@@ -40,7 +40,8 @@ const nonNegative = (value: unknown, max = 1_000_000_000): value is number => Nu
 export type ScheduleRecurrence =
   | { kind: "once"; at: number }
   | { kind: "interval"; everyMs: number }
-  | { kind: "daily"; time: string };
+  | { kind: "daily"; time: string }
+  | { kind: "weekly"; day: number; time: string };
 export type ScheduleKind = "reminder" | "summary";
 export type WallResolution = "exact" | "gap_shifted" | "overlap_first";
 
@@ -198,6 +199,17 @@ export function nextScheduledInstant(schedule: Pick<JobSchedule, "recurrence" | 
     if (anchor + rec.everyMs > afterUtc) return { utc: anchor + rec.everyMs, resolution: "exact" };
     return { utc: anchor + Math.ceil((afterUtc - anchor + 1) / rec.everyMs) * rec.everyMs, resolution: "exact" };
   }
+  if (rec.kind === "weekly") {
+    const local = tzParts(schedule.timezone, afterUtc);
+    const [h, mi] = rec.time.split(":").map(Number);
+    for (let offset = 0; offset <= 7; offset++) {
+      const date = new Date(Date.UTC(local.y, local.mo - 1, local.d + offset));
+      if (date.getUTCDay() !== rec.day) continue;
+      const candidate = wallToUtc(schedule.timezone, date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), h!, mi!);
+      if (candidate.utc > afterUtc) return candidate;
+    }
+    return null;
+  }
   return nextDailyInstant(schedule.timezone, rec.time, afterUtc);
 }
 
@@ -217,6 +229,16 @@ export function dueRange(schedule: Pick<JobSchedule, "recurrence" | "timezone" |
     if (first > now) return null;
     const count = Math.floor((now - first) / rec.everyMs) + 1;
     return { first, last: first + (count - 1) * rec.everyMs, count, resolution: "exact", requestedWall: null };
+  }
+  if (rec.kind === "weekly") {
+    const first = nextScheduledInstant(schedule, anchor ?? schedule.createdAt - 1);
+    if (!first || first.utc > now) return null;
+    const last = nextScheduledInstant(schedule, now - 8 * 86400000)!;
+    let latest = last;
+    const next = nextScheduledInstant(schedule, latest.utc);
+    if (next && next.utc <= now) latest = next;
+    const count = Math.round((latest.utc - first.utc) / (7 * 86400000)) + 1;
+    return { first: first.utc, last: latest.utc, count, resolution: latest.resolution, requestedWall: rec.time };
   }
   const firstDue = nextDailyInstant(schedule.timezone, rec.time, anchor ?? schedule.createdAt - 1);
   if (firstDue.utc > now) return null;

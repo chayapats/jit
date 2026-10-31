@@ -13,7 +13,7 @@ import { committed } from "./web-product-memory";
 import { limitValues, type S14LimitValues } from "./web-product-team";
 
 /** Schedule shapes the form offers; each maps to one `ScheduleRecurrence` the service validates again. */
-export type S14RoutineSchedule = "daily" | "interval" | "once";
+export type S14RoutineSchedule = "daily" | "interval" | "once" | "weekly";
 /** Form values kept exactly as typed across review, edit and refusal. Nothing here is authority until `routine.enable` commits. */
 export interface S14RoutineDraft extends S14LimitValues { purpose: string; completion: string; bots: string[]; tools: string[]; scopes: string[]; accounts: string[]; schedule: S14RoutineSchedule; time: string; hours: string; at: string; timezone: string; occurrences: string; days: string }
 /** Computed review of one draft. `payload` is the exact capture the enable form repeats, and `firstRun` is advisory. */

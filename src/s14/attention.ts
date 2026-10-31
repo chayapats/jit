@@ -16,6 +16,21 @@ export class S14Attention {
 
   /** Applies exact owner policy without cancelling or retrospectively creating notices. */
   apply(tx: AppTransaction, command: AttentionCommand): AttentionReceipt {
+    if (command.kind === "attention.acknowledge") {
+      exact(command.payload, ["noticeId"]);
+      identity(command.payload.noticeId);
+      const row = tx.get<{ record_json: string }>("SELECT record_json FROM attention_notices WHERE id=?", command.payload.noticeId);
+      if (!row) throw new AppError("not_found", 404);
+      const notice = JSON.parse(row.record_json) as AttentionNotice;
+      if (notice.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      notice.resolvedAt = this.app.now();
+      notice.retriesRemaining = 0;
+      if (notice.state === "queued") notice.state = "cancelled";
+      notice.revision++;
+      this.save(tx, notice);
+      return { kind: command.kind, requestId: command.requestId, notice };
+    }
+    if (command.kind !== "attention.set") throw new AppError("unknown_command");
     exact(command.payload, ["level"]);
     if (!["all", "needs-me"].includes(command.payload.level)) throw new AppError("invalid_attention");
     const setting = this.setting(tx);
@@ -31,6 +46,11 @@ export class S14Attention {
     identity(input.groupId);
     if (tx.get("SELECT 1 FROM attention_decisions WHERE group_id=?", input.groupId)) {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM attention_notices WHERE group_id=?", input.groupId);
+      if (!row && input.class === "needs_owner") {
+        tx.run("DELETE FROM attention_decisions WHERE group_id=?", input.groupId);
+        this.commit(tx, input);
+        return;
+      }
       if (row) {
         const notice = JSON.parse(row.record_json) as AttentionNotice;
         const added = input.proposalIds.some(id => !notice.proposalIds.includes(id));

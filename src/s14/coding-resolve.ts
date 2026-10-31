@@ -56,3 +56,20 @@ export async function repositoryCommit(url: string, branch: string, allowed: () 
     throw new AppError("coding_resolve_unavailable", 503);
   } finally { clear(); controller.abort(); }
 }
+
+/** Resolves an exact private branch only in the bounded trusted Git broker, never checking out repository code. */
+export async function privateRepositoryCommit(url: string, branch: string, secret: string, allowed: () => void,
+  limits?: import("./coding-git-limits").GitProcessLimits): Promise<string> {
+  codingOrigin(url); codingBranch(branch);
+  const { CodingGitMirror, brokerGit } = await import("./coding-git-mirror");
+  const mirror = new CodingGitMirror(limits);
+  try {
+    allowed();
+    const result = await brokerGit(mirror.directory, ["-c", "protocol.https.allow=always", "ls-remote", "--refs", "--", url, `refs/heads/${branch}`], secret, { limits: mirror.limits });
+    allowed();
+    const match = /^([a-f0-9]{40})\t([^\n]+)\n?$/.exec(result.stdout);
+    if (result.code !== 0 || !match || match[2] !== `refs/heads/${branch}`) throw new AppError("coding_branch_unavailable", 409);
+    codingCommit(match[1]);
+    return match[1]!;
+  } finally { mirror.close(); }
+}

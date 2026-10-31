@@ -24,6 +24,7 @@ function recurrenceText(payload: Pick<RoutinePurpose, "recurrence" | "timezone">
   const r = payload.recurrence, zone = `<span class="s-mono s-meta">${e(payload.timezone)}</span>`;
   if (r.kind === "daily") return `${tr("s14.routine.every_day")} <span class="s-mono">${e(r.time)}</span> · ${zone}`;
   if (r.kind === "once") return `${tr("s14.routine.once_at")} ${whenIn(r.at, payload.timezone)} · ${zone}`;
+  if (r.kind === "weekly") return `<span class="s-mono">${e(JSON.stringify(r))}</span> · ${zone}`;
   const hours = r.everyMs / 3600000;
   return `${tr("s14.routine.every")} ${Number.isInteger(hours) ? `${hours} ${tr(hours === 1 ? "s14.routine.hour" : "s14.routine.hours")}` : `${Math.round(r.everyMs / 60000)} ${tr("s14.time.minutes")}`} · ${zone}`;
 }
