@@ -1,3 +1,4 @@
+import { createS14Pump } from "./pump";
 import { personalServiceBinding, personalProxyRequest } from "./personal-origin";
 import { PersonalVault } from "./personal-vault";
 import { dirname, join, resolve } from "node:path";
@@ -71,31 +72,20 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       await app.recovery.boot(schwayRecovery(join(dirname(path), "native")));
       await app.botLifecycle.drain(schwayRecovery(join(dirname(path), "native")));
       await app.computers.drain();
-      // Interactive chat is checked before every bounded graph admission; each run has its own host.
-      let pumping: Promise<void> | null = null;
-      const pump = (): Promise<void> => {
-        if (app.backups.busy) return Promise.resolve();
-        if (pumping) return pumping;
-        pumping = (async () => {
-          for (;;) {
-            if (app.backups.busy) break;
-            app.routines.tick();
-            await app.drainReplies(); await app.authority.drain();
-            await app.git.drain();
-            await app.attention.drain();
-            await app.personal.drain();
-            await app.personal.effects.drain();
-            await app.botLifecycle.drain(schwayRecovery(join(dirname(path), "native")));
-            if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
-          }
-        })().finally(() => { pumping = null; });
-        return pumping;
-      };
+      const pump = createS14Pump({
+        busy: () => app.backups.busy,
+        tick: () => app.routines.tick(),
+        replies: () => app.drainReplies(), work: () => app.authority.drain(),
+        repliesQueued: () => !!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1")),
+        git: () => app.git.drain(), attention: () => app.attention.drain(),
+        personal: () => app.personal.drain(), personalEffects: () => app.personal.effects.drain(),
+        botLifecycle: () => app.botLifecycle.drain(schwayRecovery(join(dirname(path), "native"))),
+      });
       const handler = createS14Handler(app, origin, renderS14, createS14Product(app), createS14Auth(app));
       const maintainComputers = () => {
         if (app.backups.busy) return;
         app.routines.tick();
-        void pump().catch(() => {});
+        void pump.drain().catch(() => {});
         app.computers.sweep();
         app.authority.cancelFenced();
         void app.computers.drain().catch(() => {});
@@ -104,17 +94,17 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
         let incoming = request;
         try { if (binding.proxy) incoming = personalProxyRequest(request, origin); }
         catch { return new Response("host_rejected", { status: 403 }); }
-        const response = await handler(incoming); maintainComputers(); void pump().catch(() => {}); return response;
+        const response = await handler(incoming); maintainComputers(); void pump.drain().catch(() => {}); return response;
       } });
       const computerTimer = setInterval(maintainComputers, 1000);
-      void pump().catch(() => {});
+      void pump.drain().catch(() => {});
       process.once("exit", release);
       const shutdown = () => {
-        clearInterval(computerTimer); server.stop(true);
+        pump.stop(); clearInterval(computerTimer); server.stop(true);
         void (async () => {
           await app.backups.settle();
           await app.authority.shutdown();
-          await pumping;
+          await pump.idle();
           app.computers.recover(); await app.computers.drain();
           await app.signIns.close();
           await s14CredentialLifecycle().close();

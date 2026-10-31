@@ -56,15 +56,29 @@ export class CodingGitMirror {
 
   /** Refuses oversized decoded object inventories before fsck/diff or credential release, without requesting object bodies. */
   async verifyObjectBytes(): Promise<void> {
-    const result = await this.git(["-C", this.path, "cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"]);
-    if (result.code !== 0) throw new AppError("git_objects_unverified", 409);
-    let total = 0;
-    for (const line of result.stdout.trim().split("\n")) {
-      if (!/^(0|[1-9][0-9]*)$/.test(line)) throw new AppError("git_objects_unverified", 409);
-      const size = Number(line);
+    let total = 0, pending = "", count = 0;
+    const countLine = () => {
+      if (!/^(0|[1-9][0-9]*)$/.test(pending)) throw new AppError("git_objects_unverified", 409);
+      const size = Number(pending);
       if (!Number.isSafeInteger(size) || size > 32 * 1024 * 1024 - total) throw new AppError("git_decoded_objects_bound", 409);
       total += size;
-    }
+      count++;
+      pending = "";
+    };
+    const result = await this.git(["-C", this.path, "cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"], {
+      inspect(chunk) {
+        for (const byte of chunk) {
+          if (byte === 10) countLine();
+          else {
+            if (byte < 48 || byte > 57 || pending.length >= 16) throw new AppError("git_objects_unverified", 409);
+            pending += String.fromCharCode(byte);
+          }
+        }
+      },
+    });
+    if (result.code !== 0) throw new AppError("git_objects_unverified", 409);
+    if (pending) countLine();
+    if (!count) throw new AppError("git_objects_unverified", 409);
   }
 
   /** Verifies the bundle, full commit identity, reachable objects and exact reviewed diff before credential release. */
