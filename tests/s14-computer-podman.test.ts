@@ -62,6 +62,8 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       return ok(get("--name"));
     }
     if (argv[0] === "inspect") return ok([infos.get(argv[1]!)]);
+    if (argv[0] === "rm" && registryFailure === "stop-grace" && infos.has(argv.at(-1)!) && argv.at(-1)!.endsWith("-registry") &&
+        !(argv.includes("--time") && argv[argv.indexOf("--time") + 1] === "0") && options.timeoutMs < 10000) return { ...ok(), exitCode: 137 };
     if (argv[0] === "rm" && registryFailure === "cleanup" && argv.at(-1)!.endsWith("-registry")) return { ...ok(), exitCode: 1 };
     if (argv[0] === "rm") { infos.delete(argv.at(-1)!); return ok(); }
     if (argv[0] === "exec" && argv.includes("/sys/fs/cgroup/cpu.max")) return ok(kernel);
@@ -353,4 +355,14 @@ test("an unconfirmed stop cannot remove browser locks or touch persistent websit
   expect(existsSync(join(profile, "SingletonLock"))).toBe(true);
   expect(readFileSync(keep, "utf8")).toBe("synthetic session");
   expect(f.calls.some(a => a[0] === "run")).toBe(false);
+});
+
+
+test("registry removal settles within its cleanup deadline when PID 1 ignores the default stop grace", async () => {
+  const f = fixture(), handle = await f.runtime.start(f.c, () => {});
+  f.setRegistryFailure("stop-grace");
+  const result = await f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  expect(result.exitCode).toBe(0);
+  expect(f.calls.some(a => a[0] === "network" && a[1] === "rm")).toBe(true);
+  await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).resolves.toBeDefined();
 });

@@ -78,7 +78,7 @@ export class ContainerRegistryProxy {
   async close(): Promise<void> { await this.#tail.catch(() => {}); await this.#remove(); }
   async #remove(): Promise<void> {
     this.#live?.stream.close(); this.#live = null;
-    await this.#command(["rm", "--force", "--ignore", this.topology.name]);
+    await this.#command(["rm", "--force", "--time", "0", "--ignore", this.topology.name]);
   }
   async #command(argv: string[]): Promise<Uint8Array> {
     const result = await this.run(argv, { timeoutMs: 30_000 });

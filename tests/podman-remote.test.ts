@@ -164,14 +164,14 @@ test("remote proxy uses two bridges with no mounts, published ports or forwardin
   expect(f.bundle()).not.toContain("bun:");
   expect(await f.proxy.url()).toBe("http://10.89.0.2:3128"); expect(f.calls.filter(args => args[0] === "create")).toHaveLength(1);
   f.crash(); await Promise.resolve(); expect(await f.proxy.url()).toBe("http://10.89.0.3:3128");
-  await f.proxy.close(); expect(f.calls.at(-1)).toEqual(["rm", "--force", "--ignore", "jit-registry-proxy"]);
+  await f.proxy.close(); expect(f.calls.at(-1)).toEqual(["rm", "--force", "--time", "0", "--ignore", "jit-registry-proxy"]);
 });
 
 test("remote proxy refuses unexpected hardening or a failed attach without dropping workspace isolation", async () => {
   for (const kind of ["inspect", "network", "stream"] as const) {
     const f = proxyFixture(); if (kind === "inspect") f.invalid(); else f.fail(kind === "network" ? "connect" : "start");
     await expect(f.proxy.url()).rejects.toMatchObject({ code: "box_proxy_unavailable" });
-    expect(f.calls.at(-1)).toEqual(["rm", "--force", "--ignore", "jit-registry-proxy"]);
+    expect(f.calls.at(-1)).toEqual(["rm", "--force", "--time", "0", "--ignore", "jit-registry-proxy"]);
   }
 });
 
@@ -207,6 +207,6 @@ test("Podman 4.9 inspect (per-capability CapDrop, no Sysctls) is proven inside t
   for (const bad of [{ capBnd: "00000000800405fb", forwarding: "0\n0\n" }, { capBnd: "0000000000000000", forwarding: "1\n0\n" }]) {
     const f = proxyFixture(bad);
     await expect(f.proxy.url()).rejects.toMatchObject({ code: "box_proxy_unavailable" });
-    expect(f.calls.at(-1)).toEqual(["rm", "--force", "--ignore", "jit-registry-proxy"]);
+    expect(f.calls.at(-1)).toEqual(["rm", "--force", "--time", "0", "--ignore", "jit-registry-proxy"]);
   }
 });
