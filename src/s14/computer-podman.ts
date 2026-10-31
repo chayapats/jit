@@ -340,11 +340,17 @@ export class BotPodmanRuntime implements ComputerRuntime {
   private async removeRegistry(c: BotComputer, proxy?: ContainerRegistryProxy): Promise<void> {
     const prefix = `jit-s14-${c.id}-registry`, network = `${prefix}-net`;
     // PID 1 may ignore SIGTERM; do not spend Podman's default stop grace past the cleanup deadline.
-    const results = await Promise.allSettled([
-      this.command(["rm", "--force", "--time", "0", "--ignore", prefix]),
-      proxy ? proxy.close() : this.command(["rm", "--force", "--time", "0", "--ignore", `${prefix}-proxy`]),
-    ]);
-    if (results.some(result => result.status === "rejected")) fail("coding_registry_cleanup_unconfirmed");
+    // Both removals mutate the same Podman storage/network namespace. Avoid
+    // spending the check's finite deadline waiting behind the proxy's teardown
+    // on slow storage. Still attempt both cleanups when either one fails.
+    let unconfirmed = false;
+    for (const remove of [
+      () => this.command(["rm", "--force", "--time", "0", "--ignore", prefix]),
+      () => proxy ? proxy.close() : this.command(["rm", "--force", "--time", "0", "--ignore", `${prefix}-proxy`]),
+    ]) {
+      try { await remove(); } catch { unconfirmed = true; }
+    }
+    if (unconfirmed) fail("coding_registry_cleanup_unconfirmed");
     const exists = await this.#run(["network", "exists", network], { timeoutMs: 5000 });
     if (exists.exitCode === 0) await this.command(["network", "rm", network]);
     else if (exists.exitCode !== 1) fail("coding_registry_cleanup_unconfirmed");

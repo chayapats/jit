@@ -328,6 +328,23 @@ test("unconfirmed registry cleanup fences the runtime handle and cannot certify 
   await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).rejects.toThrow("computer_handle_fenced");
 });
 
+test("registry teardown does not contend on storage by removing both components concurrently", async () => {
+  let guarded = false, active = 0, maximum = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!guarded || argv[0] !== "rm" || !argv.at(-1)!.includes("-registry")) return;
+    active++; maximum = Math.max(maximum, active);
+    const contended = active > 1;
+    try { await new Promise<void>(resolve => setImmediate(resolve)); if (contended) throw Error("slow_storage_cleanup_deadline"); }
+    finally { active--; }
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  guarded = true;
+  const result = await f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  expect(result.exitCode).toBe(0);
+  expect(maximum).toBe(1);
+  expect(f.requests.filter(r => r.argv[0] === "rm" && r.argv.at(-1)!.endsWith("-registry")).every(r => r.timeoutMs === 5000)).toBe(true);
+});
+
 test("Podman 4.9 CgroupMode is accepted only for an exact private namespace; conflicting or missing proof refuses", async () => {
   const f = fixture(info => { info.HostConfig.CgroupMode = "private"; delete info.HostConfig.CgroupnsMode; });
   const handle = await f.runtime.start(f.c, () => {}); await f.runtime.stop(f.c);
