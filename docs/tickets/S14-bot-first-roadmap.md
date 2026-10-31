@@ -2,7 +2,7 @@
 
 Parent: [#244](https://github.com/chayapats/jit/issues/244). Documentation/design: [#245](https://github.com/chayapats/jit/issues/245). [Spec](../specs/S14-bot-first-local-assistant.md).
 
-Status: 17 scoped runtime/evidence tickets are published as needs-triage after the Opus handoff. None is ready-for-agent. Exact issue bodies are mirrored under s14/ and indexed in s14.json. No implementation dates are implied.
+Status checked with `gh issue view` per issue on 2026-10-31: 22 runtime/evidence/follow-up tickets are indexed in `s14.json`. Implementation tickets #246–#255, #257–#260, #262–#263, #265–#266, #268 and #279 are CLOSED. EVID14-01 (#256) and CUT14-01 (#267) remain OPEN; parent #244 remains OPEN and documentation #245 is CLOSED. Closed implementation work does not certify live acceptance. See the [consolidated evidence](../evidence/s14-mvp-evidence.md) for per-build/per-architecture limits. Original preparation mirrors remain historical issue bodies, not current readiness claims.
 
 ## Phase A — research MVP (required)
 
@@ -22,7 +22,7 @@ Status: 17 scoped runtime/evidence tickets are published as needs-triage after t
 | [OPS14-01](https://github.com/chayapats/jit/issues/263) | Owner backs up and restores the fresh S14 store, artifacts and opaque native snapshots through quarantine and current-ledger reconciliation before workers start. | BOT14-02 and its artifact/share/native recovery prerequisites | consistent manifest, corrupt/incompatible/crash cutover, credential exclusion, lifecycle anti-resurrection and opt-in Linux round trip |
 | [EVID14-01](https://github.com/chayapats/jit/issues/256) | Owner runs the research journey on supported Linux x64/arm64 with recorded limits, actual Parallel sources and restart evidence. | All Phase A slices including BOT14-02 and OPS14-01; real route and host configured by owner | ready-for-human opt-in corpus/host evidence, not paid CI |
 
-BOT14-02 owns existing-Bot capability edits, retirement and deletion; BOX14-01 computer reset does not cover them. OPS14-01 owns the usable backup/restore/upgrade path for the new store; fresh state waives legacy conversion, not NFR-08. EVID14-01 is blocked on OPS14-01 and its lifecycle prerequisites.
+BOT14-02 owns existing-Bot capability edits, retirement and deletion; BOX14-01 computer reset does not cover them. OPS14-01 owns the usable backup/restore/upgrade path for the new store; fresh state waives legacy conversion, not NFR-08. OPS14-01 and BOT14-02 are closed implementation prerequisites; EVID14-01 still requires the outstanding live permutations and owner evidence.
 
 BOT14-01 and AUTH14-01 are independently useful new-store paths; they must not wait on an unrelated live subscription smoke. Engine prerequisites block activation of the dependent capability, not deterministic fixture work. A placeholder or missing upstream contract is never marked verified.
 
@@ -45,3 +45,18 @@ Use docs/agents/workflow.md: spec parents are not implementation tickets; each t
 The owner disabled implement-parallel and its coordinator/claim workflow for this repository. Work uses the issue-specific branch/worktree, checks current ownership/PRs and respects ongoing changes. This does not disable the explicitly requested Opus UI/UX delegate.
 
 Schway briefs: [shared lifecycle](../proposals/schway/SCH14-01-shared-credential-lifecycle.md), [#414 recovery](../proposals/schway/SCH14-02-session-recovery-414.md). Publish or refine upstream work through its owner; do not invent a contract/version or duplicate #414.
+
+## Later tickets and current gate
+
+| Ticket | GitHub state verified 2026-10-31 | Scope/status distinction |
+| --- | --- | --- |
+| [UX14-01 #265](https://github.com/chayapats/jit/issues/265) | CLOSED | First-owner Web setup and conversation commands; device acceptance remains separate. |
+| [OPS14-01 #263](https://github.com/chayapats/jit/issues/263) | CLOSED | Backup/restore implementation and recorded round trips; remaining lifecycle permutations stay in evidence. |
+| [OPS14-02 #266](https://github.com/chayapats/jit/issues/266) | CLOSED | Nested subordinate-ID diagnosis; no host-configuration change implied. |
+| [CUT14-01 #267](https://github.com/chayapats/jit/issues/267) | OPEN | Opt-in install/service delivery exists; default flip and owner-host install await #256 and required evidence. |
+| [TEST14-01 #268](https://github.com/chayapats/jit/issues/268) | CLOSED | Deterministic probe uncertainty test. |
+| [UX14-02 #279](https://github.com/chayapats/jit/issues/279) | CLOSED | Routine and attention controls; AC13 owner browser/device evidence remains pending. |
+
+New ticket mirrors are in `s14/`. Their issue bodies describe scope at publication and are not rewritten to imply human acceptance. `s14.json` records the separately verified current GitHub states. No ticket is newly marked ready-for-agent by this consolidation.
+
+ADR status review: ADRs 0045–0048 are original proposed architecture, refined by accepted opt-in implementation ADRs 0049–0056 and 0057 offline activation/scoped registry, 0058–0060. CODE14/LIFE14 implementation ADRs 0057 are accepted for opt-in implementation, with live limitations retained in the evidence record. Accepted engineering does not mean that all proposed architecture or release evidence is accepted.

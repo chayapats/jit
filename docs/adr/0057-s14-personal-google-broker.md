@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted for opt-in implementation
 scope: LIFE14-01/02; S14 Phase C; owner provider/client/scope decisions from issues 259/260 on 2026-10-30
 ---
 
@@ -48,3 +48,7 @@ Held effect authority survives a successfully committed run's graph settlement, 
 ## Managed backup reconciliation (#277)
 
 The later combined fresh schema is **16**, above backup schema 14 and main schema 15; unreleased 1–15 refuse without migration or erasure. The historical #278 schema-15 reconciliation above remains its introduction record. app.managed-backup/v1 and app.restore-activation/v1 now cover personal metadata and evidence under the current lifecycle ledger, exclude OAuth flows and vault secrets, require reconnection, and fence all held/uncertain send and Calendar effects against replay. See the separate offline managed activation ADR and tests/s14-ops.test.ts for deterministic round-trip evidence; real Linux/OAuth acceptance remains unrun.
+
+## Status review — 2026-10-31
+
+The scoped implementation is integrated; associated LIFE14-01/02 (#259/#260) issue states were verified CLOSED with `gh issue view`. Acceptance here covers the implemented engineering decision, not every historical proposal or live release gate. Historical schema/availability and unrun-evidence paragraphs above describe their original checkpoints. Current per-build live results and missing cases are in [EVID14-01](../evidence/s14-mvp-evidence.md); no owner report acceptance or complete Git effect proof is inferred.

@@ -1,90 +1,90 @@
 # S14 live MVP evidence — EVID14-01 / #256
 
-Run date: 2026-10-31. **The S14 release gate is not passed. Keep #256 open.** This record separates observed host behavior, the selected model route, research usefulness and unexercised requirements. A passing deterministic test, configured image or completed model response is never substituted for live evidence.
+Consolidated 2026-10-31 from the private research, authority, isolation (final matrix), x64 computer and UX stream records. **The release gate remains open. The owner has not read or accepted the reports.** Rubric assessment is separate from owner acceptance. Refs #256.
 
-Raw commands, screenshots, timelines, source/report bodies, installation addresses and private receipts remain in the owner's ignored `.local/s14-256-live/` record. This file contains no installation address or credential. The legacy service was left installed and running. No public release, PR merge, provider/model/billing fallback or authenticated Parallel key was used.
+This consolidation performed writing and read-only checks only: no live tests, host access, deployments or new UI design. Raw reports, commands, screenshots, account/installation identities and private receipts remain in ignored `.local/s14-256-live/`. Public summaries below intentionally omit those values. The optional x64 residual stream file was absent at writing time; another agent is rerunning residual cases. No anticipated result is credited here.
 
-## Tested builds and environments
+## Build attribution and environment
 
-Both installations started at `50ea1f5`. Fixes were built natively and deployed through the real supervised `service upgrade` path, with protected operator artifacts and health checks. The five-task final research round used `f8840b08bb64d138a1416bac606cf4131217cc54`. The subsequent restore fixes used `0d8b40c` and `8b6ea9f`. The final runtime build is `c2775c06dc70adadb1f3acc7ddadc8ae7356ac03`; its additional change corrects existing composer checkbox defaults. Earlier failed rounds are retained, not replaced by later successful subcases.
+Build labels below identify actual tested code, not the latest main or a blanket certification of later integration. Schema 17 and the supported public `schway-1.0.0-rc.2-697bf40.tgz` surface remained the evidence baseline. No provider/model fallback is claimed. Explicit owner-authorized keyed Parallel rounds are separately labelled; they were not automatic fallback from anonymous quota.
 
-| Measurement/environment | Linux x64 | Linux arm64 |
+| Label | Actual build | Evidence scope |
 | --- | --- | --- |
-| OS/kernel | Ubuntu 26.04.1; Linux 7.0.0-42 | Ubuntu 24.04; Linux aarch64 |
-| CPU / RAM / swap | 8 CPU; 16,226,283,520 B RAM; 4,294,963,200 B swap | 4 CPU; 8,308,228,096 B RAM; no swap |
-| Root filesystem total / initial available | 104,028,168,192 / 86,514,810,880 B | 40,483,942,400 / 29,745,336,320 B |
-| Bun / Podman | 1.4.2 / 5.7.0 | 1.4.2 / 4.9.3 |
-| Initial service memory / peak | 50,696,192 / 104,431,616 B | 43,122,688 / 103,661,568 B |
-| Final sampled service memory / peak | 224,305,152 / 238,731,264 B | 167,079,936 / 217,362,432 B |
-| CPU accumulated in those final service samples | 22.534 s | 7.938 s |
-| Final sampled service startup (systemd start to actual listening journal entry) | 20,738.259 ms | 1,376.668 ms |
-| Later root available | 85,409,132,544 B | 24,350,371,840 B |
-| Later allocated service data / release trees | 2,306,539,520 / 1,453,412,352 B | 8,740,429,824 / 3,173,584,896 B |
-| Computer startup observation | Repeated `computer_startup_timeout`; no successful startup certified | Real workspace/browser containers and Web screenshots succeeded |
+| H | `f8840b08bb64d138a1416bac606cf4131217cc54` | Historical anonymous five-task corpus |
+| L | `c2775c06dc70adadb1f3acc7ddadc8ae7356ac03` | Initial final runtime: kernel, lifecycle, restore and composer fixes; earlier restore fixes `0d8b40c`, `8b6ea9f` |
+| A | `75972acde39a8db4d4fa35689e58dd35784f3e06` | Authority bounded negatives/correction/routines; initial arm64 isolation |
+| I | `df552f201029c2151668223eb033a54f721e6312` | arm64 retained-lease, independent stop and installed raw-byte guard |
+| C | `0e2abfba5d6e5daa79c325e71d5bc18fbeab0834` | x64 final computer journey, startup/idle/restart/reboot/reset |
+| B | `10e384b236d8bc36ce56d492742dc89e567ea1a1` | Final isolation matrix; anonymous arm64 R1–R3 and x64 R1–R2 |
+| Q | `b39cf91f276b11668b513eae7b57f54ee436f565` | Anonymous correlation fix; x64 R3/R4; quota-stopped affected reruns |
+| K | `7347c4219d43fc1fec2ed0ecd2eadb4d691db29c` | Seven explicitly keyed corpus cases |
+| R | `af5c6ecab7e5dad553d7bf2e61104f91766a0620` | Three sole authorized keyed retries; x64 scratch setup and changed-authority restart |
+| G | `702485b716d4dada2448cb16723d1e508c5da74b` | Both-host Google OAuth/effects/recovery; arm64 scratch fresh-owner completion; callback fix from #292 |
+| U | `a1914e28bd31d1c3ccb7db9c8f87f0b6ce233920` | Local scripted UX journey/audit final integration checkpoint |
+| U2 | `dfb5e37476b72e8ef887da126d3463e50966a324` | Local UX unsent-draft regression; broader audit not rerun here |
 
-These are samples from this run, not resource promises, minima or benchmarks. Release trees, retained upgrade artifacts and disk-pressure writes affect allocated bytes. The smaller arm64 VM ran real Codex, Parallel, scheduled controls, computers and restore. Its host/computer lifecycle checks passed; the overall product gate still requires the pending cases below.
-
-x64 had a material storage stall. The service was observed in kernel `jbd2_log_wait_commit` through `ext4_sync_file`/`fsync`; I/O PSI reached `some avg10=77.43`, `full avg10=77.08`. Podman's blocked `storage-chown-by-maps` helper held image/layer storage locks while preparing a rootless keep-id layer. A later computer attempt also timed out. This is observed failure evidence, not proof of an upstream root cause or a successful fix. Durability, isolation and the 30-second startup ceiling were not weakened to force a pass.
-
-## Selected route and public research
-
-Real first chat replies, Bot proposals, accepted Bots and explicit work starts ran through Codex `gpt-6.1-sol` subscription on both architectures. Route readiness is demonstrated by actual calls, not the original `configured-unverified` label. No Codex quota error was observed. Natural credential renewal during concurrent work was not established.
-
-Parallel was anonymous throughout. Actual searches/fetches returned inspectable source identities, URLs, timestamps and snippet/excerpt coverage. Blocked/oversized/partial retrievals remained visible. `parallel_quota` classifies rate-limit/quota responses; it does **not** establish that Codex subscription quota was exhausted. Such responses occurred during the run; queued jobs later completed with transparent unsupported/partial reports. No new research reads were started after the aggregate quota condition was recognized. No key or alternate route was introduced.
-
-The [corpus and fixed rubric](s14-research-corpus.md) were committed before the first live model call. All five requests were submitted through the Web on both hosts, using two concurrent Bots, 30 minutes and 40 reads per work. English was the x64 owner locale; Thai was the arm64 owner locale. Input language and output locale are recorded separately.
-
-**The owner has not read or accepted the reports.** No report-acceptance control was clicked. Rubric assessment is delegated evaluation, not owner acceptance.
-
-| Task | x64 result | arm64 result |
-| --- | --- | --- |
-| R1 Podman/cgroups | Fail: no verified official-source coverage after quota refusals; provisional uncited guidance | Fail: required cited coverage incomplete; quota refusals |
-| R2 SQLite backup/WAL | Fail: no verified official-source coverage after quota refusals | Fail: no verified official-source coverage after quota refusals |
-| R3 systemd timers | Fail: no verified official-source coverage after quota refusals | Fail: no verified official-source coverage after quota refusals |
-| R4 uncertain HTTP writes | Rubric pass, 10/10; cited partial report; real browser download/hash verified | Rubric pass, 10/10; cited partial report; real browser download/hash verified |
-| R5 WCAG/WAI checklist | Fail: provisional uncited checklist; missing research siblings | Partial cited checklist; full rubric/delivery acceptance pending |
-
-Scores below are relevance/traceability/coverage honesty/reasoning/delivery. Delivery scores of 1 retain the material gap that those artifacts were not downloaded through the Web before their later lineage withdrawal. A total of 8 without delivery=2 is not a rubric pass.
-
-| Task | x64 scores / total | arm64 scores / total |
-| --- | --- | --- |
-| R1 | 1/0/2/1/1 = 5 | 1/2/2/2/1 = 8, no pass |
-| R2 | 1/0/2/1/1 = 5 | 1/0/2/1/1 = 5 |
-| R3 | 1/0/2/1/1 = 5 | 1/0/2/1/1 = 5 |
-| R4 | 2/2/2/2/2 = 10 | 2/2/2/2/2 = 10 |
-| R5 | 1/0/2/1/1 = 5 | 1/2/2/2/1 = 8, no pass |
-
-Remaining tasks do not receive a corpus pass: missing traceability or unverified delivery cannot be averaged away. Later lifecycle deletion of a deliberately introduced memory marker withdrew dependent report revisions/artifacts. That withdrawal was previewed in the Web and survived restoring the older image; it must not be bypassed to re-download those revisions. The unaffected R4 artifacts remained readable with these verified SHA-256 values:
-
-- x64: `186c0d390b5cff309ad9d3fbb04973e633ff468606d39b11c720b1c8bb695737` (4,791 B, `text/markdown`).
-- arm64: `f53ba2e708d9b15f65dd85a366c036c8b81d266f025e15e8a1a3df9ef084bac6` (6,673 B, `text/markdown`).
-
-Concurrency is evaluated from recorded intervals, not selection or reservation counts. The final x64 R4 round has **39,741 ms** of overlap between the two accepted non-main research Bots, followed by dependency-respecting synthesis. Earlier arm64 R3 has **25,078 ms** of such overlap; interrupted/replayed intervals are not treated as continuous execution. The final arm64 corpus round did not demonstrate overlap between those two non-main Bots in each task. Other final tasks also lacked that overlap. The requested corpus-wide concurrency condition therefore remains unpassed even where a report is useful. Queue and dependency waits are retained in the raw timelines.
-
-Contracts remain application schema 17 with the pinned `schway-1.0.0-rc.2-697bf40.tgz` public host surface. HTTP command/authority envelopes were not widened. The new report candidate validator rolls back publication; offline stop reconciliation accepts only matching confirmed cleanup; decoded Git inventory is capped at 32 MiB before verification.
+Linux x64: Ubuntu 26.04, kernel 7.0.0-42, 8 CPUs, about 16.2 GB RAM and 4.3 GB swap, Bun 1.4.2, Podman 5.7.0/libsubid, native overlay on extfs. Linux arm64: Ubuntu 24.04, 4 CPUs, about 8.3 GB RAM without swap, Bun 1.4.2, Podman 4.9.3. These are observed installations, not minimum requirements or performance promises. Legacy services remained separate. Private website login is not certified by synthetic profile markers or protected offline browser input.
 
 ## Acceptance matrix
 
-`Pending` means at least one required part remains unexercised or blocked. A passed subcase is named explicitly; it does not pass the entire acceptance case.
+Pass requires all required parts of the stated case to have run. Pending cells name the missing part; bounded subcase Pass never promotes the entire case. Historical Fail remains in the rounds below even when a later subcase passes.
 
-| Case | x64 | arm64 | Actual coverage and remaining requirement |
-| --- | --- | --- | --- |
-| S14-AC01 | Pending | Pending | Real setup/profile/main chat and clean bootstrap delivery exercised. Full old-state refusal/fresh-owner end-to-end matrix not certified by this round. |
-| S14-AC02 | Pending | Pending | Real proposal and exact Web acceptance create permanent Bots; normal chat starts no team. Running capability/retire/delete races passed (computer work on arm64; tool-free real inference on x64). Stale/injected Bot-proposal coverage remains incomplete. |
-| S14-AC03 | Pending | Pending | Explicit finite Web work starts observed. Task acceptance without execution and duplicate ingress/source-command injection need complete live coverage. |
-| S14-AC04 | Pending | Pending | Real overlapping research, queues, dependency waits, partial synthesis and retained successful evidence observed. All-five-task overlap/coverage condition remains unpassed. |
-| S14-AC05 | Fail / pending | Pending | x64 computer startup blocks the full isolation drill. arm64 actual mounts, paths, environment, network and kernel bounds tested; full shell/MCP/private-memory/share/revocation matrix remains incomplete. |
-| S14-AC06 | Pending | Pending | Real private memory labels, deletion preview, derived report/artifact withdrawal and anti-resurrection after restore observed. Full extraction/correction/shared-promotion/native-replay matrix not certified. |
-| S14-AC07 | Pass | Pass | Actual anonymous Parallel reads and visible partial/oversize/quota outcomes; no key/provider/model/billing fallback. This does not pass corpus usefulness. |
-| S14-AC08 | Pending | Pending | R4 immutable cited partial revisions, source links, media type, checksum and real Web download pass. Other corpus tasks lack required evidence or complete delivery checks. |
-| S14-AC09 | Pending | Pending | No real approved external-write/unknown-outcome/reconciliation drill. No fixture claim substitutes for it. |
-| S14-AC10 | Pending | Pending | Real scheduled quiet `no_update` and deliberately failing occurrence pass: quiet has no attention notice; failure is visible once. Out-of-scope proposal/no-new-authority case remains pending. |
-| S14-AC11 | Pending | Pending | Real mid-run SIGKILL, systemd recovery and VM reboot; replay-safe replacements and retained sibling evidence observed. arm64 mid-computer-run reboot retained files and kept the attempt count at one with handler_requires_reconciliation. Unknown-effect and natural-renewal cases remain pending. |
-| S14-AC12 | Pending | Pending | arm64 Web screenshot, agent lease, owner takeover and owner input observed. Running capability/retire/delete controls fenced publication, with no result committed for any of the six race runs. Late agent browser-input refusal remains unexercised. x64 startup blocks equivalent computer evidence. |
-| S14-AC13 | Pending | Pending | Existing Thai/English desktop Chromium flows used. Full keyboard/no-script/dark-light/responsive/assistive review remains incomplete; real device, Safari, Firefox and screen-reader checks are pending. |
-| S14-AC14 | Fail | Pass (this host) | x64 repeated computer startup/storage stalls fail its just-works check. arm64 actual startup, five-minute idle stop, process/VM persistence, reset and selected-route readiness passed under the recorded limits. This does not pass other S14 gates. |
+| Case | Linux x64 | Linux arm64 |
+| --- | --- | --- |
+| S14-AC01 | Pass within exercised fresh/synthetic-old-store scope, R: separate fresh Web setup and real tool-free first chat; one owner/main Bot, no Project; synthetic old bytes unchanged, no lock/WAL/ledger. | Pass within same scope: old-store refusal/unchanged bytes A; correctly configured fresh scratch setup and real chat G. Initial scratch provider failure is retained below. |
+| S14-AC02 | Pass within exercised proposal scope A: stale exact revision and forged owner field refused, exact revised acceptance creates Bot; ordinary chat need not dispatch a team. Lifecycle races L used real tool-free inference. This is no broad injection/XSS claim. | Pass within same proposal scope A; lifecycle races L used real computer work. |
+| S14-AC03 | Pass within exercised scope A: task acceptance has no grant/attempt, identical Web work ingress yields one receipt/attempt, quoted source instruction grants no authority, actual finite explicit work starts. | Pass within same exercised scope A. |
+| S14-AC04 | Pass within research graph scope B/Q/K/R: distinct non-main native intervals overlap, actual peak two, finite 2/30/40 grants, excess queues, dependent Jit synthesis, failed siblings retain successful evidence and disclose gaps. Historical corpus overlap failures remain. | Pass within research graph scope B/K/R, same bounds; historical missing overlap remains a failed round. |
+| S14-AC05 | Pending, B: bounded foreign file/profile/network/private-memory probes, named receiver/nonreceiver and future stale-share denial pass. Committed receiver content withdrawn while original retained. Held share-revoke retry failed startup before write/wait; late-result revoke remains blocked. Registry/Git residuals below are unpassed. | Pass within bounded probes A/I/B: guessed filesystem/profile/private-memory, socket/network and named snapshot/nonreceiver/future revoke plus held-revoke zero publication. No arbitrary MCP tool exists in these exact runs, so MCP is N/A, not a simulated denial. No exhaustive escape claim. |
+| S14-AC06 | Pending: correction, explicit owner shared promotion, fresh labelled context/native retirement A; deletion, derived withdrawal and older-image anti-resurrection L pass. Extraction-not-promoting-private-data and full native reimport/lifecycle permutations have no complete new live record. | Pending for the same missing extraction/reimport permutations; bounded correction/promotion A and deletion/restore L pass. |
+| S14-AC07 | Pending for complete anonymous negative-outcome/final-head coverage. Anonymous search/fetch, inspectable provenance and partial/oversize/quota outcomes H/B/Q pass; no published numeric anonymous limit or usable retry hint; runs stopped on quota. K/R keyed results do not certify anonymous capacity. | Pending for same full anonymous coverage; historical anonymous H/B and explicitly keyed K/R remain separate. No silent key/provider/model/billing switch. |
+| S14-AC08 | Pass within fixed corpus delivery/rubric scope, combined B/Q/K/R with sole retry: 5/5. Immutable revisions, source links, bounded MIME/size/hash browser verification and actual Markdown downloads. First-attempt 4/5; owner acceptance absent. | Pass within same scope, combined B/K/R: 5/5 with retry; first-attempt 3/5; owner acceptance absent. |
+| S14-AC09 | Pending for complete stale/expired/denied/unsupported-effect live matrix. G passes actual exact approved Gmail/Calendar, changed body/recipient fencing, interrupted unknown single-attempt recovery and reconciliation within scope. Gmail reconciliation is owner statement, not provider-correlated confirmation. | Pending for same complete negative matrix; actual approved effects/unknown recovery G pass within scope, with same Gmail limitation. |
+| S14-AC10 | Pass within exercised routine scope: actual quiet/failing occurrence L plus bounded tool-free out-of-scope proposal A; accepted finding starts no work, captured authority unchanged. | Pass within same scope L/A. |
+| S14-AC11 | Pending for complete source/config/budget/unsettled-transport restart permutations. L real SIGKILL/replay-safe replacement retains siblings; R owner-stop then recovery prevents resubmit; G unknown effects remain single-attempt/reconcile-only. Natural credential renewal unobserved. | Pending for same complete permutations. L SIGKILL/reboot/computer reconciliation and older-image restore; A owner-stop recovery; G unknown effects remain single-attempt. Natural credential renewal unobserved. |
+| S14-AC12 | Pending C/B: real Web screenshot/agent lease/takeover/input/handback and separate stop/publication pass within scope. Retained lease rejected by installed application/live DB before runtime dispatch A/B. No exposed production agentInput caller; retained physical transport/late browser input unproven. Ending takeover with a held effect not certified. | Pending A/I/B for same caller/physical-transport/held-effect gaps. Actual owner controls, retained-lease guard and independent work.stop/computer.stop zero-publication probes pass within scope. |
+| S14-AC13 | Pending U/U2 local scripted UX proof, independent of Linux architecture: Thai/English, dark/light, script on/off browser-engine journeys and viewport audits. Real device, Safari, full Firefox focus walk and screen readers require owner evidence. | Pending: same local UX evidence; no architecture-specific device claim or live-host UX audit substituted. |
+| S14-AC14 | Pass within recorded host/route scope C: cold and warm pair under original 30-second bound, real five-minute idle, service restart/reboot persistence, reset and screenshot/input. Actual Codex subscription calls on C and later research builds demonstrate route; no natural renewal claim. | Pass within recorded host/route scope L: actual startup/idle/process+VM persistence/reset and real Codex calls. Later research/effect builds are separately named; no blanket recertification of later heads. |
 
-## Kernel, recovery and operations evidence
+## Research rounds, modes and usefulness
+
+The [fixed corpus/rubric](s14-research-corpus.md) predates execution. Codex `gpt-6.1-sol` subscription was selected throughout. Scores are relevance/traceability/coverage honesty/reasoning/delivery. Passing requires >=8 and traceability, coverage honesty and delivery each 2. A score of 8 with traceability 1 still fails.
+
+Historical H anonymous scores (R1 through R5) remain: x64 `1/0/2/1/1=5`, `1/0/2/1/1=5`, `1/0/2/1/1=5`, `2/2/2/2/2=10 Pass`, `1/0/2/1/1=5`; arm64 `1/2/2/2/1=8 Fail`, `1/0/2/1/1=5`, `1/0/2/1/1=5`, `2/2/2/2/2=10 Pass`, `1/2/2/2/1=8 Fail`. Only x64 R4 overlapped both non-main peers in that final round (39,741 ms); an earlier arm64 R3 interval overlapped 25,078 ms, not every final task. Those rounds failed the all-task overlap/usefulness condition. Later lineage withdrawal prevents re-download of withdrawn revisions; it was not bypassed.
+
+Subsequent anonymous scored rounds: arm64 R1 on B failed `1/1/2/2/2=8`; R2 and R3 on B passed 9 and 10; R4 on `7703450bf2b5d5314c1d188f34029e6f9b953ab2` failed `1/1/2/2/2=8`; R5 there failed `1/1/2/2/1=7`. x64 R1/R2 on B failed `1/0/2/2/2=7` and `1/1/2/2/2=8`; R3 on Q passed 10; R4 on Q failed 8. Renewed quota after a waited recovery stopped x64 R5 and the affected arm64 R4 new-Q rerun: pending, unscored, not failures invented from missing output. Earlier missing-report, citation mismatch/identity, language, oversized-output and interrupted/replayed rounds remain failures or interruptions in the private ledger, not successful attempts.
+
+The first-attempt checkpoint below is the later mixed-mode five-task ledger, not the first historical H run. Counts span several builds and modes, with a product handoff fix before the sole authorized retries; they are not a new anonymous result or a controlled estimate of model variance.
+
+| Architecture | First-attempt checkpoint | With one authorized retry per failed case |
+| --- | --- | --- |
+| arm64 | 3/5 | 5/5 combined |
+| x64 | 4/5 | 5/5 combined |
+
+| Architecture | Task | Attempt | Mode | Scores / total | Rubric | Build |
+| --- | --- | --- | --- | --- | --- | --- |
+| arm64 | R1 | 1 | keyed | 1/1/2/2/2 = 8 | Fail | K |
+| arm64 | R1 | 2 | keyed | 1/2/2/2/2 = 9 | Pass | R |
+| arm64 | R2 | 1 | anonymous | 1/2/2/2/2 = 9 | Pass | B |
+| arm64 | R3 | 1 | anonymous | 2/2/2/2/2 = 10 | Pass | B |
+| arm64 | R4 | 1 | keyed | 1/1/2/2/2 = 8 | Fail | K |
+| arm64 | R4 | 2 | keyed | 2/2/2/2/2 = 10 | Pass | R |
+| arm64 | R5 | 1 | keyed | 1/2/2/2/2 = 9 | Pass | K |
+| x64 | R1 | 1 | keyed | 1/2/2/2/2 = 9 | Pass | K |
+| x64 | R2 | 1 | keyed | 1/2/2/2/2 = 9 | Pass | K |
+| x64 | R3 | 1 | anonymous | 2/2/2/2/2 = 10 | Pass | Q |
+| x64 | R4 | 1 | keyed | 2/2/2/2/2 = 10 | Pass | K |
+| x64 | R5 | 1 | keyed | 1/1/2/2/2 = 8 | Fail | K |
+| x64 | R5 | 2 | keyed | 1/2/2/2/2 = 9 | Pass | R |
+
+All seven K cases and three R retries recorded independent peer overlap, committed dependent synthesis and browser artifact verification/downloads. Retained anonymous passes keep their actual builds. Explicit keys were removed through the product and both installations returned to anonymous; services restarted to clear process memory. Stream scans found zero key matches/errors in the listed application/vault/native/work/log/backup scopes; unrelated immutable image caches and the intentionally retained protected operator source key are outside that absence claim. No new secret scan of hosts was performed for this document.
+
+Anonymous Parallel limits are observed product facts: **no published numeric anonymous limit, no usable retry hint, runs stopped by quota**. Historical captures lack enough headers/bodies to recover an exact window. Later HTTP-phase and tool-phase refusals likewise supplied no usable reset; initialize success was not treated as tool-quota recovery. Bounded recovery observations are not vendor guarantees. Remote quota scope/per-tool/per-IP policy is unknown. Quota is distinct from Codex quota (none observed). K/R keyed successes are owner-authorized separate modes, not anonymous-capacity proof.
+
+## Kernel, recovery and operations evidence (historical L round)
+
+The following observations retain their original round/build attribution and are not re-certified on the later integration builds.
+
 
 On arm64, the actual product-created workspace and protected browser components had separate single writable mounts, read-only roots, only the fixed non-secret environment names, `network=none`, no state/vault/control-socket mount, private namespaces and dropped capabilities. Operator probes ran inside those actual containers; marker data was synthetic, enforcement was the real kernel. This is not a real website-login claim.
 
@@ -100,28 +100,60 @@ Both services were actually SIGKILLed during research. systemd restarted them; r
 
 OPS14-01 completed a real installed-state backup/restore round trip on each architecture. Backup was requested through the Web, then a private owner-authenticated offline prepare/validate/exact-hash activate sequence restored an older image against the current independent lifecycle ledger. A memory marker created before backup and deleted afterwards stayed deleted; dependent evidence remained withdrawn and the unaffected R4 artifact retained its bytes/hash. Actual service starts during quarantine exited with status 1 and exposed no Web listener; no new work was present after activation. Backup images excluded computer/profile volumes and credentials. Later Bot retirement/resource revocation permutations remain separate pending cases.
 
-## Bugs exposed and corrected
+## Later isolation, effects and computer bounds
 
-1. Privileged installer failures discarded useful diagnostics (the existing PR fix).
-2. Anonymous Parallel's real discovery schema differed from the pin; strict discovery refused real reads. The anonymous pin now matches observed discovery; authenticated-key mode remains separately unverified.
-3. Research used an arbitrary 60-second deadline and could consume its final inference budget on tools. It now uses the remaining original grant deadline/call slice, reserves a finishing inference and preserves safe failure categories without fallback.
-4. Invalid/oversized report candidates failed only after model completion. Candidate validation now uses a rolled-back transaction and at most one charged, tool-free correction under the same grant. Citation/authority/budget validation remains strict.
-5. Compressed valid Git imports could exceed the decoded-object ceiling before mirror verification. Actual decoded object sizes are now bounded before verification/push credential release.
-6. First-owner installer bootstrap raced service writers. The installer now captures its private link while stopped and delivers it only after health. Actual installer reruns and twelve clean stopped-bootstrap rounds passed on each architecture. Concurrent manual `owner-link` beside an active x64 service still produced `SQLITE_BUSY`; the bounded attach retry is not claimed to solve that case.
-7. Offline restore needlessly required a runtime to stop already confirmed stopped computers in quarantine. Matching current volume cleanup evidence now settles only those boot stops, advances generations and clears leases. Changed/unsettled cleanup still blocks.
-8. Restore treated an intentionally omitted, already acknowledged deleted native payload as `native_reference_missing`. Successful complete inventory now preserves that terminal deleted state; missing live/retired/uncertain identities remain unresolved.
-9. Composer defaults checked tools held only by unselected Bots. A computer-only Bot's normal work form was rejected with `bot_ceiling`. Existing checkboxes now default from selected Bots only. The actual unchanged Web form was rerun after deployment.
+The final isolation matrix (A/I/B) supersedes that stream's earlier checkpoint prose. arm64 registry install/script, fresh reinstall and allow/host-IP-port-HTTP/direct-bypass denial matrix passed on B. Installed production raw-byte export/final-dispatch guards passed six cases in an actual arm64 product box on I; this is not an authenticated approved GitHub effect. Live skip-worktree on both hosts refused certification with `coding_git_unconfirmed`, null head and no certified test. arm64 assume-unchanged/hostile-filter cases produced actual raw-head test failures, and mutation during an exit-0 check lost attribution as `coding_changed_during_tests`. These are bounded refusals, not fresh-test success.
 
-Each code fix has deterministic regression coverage. Those tests establish contracts, not host acceptance. No new UI/UX was designed. Follow-ups for a Claude Opus 5.5 high-effort design agent: review the active Bot's link into a retained closed chat after capability changes and transient stale overview facts while lifecycle polling updates other regions; review the research/grant choices that include main-Bot research under a two-run ceiling; complete the unrun responsive/keyboard/assistive states. These are observations and pending design work, not a new design authored here.
+x64 B foreign-path/network/private-context and selected-share probes passed within scope. The initial missing-python run executed no model probe; only the later python3 retry supplies that proof. The held-revoke model first completed without waiting; a fresh held retry failed `computer_startup_timeout` before write/wait. Registry first timed out, then ended with unknown install/`coding_registry_cleanup_unconfirmed`; its denial matrix did not run. Two raw-byte helpers produced no complete result (EIO/intentional stop). Live assume-unchanged was interrupted for computer.stop with unknown check outcome; hostile attributes/filter and mutation-during-check did not run. No boundary leak was observed in executed probes; this does not pass the missing cases.
 
-## Validation and remaining gate
+AC12 retained-lease refusal on both hosts used the installed application against the live DB **without a runtime**. It rejected `input_lease_fenced` before dispatch. `agentInput` has no exposed production caller to a Bot in this build; test call sites do not supply one. Thus retained physical-transport dispatch, late browser input and handback beside a held effect remain pending. Separate actual work.stop and computer.stop attempts published zero results within the recorded scopes; the x64 coding stop is not a completed check or a retained physical browser transport.
 
-Focused protocol/research/report/Git/bootstrap/installer/restore/recovery/composer suites and TypeScript checks passed. The final runtime suite passed 2,997 tests with 5 explicit skips, 0 failures and 239,950 assertions across 142 files. The post-documentation full-suite rerun and final-head whitespace check are recorded in draft PR #284. Prior successful full runs are retained privately; an interrupted run during a later fix is not final validation.
+The initial arm64 A fresh scratch ran with an incorrect identity and could not read the protected provider store; setup completion was not claimed until G. An initial G arm64 mail-draft call omitted `content.kind` and returned `invalid_shape`, creating no draft/send; the later exact work is a separate attempt. G real product OAuth completed on both architectures. Exact owner-approved synthetic self-send and test-calendar creation were interrupted after actual outbound bytes, then recovered unknown with exactly one original attempt each and no resend. Changed body/recipient submissions were fenced. Calendar readback verified `matching_event` while original dispatch stayed unknown. **Gmail Message-ID correlation was lost because Google rewrote it**: independent provider reads found exactly one matching self-send per host, but product readback remained unknown; reconciliation rested on an explicit Web `owner_statement/occurred`, not provider-correlated confirmation.
 
-The remaining gate includes corpus reruns after anonymous rate-limit/quota recovery, all-five-task overlap and rubric/delivery completion; x64 computer startup/storage investigation and affected reruns; full cross-Bot/MCP/private-memory/share and registry/skip-worktree enforcement; late agent browser input and the x64 computer lifecycle cases blocked by startup; real external-effect unknown-outcome recovery; natural credential renewal if observed; remaining routine authority and OPS lifecycle permutations; and device/browser/accessibility acceptance. This evidence supports `Refs #256`; the issue remains open.
+Both Google connections were disconnected and local token entries removed. Gmail remote revocation was confirmed; Calendar remained unknown. The original arm64 Calendar revocation HTTP response was not retained and cannot be reconstructed. x64's later token-endpoint diagnostic observed `invalid_grant` after sibling Gmail revocation; that is not a captured Calendar `/revoke` response or natural renewal. Neither unknown was changed to remote-success. Natural credential renewal during concurrent work was never observed.
 
-## Successor handoff
+C x64 computer journey passed within scope: first post-reboot pair <=18.114/22.703 s; warm pair <=21.316/25.758 s from committed open; four real components. Five-minute idle reached stopping after 301.055 s and stopped after 310.280 s while the grant remained live. Service restart and reboot preserved all four marker hashes; selected reset emptied only its workspace/profile while sibling markers remained. These results do not rerun B's residual isolation/registry cases.
 
-The final host runtime is `c2775c06dc70adadb1f3acc7ddadc8ae7356ac03`; the evidence-only commit does not require a host upgrade. Both services are left active with no queued/running/stopping test work and no active computer. The disposable lifecycle Bots are deleted; the original research Bots remain. Temporary browser tabs, local tunnel gateway and this agent's SSH forwards are closed before the phase-2 handoff marker. Successors must wait for that private marker before changing either host.
+Keep x64 failed rounds: before mapping preparation, startup repeatedly timed out under mapped-layer I/O/locks; prepared `b78725d` cold pair passed; A warm pair passed but first post-reboot pair failed behind serial lifecycle work; I concurrent pair failed with an unexpected UID-map tail; `b0e01c9` post-upgrade pair passed but post-reboot cold info exceeded the five-second client cutoff. C fixed the scoped journey without raising the original 30-second startup or five-minute idle bounds. Mapping preparation cost roughly 497–522 s at installation/upgrade, outside runtime startup. A Podman lookup race is an inference, not a certified upstream cause or a controlled version comparison.
 
-Retained OPS recovery points consume finite backup slots (four on arm64, three on x64 in the completed round); inspect the supported current status before another operation. Do not bypass retention, lifecycle tombstones or old withdrawn report artifacts. No live Codex quota exhaustion or natural concurrent credential renewal was observed. Anonymous Parallel quota/rate-limit classification and x64 storage stalls remain distinct blockers. Implementation-era pending checklists in runbooks are not newer evidence than this record.
+Guest small-write/fsync measurements independently showed high durable-write cost; they do not identify a specific backing-store fault or host setting. **Fresh owner-link issuance beside an active x64 service remains unproven after observed `SQLITE_BUSY`**. Later existing-owner helper checks passed 12/12 running and 12/12 stopped but issued no new capability, so they do not replay the fresh-owner contention. SQLite ATTACH/writer locks and Podman layer locks are distinct; a common storage amplifier is plausible, not established.
+
+## UX evidence and pending owner observations
+
+U used the real application/store/handler/renderers with scripted model, work, Parallel and fake computer runtime on private local instances. Chromium 1248 and WebKit 2370 are headless test engines; WebKit is not Safari. Firefox Developer Edition 160.0b1 used real Gecko with synthetic input. Pre-final-merge EN/TH journeys ran 18 checks per script-on/off configuration; the broad 6,720-row viewport audit found no overflow/main/heading faults. Discarded Firefox script-off rows actually had script on and are not counted; preference-disabled reruns replaced them.
+
+U final audit covered 3,360 rows at four widths; 33 image 403 rows came from harness computers without a live grant/sweep and 32 WebKit CSP rows remain disclosed. U2 later unsent-draft scenario passed 10/10 per engine; broader journeys/audit were not rerun on U2 and no-script draft browser proof was not run. Earlier backup keyboard checks preceded the status-role addition. Local fixtures establish UI behavior, never Linux computer/provider/device acceptance.
+
+Real devices, Safari, a full human Firefox focus-ring walk and VoiceOver/NVDA remain **pending until the owner reports evidence**. Safari automation was refused by its setting; device access was disabled. Forced-colours evidence is Chromium emulation/Home only. WebKit routine time input logs a CSP refusal and typed-minute behavior remains unresolved for Safari. Targeted Firefox rings were visible but the automated full walk disagreed, so it was not accepted. No screenshot or accessibility tree establishes conformance. Remaining design observations include a compound evidence badge showing Covered despite an explicitly missing subclaim (overall report coverage stays Partial), callback refusal copy suggesting expiry and a revocation cancel label referring to keeping a computer; no design change is made in this consolidation.
+
+## Bugs found and fixed in this round
+
+The following PRs are code-fix provenance, not release-gate completion. Their merged states were checked from GitHub for this consolidation; their historical draft/skipped checks do not become live evidence.
+
+| PR | Bugs and resulting correction |
+| --- | --- |
+| [#284](https://github.com/chayapats/jit/pull/284) | Installer child failures lost diagnostics; retain failing-step detail. Anonymous discovery pin differed from real schema; update anonymous pin. Arbitrary research deadline/final-tool budget could prevent final inference; use remaining grant and reserve finish. Invalid/oversized report candidates failed after completion; rolled-back validation and one charged tool-free correction. Compressed Git objects escaped decoded-size bound; bound actual decoded bytes before verification/credential release. First-owner bootstrap raced writers; capture private link while stopped, deliver after health. Offline restore could not settle confirmed stopped computers; require matching cleanup evidence. Acknowledged deleted native payload omission blocked restore; preserve terminal deletion only after complete inventory. Composer inherited tools from unselected Bots; default from selected ceilings. |
+| [#285](https://github.com/chayapats/jit/pull/285) | Quota discarded Retry-After/repeated discovery/admitted queued reads; preserve validated hints and fence reads/admission without fallback. Main Bot occupied a peer slot; admit non-main peers first. Citation instructions/identity errors and repeated-source output expansion obscured correction; exact contiguous quote/identity guidance, bounded cost diagnostics and existing single correction. Service-owned role/language context clarified without weakening validators. |
+| [#286](https://github.com/chayapats/jit/pull/286) | Unprepared keep-id image layers consumed runtime startup; prepare exact mappings before activation with checked cleanup. Serial lifecycle drain spent concurrent intents' deadlines; bounded two-computer admission. Concurrent namespace planning produced inconsistent maps; single-flight planning. Cold info hit a separate cutoff; share only in-flight fresh readiness inside original startup budget. Includes shared baseline research/pump fixes, not additional independent proof. |
+| [#287](https://github.com/chayapats/jit/pull/287) | Long runs starved unrelated service consumers; independent single-flight drains with boot/order/shutdown fences (ADR0060). Podman default stop grace exceeded cleanup deadline; explicit zero grace, unchanged uncertainty fence. |
+| [#288](https://github.com/chayapats/jit/pull/288) | Missing status/error announcements, invisible forced-colours selection, weak composer focus, small targets and short landscape thread. Capability transition left active Bot chat closed/stale; refresh status/composer. Live foot replacement lost unsent text/options; preserve transient draft across replacement. Main-Bot slot/queue and known quota reset descriptions made explicit. |
+| [#289](https://github.com/chayapats/jit/pull/289) | Concurrent first anonymous reads got different valid correlation IDs and falsely failed schema validation; coordinate absent correlation only. Source-grouping guidance prevents semantic citation loss during correction; strict identities/quotes remain. |
+| [#290](https://github.com/chayapats/jit/pull/290) | Authenticated discovery pin differed from real keyed catalog; independent pin. Saved anonymous correlation incorrectly constrained keyed normalization; separate modes while retaining original anonymous ID for explicit return. |
+| [#291](https://github.com/chayapats/jit/pull/291) | Read-order handoff packing dropped already-cited sibling sources at overflow; fair summary allocation, round-robin committed citations, skip oversized candidates within unchanged 49,152-byte bound. Old attempts/scores remain unchanged. |
+| [#292](https://github.com/chayapats/jit/pull/292) | Valid Google callback metadata was refused before state lookup; accept unique metadata, validate optional issuer, retain cardinality/state/owner binding and clean redirects. |
+
+## Validation and residual update slot
+
+This docs-only consolidation ran `bun install`, document/index/mirror checks, build-reference checks, privacy scans and `git diff --check`; it ran no live tests or host commands. Historical deterministic results are attributed, not rerun: L/initial #284 2,997 pass/5 skip; C 3,030/5; B 3,031/5; Q 3,044/5; U2 3,058/5; #292 code `a8bfa6725271640edb6182c95c81ee14c7c2e844` 3,080/5, all with zero failures in their completed recorded suites. Interrupted research suites, missing-Bun PATH failures and overwritten launchd logs are retained privately and do not count as passes. Fixtures and opt-in skips prove no host acceptance.
+
+NFR-08 remains bounded by the L round trip above: later Bot retirement/resource-revocation restore permutations are still pending. AC06 extraction/reimport, AC07 complete anonymous negatives, AC09 remaining negative cards, AC11 restart permutations, AC12 production caller/physical transport, AC13 owner device/accessibility observations and unobserved natural renewal remain explicit limits. The overall gate and #256 stay open; CUT14-01 default flip/owner-host installation cannot be inferred from a passing subcase or a closed implementation ticket.
+
+| x64 residual case | Status at writing time | Required successor update |
+| --- | --- | --- |
+| Held share revocation/late result | Blocked, B startup failure before write/wait | Actual build, held interval, revoke receipt, settled attempt/publication outcome |
+| Registry allow/denial matrix | Blocked, B unknown install/cleanup; matrix not run | Build, actual reinstall and complete denial/cleanup evidence |
+| Installed raw-byte six-case guard | Not certified, incomplete/interrupted helpers B | Build and complete installed-kernel results; distinguish authenticated effect |
+| Fresh skip-worktree/assume-unchanged/hostile-filter/check mutation | Refused/incomplete/unrun B as detailed above | Actual raw head, check attribution and outcome per subcase |
+| Fresh owner-link with active service | Pending after SQLITE_BUSY; existing-owner checks are narrower | Fresh-owner issuance with named build and concurrent-writer evidence |
+
+Another agent owns rerunning these cases. Replace cells only from its completed private residual record, preserve failures, name actual builds, and never infer a pass from queued work, intent receipts or a later deployment. No residual stream result existed when this record was written.
