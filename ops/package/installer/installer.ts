@@ -402,7 +402,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     try { configuredImages = pinnedImages(dry ? options.simulation?.images ?? pins : pins); }
     catch { options.out?.("Optional image list unavailable: skipping pre-pull."); }
     write(join(configDir, "installer-state.json"), JSON.stringify({ contract: "ops.installer/v1", hardware: options.facts, defaults,
-      containers: available ? "runtime-present-images-require-verification" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
+      containers: available ? s14 ? "runtime-present-images-require-verification" : "runtime-present-images-require-configuration" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
     step("service-install", "inspect service plan and the bounded journald namespace, then re-run");
     if (existsSync(unitPath)) await service(["stop", "--config", configPath]);
     if (!dry) {
