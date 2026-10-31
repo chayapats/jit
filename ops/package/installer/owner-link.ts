@@ -30,14 +30,29 @@ export function operatorTerminal(): { write(text: string): void; close(): void }
   return { write: text => { writeSync(fd, text); }, close: () => closeSync(fd) };
 }
 
+/** Private pending terminal delivery; capture occurs while stopped and display waits for service health. */
+export interface PendingOwnerLink { deliver(): void; close(): void }
+
+/** Captures exactly once into a private closure; failures/close discard it without printing or reissuing. */
+export async function prepareS14OwnerLink(argv: string[], env: Record<string, string>, origin: string,
+  deps = { capture: captureOwnerPipe, terminal: operatorTerminal }): Promise<PendingOwnerLink> {
+  const terminal = deps.terminal();
+  try {
+    let value = await deps.capture(argv, env), closed = false, delivered = false;
+    const prefix = `${origin}/owner/setup?token=`;
+    if (value !== "" && (value !== value.trim() + "\n" || !value.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(value.trim().slice(prefix.length)))) throw new Error("owner_link_pipe_invalid");
+    return { deliver() {
+      if (closed || delivered) throw new Error("owner_link_delivery_closed");
+      delivered = true;
+      terminal.write(`Open ${value.trim() || `${origin}/s14/login`} to finish setup\n`);
+      value = "";
+    }, close() { if (!closed) { closed = true; value = ""; terminal.close(); } } };
+  } catch (error) { terminal.close(); throw error; }
+}
+
 /** Issues via the trusted S14 CLI and displays once only on the operator terminal; existing owners get sign-in. */
 export async function deliverS14OwnerLink(argv: string[], env: Record<string, string>, origin: string,
   deps = { capture: captureOwnerPipe, terminal: operatorTerminal }): Promise<void> {
-  const terminal = deps.terminal();
-  try {
-    const value = await deps.capture(argv, env);
-    const prefix = `${origin}/owner/setup?token=`;
-    if (value !== "" && (value !== value.trim() + "\n" || !value.startsWith(prefix) || !/^[a-f0-9]{64}$/.test(value.trim().slice(prefix.length)))) throw new Error("owner_link_pipe_invalid");
-    terminal.write(`Open ${value.trim() || `${origin}/s14/login`} to finish setup\n`);
-  } finally { terminal.close(); }
+  const pending = await prepareS14OwnerLink(argv, env, origin, deps);
+  try { pending.deliver(); } finally { pending.close(); }
 }

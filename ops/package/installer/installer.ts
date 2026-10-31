@@ -14,7 +14,7 @@ import { en } from "../../../src/i18n/en";
 import { th } from "../../../src/i18n/th";
 import { s14SchemaVersion, inspectS14Store, S14Store } from "../../../src/s14/store";
 import { acquireS14RuntimeLock } from "../../../src/s14/runtime-lock";
-import { deliverS14OwnerLink } from "./owner-link";
+import { captureOwnerPipe, operatorTerminal, prepareS14OwnerLink, type PendingOwnerLink } from "./owner-link";
 import { provisionS14Images } from "./s14-images";
 import { provisionS14Disks } from "./s14-disks";
 import pins from "./pinned-images.json";
@@ -261,6 +261,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   };
   let ownedStaging: string | null = null;
   let frozenContainer: string | null = null;
+  let ownerTerminal: ReturnType<typeof operatorTerminal> | undefined;
+  let pendingOwner: PendingOwnerLink | undefined;
   try {
     if (options.uninstall) {
       step("uninstall", "stop the installed unit with the service package, then re-run --uninstall");
@@ -403,6 +405,10 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     catch { options.out?.("Optional image list unavailable: skipping pre-pull."); }
     write(join(configDir, "installer-state.json"), JSON.stringify({ contract: "ops.installer/v1", hardware: options.facts, defaults,
       containers: available ? s14 ? "runtime-present-images-require-verification" : "runtime-present-images-require-configuration" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
+    if (s14) {
+      step("owner-terminal", "re-run --s14 from an operator terminal; the existing service has not been stopped");
+      if (!dry) ownerTerminal = operatorTerminal();
+    }
     step("service-install", "inspect service plan and the bounded journald namespace, then re-run");
     if (existsSync(unitPath)) await service(["stop", "--config", configPath]);
     if (!dry) {
@@ -416,10 +422,18 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     if (!dry && !s14) {
       await must(asUser([options.bunPath, join(realpathSync(desired.executablePath), "ops/package/installer/main.ts"), "initialize-state", "--config", configPath]));
     }
+    const origin = serviceOrigin(desired);
+    if (s14) {
+      step("owner-link-prepare", "repair service-owned state and private fd 3 delivery, then re-run from the operator terminal; no capability is printed before health");
+      if (!dry) {
+        const terminal = ownerTerminal!; ownerTerminal = undefined;
+        pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(realpathSync(desired.executablePath), "src/main.ts"), "owner-link", "--s14", "--output-fd", "3"]),
+          { ...Object.fromEntries(serviceEnvironment(desired)), PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, origin, { capture: captureOwnerPipe, terminal: () => terminal });
+      }
+    }
     step("service-start", `inspect journalctl --namespace=${name} -u ${name}.service, fix the named gate and re-run`);
     await service(["start", "--config", configPath]);
     step("health", "inspect service preflight/journald, fix the named gate and re-run");
-    const origin = serviceOrigin(desired);
     if (dry && options.simulation?.health === false) throw new InstallerFailure(currentStep, next);
     if (!dry) {
       // systemd Type=simple can return before the listener exists. Retry locally within one wall-clock bound.
@@ -450,8 +464,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     step("owner-link", s14 ? "re-run --s14 from the operator terminal; verify service state and private fd 3 delivery; an existing owner is never reset" : "repair the service-owned state directory and re-run; an existing owner is never reset");
     let link: string | null = null;
     if (!dry && s14) {
-      await deliverS14OwnerLink(asUser([options.bunPath, join(realpathSync(desired.executablePath), "src/main.ts"), "owner-link", "--s14", "--output-fd", "3"]),
-        { ...Object.fromEntries(serviceEnvironment(desired)), PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, origin);
+      pendingOwner!.deliver();
     }
     if (!dry && !s14) {
       const result = await must(asUser([options.bunPath, join(realpathSync(desired.executablePath), "ops/package/installer/main.ts"), "owner-link", "--config", configPath]));
@@ -464,6 +477,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     if (error instanceof InstallerFailure) throw error;
     throw new InstallerFailure(currentStep, next);
   } finally {
+    pendingOwner?.close(); ownerTerminal?.close();
     if (ownedStaging) rmSync(ownedStaging, { recursive: true, force: true });
     if (frozenContainer) rmSync(frozenContainer, { recursive: true, force: true });
   }

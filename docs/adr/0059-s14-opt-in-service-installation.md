@@ -56,3 +56,7 @@ The opt-in read-only service evidence tool returns only bounded fixed checks,
 artifact/schema and pending gates. Deterministic fake-root/pipe/package tests
 prove orchestration and byte preservation, not host enforcement, account
 readiness, research usefulness, restart/reboot or the #256 release gate.
+
+## EVID14-01 first-owner contention
+
+Clean x64 runs reproduced SQLITE_BUSY during ATTACH preparation while the newly healthy service was writing. A bounded open-only wait improves diagnostics for a manual concurrent helper but did not make that path reliable in live reruns; it is not the installer's correctness mechanism. The installer now opens the controlling terminal before stopping an existing unit, captures fd 3 exactly once while the unit is stopped after installation, then starts and health-checks before displaying anything. Pending plaintext exists only in the private delivery closure, is erased on display/close, and is discarded on failure. A failed health check never prints a link. No capability issuance, work or effect is retried. Existing owners still receive sign-in without reset. Deterministic ordering/private-pipe tests and real stopped-service clean-path evidence are recorded separately from live research.
