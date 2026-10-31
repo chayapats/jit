@@ -3,7 +3,7 @@ import { AppError } from "../errors";
 import { containsCredential } from "../security/credentials";
 import { validTimezone } from "../jobs/schedules";
 import type { AppTransaction } from "../store";
-import type { Attempt, Work } from "./authority-types";
+import type { Attempt, ScopePolicy, Work } from "./authority-types";
 import { record, save } from "./application";
 import type { OwnerActor } from "./types";
 import { canonical, exact, identity, integer } from "./validation";
@@ -186,14 +186,14 @@ export class PersonalReads {
     return timezone;
   }
 
-  /** Returns a credential-free owner brief with exact source timestamps, timezone, omissions and stale input labels. */
+  /** Returns a credential-free owner brief whose coverage includes unread required inputs from the service's gaps. */
   brief(actor: OwnerActor, workId: string): { workId: string; status: "complete" | "partial" | "missing"; sections: PersonalRead[] } {
     identity(workId);
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
       record<Work>(tx, "work_items", workId);
       const sections = this.rows(tx, workId).map(read => this.project(tx, read));
-      return { workId, status: !sections.length ? "missing" : sections.some(r => r.outcome !== "success" || r.stale || r.missing.length) ? "partial" : "complete", sections };
+      return { workId, status: !sections.length ? "missing" : this.gaps(tx, workId).length ? "partial" : "complete", sections };
     });
   }
 
@@ -241,12 +241,19 @@ export class PersonalReads {
     return this.gaps(tx, workId).length > 0;
   }
 
-  /** Adds service-observed personal input gaps to the ordinary immutable report, independent of model prose. */
+  /** Adds unread readonly-account inputs and observed read failures to reports, excluding write-only account scopes. */
   gaps(tx: AppTransaction, workId: string): Extract<ReportGap, { kind: "read" }>[] {
     const rows = this.rows(tx, workId).map(read => this.project(tx, read));
     const work = record<Work>(tx, "work_items", workId);
-    const grant = work.grantId ? record<{ tools: string[]; scopes: ScopePolicyLike[] }>(tx, "work_grants", work.grantId) : null;
-    const required = grant?.tools.includes("personal_read") ? grant.scopes.filter(s => this.broker.owns(tx, s.ref)) : [];
+    const grant = work.grantId ? record<{ tools: string[]; scopes: ScopePolicy[] }>(tx, "work_grants", work.grantId) : null;
+    const required = grant?.tools.includes("personal_read") ? grant.scopes.filter(scope => {
+      if (!this.broker.owns(tx, scope.ref)) return false;
+      // Use the captured account, not the slot's current binding. Revocation must not hide an unread input.
+      const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_connections WHERE id=?", scope.snapshot.id);
+      if (!row) return true;
+      const connection = JSON.parse(row.record_json) as PersonalConnection;
+      return connection.scopes.includes(connection.service === "gmail" ? "gmail.readonly" : "calendar.readonly");
+    }) : [];
     const missing = required.filter(scope => !rows.some(read => canonical(read.scope) === canonical(scope.ref))).map(scope => scope.ref.id);
     if (grant?.tools.includes("personal_read") && !required.length) missing.push("unconfigured");
     return [...missing.map(scopeId => ({ kind: "read" as const, readId: `personal_input_${scopeId}`, outcome: "blocked" as const,
@@ -269,4 +276,3 @@ export class PersonalReads {
       } }];
   }
 }
-type ScopePolicyLike = { ref: PersonalReadInput["scope"] };

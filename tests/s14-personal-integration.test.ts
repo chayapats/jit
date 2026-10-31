@@ -11,7 +11,7 @@ import { connect, grant, personalAttempt, personalFixture, readInput, type Perso
 
 const fixtures: PersonalFixture[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.dispose(); });
-async function fixture() { const f = await personalFixture(); fixtures.push(f); return f; }
+async function fixture(options: Parameters<typeof personalFixture>[0] = {}) { const f = await personalFixture(options); fixtures.push(f); return f; }
 const limits = { attempts: 4, steps: 4, calls: 64, outputBytes: 131072, wallMs: 1800000, concurrency: 2, reads: 20 };
 function proposal(source: ReportEvidence): ReportProposal {
   return { title: "Sourced personal brief", claims: [{ id: "personal_fact", text: source.content, kind: "quote",
@@ -24,6 +24,103 @@ function available(f: PersonalFixture, workId: string) {
   if (view?.state !== "available") throw Error("Missing personal report");
   return view;
 }
+
+test.each(["gmail", "calendar"] as const)("default resource policy needs no environment configuration for an owner-accepted %s slot, work read and routine brief", async service => {
+  const f = await fixture({ policy: { routes: [{ id: "selected", provider: "codex", model: "fixture" }],
+    tools: ["personal_read", "effect_send", "effect_calendar"], resources: [] } });
+  const c = await connect(f, service), scopeId = "share_slot_01";
+  expect(f.app.policy.resources).toEqual([]);
+  expect(f.app.home(f.auth.actor).bots[0]!.capabilities.resources).toEqual([]);
+  expect(() => grant(f, c.id, scopeId)).toThrow("personal_bot_scope_refused");
+  const capability = f.app.execute(f.auth.actor, { kind: "bot.capabilities.propose", requestId: retryId(), expectedRevision: f.bot.revision,
+    payload: { botId: "jit", capabilities: { tools: [...f.app.policy.tools], resources: [scopeId] } } }).proposal!;
+  expect(() => grant(f, c.id, scopeId)).toThrow("personal_bot_scope_refused");
+  const accept = { kind: "bot.capabilities.accept" as const, requestId: retryId(), expectedRevision: capability.revision,
+    payload: { proposalId: capability.id, proposalHash: capability.hash } };
+  expect(() => f.app.execute(f.auth.actor, { ...accept, payload: { ...accept.payload, proposalHash: "forged" } })).toThrow("stale_capability_proposal");
+  f.app.execute(f.auth.actor, accept);
+  expect(() => grant(f, c.id, scopeId)).toThrow("personal_bot_scope_refused");
+  await f.app.botLifecycle.drain({ async open() { throw new Error("No native session exists before first work"); } });
+  expect(() => grant(f, c.id, "share_slot_02")).toThrow("personal_bot_scope_refused");
+  expect(() => grant(f, c.id, "share_slot_65")).toThrow("personal_bot_scope_refused");
+  grant(f, c.id, scopeId);
+  expect(f.app.authority.list(f.auth.actor)).toEqual([]);
+  expect(f.app.sharing.freeSlots(f.auth.actor).some(slot => slot.scopeId === scopeId)).toBe(false);
+  const attempt = personalAttempt(f, scopeId);
+  expect((await f.app.personal.reads.read(attempt.id, readInput(f, scopeId))).outcome).toBe("success");
+  expect(f.app.personal.reads.brief(f.auth.actor, attempt.workId).status).toBe("complete");
+  const evidence = f.store.read(tx => f.app.personal.reads.evidence(tx, attempt.id)[0]!);
+  const target = { kind: "source" as const, id: evidence.id, revision: evidence.revision, generation: evidence.generation };
+  const currentBot = f.app.home(f.auth.actor).bots.find(bot => bot.id === "jit")!;
+  expect(() => f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: currentBot.revision,
+    payload: { scopeId, target, receiverBotId: "jit", workId: null, expiresAt: f.clock.now + 60000 } })).toThrow("snapshot_share_exists");
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Sourced brief", report: proposal(evidence) });
+  f.app.authority.settle(attempt.id);
+  f.app.authority.options.executor = { async run(a, signal) {
+    await f.app.personal.reads.read(a.id, readInput(f, scopeId), signal);
+    return { state: "ready", text: '{"outcome":"report","text":"Sourced routine brief"}', report: proposal(f.store.read(tx => f.app.personal.reads.evidence(tx, a.id)[0]!)) };
+  } };
+  const routine = f.app.execute(f.auth.actor, routineCommand(f, { tools: ["personal_read"], scopes: [readInput(f, scopeId).scope], limits })).routine;
+  f.clock.now += 60000; f.app.routines.tick(); await f.app.authority.drain();
+  const occurrence = f.app.routines.view(f.auth.actor, routine.id).history[0]!;
+  expect(occurrence).toMatchObject({ state: "complete", outcome: "report" });
+  expect(f.app.personal.reads.brief(f.auth.actor, occurrence.workId!).status).toBe("complete");
+  expect(available(f, occurrence.workId!).report.missing.filter(gap => gap.kind === "read" && gap.personal)).toEqual([]);
+  expect(f.app.policy.resources).toEqual([]);
+});
+
+test("personal grants still refuse an accepted custom resource removed from live installation policy", async () => {
+  const f = await fixture(), c = await connect(f);
+  f.app.policy.resources.splice(f.app.policy.resources.indexOf("mail"), 1);
+  expect(() => grant(f, c.id)).toThrow("personal_bot_scope_refused");
+  expect(f.app.personal.settings(f.auth.actor).grants).toEqual([]);
+});
+
+test.each(["report", "no_update"] as const)("an unread requested account makes the service brief partial and prevents routine %s success", async outcome => {
+  const f = await fixture(), mail = await connect(f), calendar = await connect(f, "calendar");
+  grant(f, mail.id); grant(f, calendar.id, "calendar");
+  const scopes = [readInput(f).scope, readInput(f, "calendar").scope];
+  f.app.authority.options.executor = { async run(a, signal) {
+    await f.app.personal.reads.read(a.id, readInput(f), signal);
+    return { state: "ready", text: JSON.stringify({ outcome, text: "Sourced routine brief" }), ...(outcome === "report" ? {
+      report: proposal(f.store.read(tx => f.app.personal.reads.evidence(tx, a.id)[0]!)),
+    } : {}) };
+  } };
+  const routine = f.app.execute(f.auth.actor, routineCommand(f, { tools: ["personal_read"], scopes, limits })).routine;
+  f.clock.now += 60000; f.app.routines.tick(); await f.app.authority.drain();
+  const occurrence = f.app.routines.view(f.auth.actor, routine.id).history[0]!;
+  expect(occurrence.outcome).toBe("failed");
+  expect(f.app.personal.reads.brief(f.auth.actor, occurrence.workId!)).toMatchObject({ status: "partial", sections: [{ outcome: "success" }] });
+  expect(f.store.read(tx => f.app.personal.reads.gaps(tx, occurrence.workId!))).toEqual([
+    { kind: "read", readId: "personal_input_calendar", outcome: "blocked", personal: { scopeId: "calendar", stale: false, missing: ["required_input_missing"] } },
+  ]);
+  if (outcome === "report") expect(available(f, occurrence.workId!).report.coverage).toBe("partial");
+});
+
+test.each(["gmail", "calendar"] as const)("a readonly account plus a write-only %s account has no unread gap and can produce a brief or quiet routine", async service => {
+  const f = await fixture(), reader = await connect(f, service === "gmail" ? "calendar" : "gmail");
+  const writer = await connect(f, service, [service === "gmail" ? "gmail.send" : "calendar.events"]);
+  grant(f, reader.id, "mail"); grant(f, writer.id, "calendar");
+  const scopes = [readInput(f).scope, readInput(f, "calendar").scope];
+  let outcome: "report" | "no_update" = "report";
+  f.app.authority.options.executor = { async run(a, signal) {
+    await expect(f.app.personal.reads.read(a.id, readInput(f, "calendar"), signal)).rejects.toThrow("personal_consent_required");
+    await f.app.personal.reads.read(a.id, readInput(f), signal);
+    return { state: "ready", text: JSON.stringify({ outcome, text: "Sourced routine brief" }), ...(outcome === "report" ? {
+      report: proposal(f.store.read(tx => f.app.personal.reads.evidence(tx, a.id)[0]!)),
+    } : {}) };
+  } };
+  const routine = f.app.execute(f.auth.actor, routineCommand(f, { tools: ["personal_read"], scopes, limits })).routine;
+  for (const expected of ["report", "no_update"] as const) {
+    outcome = expected;
+    f.clock.now += 60000; f.app.routines.tick(); await f.app.authority.drain();
+    const occurrence = f.app.routines.view(f.auth.actor, routine.id).history[0]!;
+    expect(occurrence).toMatchObject({ state: "complete", outcome: expected });
+    expect(f.app.personal.reads.brief(f.auth.actor, occurrence.workId!).status).toBe("complete");
+    expect(f.store.read(tx => f.app.personal.reads.gaps(tx, occurrence.workId!))).toEqual([]);
+    if (expected === "report") expect(available(f, occurrence.workId!).report.missing.filter(gap => gap.kind === "read" && gap.personal)).toEqual([]);
+  }
+});
 
 test.each(["gmail", "calendar"] as const)("native %s routine commits an actually-read cited brief through the ordinary report validator and credential-free artifacts", async service => {
   const f = await fixture(), c = await connect(f, service), scopeId = service === "gmail" ? "mail" : "calendar";

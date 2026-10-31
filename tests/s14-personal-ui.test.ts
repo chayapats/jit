@@ -65,8 +65,8 @@ async function fresh(language: "th" | "en" = "en") {
   clean.push(() => { f.dispose(); rmSync(root, { recursive: true, force: true }); });
   return { f, ...driver(f, language) };
 }
-async function broker(language: "th" | "en" = "en") {
-  const f = await personalFixture(); clean.push(() => f.dispose());
+async function broker(language: "th" | "en" = "en", options: Parameters<typeof personalFixture>[0] = {}) {
+  const f = await personalFixture(options); clean.push(() => f.dispose());
   return { f, ...driver(f, language) };
 }
 const mail = (changes: Partial<PersonalMailDraft> = {}): PersonalMailDraft => ({ kind: "mail", to: ["ada@example.test"], cc: ["ben@example.test"], bcc: ["cho@example.test"], subject: "Quarterly numbers", body: "Hello Ada,\n\n  indented line stays\nภาษาไทย", ...changes });
@@ -225,8 +225,11 @@ test.each(["th", "en"] as const)("each Bot is allowed one by one, with revocatio
   expect(await page(`/settings/google/connections/${connection.id}`)).toContain(words["s14.google.revoked.remote_confirmed"]);
 });
 
-test("a Bot without a slot is sent to its exact ceiling proposal, and comes back after acceptance", async () => {
-  const { f, get, page, post, land, words } = await broker();
+test.each([false, true])("a Bot without a slot reaches its exact ceiling proposal and a separate grant with default resource policy=%s", async defaultResources => {
+  const { f, get, page, post, land, press, words } = await broker("en", defaultResources ? {
+    policy: { routes: [{ id: "selected", provider: "codex", model: "fixture" }], tools: ["personal_read", "effect_send", "effect_calendar"], resources: [] },
+  } : {});
+  const slot = defaultResources ? "share_slot_01" : "mail";
   f.app.execute(f.auth.actor, { kind: "bot.capabilities.propose", requestId: retryId(), expectedRevision: f.app.home(f.auth.actor).bots.find(b => b.id === "jit")!.revision, payload: { botId: "jit", capabilities: { tools: ["personal_read"], resources: [] } } });
   const proposal = f.app.botLifecycle.view(f.auth.actor, "jit").proposals[0]!;
   f.app.execute(f.auth.actor, { kind: "bot.capabilities.accept", requestId: retryId(), expectedRevision: proposal.revision, payload: { proposalId: proposal.id, proposalHash: proposal.hash } });
@@ -234,9 +237,9 @@ test("a Bot without a slot is sent to its exact ceiling proposal, and comes back
   const connection = await connect(f), html = await page(`/settings/google/connections/${connection.id}`);
   expect(html).toContain(words["s14.google.bot.needs_ceiling"]); expect(commands(html).filter(item => item.kind === "personal.grant.set")).toHaveLength(0);
   const link = unescape(/href="(\/team\/jit\/capabilities\?[^"]+)"/.exec(html)![1]!);
-  expect(link).toContain(`account=${connection.id}`); expect(link).toContain("slot=mail");
+  expect(link).toContain(`account=${connection.id}`); expect(link).toContain(`slot=${slot}`);
   const form = await page(link), fields = formFields(form, "/s14/forms/capability-propose");
-  expect(fields["resource:mail"]).toBe("on"); expect(fields["tool:personal_read"]).toBe("on"); expect(fields.account).toBe(connection.id);
+  expect(fields[`resource:${slot}`]).toBe("on"); expect(fields["tool:personal_read"]).toBe("on"); expect(fields.account).toBe(connection.id);
   const proposed = await land(await post("/s14/forms/capability-propose", fields));
   expect(proposed.path).toContain(`account=${connection.id}`);
   const accepted = await land(await post("/s14/forms/capability-accept", formFields(proposed.html, "/s14/forms/capability-accept")));
@@ -245,7 +248,10 @@ test("a Bot without a slot is sent to its exact ceiling proposal, and comes back
   const landed = await (await get(accepted.path)).text();
   expect(landed).toContain(words["s14.life.back_to_account"]);
   const after = await page(`/settings/google/connections/${connection.id}`);
-  expect(commandOf(after, "personal.grant.set").payload).toMatchObject({ scopeId: "mail", active: true });
+  expect(commandOf(after, "personal.grant.set").payload).toMatchObject({ scopeId: slot, active: true });
+  expect(f.app.personal.settings(f.auth.actor).grants).toEqual([]);
+  await press(after, "personal.grant.set");
+  expect(f.app.personal.settings(f.auth.actor).grants).toMatchObject([{ id: slot, connectionId: connection.id, botId: "jit", active: true }]);
 });
 
 test("start forms name an account with one unticked box, and ordinary work never gains an account gap", async () => {
@@ -450,6 +456,26 @@ test.each(["th", "en"] as const)("unknown delivery is reconcile-only: read-back 
   expect(sends).toBe(1);
   await f.app.personal.effects.drain();
   expect(sends).toBe(1);
+});
+
+test.each(["th", "en"] as const)("an unknown calendar card describes a calendar change before and after an owner statement (%s)", async language => {
+  const b = await broker(language), { f, page, words } = b, { view } = await held(b, event());
+  f.google.hook = async () => { throw new Error("Interrupted calendar change"); };
+  f.app.execute(f.auth.actor, { kind: "approval.decide", requestId: retryId(), expectedRevision: view.effect.revision,
+    payload: { effectId: view.effect.id, actionHash: view.effect.actionHash, decision: "approve" } });
+  await f.app.personal.effects.drain();
+  const route = `/effects/${view.effect.id}`, unknown = await page(route);
+  safe(unknown, language);
+  expect(unknown).toContain(words["s14.effect.calendar_unknown_detail"]);
+  expect(unknown).toContain(words["s14.effect.calendar_unknown_next"]);
+  expect(unknown).not.toContain(words["s14.effect.unknown_detail"]);
+  expect(unknown).not.toContain(words["s14.effect.unknown_next"]);
+  const current = f.app.personal.effects.view(f.auth.actor, view.draft.id).effect;
+  f.app.execute(f.auth.actor, { kind: "effect.reconcile", requestId: retryId(), expectedRevision: current.revision,
+    payload: { effectId: current.id, actionHash: current.actionHash, outcome: "occurred", note: "Checked the calendar" } });
+  const stated = await page(route);
+  expect(stated).toContain(words["s14.statement.calendar_banner_detail"]);
+  expect(stated).not.toContain(words["s14.statement.banner_detail"]);
 });
 
 test("send-only consent shows accepted but unchecked, and read-back is blocked with the reason", async () => {

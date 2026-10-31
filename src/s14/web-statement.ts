@@ -15,7 +15,8 @@ function ledger(effect: Effect, checked: string): string {
 }
 /** Banner of an unknown effect, before and after the owner's statement. Its tone stays neutral after one: the outcome is still unknown, but nothing waits on the owner. */
 export function statementBanner(effect: Effect): string {
-  return effect.resolution ? banner("", tr("s14.statement.banner_title"), tr("s14.statement.banner_detail")) : banner("danger", tr("s14.effect_state.unknown"), tr("s14.effect.unknown_detail"), `<p class="s-sub">${tr("s14.effect.unknown_next")}</p>`);
+  const calendar = effect.action.kind === "calendar";
+  return effect.resolution ? banner("", tr("s14.statement.banner_title"), tr(calendar ? "s14.statement.calendar_banner_detail" : "s14.statement.banner_detail")) : banner("danger", tr("s14.effect_state.unknown"), tr(calendar ? "s14.effect.calendar_unknown_detail" : "s14.effect.unknown_detail"), `<p class="s-sub">${tr(calendar ? "s14.effect.calendar_unknown_next" : "s14.effect.unknown_next")}</p>`);
 }
 /** The recorded statement, labelled as the owner's and shown apart from the observed state. `checked` carries a provider read-back when one exists. */
 export function statementBlock(effect: Effect, checked = pill(tr("s14.statement.not_checked"))): string {

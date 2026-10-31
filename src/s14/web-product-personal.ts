@@ -72,8 +72,8 @@ function flowStep(app: S14Application, actor: OwnerActor, connection: PersonalCo
 }
 /** Tools a Bot needs before this account is useful to it. The owner still reads and accepts the exact ceiling. */
 const wantedTools = (app: S14Application, connection: PersonalConnection) => [...(canRead(connection) ? ["personal_read"] : []), ...(canWrite(connection) ? [connection.service === "gmail" ? "effect_send" : "effect_calendar"] : [])].filter(tool => app.policy.tools.includes(tool));
-/** Slots `personal.grant.set` accepts today: free identities the installation configured. Built-in share slots are not accepted by that command. */
-const accountSlots = (app: S14Application, actor: OwnerActor) => app.sharing.freeSlots(actor).filter(slot => app.policy.resources.includes(slot.scopeId));
+/** Free configured/built-in candidates for exact owner capability acceptance and a separate personal grant. */
+const accountSlots = (app: S14Application, actor: OwnerActor) => app.sharing.freeSlots(actor);
 function accountBots(app: S14Application, actor: OwnerActor, connection: PersonalConnection, read: Settings, state: Home): S14AccountBot[] {
   const free = accountSlots(app, actor), wanted = wantedTools(app, connection);
   return state.bots.filter(bot => bot.enabled).map(bot => {
@@ -102,8 +102,7 @@ export function personalOverview(app: S14Application, actor: OwnerActor, views: 
 export function personalBrief(app: S14Application, actor: OwnerActor, view: WorkView): S14Brief | null {
   if (!view.grant?.tools.includes("personal_read")) return null;
   const brief = app.personal.reads.brief(actor, view.work.id), read = app.personal.settings(actor), gaps = app.store.read(tx => { app.requireOwner(tx, actor); return app.personal.reads.gaps(tx, view.work.id); });
-  const unread = gaps.some(gap => gap.personal?.missing.includes("required_input_missing"));
-  return { status: brief.status === "complete" && unread ? "partial" : brief.status, sections: brief.sections, gaps, connections: Object.fromEntries(read.connections.map(item => [item.id, item])), slots: Object.fromEntries(read.grants.flatMap(grant => { const connection = read.connections.find(item => item.id === grant.connectionId); return connection ? [[grant.id, connection]] : []; })) };
+  return { status: brief.status, sections: brief.sections, gaps, connections: Object.fromEntries(read.connections.map(item => [item.id, item])), slots: Object.fromEntries(read.grants.flatMap(grant => { const connection = read.connections.find(item => item.id === grant.connectionId); return connection ? [[grant.id, connection]] : []; })) };
 }
 
 /** Exact field values of a stored draft, one recipient per line. */
