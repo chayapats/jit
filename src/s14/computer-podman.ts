@@ -398,8 +398,17 @@ export class BotPodmanRuntime implements ComputerRuntime {
     const monitor = setInterval(() => { try { guard(); } catch { cancel(); } }, 50);
     // Proxy creation uses the same keep-id planner as computer starts. Passing
     // the raw runner here would bypass the private queue under concurrent load.
-    const proxyRun: CommandRunner = (argv, request) => this.plan(argv, () => this.#run(argv, request));
-    const proxy = new ContainerRegistryProxy(this.options.workspaceImage, hosts, proxyRun, this.#streams, undefined,
+    const proxyRun: CommandRunner = (argv, request) => this.plan(argv, () => {
+      // Recheck after queueing, but keep exact-name removal available after cancellation.
+      if (argv[0] !== "rm") guard();
+      return this.#run(argv, request);
+    });
+    const proxyStreams: StreamRunner = (argv, request) => {
+      // Bundle preparation can yield after container inspection and before exec.
+      guard();
+      return this.#streams(argv, request);
+    };
+    const proxy = new ContainerRegistryProxy(this.options.workspaceImage, hosts, proxyRun, proxyStreams, undefined,
       { internalNetwork: network, name: `${prefix}-proxy` });
     try {
       guard();

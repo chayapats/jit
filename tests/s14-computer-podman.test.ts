@@ -146,6 +146,64 @@ test("registry proxy creation shares namespace planning with another computer's 
   expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(true);
 });
 
+test.each(["cancel", "revoke"])("registry proxy queued behind another computer refuses %s before dispatch and still cleans up", async cause => {
+  const gate = barrier(), proxyReady = Promise.withResolvers<void>();
+  let held = false, revoked = false;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!held) return;
+    if (argv[0] === "info") await gate.wait();
+    if (argv[0] === "network" && argv[1] === "inspect" && argv[2] === "jit-registry-egress") proxyReady.resolve();
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  const peer = { ...f.c, id: "b".repeat(32), botId: "peer", diskSlot: { id: "slot-0002", generation: 1, clean: true } };
+  const controller = new AbortController();
+  held = true;
+  const starting = f.runtime.start(peer, () => {});
+  await gate.reached;
+  const checking = f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000, signal: controller.signal }, ["registry.npmjs.org"], () => {
+    if (revoked) throw Error("scope_revoked");
+  });
+  const outcome = checking.then(() => null, error => error);
+  try {
+    await proxyReady.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (cause === "cancel") controller.abort(); else revoked = true;
+    gate.release();
+    await starting;
+    expect(await outcome).toBeInstanceOf(Error);
+    expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(false);
+    expect(f.calls.some(argv => argv[0] === "start" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(false);
+    expect(f.streamCalls.some(argv => argv.includes("node"))).toBe(false);
+    expect(f.runnerInputs).toHaveLength(0);
+    for (const name of [`jit-s14-${f.c.id}-registry`, `jit-s14-${f.c.id}-registry-proxy`]) {
+      expect(f.calls.some(argv => argv[0] === "rm" && argv.at(-1) === name)).toBe(true);
+    }
+    expect(f.calls.some(argv => argv[0] === "network" && argv[1] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-net`)).toBe(true);
+  } finally {
+    gate.release();
+    await Promise.allSettled([starting, checking]);
+    await f.runtime.stop(f.c);
+    await f.runtime.stop(peer);
+  }
+});
+
+test("revocation during proxy inspection prevents the exec stream and leaves cleanup available", async () => {
+  let revoked = false;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (argv[0] === "container" && argv[1] === "inspect" && argv.at(-1)!.endsWith("-registry-proxy")) revoked = true;
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  await expect(f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {
+    if (revoked) throw Error("scope_revoked");
+  })).rejects.toThrow();
+  expect(f.calls.some(argv => argv[0] === "create" && argv.includes(`jit-s14-${f.c.id}-registry-proxy`))).toBe(true);
+  expect(f.streamCalls.some(argv => argv.includes("node"))).toBe(false);
+  expect(f.runnerInputs).toHaveLength(0);
+  expect(f.calls.some(argv => argv[0] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-proxy`)).toBe(true);
+  expect(f.calls.some(argv => argv[0] === "network" && argv[1] === "rm" && argv.at(-1) === `jit-s14-${f.c.id}-registry-net`)).toBe(true);
+  await f.runtime.stop(f.c);
+});
+
 test("concurrent startup shares a fresh slow info probe, reuses its host proof and probes again on a later start", async () => {
   const gate = barrier(); let infos = 0;
   const f = fixture(undefined, undefined, undefined, async argv => {
