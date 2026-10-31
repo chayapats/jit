@@ -138,6 +138,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
   readonly #byId = new Map<string, Live>();
   readonly #registry = new Map<string, { cancel(): void; settled: Promise<void> }>();
   #planning = Promise.resolve();
+  #readiness: Promise<{ state: "ready" | "unavailable"; reason: string | null; host: unknown }> | null = null;
   constructor(readonly options: BotPodmanOptions) {
     if (![options.workspaceImage, options.browserImage].every(image => pinnedImagePattern.test(image))) fail("computer_image_digest_required");
     this.#root = resolve(options.dataRoot);
@@ -187,14 +188,14 @@ export class BotPodmanRuntime implements ComputerRuntime {
     try { return await run(); }
     finally { gate.resolve(); }
   }
-  private async disks(c: BotComputer, allowed: () => void): Promise<string[]> {
+  private async disks(c: BotComputer, allowed: () => void, probedHost?: unknown): Promise<string[]> {
     let paths: string[];
     try { paths = [this.path(c, "workspace"), this.path(c, "profile")]; }
     catch (e) { if (e instanceof AppError) throw e; return fail("persistent_disk_mounts_required"); }
     // Local API transport is accepted only with the service's real Unix socket and matching daemon host/uid.
     if (!localComputerPodman(this.#run.client)) fail("computer_local_podman_required");
     if (this.#run.client?.remote) {
-      const info = JSON.parse(decode(await this.command(["info", "--format", "json"], 5000, allowed))).host;
+      const info = probedHost ?? JSON.parse(decode(await this.command(["info", "--format", "json"], 5000, allowed))).host;
       if (!computerPodmanHostLocal(info)) fail("computer_local_podman_required");
     }
     const mounts = await this.hostProbe(["findmnt", "--json", "--output", "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT,OPTIONS"], allowed);
@@ -214,6 +215,18 @@ export class BotPodmanRuntime implements ComputerRuntime {
     }
     return paths;
   }
+  private readiness(startupMs: number) {
+    if (!this.#readiness) {
+      let host: unknown;
+      const pending = probeBotPodman((argv, request) => this.plan(argv, async () => {
+        const result = await this.#run(argv, { ...request, timeoutMs: argv[0] === "info" ? startupMs : request.timeoutMs });
+        if (argv[0] === "info" && result.exitCode === 0) host = JSON.parse(decode(result.stdout)).host;
+        return result;
+      })).then(result => ({ ...result, host })).finally(() => { if (this.#readiness === pending) this.#readiness = null; });
+      this.#readiness = pending;
+    }
+    return this.#readiness;
+  }
   /** Fixed credential-free host probes; injected tests use the same argument seam without spawning Linux tools. */
   protected async hostProbe(argv: string[], allowed: () => void): Promise<string> {
     allowed();
@@ -228,10 +241,13 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   /** Starts and verifies the two isolated components before issuing one opaque generation-bound handle. */
   async start(c: BotComputer, allowed: () => void): Promise<ComputerHandle> {
-    const readiness = await probeBotPodman((argv, request) => this.plan(argv, () => { allowed(); return this.#run(argv, request); }));
+    allowed();
+    // Share only an in-flight fresh probe, never cache host authority across later starts.
+    // A cold API info request can exceed five seconds; the caller's original startup guard still applies.
+    const readiness = await this.readiness(c.limits.startupMs);
     allowed();
     if (readiness.state !== "ready") fail(readiness.reason!);
-    const paths = await this.disks(c, allowed), names = this.names(c);
+    const paths = await this.disks(c, allowed, readiness.host), names = this.names(c);
     await this.stop(c);
     // A verified stop killed the previous browser. Chromium's hostname/PID links survive SIGKILL on persistent
     // profiles; unlink only these known symlinks, never their targets or website data, before creating processes.

@@ -23,7 +23,9 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
   const runnerInputs: any[] = [];
   let registryFailure = "";
   const calls: string[][] = [], streamCalls: string[][] = [], infos = new Map<string, any>(), cdp = new FakeCdp();
+  const requests: { argv: readonly string[]; timeoutMs: number }[] = [];
   const run: CommandRunner = async (argv, options) => {
+    requests.push({ argv: [...argv], timeoutMs: options.timeoutMs });
     await before?.(argv);
     calls.push([...argv]);
     if (argv[0] === "--version") return ok("podman version fixture");
@@ -97,7 +99,7 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       return JSON.stringify({ filesystems });
     }
   }
-  return { root, c, runtime: new Runtime(options), options, calls, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
+  return { root, c, runtime: new Runtime(options), options, calls, requests, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
 }
 
 test("concurrent computers serialize only Podman namespace planning and keep the original keep-id map", async () => {
@@ -117,6 +119,22 @@ test("concurrent computers serialize only Podman namespace planning and keep the
   } finally { gate.release(); await Promise.all(starts); }
   expect(creates).toBe(4);
   expect(f.calls.filter(a => a[0] === "run").every(a => a.includes("--userns=keep-id:uid=1000,gid=1000"))).toBe(true);
+});
+
+test("concurrent startup shares a fresh slow info probe, reuses its host proof and probes again on a later start", async () => {
+  const gate = barrier(); let infos = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (argv[0] === "info") { infos++; await gate.wait(); }
+  });
+  const other = structuredClone(f.c); other.id = "b".repeat(32); other.botId = "reader"; other.diskSlot!.id = "slot-0002";
+  const starts = [f.runtime.start(f.c, () => {}), f.runtime.start(other, () => {})];
+  try { await gate.reached; await Bun.sleep(0); expect(infos).toBe(1); }
+  finally { gate.release(); await Promise.all(starts); }
+  expect(infos).toBe(1);
+  expect(f.requests.filter(r => r.argv[0] === "info").map(r => r.timeoutMs)).toEqual([30000]);
+  await f.runtime.stop(f.c);
+  await f.runtime.start(f.c, () => {});
+  expect(infos).toBe(2);
 });
 
 test("rootless workspace/browser use separate mounts, private namespaces, finite limits and no egress/socket/environment inheritance", async () => {
