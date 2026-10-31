@@ -48,3 +48,5 @@ Coordinate only first-use anonymous correlation within a conversation. Two concu
 ## Authenticated discovery conformance
 
 Pin anonymous and authenticated read schemas independently from reviewed live discovery. Authenticated discovery on 2026-10-31 differed from the initial documentation-derived fixture: it closes additional properties, adds explicit nullable defaults and omits the documented fetch URL-array maximum. Update the authenticated pin and deterministic fixture only; preserve strict structural comparison and refusal of unknown tools. Jit's own public-read and output bounds remain in force. A catalog match does not establish successful search/fetch, free capacity or a published quota number. Anonymous remains the installation default; an explicitly selected key never triggers account, model or anonymous fallback.
+
+Authenticated read correlation is independent from the saved anonymous conversation. Do not pass that saved anonymous ID into keyed normalization or replace it with a keyed response ID. A later explicit return to anonymous reuses its original provider-issued correlation.

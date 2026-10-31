@@ -223,6 +223,27 @@ test("authenticated live discovery accepts only the pinned read schemas and send
   expect(f.app.parallel.definitions(f.attempt).map(tool => tool.name)).toEqual(["web_search", "web_fetch"]);
 });
 
+test("switching to a key does not compare per-read authenticated correlation with the retained anonymous conversation", async () => {
+  let keyedReads = 0;
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/call" || !new Headers(event.init.headers).has("authorization")) return undefined;
+    const data = event.wire.params.name === "web_search" ? JSON.parse(search.result.content[0]!.text) : structuredClone(fetchResult.result.structuredContent);
+    data.session_id = `keyed_read_${++keyedReads}`;
+    return Response.json({ jsonrpc: "2.0", id: event.wire.id, result: { structuredContent: data } });
+  });
+  const f = await fixture(wire);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  enableKey(f);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "keyed public docs" })).outcome).toBe("success");
+  expect((await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false })).outcome).toBe("success");
+  expect(f.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", f.conversationId)?.vendor_id)).toBe("parallel_fixture_conversation");
+  f.app.execute(f.auth.actor, { kind: "web.parallel.configure", requestId: rid(), expectedRevision: 2, payload: { mode: "anonymous", connectionId: null, billingAcknowledged: false } });
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "anonymous public docs" })).outcome).toBe("success");
+  const calls = wire.seen.filter(event => event.wire.method === "tools/call");
+  expect(calls.slice(1, 3).every(event => !Object.hasOwn(event.wire.params.arguments as object, "session_id"))).toBe(true);
+  expect(calls[3]!.wire.params.arguments).toHaveProperty("session_id", "parallel_fixture_conversation");
+});
+
 test.each(["unknown", "additionalProperties", "fetchLimit", "nullableDefault"])("authenticated discovery %s drift refuses before dispatch", async mutation => {
   const wire = protocol(event => {
     if (event.wire.method !== "tools/list") return undefined;
