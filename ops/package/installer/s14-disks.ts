@@ -65,7 +65,8 @@ export async function provisionS14Disks(options: {
     existing.push({ size: s.size, allocated: s.blocks * 512 });
   }
   // Check before mkdir/truncate/mkfs: sparse allocations are never mistaken for their full commitment.
-  const fs = dry ? null : statfsSync(dirname(dataRoot));
+  const backing = existsSync(images) ? images : existsSync(dataRoot) ? dataRoot : dirname(dataRoot);
+  const fs = dry ? null : statfsSync(backing);
   diskPoolCapacity(fs ? fs.bavail * fs.bsize : options.freeBytes!, options.reserveBytes, existing, files.length - existing.length);
   dir(dataRoot, 0o755); dir(images, 0o700); dir(mounts, 0o755);
   const units = join(options.root, "etc/systemd/system"); dir(units, 0o755);
