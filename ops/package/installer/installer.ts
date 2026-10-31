@@ -392,7 +392,10 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
         : { base: `localhost/jit-s14-base@sha256:${"a".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"b".repeat(64)}` }
         : available ? await provisionS14Images(artifact, uid, run, asUser, desired.s14!.images) : undefined;
       if (images) desired.s14!.images = images;
-      else options.out?.("Feature-off: computer_image_digest_required; Bot images could not be built. Re-run --s14 after repairing rootless Podman/build access.");
+      else {
+        delete desired.s14!.images;
+        options.out?.("Feature-off: computer_image_digest_required; Bot images could not be built. Re-run --s14 after repairing rootless Podman/build access.");
+      }
       write(configPath, JSON.stringify(desired, null, 2), 0o640);
     }
     let configuredImages: PinnedImage[] = [];

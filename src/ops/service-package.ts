@@ -633,8 +633,10 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
     const restored = await supervisor.daemonReload();
     switchRelease(service.executablePath, previousRelease);
     const restarted = restored && await supervisor.start();
-    return result("rolled-back", "health check failed; prior release restored against a compatible state", "inspect-upgrade-health-failure",
-      { ...ids, supervisor: restarted ? "active" : "unknown" });
+    const rollbackHealthy = restarted && await (input.health ?? defaultHealth(service, supervisor))();
+    return result(rollbackHealthy ? "rolled-back" : "activation-unhealthy",
+      rollbackHealthy ? "health check failed; prior release restored against a compatible state" : "prior release restored but activation is unhealthy", "inspect-upgrade-health-failure",
+      { ...ids, supervisor: rollbackHealthy ? "active" : "unknown" });
   }
   return result("activation-unhealthy", "health check failed after a schema change; rollback to the prior release is not compatible",
     "restore-recovery-point-through-quarantine", { ...ids, supervisor: (await supervisor.state()).active });
@@ -691,7 +693,9 @@ async function upgradeS14Package(input: PackageUpgradeInput): Promise<PackageUpg
   writeFileAtomic(unitPath, previousUnit); chmodSync(unitPath, 0o644);
   switchRelease(service.executablePath, previousRelease);
   const restarted = await supervisor.daemonReload() && await supervisor.start();
-  return result(restarted ? "rolled-back" : "activation-unhealthy", "S14 health failed; compatible prior release restored", "inspect-S14-health-failure");
+  const rollbackHealthy = restarted && await (input.health ?? defaultHealth(service, supervisor))();
+  return result(rollbackHealthy ? "rolled-back" : "activation-unhealthy",
+    rollbackHealthy ? "S14 health failed; compatible prior release restored" : "S14 prior release restored but activation is unhealthy", "inspect-S14-health-failure");
 }
 
 function parseUpgradeEvidence(stdout: string): { id: string | null; state: string | null; snapshotBackupId: string | null; error: string | null } {
