@@ -9,7 +9,7 @@ export function s14MemoryStyleSheet(): string {
 .s-mem, .s-read { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-card); min-width: 0; }
 .s-mem-hd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
 .s-mem-acts { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }
-.s-mem-acts a { display: inline-flex; align-items: center; min-height: 32px; }
+.s-mem-acts a { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 32px; }
 .s-memsearch { display: flex; gap: 8px; align-items: stretch; }
 .s-memsearch .s-field { flex: 1; }
 .s-memsearch .s-btn { flex: none; }
