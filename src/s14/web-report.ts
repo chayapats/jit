@@ -3,6 +3,7 @@ import type { WorkView } from "./authority-types";
 import type { WorkStep } from "./graph-types";
 import type { Artifact, EvidenceRequirement, Report, ReportClaim, ReportGap, ReportReview, ReportView } from "./report-types";
 import { banner, botName, commandForm, e, k, ownerStrip, pill, untrusted, when } from "./web-pages";
+import { briefGapRow } from "./web-personal-brief";
 import { fileShare } from "./web-sharing";
 import type { S14Page } from "./web";
 import type { S14WorkResearch } from "./web-product-memory";
@@ -56,7 +57,8 @@ function missingRow(item: ReportGap, view: WorkView, steps: WorkStep[], evidence
     case "unsupported_claim": case "conflicting_claim": return `<li><a class="s-link-text" href="${claimAnchor(item.claimId)}">${tr(item.kind === "unsupported_claim" ? "s14.report.miss.unsupported" : "s14.report.miss.conflict")}</a></li>`;
     case "step": return `<li>${tr("s14.report.miss.step")} ${stepName(item.stepId)} · ${tr(k(`s14.step_state.${item.state}`))}</li>`;
     case "handoff": return `<li>${tr("s14.report.miss.gap")} ${stepName(item.stepId)} <span class="s-mono">${e(item.reason)}</span></li>`;
-    case "read": return `<li><a class="s-link-text" href="${evidenceHref}">${tr("s14.report.miss.read")}</a> · ${tr(k(`s14.web_outcome.${item.outcome}`))}</li>`;
+    case "read": if (item.personal) return briefGapRow(item.personal.scopeId, item.personal.stale, item.personal.missing, evidenceHref.replace("tab=evidence", "tab=brief"));
+      return `<li><a class="s-link-text" href="${evidenceHref}">${tr("s14.report.miss.read")}</a> · ${tr(k(`s14.web_outcome.${item.outcome}`))}</li>`;
     case "missing_url": return `<li>${tr("s14.report.miss.url")} <span class="s-mono">${e(item.url)}</span></li>`;
     case "failed_url": return `<li>${tr("s14.report.miss.failed")} <span class="s-mono">${e(item.url)}</span> · <span class="s-mono">${e(item.failureKind)}</span></li>`;
   }
@@ -73,8 +75,9 @@ function coverageBlock(report: Report, view: WorkView, team: S14WorkTeam, eviden
 /** One exact citation. The URL is literal text, never a link: only the row in Evidence is one click away. */
 function citationRow(claim: ReportClaim, index: number, numbers: Map<string, number>, base: string): string {
   const citation = claim.citations[index]!, source = claim.evidence[index], number = numbers.get(citation.id) ?? 0;
-  const url = source ? `<p class="s-mono">${e(source.url)}</p><p class="s-meta">${tr(k(`s14.report.scope.${citation.scope}`))} · ${tr(k(`s14.coverage.${source.coverage}`))} · ${tr(k(`s14.freshness.${source.freshness}`))} · ${tr("s14.evidence.received")} ${when(source.retrievedAt)}</p>` : `<p class="s-sub">${tr("s14.report.source_gone")}</p>`;
-  return `<li><a class="s-cite" href="${base}#source-${e(citation.id)}" aria-label="${tr("s14.report.open_source")} ${number}">${number}</a><div class="s-stack">${url}<details class="s-more"><summary>${tr("s14.report.show_quote")}</summary><div>${untrusted(`<p>${e(citation.quote)}</p>`, tr("s14.untrusted.source"))}</div></details></div></li>`;
+  const personal = source?.tool === "personal_read", head = personal ? `<p>${tr(k(`s14.brief.kind.${source.kind}`))}</p>` : source ? `<p class="s-mono">${e(source.url)}</p>` : "";
+  const url = source ? `${head}<p class="s-meta">${tr(k(`s14.report.scope.${citation.scope}`))} · ${tr(k(`s14.coverage.${source.coverage}`))}${personal ? "" : ` · ${tr(k(`s14.freshness.${source.freshness}`))}`} · ${tr("s14.evidence.received")} ${when(source.retrievedAt)}</p>` : `<p class="s-sub">${tr("s14.report.source_gone")}</p>`;
+  return `<li><a class="s-cite" href="${personal ? base.replace("tab=evidence", "tab=brief") : base}#source-${e(citation.id)}" aria-label="${tr("s14.report.open_source")} ${number}">${number}</a><div class="s-stack">${url}<details class="s-more"><summary>${tr("s14.report.show_quote")}</summary><div>${untrusted(`<p>${e(citation.quote)}</p>`, tr("s14.untrusted.source"))}</div></details></div></li>`;
 }
 function claimCard(claim: ReportClaim, index: number, report: Report, targets: EvidenceRequirement[], numbers: Map<string, number>, evidenceBase: string): string {
   const kind = pill(tr(k(`s14.report.kind.${claim.kind}`))), support = claim.support === "supported" ? pill(tr("s14.report.supported"), "strong") : "";

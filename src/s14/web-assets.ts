@@ -6,6 +6,7 @@ import { s14StyleSheet } from "./web-style";
 import { s14FirstRunStyleSheet } from "./web-style-first-run";
 import { s14MemoryStyleSheet } from "./web-style-memory";
 import { s14RoutineStyleSheet } from "./web-style-routines";
+import { s14PersonalStyleSheet } from "./web-style-personal";
 import { s14SharingStyleSheet } from "./web-style-sharing";
 import { s14TeamStyleSheet } from "./web-style-team";
 
@@ -16,7 +17,7 @@ function asset(name: S14AssetName, contentType: string, source: string): StaticA
   return Object.freeze({ name, path: `/assets/${name.slice(0, dot)}.${hash}.${name.slice(dot + 1)}`, contentType, hash, body: new Uint8Array(body) });
 }
 const own: ReadonlyMap<S14AssetName, StaticAsset> = new Map<S14AssetName, StaticAsset>([
-  ["s14.css", asset("s14.css", "text/css; charset=utf-8", s14StyleSheet() + s14MemoryStyleSheet() + s14TeamStyleSheet() + s14FirstRunStyleSheet() + s14SharingStyleSheet() + s14RoutineStyleSheet())],
+  ["s14.css", asset("s14.css", "text/css; charset=utf-8", s14StyleSheet() + s14MemoryStyleSheet() + s14TeamStyleSheet() + s14FirstRunStyleSheet() + s14SharingStyleSheet() + s14RoutineStyleSheet() + s14PersonalStyleSheet())],
   ["s14.js", asset("s14.js", "text/javascript; charset=utf-8", readFileSync(join(import.meta.dir, "web-enhance.js"), "utf8"))],
 ]);
 const byPath = new Map([...own.values()].map(item => [item.path, item]));
