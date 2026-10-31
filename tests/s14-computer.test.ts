@@ -139,6 +139,51 @@ test("lazy preparation drains an intent committed while an earlier empty drainer
   expect(f.runtime!.starts).toHaveLength(1);
 });
 
+test("a second Bot starts while the first startup is pending, within the same unchanged deadline", async () => {
+  const runtime = new FakeComputerRuntime(), gate = barrier(); runtime.beforeStart = gate;
+  const f = await fixture(runtime);
+  const other: Bot = { ...f.bot, id: "reader" };
+  f.store.transaction(tx => tx.run("INSERT INTO bots VALUES (?,?)", other.id, JSON.stringify(other)));
+  const open = (botId: string) => {
+    const work = start(f, botId).work!;
+    f.app.execute(f.auth.actor, { kind: "computer.open", requestId: rid(), expectedRevision: 0, payload: { botId, workId: work.id } });
+  };
+  open("jit");
+  const draining = f.app.computers.drain();
+  try {
+    await gate.reached;
+    open("reader");
+    // Flush the enqueue wakeup without advancing the fixture's application clock.
+    await Bun.sleep(0);
+    expect(runtime.starts.map(c => c.botId)).toEqual(["jit", "reader"]);
+    f.clock.now += 20000;
+  } finally { gate.release(); await draining; }
+  for (const botId of ["jit", "reader"]) {
+    expect(f.app.computers.view(f.auth.actor, botId).computer).toMatchObject({ state: "running", limits: { startupMs: 30000 } });
+  }
+});
+
+test("recovery settles at most two computers concurrently and drains the remaining queued computer", async () => {
+  const f = await fixture(), first = await running(f);
+  lifecycle(f, "computer.stop", first.c); await f.app.computers.drain();
+  for (const botId of ["reader", "writer"]) {
+    f.store.transaction(tx => tx.run("INSERT INTO bots VALUES (?,?)", botId, JSON.stringify({ ...f.bot, id: botId })));
+    await running(f, botId);
+  }
+  const gate = barrier(), before = f.runtime!.stops.length;
+  f.runtime!.beforeStop = gate;
+  f.app.computers.recover();
+  const draining = f.app.computers.drain();
+  try {
+    await gate.reached;
+    await Bun.sleep(0);
+    expect(f.runtime!.stops.length - before).toBe(2);
+    expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM computer_operations WHERE state='running'")!.n)).toBe(2);
+  } finally { gate.release(); await draining; }
+  expect(f.runtime!.stops.length - before).toBe(3);
+  for (const botId of ["jit", "reader", "writer"]) expect(f.app.computers.view(f.auth.actor, botId).computer?.state).toBe("stopped");
+});
+
 test.each(["running", "stopping"])("two queued jobs for one Bot wait for its %s computer to stop before rebinding", async state => {
   const runtime = new FakeComputerRuntime(), gate = barrier();
   let runs = 0;
