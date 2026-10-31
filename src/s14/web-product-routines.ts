@@ -7,6 +7,7 @@ import type { ScopeRef, Work } from "./authority-types";
 import type { AttentionNotice, EnableRoutineCommand, RoutineOccurrence, RoutinePurpose, RoutineReceipt, RoutineView } from "./routine-types";
 import type { Bot, Home, OwnerActor, Route } from "./types";
 import { inferTitle, ownerLimits, workLimits } from "./web-product";
+import { generalTool } from "./web-product-coding";
 import { committed } from "./web-product-memory";
 import { limitValues, type S14LimitValues } from "./web-product-team";
 
@@ -50,7 +51,7 @@ function checkedFields(fields: Record<string, unknown>): void {
 }
 function freshDraft(app: S14Application, actor: OwnerActor, state: Home): S14RoutineDraft {
   const jit = state.bots.find(bot => bot.id === "jit" && bot.enabled) ?? state.bots.find(bot => bot.enabled);
-  return { ...limitValues(app.graph.defaults(actor)), purpose: "", completion: "", bots: jit ? [jit.id] : [], tools: (jit?.capabilities.tools ?? []).filter(tool => app.policy.tools.includes(tool) && !tool.startsWith("effect_")), scopes: [], schedule: "daily", time: "08:00", hours: "24", at: "", timezone: hostTimezone(), occurrences: "30", days: "90" };
+  return { ...limitValues(app.graph.defaults(actor)), purpose: "", completion: "", bots: jit ? [jit.id] : [], tools: (jit?.capabilities.tools ?? []).filter(tool => app.policy.tools.includes(tool) && generalTool(tool) && !tool.startsWith("effect_")), scopes: [], schedule: "daily", time: "08:00", hours: "24", at: "", timezone: hostTimezone(), occurrences: "30", days: "90" };
 }
 function draftOf(app: S14Application, actor: OwnerActor, fields: Record<string, unknown>): S14RoutineDraft {
   const fallback = limitValues(app.graph.defaults(actor)), number = (key: keyof S14LimitValues) => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : fallback[key]; };

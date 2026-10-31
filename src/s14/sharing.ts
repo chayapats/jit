@@ -17,7 +17,7 @@ export class S14Sharing {
   freeSlots(actor: OwnerActor): FreeShareSlot[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      const used = new Set(tx.all<{ id: string }>(`SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares
+      const used = new Set(tx.all<{ id: string }>(`SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares UNION SELECT id FROM coding_repositories
         UNION SELECT id FROM lifecycle.withdrawals WHERE kind IN ('snapshot_share','share')`).map(row => row.id));
       const bots = tx.all<{ record_json: string }>("SELECT record_json FROM bots ORDER BY rowid").map(row => JSON.parse(row.record_json) as Bot);
       return [...new Set([...this.app.policy.resources, ...managedShareSlots])].filter(scopeId => !used.has(scopeId)).map(scopeId => ({

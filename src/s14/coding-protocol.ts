@@ -4,13 +4,14 @@ import { containsCredential } from "../security/credentials";
 import { exact, integer, text } from "./validation";
 import type { CodingCheck } from "./coding-types";
 
+/** Exact registry hosts a repository grant can name; an owner form lists these and nothing else. */
+export const codingRegistries: readonly string[] = Object.freeze(["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"]);
 /** Registry scopes are exact DNS names from the existing registry design, never URLs, IPs or repository-provided hosts. */
 export function codingRegistry(value: unknown): asserts value is { hosts: string[] } | null {
   if (value === null) return;
   exact(value, ["hosts"]);
-  const registries = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"];
-  if (!Array.isArray(value.hosts) || !value.hosts.length || value.hosts.length > registries.length ||
-      new Set(value.hosts).size !== value.hosts.length || value.hosts.some(host => !registries.includes(host))) throw new AppError("coding_registry_scope_invalid");
+  if (!Array.isArray(value.hosts) || !value.hosts.length || value.hosts.length > codingRegistries.length ||
+      new Set(value.hosts).size !== value.hosts.length || value.hosts.some(host => !codingRegistries.includes(host))) throw new AppError("coding_registry_scope_invalid");
 }
 
 /** Full SHA-1 object identity supported by this version; abbreviated or alternate-format repositories refuse. */

@@ -16,6 +16,9 @@ import { renderMemorySurface } from "./web-memory";
 import { recoveryNotice, recoveryPanel } from "./web-recovery";
 import { recoveryPage } from "./web-recovery-page";
 import { lifecycleLanding, lifecycleLive, lifecyclePill, lifecycleStatus, renderLifecycleSurface } from "./web-lifecycle";
+import { codingTab, renderCodingSurface } from "./web-coding";
+import { gitEffectPage, gitSummarySlip } from "./web-coding-effect";
+import { generalTool, gitAction, type S14WorkCoding } from "./web-product-coding";
 import { renderRoutineSurface, routineFindingNote } from "./web-routines";
 import { renderSharingSurface } from "./web-sharing";
 import { statementBanner, statementBlock, statementStrip, type S14StatementDraft } from "./web-statement";
@@ -103,7 +106,7 @@ export const untrusted = (body: string, label = tr("s14.untrusted.bot")) => `<di
 export const pill = (label: string, tone = "", glyph = "", id = "") => `<span${id ? ` id="${id}"` : ""} class="s-pill ${tone}">${glyph ? `<span aria-hidden="true">${glyph}</span>` : ""}${e(label)}</span>`;
 
 const workTone: Record<Work["state"], [string, string]> = { proposed: ["strong", ""], rejected: ["", ""], accepted: ["", ""], queued: ["", ""], running: ["strong", ""], waiting: ["warn", "!"], ready: ["ok", "✓"], blocked: ["warn", "!"], stopping: ["", ""], stopped: ["", ""] };
-const workPill = (state: Work["state"], id = "") => pill(tr(k(`s14.work_state.${state}`)), ...workTone[state], id);
+export const workPill = (state: Work["state"], id = "") => pill(tr(k(`s14.work_state.${state}`)), ...workTone[state], id);
 const effectTone: Record<Effect["state"], [string, string]> = { pending: ["warn", "!"], approved: ["strong", ""], denied: ["", ""], expired: ["", ""], executing: ["strong", ""], succeeded: ["ok", "✓"], failed: ["danger", "×"], unknown: ["danger", "?"], changed: ["warn", "!"] };
 export const effectPill = (state: Effect["state"]) => pill(tr(k(`s14.effect_state.${state}`)), ...effectTone[state]);
 const workDot: Partial<Record<Work["state"], string>> = { queued: "hollow", running: "working", waiting: "waiting", ready: "ready", blocked: "waiting", stopping: "hollow" };
@@ -178,7 +181,7 @@ export function limitFields(values: { concurrent: number; minutes: number; reads
   const field = (name: "concurrent" | "minutes" | "reads", label: string) => `<label class="s-limit"><input type="number" name="${name}" min="${workLimitBounds[name][0]}" max="${workLimitBounds[name][1]}" value="${values[name]}" inputmode="numeric"><span>${e(label)}</span></label>`;
   return `<fieldset class="s-limits"><legend>${tr(title)}</legend>${field("concurrent", tr("s14.limits.concurrent"))}${field("minutes", tr("s14.limits.minutes"))}${field("reads", tr("s14.limits.reads"))}</fieldset>`;
 }
-const toolOptions = (page: S14Page, bots: Bot[]) => page.policy.tools.filter(tool => bots.some(bot => bot.capabilities.tools.includes(tool)));
+const toolOptions = (page: S14Page, bots: Bot[]) => page.policy.tools.filter(tool => generalTool(tool) && bots.some(bot => bot.capabilities.tools.includes(tool)));
 /** Bots and tools the grant may name. The conversation's Bot is fixed; everything else is visible and optional. */
 function grantChoices(page: S14Page, lead: Bot, draft: S14Draft | null, workId: string | null = null): string {
   const others = page.state.bots.filter(bot => bot.id !== lead.id && bot.enabled);
@@ -332,19 +335,20 @@ function grantTab(page: S14Page, view: WorkView): string {
     <dt>${tr("s14.grant.time")}</dt><dd>${Math.round(grant.limits.wallMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.grant.reads")}</dt><dd>${grant.limits.reads}</dd><dt>${tr("s14.grant.calls")}</dt><dd>${grant.limits.calls}</dd><dt>${tr("s14.grant.concurrency")}</dt><dd>${grant.limits.concurrency}</dd><dt>${tr("s14.grant.output")}</dt><dd>${size(grant.limits.outputBytes)}</dd><dt>${tr("s14.grant.evidence")}</dt><dd>${payload.requiredEvidence?.length ? payload.requiredEvidence.map(target => e(target.label)).join("<br>") : tr("s14.grant.no_evidence_targets")}</dd></dl>
     <p class="s-note">${tr("s14.grant.enforced_note")}</p>${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
-function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, base: string): string {
+function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, base: string, coding: S14WorkCoding | null = null): string {
   if (tab === "computer" && usesComputer(view)) return computerTab(page, view);
+  if (tab === "coding" && usesCoding(view)) return codingTab(page, view, coding);
   if (tab === "report" && view.work.grantId) return reportTab(page, view, team, research, base);
   return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, team, base);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
-  if (tab === "computer" && !usesComputer(view)) tab = "progress";
+  if ((tab === "computer" && !usesComputer(view)) || (tab === "coding" && !usesCoding(view))) tab = "progress";
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("report")}${link("evidence")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${usesCoding(view) ? link("coding") : ""}${link("report")}${link("evidence")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
 }
-function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam): string {
+function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, coding: S14WorkCoding | null = null): string {
   const base = `/chats/${e(conversation.id)}?work=${e(view.work.id)}`;
-  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, base)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot, research, team, base)}</div></section>`;
+  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, base)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot, research, team, base, coding)}</div></section>`;
 }
 
 const reasonOf = (effect: Effect) => effect.reason ? trMaybe(`s14.reason.${effect.reason}`) ?? "" : "";
@@ -368,6 +372,8 @@ function effectDiff(effect: Effect, history: Effect[]): string {
 }
 /** Exact-action card: content precedes decisions so it cannot be skipped, and the labels never carry model text. */
 function effectSlip(page: S14Page, effect: Effect, history: Effect[], level: "h2" | "h3", draft: S14StatementDraft | null = null): string {
+  // A push is decided only on its own page, under its diff and checks.
+  if (level === "h3" && gitAction(effect)) return gitSummarySlip(page, effect);
   const bot = page.state.bots.find(b => b.id === effect.botId), name = botName(bot ?? { id: effect.botId, name: effect.botId }), pending = effect.state === "pending";
   const state = effect.state === "unknown" ? "unknown" : pending ? "pending" : "closed", heading = `${e(name)} ${tr("s14.effect.asks")} ${e(tr(k(`s14.effect_kind.${effect.action.kind}`)))}`;
   const decide = (decision: "approve" | "deny", label: string, cls: string) => commandForm(page.csrf, "approval.decide", effect.revision, { effectId: effect.id, actionHash: effect.actionHash, decision }, label, cls);
@@ -377,7 +383,7 @@ function effectSlip(page: S14Page, effect: Effect, history: Effect[], level: "h2
     <div class="s-slip-body">${effectBanner(effect, history)}${level === "h2" ? effectDiff(effect, history) : ""}<div><p class="s-exact-label">${tr("s14.effect.destination")}</p><pre class="s-exact">${e(effect.action.destination)}</pre></div><div><p class="s-exact-label">${tr("s14.effect.content")}</p><pre class="s-exact">${e(effect.action.content)}</pre></div>
     <dl class="s-kv"><dt>${tr("s14.effect.revision")}</dt><dd><span class="s-mono">r${effect.revision}</span></dd><dt>${tr("s14.effect.hash")}</dt><dd class="s-mono">${e(effect.actionHash)}</dd><dt>${tr("s14.effect.expires")}</dt><dd>${when(effect.expiresAt)}${pending ? ` · ${remaining(effect.expiresAt, page.now)}` : ""}</dd></dl>${statementBlock(effect)}${level === "h3" && effect.revision > 1 ? `<p><a class="s-link-text" href="/effects/${e(effect.id)}#slip">${tr("s14.effect.open_history")}</a></p>` : ""}</div>${strip}</article>`;
 }
-function effectHistory(history: Effect[], current: Effect): string {
+export function effectHistory(history: Effect[], current: Effect): string {
   const old = history.filter(item => item.revision < current.revision);
   return old.length ? `<section class="s-card" aria-labelledby="s14-effect-history"><h2 id="s14-effect-history">${tr("s14.effect.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${effectPill(item.state)}</p><p class="s-mono s-meta">${e(item.actionHash)}</p></li>`).join("")}</ul></section>` : "";
 }
@@ -385,6 +391,7 @@ function effectHistory(history: Effect[], current: Effect): string {
 /* Bot computer (BOX14-01, F11). The lease bar reads the lease, never local state, and every word here comes from typed query data. */
 export const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
 const usesComputer = (view: WorkView) => !!view.grant?.tools.includes("computer");
+const usesCoding = (view: WorkView) => !!view.grant?.tools.includes("coding");
 /** Raw dictionary text with the Bot's name filled in; callers escape it like any other query value. */
 const named = (key: string, bot: Pick<Bot, "id" | "name">) => tr(k(key)).replace("{bot}", () => botName(bot));
 const reasonText = (code: string) => trMaybe(`s14.reason.${code}`) ?? tr("s14.reason.computer_generic");
@@ -527,7 +534,7 @@ function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): stri
   const live = chat.replies.some(reply => reply.state === "queued" || reply.state === "running") || work.some(liveWork);
   const body = chat.messages.length || work.length ? thread(page, chat, bot) : emptyThread(bot);
   const content = `<div class="s-col"><div id="s14-live" class="s-thread" data-revision="${chat.conversation.revision}">${bot.id === "jit" ? "" : banner("", tr("s14.chat.direct"), tr("s14.chat.direct_detail"))}${body}</div><span id="latest"></span>${live ? `<p class="s-note"><a class="s-link-text" href="/chats/${e(chat.conversation.id)}#latest">${tr("s14.refresh")}</a></p>` : ""}</div>`;
-  return shell(page, chatLabel(page, chat.conversation), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, action: newChat(page, bot, "s-btn", ' class="s-hdr-act"'), dock: `<div class="s-dock">${notice(view.notice)}${bot.enabled ? composer(page, chat.conversation, bot, "chat", view.draft) : banner("", tr("s14.life.chat_closed"), tr("s14.life.chat_closed_detail"))}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research, view.pane.team) } : {}) });
+  return shell(page, chatLabel(page, chat.conversation), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, action: newChat(page, bot, "s-btn", ' class="s-hdr-act"'), dock: `<div class="s-dock">${notice(view.notice)}${bot.enabled ? composer(page, chat.conversation, bot, "chat", view.draft) : banner("", tr("s14.life.chat_closed"), tr("s14.life.chat_closed_detail"))}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research, view.pane.team, view.pane.coding ?? null) } : {}) });
 }
 function workListPage(page: S14Page): string {
   const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span><span class="s-row-pills">${reportHintPill(page.overview.reports[item.id])}${workPill(item.state)}</span></a>`).join("")}</section>` : "";
@@ -536,7 +543,7 @@ function workListPage(page: S14Page): string {
 }
 function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): string {
   const work = view.view.work;
-  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot, view.research, view.team, `/work/${e(work.id)}`)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
+  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot, view.research, view.team, `/work/${e(work.id)}`, view.coding ?? null)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
 }
 /** One state word for a Bot: its lifecycle when it is not plainly active, otherwise what it is doing now. */
 const botWord = (page: S14Page, bot: Bot) => { const lifecycle = page.overview.lifecycles?.[bot.id]; return tr(k(lifecycle && lifecycle.state !== "active" ? `s14.life.state.${lifecycle.state}` : `s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`)); };
@@ -550,7 +557,7 @@ function botPage(page: S14Page, view: Extract<S14View, { kind: "bot" }>): string
   const { bot, conversation, computer } = view, route = page.state.routes.find(r => r.id === bot.routeId), current = page.overview.computers[bot.id] ?? { computer: null, lease: null }, lifecycle = page.overview.lifecycles?.[bot.id], gone = botGone(bot);
   const list = (items: string[]) => items.length ? items.map(item => `<span class="s-mono">${e(item)}</span>`).join(" · ") : tr("s14.bot.none");
   const tabs = `<nav class="s-worktabs" aria-label="${tr("s14.bot.tab_label")}"><a href="/team/${e(bot.id)}"${computer ? "" : ' aria-current="page"'}>${tr("s14.bot.tab_overview")}</a><a href="${computerPath(bot)}"${computer ? ' aria-current="page"' : ""}>${tr("s14.tab.computer")}</a><a href="/team/${e(bot.id)}/capabilities">${tr("s14.bot.tab_capabilities")}</a></nav>`;
-  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${botWord(page, bot)}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision} · g${bot.generation}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")} <a class="s-link-text" href="/team/${e(bot.id)}/capabilities">${tr("s14.bot.change_ceiling")}</a></p><p class="s-row">${conversation ? `<a class="s-btn${bot.enabled ? " primary" : ""}" href="/chats/${e(conversation.id)}">${tr(bot.enabled ? "s14.bot.direct" : "s14.bot.read_chat")}</a>` : ""}${newChat(page, bot)}<a class="s-btn" href="/memory?scope=${e(bot.id)}">${tr("s14.bot.memory")}</a></p>`;
+  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${botWord(page, bot)}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision} · g${bot.generation}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")} <a class="s-link-text" href="/team/${e(bot.id)}/capabilities">${tr("s14.bot.change_ceiling")}</a></p><p class="s-row">${conversation ? `<a class="s-btn${bot.enabled ? " primary" : ""}" href="/chats/${e(conversation.id)}">${tr(bot.enabled ? "s14.bot.direct" : "s14.bot.read_chat")}</a>` : ""}${newChat(page, bot)}<a class="s-btn" href="/memory?scope=${e(bot.id)}">${tr("s14.bot.memory")}</a>${bot.capabilities.tools.includes("coding") ? `<a class="s-btn" href="/coding">${tr("s14.more.coding")}</a>` : ""}</p>`;
   const status = lifecycle ? `<div class="s-stack" id="s14-live"><span hidden data-phase="${e(tr(k(`s14.life.state.${lifecycle.state}`)))}"></span>${lifecycleStatus(bot, lifecycle)}${lifecycleLanding(bot, lifecycle, view.landing ?? null)}</div>` : "";
   return shell(page, botName(bot), `<div class="s-col${computer ? " s-col-wide" : ""}">${gone ? "" : tabs}${computer ? "" : status}${gone ? "" : computer ? computerPanel(page, bot, computer) : overview()}</div>`, { current: "team", bot, ...(computer ? { subtitle: tr("s14.computer.title") } : {}), live: !computer && lifecycleLive(lifecycle) });
 }
@@ -560,7 +567,7 @@ function preferences(page: S14Page): string {
 }
 function morePage(page: S14Page, saved: boolean): string {
   return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}
-    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/coding">${tr("s14.more.coding")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
     <form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
@@ -577,7 +584,7 @@ export function renderS14(page: S14Page): string {
       case "team": return teamPage(page);
       case "bot": return botPage(page, view);
       case "proposal": return shell(page, `${tr("s14.proposal.title")} r${view.proposal.revision}`, `<div class="s-col">${proposalCard(page, view.proposal, view.history, "h2")}${proposalHistory(view.history, view.proposal)}<p><a class="s-link-text" href="/chats/${e(page.state.conversations.find(c => c.id === view.proposal.conversationId)?.id ?? "")}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "team" });
-      case "effect": return shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail")) : ""}${notice(view.notice ?? null)}${effectSlip(page, view.effect, view.history, "h2", view.draft ?? null)}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
+      case "effect": return view.git ? gitEffectPage(page, view, view.git) : shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail")) : ""}${notice(view.notice ?? null)}${effectSlip(page, view.effect, view.history, "h2", view.draft ?? null)}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
       case "more": return morePage(page, view.saved);
       case "settings-web": return webSettingsPage(page, view);
       case "settings-work": return workSettingsPage(page, view);
@@ -586,6 +593,7 @@ export function renderS14(page: S14Page): string {
       case "shares": case "share-new": case "share": return renderSharingSurface(page, view);
       case "routines": case "routine-new": case "routine": return renderRoutineSurface(page, view);
       case "bot-policy": case "bot-end": return renderLifecycleSurface(page, view);
+      case "coding": case "coding-new": case "coding-repository": case "coding-start": return renderCodingSurface(page, view);
       default: return renderMemorySurface(page, view);
     }
   }));

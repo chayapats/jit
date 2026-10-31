@@ -447,3 +447,25 @@ Unknown offers explicit read-back through git.reconcile or the existing separate
 Combined schema **16** retains main schema 13 plus coding schema 15; unreleased 1–15 refuse with fresh-state. Existing first-run, capability/lifecycle, graph, recovery, report acceptance and snapshot-share commands/queries remain available alongside every CODE14 command/query above. `coding_never_replay` refuses generic retry/summarize without changing old evidence or queuing another shell. Git-bearing checkpoints remain reconcile-only.
 
 The future Opus-authored coding UI consumes the existing `CodingView`, `ReportView`, report-review and artifact-download gateways. Render diff/check content only when available, use the exact committed `reportId`/revision for review, and use exact Git action hash/revision for approval. A settled graph lane waiting for coding review can propose/export only under its original live `effect_push` grant; stop/retire/policy change/source withdrawal still fence dispatch. Source/access withdrawal also withholds diagnostic check logs. Registry limitations reflect the captured scope and actual observations. No new UI/UX design is supplied; existing main surfaces are retained, and concrete coding UI acceptance remains pending for Claude Opus 5.5 high.
+
+## CODE14 Web wiring
+
+Opus-authored product routes over the coding and Git seams. See section 23 of the experience document for design decisions and evidence. This section supersedes the UI-pending notes in the CODE14 handoffs above; live GitHub, real Linux, device and assistive-technology evidence stay pending.
+
+| Route / form | Use |
+| --- | --- |
+| `GET /coding` | Repositories, coding work and revoked repositories |
+| `GET /coding/new` | Grant form. It offers each enabled Bot with `computer`, `coding` and a free configured resource. |
+| `GET /coding/repositories/:id` | Exact repository, connections and revoke. `?receipt=` rereads the landing banner. |
+| `GET /coding/repositories/:id/start` | Coding start form |
+| `GET /work/:id?tab=coding`, `GET /chats/:id?work=:id&tab=coding` | Run, commands, diff and push form, shown when the grant holds `coding` |
+| `GET /effects/:id` | For a `git.propose` effect, the exact push card. `?receipt=` rereads a `git.reconcile` receipt. Other effects keep the existing card. |
+| `GET /team/:id/capabilities?add=coding&edit=1` | Draft form with `computer`, `coding` and one free configured resource ticked. It only opens the form. |
+| `POST /s14/forms/coding-grant` | `{csrf,requestId,expectedRevision,url,baseCommit,receiver}` plus `registry:<host>=on`, to `coding.repository.grant`. `receiver` is `<botId>:<resourceId>`. No ticked host sends `registry:null`. |
+| `POST /s14/forms/coding-start` | `{csrf,requestId,expectedRevision,repositoryId,repositoryRevision,botRevision,conversationId,purpose,completion,install,tests,timeout,coverage,minutes,installRegistry,testsRegistry,push,connection}` to `coding.start`. One test per line. `connection` is empty or `<id>:<revision>`. Limits are one attempt, one step, one read and 256 calls; a retried form reuses its committed expiry. |
+| `POST /s14/forms/git-connection` | `{csrf,requestId,expectedRevision,repositoryId,label}` to `git.connection.create` |
+| `POST /s14/forms/git-secret`, `git-rotate` | `{csrf,requestId,expectedRevision,repositoryId,connectionId,secret}` to `git.connection.secret.set` or `git.connection.rotate`. A refused post never renders the value. |
+| `POST /s14/forms/git-propose` | `{csrf,requestId,expectedRevision,workId,attemptId,newCommit,expiresAt,connection,branch,oldCommit,pr,base,baseCommit,title,body,draft}` to `git.propose`. PR fields are ignored unless `pr=on`. `expiresAt` is rendered once, as the earlier of an hour and the grant's end. |
+| `coding.repository.revoke`, `git.connection.remove`, `git.connection.test`, `git.reconcile`, `approval.decide` | Fixed envelopes through `POST /s14/commands` |
+
+`app.sharing.freeSlots` now also leaves out IDs bound to a repository, so the share picker cannot offer one. `codingRegistries` is exported from `coding-protocol.ts`, so forms list exactly what the service accepts. The generic `work.retry`, `work.summarize` and redo links are not rendered for coding work. Approve for a Git effect renders only on its card. `coding.repository.grant` still checks `policy.resources` alone, unlike `resourceConfigured`, so a default install has no grantable slot; the UI filter is `receivers()` in `web-product-coding.ts` and `suggested()` in `web-lifecycle.ts`.

@@ -31,6 +31,8 @@ function evidenceRows(page: S14Page, view: WorkView, research: S14WorkResearch |
 /** F14 owner choices. Nothing here runs by itself, and no copy implies a fallback, a refund or a changed route. */
 export function recoveryPanel(page: S14Page, view: WorkView, research: S14WorkResearch | null): string {
   const { work, grant } = view; if (!grant || !recoverable.includes(work.state)) return "";
+  // Coding never replays: the service refuses both commands, and "Start as new work" here would start uncoded work. The Coding tab offers the real way.
+  if (grant.tools.includes("coding")) return "";
   const blocker = blockerOf(page, view), redo = `/chats/${e(work.conversationId)}?redo=${e(work.id)}#s14-text`, rows = evidenceRows(page, view, research);
   const hasEvidence = (research?.evidence ?? []).some(item => item.botId === grant.bots[0]!.id);
   const fresh = `<p><a class="s-link-text" href="${redo}">${tr("s14.recover.start_new")}</a></p><p class="s-note">${tr("s14.recover.start_new_note")}</p>`;
