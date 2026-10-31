@@ -2,7 +2,7 @@ import { tr, trMaybe } from "../i18n";
 import type { OnlineBackupReceipt } from "./ops-types";
 import { s14SchemaVersion } from "./store";
 import { restorePrepareStep, s14OpsStatusCommand, s14ServeCommand, type S14OpsStage, type S14OpsStep } from "./ops-guide";
-import { banner, botName, commandForm, e, k, noticeText, ownerStrip, pill, shell, short, when } from "./web-pages";
+import { announced, banner, botName, commandForm, e, k, noticeText, ownerStrip, pill, shell, short, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14BackupItem } from "./backup-inventory";
 import { recoveryRoom, type S14BackupSurface } from "./web-product-backup";
@@ -34,10 +34,10 @@ function progressCard(receipt: OnlineBackupReceipt): string {
     <p class="s-sub">${tr("s14.backup.paused_note")}</p><p class="s-note"><a class="s-link-text" href="/settings/backup?request=${e(receipt.requestId)}">${tr("s14.refresh")}</a></p></div></article>`;
 }
 function resultBanner(view: S14BackupSurface, receipt: OnlineBackupReceipt): string {
-  if (receipt.state === "blocked") return banner("danger", reasonText(receipt.reason ?? "s14_backup_capture_failed"), trMaybe(`s14.next.${receipt.reason}`) ?? tr("s14.backup.failed_next"), receipt.reason ? code(receipt.reason) : "");
+  if (receipt.state === "blocked") return `<div role="alert">${banner("danger", reasonText(receipt.reason ?? "s14_backup_capture_failed"), trMaybe(`s14.next.${receipt.reason}`) ?? tr("s14.backup.failed_next"), receipt.reason ? code(receipt.reason) : "")}</div>`;
   const item = view.items.find(entry => entry.id === receipt.backupId);
-  if (!item) return banner("", tr("s14.backup.done_title"), tr("s14.backup.rotated_note"));
-  return banner("ok", tr("s14.backup.done_title"), "", `<dl class="s-kv"><dt>${tr("s14.backup.made")}</dt><dd>${madeAt(item)}</dd><dt>${tr("s14.backup.size")}</dt><dd>${bytes(item.bytes)}</dd></dl><p><a class="s-link-text" href="${itemHref(item.id)}">${tr("s14.backup.open_item")}</a></p>`);
+  if (!item) return announced(banner("", tr("s14.backup.done_title"), tr("s14.backup.rotated_note")));
+  return announced(banner("ok", tr("s14.backup.done_title"), "", `<dl class="s-kv"><dt>${tr("s14.backup.made")}</dt><dd>${madeAt(item)}</dd><dt>${tr("s14.backup.size")}</dt><dd>${bytes(item.bytes)}</dd></dl><p><a class="s-link-text" href="${itemHref(item.id)}">${tr("s14.backup.open_item")}</a></p>`));
 }
 /** Work, computers and sign-ins that hold a backup back, each linking to the control that settles it. Listing one here grants and stops nothing. */
 function holdups(page: S14Page, view: S14BackupSurface): string[] {
