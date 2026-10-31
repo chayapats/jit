@@ -32,6 +32,7 @@ export function inspectS14Store(path: string): "missing" | "s14" {
 export class S14Store {
   #db: Database;
   #tx: AppTransaction;
+  #writes = 0;
   constructor(readonly path: string, readonly maintenance?: { lifecyclePath?: string }, options?: { attachBusyTimeoutMs: number }) {
     const attachWait = options?.attachBusyTimeoutMs ?? 2000;
     if (!Number.isSafeInteger(attachWait) || attachWait < 1 || attachWait > 2000) throw new AppError("invalid_store_busy_timeout");
@@ -47,10 +48,16 @@ export class S14Store {
       closeSync(openSync(path, "wx", 0o600));
     }
     this.#db = new Database(path, { create: false, strict: true });
+    // Only plain SELECT is known read-only here. Unusual SQL (including DDL,
+    // PRAGMA and RETURNING mutations through get/all) keeps the normal commit.
+    const query = (sql: string, write = false) => {
+      if (write || !/^\s*SELECT\b/i.test(sql)) this.#writes++;
+      return this.#db.query(sql);
+    };
     this.#tx = {
-      get: <T>(sql: string, ...args: SQLQueryBindings[]) => this.#db.query(sql).get(...args) as T | null,
-      all: <T>(sql: string, ...args: SQLQueryBindings[]) => this.#db.query(sql).all(...args) as T[],
-      run: (sql: string, ...args: SQLQueryBindings[]) => { this.#db.query(sql).run(...args); },
+      get: <T>(sql: string, ...args: SQLQueryBindings[]) => query(sql).get(...args) as T | null,
+      all: <T>(sql: string, ...args: SQLQueryBindings[]) => query(sql).all(...args) as T[],
+      run: (sql: string, ...args: SQLQueryBindings[]) => { query(sql, true).run(...args); },
     };
     try {
       if (state === "missing") closeSync(openSync(ledgerPath, "wx", 0o600));
@@ -209,7 +216,23 @@ export class S14Store {
   /** Commits one synchronous receipt/state/outbox transition under the writer lock. */
   transaction<T>(fn: (tx: AppTransaction) => T): T {
     this.assertWritable();
-    return this.#db.transaction(() => { this.assertWritable(); return fn(this.#tx); }).immediate();
+    // BEGIN IMMEDIATE still protects every decision. With an attached ledger,
+    // even a write-free COMMIT can sync a super-journal; ROLLBACK avoids that
+    // idle I/O without changing the commit path of any attempted mutation.
+    const empty = {};
+    let result: T;
+    try {
+      return this.#db.transaction(() => {
+        this.assertWritable();
+        const before = this.#writes;
+        result = fn(this.#tx);
+        if (this.#writes === before) throw empty;
+        return result;
+      }).immediate();
+    } catch (error) {
+      if (error !== empty) throw error;
+      return result!;
+    }
   }
   private assertWritable(): void {
     if (!this.maintenance) { assertS14OpsUnfenced(this.path); assertS14BackupUnfenced(this.path); }

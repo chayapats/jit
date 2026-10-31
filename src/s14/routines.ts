@@ -28,7 +28,12 @@ const load = (tx: AppTransaction, key: string): Routine => {
   if (!row) throw new AppError("not_found", 404);
   return JSON.parse(row.record_json);
 };
-const storeRoutine = (tx: AppTransaction, routine: Routine) => tx.run("UPDATE routines SET record_json=? WHERE id=?", canonical(routine), routine.id);
+const storeRoutine = (tx: AppTransaction, routine: Routine) => {
+  const value = canonical(routine);
+  if (tx.get<{ record_json: string }>("SELECT record_json FROM routines WHERE id=?", routine.id)?.record_json !== value) {
+    tx.run("UPDATE routines SET record_json=? WHERE id=?", value, routine.id);
+  }
+};
 const storeOccurrence = (tx: AppTransaction, occurrence: RoutineOccurrence) => tx.run("UPDATE routine_occurrences SET work_id=?,record_json=? WHERE id=?", occurrence.workId, canonical(occurrence), occurrence.id);
 
 /** Captured standing authority over the ordinary bounded work graph, without a Project or source-authored commands. */
