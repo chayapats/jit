@@ -99,6 +99,21 @@ export class ParallelWeb {
     return attempt;
   }
 
+  /** Stops a quota-hit work and older queued work; a later explicit work may probe only after any vendor retry deadline. */
+  quota(tx: AppTransaction, workId: string): { readId: string; retryAt: number | null } | null {
+    const work = record<Work>(tx, "work_items", workId), setting = record<ParallelSetting>(tx, "parallel_settings", "parallel");
+    const row = tx.get<{ record_json: string }>(`SELECT record_json FROM web_reads
+      WHERE json_extract(record_json,'$.outcome')='quota' AND json_extract(record_json,'$.remoteRequests')>0
+      AND json_extract(record_json,'$.mode')=?
+      AND (?='anonymous' OR json_extract(record_json,'$.settingRevision')=?)
+      AND (json_extract(record_json,'$.workId')=? OR json_extract(record_json,'$.finishedAt')>=?
+        OR json_extract(record_json,'$.retryAt')>?) ORDER BY rowid DESC LIMIT 1`,
+    setting.mode, setting.mode, setting.revision, workId, work.createdAt, this.app.now());
+    if (!row) return null;
+    const read = JSON.parse(row.record_json) as WebRead;
+    return { readId: read.id, retryAt: read.retryAt ?? null };
+  }
+
   private guardOutbound(tx: AppTransaction, attempt: Attempt, subject: string, isUrl: boolean): void {
     publicOutbound(subject, isUrl);
     const packet = this.app.memory.attemptPacket(tx, attempt.id);
@@ -146,6 +161,8 @@ export class ParallelWeb {
       if (abort.signal.aborted) throw new ParallelFailure(timedOut ? "deadline" : "cancelled");
       this.app.store.read(tx => this.guardOutbound(tx, attempt, subject, tool === "web_fetch"));
       row.subject = subject;
+      const quota = this.app.store.read(tx => this.quota(tx, attempt.workId));
+      if (quota) throw new ParallelFailure("quota", quota.retryAt);
       let secret: string | null = null;
       if (setting.mode === "authenticated") {
         this.app.store.read(tx => this.check(tx, attemptId, tool, setting));
@@ -157,7 +174,7 @@ export class ParallelWeb {
       }
       const work = this.app.store.read(tx => record<Work>(tx, "work_items", attempt.workId));
       const sessionId = this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null);
-      client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model,
+      client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model, now: () => this.app.now(),
         onSessionId: value => this.app.store.transaction(tx => {
           const previous = tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId);
           if (previous && previous.vendor_id !== value) throw new ParallelFailure("schema_changed");
@@ -169,6 +186,8 @@ export class ParallelWeb {
           this.app.store.transaction(tx => {
             this.check(tx, attemptId, tool, setting);
             this.guardOutbound(tx, attempt, subject, tool === "web_fetch");
+            const quota = this.quota(tx, attempt.workId);
+            if (quota) throw new ParallelFailure("quota", quota.retryAt);
             row.remoteRequests = client!.requests + 1;
             if (method === "tools/call") row.dispatched = true;
             save(tx, "web_reads", row);
@@ -212,6 +231,7 @@ export class ParallelWeb {
       row.missing = []; row.failures = []; row.usage = null;
       if (row.outcome === "private_context" || row.outcome === "credential_refused") row.subject = "[outbound blocked]";
       row.reason = `parallel_${row.outcome}`;
+      if (row.outcome === "quota") row.retryAt = error instanceof ParallelFailure ? error.retryAt : null;
       row.finishedAt = this.app.now(); row.remoteRequests = client?.requests ?? 0;
       if (Buffer.byteLength(frame(row)) > Math.min(32768, attempt.snapshot.outputBytes)) row.subject = "[oversize]";
       this.app.store.transaction(tx => {
