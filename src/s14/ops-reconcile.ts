@@ -34,6 +34,31 @@ export function reconcileOpsComputers(live: S14Store, candidate: S14Store): void
   });
 }
 
+/** Settles quarantine-only boot stops from the installation's matching, already confirmed stopped volumes; never supplies a runtime. */
+export function reconcileOpsComputerStops(live: S14Store, candidate: S14Store): void {
+  candidate.transaction(tx => {
+    for (const row of tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM bot_computers")) {
+      const restored = JSON.parse(row.record_json) as BotComputer;
+      if (restored.state !== "stopping" || restored.reason !== "restart_fenced_no_replay") continue;
+      const current = live.read(l => l.get<{ record_json: string }>("SELECT record_json FROM bot_computers WHERE id=?", row.id));
+      const stopped = current ? JSON.parse(current.record_json) as BotComputer : null;
+      if (!stopped || stopped.state !== "stopped" || stopped.botId !== restored.botId ||
+          stopped.workspaceId !== restored.workspaceId || stopped.profileId !== restored.profileId ||
+          stopped.diskSlot?.id !== restored.diskSlot?.id || stopped.diskSlot?.clean !== restored.diskSlot?.clean) {
+        throw new AppError("s14_ops_computer_cleanup_evidence_required", 409);
+      }
+      // This candidate cannot dispatch. Its generation must still fence every archived/current lease on activation.
+      restored.generation = Math.max(restored.generation, stopped.generation) + 1;
+      restored.revision = Math.max(restored.revision, stopped.revision) + 1;
+      if (restored.diskSlot) restored.diskSlot.generation = restored.generation;
+      restored.state = "stopped";
+      tx.run("UPDATE bot_computers SET record_json=? WHERE id=?", canonical(restored), row.id);
+      tx.run("UPDATE computer_operations SET state='done' WHERE computer_id=? AND kind='stop' AND state='queued'", row.id);
+    }
+    resetComputerLeases(tx);
+  });
+}
+
 /** Applies current lifecycle facts and fences every stale execution or delivery authority before native reconciliation. */
 export function reconcileOpsImage(app: S14Application): void {
   app.store.transaction(tx => {

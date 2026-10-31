@@ -42,7 +42,7 @@ function protocol(change?: (event: Seen) => Response | undefined | Promise<Respo
   };
   return { transport, seen };
 }
-async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime } = {}) {
+async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime; wallMs?: number; calls?: number } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-s14-parallel-"))); roots.push(root);
   const path = join(root, "state", "app.sqlite"), store = new S14Store(path); stores.add(store);
   const vault = new ConnectionVault(join(root, "vault"), { forbidden: [join(root, "state"), join(root, "native")] });
@@ -52,9 +52,10 @@ async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "trans
   const app = new S14Application(store, options);
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
+  const wallMs = runtime.wallMs ?? 60000, calls = runtime.calls ?? 16;
   const start = () => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
-    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: clock.now + 60000 } });
-  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes });
+    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls, outputBytes, wallMs, concurrency: 2, reads: 40 }, expiresAt: clock.now + wallMs } });
+  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls, outputBytes });
   return { root, path, store, vault, app, options, clock, auth, token, start, attempt, work: started.work!, conversationId: setup.conversation!.id, ...wire };
 }
 type F = Awaited<ReturnType<typeof fixture>>;
@@ -137,7 +138,7 @@ test("optional authenticated key is explicit, vault-only, billed acknowledgement
   expect(f.app.parallel.settings(f.auth.actor).setting.mode).toBe("authenticated");
 });
 
-test.each(["added", "removed", "schema", "duplicate", "paging"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
+test.each(["added", "removed", "schema", "duplicate", "paging", "nullable", "additionalProperties", "fetchLimit"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
   const wire = protocol(event => {
     if (event.wire.method !== "tools/list") return undefined;
     const value = structuredClone(anonymous);
@@ -145,6 +146,9 @@ test.each(["added", "removed", "schema", "duplicate", "paging"])("changed advert
     if (mutation === "removed") value.result.tools.shift();
     if (mutation === "duplicate") value.result.tools.push(value.result.tools[0]!);
     if (mutation === "schema") (value.result.tools[0]!.inputSchema as { required?: string[] }).required = ["destination", "secret"];
+    if (mutation === "nullable") Object.assign(value.result.tools[0]!.inputSchema.properties!.client_model!, { anyOf: [{ type: "number" }, { type: "null" }] });
+    if (mutation === "additionalProperties") Object.assign(value.result.tools[0]!.inputSchema, { additionalProperties: true });
+    if (mutation === "fetchLimit") Object.assign(value.result.tools[1]!.inputSchema.properties!.urls!, { maxItems: 20 });
     return Response.json(mutation === "paging" ? { ...value, result: { ...value.result, nextCursor: "untrusted" } } : value);
   });
   const f = await fixture(wire), result = await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" });
@@ -251,6 +255,75 @@ test("supported Schway host runs two allowlisted tools, charges later inference 
   expect(f.app.home(f.auth.actor).bots).toHaveLength(1);
   expect(readdirSync(join(f.root, "native", "sessions")).some(file => file.endsWith(".host-retired"))).toBe(true);
   expect(f.app.parallel.inspect(f.auth.actor, f.work.id).evidence).toHaveLength(1);
+});
+
+test("research preserves a final inference and commits an honest partial report before exhausting its call slice", async () => {
+  const f = await fixture();
+  const budgets: number[] = [];
+  const model: Model = { provider: "scripted", id: "bounded-research", async *stream(request) {
+    const budget = JSON.parse(request.context.find(section => section.name === "remaining-run-budget")!.content);
+    budgets.push(budget.callsRemainingAfterThisInference);
+    const content = request.tools?.length ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
+      : [{ type: "text" as const, text: JSON.stringify({ text: "Incomplete research, retained for review.", report: { title: "Partial research", claims: [{ id: "gap", text: "The requested conclusion is unverified.", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: ["Further evidence required"], limitations: ["Stopped within the call budget"], artifactIds: [] } }) }];
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal);
+  f.app.authority.commit(f.attempt.id, output);
+  expect(budgets).toEqual([15, 13, 11, 9, 7, 5, 3, 1]);
+  expect(f.app.authority.view(f.auth.actor, f.work.id).reservations!.calls).toBe(15);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial" }, completion: "owner_review_required" });
+});
+
+test("computer research keeps tools on earlier turns and finishes on turn eight with calls left", async () => {
+  const f = await fixture(protocol(), {}, { computer: new FakeComputerRuntime(), calls: 32 });
+  let turn = 0;
+  const model: Model = { provider: "scripted", id: "last-computer-turn", async *stream(request) {
+    turn++;
+    const budget = JSON.parse(request.context.find(section => section.name === "remaining-run-budget")!.content);
+    expect(budget.callsRemainingAfterThisInference).toBeGreaterThan(3);
+    expect(request.tools!.length > 0).toBe(turn < 8);
+    const content = request.tools!.length ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
+      : [{ type: "text" as const, text: JSON.stringify({ text: "Partial evidence for review.", report: { title: "Bounded computer research", claims: [{ id: "gap", text: "Further evidence is required.", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: ["Further evidence"], limitations: ["Reached the turn limit"], artifactIds: [] } }) }];
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal);
+  f.app.authority.commit(f.attempt.id, output);
+  expect(turn).toBe(8);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial" } });
+});
+
+test("research honors the remaining owner wall budget beyond one minute using the public host fake clock", async () => {
+  const f = await fixture(protocol(), {}, { wallMs: 120000 });
+  const waits: { ms: number; resolve(): void }[] = [];
+  const clock = { now: () => f.clock.now, sleep(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      waits.push({ ms, resolve });
+      signal?.addEventListener("abort", () => reject(new Error("clock cancelled")), { once: true });
+    });
+  } };
+  const model: Model = { provider: "scripted", id: "slow-research", async *stream(request) {
+    f.clock.now += 61000;
+    for (const wait of waits) if (wait.ms <= 61000) wait.resolve();
+    await Promise.resolve();
+    expect(request.signal?.aborted).toBe(false);
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "Research settled within the actual owner deadline." }] } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model, clock).run(f.attempt, new AbortController().signal);
+  expect(waits.some(wait => wait.ms === 120000)).toBe(true);
+  expect(output.text).toContain("actual owner deadline");
+});
+
+test.each(["quota", "budget"] as const)("research exposes safe %s failure without provider text, retries or route fallback", async kind => {
+  const f = await fixture();
+  let calls = 0;
+  const model: Model = { provider: "scripted", id: "failure", async *stream() {
+    calls++;
+    if (kind === "budget") throw new (await import("../src/errors")).AppError("budget_exhausted", 409);
+    throw Object.assign(new Error("fixture private provider error"), { status: 429 });
+  } };
+  await expect(schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal))
+    .rejects.toThrow(kind === "quota" ? "research_quota_exceeded" : "budget_exhausted");
+  expect(calls).toBe(1);
 });
 
 test("one queued work uses its computer, private memory and both public read tools through the production executor", async () => {

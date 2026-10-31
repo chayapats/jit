@@ -2,7 +2,7 @@ import { containsCredential } from "../security/credentials";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { record, type S14Application } from "./application";
-import type { Attempt, Work } from "./authority-types";
+import type { Attempt, Work, WorkOutput } from "./authority-types";
 import type { MemoryRef } from "./memory-types";
 import type { WebRead } from "./parallel-types";
 import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportCommand, ReportEvidence, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
@@ -38,6 +38,19 @@ export function evidenceRequirements(value: unknown): asserts value is EvidenceR
 /** Validates untrusted report claims and publishes immutable files only inside a live attempt-fenced transaction. */
 export class S14Reports {
   constructor(readonly app: S14Application) {}
+
+  /** Checks the actual publication contract in a rolled-back transaction; creates no result, report, source or artifact. */
+  validateCandidate(attemptId: string, output: WorkOutput): void {
+    const rollback = {};
+    try {
+      this.app.store.transaction(tx => {
+        const attempt = this.app.authority.guard(tx, attemptId);
+        const content = text(output.text, attempt.snapshot.outputBytes);
+        if (output.report) this.publish(tx, attempt, output.report, Buffer.byteLength(content));
+        throw rollback;
+      });
+    } catch (error) { if (error !== rollback) throw error; }
+  }
 
   private gap(missing: Map<string, ReportGap>, gap: ReportGap): void { missing.set(canonical(gap), gap); }
 

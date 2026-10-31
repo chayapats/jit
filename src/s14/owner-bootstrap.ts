@@ -1,6 +1,24 @@
 import { fstatSync, writeSync } from "node:fs";
 import { AppError } from "../errors";
 import { issueOwnerSetupLink, type OwnerSetupStore } from "../ops/owner-setup";
+import { S14Store } from "./store";
+
+/** Waits only for SQLite bootstrap-open contention; capability issuance is never retried or moved into this loop. */
+export async function openS14BootstrapStore(path: string, deps = {
+  open: () => new S14Store(path, undefined, { attachBusyTimeoutMs: 25 }), now: () => performance.now(), wait: (ms: number) => Bun.sleep(ms),
+}): Promise<S14Store> {
+  const deadline = deps.now() + 2000;
+  for (;;) {
+    try { return deps.open(); }
+    catch (error) {
+      if ((error as { code?: string })?.code !== "SQLITE_BUSY") throw error;
+      const remaining = deadline - deps.now();
+      if (remaining <= 0) throw new AppError("s14_store_busy", 503);
+      // SQLite's busy handler does not always wait when ATTACH fails during statement preparation.
+      await deps.wait(Math.min(25, remaining));
+    }
+  }
+}
 
 /** Issues/displays a bootstrap link once only for an interactive foreground terminal; never uses a logger. */
 export function printS14OwnerSetupLink(store: OwnerSetupStore, origin: string,

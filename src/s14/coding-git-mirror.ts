@@ -54,6 +54,33 @@ export class CodingGitMirror {
     return brokerGit(this.directory, args, undefined, { ...options, limits: this.limits });
   }
 
+  /** Refuses oversized decoded object inventories before fsck/diff or credential release, without requesting object bodies. */
+  async verifyObjectBytes(): Promise<void> {
+    let total = 0, pending = "", count = 0;
+    const countLine = () => {
+      if (!/^(0|[1-9][0-9]*)$/.test(pending)) throw new AppError("git_objects_unverified", 409);
+      const size = Number(pending);
+      if (!Number.isSafeInteger(size) || size > 32 * 1024 * 1024 - total) throw new AppError("git_decoded_objects_bound", 409);
+      total += size;
+      count++;
+      pending = "";
+    };
+    const result = await this.git(["-C", this.path, "cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"], {
+      inspect(chunk) {
+        for (const byte of chunk) {
+          if (byte === 10) countLine();
+          else {
+            if (byte < 48 || byte > 57 || pending.length >= 16) throw new AppError("git_objects_unverified", 409);
+            pending += String.fromCharCode(byte);
+          }
+        }
+      },
+    });
+    if (result.code !== 0) throw new AppError("git_objects_unverified", 409);
+    if (pending) countLine();
+    if (!count) throw new AppError("git_objects_unverified", 409);
+  }
+
   /** Verifies the bundle, full commit identity, reachable objects and exact reviewed diff before credential release. */
   async import(bundle: Uint8Array, action: GitAction): Promise<void> {
     if (!bundle.length || bundle.length > 16777216) throw new AppError("git_bundle_bound", 409);
@@ -69,6 +96,7 @@ export class CodingGitMirror {
     const heads = await git(["-C", this.path, "bundle", "list-heads", file]);
     if (heads.trim() !== `${action.headCommit} HEAD`) throw new AppError("git_bundle_head_mismatch", 409);
     await git(["-c", "protocol.file.allow=always", "-C", this.path, "fetch", "--no-tags", "--no-write-fetch-head", "--", file, `${action.headCommit}:refs/approved/head`]);
+    await this.verifyObjectBytes();
     await git(["-C", this.path, "fsck", "--strict", "--no-reflogs"]);
     const head = await git(["-C", this.path, "rev-parse", "--verify", `${action.headCommit}^{commit}`]);
     if (head.trim() !== action.headCommit) throw new AppError("git_bundle_head_mismatch", 409);

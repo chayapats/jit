@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync,
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { installerHealth, installerOwnerLink, installerS14Schema, prepareInstallerHome, runInstaller, type InstallerOptions } from "../ops/package/installer/installer";
-import { captureOwnerPipe, deliverS14OwnerLink } from "../ops/package/installer/owner-link";
+import { captureOwnerPipe, deliverS14OwnerLink, prepareS14OwnerLink } from "../ops/package/installer/owner-link";
 import { provisionS14Images } from "../ops/package/installer/s14-images";
 import { buildPackage, installArtifactDependencies, readManifest } from "../ops/package/bun-build";
 import { parseServiceConfig, serviceDatabasePath, serviceEnvironment, type ServiceConfig } from "../ops/package/service-config";
@@ -150,6 +150,31 @@ test("private delivery discards stdout/stderr, bounds output/time, and refuses n
     await expect(deliverS14OwnerLink([], {}, "http://127.0.0.1:3001", { capture: async () => value, terminal: () => ({ write() { writes++; }, close() {} }) })).rejects.toThrow("owner_link_pipe_invalid");
   }
   expect(writes).toBe(0);
+});
+
+test("S14 bootstrap captures before service start and displays only after successful health", async () => {
+  const f = fixture(), result = await runInstaller(f.options);
+  expect(result.events.indexOf("owner-terminal")).toBeLessThan(result.events.indexOf("service-install"));
+  expect(result.events.indexOf("state-initialize")).toBeLessThan(result.events.indexOf("owner-link-prepare"));
+  expect(result.events.indexOf("owner-link-prepare")).toBeLessThan(result.events.indexOf("service-start"));
+  expect(result.events.indexOf("health")).toBeLessThan(result.events.indexOf("owner-link"));
+});
+
+test.each(["healthy", "failed"] as const)("prepared private delivery remains silent until %s health and is never reissued", async health => {
+  const f = fixture(), db = f.at("prepared.sqlite"), origin = "http://127.0.0.1:3001", terminal: string[] = [];
+  let captures = 0, closes = 0;
+  const pending = await prepareS14OwnerLink([process.execPath, join(source, "src/main.ts"), "owner-link", "--s14", "--output-fd", "3"],
+    { JIT_S14_DATABASE: db, JIT_S14_ORIGIN: origin }, origin, { capture: async (argv, env) => { captures++; return captureOwnerPipe(argv, env); }, terminal: () => ({ write: text => { terminal.push(text); }, close() { closes++; } }) });
+  expect(terminal).toEqual([]); expect(captures).toBe(1);
+  expect(JSON.stringify(pending)).toBe("{}");
+  if (health === "healthy") {
+    pending.deliver(); expect(terminal).toHaveLength(1);
+    expect(() => pending.deliver()).toThrow("owner_link_delivery_closed");
+  }
+  pending.close(); pending.close();
+  expect(closes).toBe(1); expect(captures).toBe(1);
+  expect(() => pending.deliver()).toThrow("owner_link_delivery_closed");
+  if (health === "failed") expect(terminal).toEqual([]);
 });
 
 test("actual controlling-terminal delivery bypasses redirected installer stdout/stderr", async () => {

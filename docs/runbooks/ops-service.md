@@ -26,8 +26,10 @@ tar -xzf .local/s14-release/jit-install.tar.gz -C .local/s14-release
 Alternatively, once that **tested release** has been published, fetch its
 tag-pinned `install.sh` from the release and run `sh install.sh --s14`. Do not
 assume `latest` contains this change. `--yes` skips plan confirmation but still
-requires a controlling terminal for link delivery. A headless run stops at
-`owner-link` without issuing a capability; re-run in a terminal. No password,
+requires a controlling terminal for link delivery. The terminal is opened before
+stopping an existing unit; a headless run stops at `owner-terminal` without
+issuing a capability. Capture happens while the unit is stopped, and the link is
+displayed only after start and health succeed. Re-run in a terminal. No password,
 provider login, image digest or scratch configuration is required in the shell.
 Open the link once in Web, create the owner password, then follow the existing
 S14 Web setup/provider device sign-in. Account readiness and first inference

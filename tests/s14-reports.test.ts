@@ -442,6 +442,56 @@ test("the production native executor returns validated structured report data an
   expect(f.app.authority.view(f.auth.actor, work.work!.id).results[0]!.text).toBe("Sourced summary");
 });
 
+test("candidate validation rolls back all publication rows and final commit rechecks live authority", async () => {
+  const f = await fixture(), source = await f.read(), output = { state: "ready" as const, text: "Sourced summary", report: f.proposal(source) };
+  const counts = () => f.store.read(tx => ["memory_sources", "reports", "artifacts", "work_results"].map(table => tx.get<{ n: number }>(`SELECT count(*) n FROM ${table}`)!.n));
+  const before = counts();
+  f.app.reports.validateCandidate(f.attempt.id, output);
+  expect(counts()).toEqual(before);
+  expect(f.app.reports.list(f.auth.actor, f.started.work!.id)).toEqual([]);
+  f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: f.app.authority.view(f.auth.actor, f.started.work!.id).work.revision, payload: { workId: f.started.work!.id } });
+  expect(() => f.app.authority.commit(f.attempt.id, output)).toThrow("grant_revoked");
+  expect(f.app.reports.list(f.auth.actor, f.started.work!.id)).toEqual([]);
+});
+
+test.each(["quote", "size", "still_invalid"] as const)("native report %s rejection gets one charged tool-free correction without weakening publication", async mutation => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  const work = f.start({ tools: ["web_fetch"] }).work!;
+  const { schwayResearch } = await import("../src/s14/research");
+  let turns = 0;
+  f.app.authority.options.executor = { run: (a, signal) => schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "report-repair", async *stream(request) {
+    let content;
+    if (turns++ === 0) content = [{ type: "tool_call" as const, id: rid(), name: "web_fetch", arguments: { url: "https://example.com/article", fullContent: true } }];
+    else {
+      const source = f.app.parallel.inspect(f.auth.actor, work.id).evidence[0]!, report = f.proposal(source);
+      report.claims[0]!.citations[0]!.attemptId = a.id;
+      if (turns === 2 || mutation === "still_invalid") {
+        if (mutation === "size") report.claims = Array.from({ length: 24 }, (_, index) => ({ ...report.claims[0]!, id: `claim_${index}`, kind: "inference" as const, text: "Evidence discussion ".repeat(80) }));
+        else report.claims[0]!.citations[0]!.quote = "This quotation was not returned by the source";
+      }
+      if (turns === 3) {
+        expect(request.tools).toEqual([]);
+        expect(f.app.reports.list(f.auth.actor, work.id)).toEqual([]);
+        expect(f.app.authority.view(f.auth.actor, work.id).results).toEqual([]);
+      }
+      content = [{ type: "text" as const, text: JSON.stringify({ text: "Sourced summary", report }) }];
+    }
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } }).run(a, signal) };
+  await f.app.authority.drain();
+  expect(turns).toBe(3);
+  expect(f.app.authority.view(f.auth.actor, work.id).reservations!.calls).toBe(4);
+  if (mutation === "still_invalid") {
+    expect(f.app.reports.list(f.auth.actor, work.id)).toEqual([]);
+    expect(f.app.authority.view(f.auth.actor, work.id).results).toEqual([]);
+    expect(f.app.graph.view(f.auth.actor, work.id).steps[0]).toMatchObject({ state: "failed", reason: "citation_quote_mismatch" });
+  } else {
+    const view = available(f.app.reports.list(f.auth.actor, work.id)[0]!);
+    expect(view.report.claims[0]!.citations[0]!.quote).toBe(view.report.claims[0]!.evidence[0]!.content);
+    expect(view.artifacts).toHaveLength(2);
+  }
+});
+
 test("synthesis cites only actual accessible committed handoff evidence and a failed sibling forces a partial report", async () => {
   const f = await fixture(); f.app.authority.settle(f.attempt.id);
   f.store.transaction(tx => {

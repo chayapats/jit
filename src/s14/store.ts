@@ -32,7 +32,9 @@ export function inspectS14Store(path: string): "missing" | "s14" {
 export class S14Store {
   #db: Database;
   #tx: AppTransaction;
-  constructor(readonly path: string, readonly maintenance?: { lifecyclePath?: string }) {
+  constructor(readonly path: string, readonly maintenance?: { lifecyclePath?: string }, options?: { attachBusyTimeoutMs: number }) {
+    const attachWait = options?.attachBusyTimeoutMs ?? 2000;
+    if (!Number.isSafeInteger(attachWait) || attachWait < 1 || attachWait > 2000) throw new AppError("invalid_store_busy_timeout");
     opsPath(path);
     if (!maintenance) { assertS14OpsUnfenced(path); assertS14BackupUnfenced(path); }
     const state = inspectS14Store(path);
@@ -53,9 +55,9 @@ export class S14Store {
     try {
       if (state === "missing") closeSync(openSync(ledgerPath, "wx", 0o600));
       // Attaching reads both schemas, so a concurrent writer needs the wait already in place.
-      this.#db.exec("PRAGMA busy_timeout=2000");
+      this.#db.exec(`PRAGMA busy_timeout=${attachWait}`);
       this.#db.query("ATTACH DATABASE ? AS lifecycle").run(ledgerPath);
-      this.#db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
+      this.#db.exec("PRAGMA busy_timeout=2000; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
       if (state === "missing") this.#db.transaction(() => {
         this.assertWritable();
         this.#db.exec(`

@@ -204,7 +204,10 @@ export class S14Recovery {
       } while (after);
       intent.discovered = [...sessions.values()];
       this.app.store.transaction(tx => this.saveIntent(tx, intent));
-      if (intent.reference && !sessions.has(intent.reference.id)) throw new AppError("native_reference_missing", 503);
+      // Managed backups intentionally omit payloads already acknowledged deleted. A complete inventory may
+      // therefore be empty after restore; this never excuses a missing live or uncertain saved identity.
+      const confirmedDeleted = original.mode === "delete" && original.state === "deleted";
+      if (intent.reference && !sessions.has(intent.reference.id) && !confirmedDeleted) throw new AppError("native_reference_missing", 503);
       for (const session of sessions.values()) {
         // Management uses inventory main identity; the saved execution branch is retained unchanged.
         if (intent.mode === "delete") {
@@ -214,8 +217,8 @@ export class S14Recovery {
           }
         } else if (session.state === "active") await host.retireSession(session.reference);
       }
-      intent.state = !sessions.size ? "not_created" : intent.mode === "delete" || [...sessions.values()].every(s => s.state === "deleted") ? "deleted" : "retired";
-      intent.reason = sessions.size ? null : "native_not_created";
+      intent.state = !sessions.size ? confirmedDeleted ? "deleted" : "not_created" : intent.mode === "delete" || [...sessions.values()].every(s => s.state === "deleted") ? "deleted" : "retired";
+      intent.reason = sessions.size || confirmedDeleted ? null : "native_not_created";
     } catch (error) {
       intent.state = "unresolved";
       intent.reason = safeReason(error);

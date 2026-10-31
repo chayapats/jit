@@ -24,7 +24,7 @@ import { s14Policy } from "./policy";
 import { BotPodmanRuntime } from "./computer-podman";
 import { s14CredentialLifecycle } from "./lifecycle";
 import { runComputerWork } from "./computer-work";
-import { printS14OwnerSetupLink, requireS14OwnerLinkPipe, writeS14OwnerSetupLink } from "./owner-bootstrap";
+import { openS14BootstrapStore, printS14OwnerSetupLink, requireS14OwnerLinkPipe, writeS14OwnerSetupLink } from "./owner-bootstrap";
 
 /** Explicit opt-in composition root; it imports no legacy application, workers, configuration or store at runtime. */
 export async function runS14(args = process.argv.slice(2), env = process.env): Promise<void> {
@@ -39,7 +39,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       if (args.length !== 4 || args[1] !== "--s14" || args[2] !== "--output-fd" || !/^[0-9]+$/.test(args[3]!)) throw new AppError("owner_link_private_pipe_required");
       const fd = Number(args[3]);
       requireS14OwnerLinkPipe(fd); // Validate delivery before opening/creating any state.
-      const store = new S14Store(path);
+      const store = await openS14BootstrapStore(path);
       try { writeS14OwnerSetupLink(store, origin, fd); } finally { store.close(); }
       return;
     }

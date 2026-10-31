@@ -180,8 +180,11 @@ if [ "$(id -u)" != 0 ]; then
   # Open the owner's bootstrap before sudo; root never follows a mutable script pathname.
   # This redirect intentionally runs as the owner, before sudo.
   # shellcheck disable=SC2024
-  sudo sh -s -- "$@" <"$installer_script" || failed
-  exit 0
+  if sudo sh -s -- "$@" <"$installer_script"; then exit 0; fi
+  # The privileged installer reports its own failing step. Do not relabel a
+  # provisioning/bootstrap failure as a sudo permission problem in this parent.
+  reported=true
+  exit 1
 fi
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
