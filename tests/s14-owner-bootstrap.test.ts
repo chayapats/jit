@@ -164,3 +164,12 @@ test("bootstrap contention has a finite deadline, never retries other failures a
   } })).rejects.toThrow("not contention");
   expect(opens).toBe(1); expect(existsSync(f.path)).toBe(false);
 });
+
+test("short bootstrap ATTACH waits restore the normal writer timeout before capability issuance", () => {
+  const f = fixture(), store = new S14Store(f.path, undefined, { attachBusyTimeoutMs: 25 });
+  try {
+    expect(store.read(tx => tx.get<{ timeout: number }>("PRAGMA busy_timeout")!.timeout)).toBe(2000);
+    expect(existsSync(`${f.path}.owner-setup.json`)).toBe(false);
+  } finally { store.close(); }
+  expect(() => new S14Store(f.path, undefined, { attachBusyTimeoutMs: 0 })).toThrow("invalid_store_busy_timeout");
+});

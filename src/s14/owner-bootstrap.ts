@@ -5,7 +5,7 @@ import { S14Store } from "./store";
 
 /** Waits only for SQLite bootstrap-open contention; capability issuance is never retried or moved into this loop. */
 export async function openS14BootstrapStore(path: string, deps = {
-  open: () => new S14Store(path), now: () => performance.now(), wait: (ms: number) => Bun.sleep(ms),
+  open: () => new S14Store(path, undefined, { attachBusyTimeoutMs: 25 }), now: () => performance.now(), wait: (ms: number) => Bun.sleep(ms),
 }): Promise<S14Store> {
   const deadline = deps.now() + 2000;
   for (;;) {
