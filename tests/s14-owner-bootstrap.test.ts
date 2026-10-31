@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, openSync, closeSync, readFileSync, readdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requireOwnerSetup } from "../src/ops/owner-setup";
-import { printS14OwnerSetupLink } from "../src/s14/owner-bootstrap";
+import { openS14BootstrapStore, printS14OwnerSetupLink } from "../src/s14/owner-bootstrap";
 import { acquireS14RuntimeLock } from "../src/s14/runtime-lock";
 import { S14Store } from "../src/s14/store";
 
@@ -134,4 +134,33 @@ test("installer CLI uses the configured HTTPS browser origin without placing the
   const f = fixture(), child = await issue({ ...f.env, JIT_S14_ORIGIN: "https://jit.example.test" });
   expect(child.status).toBe(0); expect(child.privateOutput).toMatch(/^https:\/\/jit\.example\.test\/owner\/setup\?token=[a-f0-9]{64}\n$/);
   expect(child.stdout + child.stderr).toBe("");
+});
+
+test("bootstrap waits for ATTACH preparation contention before issuing, and returns the one opened store", async () => {
+  const f = fixture();
+  let now = 0, opens = 0;
+  const waits: number[] = [];
+  const store = await openS14BootstrapStore(f.path, { now: () => now, wait: async ms => { waits.push(ms); now += ms; }, open() {
+    if (++opens < 3) throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+    return new S14Store(f.path);
+  } });
+  try {
+    expect(opens).toBe(3); expect(waits).toEqual([25, 25]);
+    expect(existsSync(`${f.path}.owner-setup.json`)).toBe(false);
+    expect(store.path).toBe(f.path);
+  } finally { store.close(); }
+});
+
+test("bootstrap contention has a finite deadline, never retries other failures and never creates a capability", async () => {
+  const f = fixture();
+  let now = 0, opens = 0;
+  await expect(openS14BootstrapStore(f.path, { now: () => now, wait: async ms => { now += ms; }, open() {
+    opens++; throw Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" });
+  } })).rejects.toThrow("s14_store_busy");
+  expect(now).toBe(2000); expect(opens).toBe(81);
+  opens = 0;
+  await expect(openS14BootstrapStore(f.path, { now: () => now, wait: async () => { throw Error("must not wait"); }, open() {
+    opens++; throw new Error("not contention");
+  } })).rejects.toThrow("not contention");
+  expect(opens).toBe(1); expect(existsSync(f.path)).toBe(false);
 });
