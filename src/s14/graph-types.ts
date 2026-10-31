@@ -19,7 +19,7 @@ export interface WorkStep {
   queuedAt: number | null; waitingAt: number | null; queueCeiling: QueueCeiling | null;
   reason: string | null; attemptId: string | null; startedAt: number | null; settledAt: number | null;
 }
-/** Untrusted committed input with source lineage; UTF-8 text is at most 8192 bytes and the serialized input list at most 49152. */
+/** Untrusted committed input with source lineage; fair summaries share 16384 bytes when evidence exists, each text is at most 8192 and the full serialized list at most 49152. */
 export interface StepInput { stepId: string; attemptId: string; sourceId: string; text: string; evidence: ReportEvidence[] }
 /** An explicit missing dependency; successful sibling evidence remains independently committed. */
 export interface StepGap { stepId: string; reason: string }

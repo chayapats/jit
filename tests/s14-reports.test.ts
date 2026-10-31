@@ -258,7 +258,59 @@ test("evidence filling one handoff cannot let subsequent text-only dependencies 
   expect(synthesis).toBeDefined();
   expect(synthesis!.step!.inputs[0]!.evidence).toHaveLength(1);
   expect(Buffer.byteLength(JSON.stringify(synthesis!.step!.inputs))).toBeLessThanOrEqual(49152);
-  expect(synthesis!.step!.gaps.filter(gap => gap.reason === "handoff_result_omitted")).toHaveLength(2);
+  expect(synthesis!.step!.inputs).toHaveLength(6);
+  expect(synthesis!.step!.inputs.every(input => input.text.length < 8192)).toBe(true);
+  expect(synthesis!.step!.gaps.filter(gap => gap.reason === "handoff_result_excerpt")).toHaveLength(6);
+  expect(synthesis!.step!.gaps.filter(gap => gap.reason === "handoff_result_omitted")).toHaveLength(0);
+});
+
+test.each([true, false])("handoff preserves later cited evidence and both siblings after an oversized first read (reports=%s)", async reports => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  f.store.transaction(tx => {
+    const bot = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='jit'")!.record_json);
+    bot.id = "second"; tx.run("INSERT INTO bots VALUES (?,?)", bot.id, canonical(bot));
+  });
+  const transport = f.app.parallel.options.transport!;
+  f.app.parallel.options.transport = async (url, init) => {
+    const wire = JSON.parse(init.body as string);
+    if (wire.method !== "tools/call") return transport(url, init);
+    const requested = wire.params.arguments.urls[0] as string, changed = structuredClone(fetchFixture);
+    const name = requested.split("/").at(-1)!;
+    changed.result.structuredContent.results[0]!.url = requested;
+    changed.result.structuredContent.results[0]!.full_content = `${name} fact ` + "x".repeat(name === "background" ? 25000 : name === "keyboard" ? 14900 : 25000);
+    return Response.json(changed);
+  };
+  const work = f.start({ bots: [{ id: "jit", revision: 1 }, { id: "second", revision: 1 }], tools: ["web_fetch"], requiredEvidence: [] }).work!;
+  const nodes = f.app.graph.view(f.auth.actor, work.id).graph.nodes.map(node => ({ ...node, outputBytes: 65536 }));
+  f.app.graph.propose(work.id, 1, nodes);
+  let synthesis: Attempt | undefined, executorError: unknown;
+  const report = (sources: import("../src/s14/report-types").ReportEvidence[]): ReportProposal => ({ title: "Committed sources", claims: sources.map((source, index) => ({
+    id: `fact_${index}`, text: "Source-backed fact", kind: "inference", citations: [{ attemptId: source.attemptId, id: source.id, revision: source.revision, quote: source.content.slice(0, 12), scope: "page" }], covers: [], conflicts: [],
+  })), missing: [], limitations: [], artifactIds: [] });
+  f.app.authority.options.executor = { async run(a) { try {
+    if (a.step!.handler === "research") {
+      if (a.snapshot.bot.id === "jit") {
+        await f.app.parallel.read(a.id, "web_fetch", { url: "https://example.com/background", fullContent: true });
+        if (!reports) await f.app.parallel.read(a.id, "web_fetch", { url: "https://example.com/extra", fullContent: true });
+      }
+      const read = await f.app.parallel.read(a.id, "web_fetch", { url: `https://example.com/${a.snapshot.bot.id === "jit" ? "keyboard" : "status"}`, fullContent: true });
+      return { state: "ready", text: "Committed independent findings", ...(reports ? { report: report(read.evidence) } : {}) };
+    }
+    synthesis = a;
+    const sources = a.step!.inputs.flatMap(input => input.evidence);
+    expect(sources.map(source => source.url).sort()).toEqual(reports ? ["https://example.com/keyboard", "https://example.com/status"] : ["https://example.com/background", "https://example.com/keyboard"]);
+    expect(a.step!.inputs).toHaveLength(2);
+    for (const source of sources) expect(source).toEqual(f.store.read(tx => f.app.parallel.citation(tx, source.attemptId, source.id, source.revision)));
+    expect(Buffer.byteLength(JSON.stringify(a.step!.inputs))).toBeLessThanOrEqual(49152);
+    expect(a.step!.gaps.filter(gap => gap.reason === "handoff_evidence_omitted")).toHaveLength(reports ? 1 : 2);
+    const invalid = report(sources); invalid.claims[0]!.citations[0]!.quote = "invented quotation";
+    expect(() => f.app.reports.validateCandidate(a.id, { state: "ready", text: "Invalid", report: invalid })).toThrow("citation_quote_mismatch");
+    return { state: "ready", text: "Both sources preserved", report: report(sources) };
+  } catch (error) { executorError = error; throw error; } } };
+  await f.app.authority.drain();
+  if (executorError) throw executorError;
+  expect(synthesis).toBeDefined();
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.at(-1)!).toMatchObject({ state: "committed", reason: null });
 });
 
 test("done text and a staged workspace file do not create a report; valid commit creates immutable report plus two inspectable files", async () => {
