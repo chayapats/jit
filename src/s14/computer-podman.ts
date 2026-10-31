@@ -310,9 +310,10 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   private async removeRegistry(c: BotComputer, proxy?: ContainerRegistryProxy): Promise<void> {
     const prefix = `jit-s14-${c.id}-registry`, network = `${prefix}-net`;
+    // PID 1 may ignore SIGTERM; do not spend Podman's default stop grace past the cleanup deadline.
     const results = await Promise.allSettled([
-      this.command(["rm", "--force", "--ignore", prefix]),
-      proxy ? proxy.close() : this.command(["rm", "--force", "--ignore", `${prefix}-proxy`]),
+      this.command(["rm", "--force", "--time", "0", "--ignore", prefix]),
+      proxy ? proxy.close() : this.command(["rm", "--force", "--time", "0", "--ignore", `${prefix}-proxy`]),
     ]);
     if (results.some(result => result.status === "rejected")) fail("coding_registry_cleanup_unconfirmed");
     const exists = await this.#run(["network", "exists", network], { timeoutMs: 5000 });
