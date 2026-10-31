@@ -69,7 +69,7 @@ test("S14 missing Podman/images remains chat-only and a re-run repairs without w
   const unit = readFileSync(f.at("etc/systemd/system/jit-s14.service"), "utf8");
   expect(unit).not.toContain("JIT_S14_COMPUTER_ROOT="); expect(unit).toContain("ProtectSystem=strict");
   expect(f.lines.join("\n")).toContain("computer_image_digest_required");
-  expect(f.lines.join("\n")).toContain("computer_local_podman_required");
+  expect(f.lines.join("\n")).toContain("s14-disk-pool");
   expect((await runInstaller(f.options)).config.s14!.images).toBeDefined();
   expect(existsSync(f.at("var/lib/jit"))).toBe(false);
 });
@@ -78,7 +78,7 @@ test("S14 schema and home helpers never create a legacy database or ledger seed"
   const f = fixture(), home = f.at("home"); mkdirSync(home);
   prepareInstallerHome(home, true);
   expect(existsSync(join(home, "ledger/checkpoint.json"))).toBe(false);
-  for (const path of ["vault", "computers", ".schway"]) expect(statSync(join(home, path)).mode & 0o777).toBe(0o700);
+  for (const path of ["vault", ".schway"]) expect(statSync(join(home, path)).mode & 0o777).toBe(0o700);
   expect(installerS14Schema(home)).toBeNull();
   const db = join(home, "state/application.sqlite"), store = new S14Store(db); store.close();
   expect(installerS14Schema(home, true)).toBe(s14SchemaVersion);

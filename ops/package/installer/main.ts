@@ -32,7 +32,7 @@ try {
     };
     const defaults = installerDefaults(facts);
     if (command === "plan") console.log(JSON.stringify({ contract: "ops.installer/v1", facts, defaults }));
-    else await runInstaller({ root, s14: flags.get("--s14") === "true", dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
+    else await runInstaller({ root, s14: flags.get("--s14") === "true", computerSlots: flags.has("--computer-slots") ? Number(flags.get("--computer-slots")) : undefined, dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
   } else throw new Error("invalid-installer-command");
 } catch (error) {
   console.error(error instanceof InstallerFailure ? error.message : "Failed at installer-input. Next: verify the release, arguments and fake-root host.json, then re-run.");

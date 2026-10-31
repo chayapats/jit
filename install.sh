@@ -5,7 +5,7 @@ set +x
 umask 077
 
 step=arguments
-next='use install.sh [--yes] [--s14] [--uninstall] [--dry-run --root /absolute/disposable/root]'
+next='use install.sh [--yes] [--s14] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
 scratch=
 reported=false
 # Invoked by the EXIT trap through finish.
@@ -25,6 +25,7 @@ trap 'failed' HUP INT TERM
 yes=false
 uninstall=false
 s14=false
+computer_slots=8
 name=jit
 dry=false
 root=/
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) yes=true ;;
     --s14) s14=true; name=jit-s14 ;;
+    --computer-slots) shift; [ "$#" -gt 0 ] || failed; computer_slots=$1 ;;
     --uninstall) uninstall=true ;;
     --dry-run) dry=true ;;
     --root) shift; [ "$#" -gt 0 ] || failed; root=$1 ;;
@@ -42,6 +44,8 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+case "$computer_slots" in *[!0-9]*|'') failed ;; esac
+[ "$computer_slots" -ge 8 ] && [ "$computer_slots" -le 1024 ] || failed
 case "$root" in /*) ;; *) failed ;; esac
 if [ "$dry" = true ]; then
   [ "$root" != / ] || failed
@@ -117,7 +121,7 @@ printf '%s\n' 'Plan (ops.installer/v1):'
 if [ "$s14" = true ]; then
   printf '%s\n' '  Explicit S14: jit-s14 identity/unit; /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; loopback:3001.' \
     '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
-    '  Preserve legacy installation; unverified computer/disk/remote-API limits stay feature-off.' \
+    '  Create 8 bounded workspace/profile ext4 pairs at boot; --computer-slots N extends the pool. Refuse sparse overcommit; preserve legacy data.' \
     '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
 fi
 if [ "$uninstall" = true ]; then
@@ -151,7 +155,7 @@ if [ "$yes" != true ]; then
 fi
 
 if [ "$dry" = true ]; then
-  if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall" --s14 "$s14"; then exit 0; fi
+  if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --computer-slots "$computer_slots"; then exit 0; fi
   reported=true; exit 1
 fi
 
@@ -167,7 +171,7 @@ if [ "$(id -u)" != 0 ]; then
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
   fi
   set -- --yes
-  if [ "$s14" = true ]; then set -- "$@" --s14; fi
+  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"; fi
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
   if [ "$uninstall" = true ]; then set -- "$@" --uninstall; fi
   input_owner=$(id -u)
@@ -206,20 +210,20 @@ cd /
 step=dependencies
 next='restore package registry access, or install curl, unzip, CA certificates, util-linux, useradd, dbus user sessions and gnome-keyring; re-run'
 if [ "$uninstall" = false ]; then
-  git_dependency=
-  if [ "$s14" = true ]; then git_dependency=git; fi
+  set --
+  if [ "$s14" = true ]; then set -- git e2fsprogs; fi
   case "$manager" in
     apt-get)
       timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || failed
-      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools $git_dependency >/dev/null 2>&1 || failed
+      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools "$@" >/dev/null 2>&1 || failed
       if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
     dnf)
-      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret $git_dependency >/dev/null 2>&1 || failed
+      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret "$@" >/dev/null 2>&1 || failed
       if ! timeout 600 dnf install -y podman shadow-utils-subid slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
   esac
   for tool in curl unzip sha256sum tar runuser useradd getent loginctl systemctl busctl gnome-keyring-daemon; do command -v "$tool" >/dev/null || failed; done
   if [ "$s14" = true ]; then
-    for tool in git prlimit; do command -v "$tool" >/dev/null || failed; done
+    for tool in git prlimit mkfs.ext4 losetup findmnt blkid; do command -v "$tool" >/dev/null || failed; done
   fi
 fi
 step='bun-runtime'
@@ -289,5 +293,5 @@ unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -ui
 [ -z "$unsafe" ] || failed
 source_dir=$scratch/source
 chmod 755 "$scratch"
-if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
+if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --computer-slots "$computer_slots" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
 reported=true; exit 1

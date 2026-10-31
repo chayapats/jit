@@ -27,6 +27,8 @@ export interface BotComputer {
   workspaceId: string;
   profileId: string;
   lastUsedAt: number;
+  /** Durable exclusive slot claim, fenced with the computer generation; dirty claims require a wipe before use. */
+  diskSlot?: { id: string; generation: number; clean: boolean } | null;
 }
 /** Exclusive generation-bound input ownership; reads never create a lease. */
 export interface InputLease {
@@ -63,6 +65,8 @@ export interface ComputerActivity { kind: ComputerCommand["kind"] | "takeover.in
 export interface ComputerHandle { readonly computerId: string; readonly generation: number }
 /** Trusted isolated runtime port; final guards run immediately before each dispatch and after every wait. */
 export interface ComputerRuntime {
+  /** Returns the trusted installer inventory synchronously; no provisioning or privileged runtime code. */
+  diskSlots?(): readonly string[];
   start(computer: BotComputer, allowed: () => void): Promise<ComputerHandle>;
   stop(computer: BotComputer): Promise<void>;
   destroy(computer: BotComputer, allowed: () => void): Promise<void>;

@@ -1,4 +1,4 @@
-import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { buildPackage, validateArtifact } from "../bun-build";
@@ -16,6 +16,7 @@ import { s14SchemaVersion, inspectS14Store, S14Store } from "../../../src/s14/st
 import { acquireS14RuntimeLock } from "../../../src/s14/runtime-lock";
 import { deliverS14OwnerLink } from "./owner-link";
 import { provisionS14Images } from "./s14-images";
+import { provisionS14Disks } from "./s14-disks";
 import pins from "./pinned-images.json";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
@@ -39,7 +40,7 @@ export async function repairPodmanNamespace(
 }
 
 function homeDirectories(home: string, s14 = false): string[] {
-  return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway", ...(s14 ? ["vault", "computers"] : [])].map(path => join(home, path));
+  return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway", ...(s14 ? ["vault"] : [])].map(path => join(home, path));
 }
 
 function keyringUnit(home: string): string {
@@ -159,7 +160,7 @@ export function subordinateIds(uidText: string, gidText: string, user: string,
 
 /** All installer file writes are confined to root; fake roots reject symlink parents and never call host tools. */
 export interface InstallerOptions {
-  root: string; s14?: boolean; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
+  root: string; s14?: boolean; computerSlots?: number; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
   run?: CommandRunner; out?: (line: string) => void;
   /** Fake-root scenarios only; production ignores all simulated failures/capabilities. */
   simulation?: { failStep?: string; podman?: boolean; health?: boolean; images?: unknown };
@@ -292,7 +293,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     dir(home);
     step("directories", "remove unexpected symlinks or repair directory ownership, then re-run");
     if (dry) for (const path of homeDirectories(home, s14)) dir(path);
-    if (!dry) chownSync(home, uid, gid);
+    if (!dry && (!s14 || !existsSync(join(home, "state")))) chownSync(home, uid, gid);
+    if (s14) chmodSync(home, 0o750);
     dir(prefix, 0o755); dir(join(prefix, "bin"), 0o755); dir(join(prefix, "releases"), 0o755); dir(at("/var/lib/cni"), 0o755);
     let available = dry ? options.simulation?.podman !== false : (await call(["podman", "--version"])).exitCode === 0;
     let subordinateUnavailable = false;
@@ -335,6 +337,26 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       const locked = await must(asUser(["busctl", "--user", "get-property", "org.freedesktop.secrets", "/org/freedesktop/secrets/collection/login", "org.freedesktop.Secret.Collection", "Locked"]));
       if (locked.trim() !== "b false") throw new InstallerFailure(currentStep, next);
     }
+    if (s14) {
+      step("s14-disk-pool", "require loop devices/ext4/systemd mounts and capacity for all sparse images at full size plus reserve; free space or expand the host disk, then re-run --s14 --computer-slots N (minimum 8)");
+      // The unprivileged helper has created its mutable directories; seal their parent before creating the pool.
+      if (!dry) chownSync(home, 0, gid);
+      chmodSync(home, 0o750);
+      const computerRoot = desired.s14!.computerRoot;
+      safe(computerRoot);
+      // Earlier opt-in installers created only an empty service-owned directory. Adopt only that empty root.
+      if (!dry && existsSync(computerRoot) && lstatSync(computerRoot).uid !== 0) {
+        if (readdirSync(computerRoot).length) throw new InstallerFailure(currentStep, "preserve the existing computer data and move it aside explicitly before provisioning the root-owned disk pool");
+        chownSync(computerRoot, 0, 0); chmodSync(computerRoot, 0o755);
+      }
+      try {
+        await provisionS14Disks({ root, dataRoot: computerRoot, uid, gid, slots: options.computerSlots, reserveBytes: defaults.diskReserveBytes + 512 * MiB,
+          dryRun: dry, freeBytes: options.facts.freeBytes, run });
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("computer_disk_pool_overcommit")) throw new InstallerFailure(currentStep, error.message);
+        throw new InstallerFailure(currentStep, next);
+      }
+    }
     step("artifact", "verify the release archive/Bun pins and registry access, then re-run");
     let artifact = resolve(options.source);
     if (!dry) {
@@ -372,13 +394,12 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       if (images) desired.s14!.images = images;
       else options.out?.("Feature-off: computer_image_digest_required; Bot images could not be built. Re-run --s14 after repairing rootless Podman/build access.");
       write(configPath, JSON.stringify(desired, null, 2), 0o640);
-      options.out?.("Feature-off: computer_local_podman_required; S14 cannot verify persistent disk bounds through the hardened service's remote API. Dedicated ext4 mounts/cgroup proof remain required; no local or host-shell fallback.");
     }
     let configuredImages: PinnedImage[] = [];
     try { configuredImages = pinnedImages(dry ? options.simulation?.images ?? pins : pins); }
     catch { options.out?.("Optional image list unavailable: skipping pre-pull."); }
     write(join(configDir, "installer-state.json"), JSON.stringify({ contract: "ops.installer/v1", hardware: options.facts, defaults,
-      containers: available ? s14 ? "feature-off-computer_local_podman_required" : "runtime-present-images-require-configuration" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
+      containers: available ? "runtime-present-images-require-verification" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
     step("service-install", "inspect service plan and the bounded journald namespace, then re-run");
     if (existsSync(unitPath)) await service(["stop", "--config", configPath]);
     if (!dry) {

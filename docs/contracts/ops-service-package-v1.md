@@ -162,8 +162,7 @@ redirect cannot satisfy the gate.
 tmpfs with finite size and resolved ownership, `HOME` and Schway lock writes,
 and runs `serve --s14 --no-refusal-page`. Startup failure therefore cannot be
 mistaken for a healthy refusal page. It retains the user bus/socket bindings
-and remote-client policy; the current S14 computer local-disk-proof gap stays
-fail-closed. Plans still require the identity, directories, release trust,
+and remote-client policy. ADR 0046 permits the verified same-host service Unix API for local disk proof; foreign/SSH/TCP clients and unproven finite disk/cgroup limits stay fail-closed. The root installer provisions/extends the boot-mounted ext4 pool; service/runtime operations never mount or format disks. Plans still require the identity, directories, release trust,
 runtime pin and session bus; they require an S14 artifact pin and skip the
 legacy JSON ledger seed. The S14 store owns its independent lifecycle ledger.
 
