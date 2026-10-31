@@ -193,6 +193,9 @@ test("actual per-run public Schway hosts overlap with separate strict native con
   const f = await fixture({ async run(a, signal) {
     return schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "barrier-model", async *stream(request) {
       seen.push(JSON.stringify(request));
+      const role = JSON.parse(request.context.find(section => section.name === "work-graph-role")!.content);
+      expect(role).toMatchObject({ handler: a.step!.handler, botId: a.snapshot.bot.id });
+      expect(role.instruction).toContain("missing delegation tool does not establish that sibling research failed");
       if (a.step!.handler === "research") { if (++streams === 2) entered.resolve(); await release.promise; }
       yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: `Committed ${a.snapshot.bot.id}` }] } };
     } }).run(a, signal);
@@ -400,4 +403,46 @@ test("committed work at an empty drain's completion boundary is not lost", async
   await draining;
   expect(seen).toEqual([started.work!.id]);
   expect(f.app.authority.view(f.auth.actor, started.work!.id).work.state).toBe("ready");
+});
+
+test("two non-main research Bots overlap before the main Bot uses a slot, then the main Bot synthesizes", async () => {
+  const both = barrier(), release = barrier(), seen: Attempt[] = [];
+  const f = await fixture({ async run(attempt) {
+    seen.push(attempt);
+    if (attempt.step!.handler === "research" && attempt.snapshot.bot.id !== "jit") {
+      if (seen.length === 2) both.resolve();
+      await release.promise;
+    }
+    if (attempt.step!.handler === "synthesis") {
+      expect(attempt.snapshot.bot.id).toBe("jit");
+      expect(attempt.step!.inputs).toHaveLength(3);
+    }
+    return { state: "ready", text: `Evidence ${attempt.snapshot.bot.id}` };
+  } });
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }, { id: "second", revision: 1 }, { id: "third", revision: 1 }] });
+  const pending = f.app.authority.drain(); await both.promise;
+  expect(seen.map(a => a.snapshot.bot.id)).toEqual(["second", "third"]);
+  expect(f.app.graph.view(f.auth.actor, started.work!.id).active).toBe(2);
+  f.clock.now += 1000; release.resolve(); await pending;
+  const steps = f.app.graph.view(f.auth.actor, started.work!.id).steps;
+  const peers = steps.filter(s => s.handler === "research" && s.botId !== "jit");
+  expect(Math.min(...peers.map(s => s.settledAt!)) - Math.max(...peers.map(s => s.startedAt!))).toBe(1000);
+  expect(steps.at(-1)).toMatchObject({ botId: "jit", handler: "synthesis", state: "committed" });
+});
+
+test("known Parallel quota blocks queued web lanes without admitting a model; synthesis retains the gap", async () => {
+  const seen: Attempt[] = [];
+  const f = await fixture({ async run(a) {
+    seen.push(a);
+    if (a.step!.handler === "research") {
+      f.store.transaction(tx => tx.run("INSERT INTO web_reads VALUES (?,?,?)", "quota_read", a.id, canonical({ id: "quota_read", attemptId: a.id, workId: a.workId, mode: "anonymous", settingRevision: 1, outcome: "quota", remoteRequests: 4, finishedAt: f.clock.now, retryAt: f.clock.now + 60000 })));
+    } else {
+      expect(a.step!.gaps).toMatchObject([{ reason: "parallel_quota" }]);
+    }
+    return { state: "ready", text: "Partial evidence: Parallel quota" };
+  } });
+  const started = f.start({ limits: { attempts: 8, steps: 8, calls: 40, outputBytes: 65536, wallMs: 1800000, concurrency: 1, reads: 40 } });
+  await f.app.authority.drain();
+  expect(seen.map(a => a.step!.handler)).toEqual(["research", "synthesis"]);
+  expect(f.app.graph.view(f.auth.actor, started.work!.id).steps[1]).toMatchObject({ state: "blocked", reason: "parallel_quota", attemptId: null, startedAt: null });
 });

@@ -11,6 +11,7 @@ import { dropsAllCapabilities } from "../exec/container-checks";
 import { pinnedImagePattern } from "../exec/box-runtime";
 import { podmanCommandRunner, podmanStreamRunner, type CommandRunner, type StreamRunner } from "../exec/podman-runtime";
 import type { AgentInput, BotComputer, ComputerHandle, ComputerRuntime, OwnerInput } from "./computer-types";
+import { botComputerUserNamespace } from "./computer-types";
 import { readComputerDiskPool } from "./computer-disks";
 import type { PodmanClient } from "../exec/podman-client";
 
@@ -136,6 +137,8 @@ export class BotPodmanRuntime implements ComputerRuntime {
   readonly #live = new WeakMap<ComputerHandle, Live>();
   readonly #byId = new Map<string, Live>();
   readonly #registry = new Map<string, { cancel(): void; settled: Promise<void> }>();
+  #planning = Promise.resolve();
+  #readiness: Promise<{ state: "ready" | "unavailable"; reason: string | null; host: unknown }> | null = null;
   constructor(readonly options: BotPodmanOptions) {
     if (![options.workspaceImage, options.browserImage].every(image => pinnedImagePattern.test(image))) fail("computer_image_digest_required");
     this.#root = resolve(options.dataRoot);
@@ -165,22 +168,34 @@ export class BotPodmanRuntime implements ComputerRuntime {
     return path;
   }
   private async command(argv: string[], timeoutMs = 5000, allowed = () => {}): Promise<Uint8Array> {
-    allowed();
-    let result;
-    try { result = await this.#run(argv, { timeoutMs }); }
-    catch { return fail("podman_runtime_unavailable"); }
-    allowed();
-    if (result.exitCode !== 0) fail(podmanFailure(result.stderr));
-    return result.stdout;
+    return this.plan(argv, async () => {
+      allowed();
+      let result;
+      try { result = await this.#run(argv, { timeoutMs }); }
+      catch { return fail("podman_runtime_unavailable"); }
+      allowed();
+      if (result.exitCode !== 0) fail(podmanFailure(result.stderr));
+      return result.stdout;
+    });
   }
-  private async disks(c: BotComputer, allowed: () => void): Promise<string[]> {
+  private async plan<T>(argv: readonly string[], run: () => Promise<T>): Promise<T> {
+    if (!["info", "create", "run"].includes(argv[0]!)) return run();
+    // The local API's keep-id planner reads process-global libsubid state. Concurrent
+    // planning produced duplicate UID ranges on Podman 5.7; keep the exact prepared map.
+    const previous = this.#planning, gate = Promise.withResolvers<void>();
+    this.#planning = gate.promise;
+    await previous;
+    try { return await run(); }
+    finally { gate.resolve(); }
+  }
+  private async disks(c: BotComputer, allowed: () => void, probedHost?: unknown): Promise<string[]> {
     let paths: string[];
     try { paths = [this.path(c, "workspace"), this.path(c, "profile")]; }
     catch (e) { if (e instanceof AppError) throw e; return fail("persistent_disk_mounts_required"); }
     // Local API transport is accepted only with the service's real Unix socket and matching daemon host/uid.
     if (!localComputerPodman(this.#run.client)) fail("computer_local_podman_required");
     if (this.#run.client?.remote) {
-      const info = JSON.parse(decode(await this.command(["info", "--format", "json"], 5000, allowed))).host;
+      const info = probedHost ?? JSON.parse(decode(await this.command(["info", "--format", "json"], 5000, allowed))).host;
       if (!computerPodmanHostLocal(info)) fail("computer_local_podman_required");
     }
     const mounts = await this.hostProbe(["findmnt", "--json", "--output", "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT,OPTIONS"], allowed);
@@ -200,6 +215,18 @@ export class BotPodmanRuntime implements ComputerRuntime {
     }
     return paths;
   }
+  private readiness(startupMs: number) {
+    if (!this.#readiness) {
+      let host: unknown;
+      const pending = probeBotPodman((argv, request) => this.plan(argv, async () => {
+        const result = await this.#run(argv, { ...request, timeoutMs: argv[0] === "info" ? startupMs : request.timeoutMs });
+        if (argv[0] === "info" && result.exitCode === 0) host = JSON.parse(decode(result.stdout)).host;
+        return result;
+      })).then(result => ({ ...result, host })).finally(() => { if (this.#readiness === pending) this.#readiness = null; });
+      this.#readiness = pending;
+    }
+    return this.#readiness;
+  }
   /** Fixed credential-free host probes; injected tests use the same argument seam without spawning Linux tools. */
   protected async hostProbe(argv: string[], allowed: () => void): Promise<string> {
     allowed();
@@ -214,10 +241,13 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   /** Starts and verifies the two isolated components before issuing one opaque generation-bound handle. */
   async start(c: BotComputer, allowed: () => void): Promise<ComputerHandle> {
-    const readiness = await probeBotPodman(this.#run);
+    allowed();
+    // Share only an in-flight fresh probe, never cache host authority across later starts.
+    // A cold API info request can exceed five seconds; the caller's original startup guard still applies.
+    const readiness = await this.readiness(c.limits.startupMs);
     allowed();
     if (readiness.state !== "ready") fail(readiness.reason!);
-    const paths = await this.disks(c, allowed), names = this.names(c);
+    const paths = await this.disks(c, allowed, readiness.host), names = this.names(c);
     await this.stop(c);
     // A verified stop killed the previous browser. Chromium's hostname/PID links survive SIGKILL on persistent
     // profiles; unlink only these known symlinks, never their targets or website data, before creating processes.
@@ -250,7 +280,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   private containerArgs(c: BotComputer, name: string, source: string, destination: string, network = "none"): string[] {
     return ["run", "--detach", "--pull=never", "--http-proxy=false", "--unsetenv-all", `--network=${network}`, "--pid=private", "--ipc=private", "--uts=private", "--cgroupns=private",
-      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=1000,gid=1000", "--user=1000:1000",
+      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", `--userns=${botComputerUserNamespace}`, "--user=1000:1000",
       "--cpus", String(c.limits.cpuMillis / 1000), "--memory", String(c.limits.memoryBytes), "--memory-swap", String(c.limits.memoryBytes),
       "--pids-limit", String(c.limits.pids), "--log-driver=none", "--no-healthcheck", "--shm-size=64m",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777", "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=134217728,mode=1777",
@@ -309,9 +339,10 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   private async removeRegistry(c: BotComputer, proxy?: ContainerRegistryProxy): Promise<void> {
     const prefix = `jit-s14-${c.id}-registry`, network = `${prefix}-net`;
+    // PID 1 may ignore SIGTERM; do not spend Podman's default stop grace past the cleanup deadline.
     const results = await Promise.allSettled([
-      this.command(["rm", "--force", "--ignore", prefix]),
-      proxy ? proxy.close() : this.command(["rm", "--force", "--ignore", `${prefix}-proxy`]),
+      this.command(["rm", "--force", "--time", "0", "--ignore", prefix]),
+      proxy ? proxy.close() : this.command(["rm", "--force", "--time", "0", "--ignore", `${prefix}-proxy`]),
     ]);
     if (results.some(result => result.status === "rejected")) fail("coding_registry_cleanup_unconfirmed");
     const exists = await this.#run(["network", "exists", network], { timeoutMs: 5000 });

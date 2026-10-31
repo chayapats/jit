@@ -38,6 +38,7 @@ export class S14Computers {
   readonly #processId = id();
   readonly #limits: ComputerLimits;
   #draining: Promise<void> | null = null;
+  #wakeDrain: (() => void) | null = null;
   constructor(readonly app: S14Application, readonly options: ComputerOptions = {}) {
     this.#limits = structuredClone(options.limits ?? defaultComputerLimits);
     exact(this.#limits, Object.keys(defaultComputerLimits));
@@ -189,6 +190,8 @@ export class S14Computers {
   }
   private enqueue(tx: AppTransaction, c: BotComputer, kind: Operation["kind"]): void {
     tx.run("INSERT INTO computer_operations(computer_id,generation,kind,state) VALUES (?,?,?,'queued')", c.id, c.generation, kind);
+    // The drainer resumes after this synchronous transaction commits, never inside it.
+    this.#wakeDrain?.();
   }
   private async locked<T>(computerId: string, run: () => Promise<T>): Promise<T> {
     const waiting = this.#waiting.get(computerId) ?? 0;
@@ -215,7 +218,7 @@ export class S14Computers {
       this.live(tx, current);
     });
   }
-  /** Drains committed lifecycle intents; stale startup completion cannot publish a handle after stop/revoke. */
+  /** Drains at most two computers concurrently, preserving each computer's order and live authority checks. */
   async drain(): Promise<void> {
     if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) {
@@ -228,68 +231,94 @@ export class S14Computers {
     finally { this.#draining = null; }
   }
   private async drainOperations(): Promise<void> {
+    const pending = new Map<string, Promise<void>>();
+    const failures: unknown[] = [];
+    try {
       for (;;) {
-        const op = this.app.store.transaction(tx => {
-          const row = tx.get<Operation>("SELECT * FROM computer_operations WHERE state='queued' ORDER BY sequence LIMIT 1");
-          if (row) tx.run("UPDATE computer_operations SET state='running' WHERE sequence=?", row.sequence);
-          return row;
-        });
-        if (!op) return;
-        const c = this.app.store.read(tx => {
-          const row = tx.get<{ record_json: string }>("SELECT record_json FROM bot_computers WHERE id=?", op.computer_id);
-          return row ? JSON.parse(row.record_json) as BotComputer : null;
-        });
-        if (!c || c.generation !== op.generation) { this.finishOperation(op); continue; }
-        let reason: string | null = null;
-        try {
-          const runtime = this.options.runtime;
-          if (!runtime) throw new AppError("computer_runtime_not_configured", 503);
-          await this.locked(c.id, async () => {
-            if (op.kind === "start") {
-              const allowed = this.guard(c, "starting");
-              allowed();
-              if (c.diskSlot && !c.diskSlot.clean) {
-                await runtime.destroy(structuredClone(c), allowed);
-                allowed();
-                c.diskSlot.clean = true;
-                this.app.store.transaction(tx => save(tx, c));
-              }
-              const handle = await runtime.start(structuredClone(c), allowed);
-              try { allowed(); this.#handles.set(c.id, handle); }
-              catch (error) { await runtime.stop(c); throw error; }
-            } else {
-              this.#handles.delete(c.id);
-              if (op.kind === "reset" || op.kind === "delete") {
-                const allowed = () => this.app.store.read(tx => {
-                  const current = this.current(tx, c.botId, c.id, c.generation);
-                  if (current.state !== c.state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== c.ownerGeneration) throw new AppError("computer_owner_scope_changed", 403);
-                });
-                allowed();
-                await runtime.destroy(structuredClone(c), allowed);
-              }
-              else await runtime.stop(structuredClone(c));
-            }
+        const wake = Promise.withResolvers<void>();
+        this.#wakeDrain = () => wake.resolve();
+        while (pending.size < 2) {
+          const excluded = [...pending.keys()];
+          const next = (tx: AppTransaction) => tx.get<Operation>(`SELECT q.* FROM computer_operations q
+            WHERE q.state='queued' AND q.computer_id NOT IN (?,?)
+              AND NOT EXISTS (SELECT 1 FROM computer_operations r WHERE r.computer_id=q.computer_id AND r.state='running')
+            ORDER BY q.sequence LIMIT 1`, excluded[0] ?? "", excluded[1] ?? "");
+          // Avoid an attached-database write transaction for an empty queue on slow storage.
+          if (!this.app.store.read(next)) break;
+          const op = this.app.store.transaction(tx => {
+            const row = next(tx);
+            if (row) tx.run("UPDATE computer_operations SET state='running' WHERE sequence=?", row.sequence);
+            return row;
           });
-        } catch (error) {
-          reason = error instanceof AppError ? error.code : "computer_runtime_unavailable";
-          this.#handles.delete(c.id);
-          this.app.store.transaction(tx => recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now()));
-          await this.options.runtime?.stop(c).catch(() => {});
+          if (!op) break;
+          const task = this.runOperation(op).catch(error => { failures.push(error); }).finally(() => pending.delete(op.computer_id));
+          pending.set(op.computer_id, task);
         }
-        this.app.store.transaction(tx => {
-          const current = load(tx, c.botId);
-          if (current?.generation === c.generation) {
-            current.state = reason ? "unavailable" : op.kind === "start" ? "running" : op.kind === "delete" ? "deleted" : "stopped";
-            current.reason = reason ?? current.reason;
-            current.revision++;
-            if (!reason && (op.kind === "reset" || op.kind === "delete")) { current.workspaceId = id(); current.profileId = id(); }
-            if (!reason && op.kind === "delete") current.diskSlot = null;
-            if (!reason && op.kind === "reset" && current.diskSlot) current.diskSlot.clean = true;
-            save(tx, current);
-          }
-          tx.run("UPDATE computer_operations SET state='done' WHERE sequence=?", op.sequence);
-        });
+        if (failures.length) throw failures[0];
+        if (!pending.size) return;
+        await Promise.race([...pending.values(), wake.promise]);
       }
+    } finally {
+      this.#wakeDrain = null;
+      // Do not release drainer ownership while another computer is still settling.
+      await Promise.allSettled(pending.values());
+    }
+  }
+  private async runOperation(op: Operation): Promise<void> {
+    const c = this.app.store.read(tx => {
+      const row = tx.get<{ record_json: string }>("SELECT record_json FROM bot_computers WHERE id=?", op.computer_id);
+      return row ? JSON.parse(row.record_json) as BotComputer : null;
+    });
+    if (!c || c.generation !== op.generation) { this.finishOperation(op); return; }
+    let reason: string | null = null;
+    try {
+      const runtime = this.options.runtime;
+      if (!runtime) throw new AppError("computer_runtime_not_configured", 503);
+      await this.locked(c.id, async () => {
+        if (op.kind === "start") {
+          const allowed = this.guard(c, "starting");
+          allowed();
+          if (c.diskSlot && !c.diskSlot.clean) {
+            await runtime.destroy(structuredClone(c), allowed);
+            allowed();
+            c.diskSlot.clean = true;
+            this.app.store.transaction(tx => save(tx, c));
+          }
+          const handle = await runtime.start(structuredClone(c), allowed);
+          try { allowed(); this.#handles.set(c.id, handle); }
+          catch (error) { await runtime.stop(c); throw error; }
+        } else {
+          this.#handles.delete(c.id);
+          if (op.kind === "reset" || op.kind === "delete") {
+            const allowed = () => this.app.store.read(tx => {
+              const current = this.current(tx, c.botId, c.id, c.generation);
+              if (current.state !== c.state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== c.ownerGeneration) throw new AppError("computer_owner_scope_changed", 403);
+            });
+            allowed();
+            await runtime.destroy(structuredClone(c), allowed);
+          }
+          else await runtime.stop(structuredClone(c));
+        }
+      });
+    } catch (error) {
+      reason = error instanceof AppError ? error.code : "computer_runtime_unavailable";
+      this.#handles.delete(c.id);
+      this.app.store.transaction(tx => recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now()));
+      await this.options.runtime?.stop(c).catch(() => {});
+    }
+    this.app.store.transaction(tx => {
+      const current = load(tx, c.botId);
+      if (current?.generation === c.generation) {
+        current.state = reason ? "unavailable" : op.kind === "start" ? "running" : op.kind === "delete" ? "deleted" : "stopped";
+        current.reason = reason ?? current.reason;
+        current.revision++;
+        if (!reason && (op.kind === "reset" || op.kind === "delete")) { current.workspaceId = id(); current.profileId = id(); }
+        if (!reason && op.kind === "delete") current.diskSlot = null;
+        if (!reason && op.kind === "reset" && current.diskSlot) current.diskSlot.clean = true;
+        save(tx, current);
+      }
+      tx.run("UPDATE computer_operations SET state='done' WHERE sequence=?", op.sequence);
+    });
   }
   private finishOperation(op: Operation): void { this.app.store.transaction(tx => tx.run("UPDATE computer_operations SET state='done' WHERE sequence=?", op.sequence)); }
   /** Fences one Bot's computer/input immediately and queues only its authorized stop or destructive cleanup. */

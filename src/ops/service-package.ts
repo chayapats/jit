@@ -9,6 +9,7 @@ import { SystemdSupervisor, type CommandRunner, type SupervisorState } from "./s
 import { writeFileAtomic } from "./upgrade-fence";
 import { enableServicePodman, servicePodmanCommands, type ServicePodmanStatus } from "./podman-service";
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
+import { prepareS14Image } from "../../ops/package/installer/s14-images";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
   serviceEnvironment, serviceJournal, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnit, serviceLoginPath,
@@ -679,6 +680,15 @@ async function upgradeS14Package(input: PackageUpgradeInput): Promise<PackageUpg
     return result("blocked", "S14 state is incompatible, fenced or still owned", "inspect-S14-maintenance-state");
   }
   await enableServicePodman(host.run, service.serviceUser, who.uid);
+  if (service.s14!.images) {
+    const asUser = (argv: string[]) => ["runuser", "-u", service.serviceUser, "--", "env", `HOME=${who.home}`,
+      `XDG_RUNTIME_DIR=/run/user/${who.uid}`, ...argv];
+    for (const image of [service.s14!.images.base, service.s14!.images.browser]) {
+      if (!await prepareS14Image(image, who.uid, (argv, options) => host.run(argv, { ...options, cwd: "/" }), asUser)) {
+        return result("blocked", "S14 computer image preparation failed before activation", "repair-rootless-image-storage-and-retry-service-upgrade");
+      }
+    }
+  }
   writeFileAtomic(unitPath, nextUnit); chmodSync(unitPath, 0o644);
   switchRelease(service.executablePath, release);
   const started = await supervisor.daemonReload() && await supervisor.start();

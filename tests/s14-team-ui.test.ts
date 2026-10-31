@@ -57,7 +57,7 @@ async function overlapping(f: TeamFixture) {
   const jit = gate(), scout = gate(), analyst = gate();
   f.scripts.lanes = { "jit:research": jit.run(ok), scout: scout.run(ok), analyst: analyst.run(ok) };
   const work = f.start(), pending = f.app.authority.drain();
-  await Promise.all([jit.entered, scout.entered]);
+  await Promise.all([scout.entered, analyst.entered]);
   return { work, pending, jit, scout, analyst };
 }
 async function settle(run: Awaited<ReturnType<typeof overlapping>>) { run.jit.release(); run.scout.release(); run.analyst.release(); await run.pending; }
@@ -70,7 +70,7 @@ test("running lanes state real overlap, the limit, the queue and the dependency 
   expect(barCount(html, "run")).toBe(2);
   expect(html.match(/<svg class="s-tl-track"/g)).toHaveLength(4);
   for (const word of [en["s14.step_state.running"], en["s14.step_state.queued"], en["s14.step_state.waiting_evidence"]]) expect(body).toContain(word);
-  expect(body).toContain(`${en["s14.team.waiting_on"]} Jit · ${en["s14.step_handler.research"]} · Scout · Analyst`);
+  expect(body).toContain(`${en["s14.team.waiting_on"]} Scout · Analyst · Jit · ${en["s14.step_handler.research"]}`);
   expect(body).toContain(`${en["s14.timeline.overlap"]} 1 ${en["s14.time.min"]} 30 ${en["s14.time.sec"]}`);
   expect(body).toContain(en["s14.timeline.not_recorded"]);
   expect(body).toContain(en["s14.usage.actual"]); expect(html).toContain("s-unknown-bar");
@@ -222,7 +222,7 @@ test("stopping the whole work holds the words until open calls settle, then keep
 test("the Bot dot follows its own lane, so only Bots really running read as working", async () => {
   const f = await fixture(), run = await overlapping(f), team = await f.page("/team");
   const stateOf = (name: string) => new RegExp(`<b>${name}</b>[\\s\\S]*?class="s-pill ">(?:<span[^>]*>[^<]*</span>)?([^<]+)<`).exec(team)?.[1];
-  expect(stateOf("Scout")).toBe(en["s14.bot_state.working"]); expect(stateOf("Analyst")).toBe(en["s14.bot_state.queued"]);
+  expect(stateOf("Scout")).toBe(en["s14.bot_state.working"]); expect(stateOf("Analyst")).toBe(en["s14.bot_state.working"]);
   await settle(run);
 });
 

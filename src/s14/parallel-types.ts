@@ -33,6 +33,8 @@ export interface WebRead {
   mode: ParallelSetting["mode"]; settingRevision: number; evidence: ExternalEvidence[]; missing: string[];
   failures: { url: string; kind: string; status: number | null }[];
   usage: { name: string; count: number; costUsd: number }[] | null; omittedResults: number; remoteRequests: number; reason: string | null;
+  /** Parsed vendor Retry-After deadline on quota; absent/null means the reset time is unknown, never immediate readiness. */
+  retryAt?: number | null;
 }
 /** Normalized vendor result independent of owner authorization, with no claimed remote DNS validation. */
 export interface ParallelResult {
