@@ -8,6 +8,7 @@ import type { BotComputer } from "../src/s14/computer-types";
 import type { CommandRunner } from "../src/exec/podman-runtime";
 import type { BoxStream } from "../src/exec/box-runtime";
 import { FakeCdp } from "./fixtures/fake-cdp";
+import { barrier } from "./fixtures/s14-computer";
 
 const image = `localhost/jit@sha256:${"a".repeat(64)}`;
 const roots: string[] = [];
@@ -15,14 +16,17 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const bytes = (v: unknown) => new TextEncoder().encode(typeof v === "string" ? v : JSON.stringify(v));
 const ok = (v: unknown = "") => ({ exitCode: 0, stdout: bytes(v), stderr: new Uint8Array() });
 const host = () => ({ os: "linux", security: { rootless: true }, cgroupVersion: "v2", cgroupControllers: ["cpu", "memory", "pids"], idMappings: { uidmap: [{ size: 65536 }], gidmap: [{ size: 65536 }] } });
-function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n", stream?: (index: number) => BoxStream) {
+function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n", stream?: (index: number) => BoxStream, before?: (argv: readonly string[]) => Promise<void>) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-podman-"))); roots.push(root);
   for (const bot of ["slot-0001", "slot-0002"]) for (const role of ["workspace", "profile"]) mkdirSync(join(root, "slots", bot, role), { recursive: true, mode: 0o700 });
   const networks = new Map<string, any>([["jit-registry-egress", { driver: "bridge", internal: false }]]);
   const runnerInputs: any[] = [];
   let registryFailure = "";
   const calls: string[][] = [], streamCalls: string[][] = [], infos = new Map<string, any>(), cdp = new FakeCdp();
+  const requests: { argv: readonly string[]; timeoutMs: number }[] = [];
   const run: CommandRunner = async (argv, options) => {
+    requests.push({ argv: [...argv], timeoutMs: options.timeoutMs });
+    await before?.(argv);
     calls.push([...argv]);
     if (argv[0] === "--version") return ok("podman version fixture");
     if (argv[0] === "network") {
@@ -58,6 +62,8 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       return ok(get("--name"));
     }
     if (argv[0] === "inspect") return ok([infos.get(argv[1]!)]);
+    if (argv[0] === "rm" && registryFailure === "stop-grace" && infos.has(argv.at(-1)!) && argv.at(-1)!.endsWith("-registry") &&
+        !(argv.includes("--time") && argv[argv.indexOf("--time") + 1] === "0") && options.timeoutMs < 10000) return { ...ok(), exitCode: 137 };
     if (argv[0] === "rm" && registryFailure === "cleanup" && argv.at(-1)!.endsWith("-registry")) return { ...ok(), exitCode: 1 };
     if (argv[0] === "rm") { infos.delete(argv.at(-1)!); return ok(); }
     if (argv[0] === "exec" && argv.includes("/sys/fs/cgroup/cpu.max")) return ok(kernel);
@@ -95,8 +101,43 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
       return JSON.stringify({ filesystems });
     }
   }
-  return { root, c, runtime: new Runtime(options), options, calls, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
+  return { root, c, runtime: new Runtime(options), options, calls, requests, streamCalls, runnerInputs, cdp, setRegistryFailure(value: string) { registryFailure = value; }, setDisk(value: string) { disk = value; } };
 }
+
+test("concurrent computers serialize only Podman namespace planning and keep the original keep-id map", async () => {
+  const gate = barrier(); let planning = 0, maxPlanning = 0, creates = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (!["info", "run", "create"].includes(argv[0]!)) return;
+    planning++; maxPlanning = Math.max(maxPlanning, planning);
+    try { if (argv[0] === "run") { creates++; await gate.wait(); } }
+    finally { planning--; }
+  });
+  const other = structuredClone(f.c); other.id = "b".repeat(32); other.botId = "reader"; other.diskSlot!.id = "slot-0002";
+  const starts = [f.runtime.start(f.c, () => {}), f.runtime.start(other, () => {})];
+  try {
+    await gate.reached; await Bun.sleep(0);
+    expect(creates).toBe(1);
+    expect(maxPlanning).toBe(1);
+  } finally { gate.release(); await Promise.all(starts); }
+  expect(creates).toBe(4);
+  expect(f.calls.filter(a => a[0] === "run").every(a => a.includes("--userns=keep-id:uid=1000,gid=1000"))).toBe(true);
+});
+
+test("concurrent startup shares a fresh slow info probe, reuses its host proof and probes again on a later start", async () => {
+  const gate = barrier(); let infos = 0;
+  const f = fixture(undefined, undefined, undefined, async argv => {
+    if (argv[0] === "info") { infos++; await gate.wait(); }
+  });
+  const other = structuredClone(f.c); other.id = "b".repeat(32); other.botId = "reader"; other.diskSlot!.id = "slot-0002";
+  const starts = [f.runtime.start(f.c, () => {}), f.runtime.start(other, () => {})];
+  try { await gate.reached; await Bun.sleep(0); expect(infos).toBe(1); }
+  finally { gate.release(); await Promise.all(starts); }
+  expect(infos).toBe(1);
+  expect(f.requests.filter(r => r.argv[0] === "info").map(r => r.timeoutMs)).toEqual([30000]);
+  await f.runtime.stop(f.c);
+  await f.runtime.start(f.c, () => {});
+  expect(infos).toBe(2);
+});
 
 test("rootless workspace/browser use separate mounts, private namespaces, finite limits and no egress/socket/environment inheritance", async () => {
   const f = fixture(), handle = await f.runtime.start(f.c, () => {});
@@ -314,4 +355,14 @@ test("an unconfirmed stop cannot remove browser locks or touch persistent websit
   expect(existsSync(join(profile, "SingletonLock"))).toBe(true);
   expect(readFileSync(keep, "utf8")).toBe("synthetic session");
   expect(f.calls.some(a => a[0] === "run")).toBe(false);
+});
+
+
+test("registry removal settles within its cleanup deadline when PID 1 ignores the default stop grace", async () => {
+  const f = fixture(), handle = await f.runtime.start(f.c, () => {});
+  f.setRegistryFailure("stop-grace");
+  const result = await f.runtime.registrySpawn(handle, { cwd: "/workspace", command: "'npm' 'install'", timeoutMs: 1000 }, ["registry.npmjs.org"], () => {});
+  expect(result.exitCode).toBe(0);
+  expect(f.calls.some(a => a[0] === "network" && a[1] === "rm")).toBe(true);
+  await expect(f.runtime.exec(handle, { input: bytes({ v: 1, op: "stat", path: "/workspace/file" }), timeoutMs: 1000 }, () => {})).resolves.toBeDefined();
 });

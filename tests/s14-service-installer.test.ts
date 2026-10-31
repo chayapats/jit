@@ -161,6 +161,70 @@ test("S14 bootstrap captures before service start and displays only after succes
   expect(result.events.indexOf("health")).toBeLessThan(result.events.indexOf("owner-link"));
 });
 
+test.each([false, true])("an S14 installer rerun stops before image preparation and restores chat after preparation failure=%s", async failImages => {
+  const f = fixture();
+  await runInstaller({ ...f.options, s14: false });
+  await runInstaller(f.options);
+  const legacyPaths = ["etc/jit/service-config.json", "etc/systemd/system/jit.service", "etc/systemd/journald@jit.conf", "var/lib/jit/keyring-unlock"];
+  const legacy = legacyPaths.map(path => readFileSync(f.at(path)));
+  const result = await runInstaller({ ...f.options, simulation: failImages ? { failStep: "optional-s14-images" } : {} });
+  const order = result.events;
+  expect(order).toContain("service-stop");
+  expect(order.indexOf("owner-terminal")).toBeLessThan(order.indexOf("service-stop"));
+  expect(order.indexOf("service-stop")).toBeLessThan(order.indexOf("optional-s14-images"));
+  expect(order.indexOf("optional-s14-images")).toBeLessThan(order.indexOf("service-install"));
+  expect(order.indexOf("service-install")).toBeLessThan(order.indexOf("service-start"));
+  expect(order.indexOf("service-start")).toBeLessThan(order.indexOf("health"));
+  expect(order.at(-1)).toBe("owner-link");
+  if (failImages) {
+    expect(result.config.s14!.images).toBeUndefined();
+    const unit = readFileSync(f.at("etc/systemd/system/jit-s14.service"), "utf8");
+    expect(unit).toContain("serve --s14"); expect(unit).not.toContain("JIT_S14_COMPUTER_ROOT=");
+  }
+  legacyPaths.forEach((path, i) => expect(readFileSync(f.at(path))).toEqual(legacy[i]!));
+});
+
+test("an unavailable operator terminal refuses a rerun before stopping or preparing images", async () => {
+  const f = fixture(); await runInstaller(f.options); f.lines.length = 0;
+  await expect(runInstaller({ ...f.options, simulation: { failStep: "owner-terminal" } })).rejects.toThrow("Failed at owner-terminal");
+  expect(f.lines).not.toContain("Step: service-stop");
+  expect(f.lines).not.toContain("Step: optional-s14-images");
+});
+
+test.each([true, false])("a pre-activation rerun failure restores prior config and resumes only a previously active service=%s", async serviceActive => {
+  const f = fixture(); await runInstaller(f.options);
+  const configPath = f.at("etc/jit-s14/service-config.json"), unitPath = f.at("etc/systemd/system/jit-s14.service");
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  config.s14.images = { base: `localhost/previous-base@sha256:${"c".repeat(64)}`, browser: `localhost/previous-browser@sha256:${"d".repeat(64)}` };
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  const previousConfig = readFileSync(configPath), previousUnit = readFileSync(unitPath);
+  f.lines.length = 0;
+  await expect(runInstaller({ ...f.options, simulation: { failStep: "service-install", serviceActive } })).rejects.toThrow("Failed at service-install");
+  expect(readFileSync(configPath)).toEqual(previousConfig);
+  expect(readFileSync(unitPath)).toEqual(previousUnit);
+  expect(readFileSync(f.at("etc/jit-s14/installer-previous-config.json"))).toEqual(previousConfig);
+  expect(f.lines).toContain("Step: service-rollback");
+  expect(f.lines.includes("Step: service-resume")).toBe(serviceActive);
+  expect(f.lines).not.toContain("Step: owner-link-prepare");
+});
+
+test("a later installer failure after unavailable images preserves the prior installation with an explicit cleanup recovery path", async () => {
+  const f = fixture(); await runInstaller(f.options);
+  const configPath = f.at("etc/jit-s14/service-config.json"), unitPath = f.at("etc/systemd/system/jit-s14.service");
+  const previousConfig = readFileSync(configPath), previousUnit = readFileSync(unitPath);
+  f.lines.length = 0;
+  await expect(runInstaller({ ...f.options, simulation: { failStep: "optional-s14-images" }, out: line => {
+    f.lines.push(line);
+    if (line === "Step: service-install") throw new Error("simulated pre-activation write failure");
+  } })).rejects.toThrow("confirm Podman image cleanup");
+  expect(readFileSync(configPath)).toEqual(previousConfig);
+  expect(readFileSync(unitPath)).toEqual(previousUnit);
+  expect(readFileSync(f.at("etc/jit-s14/installer-previous-config.json"))).toEqual(previousConfig);
+  expect(f.lines).toContain("Step: service-rollback");
+  expect(f.lines).not.toContain("Step: service-resume");
+  expect(f.lines).not.toContain("Step: owner-link-prepare");
+});
+
 test.each(["healthy", "failed"] as const)("prepared private delivery remains silent until %s health and is never reissued", async health => {
   const f = fixture(), db = f.at("prepared.sqlite"), origin = "http://127.0.0.1:3001", terminal: string[] = [];
   let captures = 0, closes = 0;
