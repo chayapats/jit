@@ -42,6 +42,8 @@ private pipe, validate the exact link and display once on that terminal.
 Headless progress/journald must never receive a capability. Re-run rotates only
 an unowned setup capability; an existing owner receives sign-in.
 
+An S14 installer re-run opens the operator terminal and stops/verifies only its existing S14 unit before image mapping preparation. The installer's Podman requests cannot share the running runtime's private namespace-planning queue. Image preparation remains optional: an unavailable image pair proceeds through installation/start/health as an explicit chat-only configuration. Before stopping, retain the prior config as `installer-previous-config.json` under the protected S14 config directory. A failure before activation restores the prior config while its unit/release remain selected, and resumes only a previously active service after successful preparation. If preparation was unavailable, a subsequent failure retains the prior installation with an explicit Podman-cleanup/start-or-rerun recovery action instead of resuming computer planning against unconfirmed layer locks. Activation and health failures retain the existing explicit installer recovery policy; this does not add automatic health rollback or touch the legacy unit.
+
 Add a content-bound optional S14 schema pin to artifacts. Compatible-code
 service upgrades stop, validate state/fences/lifecycle availability through the
 trusted build as the service UID under the exclusive runtime lock, switch and

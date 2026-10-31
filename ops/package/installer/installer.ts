@@ -163,7 +163,7 @@ export interface InstallerOptions {
   root: string; s14?: boolean; computerSlots?: number; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
   run?: CommandRunner; out?: (line: string) => void;
   /** Fake-root scenarios only; production ignores all simulated failures/capabilities. */
-  simulation?: { failStep?: string; podman?: boolean; health?: boolean; images?: unknown };
+  simulation?: { failStep?: string; podman?: boolean; health?: boolean; images?: unknown; serviceActive?: boolean };
 }
 /** Safe, actionable step failure; never includes raw command output, paths carrying credentials or exception text. */
 export class InstallerFailure extends Error {
@@ -216,6 +216,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   };
   const configDir = at(`/etc/${name}`), prefix = at(`/opt/${name}`), configPath = join(configDir, "service-config.json"), home = at(`/var/lib/${name}`);
   const unitPath = at(`/etc/systemd/system/${name}.service`), journalPath = at(`/etc/systemd/journald@${name}.conf`);
+  const previousConfigPath = join(configDir, "installer-previous-config.json");
   safe(configPath);
   if (!dry) {
     try {
@@ -223,7 +224,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       assertRootTree(resolve(options.source));
     } catch { throw new InstallerFailure("trusted-paths", "use root-owned executable/config/system parents without symlinks or group/other write, then re-run from a trusted release"); }
   }
-  const desired = parseServiceConfig(existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {
+  const previousConfig = existsSync(configPath) ? { text: readFileSync(configPath, "utf8"), stat: lstatSync(configPath) } : null;
+  const desired = parseServiceConfig(previousConfig ? JSON.parse(previousConfig.text) : {
     ...(s14 ? { runtime: "s14", s14: { vaultDirectory: join(home, "vault"), computerRoot: join(home, "computers"), gitScratch: at("/run/jit-s14-git") } } : {}),
     serviceUser: name, executablePath: join(prefix, "current"), workingDirectory: join(home, "work"), stateDirectory: join(home, "state"),
     ledgerPath: join(home, "ledger/checkpoint.json"), backupDirectory: join(home, "backups"), secretRefs: [],
@@ -263,6 +265,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   let frozenContainer: string | null = null;
   let ownerTerminal: ReturnType<typeof operatorTerminal> | undefined;
   let pendingOwner: PendingOwnerLink | undefined;
+  let stoppedBeforeImages = false, resumePrevious = false, activationStarted = false, imagesUnavailable = false;
   try {
     if (options.uninstall) {
       step("uninstall", "stop the installed unit with the service package, then re-run --uninstall");
@@ -389,12 +392,27 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     if (!existsSync(configPath)) write(configPath, JSON.stringify(desired, null, 2), 0o640);
     if (!dry) chownSync(configDir, 0, gid);
     if (s14) {
+      step("owner-terminal", "re-run --s14 from an operator terminal; the existing service has not been stopped");
+      if (!dry) ownerTerminal = operatorTerminal();
+      if (existsSync(unitPath)) {
+        step("service-stop", "inspect jit-s14.service and re-run from the operator terminal before preparing images");
+        const supervisor = new SystemdSupervisor(run, { unit: serviceUnit(desired) });
+        const active = dry ? options.simulation?.serviceActive === false ? "inactive" : "active" : (await supervisor.state()).active;
+        if (!["active", "inactive", "failed"].includes(active)) throw new InstallerFailure(currentStep, next);
+        // Keep an operator-readable recovery copy even if restoring config later fails.
+        if (previousConfig) write(previousConfigPath, previousConfig.text, previousConfig.stat.mode & 0o777);
+        resumePrevious = active === "active";
+        stoppedBeforeImages = true;
+        await service(["stop", "--config", configPath]);
+        if (!dry && !["inactive", "failed"].includes((await supervisor.state()).active)) throw new InstallerFailure(currentStep, next);
+      }
       step("optional-s14-images", "restore rootless Podman image build access and re-run --s14; chat remains available");
       const images = dry ? options.simulation?.podman === false || options.simulation?.failStep === "optional-s14-images" ? undefined
         : { base: `localhost/jit-s14-base@sha256:${"a".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"b".repeat(64)}` }
         : available ? await provisionS14Images(artifact, uid, run, asUser, desired.s14!.images) : undefined;
       if (images) desired.s14!.images = images;
       else {
+        imagesUnavailable = true;
         delete desired.s14!.images;
         options.out?.("Feature-off: computer_image_digest_required; Bot images could not be built. Re-run --s14 after repairing rootless Podman/build access.");
       }
@@ -405,12 +423,10 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     catch { options.out?.("Optional image list unavailable: skipping pre-pull."); }
     write(join(configDir, "installer-state.json"), JSON.stringify({ contract: "ops.installer/v1", hardware: options.facts, defaults,
       containers: available ? s14 ? "runtime-present-images-require-verification" : "runtime-present-images-require-configuration" : "unavailable", images: s14 ? desired.s14!.images ?? null : configuredImages }, null, 2));
-    if (s14) {
-      step("owner-terminal", "re-run --s14 from an operator terminal; the existing service has not been stopped");
-      if (!dry) ownerTerminal = operatorTerminal();
-    }
     step("service-install", "inspect service plan and the bounded journald namespace, then re-run");
-    if (existsSync(unitPath)) await service(["stop", "--config", configPath]);
+    // From activation onward retain the installer's explicit recovery policy, not upgrade's health rollback.
+    activationStarted = true;
+    if (!s14 && existsSync(unitPath)) await service(["stop", "--config", configPath]);
     if (!dry) {
       const checked = validateArtifact(artifact, { runtime: true });
       if (!checked.ok || !checked.manifest) throw new InstallerFailure(currentStep, next);
@@ -474,6 +490,25 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     options.out?.(dry ? "Dry run complete. No host commands ran; no setup credential was created." : s14 ? "S14 service ready; owner access was delivered on the operator terminal." : `Open ${link ?? `${origin}/login`} to finish setup`);
     return { events, config: desired, defaults };
   } catch (error) {
+    if (stoppedBeforeImages && !activationStarted) {
+      // Only the early stop is new: the prior unit/release are still selected and can be restored safely.
+      events.push("service-rollback"); options.out?.("Step: service-rollback");
+      try {
+        if (previousConfig) {
+          write(configPath, previousConfig.text, previousConfig.stat.mode & 0o777);
+          if (!dry) chownSync(configPath, previousConfig.stat.uid, previousConfig.stat.gid);
+        }
+        if (resumePrevious) {
+          // A timed-out preparation may still own Podman's layer locks. Do not re-enable
+          // the prior computer configuration until the operator confirms cleanup.
+          if (imagesUnavailable) throw new Error("image_preparation_unconfirmed");
+          events.push("service-resume"); options.out?.("Step: service-resume");
+          await service(["start", "--config", configPath]);
+        }
+      } catch {
+        throw new InstallerFailure("service-rollback", "the prior unit/release remain selected; confirm Podman image cleanup, restore installer-previous-config.json if needed and start jit-s14.service, or re-run --s14 from the operator terminal");
+      }
+    }
     if (error instanceof InstallerFailure) throw error;
     throw new InstallerFailure(currentStep, next);
   } finally {
