@@ -201,7 +201,31 @@ test.each(["wrong issuer", "empty issuer", "duplicate issuer", "missing state", 
   expect(valid.headers.get("location")).toBe("/s14/personal/oauth/done");
 });
 
-test("a refused callback leaves no code in the address, and a failed finish names the likely causes", async () => {
+test.each(["th", "en"] as const)("Google return copy states only the observed outcome and gives the connection retry route (%s)", async language => {
+  const { f, get, page, words } = await broker(language);
+  const connection = f.app.execute(f.auth.actor, { kind: "personal.connection.create", requestId: retryId(), expectedRevision: 0, payload: { label: "Inbox", service: "gmail", scopes: ["gmail.readonly"], account: "owner@example.test", calendarId: null } }).connection!;
+  const flow = f.app.execute(f.auth.actor, { kind: "personal.oauth.begin", requestId: retryId(), expectedRevision: connection.revision, payload: { connectionId: connection.id } }).flow!;
+  const state = new URL(f.app.personal.authorization(f.auth.actor, flow.id).url).searchParams.get("state")!;
+  // Shape refusal leaves this flow pending: the generic page cannot infer expiry or prior use.
+  await get(`/s14/personal/oauth/callback?state=${state}&code=fixture-code&iss=wrong`, false);
+  const refused = await (await get("/s14/personal/oauth/done?refused=1", false)).text();
+  expect(refused).toContain(words["s14.google.return.failed_detail"]);
+  expect(refused).toContain('href="/settings/google"');
+  expect(refused).not.toContain("data-go");
+  expect(f.app.personal.settings(f.auth.actor).flows.find(item => item.id === flow.id)?.state).toBe("pending");
+  // A valid provider denial reaches the ordinary return page after changing local state.
+  const denied = await get(`/s14/personal/oauth/callback?state=${state}&error=access_denied`, false);
+  expect(denied.headers.get("location")).toBe("/s14/personal/oauth/done");
+  const returned = await (await get("/s14/personal/oauth/done", false)).text();
+  expect(returned).toContain(words["s14.google.return.detail"]);
+  expect(returned).not.toContain(words["s14.google.finish.go"]);
+  expect(f.app.personal.settings(f.auth.actor).connections[0]?.state).toBe("reauth_required");
+  expect(await page(`/settings/google/connections/${connection.id}`)).toContain(words["s14.google.again.begin"]);
+  const copy = [words["s14.google.return.failed"], words["s14.google.return.failed_detail"], words["s14.google.return.detail"], words["s14.google.expired.title"], words["s14.google.expired.lead"]].join(" ");
+  expect(copy).not.toMatch(/expired|been used|nothing changed|หมดอายุ|ถูกใช้|ไม่มี.*เปลี่ยนแปลง/i);
+});
+
+test("a refused callback leaves no code in the address, and a failed finish offers possible causes", async () => {
   const { f, get, page, post, land, words } = await broker();
   const refused = await get("/s14/personal/oauth/callback?state=forged&code=stolen-code-value", false);
   expect(refused.status).toBe(303); expect(refused.headers.get("location")).toBe("/s14/personal/oauth/done?refused=1");
