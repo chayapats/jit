@@ -83,11 +83,14 @@ function processStart(pid: number): string | null {
 
 /** Ephemeral kernel PID/start-time witnesses; neither process IDs nor raw proc/inspect output enters evidence records. */
 export class InputEvidenceProcesses {
-  readonly #observed = new Map<string, { pid: number; start: string }[]>();
+  readonly #observed = new Map<string, { witnesses: { pid: number; start: string }[]; complete: boolean }>();
   constructor(readonly run: CommandRunner, readonly startTime: (pid: number) => string | null = processStart) {}
   /** Captures both actual component processes before live input, or only present components during cleanup-only. */
   async remember(id: string, requireRunning = true): Promise<void> {
     check(/^[a-f0-9]{32}$/.test(id), "input_evidence_process_scope_refused");
+    // Persist each witness before another inspect can fail. A failed refresh cannot erase an earlier PID.
+    const observation = this.#observed.get(id) ?? { witnesses: [], complete: false };
+    observation.complete = false; this.#observed.set(id, observation);
     const observed: { pid: number; start: string }[] = [];
     for (const role of ["workspace", "browser"]) {
       const name = `jit-s14-${id}-${role}`;
@@ -99,10 +102,12 @@ export class InputEvidenceProcesses {
       const fields = new TextDecoder().decode(result.stdout).trim().split(" "), pid = Number(fields[0]);
       if (!requireRunning && pid === 0 && fields[1] === "false") continue;
       check(fields.length === 2 && fields[1] === "true" && Number.isSafeInteger(pid) && pid > 0, "input_evidence_process_unobserved");
-      const start = this.startTime(pid); check(start, "input_evidence_process_unobserved"); observed.push({ pid, start: start! });
+      const start = this.startTime(pid); check(start, "input_evidence_process_unobserved");
+      const witness = { pid, start: start! }; observed.push(witness);
+      if (!observation.witnesses.some(prior => prior.pid === pid && prior.start === start)) observation.witnesses.push(witness);
     }
     check(!requireRunning || observed.length === 2 && observed[0]!.pid !== observed[1]!.pid, "input_evidence_process_unobserved");
-    this.#observed.set(id, observed);
+    observation.complete = true;
   }
   /** Requires exact container removal and absence of the original kernel processes before capacity reuse. */
   async absent(id: string): Promise<void> {
@@ -111,7 +116,9 @@ export class InputEvidenceProcesses {
       const result = await this.run(["container", "exists", `jit-s14-${id}-${role}`], { timeoutMs: 5000 });
       check(result.exitCode === 1 && result.stdout.length === 0, "input_evidence_process_removal_unconfirmed");
     }
-    for (const process of this.#observed.get(id) ?? []) check(this.startTime(process.pid) !== process.start, "input_evidence_kernel_process_still_present");
+    const observation = this.#observed.get(id);
+    for (const process of observation?.witnesses ?? []) check(this.startTime(process.pid) !== process.start, "input_evidence_kernel_process_still_present");
+    check(!observation || observation.complete, "input_evidence_process_observation_unconfirmed");
     this.#observed.delete(id);
   }
 }

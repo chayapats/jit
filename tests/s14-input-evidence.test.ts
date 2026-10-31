@@ -207,6 +207,36 @@ test("container absence alone cannot clear an observed kernel process; PID reuse
   await expect(processes.absent("not-an-id")).rejects.toThrow("input_evidence_process_scope_refused");
 });
 
+test("partial process observation retains every witness and refuses cleanup until inspection is confirmed", async () => {
+  let containersExist = true;
+  const starts = new Map([[101, "original-workspace"]]);
+  const run: CommandRunner = async argv => {
+    const workspace = argv.at(-1)!.endsWith("workspace");
+    return { exitCode: argv[0] === "container" ? containersExist ? 0 : 1 : workspace ? 0 : 125,
+      stdout: new TextEncoder().encode(argv[0] === "inspect" && workspace ? "101 true" : ""), stderr: new Uint8Array() };
+  };
+  const processes = new InputEvidenceProcesses(run, pid => starts.get(pid) ?? null), id = "b".repeat(32);
+  await expect(processes.remember(id)).rejects.toThrow("input_evidence_process_unobserved");
+  containersExist = false;
+  await expect(processes.absent(id)).rejects.toThrow("input_evidence_kernel_process_still_present");
+  starts.delete(101);
+  await expect(processes.absent(id)).rejects.toThrow("input_evidence_process_observation_unconfirmed");
+  // A cleanup inspection may confirm missing containers, but must retain the earlier process witness.
+  starts.set(101, "original-workspace");
+  await processes.remember(id, false);
+  await expect(processes.absent(id)).rejects.toThrow("input_evidence_kernel_process_still_present");
+  starts.delete(101); await processes.absent(id);
+});
+
+test.each([0, 1, 31])("command settlement at monotonic time %s cannot bypass its 1 ms deadline", async elapsed => {
+  // Isolate the fake process/clock from other tests. No Podman or host runtime is invoked.
+  const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures/s14-input-evidence-command.ts"), String(elapsed)],
+    { env: { PATH: process.env.PATH, LANG: "C", JIT_PODMAN_MODE: "local" }, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exitCode).toBe(0); expect(stderr).toBe("");
+  expect(JSON.parse(stdout).code).toBe(elapsed < 1 ? "success" : "input_evidence_command_timeout");
+});
+
 test("installed unused-pool refusal includes stopped claims and never edits installed authority", () => {
   const file = join(root(), "application.sqlite"), store = new S14Store(file);
   requireUnusedInputEvidencePool(file);
