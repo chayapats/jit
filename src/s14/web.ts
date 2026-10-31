@@ -100,8 +100,10 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return respond("", 303, "text/html", { Location: "/", "Set-Cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}` });
       }
       if (request.method === "GET" && url.pathname === "/s14/personal/oauth/callback") try {
-        if ([...url.searchParams.keys()].some(key => !["state", "code", "error", "scope", "authuser", "prompt"].includes(key)) ||
+        // Google may add response metadata; it grants nothing and must not invalidate an otherwise bound callback.
+        if (url.searchParams.getAll("state").length !== 1 ||
             [...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1) ||
+            (url.searchParams.has("iss") && url.searchParams.get("iss") !== "https://accounts.google.com") ||
             url.searchParams.has("code") === url.searchParams.has("error")) throw new AppError("personal_oauth_stale", 409);
         app.personal.callback(url.searchParams.get("state") ?? "", url.searchParams.get("code"));
         return redirect(product?.googleReturn ? "/s14/personal/oauth/done" : "/", { "Referrer-Policy": "no-referrer" });

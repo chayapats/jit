@@ -158,7 +158,9 @@ test("sign-in walks begin, open, Google, a session-free return page, then one fi
   expect(url.searchParams.get("scope")).toBe("https://www.googleapis.com/auth/gmail.readonly");
   expect(url.searchParams.get("redirect_uri")).toBe(callback);
   // Google's redirect arrives with no cookie: SameSite=Strict is not sent on a chain that started cross-site.
-  const back = await get(`/s14/personal/oauth/callback?state=${url.searchParams.get("state")}&code=fixture-code-value`, false);
+  const googleQuery = new URLSearchParams({ state: url.searchParams.get("state")!, code: "fixture-code-value", iss: "https://accounts.google.com",
+    scope: "https://www.googleapis.com/auth/gmail.readonly", authuser: "0", prompt: "consent", hd: "example.test", session_state: "provider-session", future_parameter: "ignored" });
+  const back = await get(`/s14/personal/oauth/callback?${googleQuery}`, false);
   expect(back.status).toBe(303); expect(back.headers.get("location")).toBe("/s14/personal/oauth/done"); expect(back.headers.get("referrer-policy")).toBe("no-referrer");
   const done = await get("/s14/personal/oauth/done", false), body = await done.text();
   expect(done.status).toBe(200); expect(body).toContain("data-go"); expect(body).toContain('href="/settings/google"'); expect(body).not.toContain("fixture-code-value"); strict(body);
@@ -173,6 +175,30 @@ test("sign-in walks begin, open, Google, a session-free return page, then one fi
   expect(finished.html).toContain(words["s14.google.bots_lead"]);
   // Completing is not work authorization: nothing started and no Bot gained the account.
   expect(f.app.authority.list(f.auth.actor)).toHaveLength(0); expect(f.app.personal.settings(f.auth.actor).grants).toHaveLength(0);
+});
+
+test.each(["wrong issuer", "empty issuer", "duplicate issuer", "missing state", "duplicate state", "duplicate code", "code and error", "neither code nor error", "duplicate extra"])("Google callback refuses %s without consuming the pending flow", async variant => {
+  const { f, get } = await broker();
+  const connection = f.app.execute(f.auth.actor, { kind: "personal.connection.create", requestId: retryId(), expectedRevision: 0, payload: { label: "Inbox", service: "gmail", scopes: ["gmail.readonly"], account: "owner@example.test", calendarId: null } }).connection!;
+  const flow = f.app.execute(f.auth.actor, { kind: "personal.oauth.begin", requestId: retryId(), expectedRevision: connection.revision, payload: { connectionId: connection.id } }).flow!;
+  const state = new URL(f.app.personal.authorization(f.auth.actor, flow.id).url).searchParams.get("state")!;
+  const query = new URLSearchParams({ state, code: "fixture-code-value", iss: "https://accounts.google.com" });
+  if (variant === "wrong issuer") query.set("iss", "https://other.example.test");
+  if (variant === "empty issuer") query.set("iss", "");
+  if (variant === "duplicate issuer") query.append("iss", "https://accounts.google.com");
+  if (variant === "missing state") query.delete("state");
+  if (variant === "duplicate state") query.append("state", state);
+  if (variant === "duplicate code") query.append("code", "other-code-value");
+  if (variant === "code and error") query.set("error", "access_denied");
+  if (variant === "neither code nor error") query.delete("code");
+  if (variant === "duplicate extra") { query.append("future_parameter", "one"); query.append("future_parameter", "two"); }
+  const refused = await get(`/s14/personal/oauth/callback?${query}`, false);
+  expect(refused.status).toBe(303); expect(refused.headers.get("location")).toBe("/s14/personal/oauth/done?refused=1");
+  expect(refused.headers.get("referrer-policy")).toBe("no-referrer"); expect(await refused.text()).not.toContain("fixture-code-value");
+  expect(f.app.personal.settings(f.auth.actor).flows.find(item => item.id === flow.id)?.state).toBe("pending");
+  // A refused shape/issuer must not consume the valid state or require a new owner consent.
+  const valid = await get(`/s14/personal/oauth/callback?state=${state}&code=fixture-code-value`, false);
+  expect(valid.headers.get("location")).toBe("/s14/personal/oauth/done");
 });
 
 test("a refused callback leaves no code in the address, and a failed finish names the likely causes", async () => {
