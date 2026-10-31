@@ -18,9 +18,10 @@ import { managedBackupContract, opsLimits, restoreActivationContract, type Manag
 import { validateOpsSnapshot } from "./ops-native";
 import { assertS14BackupQuiescent, captureS14Backup } from "./ops-capture";
 import { reconcileOpsComputers, reconcileOpsImage } from "./ops-reconcile";
+import { commitOpsLedger } from "./ops-ledger";
 
 /** Deterministic crash boundaries; production maintenance supplies no injection hook. */
-export type OpsFault = "image_captured" | "native_captured" | "manifest_committed" | "candidate_imported" | "candidate_reconciled" | "activation_intent" | "application_renamed" | "native_pointer_written";
+export type OpsFault = "image_captured" | "native_captured" | "manifest_committed" | "candidate_imported" | "candidate_reconciled" | "activation_intent" | "ledger_committed" | "application_renamed" | "native_pointer_written";
 /** Owner-authenticated offline maintenance with one OS lock and an independent durable boot fence. */
 export class S14Maintenance {
   readonly root: string;
@@ -212,7 +213,7 @@ export class S14Maintenance {
       }
       const stage: OpsStage = { id, mode: command.kind === "upgrade.prepare" ? "upgrade" : "restore", backupId: manifest?.id ?? id,
         state: "preparing", reason: null, candidateHash: null, liveHash: opsLiveHash(this.store), ledger: this.store.read(opsLedger), actionHash: null, priorHash: null, targetHash: null, activationHash: null,
-        nativeDigest: null, nativeDirectory: join(this.stageDirectory(id), "native-sessions"), priorNativeDirectory: nativeSessionDirectory(this.nativeRoot), recoveryBackupId: id };
+        candidateLedgerHash: null, targetLedger: null, nativeDigest: null, nativeDirectory: join(this.stageDirectory(id), "native-sessions"), priorNativeDirectory: nativeSessionDirectory(this.nativeRoot), recoveryBackupId: id };
       this.control.stage = stage;
       this.persist();
       try {
@@ -264,7 +265,10 @@ export class S14Maintenance {
       opsPath(stage.nativeDirectory);
       rmSync(stage.nativeDirectory, { recursive: true, force: true });
       inspectOpsImage(opsRead(path, opsLimits.bytes), this.store.read(opsSchema));
-      candidate = new S14Store(path, { lifecyclePath: `${this.path}.lifecycle.sqlite` });
+      const ledgerPath = join(this.stageDirectory(stage.id), "candidate-lifecycle.sqlite");
+      if (existsSync(ledgerPath)) rmSync(ledgerPath);
+      opsWrite(ledgerPath, this.store.snapshotLifecycleBytes());
+      candidate = new S14Store(path, { lifecyclePath: ledgerPath });
       const artifacts = imageArtifacts(candidate);
       if (JSON.stringify(artifacts) !== JSON.stringify(manifest.artifacts)) throw new AppError("s14_ops_artifact_inventory_invalid", 409);
       candidate.transaction(tx => {
@@ -306,11 +310,13 @@ export class S14Maintenance {
       this.fault?.("candidate_reconciled");
       stage.nativeDigest = await this.nativeDigest(this.intents(candidate), stage.nativeDirectory);
       stage.candidateHash = opsHash(candidate.snapshotBytes());
+      stage.targetLedger = candidate.read(opsLedger);
+      stage.candidateLedgerHash = opsHash(opsRead(ledgerPath, opsLimits.bytes));
       stage.ledger = this.store.read(opsLedger);
       stage.liveHash = opsLiveHash(this.store);
       stage.state = "validated";
       stage.reason = null;
-      stage.actionHash = opsHash(JSON.stringify({ contract: restoreActivationContract, id: stage.id, candidate: stage.candidateHash, live: stage.liveHash, ledger: stage.ledger, backupId: stage.backupId }));
+      stage.actionHash = opsHash(JSON.stringify({ contract: restoreActivationContract, id: stage.id, candidate: stage.candidateHash, candidateLedger: stage.candidateLedgerHash, live: stage.liveHash, ledger: stage.ledger, backupId: stage.backupId }));
       return { ...this.result(command, "validated"), stage: this.publicStage(stage) };
     } catch (error) {
       if (stage.state !== "partial") stage.state = "blocked";
@@ -324,6 +330,8 @@ export class S14Maintenance {
     const directory = this.stageDirectory(stage.id), activation = join(directory, "activation.sqlite");
     const candidateBytes = opsRead(join(directory, "candidate.sqlite"), opsLimits.bytes);
     if (opsHash(candidateBytes) !== stage.candidateHash) throw new AppError("s14_ops_integrity_failed", 409);
+    const ledgerBytes = opsRead(join(directory, "candidate-lifecycle.sqlite"), opsLimits.bytes);
+    if (!stage.targetLedger || opsHash(ledgerBytes) !== stage.candidateLedgerHash) throw new AppError("s14_ops_integrity_failed", 409);
     const nativeCandidate = Database.deserialize(candidateBytes);
     const nativeIntents = (nativeCandidate.query("SELECT record_json FROM native_intents ORDER BY id").all() as { record_json: string }[]).map(row => JSON.parse(row.record_json) as NativeIntent);
     nativeCandidate.close();
@@ -350,6 +358,8 @@ export class S14Maintenance {
       this.persist();
       this.fault?.("activation_intent");
     }
+    commitOpsLedger(this.store, ledgerBytes, stage.ledger, stage.targetLedger);
+    this.fault?.("ledger_committed");
     const liveHash = opsLiveHash(this.store);
     this.store.close();
     if (liveHash === stage.priorHash) {
@@ -361,7 +371,7 @@ export class S14Maintenance {
     this.fault?.("native_pointer_written");
     this.store = new S14Store(this.path, {});
     this.app = new S14Application(this.store, this.options);
-    if (stage.ledger !== this.store.read(opsLedger)) throw new AppError("s14_ops_ledger_changed", 503);
+    if (stage.targetLedger !== this.store.read(opsLedger)) throw new AppError("s14_ops_ledger_changed", 503);
     stage.state = "complete";
     stage.reason = null;
     this.persist();

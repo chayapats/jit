@@ -187,6 +187,8 @@ export class S14Store {
   }
   /** Copies a consistent main-database image while its caller holds the exclusive maintenance lock. */
   snapshotBytes(): Uint8Array { return this.#db.serialize("main"); }
+  /** Copies the current independent ledger for private quarantine; never include it in a backup/export. */
+  snapshotLifecycleBytes(): Uint8Array { return this.#db.serialize("lifecycle"); }
   /** Closes this connection without deleting application, backup or profile data. */
   close(): void { this.#db.close(); }
 }

@@ -1,4 +1,4 @@
-import { constants, closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, parse, resolve } from "node:path";
 import { AppError } from "../errors";
 import { writeFileAtomic } from "../ops/upgrade-fence";
@@ -18,10 +18,19 @@ export function opsPath(path: string): string {
   }
   return absolute;
 }
-/** Requires a private, same-owner directory with no symlink ancestors. */
+/** Durably creates each missing ancestor and requires a private, same-owner final directory. */
 export function opsDirectory(path: string): void {
-  opsPath(path);
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+  path = opsPath(path);
+  const ensure = (directory: string): void => {
+    if (!lstatSync(directory, { throwIfNoEntry: false })) {
+      ensure(dirname(directory));
+      mkdirSync(directory, { mode: 0o700 });
+    }
+    // Also flush existing entries: a previous process may have died between mkdir and fsync.
+    opsSyncDirectory(directory);
+    opsSyncDirectory(dirname(directory));
+  };
+  ensure(path);
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.mode & 0o077 || stat.uid !== process.getuid?.()) throw new AppError("s14_ops_path_untrusted", 409);
 }
@@ -50,6 +59,8 @@ export function opsAtomic(path: string, value: unknown): void {
   opsDirectory(dirname(path));
   opsPath(path);
   writeFileAtomic(path, JSON.stringify(value));
+  // The shared helper flushes file contents, but treats directory fsync as best effort.
+  opsSyncDirectory(dirname(path));
 }
 /** Flushes rename metadata on supported Linux filesystems; failures keep maintenance fenced. */
 export function opsSyncDirectory(path: string): void {

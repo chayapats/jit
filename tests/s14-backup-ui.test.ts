@@ -77,6 +77,52 @@ function heldPort(entered: ReturnType<typeof barrier>, snapshots: Map<string, Ho
   } };
 }
 
+/** Extracts a real rendered region, including nested elements, for the enhancement script's small DOM fixture. */
+function liveRegion(html: string, id: string) {
+  const opening = new RegExp(`<([a-z]+)\\b[^>]* id="${id}"[^>]*>`).exec(html)!;
+  expect(opening, id).not.toBeNull();
+  const start = opening.index + opening[0].length, tags = new RegExp(`</?${opening[1]}\\b[^>]*>`, "g");
+  tags.lastIndex = start;
+  let depth = 1, end = start;
+  for (let tag = tags.exec(html); tag; tag = tags.exec(html)) {
+    depth += tag[0].startsWith("</") ? -1 : 1;
+    if (!depth) { end = tag.index; break; }
+  }
+  return { innerHTML: html.slice(start, end), className: /class="([^"]*)"/.exec(opening[0])?.[1] ?? "", dataset: {}, contains: () => false,
+    querySelector(selector: string) { return selector === "details[open]" && /<details[^>]* open/.test(this.innerHTML) ? {} : null; } };
+}
+
+test.each(["th", "en"] as const)("%s: the final live read refreshes the list, restore and workers while the first-page details stays open", async language => {
+  const hold = barrier(), snapshots = new Map<string, HostSessionSnapshot>();
+  const { f, page, press, words } = await fixture(language, { backups: heldPort(hold, snapshots) });
+  stalledNative(f, snapshots);
+  await press(await page("/settings/backup")); await hold.reached;
+  const before = await page("/settings/backup");
+  hold.release(); await f.app.backups.settle();
+  const after = await page("/settings/backup"), id = f.app.backups.status(f.auth.actor).latest!.backupId;
+  const ids = ["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"];
+  const current = new Map(ids.map(id => [id, liveRegion(before, id)])), fresh = new Map(ids.map(id => [id, liveRegion(after, id)]));
+  const details = { open: true };
+  expect(before).toContain('<details class="s-card s-more" open>');
+  const document = (regions: typeof current, live: boolean) => ({ documentElement: { dataset: {} }, body: {}, activeElement: null,
+    getElementById: (id: string) => regions.get(id) ?? null, querySelectorAll: () => [],
+    querySelector: (selector: string) => selector === "[data-live]" && live ? {} : selector === "details[open]" ? details : null });
+  const ticks: (() => Promise<void>)[] = [];
+  runInNewContext(readFileSync(new URL("../src/s14/web-enhance.js", import.meta.url), "utf8"), {
+    document: document(current, true), location: { href: `${origin}/settings/backup`, hash: "" },
+    DOMParser: class { parseFromString() { return document(fresh, false); } },
+    fetch: async () => ({ ok: true, text: async () => after }), setTimeout: (tick: () => Promise<void>) => ticks.push(tick),
+  });
+  expect(ticks).toHaveLength(1); await ticks.shift()!();
+  for (const id of ids) expect(current.get(id)!.innerHTML, id).toBe(fresh.get(id)!.innerHTML);
+  expect(current.get("s14-live")!.innerHTML).toContain(words["s14.backup.done_title"]);
+  expect(current.get("s14-backup-list")!.innerHTML).toContain(`/settings/backup/${id}`);
+  expect(current.get("s14-backup-restore")!.innerHTML).toContain(words["s14.backup.restore_pick"]);
+  expect(current.get("s14-backup-version")!.innerHTML).toContain(words["s14.backup.workers.running"]);
+  expect(details.open).toBe(true);
+  expect(ticks).toHaveLength(0);
+});
+
 test.each(["th", "en"] as const)("%s: More reaches an honest first page with one press and the fixed lists", async language => {
   const { words, page } = await fixture(language);
   expect(await page("/more")).toContain('href="/settings/backup"');

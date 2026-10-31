@@ -182,7 +182,7 @@ test("partial native import keeps workers fenced and a deterministic retry valid
   expect(retry.state).toBe("validated");
 });
 
-test.each(["activation_intent", "application_renamed", "native_pointer_written"] as const)("crash at %s resolves exactly one active image and retains the fence until explicit retry", async point => {
+test.each(["activation_intent", "ledger_committed", "application_renamed", "native_pointer_written"] as const)("crash at %s resolves exactly one active image and retains the fence until explicit retry", async point => {
   const f = await fixture(), n = fakeNative();
   let armed = false;
   let { m, actor } = open(f, n.port, at => { if (armed && at === point) throw Error("simulated process crash"); });
@@ -201,6 +201,88 @@ test.each(["activation_intent", "application_renamed", "native_pointer_written"]
   expect(inspectS14Store(f.path)).toBe("s14");
   expect(existsSync(join(opsRoot(f.path), "fence.json"))).toBe(false);
   expect(existsSync(join(opsRoot(f.path), "stages", staged.stage!.id, "prior.sqlite"))).toBe(true);
+});
+
+async function workAfterBackup(f: DomainFixture) {
+  f.reopen();
+  const work = f.app.execute(f.auth.actor, workCommand(f)).work!;
+  const attempt = f.app.authority.admit(work.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "Newer native work", calls: 1, outputBytes: 1024 });
+  const intent = f.app.recovery.intent(attempt.id, attempt.memoryId!, attempt.snapshot.route);
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Retained newer work" });
+  // Inventory proves this intent never created a session; its catalog still postdates the backup.
+  await f.app.recovery.boot(fakeNative().port);
+  expect(f.app.recovery.view(f.auth.actor).native.find(i => i.id === intent.id)?.state).toBe("not_created");
+  return { work, intent };
+}
+
+test.each(["discard", "blocked", "killed"] as const)("%s quarantine with a newer native intent preserves the live application, ledger and work authority", async outcome => {
+  const f = await fixture();
+  let { m, actor } = open(f);
+  const id = await backup(m, actor); m.close();
+  const { work } = await workAfterBackup(f);
+  // Reopening SQLite can advance header counters; every application row and ledger byte must stay intact.
+  const rows = (store: S14Store) => store.read(tx => tx.all<{ name: string }>("SELECT name FROM main.sqlite_master WHERE type='table' ORDER BY name").map(({ name }) => [name, tx.all(`SELECT * FROM main.${name} ORDER BY rowid`)]));
+  const before = rows(f.store), ledgerBefore = readFileSync(`${f.path}.lifecycle.sqlite`);
+  let stageId: string;
+  if (outcome === "killed") {
+    f.store.close();
+    const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures/s14-ops-crash.ts")], {
+      stdin: new Blob([JSON.stringify({ path: f.path, token: f.token, point: "candidate_reconciled", command: command(m, "restore.prepare", { backupId: id }), options: { policy: f.options.policy }, now: f.clock.now })]), stdout: "pipe", stderr: "pipe",
+    });
+    expect(await child.exited).not.toBe(0);
+    expect(["SIGKILL", 9] as Array<string | number | null>).toContain(child.signalCode);
+    m = new S14Maintenance(f.path, f.options, fakeNative().port); maintenance.push(m);
+    actor = m.app.authenticate(f.token).actor;
+    stageId = m.control.stage!.id;
+  } else {
+    ({ m, actor } = open(f, fakeNative().port, point => { if (outcome === "blocked" && point === "candidate_reconciled") throw Error("validation interrupted"); }));
+    const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+    expect(staged.state).toBe(outcome === "blocked" ? "blocked" : "validated");
+    stageId = staged.stage!.id;
+  }
+  expect(rows(m.store)).toEqual(before);
+  expect(readFileSync(`${f.path}.lifecycle.sqlite`)).toEqual(ledgerBefore);
+  expect((await m.execute(actor, command(m, "restore.discard", { stageId }))).state).toBe("discarded");
+  expect(rows(m.store)).toEqual(before);
+  expect(readFileSync(`${f.path}.lifecycle.sqlite`)).toEqual(ledgerBefore);
+  const admitted = m.app.authority.admit(work.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "Still authorized", calls: 1, outputBytes: 1024 });
+  expect(admitted.workId).toBe(work.id);
+});
+
+test.each(["activation_intent", "ledger_committed"] as const)("a killed %s publishes newer orphan facts only after exact cutover authority and retries once", async point => {
+  const f = await fixture(); let { m, actor } = open(f);
+  const id = await backup(m, actor); m.close();
+  const { intent } = await workAfterBackup(f);
+  ({ m, actor } = open(f));
+  const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(staged.state).toBe("validated");
+  const withdrawal = () => m.store.read(tx => tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", intent.grantId));
+  expect(withdrawal()).toBeNull();
+  const activate = command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash });
+  m.close();
+  const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures/s14-ops-crash.ts")], {
+    stdin: new Blob([JSON.stringify({ path: f.path, token: f.token, point, command: activate, options: { policy: f.options.policy }, now: f.clock.now })]), stdout: "pipe", stderr: "pipe",
+  });
+  expect(await child.exited).not.toBe(0);
+  expect(["SIGKILL", 9] as Array<string | number | null>).toContain(child.signalCode);
+  m = new S14Maintenance(f.path, f.options, fakeNative().port); maintenance.push(m);
+  actor = m.app.authenticate(f.token).actor;
+  expect(!!withdrawal()).toBe(point === "ledger_committed");
+  expect((await m.execute(actor, activate)).state).toBe("complete");
+  expect(withdrawal()).not.toBeNull();
+  actor = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  expect(await m.execute(actor, activate)).toMatchObject({ state: "complete" });
+  expect(m.store.read(tx => tx.all("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", intent.grantId))).toHaveLength(1);
+});
+
+test("changed quarantine ledger bytes refuse activation before any live mutation", async () => {
+  const f = await fixture(), { m, actor } = open(f), id = await backup(m, actor);
+  const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  const before = readFileSync(f.path), ledgerBefore = readFileSync(`${f.path}.lifecycle.sqlite`);
+  writeFileSync(join(opsRoot(f.path), "stages", staged.stage!.id, "candidate-lifecycle.sqlite"), "changed ledger");
+  await expect(m.execute(actor, command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }))).rejects.toThrow("s14_ops_integrity_failed");
+  expect(readFileSync(f.path)).toEqual(before);
+  expect(readFileSync(`${f.path}.lifecycle.sqlite`)).toEqual(ledgerBefore);
 });
 
 test("supported current-schema upgrade has a recovery point and rollback discards only the candidate", async () => {

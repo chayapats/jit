@@ -26,6 +26,7 @@ export interface ManagedBackupManifest {
 export interface OpsStage {
   id: string; mode: "restore" | "upgrade"; backupId: string; state: "preparing" | "validated" | "activating" | "complete" | "partial" | "blocked" | "discarded";
   reason: string | null; candidateHash: string | null; liveHash: string; ledger: string; actionHash: string | null; priorHash: string | null; targetHash: string | null; activationHash: string | null;
+  candidateLedgerHash: string | null; targetLedger: string | null;
   nativeDigest: string | null; nativeDirectory: string; priorNativeDirectory: string; recoveryBackupId: string;
 }
 /** Bounded installation control state, stored outside every application image. */

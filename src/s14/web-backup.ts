@@ -72,7 +72,7 @@ function backupRow(item: S14BackupItem): string {
 function backupList(view: S14BackupSurface): string {
   const { items, retention } = view, attention = items.filter(item => item.health !== "intact").length, newest = items.find(item => item.createdAt !== null);
   const health = items.length ? `<dl class="s-facts s-backup-health"><div><dt>${tr("s14.backup.kept")}</dt><dd><b>${items.length}</b> ${fill("s14.backup.of_limit", { limit: retention.limit })}</dd></div><div><dt>${tr("s14.backup.newest")}</dt><dd>${newest ? madeAt(newest) : tr("s14.unknown")}</dd></div><div><dt>${tr("s14.backup.needs_attention")}</dt><dd><b>${attention}</b></dd></div></dl>` : "";
-  return `<section class="s-stack" aria-labelledby="s14-backups"><h2 class="s-section-t" id="s14-backups">${tr("s14.backup.list")}</h2>${health}${items.length ? `<div>${items.map(backupRow).join("")}</div><p class="s-note">${tr(retention.protected.length ? "s14.backup.retention_protected" : "s14.backup.retention")}</p>` : `<p class="s-sub">${tr("s14.backup.empty")}</p>`}</section>`;
+  return `<section class="s-stack" id="s14-backup-list" aria-labelledby="s14-backups"><h2 class="s-section-t" id="s14-backups">${tr("s14.backup.list")}</h2>${health}${items.length ? `<div>${items.map(backupRow).join("")}</div><p class="s-note">${tr(retention.protected.length ? "s14.backup.retention_protected" : "s14.backup.retention")}</p>` : `<p class="s-sub">${tr("s14.backup.empty")}</p>`}</section>`;
 }
 function stageState(stage: S14OpsStage): string {
   const tone: Record<S14OpsStage["state"], [string, string]> = { preparing: ["strong", ""], validated: ["strong", ""], activating: ["warn", "!"], complete: ["ok", "✓"], partial: ["warn", "!"], blocked: ["warn", "!"], discarded: ["", ""] };
@@ -91,11 +91,11 @@ function block(step: Pick<S14OpsStep, "script">, id: string): string {
 function restoreCard(view: S14BackupSurface): string {
   const stage = view.stage, usable = view.items.filter(item => item.health === "intact");
   const body = usable.length ? `<p class="s-sub">${tr("s14.backup.restore_lead")}</p><p class="s-note">${tr("s14.backup.restore_pick")}</p>` : `<p class="s-sub">${tr(view.items.length ? "s14.backup.restore_none_usable" : "s14.backup.restore_none")}</p>`;
-  return `<section class="s-card s-stack" aria-labelledby="s14-restore"><h2 id="s14-restore">${tr("s14.backup.restore_title")}</h2>${stage ? lastOperation(stage) : ""}${body}</section>`;
+  return `<section class="s-card s-stack" id="s14-backup-restore" aria-labelledby="s14-restore"><h2 id="s14-restore">${tr("s14.backup.restore_title")}</h2>${stage ? lastOperation(stage) : ""}${body}</section>`;
 }
 function versionCard(view: S14BackupSurface): string {
   const { stage } = view;
-  return `<section class="s-card s-stack" aria-labelledby="s14-version"><h2 id="s14-version">${tr("s14.backup.version_title")}</h2><dl class="s-kv"><dt>${tr("s14.backup.data_format")}</dt><dd><span class="s-mono">schema 14 · jit/0.1.0</span></dd><dt>${tr("s14.backup.upgrades")}</dt><dd>${tr("s14.backup.upgrades_detail")}</dd><dt>${tr("s14.backup.workers")}</dt><dd>${tr(k(`s14.backup.workers.${view.workers}`))}</dd><dt>${tr("s14.backup.last_operation")}</dt><dd>${stage ? `${tr(k(`s14.backup.mode.${stage.mode}`))} ${stageState(stage)}` : tr("s14.backup.last_none")}</dd></dl></section>`;
+  return `<section class="s-card s-stack" id="s14-backup-version" aria-labelledby="s14-version"><h2 id="s14-version">${tr("s14.backup.version_title")}</h2><dl class="s-kv"><dt>${tr("s14.backup.data_format")}</dt><dd><span class="s-mono">schema 14 · jit/0.1.0</span></dd><dt>${tr("s14.backup.upgrades")}</dt><dd>${tr("s14.backup.upgrades_detail")}</dd><dt>${tr("s14.backup.workers")}</dt><dd>${tr(k(`s14.backup.workers.${view.workers}`))}</dd><dt>${tr("s14.backup.last_operation")}</dt><dd>${stage ? `${tr(k(`s14.backup.mode.${stage.mode}`))} ${stageState(stage)}` : tr("s14.backup.last_none")}</dd></dl></section>`;
 }
 function overview(page: S14Page, view: S14BackupSurface): string {
   const capturing = view.receipt?.state === "capturing", held = view.refusal === "s14_ops_quiesce_required";

@@ -21,7 +21,7 @@ const excluded = new Set(`sessions login_throttle parallel_connections parallel_
 
 /** Application tables are retained, emptied, or owner-verifier redacted; unknown tables always block capture. */
 export const opsMainTables = Object.freeze({ retained: Object.freeze([...included].sort()), excluded: Object.freeze([...excluded].sort()), redacted: Object.freeze(["owner"]) });
-/** Independent tables are never copied; all are hashed and reconciled from the installation's current ledger. */
+/** Independent tables are never archived; private quarantine starts from the installation's current ledger. */
 export const opsLedgerTables = Object.freeze(["identity", "withdrawals", "bot_events", "native_intents", "grant_usage", "routine_usage", "effect_outcomes"]);
 /** Requires every actual main/ledger table to have an explicit reviewed backup policy. */
 export function assertOpsTableClassification(tx: AppTransaction): void {
