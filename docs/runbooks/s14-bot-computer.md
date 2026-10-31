@@ -26,7 +26,7 @@ Use the application's non-root service identity and rootless Podman through its 
 
 Provision an **isolated test pool**, distinct from the application computer root, through the same root `provisionS14Disks` installer API. It needs a protected manifest and eight finite pairs; do not use active Bot storage. The standalone probe uses only the first two slots and never reads application/native/provider state. The regular `install.sh --s14` provisions the application's pool automatically; its scoped lifecycle is tested separately.
 
-Set non-secret `JIT_S14_SMOKE_ROOT`, actual digest-pinned `JIT_BOX_IMAGE_BASE`, `JIT_BOX_IMAGE_BROWSER` and the service's `JIT_PODMAN_MODE=remote` / `XDG_RUNTIME_DIR`. Run as its service identity. Record exact revisions and results in `/Users/chayapats/Projects/jit/.local/s14-live-hosts.md`; no addresses or raw output enter tracked files.
+Set non-secret `JIT_S14_SMOKE_ROOT`, actual digest-pinned `JIT_BOX_IMAGE_BASE`, `JIT_BOX_IMAGE_BROWSER` and the service's `JIT_PODMAN_MODE=remote` / `XDG_RUNTIME_DIR`. Run as its service identity. Record exact revisions and results in `.local/s14-live-hosts.md`; no addresses or raw output enter tracked files.
 
 ```sh
 bun --no-env-file ops/box/s14-probe.ts --diagnostics
