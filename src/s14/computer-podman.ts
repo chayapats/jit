@@ -137,6 +137,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
   readonly #live = new WeakMap<ComputerHandle, Live>();
   readonly #byId = new Map<string, Live>();
   readonly #registry = new Map<string, { cancel(): void; settled: Promise<void> }>();
+  #planning = Promise.resolve();
   constructor(readonly options: BotPodmanOptions) {
     if (![options.workspaceImage, options.browserImage].every(image => pinnedImagePattern.test(image))) fail("computer_image_digest_required");
     this.#root = resolve(options.dataRoot);
@@ -166,13 +167,25 @@ export class BotPodmanRuntime implements ComputerRuntime {
     return path;
   }
   private async command(argv: string[], timeoutMs = 5000, allowed = () => {}): Promise<Uint8Array> {
-    allowed();
-    let result;
-    try { result = await this.#run(argv, { timeoutMs }); }
-    catch { return fail("podman_runtime_unavailable"); }
-    allowed();
-    if (result.exitCode !== 0) fail(podmanFailure(result.stderr));
-    return result.stdout;
+    return this.plan(argv, async () => {
+      allowed();
+      let result;
+      try { result = await this.#run(argv, { timeoutMs }); }
+      catch { return fail("podman_runtime_unavailable"); }
+      allowed();
+      if (result.exitCode !== 0) fail(podmanFailure(result.stderr));
+      return result.stdout;
+    });
+  }
+  private async plan<T>(argv: readonly string[], run: () => Promise<T>): Promise<T> {
+    if (!["info", "create", "run"].includes(argv[0]!)) return run();
+    // The local API's keep-id planner reads process-global libsubid state. Concurrent
+    // planning produced duplicate UID ranges on Podman 5.7; keep the exact prepared map.
+    const previous = this.#planning, gate = Promise.withResolvers<void>();
+    this.#planning = gate.promise;
+    await previous;
+    try { return await run(); }
+    finally { gate.resolve(); }
   }
   private async disks(c: BotComputer, allowed: () => void): Promise<string[]> {
     let paths: string[];
@@ -215,7 +228,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   /** Starts and verifies the two isolated components before issuing one opaque generation-bound handle. */
   async start(c: BotComputer, allowed: () => void): Promise<ComputerHandle> {
-    const readiness = await probeBotPodman(this.#run);
+    const readiness = await probeBotPodman((argv, request) => this.plan(argv, () => { allowed(); return this.#run(argv, request); }));
     allowed();
     if (readiness.state !== "ready") fail(readiness.reason!);
     const paths = await this.disks(c, allowed), names = this.names(c);
