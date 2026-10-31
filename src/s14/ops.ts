@@ -17,7 +17,7 @@ import { nativeSessionDirectory, opsRoot, readS14Ops } from "./ops-state";
 import { managedBackupContract, opsLimits, restoreActivationContract, type ManagedBackupManifest, type OpsCommand, type OpsControl, type OpsNativePort, type OpsReceipt, type OpsStage } from "./ops-types";
 import { validateOpsSnapshot } from "./ops-native";
 import { assertS14BackupQuiescent, captureS14Backup } from "./ops-capture";
-import { reconcileOpsComputers, reconcileOpsImage } from "./ops-reconcile";
+import { reconcileOpsComputers, reconcileOpsComputerStops, reconcileOpsImage } from "./ops-reconcile";
 import { commitOpsLedger } from "./ops-ledger";
 
 /** Deterministic crash boundaries; production maintenance supplies no injection hook. */
@@ -297,6 +297,7 @@ export class S14Maintenance {
       reconcileOpsImage(candidateApp);
       await candidateApp.recovery.boot({ open: intent => this.native.open(intent, stage.nativeDirectory) });
       reconcileOpsImage(candidateApp);
+      reconcileOpsComputerStops(this.store, candidate);
       await candidateApp.computers.drain();
       await candidateApp.botLifecycle.drain({ open: intent => this.native.open(intent, stage.nativeDirectory) });
       candidate.read(tx => {

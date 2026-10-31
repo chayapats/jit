@@ -866,6 +866,30 @@ test("restore consumes current routine high-water marks and attention send claim
   expect(m.app.routines.view(actor, routine.id).history).toEqual([]);
 });
 
+test("offline restore without a runtime preserves confirmed stopped computers and fences archived leases", async () => {
+  const runtime = new FakeComputerRuntime(), f = await fixture({ computers: { runtime } });
+  const work = f.app.execute(f.auth.actor, workCommand(f, { tools: ["computer"] })).work!;
+  f.app.execute(f.auth.actor, { kind: "computer.open", requestId: retryId(), expectedRevision: 0, payload: { botId: "jit", workId: work.id } });
+  await f.app.computers.drain();
+  const running = f.app.computers.view(f.auth.actor, "jit").computer!;
+  f.app.execute(f.auth.actor, { kind: "computer.stop", requestId: retryId(), expectedRevision: running.revision,
+    payload: { botId: "jit", computerId: running.id, generation: running.generation } });
+  await f.app.computers.drain();
+  const stopped = f.app.computers.view(f.auth.actor, "jit").computer!;
+  let { m, actor } = open(f), backupId = await backup(m, actor); m.close();
+  delete f.options.computers; // The actual offline CLI deliberately supplies no computer runtime.
+  ({ m, actor } = open(f));
+  const prepared = await m.execute(actor, command(m, "restore.prepare", { backupId }));
+  expect(prepared).toMatchObject({ state: "validated", reason: null, workers: "fenced" });
+  await m.execute(actor, command(m, "restore.activate", { stageId: prepared.stage!.id, actionHash: prepared.stage!.actionHash }));
+  actor = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  const restored = m.app.computers.view(actor, "jit");
+  expect(restored.computer).toMatchObject({ state: "stopped", workspaceId: stopped.workspaceId, profileId: stopped.profileId });
+  expect(restored.computer!.generation).toBeGreaterThan(stopped.generation);
+  expect(restored.lease).toMatchObject({ actor: null, attemptId: null, expiresAt: 0 });
+  expect(m.store.read(tx => tx.all("SELECT * FROM computer_operations WHERE state<>'done'"))).toEqual([]);
+});
+
 test.each(["reset", "delete"] as const)("restore preserves current computer %s identities and old activity without starting old volumes", async mode => {
   const runtime = new FakeComputerRuntime(), f = await fixture({ computers: { runtime } });
   const work = f.app.execute(f.auth.actor, workCommand(f, { tools: ["computer"] })).work!;
