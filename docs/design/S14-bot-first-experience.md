@@ -978,3 +978,22 @@ Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 202
 - The page cannot see the recovery or backup barrier, so Run once now can be refused with `routine_not_ready`. The refusal explains it.
 
 **Verification:** rendering and form-contract tests are in `tests/s14-routine-controls-ui.test.ts`, over the real application and handler with scripted executors and a scripted `git ls-remote` behind the real broker: every control in both languages, each state a control must be absent from, stale and forged posts, refused posts that keep the typing, write-only tokens, spoofed landing links and hostile titles. Chromium on macOS first confirmed the collision, then loaded 20 seeded pages at 360, 390, 430, 820 and 1280 px in both themes and both languages (400 page loads), with no page overflow, no CSP or console error, no hostile element and no control under 40 px at phone widths. The same browser ran 8 journeys in Thai and English, with script off and on (32 runs): dismiss, attention level, discard, weekly enable, run once now, revoke and delete, connect and grant a private branch, repin. That run found the two-Bot repeat, which is now fixed. A keyboard pass confirmed Tab reaches Dismiss and its description resolves, and that Enter on the delete heading deletes nothing. Forced-colours renders kept the state words. Playwright's WebKit loaded the 20 pages at 390 px in both languages with no overflow. Firefox failed to start here. No real phone, Safari, screen reader, live GitHub, real private repository, Linux host or live model was used. The switch from "a run is in progress" back to the slip when a run settles was not seen live, and the repin note about running work comes from the contract and was not exercised.
+
+## 27. Acceptance run refinements (EVID14-01, S14-AC13)
+
+Author: Claude Opus 5.5 (`claude-opus-5-5`), effort high, as the UI/UX delegate for the [EVID14-01](../tickets/s14/EVID14-01.md) live run. Authority, grants and domain logic did not change. Each item is **P** unless marked. Per-engine results stay in the private evidence record.
+
+| Finding | Decision | Label |
+| --- | --- | --- |
+| A refused post and a saved landing were plain banners, so neither appeared as an announcement | A refusal is `role="alert"`, a landing after a command is `role="status"`, and the failure page is an alert. The words stay the ones the page already shows | R (NFR-11) + P |
+| A chat or Bot page opened during a ceiling change stayed closed after the Bot became active again | The foot of a chat and the Bot overview are live regions while a transition settles. A chat reopens by itself, the status region says so, and the page keeps a no-script refresh link. A closed foot always links to the Bot | P |
+| A ceiling change read the same as a retired Bot | "{Bot} is changing its ceiling" says it clears by itself. "This chat can't take new messages now" stays for a Bot that will not come back on its own | P |
+| A post refused during a transition lost its text, though the page promises to keep it | The composer stays with the text beside the closed notice. The service still refuses the send | R (F2 draft rule) + P |
+| The chat's own Bot was a hidden field, so a person could tick two Bots under a limit of 2 and not see a third run | The Bots group has a legend and a fixed text row for the chat's Bot, which says it takes one place. A note states that every Bot researches, what queues, and who writes the summary. It is words, not a control: the lead stays fixed and no limit is checked in the browser | P |
+| A queued lane named the limit but not who held it | "Places in use: Scout · Analyst" sits under a lane held by this work's limit, from recorded running steps only | P |
+| A vendor reset time existed but the copy said it was unknown | The time appears only when one was recorded. Absent still reads as unknown, never as ready | R (Honest gaps) + P |
+| The composer's focus was a 1 px border change | It gains a second pixel, drawn as a ring | R (NFR-11) + P |
+| Forced colours dropped the selected work chip and the current page marks | They use system colours or an outline in that mode | P |
+| A phone on its side gave the composer over a third of the height | Under 480 px tall, the header and composer compact and the thread keeps the height | P |
+
+The work pane at 680–1039 px is a full replacement of the chat column, not the overlay in section 4. Focus stays contained because the chat column is not rendered, so this refinement keeps it.

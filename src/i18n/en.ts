@@ -2603,6 +2603,8 @@ export const en: Record<MessageKey, string> = {
   "s14.web_outcome.key_unavailable": "Key unavailable",
   "s14.web_outcome.partial_title": "Partly returned",
   "s14.web_outcome.partial_detail": "What is missing is listed below. Jit does not read again by itself.",
+  "s14.web_outcome.quota_known_detail": "The service gave a reset time. New web reads wait until it passes. Jit will not change provider or account for you.",
+  "s14.web_outcome.resets_at": "Resets at",
   "s14.web_outcome.quota_title": "Parallel rate limit",
   "s14.web_outcome.quota_detail": "The no-key mode hit a temporary limit. The service did not say when it resets. Jit will not change provider or turn on an account for you.",
   "s14.web_outcome.quota_account_title": "Parallel account limit",

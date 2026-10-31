@@ -94,6 +94,7 @@ html, body { height: 100%; }
 .s-check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--fg); flex: none; }
 .s-check small { display: block; color: var(--fg-3); font-size: var(--size-xs); }
 .s-check-fixed { padding-inline-start: 28px; }
+.auth-card [role=alert] { margin-block-end: 12px; }
 
 /* Bot tile: cut from the mark's head; the floating dot is its one living part. */
 .s-tile { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; margin-top: 6px; background: var(--surface-3); border: 1px solid var(--line-strong); border-radius: var(--radius-tile); font-size: var(--size-sm); font-weight: 600; }

@@ -2607,6 +2607,8 @@ export const th = {
   "s14.web_outcome.key_unavailable": "ไม่มี key ให้ใช้",
   "s14.web_outcome.partial_title": "ได้บางส่วน",
   "s14.web_outcome.partial_detail": "ส่วนที่ขาดอยู่ในรายการด้านล่าง จิตไม่อ่านซ้ำเอง",
+  "s14.web_outcome.quota_known_detail": "บริการแจ้งเวลารีเซ็ตมาแล้ว การอ่านเว็บใหม่จะรอจนเลยเวลานี้ จิตจะไม่เปลี่ยนผู้ให้บริการหรือบัญชีให้เอง",
+  "s14.web_outcome.resets_at": "รีเซ็ตเวลา",
   "s14.web_outcome.quota_title": "Parallel จำกัดความถี่",
   "s14.web_outcome.quota_detail": "โหมดไม่ใช้ key ถึงเพดานชั่วคราว ระบบไม่ได้บอกเวลาที่จะใช้ได้อีก จิตไม่เปลี่ยนผู้ให้บริการหรือเปิดบัญชีให้เอง",
   "s14.web_outcome.quota_account_title": "บัญชี Parallel ถึงเพดาน",

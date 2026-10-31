@@ -19,8 +19,10 @@ function outcomeBanner(read: WebRead): string {
   const withdrawn = read.subject === "[withdrawn context]", key = withdrawn ? "withdrawn" : read.outcome === "quota" && read.mode === "authenticated" ? "quota_account" : read.outcome;
   if (read.outcome === "success") return "";
   const tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(`s14.web_outcome.${key}_title`)), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
-  const action = read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : "";
-  return banner(tone as "warn" | "danger", title, `${tr(k(`s14.web_outcome.${key}_detail`))} ${left}`, action);
+  // A vendor reset time is shown only when it was given; absent still reads as unknown, never as ready.
+  const resets = read.outcome === "quota" && typeof read.retryAt === "number" ? `<p class="s-sub">${tr("s14.web_outcome.resets_at")} ${when(read.retryAt)}</p>` : "";
+  const action = `${resets}${read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : ""}`;
+  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k(`s14.web_outcome.${key}_detail`))} ${left}`, action);
 }
 function usageRows(read: WebRead): string {
   if (read.usage === null) return `<span>${tr("s14.unknown")}</span>`;
