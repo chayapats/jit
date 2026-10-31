@@ -6,7 +6,7 @@ export interface ServiceConfig {
   /** Omitted selects the unchanged legacy service; S14 always uses a separate installation. */
   runtime?: "s14";
   /** Service-only S14 paths and locally built, digest-pinned Bot images. */
-  s14?: { vaultDirectory: string; computerRoot: string; gitScratch: string; images?: { base: string; browser: string } };
+  s14?: { vaultDirectory: string; computerRoot: string; gitScratch: string; images?: { base: string; browser: string; buildInputsHash?: string } };
   /** Dedicated service identity. Never root and never an interactive login user. */
   serviceUser: string;
   /**
@@ -320,9 +320,11 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
     if (s.images !== undefined) {
       const images = s.images as Record<string, unknown>;
       if (!images || typeof images !== "object" || Array.isArray(images)) fail();
-      keysWithin(images, ["base", "browser"], []);
+      keysWithin(images, ["base", "browser"], ["buildInputsHash"]);
+      if (images.buildInputsHash !== undefined && (typeof images.buildInputsHash !== "string" || !/^[a-f0-9]{64}$/.test(images.buildInputsHash))) fail();
       if (![images.base, images.browser].every(image => typeof image === "string" && imagePattern.test(image))) fail();
-      parsed.s14.images = { base: images.base as string, browser: images.browser as string };
+      parsed.s14.images = { base: images.base as string, browser: images.browser as string,
+        ...(images.buildInputsHash !== undefined ? { buildInputsHash: images.buildInputsHash as string } : {}) };
     }
   }
   return parsed;

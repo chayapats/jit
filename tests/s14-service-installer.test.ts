@@ -71,6 +71,10 @@ test("S14 missing Podman/images remains chat-only and a re-run repairs without w
   expect(f.lines.join("\n")).toContain("computer_image_digest_required");
   expect(f.lines.join("\n")).toContain("computer_local_podman_required");
   expect((await runInstaller(f.options)).config.s14!.images).toBeDefined();
+  const failed = await runInstaller({ ...f.options, simulation: { failStep: "optional-s14-images" } });
+  expect(failed.config.s14!.images).toBeUndefined();
+  expect(JSON.parse(readFileSync(f.at("etc/jit-s14/service-config.json"), "utf8")).s14.images).toBeUndefined();
+  expect(readFileSync(f.at("etc/systemd/system/jit-s14.service"), "utf8")).not.toContain("JIT_BOX_IMAGE_BASE=");
   expect(existsSync(f.at("var/lib/jit"))).toBe(false);
 });
 
@@ -164,19 +168,42 @@ test("actual controlling-terminal delivery bypasses redirected installer stdout/
 });
 
 test("Bot images build as the identity from the packaged context, use verified digests and fail closed on absent pins", async () => {
+  const release = fixture().at("release");
+  mkdirSync(join(release, "ops"), { recursive: true });
+  cpSync(join(source, "ops/box"), join(release, "ops/box"), { recursive: true });
   const calls: string[][] = [], asUser = (argv: string[]) => ["runuser", "-u", "jit-s14", "--", ...argv];
   const run: OperatorHost["run"] = async (argv, options) => {
     calls.push(argv); expect(argv.slice(0, 4)).toEqual(["runuser", "-u", "jit-s14", "--"]); expect(options.timeoutMs).toBeGreaterThan(0);
     return { exitCode: 0, timedOut: false, stdout: argv.includes("inspect") ? `sha256:${"c".repeat(64)}\n` : "" };
   };
-  expect(await provisionS14Images("/trusted/release", 1234, run, asUser)).toEqual({ base: `localhost/jit-s14-base@sha256:${"c".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"c".repeat(64)}` });
+  const pins = await provisionS14Images(release, 1234, run, asUser);
+  expect(pins).toMatchObject({ base: `localhost/jit-s14-base@sha256:${"c".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"c".repeat(64)}` });
   expect(calls.filter(argv => argv.includes("build"))).toHaveLength(2);
-  expect(calls[0]).toContain("/trusted/release/ops/box/Containerfile");
+  expect(calls[0]).toContain(join(release, "ops/box/Containerfile"));
+  expect(pins!.buildInputsHash).toMatch(/^[a-f0-9]{64}$/);
   calls.length = 0;
-  const pins = { base: `localhost/jit-s14-base@sha256:${"c".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"c".repeat(64)}` };
-  expect(await provisionS14Images("/trusted/release", 1234, run, asUser, pins)).toEqual(pins);
+  expect(await provisionS14Images(release, 1234, run, asUser, pins)).toEqual(pins);
   expect(calls.some(argv => argv.includes("build"))).toBe(false);
-  expect(await provisionS14Images("/trusted/release", 1234, async () => ({ exitCode: 0, timedOut: false, stdout: "" }), asUser)).toBeUndefined();
+  // Existing installations without input provenance must rebuild, too.
+  calls.length = 0;
+  await provisionS14Images(release, 1234, run, asUser, { base: pins!.base, browser: pins!.browser });
+  expect(calls.filter(argv => argv.includes("build"))).toHaveLength(2);
+  for (const input of ["Containerfile", "runner", "sanitize", "cdp-relay"]) {
+    const path = join(release, "ops/box", input);
+    const original = readFileSync(path);
+    writeFileSync(path, original.toString("utf8") + "\n# changed\n");
+    calls.length = 0;
+    expect(await provisionS14Images(release, 1234, async argv => {
+      calls.push(argv); return { exitCode: 1, timedOut: false, stdout: "" };
+    }, asUser, pins)).toBeUndefined();
+    expect(calls[0]).toContain("build");
+    calls.length = 0;
+    const rebuilt = await provisionS14Images(release, 1234, run, asUser, pins);
+    expect(rebuilt!.buildInputsHash).not.toBe(pins!.buildInputsHash);
+    expect(calls.filter(argv => argv.includes("build"))).toHaveLength(2);
+    writeFileSync(path, original);
+  }
+  expect(await provisionS14Images(release, 1234, async () => ({ exitCode: 0, timedOut: false, stdout: "" }), asUser)).toBeUndefined();
 });
 
 async function artifact(root: string, name: string, runnable = false) {
@@ -234,8 +261,15 @@ test("S14 service package install/upgrade/compatible rollback select only its un
   expect(existsSync(config.ledgerPath)).toBe(false);
   expect(existsSync(serviceDatabasePath(config))).toBe(false);
   const first = readlinkSync(config.executablePath);
-  const result = await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => false });
+  let healthCalls = 0;
+  const result = await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => ++healthCalls === 2 });
+  expect(healthCalls).toBe(2);
   expect(result.outcome).toBe("rolled-back"); expect(readlinkSync(config.executablePath)).toBe(first);
+  healthCalls = 0;
+  const unhealthy = await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => { healthCalls++; return false; } });
+  expect(healthCalls).toBe(2);
+  expect(unhealthy).toMatchObject({ outcome: "activation-unhealthy", supervisor: null });
+  expect(readlinkSync(config.executablePath)).toBe(first);
   expect(await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => true })).toMatchObject({ outcome: "upgraded" });
   expect(readManifest(readlinkSync(config.executablePath)).artifactId).toBe(readManifest(next).artifactId);
   schema--;
@@ -249,6 +283,9 @@ test("S14 service package install/upgrade/compatible rollback select only its un
 
 test("S14 configuration refuses path overlaps, non-Schway routes and mismatched listeners", async () => {
   const f = fixture(), { config } = await runInstaller(f.options);
+  const images = { base: `localhost/base@sha256:${"c".repeat(64)}`, browser: `localhost/browser@sha256:${"d".repeat(64)}`, buildInputsHash: "e".repeat(64) };
+  expect(parseServiceConfig({ ...config, s14: { ...config.s14, images } }).s14!.images).toEqual(images);
+  expect(() => parseServiceConfig({ ...config, s14: { ...config.s14, images: { ...images, buildInputsHash: "invalid" } } })).toThrow("invalid_service_config");
   for (const change of [{ s14: { ...config.s14, vaultDirectory: config.stateDirectory } }, { s14: { ...config.s14, gitScratch: config.s14!.computerRoot } }, { runPort: "scripted" }, { runtime: undefined }, { network: { ...config.network, origin: "http://127.0.0.1:3000" } }, { network: { ...config.network, port: 4000, origin: "https://jit.example.test" } }]) {
     expect(() => parseServiceConfig({ ...config, ...change })).toThrow("invalid_service_config");
   }
