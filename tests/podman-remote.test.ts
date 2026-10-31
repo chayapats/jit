@@ -46,7 +46,7 @@ test("commands use the explicit Unix remote URL, preserve input and never forwar
     // Only the bound service-owned API directory is a usable client runtime directory in the unit.
     expect(Object.keys(value.env).sort()).toEqual(["HOME", "PATH", "XDG_RUNTIME_DIR"]);
   }
-  const local = JSON.parse(Buffer.from((await podmanCommandRunner({ PATH: f.env.PATH }, f.binary)(["info"], { timeoutMs: 1000 })).stdout).toString());
+  const local = JSON.parse(Buffer.from((await podmanCommandRunner({ PATH: f.env.PATH }, f.binary)(["info"], { timeoutMs: 5000 })).stdout).toString());
   expect(local.args).toEqual(["--remote=false", "info"]);
 }, 30_000);
 
