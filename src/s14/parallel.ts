@@ -203,7 +203,8 @@ export class ParallelWeb {
       }
       const work = this.app.store.read(tx => record<Work>(tx, "work_items", attempt.workId));
       if (setting.mode === "anonymous") releaseBootstrap = await this.anonymousSessionTurn(work.conversationId, abort.signal);
-      const sessionId = this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null);
+      // Keyed reads return independent correlation; retain the anonymous conversation only for anonymous use.
+      const sessionId = setting.mode === "anonymous" ? this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null) : null;
       client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model, now: () => this.app.now(),
         onSessionId: value => this.app.store.transaction(tx => {
           const previous = tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId);

@@ -6,35 +6,34 @@
       {
         "name": "web_search",
         "inputSchema": {
-          "type": "object",
           "properties": {
             "objective": {
               "type": "string"
             },
             "search_queries": {
-              "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "type": "array"
             }
           },
           "required": [
             "objective",
             "search_queries"
-          ]
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       {
         "name": "web_fetch",
         "inputSchema": {
-          "type": "object",
           "properties": {
             "urls": {
-              "type": "array",
               "items": {
                 "type": "string"
               },
-              "maxItems": 20
+              "type": "array"
             },
             "objective": {
               "anyOf": [
@@ -44,43 +43,47 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "search_queries": {
               "anyOf": [
                 {
-                  "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "type": "array"
                 },
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "full_content": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "allow_live_fetch": {
-              "type": "boolean",
-              "default": true
+              "default": true,
+              "type": "boolean"
             }
           },
           "required": [
             "urls"
-          ]
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       {
-        "name": "web_decisions",
+        "name": "web_research",
         "inputSchema": {
           "type": "object"
         }
       },
       {
-        "name": "web_research",
+        "name": "web_decisions",
         "inputSchema": {
           "type": "object"
         }

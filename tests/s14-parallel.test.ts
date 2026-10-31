@@ -210,6 +210,55 @@ test("optional authenticated key is explicit, vault-only, billed acknowledgement
   expect(f.app.parallel.settings(f.auth.actor).setting.mode).toBe("authenticated");
 });
 
+test("authenticated live discovery accepts only the pinned read schemas and sends no anonymous arguments", async () => {
+  const f = await fixture();
+  enableKey(f);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  expect((await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true })).outcome).toBe("success");
+  const calls = f.seen.filter(event => event.wire.method === "tools/call");
+  expect(calls.map(event => event.wire.params)).toEqual([
+    { name: "web_search", arguments: { objective: "public docs", search_queries: ["public docs"] } },
+    { name: "web_fetch", arguments: { urls: ["https://example.com/article"], full_content: true, allow_live_fetch: true } },
+  ]);
+  expect(f.app.parallel.definitions(f.attempt).map(tool => tool.name)).toEqual(["web_search", "web_fetch"]);
+});
+
+test("switching to a key does not compare per-read authenticated correlation with the retained anonymous conversation", async () => {
+  let keyedReads = 0;
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/call" || !new Headers(event.init.headers).has("authorization")) return undefined;
+    const data = event.wire.params.name === "web_search" ? JSON.parse(search.result.content[0]!.text) : structuredClone(fetchResult.result.structuredContent);
+    data.session_id = `keyed_read_${++keyedReads}`;
+    return Response.json({ jsonrpc: "2.0", id: event.wire.id, result: { structuredContent: data } });
+  });
+  const f = await fixture(wire);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  enableKey(f);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "keyed public docs" })).outcome).toBe("success");
+  expect((await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false })).outcome).toBe("success");
+  expect(f.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", f.conversationId)?.vendor_id)).toBe("parallel_fixture_conversation");
+  f.app.execute(f.auth.actor, { kind: "web.parallel.configure", requestId: rid(), expectedRevision: 2, payload: { mode: "anonymous", connectionId: null, billingAcknowledged: false } });
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "anonymous public docs" })).outcome).toBe("success");
+  const calls = wire.seen.filter(event => event.wire.method === "tools/call");
+  expect(calls.slice(1, 3).every(event => !Object.hasOwn(event.wire.params.arguments as object, "session_id"))).toBe(true);
+  expect(calls[3]!.wire.params.arguments).toHaveProperty("session_id", "parallel_fixture_conversation");
+});
+
+test.each(["unknown", "additionalProperties", "fetchLimit", "nullableDefault"])("authenticated discovery %s drift refuses before dispatch", async mutation => {
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/list") return undefined;
+    const value = structuredClone(authenticated);
+    if (mutation === "unknown") value.result.tools.push({ name: "shell", inputSchema: { type: "object" } } as typeof value.result.tools[number]);
+    if (mutation === "additionalProperties") Object.assign(value.result.tools[0]!.inputSchema, { additionalProperties: true });
+    if (mutation === "fetchLimit") Object.assign(value.result.tools[1]!.inputSchema.properties!.urls!, { maxItems: 20 });
+    if (mutation === "nullableDefault") Object.assign(value.result.tools[1]!.inputSchema.properties!.objective!, { default: "changed" });
+    return Response.json(value);
+  });
+  const f = await fixture(wire); enableKey(f);
+  expect(await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).toMatchObject({ outcome: "schema_changed", dispatched: false, remoteRequests: 3 });
+  expect(wire.seen.some(event => event.wire.method === "tools/call")).toBe(false);
+});
+
 test.each(["added", "removed", "schema", "duplicate", "paging", "nullable", "additionalProperties", "fetchLimit"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
   const wire = protocol(event => {
     if (event.wire.method !== "tools/list") return undefined;
