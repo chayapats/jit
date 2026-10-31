@@ -15,3 +15,5 @@ Jit owns persistent Bots, work grants, conversations, memory, tasks, computers, 
 - All UI/UX design must be authored by a Claude Opus 5.5 subagent with `effort: high`. The primary agent owns architecture, logic, code and contract review, not UI/UX design.
 - Keep domain definitions in root CONTEXT.md and architecture decisions in docs/adr. Use exported function/type TSDoc to state contracts when code exists.
 - Write every reply to the owner in Thai: explanations, reports, progress updates, summaries and questions, even when the owner or the task text is in English. Keep technical terms in English as they are (commit, schema, migration, CSP, PR, ...); do not force-translate them, and quote identifiers, commands and error codes exactly.
+- Write everything stored in the repository or on GitHub in English: commit messages, PR titles and bodies, issues, review replies, code comments, docs and ADRs. Thai is only for replies to the owner and for product copy in `src/i18n/th.ts`.
+- Never add AI attribution to PR bodies, issues, commits or any other repository or GitHub text: no "Generated with Claude Code" line and no `Co-Authored-By` trailer for a model or agent.
