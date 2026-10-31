@@ -180,6 +180,17 @@ test("cancellation preserves completed checks and an unknown in-flight check wit
   expect(f.app.reports.list(f.auth.actor, attempt.workId)).toHaveLength(0);
 });
 
+test("cancelled draft installation remains visible without commit attribution before verification starts", async () => {
+  const f = await fixture(), gate = barrier(), abort = new AbortController();
+  const { attempt } = f.start([check], { ...check, argv: ["printf", "draft-install-wait"] });
+  f.runtime.beforeSpawn = async command => { if (command.includes("draft-install-wait")) await gate.wait(); };
+  const running = f.app.coding.run(join(f.root, "native"), attempt, abort.signal);
+  await gate.reached;
+  abort.abort(); gate.release();
+  await expect(running).rejects.toThrow("coding_cancelled");
+  expect(f.app.coding.view(f.auth.actor, attempt.workId).checks).toMatchObject([{ ordinal: -1, result: { state: "unknown", commit: null } }]);
+});
+
 
 test("owner registry scope is visible, exact and permits install/test dispatch only under that live resource", async () => {
   const f = await fixture(true, { hosts: ["registry.npmjs.org"] });

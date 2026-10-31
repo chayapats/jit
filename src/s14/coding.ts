@@ -154,7 +154,8 @@ export class S14Coding {
             this.app.authority.retainedEvidence(tx, run.attemptId);
         } catch { return false; }
       });
-      const checks = available ? tx.all<{ attemptId: string; ordinal: number; record_json: string }>("SELECT c.attempt_id AS attemptId,c.ordinal,c.record_json FROM coding_checks c JOIN coding_runs r ON r.attempt_id=c.attempt_id WHERE r.work_id=? AND c.ordinal>=0 ORDER BY c.rowid", workId)
+      const checks = available ? tx.all<{ attemptId: string; ordinal: number; record_json: string }>(`SELECT c.attempt_id AS attemptId,c.ordinal,c.record_json FROM coding_checks c JOIN coding_runs r ON r.attempt_id=c.attempt_id
+        WHERE r.work_id=? AND (c.ordinal>=0 OR NOT EXISTS (SELECT 1 FROM coding_checks verified WHERE verified.attempt_id=c.attempt_id AND verified.ordinal=0)) ORDER BY c.rowid`, workId)
         .map(({ record_json, ...row }) => ({ ...row, result: JSON.parse(record_json) as CodingCheckResult })) : [];
       return { job: available ? this.job(tx, workId) : null, runs: runs.map(run => run.state === "reviewable" && !run.reportId ? { ...run, state: "partial", reason: "coding_evidence_not_committed" }
         : run.state === "reviewable" && run.evidenceCheckout !== "recorded-raw/v1" ? { ...run, state: "partial", reason: "coding_recorded_checkout_required" } : run), available, checks };
