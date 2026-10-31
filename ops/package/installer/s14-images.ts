@@ -2,6 +2,31 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { CommandRunner } from "../../../src/ops/supervisor";
+import { botComputerUserNamespace } from "../../../src/s14/computer-types";
+import { pinnedImagePattern } from "../../../src/exec/box-runtime";
+
+/** Prepares cached ID-mapped layers as the service identity, without starting processes or mounting Bot data. */
+export async function prepareS14Image(image: string, uid: number, run: CommandRunner, asUser: (args: string[]) => string[]): Promise<boolean> {
+  if (!pinnedImagePattern.test(image)) return false;
+  const podman = ["podman", "--remote", "--url", `unix:///run/user/${uid}/podman/podman.sock`];
+  const name = `jit-s14-image-prepare-${crypto.randomUUID()}`;
+  let prepared = false, removed = false;
+  try {
+    // create materializes Podman's MappedTopLayers cache. A plain image build/exists does not.
+    // Keep the runtime mapping intact; slow disks do this work outside the 30-second admission window.
+    const result = await run(asUser([...podman, "create", "--name", name, "--pull=never", "--http-proxy=false", "--unsetenv-all",
+      `--userns=${botComputerUserNamespace}`, "--user=1000:1000", "--network=none", "--read-only", "--cap-drop=ALL",
+      "--security-opt=no-new-privileges", "--log-driver=none", "--no-healthcheck", "--entrypoint", "/usr/bin/true", image]), { timeoutMs: 600_000 });
+    prepared = result.exitCode === 0 && !result.timedOut;
+  } catch { /* Cleanup also runs when the client throws or times out. */ }
+  finally {
+    try {
+      const result = await run(asUser([...podman, "rm", "--force", "--ignore", name]), { timeoutMs: 30_000 });
+      removed = result.exitCode === 0 && !result.timedOut;
+    } catch { /* Unconfirmed cleanup cannot certify preparation. */ }
+  }
+  return prepared && removed;
+}
 
 function buildInputsHash(release: string): string {
   const root = join(release, "ops/box"), hash = createHash("sha256");
@@ -30,7 +55,10 @@ export async function provisionS14Images(release: string, uid: number, run: Comm
       const existing = current?.[target as "base" | "browser"];
       if (current?.buildInputsHash === inputsHash && existing && /^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f0-9]{64}$/.test(existing)) {
         const present = await run(asUser([...podman, "image", "exists", existing]), { timeoutMs: 10_000 });
-        if (present.exitCode === 0 && !present.timedOut) { images[target] = existing; continue; }
+        if (present.exitCode === 0 && !present.timedOut) {
+          if (!await prepareS14Image(existing, uid, run, asUser)) return;
+          images[target] = existing; continue;
+        }
       }
       const built = await run(asUser([...podman, "build", "--target", target, "-f", join(release, "ops/box/Containerfile"), "-t", `${name}:installed`, release]), { timeoutMs: 600_000 });
       if (built.exitCode !== 0 || built.timedOut) return;
@@ -40,6 +68,7 @@ export async function provisionS14Images(release: string, uid: number, run: Comm
       const ref = `${name}@${digest}`;
       const verified = await run(asUser([...podman, "image", "exists", ref]), { timeoutMs: 10_000 });
       if (verified.exitCode !== 0 || verified.timedOut) return;
+      if (!await prepareS14Image(ref, uid, run, asUser)) return;
       images[target] = ref;
     }
     return { base: images.base!, browser: images.browser!, buildInputsHash: inputsHash };

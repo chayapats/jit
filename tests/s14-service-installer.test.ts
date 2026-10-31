@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { installerHealth, installerOwnerLink, installerS14Schema, prepareInstallerHome, runInstaller, type InstallerOptions } from "../ops/package/installer/installer";
 import { captureOwnerPipe, deliverS14OwnerLink, prepareS14OwnerLink } from "../ops/package/installer/owner-link";
-import { provisionS14Images } from "../ops/package/installer/s14-images";
+import { prepareS14Image, provisionS14Images } from "../ops/package/installer/s14-images";
+import { botComputerUserNamespace } from "../src/s14/computer-types";
 import { buildPackage, installArtifactDependencies, readManifest } from "../ops/package/bun-build";
 import { parseServiceConfig, serviceDatabasePath, serviceEnvironment, type ServiceConfig } from "../ops/package/service-config";
 import { defaultHealth, installService, upgradePackage, type OperatorHost } from "../src/ops/service-package";
@@ -204,11 +205,13 @@ test("Bot images build as the identity from the packaged context, use verified d
   const pins = await provisionS14Images(release, 1234, run, asUser);
   expect(pins).toMatchObject({ base: `localhost/jit-s14-base@sha256:${"c".repeat(64)}`, browser: `localhost/jit-s14-browser@sha256:${"c".repeat(64)}` });
   expect(calls.filter(argv => argv.includes("build"))).toHaveLength(2);
+  expect(calls.filter(argv => argv.includes("create"))).toHaveLength(2);
   expect(calls[0]).toContain(join(release, "ops/box/Containerfile"));
   expect(pins!.buildInputsHash).toMatch(/^[a-f0-9]{64}$/);
   calls.length = 0;
   expect(await provisionS14Images(release, 1234, run, asUser, pins)).toEqual(pins);
   expect(calls.some(argv => argv.includes("build"))).toBe(false);
+  expect(calls.filter(argv => argv.includes("create"))).toHaveLength(2);
   // Existing installations without input provenance must rebuild, too.
   calls.length = 0;
   await provisionS14Images(release, 1234, run, asUser, { base: pins!.base, browser: pins!.browser });
@@ -229,6 +232,48 @@ test("Bot images build as the identity from the packaged context, use verified d
     writeFileSync(path, original);
   }
   expect(await provisionS14Images(release, 1234, async () => ({ exitCode: 0, timedOut: false, stdout: "" }), asUser)).toBeUndefined();
+});
+
+test.each(["success", "create-failed", "create-timeout", "create-threw", "cleanup-failed", "cleanup-timeout", "cleanup-threw"])("image mapping preparation: %s", async outcome => {
+  const image = `localhost/prepared@sha256:${"a".repeat(64)}`, calls: string[][] = [];
+  const asUser = (args: string[]) => ["runuser", "-u", "jit-s14", "--", ...args];
+  const prepared = await prepareS14Image(image, 1234, async (argv, options) => {
+    calls.push(argv);
+    const creating = argv.includes("create"), phase = creating ? "create" : "cleanup";
+    expect(options.timeoutMs).toBe(creating ? 600_000 : 30_000);
+    if (outcome === `${phase}-threw`) throw new Error("private diagnostic");
+    return { exitCode: outcome === `${phase}-failed` ? 1 : 0, timedOut: outcome === `${phase}-timeout`, stdout: "" };
+  }, asUser);
+  expect(prepared).toBe(outcome === "success");
+  expect(calls).toHaveLength(2); // Never retry a create, including after timeout; always attempt exact-name cleanup.
+  const create = calls[0]!, cleanup = calls[1]!;
+  expect(create.slice(0, 8)).toEqual(["runuser", "-u", "jit-s14", "--", "podman", "--remote", "--url", "unix:///run/user/1234/podman/podman.sock"]);
+  for (const arg of [`--userns=${botComputerUserNamespace}`, "--user=1000:1000", "--network=none", "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pull=never", "--unsetenv-all", "--http-proxy=false"]) expect(create).toContain(arg);
+  expect(create.at(-1)).toBe(image);
+  expect(create).not.toContain("--mount"); expect(create).not.toContain("run"); expect(create).not.toContain("start");
+  const name = create[create.indexOf("--name") + 1]!;
+  expect(name).toMatch(/^jit-s14-image-prepare-[a-f0-9-]{36}$/);
+  expect(cleanup.slice(-4)).toEqual(["rm", "--force", "--ignore", name]);
+});
+
+test("unprepared new and reused images never become configured pins", async () => {
+  const release = fixture().at("release");
+  mkdirSync(join(release, "ops"), { recursive: true });
+  cpSync(join(source, "ops/box"), join(release, "ops/box"), { recursive: true });
+  const run: OperatorHost["run"] = async argv => ({ exitCode: 0, timedOut: false, stdout: argv.includes("inspect") ? `sha256:${"c".repeat(64)}` : "" });
+  const pins = await provisionS14Images(release, 1234, run, args => args);
+  for (const current of [undefined, pins]) {
+    const calls: string[][] = [];
+    expect(await provisionS14Images(release, 1234, async (argv, options) => {
+      calls.push(argv);
+      return argv.includes("create") ? { exitCode: 1, timedOut: false, stdout: "" } : run(argv, options);
+    }, args => args, current)).toBeUndefined();
+    expect(calls.filter(argv => argv.includes("create"))).toHaveLength(1);
+    expect(calls.at(-1)).toContain("rm");
+  }
+  let calls = 0;
+  expect(await prepareS14Image("mutable:tag", 1234, async () => { calls++; throw new Error(); }, args => args)).toBe(false);
+  expect(calls).toBe(0);
 });
 
 async function artifact(root: string, name: string, runnable = false) {
@@ -267,7 +312,7 @@ test("rendered service argv/environment boots the packaged S14 entrypoint and re
 test("S14 service package install/upgrade/compatible rollback select only its unit and never legacy upgrade or password", async () => {
   const f = fixture(), { config } = await runInstaller(f.options), calls: string[][] = [];
   const art = await artifact(f.root, "first"), next = await artifact(f.root, "next");
-  let active = false, schema = s14SchemaVersion;
+  let active = false, schema = s14SchemaVersion, preparationFails = false;
   const host: OperatorHost = { unitDir: f.at("etc/systemd/system"), journaldDir: f.at("etc/systemd"), configDir: f.at("etc/jit-s14"), bunPath: process.execPath,
     skipLedgerSeed: true, chown() {}, run: async argv => {
       calls.push(argv);
@@ -279,6 +324,7 @@ test("S14 service package install/upgrade/compatible rollback select only its un
         if (argv[1] === "start") active = true;
         stdout = `ActiveState=${active ? "active" : "inactive"}\nUnitFileState=enabled\nMainPID=0\nNRestarts=0\n`;
       } else if (argv.includes("check-s14")) stdout = String(schema);
+      if (preparationFails && argv.includes("create")) return { exitCode: 1, stdout: "private diagnostic", timedOut: false };
       return { exitCode: 0, stdout, timedOut: false };
     } };
   const installed = await installService({ service: config, artifactDir: art, host });
@@ -286,10 +332,22 @@ test("S14 service package install/upgrade/compatible rollback select only its un
   expect(existsSync(config.ledgerPath)).toBe(false);
   expect(existsSync(serviceDatabasePath(config))).toBe(false);
   const first = readlinkSync(config.executablePath);
+  preparationFails = true;
+  calls.length = 0;
+  expect(await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => { throw new Error("must not activate"); } })).toMatchObject({ outcome: "blocked", detail: "S14 computer image preparation failed before activation" });
+  expect(readlinkSync(config.executablePath)).toBe(first);
+  expect(calls.filter(argv => argv.includes("create"))).toHaveLength(1);
+  expect(calls.some(argv => argv[0] === "systemctl" && argv[1] === "start" && argv.includes("jit-s14.service"))).toBe(false);
+  preparationFails = false;
+  calls.length = 0;
   let healthCalls = 0;
   const result = await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => ++healthCalls === 2 });
   expect(healthCalls).toBe(2);
   expect(result.outcome).toBe("rolled-back"); expect(readlinkSync(config.executablePath)).toBe(first);
+  const prepareIndices = calls.flatMap((argv, i) => argv.includes("create") ? [i] : []);
+  expect(prepareIndices).toHaveLength(2);
+  const startIndex = calls.findIndex(argv => argv[0] === "systemctl" && argv[1] === "start" && argv.includes("jit-s14.service"));
+  expect(Math.max(...prepareIndices)).toBeLessThan(startIndex);
   healthCalls = 0;
   const unhealthy = await upgradePackage({ service: config, artifactDir: next, host, ownerPassword: "", health: async () => { healthCalls++; return false; } });
   expect(healthCalls).toBe(2);
