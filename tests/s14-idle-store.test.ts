@@ -80,3 +80,32 @@ test("settled review-waiting work does not advance revisions or commit again on 
     expect(observed.count).toBe(0);
   } finally { observed?.restore(); f.dispose(); }
 });
+
+test("boot inventories every native context without per-context commits for unchanged terminal metadata", async () => {
+  const f = await domainFixture();
+  const route = f.options.policy.routes[0]!;
+  const sessions = new Map<string, { reference: { id: string; branchId: string }; state: "active" | "retired" }[]>();
+  let opens = 0, lists = 0, retired = 0;
+  const port: import("../src/s14/recovery-types").NativeRecoveryPort = { async open(intent) {
+    expect(f.app.recovery.booting).toBe(true); opens++;
+    return { async listSessions() { lists++; return { sessions: structuredClone(sessions.get(intent.id) ?? []) }; },
+      async retireSession(ref) { retired++; sessions.get(intent.id)!.find(s => s.reference.id === ref.id)!.state = "retired"; },
+      async deleteSession() { throw Error("unexpected_delete"); }, async close() {} };
+  } };
+  const observed = commits(f.path);
+  try {
+    const first = f.app.recovery.intent(null, null, route);
+    await f.app.recovery.boot(port); await f.app.recovery.boot(port);
+    observed.reset(); opens = lists = 0; await f.app.recovery.boot(port);
+    const one = observed.count; expect(opens).toBe(1); expect(lists).toBe(1);
+    for (let i = 0; i < 3; i++) f.app.recovery.intent(null, null, route);
+    await f.app.recovery.boot(port); await f.app.recovery.boot(port);
+    observed.reset(); opens = lists = 0; await f.app.recovery.boot(port);
+    expect(opens).toBe(4); expect(lists).toBe(4); expect(observed.count).toBe(one);
+    // A newly discovered native session must still be retired and recorded durably.
+    sessions.set(first.id, [{ reference: { id: crypto.randomUUID(), branchId: "main" }, state: "active" }]);
+    observed.reset(); await f.app.recovery.boot(port);
+    expect(retired).toBe(1); expect(observed.count).toBeGreaterThan(one);
+    expect(f.app.recovery.view(f.auth.actor).native.find(i => i.id === first.id)!.state).toBe("retired");
+  } finally { observed.restore(); f.dispose(); }
+});
