@@ -114,6 +114,8 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Installation upgrade / quarantined restore:** Owner-authorized staged validation, fencing, recovery point and atomic activation before workers resume. A fresh S14 store is not permission to erase or reinterpret a legacy installation.
 
+S14 personal-effect refinement (#278): a committed run can end while an exact pending card keeps its work waiting on the owner; this retains only held-effect authority, never a right to resume model tools. Calendar update/delete binds an actually-read source and service-verified event version into that card. Personal source presentation does not change its privacy, and any bounded ingestion omission remains a visible coverage gap that cannot be a quiet no_update. See ADR 0057 and the personal/effect contracts.
+
 ## Historical terms
 
 Project, Project group, Topic promotion and General system project describe the implemented v1 model and historical specs. They are not required S14 entities, hidden permission scopes or aliases for a work item. Old sources retain their historical meaning in the old store; S14 requires no conversion.

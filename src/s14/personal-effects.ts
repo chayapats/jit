@@ -26,7 +26,7 @@ function persist(tx: AppTransaction, draft: PersonalDraft): void {
 function action(draft: PersonalDraft): EffectAction {
   return { kind: draft.content?.kind === "mail" ? "send" : "calendar", destination: `google-personal/${draft.connectionId}/${draft.scope.id}`,
     content: canonical({ contract, draftId: draft.id, revision: draft.revision, attemptId: draft.attemptId, scope: draft.scope, connectionId: draft.connectionId, connectionRevision: draft.connectionRevision,
-      account: draft.account, calendarId: draft.calendarId, content: draft.content, expiresAt: draft.expiresAt }) };
+      account: draft.account, calendarId: draft.calendarId, ...(draft.eventSource ? { eventSource: draft.eventSource } : {}), content: draft.content, expiresAt: draft.expiresAt }) };
 }
 function draftHash(draft: PersonalDraft): string { return digest(canonical(action(draft))); }
 
@@ -39,9 +39,22 @@ export class PersonalEffects {
   private guard(tx: AppTransaction, draft: PersonalDraft): PersonalConnection {
     if (!draft.content || draft.payloadState !== "present" || draft.hash !== draftHash(draft)) throw new AppError("personal_draft_changed", 409);
     const mail = draft.content.kind === "mail";
-    const result = this.broker.guard(tx, draft.attemptId, draft.scope, mail ? "effect_send" : "effect_calendar", mail ? "gmail.send" : "calendar.events");
+    const result = this.broker.guard(tx, draft.attemptId, draft.scope, mail ? "effect_send" : "effect_calendar", mail ? "gmail.send" : "calendar.events", draft.effectId);
     if (result.connection.id !== draft.connectionId || result.connection.revision !== draft.connectionRevision || result.connection.account !== draft.account || result.connection.calendarId !== draft.calendarId || result.connection.service !== (mail ? "gmail" : "calendar")) throw new AppError("personal_account_changed", 403);
+    if (draft.content.kind === "event" && draft.content.operation !== "create") {
+      if (!draft.eventSource) throw new AppError("personal_event_revision_required", 403);
+      const verified = this.broker.reads.eventRevision(tx, draft.attemptId, result.connection, draft.content.eventId!, draft.eventSource);
+      if (verified.etag !== draft.content.etag) throw new AppError("personal_event_revision_changed", 409);
+    }
     return result.connection;
+  }
+
+  private bindEvent(tx: AppTransaction, attemptId: string, connection: PersonalConnection, content: PersonalDraftContent): PersonalDraft["eventSource"] {
+    if (content.kind !== "event" || content.operation === "create") return null;
+    const verified = this.broker.reads.eventRevision(tx, attemptId, connection, content.eventId!);
+    if (content.etag !== null && content.etag !== verified.etag) throw new AppError("personal_event_revision_changed", 409);
+    content.etag = verified.etag;
+    return verified.source;
   }
 
   /** Creates one immutable exact draft/card under live write scope; source/model suggestions can never approve it. */
@@ -61,13 +74,14 @@ export class PersonalEffects {
       const { attempt, connection } = this.broker.guard(tx, attemptId, scope, mail ? "effect_send" : "effect_calendar", mail ? "gmail.send" : "calendar.events");
       if (connection.service !== (mail ? "gmail" : "calendar")) throw new AppError("personal_consent_required", 403);
       const selected = structuredClone(content);
+      const eventSource = this.bindEvent(tx, attemptId, connection, selected);
       if (selected.kind === "event" && selected.operation === "create") {
         if (selected.eventId !== null) throw new AppError("personal_create_identity_owned_by_broker");
         selected.eventId = crypto.randomUUID().replaceAll("-", "");
       }
       const draft: PersonalDraft = { id: crypto.randomUUID().replaceAll("-", ""), revision: 1, attemptId, workId: attempt.workId, botId: attempt.snapshot.bot.id, scope: structuredClone(scope),
         connectionId: connection.id, connectionRevision: connection.revision, account: connection.account, calendarId: connection.calendarId,
-        content: selected, expiresAt, hash: "", effectId: "", payloadState: "present" };
+        content: selected, eventSource, expiresAt, hash: "", effectId: "", payloadState: "present" };
       draft.hash = draftHash(draft);
       tx.run("INSERT INTO personal_drafts VALUES (?,?,?,?,?)", draft.id, attemptId, requestId, inputHash, canonical(draft));
       const effect = this.app.authority.proposeEffect(attemptId, draft.id, action(draft), expiresAt);
@@ -86,9 +100,10 @@ export class PersonalEffects {
     validatePersonalDraft(p.content);
     const draft = load(tx, p.draftId);
     if (draft.revision !== command.expectedRevision || draft.hash !== p.draftHash || !draft.content || draft.content.kind !== p.content.kind) throw new AppError("personal_draft_changed", 409);
-    this.guard(tx, draft);
+    const connection = this.guard(tx, draft);
     if (p.content.kind === "event" && p.content.operation === "create" && p.content.eventId !== (draft.content.kind === "event" ? draft.content.eventId : null)) throw new AppError("personal_create_identity_owned_by_broker");
     draft.content = structuredClone(p.content);
+    draft.eventSource = this.bindEvent(tx, draft.attemptId, connection, draft.content);
     draft.expiresAt = p.expiresAt;
     draft.revision++;
     draft.hash = draftHash(draft);
@@ -175,7 +190,7 @@ export class PersonalEffects {
       const request = async (url: string, init: RequestInit = {}, mutating = false): Promise<Record<string, unknown>> => {
         const value = await this.broker.google.request(url, { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers } }, () => {
         check();
-        this.app.authority.reserveTool(draft.attemptId, draft.content!.kind === "mail" ? "effect_send" : "effect_calendar", draft.scope);
+        this.app.authority.reserveEffectTool(draft.effectId, draft.content!.kind === "mail" ? "effect_send" : "effect_calendar", draft.scope);
         if (mutating) dispatched = true;
       });
         check();
@@ -336,7 +351,7 @@ export class PersonalEffects {
       return false;
     }));
     if (!available) return [];
-    return [{ name: "personal_draft", description: "Propose one exact Gmail send or Calendar change for owner approval. A proposal never executes or grants consent; quote all recipients, text, timezone, recurrence and event etag exactly.",
+    return [{ name: "personal_draft", description: "Propose one exact Gmail send or Calendar change for owner approval. A proposal never executes or grants consent. Quote recipients, text, timezone and recurrence exactly. For update/delete select an event from personal_read; pass etag:null so the service binds its verified revision.",
       inputSchema: { type: "object", properties: { requestId: { type: "string" }, scope: { type: "object" }, content: { type: "object" }, expiresAt: { type: "integer" } }, required: ["requestId", "scope", "content", "expiresAt"], additionalProperties: false },
       effect: "read-only", execution: "exclusive", execute: async input => {
         exact(input, ["requestId", "scope", "content", "expiresAt"]);

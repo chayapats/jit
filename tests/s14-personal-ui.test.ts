@@ -76,7 +76,9 @@ async function held(b: Awaited<ReturnType<typeof broker>>, content: PersonalDraf
   const isMail = content.kind === "mail", service = isMail ? "gmail" as const : "calendar" as const, slot = isMail ? "mail" : "calendar";
   const connection = await connect(b.f, service, scopes ?? (isMail ? ["gmail.readonly", "gmail.send"] : ["calendar.readonly", "calendar.events"]));
   grant(b.f, connection.id, slot);
-  const attempt = personalAttempt(b.f, slot, [isMail ? "effect_send" : "effect_calendar"]);
+  const readEvent = !isMail && content.operation !== "create";
+  const attempt = personalAttempt(b.f, slot, [isMail ? "effect_send" : "effect_calendar", ...(readEvent ? ["personal_read"] : [])]);
+  if (readEvent) await b.f.app.personal.reads.read(attempt.id, readInput(b.f, slot));
   const view = b.f.app.personal.effects.propose(attempt.id, retryId(), readInput(b.f, slot).scope, content, b.f.clock.now + 50000);
   return { connection, attempt, view };
 }

@@ -19,7 +19,8 @@ async function fixture(kind: "mail" | "event" = "mail", writeOnly = false, guard
   const c = await connect(f, kind === "mail" ? "gmail" : "calendar", scopes);
   const scopeId = kind === "mail" ? "mail" : "calendar";
   grant(f, c.id, scopeId);
-  const attempt = personalAttempt(f, scopeId, [kind === "mail" ? "effect_send" : "effect_calendar"]);
+  const attempt = personalAttempt(f, scopeId, [kind === "mail" ? "effect_send" : "effect_calendar", ...(kind === "event" && !writeOnly ? ["personal_read"] : [])]);
+  if (kind === "event" && !writeOnly) await f.app.personal.reads.read(attempt.id, readInput(f, scopeId));
   const propose = (content: PersonalDraftContent = kind === "mail" ? mail() : event()) => f.app.personal.effects.propose(attempt.id, retryId(), readInput(f, scopeId).scope, content, f.clock.now + 50000);
   return { f, c, attempt, propose };
 }
@@ -106,7 +107,7 @@ test.each(["to", "cc", "bcc", "subject", "body"] as const)("editing mail %s inva
   expect(f.app.authority.effect(f.auth.actor, first.effect.id).history[0]?.state).toBe("changed");
 });
 
-test.each(["eventId", "etag", "timezone", "recurrence", "attendees", "start", "description"] as const)("editing event %s creates a new unapproved revision", async field => {
+test.each(["eventId", "etag", "timezone", "recurrence", "attendees", "start", "description"] as const)("editing event %s requires a verified identity/version and new exact approval", async field => {
   const { f, propose } = await fixture("event"); const first = propose(event("update")); approve(f, first);
   const content = structuredClone(first.draft.content) as PersonalEventDraft;
   if (field === "eventId") content.eventId = "other_event";
@@ -116,7 +117,13 @@ test.each(["eventId", "etag", "timezone", "recurrence", "attendees", "start", "d
   else if (field === "attendees") content.event!.attendees = ["changed@example.test"];
   else if (field === "start") content.event!.start = "2026-11-01T01:45:00-04:00";
   else content.event!.description = "Changed exact description";
-  const revised = f.app.execute(f.auth.actor, { kind: "personal.draft.revise", requestId: retryId(), expectedRevision: 1, payload: { draftId: first.draft.id, draftHash: first.draft.hash, content, expiresAt: first.draft.expiresAt } });
+  const revise = () => f.app.execute(f.auth.actor, { kind: "personal.draft.revise", requestId: retryId(), expectedRevision: 1, payload: { draftId: first.draft.id, draftHash: first.draft.hash, content, expiresAt: first.draft.expiresAt } });
+  if (field === "eventId" || field === "etag") {
+    expect(revise).toThrow(field === "eventId" ? "personal_event_revision_required" : "personal_event_revision_changed");
+    expect(f.app.personal.effects.view(f.auth.actor, first.draft.id).draft).toEqual(first.draft);
+    return;
+  }
+  const revised = revise();
   expect(revised.effect.state).toBe("pending"); expect(revised.draft.hash).not.toBe(first.draft.hash);
   await expect(run(f, first)).rejects.toThrow(); expect(mutations(f)).toHaveLength(0);
 });

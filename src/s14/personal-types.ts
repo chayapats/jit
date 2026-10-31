@@ -75,6 +75,8 @@ export interface PersonalEvidence {
   timezone: string | null;
   retrievedAt: number;
   untrusted: true;
+  /** Provider-observed Calendar version; draft creation resolves it from this service record, never model authority. */
+  eventEtag?: string;
 }
 /** Report/handoff evidence from an exact personal read; bounded excerpts never claim full mailbox/event coverage. */
 export interface PersonalReportEvidence extends Omit<ExternalEvidence, "tool" | "provider" | "mode" | "coverage" | "freshness"> {

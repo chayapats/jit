@@ -35,7 +35,7 @@ export function validatePersonalDraft(value: unknown): asserts value is Personal
   if (kind !== "event" || !["create", "update", "delete"].includes(value.operation as string) || !["all", "none"].includes(value.sendUpdates as string) || !validTimezone(value.timezone)) throw new AppError("personal_invalid_event");
   if (value.operation === "create") {
     if (value.etag !== null || value.eventId !== null && (typeof value.eventId !== "string" || !/^[a-v0-9]{5,128}$/.test(value.eventId))) throw new AppError("personal_invalid_event_identity");
-  } else if (typeof value.eventId !== "string" || !/^[a-zA-Z0-9_-]{1,256}$/.test(value.eventId) || typeof value.etag !== "string" || !/^"[^"\u0000-\u0020]{1,200}"$/.test(value.etag)) throw new AppError("personal_invalid_event_identity");
+  } else if (typeof value.eventId !== "string" || !/^[a-zA-Z0-9_-]{1,256}$/.test(value.eventId) || value.etag !== null && (typeof value.etag !== "string" || !/^"[^"\u0000-\u0020]{1,200}"$/.test(value.etag))) throw new AppError("personal_invalid_event_identity");
   if (value.operation === "delete") {
     if (value.event !== null) throw new AppError("personal_invalid_event");
     return;

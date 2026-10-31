@@ -1,12 +1,13 @@
 import type { Effect } from "./authority-types";
 import type { ScopeRef } from "./authority-types";
 import type { Envelope } from "./types";
+import type { MemoryRef } from "./memory-types";
 
 /** Exact plain UTF-8 message; headers, recipients and text are never inferred from a summary. */
 export interface PersonalMailDraft { kind: "mail"; to: string[]; cc: string[]; bcc: string[]; subject: string; body: string }
 /** Exact timed calendar fields sent as one reviewed change; recurrence and attendee notifications are explicit. */
 export interface PersonalEventFields { summary: string; description: string; location: string; start: string; end: string; recurrence: string[]; attendees: string[] }
-/** Exact event identity/version/timezone/change, with provider-generated identity disabled for create. */
+/** Exact event suggestion; null update/delete etags are bound by the broker to an actually-read source revision. */
 export interface PersonalEventDraft { kind: "event"; operation: "create" | "update" | "delete"; eventId: string | null; etag: string | null; timezone: string; sendUpdates: "all" | "none"; event: PersonalEventFields | null }
 /** Untrusted draft content can propose only one bounded mail or event action, never consent or approval. */
 export type PersonalDraftContent = PersonalMailDraft | PersonalEventDraft;
@@ -22,6 +23,8 @@ export interface PersonalDraft {
   connectionRevision: number;
   account: string;
   calendarId: string | null;
+  /** Exact actually-read event snapshot supplying the immutable update/delete etag; null for mail/create. */
+  eventSource: MemoryRef | null;
   content: PersonalDraftContent | null;
   hash: string;
   expiresAt: number;

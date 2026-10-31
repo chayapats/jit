@@ -285,9 +285,10 @@ export class S14Personal {
     } catch { return null; }
   }
 
-  /** Rechecks the exact attempt, Bot resource and provider consent before every broker request or publication. */
-  guard(tx: AppTransaction, attemptId: string, scope: ScopeRef, tool: string, consent: PersonalScope): { attempt: Attempt; connection: PersonalConnection } {
-    const attempt = this.app.authority.guard(tx, attemptId, tool);
+  /** Rechecks exact attempt or held-effect authority, Bot resource and provider consent before broker requests/publication. */
+  guard(tx: AppTransaction, attemptId: string, scope: ScopeRef, tool: string, consent: PersonalScope, effectId?: string): { attempt: Attempt; connection: PersonalConnection } {
+    const attempt = effectId ? this.app.authority.effectGuard(tx, effectId, tool) : this.app.authority.guard(tx, attemptId, tool);
+    if (attempt.id !== attemptId) throw new AppError("effect_fenced", 403);
     const current = this.scope(tx, scope);
     if (!current || current.ownerBotId !== attempt.snapshot.bot.id || !attempt.snapshot.scopes.some(s => canonical(s) === canonical(current))) throw new AppError("personal_account_outside_grant", 403);
     const connection = this.connection(tx, current.snapshot.id, current.snapshot.revision);
@@ -378,12 +379,28 @@ export class S14Personal {
     this.reconcile(tx);
   }
 
-  /** Supplies account-private source text to the existing outbound guard even though its attribution is external. */
+  /** Protects all previously disclosed Bot-private personal text, including raw JSON/HTML-framed fields, without granting access. */
   privateCorpus(tx: AppTransaction, botId: string): { text: string }[] {
     return tx.all<{ record_json: string }>(`SELECT s.record_json FROM memory_sources s
       JOIN personal_sources p ON p.source_id=s.id WHERE s.bot_id=?`, botId)
       .map(row => JSON.parse(row.record_json) as { text: string | null })
-      .filter((source): source is { text: string } => source.text !== null);
+      .filter((source): source is { text: string } => source.text !== null)
+      .flatMap(source => {
+        // Reverse exactly the service's presentation envelope, never arbitrary source-authored HTML.
+        const match = /^<untrusted_personal_data>\n([\s\S]*)\n<\/untrusted_personal_data>$/.exec(source.text);
+        if (!match) throw new AppError("personal_corpus_unavailable", 403);
+        const item = googleObject(JSON.parse(match[1]!.replaceAll("&gt;", ">").replaceAll("&lt;", "<").replaceAll("&amp;", "&")));
+        const entries = [source];
+        const collect = (value: unknown): void => {
+          if (typeof value === "string") entries.push({ text: value });
+          else if (Array.isArray(value)) value.forEach(collect);
+          else if (value && typeof value === "object") Object.values(value).forEach(collect);
+        };
+        collect(item);
+        // Calendar evidence has an additional JSON representation inside its text field.
+        if (item.kind === "event" && typeof item.text === "string") collect(googleObject(JSON.parse(item.text)));
+        return entries;
+      });
   }
 
   /** Enumerates only identity/hash metadata for exact Bot lifecycle previews, never connection credentials or source bodies. */

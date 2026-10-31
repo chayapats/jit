@@ -11,10 +11,16 @@ import { GoogleFailure, googleObject, googleText } from "./personal-protocol";
 import type { S14Personal } from "./personal";
 import type { PersonalConnection, PersonalEvidence, PersonalRead, PersonalReadInput, PersonalReportEvidence } from "./personal-types";
 import type { ReportGap } from "./report-types";
+import type { MemoryRef } from "./memory-types";
 
 const path = (value: string) => encodeURIComponent(value);
 const frame = (value: unknown) => `<untrusted_personal_data>\n${JSON.stringify(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}\n</untrusted_personal_data>`;
 type Item = Omit<PersonalEvidence, "source" | "retrievedAt" | "untrusted">;
+function bounded(value: unknown, max: number, missing: string[], gap: string): string {
+  const sanitized = googleText(value, Number.MAX_SAFE_INTEGER);
+  if (sanitized.length > max) missing.push(gap);
+  return sanitized.slice(0, max);
+}
 
 /** Bounded Gmail/Calendar ingestion and sourced brief projection under ordinary work/routine authority. */
 export class PersonalReads {
@@ -102,7 +108,9 @@ export class PersonalReads {
     if (list.nextPageToken) missing.push("mail_page_limit");
     if (list.messages === undefined && typeof list.resultSizeEstimate === "number" && list.resultSizeEstimate > 0) throw new GoogleFailure(0, "google_schema_changed");
     if (list.messages !== undefined && !Array.isArray(list.messages)) throw new GoogleFailure(0, "google_schema_changed");
-    for (const entry of (list.messages ?? []) as unknown[]) {
+    const messages = (list.messages ?? []) as unknown[];
+    if (messages.length > 5) missing.push("mail_message_limit");
+    for (const entry of messages.slice(0, 5)) {
       try {
         const id = googleObject(entry).id;
         if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,256}$/.test(id)) throw new GoogleFailure(0, "google_schema_changed");
@@ -112,21 +120,25 @@ export class PersonalReads {
         if (timestamp === null || !Number.isSafeInteger(timestamp)) missing.push("mail_timestamp_unknown");
         const payload = googleObject(message.payload);
         const headers = Array.isArray(payload.headers) ? payload.headers.map(googleObject) : [];
-        const header = (name: string) => googleText(headers.find(h => typeof h.name === "string" && h.name.toLowerCase() === name)?.value, 512);
+        const header = (name: string) => bounded(headers.find(h => typeof h.name === "string" && h.name.toLowerCase() === name)?.value, 512, missing, "mail_header_truncated");
         const subject = header("subject") || "(untitled mail)";
         const parts: string[] = [];
         const attachments: Item[] = [];
         let visits = 0;
         const walk = async (node: Record<string, unknown>, depth: number): Promise<void> => {
           if (++visits > 16 || depth > 4) { missing.push("mail_part_limit"); return; }
-          if (Array.isArray(node.parts)) for (const part of node.parts.slice(0, 8)) await walk(googleObject(part), depth + 1);
+          if (Array.isArray(node.parts)) {
+            if (node.parts.length > 8) missing.push("mail_part_limit");
+            for (const part of node.parts.slice(0, 8)) await walk(googleObject(part), depth + 1);
+          }
           const body = node.body ? googleObject(node.body) : {};
           if (node.mimeType !== "text/plain") {
             if (body.data || body.attachmentId) missing.push("mail_non_plain_content_not_read");
             return;
           }
           let data = body.data;
-          const filename = googleText(node.filename, 128);
+          const filename = bounded(node.filename, 128, missing, "attachment_name_truncated");
+          if ((filename || body.attachmentId) && attachments.length >= 1) { missing.push("attachment_limit_or_unsupported"); return; }
           if (body.attachmentId) {
             if (typeof body.attachmentId !== "string" || attachments.length >= 1 || typeof body.size !== "number" || body.size > 4096) { missing.push("attachment_limit_or_unsupported"); return; }
             const attachment = await get(`${base}/${path(id)}/attachments/${path(body.attachmentId)}`);
@@ -135,13 +147,14 @@ export class PersonalReads {
           if (typeof data !== "string") return;
           if (data.length > 12000 || !/^[a-zA-Z0-9_=-]*$/.test(data)) { missing.push("mail_content_limit"); return; }
           const raw = Buffer.from(data, "base64url");
-          const decoded = googleText(new TextDecoder("utf-8", { fatal: true }).decode(raw), 4096);
+          const decoded = bounded(new TextDecoder("utf-8", { fatal: true }).decode(raw), 4096, missing, "mail_content_truncated");
           if (raw.length > 4096) missing.push("mail_content_truncated");
           if (filename || body.attachmentId) attachments.push({ kind: "attachment", providerId: `${id}:attachment`, title: filename || "(plain text attachment)", text: decoded || "(empty attachment)", sourceTimestamp: timestamp, timezone: null });
           else parts.push(decoded);
         };
         await walk(payload, 0);
-        items.push({ kind: "mail", providerId: id, title: subject, text: `From: ${header("from")}\nTo: ${header("to")}\n${parts.join("\n").slice(0, 4096) || "(no plain text body returned)"}`, sourceTimestamp: timestamp, timezone: null }, ...attachments);
+        const body = bounded(parts.join("\n"), 4096, missing, "mail_body_truncated");
+        items.push({ kind: "mail", providerId: id, title: subject, text: `From: ${header("from")}\nTo: ${header("to")}\n${body || "(no plain text body returned)"}`, sourceTimestamp: timestamp, timezone: null }, ...attachments);
       } catch { missing.push("mail_message_or_attachment_failed"); }
     }
     // The connection is to users/me only; account names are labels unless getProfile verified this exact token.
@@ -157,10 +170,12 @@ export class PersonalReads {
     const list = await get(`${base}/events?${query}`);
     if (list.nextPageToken) missing.push("calendar_page_limit");
     if (list.items !== undefined && !Array.isArray(list.items)) throw new GoogleFailure(0, "google_schema_changed");
-    for (const value of (list.items ?? []) as unknown[]) {
+    const events = (list.items ?? []) as unknown[];
+    if (events.length > 20) missing.push("calendar_event_limit");
+    for (const value of events.slice(0, 20)) {
       try {
         const event = googleObject(value);
-        if (typeof event.id !== "string") throw new GoogleFailure(0, "google_schema_changed");
+        if (typeof event.id !== "string" || !/^[a-zA-Z0-9_-]{1,256}$/.test(event.id) || containsCredential(event.id)) throw new GoogleFailure(0, "google_schema_changed");
         if (event.status === "cancelled") continue;
         const point = (value: unknown) => {
           const data = googleObject(value);
@@ -168,22 +183,37 @@ export class PersonalReads {
           for (const key of ["date", "dateTime", "timeZone"]) {
             if (data[key] === undefined) continue;
             if (typeof data[key] !== "string") throw new GoogleFailure(0, "google_schema_changed");
-            result[key] = googleText(data[key], 128);
+            result[key] = bounded(data[key], 128, missing, "calendar_time_truncated");
           }
           return result;
         };
         const start = point(event.start), end = point(event.end);
-        const recurrence = Array.isArray(event.recurrence) ? event.recurrence.slice(0, 8).map(rule => googleText(rule, 512)) : [];
+        const recurrence = Array.isArray(event.recurrence) ? event.recurrence.slice(0, 8).map(rule => bounded(rule, 512, missing, "calendar_recurrence_truncated")) : [];
         if (event.recurrence !== undefined && (!Array.isArray(event.recurrence) || event.recurrence.length > 8)) missing.push("calendar_recurrence_limit");
         const eventTimezone = typeof start.timeZone === "string" && validTimezone(start.timeZone) ? start.timeZone : timezone;
         const timestamp = typeof event.updated === "string" && Number.isFinite(Date.parse(event.updated)) ? Date.parse(event.updated) : null;
         if (timestamp === null) missing.push("event_timestamp_unknown");
-        items.push({ kind: "event", providerId: googleText(event.id, 256), title: googleText(event.summary, 512) || "(untitled event)",
-          text: JSON.stringify({ start, end, recurrence, description: googleText(event.description, 4096), location: googleText(event.location, 512), calendarTimezone: timezone }),
+        const etag = typeof event.etag === "string" && /^"[^"\u0000-\u0020]{1,200}"$/.test(event.etag) && !containsCredential(event.etag) ? event.etag : null;
+        if (!etag) missing.push("calendar_event_revision_unknown");
+        items.push({ kind: "event", providerId: event.id, title: bounded(event.summary, 512, missing, "calendar_title_truncated") || "(untitled event)",
+          ...(etag ? { eventEtag: etag } : {}),
+          text: JSON.stringify({ start, end, recurrence, description: bounded(event.description, 4096, missing, "calendar_description_truncated"), location: bounded(event.location, 512, missing, "calendar_location_truncated"), calendarTimezone: timezone }),
           sourceTimestamp: timestamp, timezone: eventTimezone });
       } catch { missing.push("calendar_event_incomplete"); }
     }
     return timezone;
+  }
+
+  /** Resolves a verified event version from this attempt's current exact-connection read, optionally pinning an older draft snapshot. */
+  eventRevision(tx: AppTransaction, attemptId: string, connection: PersonalConnection, eventId: string, source?: MemoryRef): { source: MemoryRef; etag: string } {
+    const reads = tx.all<{ record_json: string }>("SELECT record_json FROM personal_reads WHERE attempt_id=? ORDER BY rowid DESC", attemptId);
+    for (const row of reads) {
+      const read = this.project(tx, JSON.parse(row.record_json) as PersonalRead);
+      if (!["success", "partial"].includes(read.outcome) || read.connectionId !== connection.id || read.connectionRevision !== connection.revision) continue;
+      const item = read.evidence.find(e => e.kind === "event" && e.providerId === eventId && (!source || canonical(e.source) === canonical(source)));
+      if (item?.eventEtag && this.app.memory.sourceCurrent(tx, item.source, read.botId)) return { source: item.source, etag: item.eventEtag };
+    }
+    throw new AppError("personal_event_revision_required", 403);
   }
 
   /** Returns a credential-free owner brief whose coverage includes unread required inputs from the service's gaps. */
