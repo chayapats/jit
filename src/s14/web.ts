@@ -97,6 +97,19 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const token = await app.login(p.password);
         return respond("", 303, "text/html", { Location: "/", "Set-Cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "GET" && url.pathname === "/s14/personal/oauth/callback") try {
+        if ([...url.searchParams.keys()].some(key => !["state", "code", "error", "scope", "authuser", "prompt"].includes(key)) ||
+            [...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1) ||
+            url.searchParams.has("code") === url.searchParams.has("error")) throw new AppError("personal_oauth_stale", 409);
+        app.personal.callback(url.searchParams.get("state") ?? "", url.searchParams.get("code"));
+        return redirect(product?.googleReturn ? "/s14/personal/oauth/done" : "/", { "Referrer-Policy": "no-referrer" });
+      } catch (error) {
+        // A refused callback still must not leave the code in the address bar, in history or in a later Referer.
+        if (!product?.googleReturn) throw error;
+        return redirect("/s14/personal/oauth/done?refused=1", { "Referrer-Policy": "no-referrer" });
+      }
+      // Reached from Google with no session cookie, so it holds nothing private. The address carries no code, and the next navigation starts on this origin.
+      if (request.method === "GET" && url.pathname === "/s14/personal/oauth/done" && product?.googleReturn) return respond(product.googleReturn(browserLocale(), url.searchParams.has("refused")), 200, "text/html", { "Referrer-Policy": "no-referrer", Vary: "Accept-Language" });
       const matches = (request.headers.get("cookie") ?? "").split(";").map(s => s.trim()).filter(s => s.startsWith(`${cookieName}=`));
       if (matches.length !== 1) throw new AppError("authentication_required", 401);
       const auth = app.authenticate(matches[0]!.slice(cookieName.length + 1));
@@ -107,6 +120,41 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);
         return redirect("/s14/login", { "Set-Cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "POST" && ["/api/s14/personal/oauth/complete", "/s14/personal/oauth/complete"].includes(url.pathname)) {
+        const p = await body(request);
+        const form = url.pathname.startsWith("/s14/");
+        app.verifyCsrf(auth.csrf, form ? p.csrf : request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== (form ? "csrf,flowId" : "flowId") || typeof p.flowId !== "string") throw new AppError("invalid_body");
+        if (form && product) next = "/settings/google";
+        const connection = await app.personal.complete(auth.actor, p.flowId);
+        return form ? redirect(product ? `/settings/google/connections/${connection.id}#next` : "/") : json({ connection });
+      }
+      // The no-script twin of the JSON read-back: the same service call under the same session, Origin and CSRF checks.
+      const readback = product && request.method === "POST" ? /^\/s14\/personal\/drafts\/([a-zA-Z0-9_-]+)\/readback$/.exec(url.pathname) : null;
+      if (readback) {
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, p.csrf);
+        if (Object.keys(p).sort().join() !== "actionHash,csrf,expectedRevision" || typeof p.actionHash !== "string") throw new AppError("invalid_body");
+        const effectId = app.personal.effects.view(auth.actor, readback[1]!).effect.id;
+        next = `/effects/${effectId}`;
+        await app.personal.effects.reconcile(auth.actor, readback[1]!, Number(p.expectedRevision), p.actionHash);
+        return redirect(`/effects/${effectId}#slip`);
+      }
+      if (request.method === "GET" && url.pathname === "/api/s14/personal") return json(app.personal.settings(auth.actor));
+      const oauth = /^\/api\/s14\/personal\/oauth\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (request.method === "GET" && oauth) return json(app.personal.authorization(auth.actor, oauth[1]!));
+      const brief = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/brief$/.exec(url.pathname);
+      if (request.method === "GET" && brief) return json(app.personal.reads.brief(auth.actor, brief[1]!));
+      const personalEffect = /^\/api\/s14\/personal\/drafts\/([a-zA-Z0-9_-]+)(\/readback)?$/.exec(url.pathname);
+      if (personalEffect && request.method === "GET" && !personalEffect[2]) return json(app.personal.effects.view(auth.actor, personalEffect[1]!));
+      if (personalEffect && request.method === "POST" && personalEffect[2]) {
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== "actionHash,expectedRevision" || typeof p.expectedRevision !== "number" || typeof p.actionHash !== "string") throw new AppError("invalid_body");
+        return json(await app.personal.effects.reconcile(auth.actor, personalEffect[1]!, p.expectedRevision, p.actionHash));
+      }
+      const personalDrafts = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/drafts$/.exec(url.pathname);
+      if (request.method === "GET" && personalDrafts) return json({ items: app.personal.effects.list(auth.actor, personalDrafts[1]!) });
       const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
       if (request.method === "POST" && input) {
         const isForm = !input[1];

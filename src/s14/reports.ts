@@ -4,8 +4,8 @@ import type { AppTransaction } from "../store";
 import { record, type S14Application } from "./application";
 import type { Attempt, Work } from "./authority-types";
 import type { MemoryRef } from "./memory-types";
-import type { ExternalEvidence, WebRead } from "./parallel-types";
-import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportCommand, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
+import type { WebRead } from "./parallel-types";
+import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportCommand, ReportEvidence, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
 import type { OwnerActor } from "./types";
 import { artifactHash, validateArtifact } from "./artifacts";
 import { canonical, exact, identity, integer, text } from "./validation";
@@ -76,12 +76,13 @@ export class S14Reports {
     return { kind: command.kind, requestId: command.requestId, review, conversationId: record<Work>(tx, "work_items", workId).conversationId };
   }
 
-  private citation(tx: AppTransaction, attempt: Attempt, value: ReportCitation): ExternalEvidence {
+  private citation(tx: AppTransaction, attempt: Attempt, value: ReportCitation): ReportEvidence {
     exact(value, ["attemptId", "id", "revision", "quote", "scope"]);
     identity(value.attemptId); identity(value.id); integer(value.revision, 1); text(value.quote, 4096);
     if (!["snippet", "excerpt", "page"].includes(value.scope)) throw new AppError("invalid_report_citation");
     if (value.attemptId !== attempt.id && !attempt.step?.inputs.some(input => input.attemptId === value.attemptId && input.evidence.some(e => e.id === value.id && e.revision === value.revision))) throw new AppError("citation_not_read", 403);
-    const evidence = this.app.parallel.citation(tx, value.attemptId, value.id, value.revision);
+    const evidence = this.app.personal.reads.evidence(tx, value.attemptId).find(source => source.id === value.id && source.revision === value.revision)
+      ?? this.app.parallel.citation(tx, value.attemptId, value.id, value.revision);
     if (evidence.workId !== attempt.workId || !evidence.content.includes(value.quote)) throw new AppError("citation_quote_mismatch", 403);
     return evidence;
   }
@@ -117,7 +118,7 @@ export class S14Reports {
         const target = targets.find(t => t.id === key)!;
         const matching = evidence.some(source => coverageRank[source.coverage] >= coverageRank[target.coverage] &&
           (!target.url || source.url === target.url && (source.requestedUrl === null || source.requestedUrl === target.url)) &&
-          (target.freshness === "any" || source.freshness === "live_reported") && !source.truncated);
+          (target.freshness === "any" || source.freshness === "live_reported") && (!source.truncated || source.tool === "personal_read" && target.coverage !== "full_content_returned"));
         if (supported && matching && !value.conflicts.length) covered.add(key);
       }
       return { ...structuredClone(value), text: content, support: supported ? "supported" : "unsupported", flags: [...flags], evidence };
@@ -163,6 +164,7 @@ export class S14Reports {
       for (const url of read.missing) this.gap(missing, { kind: "missing_url", url });
       for (const failure of read.failures) this.gap(missing, { kind: "failed_url", url: failure.url, failureKind: failure.kind });
     }
+    for (const gap of this.app.personal.reads.gaps(tx, attempt.workId)) this.gap(missing, gap);
     const key = id(), packet = this.app.memory.attemptPacket(tx, attempt.id), lineage = this.app.memory.derive(tx, packet);
     const staged = proposal.artifactIds.map(key => {
       identity(key);

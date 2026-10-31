@@ -1,6 +1,6 @@
 // S14 browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every S14 page is complete without this file: forms post, the composer's work mode is a checkbox and limits are visible.
-// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, a device timezone, copying a sign-in code and same-origin
+// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, a device timezone, copying a sign-in code or setup value, moving on from the Google return page and same-origin
 // reads of the page being viewed while something is in flight. It never posts data itself and stores nothing.
 
 document.documentElement.dataset.enhanced = "true";
@@ -55,8 +55,12 @@ if (signIn) {
   };
   setTimeout(poll, 3000);
 }
+// The page after Google has one link. Following it here replaces the page, so Back never lands on it, and the navigation starts on this origin.
+const onward = document.querySelector("a[data-go]");
+if (onward) location.replace(onward.href);
+
 for (const button of document.querySelectorAll("[data-copy]")) {
-  const source = document.querySelector("[data-copy-source]");
+  const source = button.dataset.copyTarget ? document.getElementById(button.dataset.copyTarget) : document.querySelector("[data-copy-source]");
   if (!source || !navigator.clipboard) continue;
   button.hidden = false;
   button.addEventListener("click", async () => {

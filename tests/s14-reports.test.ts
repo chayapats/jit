@@ -51,7 +51,7 @@ async function fixture(resources: string[] = []) {
     expect(row.evidence.length).toBeGreaterThan(0);
     return row.evidence[0]!;
   };
-  const proposal = (source: Awaited<ReturnType<typeof read>>, changes: Partial<ReportProposal> = {}): ReportProposal => ({ title: "Cited report", claims: [{ id: "claim", text: source.content, kind: "quote",
+  const proposal = (source: import("../src/s14/report-types").ReportEvidence, changes: Partial<ReportProposal> = {}): ReportProposal => ({ title: "Cited report", claims: [{ id: "claim", text: source.content, kind: "quote",
     citations: [{ attemptId: attempt.id, id: source.id, revision: source.revision, quote: source.content, scope: source.coverage === "snippet" ? "snippet" : source.coverage === "excerpt" ? "excerpt" : "page" }], covers: ["page"], conflicts: [] }], missing: [], limitations: [], artifactIds: [], ...changes });
   return { root, path, store, app, options, auth, token, conversationId, target, start, started, attempt, admit, read, proposal };
 }

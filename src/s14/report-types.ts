@@ -2,6 +2,10 @@ import type { MemoryRef } from "./memory-types";
 import type { WorkStep } from "./graph-types";
 import type { ExternalEvidence, WebRead } from "./parallel-types";
 import type { Envelope } from "./types";
+import type { PersonalReportEvidence } from "./personal-types";
+
+/** Actually-read public or account-private evidence; provider and tool identities stay distinct. */
+export type ReportEvidence = ExternalEvidence | PersonalReportEvidence;
 
 /** Owner-defined evidence coverage target; absence never lets a model certify the free-text completion rule. */
 export interface EvidenceRequirement { id: string; label: string; url: string | null; coverage: ExternalEvidence["coverage"]; freshness: "any" | "live_reported" }
@@ -15,7 +19,7 @@ export interface ReportProposal { title: string; claims: ReportClaimProposal[]; 
 export interface ReportClaim extends ReportClaimProposal {
   support: "supported" | "unsupported";
   flags: ("inference" | "snippet" | "excerpt" | "cached_reported" | "freshness_unknown" | "conflicting" | "unsupported")[];
-  evidence: ExternalEvidence[];
+  evidence: ReportEvidence[];
 }
 /** Service-observed gaps; model prose can never create one of these facts. */
 export type ReportGap =
@@ -24,7 +28,7 @@ export type ReportGap =
   | { kind: "unsupported_claim" | "conflicting_claim"; claimId: string }
   | { kind: "step"; stepId: string; state: WorkStep["state"] }
   | { kind: "handoff"; stepId: string; reason: string }
-  | { kind: "read"; readId: string; outcome: WebRead["outcome"] }
+  | { kind: "read"; readId: string; outcome: WebRead["outcome"]; personal?: { scopeId: string; stale: boolean; missing: string[] } }
   | { kind: "missing_url"; url: string }
   | { kind: "failed_url"; url: string; failureKind: string };
 /** Immutable owner acceptance evidence, bound to one report revision rather than its coverage. */
