@@ -141,3 +141,57 @@ Result: `jit.ops.package-upgrade/v1` with outcome, previous/new/active artifact 
 Deterministic (`bun test tests/ops-service-package.test.ts tests/ops-service.test.ts`, `bun test`, `bun run typecheck`, also with `TMPDIR` inside the worktree): disposable directories, a fake supervisor that takes the rendered unit's `ExecStart`/`Environment` and boots that release's own `startFullApp` in-process (real OPS02 ledger gate), with owner HTTP driven through the release's `createWebHandler` — no listener or socket; a duplicate writer is a real child process running the release's `main.ts serve`; simulated `getent`/`ip`/dependency install/ownership and simulated `upgrade` outcomes; real artifact build, plan/install writes, release symlink, full-app boot, HTTP owner login and persisted state. No systemctl, registry, network accounts, VPN or reboot.
 
 Opt-in, not in `bun test`: `JIT_OPS_SMOKE=1 bun run ops:smoke` on Linux arm64 builds, installs and seals dependencies, runs the release's read-only `preflight --service-config` (artifact gate must be ready), launches the release's installed-profile `serve --service-config` against disposable state (the seed establishes the ledger checkpoint) and prints a sanitized summary; it refuses elsewhere. Real systemd install, unattended boot, reboot, Secret Service/credential access and VPN reachability on the Pi are OPS05 (#36) evidence.
+
+## CUT14-01 explicit S14 installation (default unchanged)
+
+`ServiceConfig.runtime?: "s14"` plus `s14: {vaultDirectory, computerRoot,
+gitScratch, images?: {base,browser}}` selects the independent runtime. Omission
+preserves the legacy contract above. Paths must be separate from managed
+state/releases and each other, images must be digest-pinned, `runPort` must be
+`schway`, and the configured origin must match the S14 loopback listener (HTTPS
+private ingress uses 127.0.0.1:3001). Legacy execution/channel options cannot
+silently activate S14 features.
+
+`serviceUnit` / `serviceJournal` select `jit-s14.service` / `jit-s14`;
+`serviceDatabasePath` selects `application.sqlite`; `serviceEnvironment` emits
+only the S14 database/origin/vault/scratch and optional computer/image settings.
+`renderServiceUnit` retains legacy hardening, adds the service-only scratch
+tmpfs with finite size and resolved ownership, `HOME` and Schway lock writes,
+and runs `serve --s14 --no-refusal-page`. Startup failure therefore cannot be
+mistaken for a healthy refusal page. It retains the user bus/socket bindings
+and remote-client policy; the current S14 computer local-disk-proof gap stays
+fail-closed. Plans still require the identity, directories, release trust,
+runtime pin and session bus; they require an S14 artifact pin and skip the
+legacy JSON ledger seed. The S14 store owns its independent lifecycle ledger.
+
+Artifacts add optional `s14SchemaVersion` to the existing manifest, bound into
+the content hash. New artifacts include `ops/box/` for automatic image builds;
+older manifests without that pin remain legacy-only. Legacy `schemaVersion`
+semantics and dependency sealing are unchanged.
+
+The existing `service` CLI selects S14 via `--config /etc/jit-s14/service-config.json`
+(no CLI `--s14`). Its installed config directory follows that file unless
+explicitly supplied. Start/stop/restart/status/disable/uninstall use only the
+S14 unit and never instantiate the legacy store/status graph. Root trust checks
+cover S14 config/unit/drop-ins/journal/releases and permit only the exact
+protected `/opt/jit-s14/current/src/main.ts` managed alias in addition to the
+legacy alias. Uninstall retains data, credentials, releases and config.
+
+`upgradePackage` branches to compatible-code S14 activation: validate/stage the
+protected artifact, require the previous and new S14 schema pins to match,
+stop and confirm the supervisor inactive, inspect the selected database/fences
+and lifecycle availability through the new trusted build under the service UID
+and exclusive runtime lock, then rewrite/reload the unit, activate and health
+check. It reads no owner password and invokes no legacy `upgrade`. Failed health
+requires confirmed stop and the previous build's state check before restoring
+its descriptor/link; failed compatibility leaves the service stopped. A
+retained compatible artifact can be selected by the same command for deliberate
+rollback. Different schema pins block before stop with an OPS14 staged
+maintenance next action. No database conversion or schema downgrade is offered.
+
+`ops/package/s14-service-evidence.ts` is opt-in (`JIT_S14_SERVICE_EVIDENCE=1`,
+Linux x64/arm64 root), read-only and credential-free. Its
+`ops.s14-service-evidence/v1` summary distinguishes actual service/identity/
+hardening/tmpfs/keyring/socket/image observations from pending route, computer,
+research, restart/reboot and backup evidence. It starts no container or model.
+Deterministic tests and that summary do not close #256 or flip the default.

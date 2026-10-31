@@ -11,7 +11,7 @@ import { enableServicePodman, servicePodmanCommands, type ServicePodmanStatus } 
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
-  serviceEnvironment, serviceLogNamespace, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnitName,
+  serviceEnvironment, serviceJournal, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnit,
   type ServiceConfig, type ServicePlanChange,
 } from "../../ops/package/service-config";
 
@@ -271,6 +271,8 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   const checks: OperatorCheck[] = [];
   const validation = validateArtifact(input.artifactDir, { runtime: true });
   const manifest = validation.manifest;
+  if (service.runtime === "s14") checks.push(manifest?.s14SchemaVersion
+    ? ok("s14-artifact", "independent S14 schema pin present") : blocked("s14-artifact", "rebuild-s14-artifact", "artifact is legacy-only"));
   checks.push(validation.ok && manifest?.engineContract === "jit.schway.bridge/v1"
     ? ok("artifact", `artifact ${manifest.artifactId} validated`)
     : blocked("artifact", "rebuild-or-reinstall-artifact-dependencies", `artifact failed: ${validation.checks.filter(c => !c.ok).map(c => c.check).join(",") || "engine-contract"}`));
@@ -281,7 +283,7 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   checks.push(directory("backup-directory", service.backupDirectory, who.uid, true));
   checks.push(directory("working-directory", service.workingDirectory, null, false));
   checks.push(directory("ledger-directory", dirname(service.ledgerPath), null, false));
-  const ledgerCheck = ledgerFileCheck(service, who.uid);
+  const ledgerCheck = service.runtime === "s14" ? null : ledgerFileCheck(service, who.uid);
   if (ledgerCheck) checks.push(ledgerCheck);
   checks.push(configDirectoryCheck(host));
   checks.push(...secretChecks(service, who.uid));
@@ -290,8 +292,8 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   if (bus) checks.push(bus);
   checks.push(await privateBind(host.run, service));
   checks.push(activeReleaseCheck(service));
-  const supervisor = new SystemdSupervisor(host.run);
-  const unitPath = join(host.unitDir, serviceUnitName);
+  const supervisor = new SystemdSupervisor(host.run, { unit: serviceUnit(service) });
+  const unitPath = join(host.unitDir, serviceUnit(service));
   const state = existsSync(unitPath) ? await supervisor.state() : null;
   checks.push(state && state.active !== "inactive" && state.active !== "failed"
     ? blocked("instance", "stop-service-before-reinstall", `installed unit is ${state.active}`)
@@ -304,22 +306,22 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   const releaseDirectory = manifest ? join(serviceReleasesDirectory(service), manifest.artifactId) : null;
   const files: PlannedFile[] = [
     { path: unitPath, mode: "0644", sha256: sha256(unit), content: unit, owner: null },
-    { path: join(host.journaldDir, `journald@${serviceLogNamespace}.conf`), mode: "0644", sha256: sha256(journald), content: journald, owner: null },
+    { path: join(host.journaldDir, `journald@${serviceJournal(service)}.conf`), mode: "0644", sha256: sha256(journald), content: journald, owner: null },
     // The installed configuration is shown by digest only; its non-secret fields appear in `changes`.
     // root:<service gid> 0640: readable by the service, writable only by the operator.
     { path: configPath, mode: "0640", sha256: sha256(configText), content: null, owner: who.gid !== null ? { uid: 0, gid: who.gid } : null },
   ];
-  if (!existsSync(service.ledgerPath)) {
+  if (service.runtime !== "s14" && !existsSync(service.ledgerPath)) {
     // Seed placeholder owned by the service identity, which must read and later replace it.
     const seed = JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }) + "\n";
     files.push({ path: service.ledgerPath, mode: "0600", sha256: sha256(seed), content: seed,
       owner: who.uid !== null && who.gid !== null ? { uid: who.uid, gid: who.gid } : null });
   }
   return {
-    schema: "jit.ops.service-plan/v1", ok: checks.every(c => c.ok), unit: serviceUnitName,
+    schema: "jit.ops.service-plan/v1", ok: checks.every(c => c.ok), unit: serviceUnit(service),
     artifactId: manifest?.artifactId ?? null, checks, identity: who.uid !== null && who.gid !== null ? { uid: who.uid, gid: who.gid } : null, changes: planServiceConfig(readCurrent(host), service), files,
     releaseDirectory, activeRelease: service.executablePath,
-    commands: [["systemctl", "daemon-reload"], ["systemctl", "enable", serviceUnitName]],
+    commands: [["systemctl", "daemon-reload"], ["systemctl", "enable", serviceUnit(service)]],
     optionalCommands: who.uid === null ? [] : servicePodmanCommands(service.serviceUser, who.uid),
     preserved: [service.stateDirectory, service.backupDirectory, service.ledgerPath, ...service.secretRefs.map(r => `secret-ref:${r.name}`)],
   };
@@ -439,7 +441,7 @@ export async function installService(input: { service: unknown; artifactDir: str
     }
   }
   // Verify, as the service identity, everything the unit needs before activating anything.
-  const verify: [string, AccessFlag[]][] = [[installedConfigPath(host), ["-r"]], [service.ledgerPath, ["-r", "-w"]],
+  const verify: [string, AccessFlag[]][] = [[installedConfigPath(host), ["-r"]], ...(service.runtime === "s14" ? [] : [[service.ledgerPath, ["-r", "-w"]] as [string, AccessFlag[]]]),
     [release, ["-r", "-x"]], [join(release, "src", "main.ts"), ["-r"]]];
   for (const [path, flags] of verify) {
     const missing = await serviceCan(host.run, service.serviceUser, path, flags);
@@ -455,7 +457,7 @@ export async function installService(input: { service: unknown; artifactDir: str
   }
   const podman = await enableServicePodman(host.run, service.serviceUser, uid);
   switchRelease(service.executablePath, release);
-  const supervisor = new SystemdSupervisor(host.run);
+  const supervisor = new SystemdSupervisor(host.run, { unit: serviceUnit(service) });
   const reloaded = await supervisor.daemonReload();
   const enabled = reloaded && await supervisor.enable();
   return { ok: reloaded && enabled, plan, release, supervisor: { reloaded, enabled }, podman };
@@ -557,8 +559,9 @@ export function defaultHealth(service: ServiceConfig, supervisor: SystemdSupervi
  */
 export async function upgradePackage(input: PackageUpgradeInput): Promise<PackageUpgradeResult> {
   const service = parseServiceConfig(input.service);
+  if (service.runtime === "s14") return upgradeS14Package(input);
   const host = input.host;
-  const supervisor = new SystemdSupervisor(host.run);
+  const supervisor = new SystemdSupervisor(host.run, { unit: serviceUnit(service) });
   const fromSchema = schemaOf(service);
   const previousRelease = releaseTarget(service.executablePath);
   let previous: BuildManifest | null = null;
@@ -593,7 +596,7 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   }
   const who = await identity(host.run, service.serviceUser);
   if (!who.check.ok || who.uid === null || who.gid === null) return result("blocked", who.check.detail, who.check.nextAction);
-  const unitPath = join(host.unitDir, serviceUnitName);
+  const unitPath = join(host.unitDir, serviceUnit(service));
   const previousUnit = readFileSync(unitPath, "utf8");
   const nextUnit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath: installedConfigPath(host), uid: who.uid, gid: who.gid, ...(who.home !== null ? { home: who.home } : {}) });
   const podman = await enableServicePodman(host.run, service.serviceUser, who.uid);
@@ -637,6 +640,60 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
     "restore-recovery-point-through-quarantine", { ...ids, supervisor: (await supervisor.state()).active });
 }
 
+/** S14 compatible-code activation/rollback; schema changes remain owner-authenticated OPS14 staged maintenance. */
+async function upgradeS14Package(input: PackageUpgradeInput): Promise<PackageUpgradeResult> {
+  const service = parseServiceConfig(input.service), host = input.host;
+  const supervisor = new SystemdSupervisor(host.run, { unit: serviceUnit(service) });
+  const previousRelease = releaseTarget(service.executablePath);
+  let previous: BuildManifest | null = null;
+  try { if (previousRelease) previous = readManifest(previousRelease); } catch { /* Refuse below. */ }
+  const validation = validateArtifact(input.artifactDir, { runtime: true }), manifest = validation.manifest;
+  let observedSchema: number | null = null;
+  const result = (outcome: PackageUpgradeOutcome, detail: string, nextAction: string): PackageUpgradeResult => ({
+    schema: "jit.ops.package-upgrade/v1", outcome, previousArtifactId: previous?.artifactId ?? null,
+    artifactId: manifest?.artifactId ?? null, activeArtifactId: (() => {
+      try { const target = releaseTarget(service.executablePath); return target ? readManifest(target).artifactId : null; } catch { return null; }
+    })(), fromSchema: observedSchema, toSchema: observedSchema,
+    recoveryBackupId: null, upgradeId: null, supervisor: outcome === "upgraded" || outcome === "rolled-back" ? "active" : null, detail, nextAction,
+  });
+  if (!validation.ok || !manifest || manifest.engineContract !== "jit.schway.bridge/v1" || !previous || !previousRelease || !manifest.s14SchemaVersion) return result("blocked", "S14 artifact or previous release invalid", "rebuild-s14-artifact");
+  if (manifest.s14SchemaVersion !== previous.s14SchemaVersion) return result("blocked", "S14 schema change requires staged maintenance", "use-owner-authenticated-S14-ops-before-code-activation");
+  if (manifest.artifactId === previous.artifactId) return result("blocked", "artifact already active", "none");
+  const who = await identity(host.run, service.serviceUser);
+  if (!who.check.ok || who.uid === null || who.gid === null || !who.home) return result("blocked", who.check.detail, who.check.nextAction);
+  const release = stageRelease(service, input.artifactDir, manifest, host.rootPathPolicy);
+  if (!await releaseReadableByService(host.run, service.serviceUser, release)) return result("blocked", "S14 release unreadable", "grant-service-identity-access");
+  const unitPath = join(host.unitDir, serviceUnit(service)), previousUnit = readFileSync(unitPath, "utf8");
+  const nextUnit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath: installedConfigPath(host), uid: who.uid, gid: who.gid, home: who.home });
+  if (!await supervisor.stop() || !["inactive", "failed"].includes((await supervisor.state()).active)) return result("blocked", "S14 service did not stop", "stop-S14-service-and-reconcile");
+  // The new protected code inspects the S14 header, fences, independent ledger and exclusive runtime lock as its uid.
+  // No root-side SQLite open, legacy ledger seed, owner impersonation or schema migration occurs here.
+  const checked = await host.run(["runuser", "-u", service.serviceUser, "--", host.bunPath,
+    join(release, "ops/package/installer/main.ts"), "check-s14", "--config", installedConfigPath(host)], {
+    timeoutMs: 20_000, cwd: service.workingDirectory, env: { ...Object.fromEntries(serviceEnvironment(service)), HOME: who.home, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+  });
+  if (checked.exitCode === 0 && /^\d+$/.test(checked.stdout.trim())) observedSchema = Number(checked.stdout.trim());
+  if (checked.exitCode !== 0 || checked.timedOut || checked.stdout.trim() !== String(manifest.s14SchemaVersion)) {
+    return result("blocked", "S14 state is incompatible, fenced or still owned", "inspect-S14-maintenance-state");
+  }
+  await enableServicePodman(host.run, service.serviceUser, who.uid);
+  writeFileAtomic(unitPath, nextUnit); chmodSync(unitPath, 0o644);
+  switchRelease(service.executablePath, release);
+  const started = await supervisor.daemonReload() && await supervisor.start();
+  if (started && await (input.health ?? defaultHealth(service, supervisor))()) return result("upgraded", "S14 compatible release active and healthy", "none");
+  if (!await supervisor.stop() || !["inactive", "failed"].includes((await supervisor.state()).active)) return result("activation-unhealthy", "S14 health failed and process did not stop", "stop-S14-service-before-rollback");
+  // Recheck through the previous build before rollback; never reactivate code against an incompatible schema/fence.
+  const rollback = await host.run(["runuser", "-u", service.serviceUser, "--", host.bunPath,
+    join(previousRelease, "ops/package/installer/main.ts"), "check-s14", "--config", installedConfigPath(host)], {
+    timeoutMs: 20_000, cwd: service.workingDirectory, env: { ...Object.fromEntries(serviceEnvironment(service)), HOME: who.home, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+  });
+  if (rollback.exitCode !== 0 || rollback.timedOut || rollback.stdout.trim() !== String(previous.s14SchemaVersion)) return result("activation-unhealthy", "S14 rollback state is incompatible or fenced", "use-S14-quarantined-recovery");
+  writeFileAtomic(unitPath, previousUnit); chmodSync(unitPath, 0o644);
+  switchRelease(service.executablePath, previousRelease);
+  const restarted = await supervisor.daemonReload() && await supervisor.start();
+  return result(restarted ? "rolled-back" : "activation-unhealthy", "S14 health failed; compatible prior release restored", "inspect-S14-health-failure");
+}
+
 function parseUpgradeEvidence(stdout: string): { id: string | null; state: string | null; snapshotBackupId: string | null; error: string | null } {
   const line = stdout.trim().split("\n").at(-1) ?? "";
   try {
@@ -661,11 +718,12 @@ export interface RemoveResult { disabled: boolean; removed: string[]; preserved:
  * managed data is a distinct, separately authorized operation.
  */
 export async function disableService(input: { service: ServiceConfig; host: OperatorHost; remove: boolean }): Promise<RemoveResult> {
-  const supervisor = new SystemdSupervisor(input.host.run);
+  const service = input.service;
+  const supervisor = new SystemdSupervisor(input.host.run, { unit: serviceUnit(service) });
   const disabled = await supervisor.disable();
   const removed: string[] = [];
   if (input.remove && disabled) {
-    for (const path of [join(input.host.unitDir, serviceUnitName), join(input.host.journaldDir, `journald@${serviceLogNamespace}.conf`)]) {
+    for (const path of [join(input.host.unitDir, serviceUnit(service)), join(input.host.journaldDir, `journald@${serviceJournal(service)}.conf`)]) {
       if (existsSync(path)) { rmSync(path, { force: true }); removed.push(path); }
     }
     await supervisor.daemonReload();

@@ -18,8 +18,9 @@ Type=simple
 User={{SERVICE_USER}}
 Group={{SERVICE_GROUP}}
 WorkingDirectory={{WORKING_DIR}}
-ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve --service-config {{CONFIG_PATH}}
+ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve {{RUNTIME_ARGS}}
 {{ENVIRONMENT}}
+{{RUNTIME_FILESYSTEM}}
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=120

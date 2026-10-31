@@ -5,7 +5,7 @@ set +x
 umask 077
 
 step=arguments
-next='use install.sh [--yes] [--uninstall] [--dry-run --root /absolute/disposable/root]'
+next='use install.sh [--yes] [--s14] [--uninstall] [--dry-run --root /absolute/disposable/root]'
 scratch=
 reported=false
 # Invoked by the EXIT trap through finish.
@@ -24,6 +24,8 @@ trap 'failed' HUP INT TERM
 
 yes=false
 uninstall=false
+s14=false
+name=jit
 dry=false
 root=/
 source_dir=
@@ -31,6 +33,7 @@ release_url=https://github.com/chayapats/jit/releases/latest/download
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) yes=true ;;
+    --s14) s14=true; name=jit-s14 ;;
     --uninstall) uninstall=true ;;
     --dry-run) dry=true ;;
     --root) shift; [ "$#" -gt 0 ] || failed; root=$1 ;;
@@ -76,7 +79,7 @@ next='use 64-bit Linux x64/arm64 with systemd; install core dependencies manuall
 if [ "$dry" = true ]; then
   [ -n "$source_dir" ] && [ -f "$root/host.json" ] || failed
   bun=$(command -v bun) || failed
-  "$bun" "$source_dir/ops/package/installer/main.ts" plan --root "$root" --dry-run true || failed
+  "$bun" "$source_dir/ops/package/installer/main.ts" plan --root "$root" --dry-run true --s14 "$s14" || failed
 else
   [ "$(uname -s)" = Linux ] && [ "$(getconf LONG_BIT)" = 64 ] && [ -d /run/systemd/system ] || failed
   case "$(uname -m)" in x86_64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) failed ;; esac
@@ -90,7 +93,7 @@ else
   ram_mb=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
   cpus=$(getconf _NPROCESSORS_ONLN)
   disk_path=/var/lib
-  if [ -d /var/lib/jit/state ]; then disk_path=/var/lib/jit/state; fi
+  if [ -d "/var/lib/$name/state" ]; then disk_path=/var/lib/$name/state; fi
   disk_total=$(df -Pk "$disk_path" | awk 'NR==2 {printf "%.0f", $2*1024}')
   disk_free=$(df -Pk "$disk_path" | awk 'NR==2 {printf "%.0f", $4*1024}')
   for number in "$ram_mb" "$cpus" "$disk_total" "$disk_free"; do
@@ -111,20 +114,26 @@ else
 fi
 
 printf '%s\n' 'Plan (ops.installer/v1):'
+if [ "$s14" = true ]; then
+  printf '%s\n' '  Explicit S14: jit-s14 identity/unit; /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; loopback:3001.' \
+    '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
+    '  Preserve legacy installation; unverified computer/disk/remote-API limits stay feature-off.' \
+    '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
+fi
 if [ "$uninstall" = true ]; then
   printf '%s\n' '  Stop/disable Jit and its Secret Service; remove their units and journald config.' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
 else
   printf '%s\n' \
     '  Install core dependencies with apt/dnf, or verify them on other systemd distributions.' \
-    '  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/jit/bin/bun.' \
-    '  Create/verify non-login jit identity with /var/lib/jit home; owner-only data/work/ledger/backups/keyring directories.' \
+    "  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/$name/bin/bun." \
+    "  Create/verify non-login $name identity with /var/lib/$name home; owner-only state/work/backups/keyring directories." \
     '  Create <data>/attachments mode 0700 and check the hardware-scaled disk reserve (+512 MiB staging).' \
     '  Try Podman/uidmap/slirp4netns; allocate unused subuid/subgid ranges and create /var/lib/cni.' \
     '  Enable linger/user manager and optional user podman.socket; install a Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
     '  Build/install sealed service artifact and dependencies; preserve existing config and data.' \
-    '  Write /etc/jit/service-config.json: loopback:3000, Schway, Codex/Grok recommended models, Telegram disabled.' \
+    "  Write /etc/$name/service-config.json: loopback, Schway, recommended models, Telegram disabled." \
     '  Size service memory from RAM/3 (256 MiB..8 GiB), logs from disk/1000 (16..256 MiB); record RAM/CPU-sized box recommendations.' \
-    '  Stop/repair/install/enable/start jit.service and bounded journald namespace; never run Jit as root.' \
+    "  Stop/repair/install/enable/start $name.service and bounded journald namespace; never run Jit as root." \
     '  Initialize only a new database; schema-changing upgrades retain owner-authorized staged migration gates.' \
     '  Probe local health; optionally pre-pull only listed digest-pinned images and run box-doctor (never blocks chat).' \
     '  Issue a hashed, single-use 15-minute first-owner link; an existing owner receives the sign-in URL.'
@@ -142,7 +151,7 @@ if [ "$yes" != true ]; then
 fi
 
 if [ "$dry" = true ]; then
-  if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall"; then exit 0; fi
+  if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall" --s14 "$s14"; then exit 0; fi
   reported=true; exit 1
 fi
 
@@ -158,6 +167,7 @@ if [ "$(id -u)" != 0 ]; then
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
   fi
   set -- --yes
+  if [ "$s14" = true ]; then set -- "$@" --s14; fi
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
   if [ "$uninstall" = true ]; then set -- "$@" --uninstall; fi
   input_owner=$(id -u)
@@ -187,29 +197,34 @@ root_path() {
   done
 }
 step=trusted-paths
-next='use root-owned non-symlink /opt/jit, Bun and system/config parents without group/other write; do not reuse service-owned code'
-for protected in /opt/jit/bin/bun /opt/jit/releases /etc/jit/service-config.json /etc/systemd/system/jit.service /etc/systemd/journald@jit.conf; do root_path "$protected"; done
-install -d -m 755 /opt/jit /opt/jit/bin /opt/jit/releases
-scratch=$(mktemp -d /opt/jit/.install.XXXXXXXX)
+next='use root-owned non-symlink installation paths, Bun and system/config parents without group/other write; do not reuse service-owned code'
+for protected in /opt/$name/bin/bun /opt/$name/releases /etc/$name/service-config.json /etc/systemd/system/$name.service /etc/systemd/journald@$name.conf; do root_path "$protected"; done
+install -d -m 755 /opt/$name /opt/$name/bin /opt/$name/releases
+scratch=$(mktemp -d /opt/$name/.install.XXXXXXXX)
 # Bun must not discover cwd-local .env/bunfig/preloads from the invoking account.
 cd /
 step=dependencies
 next='restore package registry access, or install curl, unzip, CA certificates, util-linux, useradd, dbus user sessions and gnome-keyring; re-run'
 if [ "$uninstall" = false ]; then
+  git_dependency=
+  if [ "$s14" = true ]; then git_dependency=git; fi
   case "$manager" in
     apt-get)
       timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || failed
-      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools >/dev/null 2>&1 || failed
+      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools $git_dependency >/dev/null 2>&1 || failed
       if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
     dnf)
-      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret >/dev/null 2>&1 || failed
+      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret $git_dependency >/dev/null 2>&1 || failed
       if ! timeout 600 dnf install -y podman shadow-utils-subid slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
   esac
   for tool in curl unzip sha256sum tar runuser useradd getent loginctl systemctl busctl gnome-keyring-daemon; do command -v "$tool" >/dev/null || failed; done
+  if [ "$s14" = true ]; then
+    for tool in git prlimit; do command -v "$tool" >/dev/null || failed; done
+  fi
 fi
 step='bun-runtime'
 next='verify Bun release access and SHA-256 pins; re-run with a supported libc/architecture'
-bun=/opt/jit/bin/bun
+bun=/opt/$name/bin/bun
 if [ "$uninstall" = false ]; then
   case "$arch" in
     x64) asset='bun-linux-x64-baseline'; digest=c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f ;;
@@ -225,7 +240,7 @@ if [ "$uninstall" = false ]; then
   printf '%s  %s\n' "$digest" "$scratch/bun.zip" | sha256sum -c - >/dev/null 2>&1 || failed
   unzip -q "$scratch/bun.zip" -d "$scratch" || failed
   # Never truncate a binary in use by an existing service.
-  bun_next=$(mktemp /opt/jit/bin/.bun.XXXXXXXX)
+  bun_next=$(mktemp /opt/$name/bin/.bun.XXXXXXXX)
   install -m 755 "$scratch/$asset/bun" "$bun_next" || failed
   mv -fT "$bun_next" "$bun" || failed
 fi
@@ -245,19 +260,19 @@ if [ -z "$source_dir" ]; then
   source_dir=$scratch/release/artifact
 fi
 # Local input is trusted only when root or the invoking sudo owner controls
-# every ancestor and file. /opt/jit/current is the sole permitted link and is
+# every ancestor and file. /opt/$name/current is the sole permitted link and is
 # resolved once; its link and parent must themselves belong to root.
-if [ "$source_dir" = /opt/jit/current ]; then
-  root_path /opt/jit
-  [ "$(stat -c %u /opt/jit/current)" = 0 ] || failed
-  source_dir=$(readlink -f /opt/jit/current) || failed
+if [ "$source_dir" = /opt/$name/current ]; then
+  root_path /opt/$name
+  [ "$(stat -c %u /opt/$name/current)" = 0 ] || failed
+  source_dir=$(readlink -f /opt/$name/current) || failed
 fi
 input_owner=${SUDO_UID:-0}
 # Copy only package inputs from a checkout; never include user node_modules,
 # bunfig, .env, .local or Git metadata in the privileged bootstrap.
 trusted_input "$source_dir/ops/package"
 mkdir -m 755 "$scratch/source"
-for entry in package.json bun.lock src ops/package vendor; do
+for entry in package.json bun.lock src ops/package ops/box vendor; do
   trusted_input "$source_dir/$entry"
   # Only the single ops parent can be missing; every ancestor is already protected.
   # shellcheck disable=SC2174
@@ -274,5 +289,5 @@ unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -ui
 [ -z "$unsafe" ] || failed
 source_dir=$scratch/source
 chmod 755 "$scratch"
-if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
+if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
 reported=true; exit 1

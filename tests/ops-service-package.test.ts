@@ -969,7 +969,7 @@ test("release and dependency modes are canonical and sealed; a nested 0600 membe
   const l = layout();
   // A source checkout with a restrictive nested member is canonicalized by the build.
   const src = join(l.root, "checkout");
-  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
+  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
   chmodSync(join(src, "src", "config.ts"), 0o600);
   chmodSync(join(src, "src", "ops"), 0o700);
   const out = join(l.root, "canonical");

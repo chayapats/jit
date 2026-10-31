@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { assertRootPath, assertRootTree, UnsafeRootPath, type RootPathPolicy } from "../../ops/package/trusted-paths";
-import type { ServiceConfig } from "../../ops/package/service-config";
+import { serviceUnit, serviceJournal, type ServiceConfig } from "../../ops/package/service-config";
 import type { OperatorHost } from "./service-package";
 
 /** Exact copy command in the operator runbook; the destination must first be a fresh private root-owned directory. */
@@ -26,8 +26,8 @@ export function serviceInvocationPath(argv: string[], raw = readFileSync("/proc/
 /** Validates the running CLI before application imports, its invocation path, Bun and ancestor dependency/config lookup locations. */
 export function assertServiceRuntime(runtimeDir: string, bunPath: string, policy: RootPathPolicy = {}, entryPath?: string): void {
   if (entryPath) {
-    const activation = join(resolve(policy.root ?? "/"), "opt/jit/current");
-    if (resolve(entryPath) === join(activation, "src/main.ts")) {
+    const activation = ["opt/jit/current", "opt/jit-s14/current"].map(path => join(resolve(policy.root ?? "/"), path)).find(path => resolve(entryPath) === join(path, "src/main.ts"));
+    if (activation) {
       // This is the sole admitted alias. Check its parent/link before reading the direct protected target,
       // and bind it to the release whose bootstrap code is running, not an arbitrary root-owned tree.
       assertServiceRelease(activation, policy);
@@ -65,8 +65,8 @@ export function assertServiceRelease(activePath: string, policy: RootPathPolicy)
 /** Protects every package config/unit/release location before lifecycle reads or effects; service-owned state is outside this code boundary. */
 export function assertServicePaths(service: ServiceConfig, host: OperatorHost, policy: RootPathPolicy): void {
   for (const path of [host.configDir, host.unitDir, host.journaldDir, join(host.configDir, "service-config.json"),
-    join(host.unitDir, "jit.service"), join(host.journaldDir, "journald@jit.conf"), join(dirname(service.executablePath), "releases")]) assertRootPath(path, policy);
-  const dropins = join(host.unitDir, "jit.service.d");
+    join(host.unitDir, serviceUnit(service)), join(host.journaldDir, `journald@${serviceJournal(service)}.conf`), join(dirname(service.executablePath), "releases")]) assertRootPath(path, policy);
+  const dropins = join(host.unitDir, `${serviceUnit(service)}.d`);
   assertRootPath(dropins, policy);
   let present = true;
   try { lstatSync(dropins); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; present = false; }
