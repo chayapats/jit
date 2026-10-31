@@ -93,6 +93,7 @@ html, body { height: 100%; }
 .s-check { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-weight: 400; }
 .s-check input { width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--fg); flex: none; }
 .s-check small { display: block; color: var(--fg-3); font-size: var(--size-xs); }
+.s-check-fixed { padding-inline-start: 28px; }
 
 /* Bot tile: cut from the mark's head; the floating dot is its one living part. */
 .s-tile { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; margin-top: 6px; background: var(--surface-3); border: 1px solid var(--line-strong); border-radius: var(--radius-tile); font-size: var(--size-sm); font-weight: 600; }
@@ -118,7 +119,7 @@ html, body { height: 100%; }
 .s-bot-text { font-size: var(--size-chat); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .s-who { font-size: var(--size-xs); color: var(--fg-3); line-height: 1.4; }
 .s-composer { background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: var(--radius-composer); padding: 12px 12px 10px 16px; }
-.s-composer:focus-within { border-color: var(--fg); }
+.s-composer:focus-within { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
 .s-composer textarea { display: block; width: 100%; min-height: 52px; max-height: 240px; resize: none; field-sizing: content; background: none; border: 0; color: var(--fg); font-size: var(--size-input-mobile); line-height: 1.6; }
 .s-composer textarea:focus-visible { outline: none; }
 .s-composer textarea::placeholder { color: var(--fg-3); }
@@ -126,7 +127,7 @@ html, body { height: 100%; }
 .s-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
 .s-grow { flex: 1; }
 .s-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); font-size: var(--size-sm); white-space: nowrap; color: var(--fg-2); }
-.s-mode { cursor: pointer; color: var(--fg); }
+.s-mode { position: relative; cursor: pointer; color: var(--fg); }
 .s-mode input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .s-mode:has(input:checked) { background: var(--fg); color: var(--on-fg); border-color: var(--fg); font-weight: 500; }
 .s-mode:has(input:focus-visible) { outline: 2px solid var(--fg); outline-offset: 2px; }
@@ -226,7 +227,7 @@ html, body { height: 100%; }
 .s-screen-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line); border-radius: var(--radius-card) var(--radius-card) 0 0; }
 .s-screen-bar svg { width: 14px; height: 14px; color: var(--fg-3); }
 .s-screen-bar h2 { flex: 1; min-width: 0; font-size: var(--size-sm); font-weight: 500; }
-.s-screen-bar .s-link-text { font-size: var(--size-xs); }
+.s-screen-bar .s-link-text { display: inline-flex; align-items: center; min-height: 24px; font-size: var(--size-xs); }
 .s-screen-view { overflow-x: auto; overscroll-behavior-x: contain; }
 .s-screen-view form { margin: 0; }
 .s-screen-view img { display: block; width: 100%; height: auto; }
@@ -306,6 +307,22 @@ html, body { height: 100%; }
   .s-kv { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .s-kv dd { margin-bottom: 8px; }
   .s-strip-acts form:not(.s-strip-grant), .s-strip-acts .s-btn { width: 100%; }
+}
+/* A phone on its side: the thread keeps the height, and the composer still grows as it fills. */
+@media (max-height: 480px) {
+  .s-hdr { min-height: 44px; padding-block: 4px; }
+  .s-hdr-t small { display: none; }
+  .s-dock { padding-block: 4px max(4px, env(safe-area-inset-bottom)); }
+  .s-composer { padding-block: 6px; }
+  .s-composer textarea { min-height: 28px; }
+  .s-bar { margin-top: 2px; }
+}
+/* Forced colours drop backgrounds and shadows, so the states drawn with them get a system colour or an outline. */
+@media (forced-colors: active) {
+  .s-mode:has(input:checked) { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; }
+  .s-composer:focus-within { outline: 2px solid CanvasText; }
+  .s-link[aria-current=page], .s-tabs a[aria-current=page] { outline: 1px solid CanvasText; outline-offset: -1px; }
+  .s-worktabs a[aria-current=page] { border-block-end: 2px solid CanvasText; }
 }
 `;
 }

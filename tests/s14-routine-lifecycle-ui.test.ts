@@ -286,7 +286,7 @@ test.each(["th", "en"] as const)("%s adding web tools shows the exact before and
   expect(accepted.path).toContain("/team/jit?receipt="); safe(accepted.html, language);
   for (const value of [words["s14.life.done.capabilities_accept"], words["s14.life.done_intent"], words["s14.life.stopping.active"], words["s14.life.step.calls"], "data-live"]) expect(accepted.html).toContain(value);
   const home = await g.page("/"); expect(home).toContain(words["s14.life.main_paused"]);
-  const chat = await g.page(`/chats/${g.conversationId}`); expect(chat).toContain(words["s14.life.chat_closed"]); expect(chat).not.toContain("data-composer");
+  const chat = await g.page(`/chats/${g.conversationId}`); expect(chat).toContain(words["s14.life.chat_returning_detail"]); expect(chat).not.toContain("data-composer");
   await g.settle();
   const settled = await g.page(accepted.path); safe(settled, language);
   expect(settled).toContain(words["s14.life.done_settled"]); expect(settled).not.toContain(words["s14.life.stopping.active"]); expect(settled).not.toContain("data-live");

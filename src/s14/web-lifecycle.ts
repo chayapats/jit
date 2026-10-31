@@ -4,7 +4,7 @@ import type { BotLifecycle, BotLifecyclePreview, CapabilityProposal } from "./bo
 import type { RoutineView } from "./routine-types";
 import type { Bot, Capabilities } from "./types";
 import type { S14Page } from "./web";
-import { banner, botName, commandForm, computerPath, e, flat, hidden, k, notice, ownerStrip, pill, shell } from "./web-pages";
+import { announced, banner, botName, commandForm, computerPath, e, flat, hidden, k, notice, ownerStrip, pill, shell } from "./web-pages";
 import { reach } from "./web-memory";
 import { shareQuery, type S14BotEnd, type S14BotLanding, type S14BotPolicy, type S14LifecycleSurface, type S14ShareReturn } from "./web-product-lifecycle";
 
@@ -45,7 +45,7 @@ export function lifecycleStatus(bot: Bot, lifecycle: BotLifecycle): string {
 export function lifecycleLanding(bot: Bot, lifecycle: BotLifecycle, landing: S14BotLanding | null): string {
   if (!landing) return "";
   const key = landing.receipt?.kind.slice("bot.".length).replaceAll(".", "_"), kept = key === "capabilities_discard" ? tr("s14.life.done.capabilities_discard_detail") : tr(settling(lifecycle) ? "s14.life.done_intent" : "s14.life.done_settled");
-  const done = key ? banner("", tr(k(`s14.life.done.${key}`)), kept) : "";
+  const done = key ? announced(banner("", tr(k(`s14.life.done.${key}`)), kept)) : "";
   const back = landing.back ? lifecycle.state === "active" && bot.enabled ? `<p><a class="s-btn primary" href="${shareBack(landing.back)}">${tr("s14.life.back_to_share")}</a></p>` : settling(lifecycle) ? `<p class="s-note">${tr("s14.life.back_wait")}</p>` : "" : "";
   const account = landing.account ? lifecycle.state === "active" && bot.enabled ? `<p><a class="s-btn primary" href="/settings/google/connections/${e(landing.account)}">${tr("s14.life.back_to_account")}</a></p>` : settling(lifecycle) ? `<p class="s-note">${tr("s14.life.back_wait")}</p>` : "" : "";
   return `${done}${back}${account}`;

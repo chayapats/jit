@@ -1,7 +1,7 @@
 import { tr } from "../i18n";
 import type { WorkView } from "./authority-types";
 import type { ExternalEvidence, WebOutcome, WebRead } from "./parallel-types";
-import { banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, shell, short, size, untrusted, when } from "./web-pages";
+import { announced, banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, shell, short, size, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14WebSettings, S14WorkResearch } from "./web-product-memory";
 
@@ -100,7 +100,7 @@ function capabilityRow(page: S14Page): string {
 function receiptBanner(view: S14WebSettings): string {
   const receipt = view.receipt; if (!receipt) return "";
   const word = receipt.kind === "web.parallel.key.set" ? "key_saved" : receipt.kind === "web.parallel.key.remove" ? "key_removed" : receipt.setting?.mode === "anonymous" ? "free" : "paid";
-  return banner("ok", tr(k(`s14.web.done.${word}`)), tr(k(`s14.web.done.${word}_detail`)));
+  return announced(banner("ok", tr(k(`s14.web.done.${word}`)), tr(k(`s14.web.done.${word}_detail`))));
 }
 function keyRows(page: S14Page, view: S14WebSettings): string {
   const { setting, connections } = view.read, live = connections.filter(item => item.state === "set");

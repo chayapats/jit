@@ -2,7 +2,7 @@ import { tr } from "../i18n";
 import type { MessageKey } from "../i18n";
 import type { MemoryLookup, MemoryRef, MemorySource } from "./memory-types";
 import type { Bot } from "./types";
-import { banner, botName, e, flat, hidden, k, notice, ownerStrip, pill, rid, shell, short, untrusted, when } from "./web-pages";
+import { announced, banner, botName, e, flat, hidden, k, notice, ownerStrip, pill, rid, shell, short, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import { fileShareSource } from "./web-sharing";
 import { resourceConfigured } from "./share-slots";
@@ -47,7 +47,7 @@ function scopeTabs(page: S14Page, view: S14MemoryBrowse): string {
 function receiptBanner(view: S14MemoryBrowse): string {
   const receipt = view.receipt; if (!receipt) return "";
   const word = receipt.kind.slice("memory.".length).replace(".", "_");
-  return banner("ok", tr(k(`s14.memory.done.${word}`)), `${tr(k(`s14.memory.done.${word}_detail`))}${receipt.withdrawn ? ` ${tr("s14.memory.done.withdrawn")} ${receipt.withdrawn}` : ""}`);
+  return announced(banner("ok", tr(k(`s14.memory.done.${word}`)), `${tr(k(`s14.memory.done.${word}_detail`))}${receipt.withdrawn ? ` ${tr("s14.memory.done.withdrawn")} ${receipt.withdrawn}` : ""}`));
 }
 function rememberForm(page: S14Page, view: S14MemoryBrowse, bot: Bot): string {
   if (!view.conversation) return "";

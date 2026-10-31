@@ -4,7 +4,7 @@ import type { CodingCheck, CodingCheckResult, CodingRepository, CodingRun } from
 import type { GitConnection } from "./coding-git-types";
 import type { Bot } from "./types";
 import type { S14Page } from "./web";
-import { banner, botName, commandForm, e, effectPill, flat, hidden, k, notice, ownerStrip, pill, short, shell, size, untrusted, when, workPill } from "./web-pages";
+import { announced, banner, botName, commandForm, e, effectPill, flat, hidden, k, notice, ownerStrip, pill, short, shell, size, untrusted, when, workPill } from "./web-pages";
 import { reach } from "./web-memory";
 import { proposalExpiry, registryHosts, type S14CodingConnect, type S14CodingHub, type S14CodingNew, type S14CodingRepositoryPage, type S14CodingStart, type S14CodingSurface, type S14GitDraft, type S14SlotConnection, type S14WorkCoding } from "./web-product-coding";
 
@@ -114,7 +114,7 @@ function landing(view: S14CodingRepositoryPage): string {
   const receipt = view.receipt; if (!receipt) return "";
   const test = "test" in receipt ? receipt.test : undefined;
   if (receipt.kind === "git.connection.test") return test === "present" ? banner("", tr("s14.git.test_present"), tr("s14.git.test_local")) : banner("warn", tr(k(`s14.git.test_${test ?? "missing"}`)), tr("s14.git.test_local"));
-  return banner("", tr(k(`s14.coding.done.${receipt.kind.replaceAll(".", "_")}`)), "");
+  return announced(banner("", tr(k(`s14.coding.done.${receipt.kind.replaceAll(".", "_")}`)), ""));
 }
 /** Repins an active repository from a branch. The stored token is chosen, never typed, and the only thing written is the commit the broker read. */
 function pinBlock(page: S14Page, view: S14CodingRepositoryPage): string {

@@ -5,16 +5,21 @@
 
 document.documentElement.dataset.enhanced = "true";
 
-for (const form of document.querySelectorAll("[data-composer]")) {
-  const text = form.querySelector("textarea");
-  text?.addEventListener("keydown", event => {
-    // Thai and other IMEs use Enter to confirm a composition; that must not send.
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
-    event.preventDefault();
-    form.requestSubmit();
-  });
-  if (location.hash === "#s14-text" && text) { text.focus(); text.setSelectionRange(text.value.length, text.value.length); }
-}
+const wireComposers = () => {
+  for (const form of document.querySelectorAll("[data-composer]")) {
+    if (form.dataset.wired) continue;
+    form.dataset.wired = "true";
+    const text = form.querySelector("textarea");
+    text?.addEventListener("keydown", event => {
+      // Thai and other IMEs use Enter to confirm a composition; that must not send.
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
+      event.preventDefault();
+      form.requestSubmit();
+    });
+    if (location.hash === "#s14-text" && text) { text.focus(); text.setSelectionRange(text.value.length, text.value.length); }
+  }
+};
+wireComposers();
 
 // A new routine starts from the host's timezone; this device's is the better guess. Both stay visible, editable and reviewed.
 for (const input of document.querySelectorAll("[data-device-timezone]")) {
@@ -71,7 +76,7 @@ for (const button of document.querySelectorAll("[data-copy]")) {
 }
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 let expectedComputerKey = document.querySelector("[data-computer]")?.dataset.key;
@@ -94,6 +99,17 @@ async function refresh() {
       if (stale || current.innerHTML !== fresh.innerHTML) current.innerHTML = fresh.innerHTML;
       if (fresh.dataset.sig) current.dataset.sig = fresh.dataset.sig;
       if (current.className !== fresh.className) current.className = fresh.className;
+    }
+  }
+  // The foot of a chat changes only when the Bot can or cannot take a message, so a read never replaces text being typed.
+  const dock = document.getElementById("s14-dock"), freshDock = next.getElementById("s14-dock");
+  if (dock && freshDock && dock.dataset.sig !== freshDock.dataset.sig) {
+    if (busy(dock)) deferred = true;
+    else {
+      dock.innerHTML = freshDock.innerHTML;
+      dock.dataset.sig = freshDock.dataset.sig;
+      wireComposers();
+      if (status) status.textContent = freshDock.dataset.announce;
     }
   }
   const revision = next.querySelector("[data-composer] input[name=expectedRevision]"), mine = document.querySelector("[data-composer] input[name=expectedRevision]");
