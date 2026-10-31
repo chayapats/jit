@@ -2,7 +2,7 @@ import { tr, type MessageKey } from "../i18n";
 import type { Work } from "./authority-types";
 import type { ShareView, SnapshotTarget } from "./sharing-types";
 import type { Bot } from "./types";
-import { banner, botName, commandForm, e, hidden, k, notice, ownerStrip, pill, remaining, rid, shell, tile, untrusted, when } from "./web-pages";
+import { announced, banner, botName, commandForm, e, hidden, k, notice, ownerStrip, pill, remaining, rid, shell, tile, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import { memoryShareHours } from "./web-product-memory";
 import { shareableBytes, type S14ShareDetail, type S14ShareFile, type S14ShareList, type S14ShareSheet, type S14ShareSnapshot, type S14SharingSurface } from "./web-product-sharing";
@@ -84,7 +84,7 @@ function revokeSlip(page: S14Page, view: S14ShareDetail): string {
 function detailPage(page: S14Page, view: S14ShareDetail): string {
   const { share, state, disclosedKnowledge } = view.view, receiver = nameOf(page, share.receiverBotId), back = `<p><a class="s-link-text" href="/shares">${tr("s14.share.back")}</a></p>`;
   const words = filled(k(`s14.share.detail.${state}`), { bot: receiver }), done = view.receipt ? (view.receipt.kind === "snapshot.revoke" ? tr("s14.share.done.revoke") : tr("s14.share.done.share")) : "";
-  const landed = view.receipt ? banner("", done, view.receipt.kind === "snapshot.revoke" ? words : tr("s14.share.done.share_detail")) : "";
+  const landed = view.receipt ? announced(banner("", done, view.receipt.kind === "snapshot.revoke" ? words : tr("s14.share.done.share_detail"))) : "";
   const until = state === "active" ? `${when(share.expiresAt)} · ${remaining(share.expiresAt, page.now)}` : when(share.expiresAt);
   const scope = view.work ? `${tr("s14.share.work_only")} · <a class="s-link-text" href="/work/${e(view.work.id)}">${e(view.work.title)}</a>` : tr("s14.share.work_any");
   const facts = exactFacts(page, share);

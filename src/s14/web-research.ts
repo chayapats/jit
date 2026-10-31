@@ -1,7 +1,7 @@
 import { tr } from "../i18n";
 import type { WorkView } from "./authority-types";
 import type { ExternalEvidence, WebOutcome, WebRead } from "./parallel-types";
-import { banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, shell, short, size, untrusted, when } from "./web-pages";
+import { announced, banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, shell, short, size, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14WebSettings, S14WorkResearch } from "./web-product-memory";
 
@@ -19,8 +19,10 @@ function outcomeBanner(read: WebRead): string {
   const withdrawn = read.subject === "[withdrawn context]", key = withdrawn ? "withdrawn" : read.outcome === "quota" && read.mode === "authenticated" ? "quota_account" : read.outcome;
   if (read.outcome === "success") return "";
   const tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(`s14.web_outcome.${key}_title`)), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
-  const action = read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : "";
-  return banner(tone as "warn" | "danger", title, `${tr(k(`s14.web_outcome.${key}_detail`))} ${left}`, action);
+  // A vendor reset time is shown only when it was given; absent still reads as unknown, never as ready.
+  const resets = read.outcome === "quota" && typeof read.retryAt === "number" ? `<p class="s-sub">${tr("s14.web_outcome.resets_at")} ${when(read.retryAt)}</p>` : "";
+  const action = `${resets}${read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : ""}`;
+  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k(`s14.web_outcome.${key}_detail`))} ${left}`, action);
 }
 function usageRows(read: WebRead): string {
   if (read.usage === null) return `<span>${tr("s14.unknown")}</span>`;
@@ -100,7 +102,7 @@ function capabilityRow(page: S14Page): string {
 function receiptBanner(view: S14WebSettings): string {
   const receipt = view.receipt; if (!receipt) return "";
   const word = receipt.kind === "web.parallel.key.set" ? "key_saved" : receipt.kind === "web.parallel.key.remove" ? "key_removed" : receipt.setting?.mode === "anonymous" ? "free" : "paid";
-  return banner("ok", tr(k(`s14.web.done.${word}`)), tr(k(`s14.web.done.${word}_detail`)));
+  return announced(banner("ok", tr(k(`s14.web.done.${word}`)), tr(k(`s14.web.done.${word}_detail`))));
 }
 function keyRows(page: S14Page, view: S14WebSettings): string {
   const { setting, connections } = view.read, live = connections.filter(item => item.state === "set");

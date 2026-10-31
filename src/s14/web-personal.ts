@@ -4,7 +4,7 @@ import { googleScope } from "./personal-protocol";
 import type { PersonalClient, PersonalConnection, PersonalReceipt, PersonalScope } from "./personal-types";
 import type { S14Page } from "./web";
 import { reach } from "./web-memory";
-import { banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, remaining, shell, standalone, tile, when, withTheme } from "./web-pages";
+import { announced, banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, remaining, shell, standalone, tile, when, withTheme } from "./web-pages";
 import { canRead, canWrite, type S14AccountBot, type S14GoogleConnection, type S14GoogleGuide, type S14GoogleHome, type S14GoogleNew, type S14GoogleRedirect, type S14PersonalSurface } from "./web-product-personal";
 import { draftEditPage } from "./web-personal-effect";
 import type { ThemePreference } from "../web-layout";
@@ -52,9 +52,9 @@ const driftBanner = (client: PersonalClient | null, redirect: S14GoogleRedirect)
 function landing(receipt: PersonalReceipt | null): string {
   if (!receipt) return "";
   if (receipt.kind === "personal.oauth.begin") return "";
-  if (receipt.kind === "personal.grant.set") return banner("", tr(receipt.grant?.active ? "s14.google.done.grant" : "s14.google.done.grant_off"), tr(receipt.grant?.active ? "s14.google.done.grant_detail" : "s14.google.done.grant_off_detail"));
+  if (receipt.kind === "personal.grant.set") return announced(banner("", tr(receipt.grant?.active ? "s14.google.done.grant" : "s14.google.done.grant_off"), tr(receipt.grant?.active ? "s14.google.done.grant_detail" : "s14.google.done.grant_off_detail")));
   const name = receipt.kind.slice("personal.".length).replaceAll(".", "_");
-  return banner("", tr(k(`s14.google.done.${name}`)), tr(k(`s14.google.done.${name}_detail`)));
+  return announced(banner("", tr(k(`s14.google.done.${name}`)), tr(k(`s14.google.done.${name}_detail`))));
 }
 
 function connectionRow(connection: PersonalConnection): string {

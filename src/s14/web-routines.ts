@@ -3,7 +3,7 @@ import type { Bot, Route } from "./types";
 import type { AttentionNotice, Routine, RoutineOccurrence, RoutinePurpose, RoutineView } from "./routine-types";
 import type { ScopeRef } from "./authority-types";
 import type { S14Page } from "./web";
-import { accountChoices, banner, botName, commandForm, dismissForm, e, hidden, icon, k, limitFields, notice, ownerStrip, pill, routeText, shareChoices, shell, size, untrusted, when } from "./web-pages";
+import { accountChoices, announced, banner, botName, commandForm, dismissForm, e, hidden, icon, k, limitFields, notice, ownerStrip, pill, routeText, shareChoices, shell, size, untrusted, when } from "./web-pages";
 import { reach } from "./web-memory";
 import { generalTool } from "./web-product-coding";
 import { ownerStoppedRun, routineBounds, type S14RoutineDetail, type S14RoutineDraft, type S14RoutineFinding, type S14RoutineList, type S14RoutineNew, type S14RoutineReview, type S14RoutineSurface } from "./web-product-routines";
@@ -57,7 +57,7 @@ function scheduleField(draft: S14RoutineDraft): string {
 }
 function botChoices(page: S14Page, draft: S14RoutineDraft): string {
   const bots = page.state.bots.filter(bot => bot.enabled);
-  return `<fieldset class="s-field"><legend>${tr("s14.routine.field.bots")}</legend>${bots.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}<p class="s-note">${tr("s14.routine.bots_note")}</p></fieldset>`;
+  return `<fieldset class="s-field"><legend>${tr("s14.routine.field.bots")}</legend>${bots.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}<p class="s-note">${tr("s14.routine.bots_note")} ${tr("s14.routine.places_note")}</p></fieldset>`;
 }
 function toolChoices(page: S14Page, draft: S14RoutineDraft): string {
   const bots = page.state.bots.filter(bot => bot.enabled), tools = page.policy.tools.filter(tool => generalTool(tool) && tool !== "personal_read" && bots.some(bot => bot.capabilities.tools.includes(tool)));
@@ -146,7 +146,7 @@ function deleteSlip(page: S14Page, view: S14RoutineDetail): string {
   return `<article class="s-slip" data-state="unknown" aria-label="${title}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${title}</h2><p class="s-meta">${tr("s14.routine.delete_meta")}</p></div></div><div class="s-slip-body">${body}</div>${strip}</article>`;
 }
 function landing(view: S14RoutineDetail): string {
-  return view.receipt ? banner("", tr(k(`s14.routine.done.${view.receipt.kind.slice("routine.".length)}`)), tr(k(`s14.routine.done.${view.receipt.kind.slice("routine.".length)}_detail`))) : "";
+  return view.receipt ? announced(banner("", tr(k(`s14.routine.done.${view.receipt.kind.slice("routine.".length)}`)), tr(k(`s14.routine.done.${view.receipt.kind.slice("routine.".length)}_detail`)))) : "";
 }
 function detailPage(page: S14Page, view: S14RoutineDetail): string {
   const { routine } = view.view, capture = routine.capture, payload = capture.command.payload, live = view.view.history.some(run => run.state === "running");
@@ -163,7 +163,7 @@ function listPage(page: S14Page, view: S14RoutineList): string {
   const open = view.items.filter(item => item.routine.state !== "revoked"), ended = view.items.filter(item => item.routine.state === "revoked");
   const rows = open.length ? `<section class="s-stack" aria-labelledby="s14-routine-list"><h2 class="s-section-t" id="s14-routine-list">${tr("s14.routine.list")}</h2><div class="s-stack">${open.map(routineRow).join("")}</div></section>` : `<p class="s-sub">${tr("s14.routine.empty")}</p>`;
   const closed = ended.length ? `<details class="s-card s-more"><summary>${tr("s14.routine.revoked_list")}: ${ended.length}</summary><div>${ended.map(routineRow).join("")}</div></details>` : "";
-  const deleted = view.receipt ? banner("", tr("s14.routine.done.delete"), tr("s14.routine.done.delete_detail")) : "", level = `<p class="s-note">${tr(k(`s14.attention.level.now.${view.level}`))} <a class="s-link-text" href="/more#s14-attention-level">${tr("s14.attention.level.change")}</a></p>`;
+  const deleted = view.receipt ? announced(banner("", tr("s14.routine.done.delete"), tr("s14.routine.done.delete_detail"))) : "", level = `<p class="s-note">${tr(k(`s14.attention.level.now.${view.level}`))} <a class="s-link-text" href="/more#s14-attention-level">${tr("s14.attention.level.change")}</a></p>`;
   return shell(page, tr("s14.nav.routines"), `<div class="s-col">${deleted}<div class="s-between"><p class="s-sub">${tr("s14.routine.lead")}</p>${add}</div>${findings(page, view.findings)}${rows}${closed}${level}</div>`, { current: "routines", subtitle: tr("s14.routine.subtitle") });
 }
 /** Renders the routine surfaces. Every title, purpose and finding is escaped and framed, and none of them reaches a button. */

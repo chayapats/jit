@@ -150,6 +150,7 @@ test.each(["th", "en"] as const)("%s: a no-script press lands on the durable res
   const done = await page(landed.path);
   safe(done, language);
   shown(done, words["s14.backup.done_title"]);
+  expect(done).toMatch(new RegExp(`<div role="status"><div class="s-banner ok">[\\s\\S]*?${words["s14.backup.done_title"]}`));
   shown(done, words["s14.backup.state.complete"]);
   expect(done).toMatch(/\d(\.\d)? (KiB|MiB)/);
   shown(done, words["s14.backup.origin.online"]);

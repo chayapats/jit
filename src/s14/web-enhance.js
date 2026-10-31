@@ -1,20 +1,47 @@
 // S14 browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every S14 page is complete without this file: forms post, the composer's work mode is a checkbox and limits are visible.
 // It only adds Enter to send, the setup ceremony, focus on an opened approval slip, a device timezone, copying a sign-in code or setup value, moving on from the Google return page and same-origin
-// reads of the page being viewed while something is in flight. It never posts data itself and stores nothing.
+// reads of the page being viewed while something is in flight. It never posts data itself and stores nothing: an unsent draft held across a chat closing lives in this page's memory only.
 
 document.documentElement.dataset.enhanced = "true";
 
-for (const form of document.querySelectorAll("[data-composer]")) {
-  const text = form.querySelector("textarea");
-  text?.addEventListener("keydown", event => {
-    // Thai and other IMEs use Enter to confirm a composition; that must not send.
-    if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
-    event.preventDefault();
-    form.requestSubmit();
-  });
-  if (location.hash === "#s14-text" && text) { text.focus(); text.setSelectionRange(text.value.length, text.value.length); }
+const wireComposers = () => {
+  for (const form of document.querySelectorAll("[data-composer]")) {
+    if (form.dataset.wired) continue;
+    form.dataset.wired = "true";
+    const text = form.querySelector("textarea");
+    text?.addEventListener("keydown", event => {
+      // Thai and other IMEs use Enter to confirm a composition; that must not send.
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
+      event.preventDefault();
+      form.requestSubmit();
+    });
+  }
+};
+wireComposers();
+if (location.hash === "#s14-text") {
+  const text = document.querySelector("[data-composer] textarea");
+  if (text) { text.focus(); text.setSelectionRange(text.value.length, text.value.length); }
 }
+
+// A composer leaves when its Bot can't take a message. What was typed and chosen is held here and goes onto the next
+// composer's own fields, so hidden request IDs and revision-bound values stay fresh and a choice no longer offered stays gone.
+let heldDraft = null;
+const draftFields = form => [...form.elements].filter(field => field.name && !["hidden", "submit", "button", "radio"].includes(field.type));
+const holdDraft = form => {
+  const fields = draftFields(form);
+  return { values: new Map(fields.map(field => [field.name, field.type === "checkbox" ? field.checked : field.value])),
+    text: fields.filter(field => field.tagName === "TEXTAREA" || field.type === "text").map(field => field.value).filter(value => value.trim()).join("\n\n"),
+    open: [...form.querySelectorAll("details")].map(item => item.open) };
+};
+const restoreDraft = (form, held) => {
+  for (const field of draftFields(form)) {
+    if (!held.values.has(field.name)) continue;
+    if (field.type === "checkbox") field.checked = held.values.get(field.name);
+    else field.value = held.values.get(field.name);
+  }
+  [...form.querySelectorAll("details")].forEach((item, index) => { if (held.open[index]) item.open = true; });
+};
 
 // A new routine starts from the host's timezone; this device's is the better guess. Both stay visible, editable and reviewed.
 for (const input of document.querySelectorAll("[data-device-timezone]")) {
@@ -71,7 +98,7 @@ for (const button of document.querySelectorAll("[data-copy]")) {
 }
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 let expectedComputerKey = document.querySelector("[data-computer]")?.dataset.key;
@@ -96,9 +123,31 @@ async function refresh() {
       if (current.className !== fresh.className) current.className = fresh.className;
     }
   }
+  // The foot of a chat changes only when the Bot can or cannot take a message. A field in use defers the change, and whatever was typed moves across it.
+  const dock = document.getElementById("s14-dock"), freshDock = next.getElementById("s14-dock");
+  if (dock && freshDock && dock.dataset.sig !== freshDock.dataset.sig) {
+    if (busy(dock)) deferred = true;
+    else {
+      const leaving = dock.querySelector("[data-composer]"), held = leaving ? holdDraft(leaving) : heldDraft;
+      dock.innerHTML = freshDock.innerHTML;
+      dock.dataset.sig = freshDock.dataset.sig;
+      wireComposers();
+      const composer = dock.querySelector("[data-composer]"), block = dock.querySelector("[data-draft-held]");
+      heldDraft = composer ? null : held;
+      if (composer && held) restoreDraft(composer, held);
+      if (block && held?.text) {
+        block.querySelector("[data-draft-text]").textContent = held.text;
+        block.hidden = false;
+      }
+      if (status) status.textContent = held?.text ? freshDock.dataset.kept : freshDock.dataset.announce;
+    }
+  }
   const revision = next.querySelector("[data-composer] input[name=expectedRevision]"), mine = document.querySelector("[data-composer] input[name=expectedRevision]");
   if (revision && mine && mine.value !== revision.value) mine.value = revision.value;
-  const typed = next.querySelector("[data-phase]")?.dataset.phase, phase = typed ?? next.querySelector(".s-pane .s-pill, .s-col > .s-between .s-pill")?.textContent ?? "";
+  // A pill's glyph is hidden from assistive technology, so the announcement carries the word alone.
+  const word = next.querySelector(".s-pane .s-pill, .s-col > .s-between .s-pill");
+  word?.querySelector("[aria-hidden]")?.remove();
+  const typed = next.querySelector("[data-phase]")?.dataset.phase, phase = typed ?? word?.textContent ?? "";
   if (status && phase && status.textContent !== phase) status.textContent = phase;
   else if (status && next.querySelectorAll(".s-bot-text").length > replies) status.textContent = status.dataset.reply;
   replies = next.querySelectorAll(".s-bot-text").length;

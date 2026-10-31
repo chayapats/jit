@@ -3,7 +3,7 @@ import type { Effect } from "./authority-types";
 import type { GitAction, GitProgress } from "./coding-git-types";
 import { gitPullUrl } from "./coding-git-remote";
 import type { S14Page } from "./web";
-import { banner, botName, commandForm, e, effectHistory, effectPill, k, notice, ownerStrip, pill, remaining, shell, when } from "./web-pages";
+import { announced, banner, botName, commandForm, e, effectHistory, effectPill, k, notice, ownerStrip, pill, remaining, shell, when } from "./web-pages";
 import { checksBlock, diffBlock, exactBlock } from "./web-coding";
 import { reach } from "./web-memory";
 import { gitAction, type S14GitCard, type S14WorkCoding } from "./web-product-coding";
@@ -106,5 +106,5 @@ function fullSlip(page: S14Page, view: Extract<S14View, { kind: "effect" }>, car
 export function gitEffectPage(page: S14Page, view: Extract<S14View, { kind: "effect" }>, card: S14GitCard): string {
   const { effect } = view, live = followed(effect, card), requested = card.receipt && !card.reconcileRequested ? banner("", tr("s14.git.read_done"), tr("s14.git.read_done_detail")) : "";
   const content = `<span hidden data-phase="${e(tr(k(`s14.effect_state.${effect.state}`)))}"></span>${requested}${fullSlip(page, view, card)}`;
-  return shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail")) : ""}${notice(view.notice ?? null)}<div class="s-stack" id="s14-live">${content}</div>${effectHistory(view.history, effect)}<p><a class="s-link-text" href="/work/${e(effect.workId)}?tab=coding">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work", live });
+  return shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? announced(banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail"))) : ""}${notice(view.notice ?? null)}<div class="s-stack" id="s14-live">${content}</div>${effectHistory(view.history, effect)}<p><a class="s-link-text" href="/work/${e(effect.workId)}?tab=coding">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work", live });
 }

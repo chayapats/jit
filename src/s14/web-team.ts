@@ -3,7 +3,7 @@ import type { Attempt, Work, WorkView } from "./authority-types";
 import type { GraphView, WorkStep } from "./graph-types";
 import type { Bot } from "./types";
 import type { S14Page } from "./web";
-import { banner, botName, commandForm, computerPath, e, k, notice, ownerStrip, pill, shell, size, tile, flat } from "./web-pages";
+import { announced, banner, botName, commandForm, computerPath, e, k, notice, ownerStrip, pill, shell, size, tile, flat } from "./web-pages";
 import type { S14WorkResearch } from "./web-product-memory";
 import { defaultWorkLimits, workLimitBounds } from "./web-product";
 import { limitValues, type S14LimitValues, type S14WorkSettings, type S14WorkTeam } from "./web-product-team";
@@ -128,7 +128,9 @@ function laneLine(page: S14Page, step: WorkStep, graph: GraphView, depends: stri
   }
   if (step.state === "running" && step.startedAt !== null) return `<p class="s-sub">${tr("s14.team.running_since")} ${clock(step.startedAt)}</p>`;
   const held = heldBy(step, graph), line = tr(k(step.state === "queued" && !held ? "s14.step_line.queued_free" : `s14.step_line.${step.state}`)), detail = [why, held].filter(Boolean).join(" · ");
-  return `<p class="s-sub">${e(`${detail ? `${detail}. ` : ""}${line}`)}</p>${code ? `<p class="s-mono s-meta">${e(code)}</p>` : ""}`;
+  // The main Bot's own lane takes a place too, so a held lane names exactly who has them.
+  const using = step.state === "queued" && step.queueCeiling === "work" ? steps.filter(item => item.state === "running").map(item => laneName(page, item, steps)) : [];
+  return `<p class="s-sub">${e(`${detail ? `${detail}. ` : ""}${line}`)}</p>${using.length ? `<p class="s-meta">${tr("s14.team.places_used")} ${e(using.join(" · "))}</p>` : ""}${code ? `<p class="s-mono s-meta">${e(code)}</p>` : ""}`;
 }
 /** One lane per graph step. Stopping one is only offered when a sibling exists; a lone lane is the whole work. */
 function lane(page: S14Page, view: WorkView, team: S14WorkTeam, step: WorkStep, research: S14WorkResearch | null): string {
@@ -180,6 +182,6 @@ export function workSettingsPage(page: S14Page, view: S14WorkSettings): string {
   const factory = `${tr("s14.defaults.factory")} ${defaultWorkLimits.concurrent} · ${defaultWorkLimits.minutes} · ${defaultWorkLimits.reads}`;
   const form = `<form class="s-stack" method="post" action="/s14/forms/work-defaults">${flat(page.csrf, view.defaults.revision)}${field("concurrent", "s14.defaults.concurrent", "s14.defaults.concurrent_note")}${field("minutes", "s14.defaults.minutes", "s14.defaults.minutes_note")}${field("reads", "s14.defaults.reads", "s14.defaults.reads_note")}<p class="s-note">${e(factory)}</p><div><button class="s-btn primary">${tr("s14.defaults.save")}</button></div></form>`;
   const ceilings = `<section class="s-card s-stack" aria-labelledby="s14-ceilings"><h2 id="s14-ceilings">${tr("s14.defaults.ceilings")}</h2><dl class="s-kv"><dt>${tr("s14.defaults.ceiling_global")}</dt><dd>${limits.global}</dd><dt>${tr("s14.defaults.ceiling_route")}</dt><dd>${limits.route}</dd><dt>${tr("s14.defaults.ceiling_bot")}</dt><dd>${limits.bot}</dd><dt>${tr("s14.defaults.ceiling_computer")}</dt><dd>${limits.computer}</dd></dl><p class="s-note">${tr("s14.defaults.ceilings_note")}</p></section>`;
-  const saved = view.saved ? banner("ok", tr("s14.defaults.saved"), tr("s14.defaults.saved_detail")) : "";
+  const saved = view.saved ? announced(banner("ok", tr("s14.defaults.saved"), tr("s14.defaults.saved_detail"))) : "";
   return shell(page, tr("s14.defaults.title"), `<div class="s-col">${saved}${notice(view.notice)}<section class="s-card s-stack" aria-labelledby="s14-defaults"><div class="s-between"><h2 id="s14-defaults">${tr("s14.defaults.heading")}</h2><span class="s-mono s-meta">r${view.defaults.revision}</span></div><p class="s-sub">${tr("s14.defaults.lead")}</p>${form}</section>${ceilings}<p><a class="s-link-text" href="/more">${tr("s14.web.back")}</a></p></div>`, { current: "more", subtitle: tr("s14.defaults.subtitle") });
 }
