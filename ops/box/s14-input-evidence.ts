@@ -15,7 +15,7 @@ const rid = () => crypto.randomUUID().replaceAll("-", "");
 const forbidden = (): never => { throw new AppError("input_evidence_forbidden_native_port"); };
 
 // Operator entrypoint only. Importing this file never probes a host or starts a runtime.
-async function evidenceMain(): Promise<void> {
+async function evidenceMain(totalDeadline: number): Promise<void> {
   check(process.argv.slice(2).length === 0 || process.argv.slice(2).join() === "--cleanup-only", "input_evidence_arguments_refused");
   const cleanupOnly = process.argv[2] === "--cleanup-only";
   const { config, database, build } = await requireInputEvidenceInstallation(cleanupOnly);
@@ -72,7 +72,8 @@ async function evidenceMain(): Promise<void> {
       }
       catch { reason ??= "input_evidence_cleanup_unconfirmed"; }
       await transport.join();
-      const passed = success && cleanup && !interrupted && !transport.failure;
+      if (performance.now() >= totalDeadline) reason ??= "input_evidence_total_deadline";
+      const passed = success && cleanup && !interrupted && !transport.failure && !reason;
       const cleaned = cleanupOnly && cleanup && !reason && !interrupted && !transport.failure;
       privateState.state.phase = cleaned ? "cleaned" : passed ? "passed" : "failed";
       // Failures retain the private recovery password even when supported cleanup succeeded.
@@ -95,7 +96,7 @@ async function evidenceMain(): Promise<void> {
 async function main(): Promise<void> {
   // Covers preflight too. Unconfirmed cleanup leaves the durable private marker for cleanup-only inspection.
   const hardDeadline = setTimeout(() => { process.exit(1); }, 240000);
-  try { await evidenceMain(); } finally { clearTimeout(hardDeadline); }
+  try { await evidenceMain(performance.now() + 240000); } finally { clearTimeout(hardDeadline); }
 }
 
 if (import.meta.main) main().catch(error => {

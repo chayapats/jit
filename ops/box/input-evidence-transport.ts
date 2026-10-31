@@ -19,22 +19,31 @@ export class ReceivedReplyGate {
   readonly reached = this.#reached.promise;
   readonly released = this.#released.promise;
   readonly #cancel: () => void;
+  readonly #deadline: number;
   #state: "armed" | "held" | "released" | "closed" = "armed";
-  constructor(readonly method: string, timer: EvidenceTimer, onTimeout: () => void) {
+  constructor(readonly method: string, timer: EvidenceTimer, readonly now: () => number, readonly onTimeout: () => void) {
     // Register rejection handling even when dispatch fails before the caller awaits reached.
     void this.reached.catch(() => {});
-    this.#cancel = timer(() => { this.close(); onTimeout(); }, inputEvidenceBounds.gateMs);
+    this.#deadline = now() + inputEvidenceBounds.gateMs;
+    this.#cancel = timer(() => this.expire(), inputEvidenceBounds.gateMs);
+  }
+  private expire(): void { this.close(); this.onTimeout(); }
+  private beforeDeadline(): void {
+    // A slow synchronous authority commit may delay JS timers. It must never turn an overdue hold into a pass.
+    if (this.now() >= this.#deadline) { this.expire(); fail("input_evidence_gate_timeout"); }
   }
   get state() { return this.#state; }
   /** Called by the pass-through reader after the real response has arrived. */
   capture(): void {
     if (this.#state !== "armed") fail("input_evidence_gate_stale");
+    this.beforeDeadline();
     this.#state = "held"; this.#reached.resolve();
   }
   /** Releases a received response unchanged. Releasing twice cannot latch a later response. */
   release(): void {
     if (this.#state === "released" || this.#state === "closed") return;
     if (this.#state !== "held") fail("input_evidence_reply_not_received");
+    this.beforeDeadline();
     this.#state = "released"; this.#cancel(); this.#released.resolve();
   }
   /** Failure/interruption closes the latch and unblocks its reader; it never synthesizes a response. */
@@ -82,7 +91,7 @@ export class InputEvidenceTransport {
   #runnerId = 0;
   #closed = false;
   #failure: string | null = null;
-  constructor(readonly timer: EvidenceTimer = realTimer) {}
+  constructor(readonly timer: EvidenceTimer = realTimer, readonly now: () => number = () => performance.now()) {}
   get failure() { return this.#failure; }
   get held() { return [...this.#gates].filter(g => g.state === "held").length; }
   /** Arms the next matching real reply; at most two latches may be armed/held together. */
@@ -90,7 +99,7 @@ export class InputEvidenceTransport {
     this.check();
     const active = [...this.#gates].filter(g => ["armed", "held"].includes(g.state));
     if (active.length >= 2 || this.#gates.size >= 16 || active.some(g => g.method === method)) fail("input_evidence_gate_capacity");
-    const gate = new ReceivedReplyGate(method, this.timer, () => this.abort("input_evidence_gate_timeout"));
+    const gate = new ReceivedReplyGate(method, this.timer, this.now, () => this.abort("input_evidence_gate_timeout"));
     this.#gates.add(gate); return gate;
   }
   check(): void { if (this.#failure || this.#closed) fail(this.#failure ?? "input_evidence_transport_closed"); }

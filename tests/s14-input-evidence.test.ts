@@ -86,6 +86,18 @@ test("peer close of an actually held reply closes the latch immediately and a st
   gate.release(); expect(f.transport.trace.filter(t => t.stage === "delivered")).toHaveLength(0);
 });
 
+test("a delayed timer callback cannot allow an overdue authority commit to release a reply as success", async () => {
+  let now = 0;
+  const transport = new InputEvidenceTransport(() => () => {}, () => now), pipe = inputEvidencePipe();
+  const client = new CdpClient(transport.streams(() => pipe.stream)(argv, {}));
+  cleanups.push(async () => { transport.close(); await transport.join(); });
+  const gate = transport.arm("Input.dispatchMouseEvent"), result = client.send("Input.dispatchMouseEvent").catch(error => error);
+  pipe.emit(cdpFrame({ id: 1, result: {} })); await gate.reached;
+  now = 5001;
+  expect(() => gate.release()).toThrow("input_evidence_gate_timeout");
+  expect((await result).code).toBe("cdp_closed"); expect(transport.trace.filter(t => t.stage === "delivered")).toHaveLength(0);
+});
+
 test("unterminated input and outstanding command limits refuse before additional dispatch", () => {
   const f = protocol();
   for (let id = 1; id <= inputEvidenceBounds.pending; id++) f.stream.write(cdpFrame({ id, method: "Target.getTargets" }));
