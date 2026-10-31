@@ -193,6 +193,9 @@ test("actual per-run public Schway hosts overlap with separate strict native con
   const f = await fixture({ async run(a, signal) {
     return schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "barrier-model", async *stream(request) {
       seen.push(JSON.stringify(request));
+      const role = JSON.parse(request.context.find(section => section.name === "work-graph-role")!.content);
+      expect(role).toMatchObject({ handler: a.step!.handler, botId: a.snapshot.bot.id });
+      expect(role.instruction).toContain("missing delegation tool does not establish that sibling research failed");
       if (a.step!.handler === "research") { if (++streams === 2) entered.resolve(); await release.promise; }
       yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: `Committed ${a.snapshot.bot.id}` }] } };
     } }).run(a, signal);
