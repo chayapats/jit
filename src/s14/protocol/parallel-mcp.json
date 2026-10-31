@@ -1,50 +1,65 @@
 {
   "endpoint": "https://mcp.parallel.ai/mcp",
-  "verifiedAt": "2026-10-30",
+  "verifiedAt": "2026-10-31",
   "source": "https://docs.parallel.ai/integrations/mcp/quickstart",
-  "provenance": "Documentation-derived input schemas, not a live discovery capture. Optional nullable inputs follow the documented null defaults. Runtime compares structural schemas after removing non-behavioral annotations. Live conformance remains pending.",
+  "provenance": "Anonymous web_search/web_fetch structural schemas captured from live initialize and tools/list on 2026-10-31 before tools/call. Non-behavioral annotations removed. Authenticated variant remains documentation-derived and unverified; no key used.",
   "variants": {
     "anonymous": [
       {
         "name": "web_search",
         "inputSchema": {
-          "type": "object",
           "properties": {
             "objective": {
               "type": "string"
             },
             "search_queries": {
-              "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "type": "array"
             },
             "client_model": {
-              "type": "string",
-              "maxLength": 100
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "session_id": {
-              "type": "string",
-              "maxLength": 1000
+              "anyOf": [
+                {
+                  "maxLength": 1000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
             "objective",
             "search_queries"
-          ]
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       },
       {
         "name": "web_fetch",
         "inputSchema": {
-          "type": "object",
           "properties": {
             "urls": {
-              "type": "array",
               "items": {
                 "type": "string"
               },
-              "maxItems": 20
+              "type": "array"
             },
             "objective": {
               "anyOf": [
@@ -54,41 +69,61 @@
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "search_queries": {
               "anyOf": [
                 {
-                  "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "type": "array"
                 },
                 {
                   "type": "null"
                 }
-              ]
+              ],
+              "default": null
             },
             "full_content": {
-              "type": "boolean",
-              "default": false
+              "default": false,
+              "type": "boolean"
             },
             "allow_live_fetch": {
-              "type": "boolean",
-              "default": true
+              "default": true,
+              "type": "boolean"
             },
             "client_model": {
-              "type": "string",
-              "maxLength": 100
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "session_id": {
-              "type": "string",
-              "maxLength": 1000
+              "anyOf": [
+                {
+                  "maxLength": 1000,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "required": [
             "urls"
-          ]
+          ],
+          "type": "object",
+          "additionalProperties": false
         }
       }
     ],

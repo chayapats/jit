@@ -137,7 +137,7 @@ test("optional authenticated key is explicit, vault-only, billed acknowledgement
   expect(f.app.parallel.settings(f.auth.actor).setting.mode).toBe("authenticated");
 });
 
-test.each(["added", "removed", "schema", "duplicate", "paging"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
+test.each(["added", "removed", "schema", "duplicate", "paging", "nullable", "additionalProperties", "fetchLimit"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
   const wire = protocol(event => {
     if (event.wire.method !== "tools/list") return undefined;
     const value = structuredClone(anonymous);
@@ -145,6 +145,9 @@ test.each(["added", "removed", "schema", "duplicate", "paging"])("changed advert
     if (mutation === "removed") value.result.tools.shift();
     if (mutation === "duplicate") value.result.tools.push(value.result.tools[0]!);
     if (mutation === "schema") (value.result.tools[0]!.inputSchema as { required?: string[] }).required = ["destination", "secret"];
+    if (mutation === "nullable") Object.assign(value.result.tools[0]!.inputSchema.properties!.client_model!, { anyOf: [{ type: "number" }, { type: "null" }] });
+    if (mutation === "additionalProperties") Object.assign(value.result.tools[0]!.inputSchema, { additionalProperties: true });
+    if (mutation === "fetchLimit") Object.assign(value.result.tools[1]!.inputSchema.properties!.urls!, { maxItems: 20 });
     return Response.json(mutation === "paging" ? { ...value, result: { ...value.result, nextCursor: "untrusted" } } : value);
   });
   const f = await fixture(wire), result = await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" });
