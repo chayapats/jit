@@ -210,6 +210,34 @@ test("optional authenticated key is explicit, vault-only, billed acknowledgement
   expect(f.app.parallel.settings(f.auth.actor).setting.mode).toBe("authenticated");
 });
 
+test("authenticated live discovery accepts only the pinned read schemas and sends no anonymous arguments", async () => {
+  const f = await fixture();
+  enableKey(f);
+  expect((await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+  expect((await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true })).outcome).toBe("success");
+  const calls = f.seen.filter(event => event.wire.method === "tools/call");
+  expect(calls.map(event => event.wire.params)).toEqual([
+    { name: "web_search", arguments: { objective: "public docs", search_queries: ["public docs"] } },
+    { name: "web_fetch", arguments: { urls: ["https://example.com/article"], full_content: true, allow_live_fetch: true } },
+  ]);
+  expect(f.app.parallel.definitions(f.attempt).map(tool => tool.name)).toEqual(["web_search", "web_fetch"]);
+});
+
+test.each(["unknown", "additionalProperties", "fetchLimit", "nullableDefault"])("authenticated discovery %s drift refuses before dispatch", async mutation => {
+  const wire = protocol(event => {
+    if (event.wire.method !== "tools/list") return undefined;
+    const value = structuredClone(authenticated);
+    if (mutation === "unknown") value.result.tools.push({ name: "shell", inputSchema: { type: "object" } } as typeof value.result.tools[number]);
+    if (mutation === "additionalProperties") Object.assign(value.result.tools[0]!.inputSchema, { additionalProperties: true });
+    if (mutation === "fetchLimit") Object.assign(value.result.tools[1]!.inputSchema.properties!.urls!, { maxItems: 20 });
+    if (mutation === "nullableDefault") Object.assign(value.result.tools[1]!.inputSchema.properties!.objective!, { default: "changed" });
+    return Response.json(value);
+  });
+  const f = await fixture(wire); enableKey(f);
+  expect(await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).toMatchObject({ outcome: "schema_changed", dispatched: false, remoteRequests: 3 });
+  expect(wire.seen.some(event => event.wire.method === "tools/call")).toBe(false);
+});
+
 test.each(["added", "removed", "schema", "duplicate", "paging", "nullable", "additionalProperties", "fetchLimit"])("changed advertised MCP %s refuses before tools/call and never executes extra tools", async mutation => {
   const wire = protocol(event => {
     if (event.wire.method !== "tools/list") return undefined;
