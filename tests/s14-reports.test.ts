@@ -682,3 +682,77 @@ test("model gaps impersonating genuine service codes stay untrusted in reports a
   const file = committed.artifacts.find(a => a.mediaType === "application/json")!, snapshot = f.app.artifacts.download(f.auth.actor, file.id);
   expect(JSON.parse(new TextDecoder().decode(snapshot.bytes))).toMatchObject({ missing: [], modelMissing: spoofed });
 });
+
+test("oversized repeated evidence gets bounded validated byte costs and one tool-free cited correction", async () => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  const original = f.app.parallel.options.transport!;
+  f.app.parallel.options.transport = async (url, init) => {
+    const wire = JSON.parse(init.body as string);
+    return wire.method === "tools/call" ? Response.json({ jsonrpc: "2.0", id: wire.id, result: { structuredContent: { results: [{ url: "https://example.com/article", full_content: "Bounded evidence. " + "x".repeat(18000) }], errors: [] } } }) : original(url, init);
+  };
+  const work = f.start({ tools: ["web_fetch"] }).work!;
+  const { schwayResearch } = await import("../src/s14/research");
+  let turns = 0;
+  f.app.authority.options.executor = { run: (a, signal) => schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "budget-costs", async *stream(request) {
+    let content;
+    if (turns++ === 0) content = [{ type: "tool_call" as const, id: rid(), name: "web_fetch", arguments: { url: "https://example.com/article", fullContent: true } }];
+    else {
+      const source = f.app.parallel.inspect(f.auth.actor, work.id).evidence[0]!, report = f.proposal(source);
+      report.claims = Array.from({ length: turns === 2 ? 2 : 1 }, (_, index) => ({ ...report.claims[0]!, id: `claim_${index}`, kind: "inference" as const, text: "A bounded supported finding.",
+        citations: [{ attemptId: a.id, id: source.id, revision: 1, quote: "Bounded evidence.", scope: "page" as const }] }));
+      if (turns === 3) {
+        const message = request.items.findLast(item => item.type === "user")!;
+        if (message.type !== "user") throw Error("missing correction");
+        const prompt = message.content.filter(p => p.type === "text").map(p => p.text).join("\n");
+        const diagnostics = JSON.parse(prompt.split("Budget diagnostics: ")[1]!);
+        expect(diagnostics).toMatchObject({ phase: "snapshot", outputBytes: 32768, omittedSources: 0 });
+        expect(diagnostics.actualBytes).toBeGreaterThan(32768);
+        const costs = JSON.parse(diagnostics.citationCosts);
+        expect(costs).toMatchObject([{ attemptId: a.id, id: source.id, revision: 1, references: 2 }]);
+        expect(costs[0].bytesPerReference).toBeGreaterThan(18000);
+        expect(diagnostics.citationCosts).not.toContain("Bounded evidence.");
+        expect(Buffer.byteLength(diagnostics.citationCosts)).toBeLessThanOrEqual(4096);
+        expect(request.tools).toEqual([]);
+        expect(f.app.reports.list(f.auth.actor, work.id)).toEqual([]);
+      }
+      content = [{ type: "text" as const, text: JSON.stringify({ text: "Cited findings", report }) }];
+    }
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } }).run(a, signal) };
+  await f.app.authority.drain();
+  expect(turns).toBe(3);
+  const view = available(f.app.reports.list(f.auth.actor, work.id)[0]!);
+  expect(view.report.claims[0]!.support).toBe("supported");
+  expect(view.report.claims[0]!.citations[0]!.quote).toBe("Bounded evidence.");
+  expect(f.app.parallel.inspect(f.auth.actor, work.id).reads).toHaveLength(1);
+  expect(f.app.authority.view(f.auth.actor, work.id).reservations!.calls).toBe(4);
+});
+
+test("budget diagnostics cap source identities and omit all source content", async () => {
+  const f = await fixture(), original = f.app.parallel.options.transport!; let calls = 0;
+  f.app.parallel.options.transport = async (url, init) => {
+    const wire = JSON.parse(init.body as string);
+    if (wire.method !== "tools/call") return original(url, init);
+    const group = calls++;
+    return Response.json({ jsonrpc: "2.0", id: wire.id, result: { structuredContent: { results: Array.from({ length: 5 }, (_, index) => ({ url: `https://example.com/${group}/${index}`, excerpts: ["Public source text must not appear in diagnostics."] })) } } });
+  };
+  const sources: Report["claims"][number]["evidence"] = [];
+  for (let index = 0; index < 4; index++) sources.push(...(await f.app.parallel.read(f.attempt.id, "web_search", { query: "public facts" })).evidence);
+  expect(sources).toHaveLength(20);
+  const proposal = f.proposal(sources[0]!);
+  proposal.claims = sources.map((source, index) => ({ ...proposal.claims[0]!, id: `claim_${index}`, kind: "inference", text: "A provisional source-based finding.", covers: [],
+    citations: [{ attemptId: f.attempt.id, id: source.id, revision: 1, quote: source.content, scope: "snippet" }] }));
+  proposal.limitations = Array.from({ length: 20 }, (_, index) => `${index}: ${"Bounded limitation. ".repeat(60)}`);
+  let rejected: unknown;
+  try { f.app.reports.validateCandidate(f.attempt.id, { state: "ready", text: "Summary", report: proposal }); } catch (error) { rejected = error; }
+  const { AppError } = await import("../src/errors");
+  expect(rejected).toBeInstanceOf(AppError);
+  const error = rejected as InstanceType<typeof AppError>;
+  expect(error.code).toBe("report_output_budget_exhausted");
+  const costs = JSON.parse(error.detail!.citationCosts as string);
+  expect(costs).toHaveLength(16); expect(error.detail!.omittedSources).toBe(4);
+  expect(Buffer.byteLength(error.detail!.citationCosts as string)).toBeLessThanOrEqual(4096);
+  expect(JSON.stringify(error.detail)).not.toContain(sources[0]!.content);
+  expect(costs.every((cost: { id: string }) => sources.some(s => s.id === cost.id))).toBe(true);
+  expect(f.app.reports.list(f.auth.actor, f.started.work!.id)).toEqual([]);
+});
