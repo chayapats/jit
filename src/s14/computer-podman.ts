@@ -11,6 +11,7 @@ import { dropsAllCapabilities } from "../exec/container-checks";
 import { pinnedImagePattern } from "../exec/box-runtime";
 import { podmanCommandRunner, podmanStreamRunner, type CommandRunner, type StreamRunner } from "../exec/podman-runtime";
 import type { AgentInput, BotComputer, ComputerHandle, ComputerRuntime, OwnerInput } from "./computer-types";
+import { botComputerUserNamespace } from "./computer-types";
 import { readComputerDiskPool } from "./computer-disks";
 import type { PodmanClient } from "../exec/podman-client";
 
@@ -250,7 +251,7 @@ export class BotPodmanRuntime implements ComputerRuntime {
   }
   private containerArgs(c: BotComputer, name: string, source: string, destination: string, network = "none"): string[] {
     return ["run", "--detach", "--pull=never", "--http-proxy=false", "--unsetenv-all", `--network=${network}`, "--pid=private", "--ipc=private", "--uts=private", "--cgroupns=private",
-      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=1000,gid=1000", "--user=1000:1000",
+      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", `--userns=${botComputerUserNamespace}`, "--user=1000:1000",
       "--cpus", String(c.limits.cpuMillis / 1000), "--memory", String(c.limits.memoryBytes), "--memory-swap", String(c.limits.memoryBytes),
       "--pids-limit", String(c.limits.pids), "--log-driver=none", "--no-healthcheck", "--shm-size=64m",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=67108864,mode=1777", "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=134217728,mode=1777",

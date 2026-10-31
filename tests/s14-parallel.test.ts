@@ -244,6 +244,8 @@ test("supported Schway host runs two allowlisted tools, charges later inference 
     expect(request.tools!.map(t => t.name)).toEqual(["web_search", "web_fetch"]);
     expect(request.hostedTools ?? []).toEqual([]);
     expect(request.context.map(section => section.content).join("\n")).toContain('"language":"en"');
+    expect(request.systemPrompt).toContain("language requested by the work purpose");
+    expect(request.systemPrompt).toContain("configured language only as a fallback");
     const content = turn++ === 0 ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
       : [{ type: "text" as const, text: "Snippet evidence only; freshness unknown. Ready for owner review." }];
     yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
@@ -562,4 +564,72 @@ test("foreign published inference quotes and private packet/Bot metadata remain 
     expect((await f.app.parallel.read(attempt.id, "web_search", { query })).outcome).toBe("private_context");
   }
   expect(f.seen).toHaveLength(0);
+});
+
+test.each([
+  ["initialize", "30", epoch + 30000],
+  ["notifications/initialized", new Date(epoch + 45000).toUTCString(), epoch + 45000],
+  ["tools/list", "unknown-private-vendor-text", null],
+  ["tools/call", "999999999999999999999999", null],
+] as const)("quota at %s preserves only a safe retry deadline and fences later reads across restart", async (method, hint, deadline) => {
+  const f = await fixture(protocol(event => event.wire.method === method ? new Response("private vendor body", { status: 429, headers: { "retry-after": hint } }) : undefined));
+  const first = await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" });
+  expect(first).toMatchObject({ outcome: "quota", retryAt: deadline });
+  const count = f.seen.length;
+  const app = new S14Application(f.store, f.options);
+  const next = await app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false });
+  expect(next).toMatchObject({ outcome: "quota", retryAt: deadline, remoteRequests: 0, dispatched: false });
+  expect(f.seen).toHaveLength(count);
+  expect(JSON.stringify(app.parallel.inspect(app.authenticate(f.token).actor, f.work.id))).not.toContain("private vendor");
+});
+
+test("a vendor retry hint blocks a new work until its deadline; unknown windows require a later explicit work", async () => {
+  for (const hint of ["20", null]) {
+    let refused = false;
+    const f = await fixture(protocol(event => {
+      if (event.wire.method === "tools/call" && !refused) {
+        refused = true;
+        return new Response(null, { status: 429, headers: hint ? { "retry-after": hint } : {} });
+      }
+    }));
+    await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" });
+    f.app.authority.settle(f.attempt.id);
+    f.clock.now++;
+    const work = f.start().work!, attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: policy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes: 32768 });
+    const count = f.seen.length;
+    if (hint) {
+      expect((await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" })).outcome).toBe("quota");
+      expect(f.seen).toHaveLength(count);
+      f.clock.now = epoch + 20001;
+    }
+    expect((await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" })).outcome).toBe("success");
+    expect(f.seen).toHaveLength(count + 4);
+  }
+});
+
+test("structured tool quota honors HTTP Retry-After without leaking its body", async () => {
+  const f = await fixture(protocol(event => event.wire.method === "tools/call" ? Response.json({ jsonrpc: "2.0", id: 3, result: { isError: true, structuredContent: { code: "rate_limit_exceeded", secret: "private provider content" } } }, { headers: { "retry-after": "25" } }) : undefined));
+  expect(await f.app.parallel.read(f.attempt.id, "web_search", { query: "public docs" })).toMatchObject({ outcome: "quota", retryAt: epoch + 25000, remoteRequests: 4 });
+});
+
+test("research stops offering tools immediately after Parallel quota and commits disclosed missing coverage", async () => {
+  const f = await fixture(protocol(event => event.wire.method === "tools/call" ? new Response(null, { status: 429, headers: { "retry-after": "45" } }) : undefined));
+  let turns = 0;
+  const model: Model = { provider: "scripted", id: "quota-final", async *stream(request) {
+    const budget = JSON.parse(request.context.find(section => section.name === "remaining-run-budget")!.content);
+    const contract = request.context.find(section => section.name === "report-contract")!.content;
+    expect(contract).toContain("one exact substring");
+    let content;
+    if (turns++ === 0) content = [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }];
+    else {
+      expect(request.tools).toEqual([]);
+      expect(budget).toMatchObject({ maximumFurtherToolCalls: 0, parallelQuota: { retryAt: epoch + 45000 } });
+      content = [{ type: "text" as const, text: JSON.stringify({ text: "Missing evidence after Parallel quota.", report: { title: "Partial research", claims: [{ id: "gap", text: "The requested conclusion remains unverified.", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: ["Parallel quota prevented retrieval"], limitations: ["No sources were read"], artifactIds: [] } }) }];
+    }
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal);
+  f.app.authority.commit(f.attempt.id, output);
+  expect(turns).toBe(2); expect(f.seen).toHaveLength(4);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial", missing: expect.arrayContaining([expect.objectContaining({ kind: "read", outcome: "quota" })]) } });
 });

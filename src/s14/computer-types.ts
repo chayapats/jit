@@ -87,3 +87,5 @@ export interface ComputerSession {
   registrySpawn(request: ExecutionSpawnRequest, hosts: readonly string[], allowed: () => void): Promise<ExecutionSpawnResult>;
   release(): void;
 }
+/** Exact rootless image mapping shared by install-time preparation and runtime computer creation. */
+export const botComputerUserNamespace = "keep-id:uid=1000,gid=1000";

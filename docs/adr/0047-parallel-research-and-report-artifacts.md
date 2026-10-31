@@ -36,3 +36,9 @@ Parallel remains an external recipient even though execution and persistent stat
 ## Evidence required
 
 Anonymous and authenticated MCP fixtures; tool-list/schema changes; quota/network/cancel/output caps; unsafe/private outbound inputs; no hidden fallback; citation/evidence mismatch; artifact path/type/hash/size rejection; partial and stale-cache reports; source deletion cleanup; separate opt-in live usefulness. Requirements: FR-07/13/17/18/29/41/42; NFR-09/10.
+
+## EVID14-01 quota refusal refinement
+
+Persist only a validated Retry-After deadline with the read outcome. Stop the affected work's public reads after the first quota and fence pre-existing queued read lanes before spending a model admission; permit tool-free partial synthesis with the failed-read gap. Apply a known retry deadline to later work on the same configured identity. An unknown reset time stays unknown and requires a later explicit new-work probe, never identifier rotation or fallback. Installation-wide anonymous fencing is conservative and does not establish the vendor's actual quota scope/window.
+
+Keep exact quote and source-identity validation strict. Better initial report instructions and the existing one charged tool-free correction can address malformed candidates; they cannot repair absent evidence or certify usefulness.

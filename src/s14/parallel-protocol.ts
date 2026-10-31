@@ -14,7 +14,15 @@ export type ParallelTransport = (url: string, init: RequestInit) => Promise<Resp
 export type ParallelTimer = (callback: () => void, ms: number) => () => void;
 /** Safe protocol failure; vendor bodies, transport messages and credentials never enter errors. */
 export class ParallelFailure extends AppError {
-  constructor(readonly outcome: WebOutcome) { super(`parallel_${outcome}`, 503); }
+  constructor(readonly outcome: WebOutcome, readonly retryAt: number | null = null) { super(`parallel_${outcome}`, 503); }
+}
+
+function retryAt(headers: Headers, now: number): number | null {
+  const value = headers.get("retry-after");
+  if (!value || value.length > 128) return null;
+  const date = /^\d+$/.test(value) ? now + Number(value) * 1000
+    : /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value) ? Date.parse(value) : NaN;
+  return Number.isSafeInteger(date) && date >= 0 ? Math.max(now, date) : null;
 }
 
 function schema(value: unknown): unknown {
@@ -92,9 +100,10 @@ export class ParallelMcp implements SearchProvider {
   requests = 0;
   last: ParallelResult | null = null;
   #transportSession: string | null = null;
+  #retryAt: number | null = null;
   constructor(readonly options: {
     mode: ParallelSetting["mode"]; secret: string | null; sessionId: string | null; model: string;
-    transport?: ParallelTransport; maxBytes?: number; beforeRequest?: (method: string) => void;
+    transport?: ParallelTransport; maxBytes?: number; beforeRequest?: (method: string) => void; now?: () => number;
     /** Persist validated vendor correlation independently of evidence acceptance. */
     onSessionId?: (sessionId: string) => void;
   }) {}
@@ -109,9 +118,10 @@ export class ParallelMcp implements SearchProvider {
     if (this.#transportSession) headers["Mcp-Session-Id"] = this.#transportSession;
     const body = JSON.stringify({ jsonrpc: "2.0", ...(requestId === null ? {} : { id: requestId }), method, params });
     const response = await (this.options.transport ?? fetch)(parallelEndpoint, { method: "POST", headers, body, signal, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer" });
+    this.#retryAt = retryAt(response.headers, (this.options.now ?? Date.now)());
     if (!response.ok) {
       await response.body?.cancel();
-      throw new ParallelFailure(response.status === 429 ? "quota" : response.status === 403 || response.status === 451 ? "blocked" : response.status === 401 ? "key_unavailable" : "service_error");
+      throw new ParallelFailure(response.status === 429 ? "quota" : response.status === 403 || response.status === 451 ? "blocked" : response.status === 401 ? "key_unavailable" : "service_error", response.status === 429 ? this.#retryAt : null);
     }
     const transportSession = response.headers.get("mcp-session-id");
     if (transportSession !== null) {
@@ -184,7 +194,8 @@ export class ParallelMcp implements SearchProvider {
     if (raw.isError === true) {
       // Structured error codes alone select a class; raw error content stays private to the protocol boundary.
       const code = object(raw.structuredContent ?? {}).code;
-      throw new ParallelFailure(code === "rate_limit_exceeded" || code === "quota_exceeded" ? "quota" : code === "blocked" ? "blocked" : "service_error");
+      const outcome = code === "rate_limit_exceeded" || code === "quota_exceeded" ? "quota" : code === "blocked" ? "blocked" : "service_error";
+      throw new ParallelFailure(outcome, outcome === "quota" ? this.#retryAt : null);
     }
     let data: Record<string, unknown>;
     if (raw.structuredContent) data = object(raw.structuredContent);

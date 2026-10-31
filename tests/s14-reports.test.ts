@@ -454,7 +454,7 @@ test("candidate validation rolls back all publication rows and final commit rech
   expect(f.app.reports.list(f.auth.actor, f.started.work!.id)).toEqual([]);
 });
 
-test.each(["quote", "size", "still_invalid"] as const)("native report %s rejection gets one charged tool-free correction without weakening publication", async mutation => {
+test.each(["quote", "size", "unknown_attempt", "unknown_evidence", "still_invalid"] as const)("native report %s rejection gets one charged tool-free correction without weakening publication", async mutation => {
   const f = await fixture(); f.app.authority.settle(f.attempt.id);
   const work = f.start({ tools: ["web_fetch"] }).work!;
   const { schwayResearch } = await import("../src/s14/research");
@@ -466,7 +466,9 @@ test.each(["quote", "size", "still_invalid"] as const)("native report %s rejecti
       const source = f.app.parallel.inspect(f.auth.actor, work.id).evidence[0]!, report = f.proposal(source);
       report.claims[0]!.citations[0]!.attemptId = a.id;
       if (turns === 2 || mutation === "still_invalid") {
-        if (mutation === "size") report.claims = Array.from({ length: 24 }, (_, index) => ({ ...report.claims[0]!, id: `claim_${index}`, kind: "inference" as const, text: "Evidence discussion ".repeat(80) }));
+        if (mutation === "unknown_attempt") report.claims[0]!.citations[0]!.attemptId = "invented_attempt";
+        else if (mutation === "unknown_evidence") report.claims[0]!.citations[0]!.id = "invented_evidence";
+        else if (mutation === "size") report.claims = Array.from({ length: 24 }, (_, index) => ({ ...report.claims[0]!, id: `claim_${index}`, kind: "inference" as const, text: "Evidence discussion ".repeat(80) }));
         else report.claims[0]!.citations[0]!.quote = "This quotation was not returned by the source";
       }
       if (turns === 3) {

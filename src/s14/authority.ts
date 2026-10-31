@@ -647,6 +647,12 @@ export class S14Authority {
           const node = graph.nodes.find(n => n.id === step.nodeId)!;
           const dependencies = this.app.graph.inputs(tx, step, node);
           if (!dependencies) continue;
+          if (node.tools.some(tool => tool === "web_search" || tool === "web_fetch") && this.app.parallel.quota(tx, graph.id)) {
+            step.state = "blocked"; step.reason = "parallel_quota"; step.queueCeiling = null;
+            step.settledAt = this.app.now(); step.revision++;
+            save(tx, "work_steps", step);
+            continue;
+          }
           if (step.state === "waiting_evidence") {
             step.state = "queued"; step.queuedAt = this.app.now(); step.reason = null; step.revision++;
             save(tx, "work_steps", step);

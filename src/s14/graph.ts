@@ -61,12 +61,13 @@ export function validateWorkGraph(grant: WorkGrant, proposed: StepProposal[]): S
 export function defaultWorkGraph(grant: WorkGrant): StepProposal[] {
   const count = grant.bots.length + (grant.bots.length > 1 ? 1 : 0);
   const calls = Math.floor(grant.limits.calls / count), outputBytes = Math.floor(grant.limits.outputBytes / grant.limits.attempts);
-  const nodes: StepProposal[] = grant.bots.map((bot, index) => ({ id: `research_${index}`, handler: "research", botId: bot.id,
+  const researchers = grant.bots.length > 2 ? [...grant.bots.filter(bot => bot.id !== "jit"), ...grant.bots.filter(bot => bot.id === "jit")] : grant.bots;
+  const nodes: StepProposal[] = researchers.map((bot, index) => ({ id: `research_${index}`, handler: "research", botId: bot.id,
     dependsOn: [], tools: grant.tools.filter(tool => bot.capabilities.tools.includes(tool)),
     scopes: grant.scopes.filter(s => bot.capabilities.resources.includes(s.ref.id) && (s.ref.kind === "share" ? s.receiverBotId === bot.id : s.ownerBotId === bot.id)).map(s => s.ref),
     input: `${grant.purpose}\nCompletion rule: ${grant.command.payload.completionRule}`, calls, outputBytes }));
   if (count > 1) nodes.push({ id: "synthesis", handler: "synthesis", botId: grant.bots[0]!.id, dependsOn: nodes.map(n => n.id),
-    tools: [], scopes: nodes[0]!.scopes.filter(scope => scope.kind === "share"), input: `Synthesize the committed evidence for: ${grant.purpose}. Preserve conflicts, missing evidence and failed siblings.`, calls, outputBytes });
+    tools: [], scopes: nodes.find(node => node.botId === grant.bots[0]!.id)!.scopes.filter(scope => scope.kind === "share"), input: `Synthesize the committed evidence for: ${grant.purpose}. Preserve conflicts, missing evidence and failed siblings.`, calls, outputBytes });
   return validateWorkGraph(grant, nodes);
 }
 
