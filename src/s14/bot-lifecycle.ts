@@ -75,6 +75,7 @@ export class S14BotLifecycle {
         .filter(routine => routine.capture.bots.some(b => b.id === botId))
         .map(routine => ({ id: routine.id, revision: routine.revision, generation: routine.generation, state: routine.state })),
       withdrawals: tx.all<{ kind: string; id: string; mode: string }>("SELECT kind,id,mode FROM lifecycle.withdrawals ORDER BY kind,id,mode").filter(row => scopedIds.has(row.id)),
+      personal: this.app.personal.impact(tx, botId),
       retainedEffects: tx.all<{ id: string; record_json: string; attempt_json: string }>("SELECT e.id,e.record_json,a.record_json AS attempt_json FROM effects e JOIN work_attempts a ON a.id=e.attempt_id ORDER BY e.id")
         .filter(row => JSON.parse(row.record_json).botId === botId || data.contexts.includes(JSON.parse(row.attempt_json).memoryId)).map(row => {
         const effect = JSON.parse(row.record_json);
@@ -244,6 +245,7 @@ export class S14BotLifecycle {
       }
     }
     this.app.memory.reconcile(tx);
+    this.app.personal.reconcile(tx);
     this.app.sharing.fence(tx);
     this.app.parallel.reconcile(tx);
     this.app.reports.reconcile(tx);
@@ -280,6 +282,7 @@ export class S14BotLifecycle {
 
   /** Drains retry-safe local/computer/native cleanup after fencing, retaining stopping until actual transports settle. */
   async drain(port: NativeRecoveryPort): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) return this.#draining;
     this.#draining = this.cleanup(port);
     try { await this.#draining; }

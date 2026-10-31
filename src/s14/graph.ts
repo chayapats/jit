@@ -161,8 +161,8 @@ export class S14Graph {
     return tx.all<{ record_json: string }>("SELECT record_json FROM work_steps WHERE work_id=? ORDER BY rowid", workId).map(r => JSON.parse(r.record_json));
   }
 
-  /** Fences a cancelled lane at every tool and final-result barrier. */
-  guard(tx: AppTransaction, attempt: Attempt): void {
+  /** Fences stopped lanes; only a held card may use a settled result's authority without reopening execution. */
+  guard(tx: AppTransaction, attempt: Attempt, heldEffect = false): void {
     if (!attempt.step) return;
     const step = record<WorkStep>(tx, "work_steps", attempt.step.id);
     // Coding's committed waiting result keeps its original exact-effect seam usable after transport settlement.
@@ -175,7 +175,10 @@ export class S14Graph {
         WHERE c.attempt_id=? AND w.state='waiting' AND r.content_json IS NOT NULL
         AND json_extract(c.record_json,'$.reportId')=r.id
         AND json_extract(c.record_json,'$.state') IN ('reviewable','partial')`, attempt.id);
-    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id) || step.attemptId !== attempt.id || step.state !== "running" && !codingReview) throw new AppError("step_fenced", 403);
+    const settled = heldEffect && attempt.state === "waiting" && step.settledAt !== null &&
+      (step.state === "committed" || step.state === "blocked" && step.reason === "handler_waiting") &&
+      !!tx.get("SELECT 1 FROM work_results WHERE attempt_id=?", attempt.id);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id) || step.attemptId !== attempt.id || step.state !== "running" && !settled && !codingReview) throw new AppError("step_fenced", 403);
   }
 
   /** Selects dependencies only after actual sibling settlement and committed evidence, retaining explicit gaps. */

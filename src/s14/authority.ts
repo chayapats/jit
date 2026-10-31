@@ -16,7 +16,7 @@ const equal = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const refsEqual = (a: ScopeRef, b: ScopeRef) => a.kind === b.kind && a.id === b.id && a.revision === b.revision;
 const maxLimits: WorkLimits = { attempts: 64, steps: 64, calls: 256, outputBytes: 1048576, wallMs: 86400000, concurrency: 8, reads: 256 };
 const stopped = ["blocked", "stopping", "stopped", "ready"];
-const effectKinds = ["send", "publish", "push", "payment", "delete"];
+const effectKinds = ["send", "publish", "push", "payment", "delete", "calendar"];
 function list(v: unknown): asserts v is string[] {
   if (!Array.isArray(v) || v.length > 64 || new Set(v).size !== v.length) throw new AppError("invalid_list");
   for (const item of v) identity(item);
@@ -265,7 +265,7 @@ export class S14Authority {
         if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
         const bot = record<Bot>(tx, "bots", s.bot.id);
         if (((!equal(bot, s.bot) || !bot.enabled) && !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='retained_evidence' AND id=? AND mode='owner_retained'", attempt.id)) || !equal(this.app.route(bot.routeId), s.route)) return false;
-        for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
+        for (const scope of s.scopes) if (!equal(this.app.personal.retainedScope(tx, scope.ref, attempt.id) ?? this.scope(tx, scope.ref), scope)) return false;
         const computer = tx.get<{ computer_id: string; generation: number }>("SELECT computer_id,generation FROM computer_attempts WHERE attempt_id=?", key);
         if (computer) {
           const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
@@ -290,8 +290,8 @@ export class S14Authority {
     if (!attempt.snapshot.tools.includes(tool)) throw new AppError("tool_outside_grant", 403);
     return attempt;
   }
-  private live(tx: AppTransaction, attempt: Attempt): Work {
-    this.app.graph.guard(tx, attempt);
+  private live(tx: AppTransaction, attempt: Attempt, heldEffect = false): Work {
+    this.app.graph.guard(tx, attempt, heldEffect);
     if (attempt.state !== "running" && attempt.state !== "waiting") throw new AppError("attempt_fenced", 403);
     if (!this.app.memory.attemptCurrent(tx, attempt.id)) throw new AppError("memory_context_stale", 403);
     const computer = tx.get<{ generation: number; record_json: string }>("SELECT a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attempt.id);
@@ -364,6 +364,24 @@ export class S14Authority {
     this.live(tx, attempt);
     if (tool && !attempt.snapshot.tools.includes(tool)) throw new AppError("tool_outside_grant", 403);
     return attempt;
+  }
+  /** Rechecks a held card's originating authority after run settlement, without reopening inference, reads or result publication. */
+  effectGuard(tx: AppTransaction, effectId: string, tool?: string): Attempt {
+    const effect = record<Effect>(tx, "effects", effectId);
+    if (!["pending", "approved", "executing"].includes(effect.state) || effect.actionHash !== digest(canonical(effect.action)) || this.app.now() >= effect.expiresAt) throw new AppError("effect_fenced", 403);
+    const attempt = record<Attempt>(tx, "work_attempts", effect.attemptId);
+    this.live(tx, attempt, true);
+    if (tool && (tool !== `effect_${effect.action.kind}` || !attempt.snapshot.tools.includes(tool))) throw new AppError("tool_outside_grant", 403);
+    return attempt;
+  }
+  /** Charges a broker request only to its exact executing card and original finite tool/resource budget. */
+  reserveEffectTool(effectId: string, tool: string, ref: ScopeRef): void {
+    this.app.store.transaction(tx => {
+      const attempt = this.effectGuard(tx, effectId, tool);
+      if (record<Effect>(tx, "effects", effectId).state !== "executing") throw new AppError("effect_fenced", 403);
+      if (!attempt.snapshot.scopes.some(s => refsEqual(s.ref, ref) && s.tools.includes(tool))) throw new AppError("scope_outside_grant", 403);
+      this.chargeCall(tx, attempt);
+    });
   }
   /** Reserves each later native model turn under the same finite call ceiling as tools. */
   reserveInference(attemptId: string): void {
@@ -465,7 +483,7 @@ export class S14Authority {
   reviseEffect(attemptId: string, effectId: string, expectedRevision: number, proposed: EffectAction, expiresAt: number): Effect {
     action(proposed); integer(expiresAt, 1, Number.MAX_SAFE_INTEGER);
     return this.app.store.transaction(tx => {
-      const attempt = record<Attempt>(tx, "work_attempts", attemptId); this.live(tx, attempt);
+      const attempt = this.effectGuard(tx, effectId);
       const effect = record<Effect>(tx, "effects", effectId);
       if (effect.attemptId !== attemptId || effect.revision !== expectedRevision || !["pending", "approved"].includes(effect.state)) throw new AppError("stale_revision", 409);
       if (!attempt.snapshot.tools.includes(`effect_${proposed.kind}`)) throw new AppError("effect_outside_grant", 403);
@@ -480,7 +498,7 @@ export class S14Authority {
     const effect = record<Effect>(tx, "effects", c.payload.effectId);
     if (effect.revision !== c.expectedRevision || effect.actionHash !== c.payload.actionHash || effect.state !== "pending") throw new AppError("stale_approval", 409);
     if (this.app.now() >= effect.expiresAt) throw new AppError("approval_expired", 409);
-    this.live(tx, record<Attempt>(tx, "work_attempts", effect.attemptId));
+    this.effectGuard(tx, effect.id);
     if (!["approve", "deny"].includes(c.payload.decision)) throw new AppError("invalid_decision");
     effect.state = c.payload.decision === "approve" ? "approved" : "denied"; this.saveEffect(tx, effect);
     if (effect.state === "denied") this.reevaluate(tx, effect.workId);
@@ -494,7 +512,7 @@ export class S14Authority {
     const effect = this.app.store.transaction(tx => {
       const current = record<Effect>(tx, "effects", effectId);
       if (current.revision !== expectedRevision || current.actionHash !== actionHash || current.actionHash !== digest(canonical(current.action)) || current.state !== "approved") throw new AppError("stale_approval", 409);
-      const attempt = record<Attempt>(tx, "work_attempts", current.attemptId); this.live(tx, attempt);
+      const attempt = this.effectGuard(tx, current.id);
       if (this.app.now() >= current.expiresAt) throw new AppError("approval_expired", 409);
       if (!this.options.effects?.[current.action.kind]) throw new AppError("effect_adapter_unavailable", 503);
       this.chargeCall(tx, attempt);
@@ -504,7 +522,7 @@ export class S14Authority {
     this.#effects.add(effect.id);
     const selectedAction = structuredClone(effect.action);
     const allowed = () => this.app.store.read(tx => {
-      const current = record<Effect>(tx, "effects", effect.id); this.live(tx, record<Attempt>(tx, "work_attempts", effect.attemptId));
+      const current = record<Effect>(tx, "effects", effect.id); this.effectGuard(tx, current.id);
       if (current.state !== "executing" || current.revision !== effect.revision || current.actionHash !== effect.actionHash || digest(canonical(selectedAction)) !== effect.actionHash || this.app.now() >= effect.expiresAt) throw new AppError("effect_fenced", 403);
     });
     let outcome: "succeeded" | "failed" | "unknown" = "unknown";
@@ -513,7 +531,7 @@ export class S14Authority {
     finally { this.#effects.delete(effect.id); }
     return this.app.store.transaction(tx => {
       const current = record<Effect>(tx, "effects", effect.id); if (current.state !== "executing") return current;
-      try { this.live(tx, record<Attempt>(tx, "work_attempts", current.attemptId)); if (this.app.now() >= current.expiresAt) outcome = "unknown"; } catch { outcome = "unknown"; }
+      try { this.effectGuard(tx, current.id); } catch { outcome = "unknown"; }
       current.state = outcome; current.reason = outcome === "unknown" ? "reconcile_only_no_retry" : null; this.saveEffect(tx, current);
       this.reevaluate(tx, current.workId); return current;
     });
@@ -556,8 +574,9 @@ export class S14Authority {
 
   /** Drains finite DAG lanes under shared capacity, retaining slots until actual transport settlement. */
   drain(): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return Promise.resolve();
     this.expireEffects();
-    if (!this.options.executor || this.#closing || this.app.recovery.booting) return Promise.resolve();
+    if (!this.options.executor || this.#closing) return Promise.resolve();
     if (this.#draining) { this.wake(); return this.#draining; }
     // Install ownership before calling any executor, including synchronously reentrant fixture/host code.
     const completion = Promise.withResolvers<void>();
@@ -654,8 +673,12 @@ export class S14Authority {
                     continue;
                   }
                   const evidenceRows = tx.all<{ id: string }>("SELECT id FROM external_evidence WHERE attempt_id=? ORDER BY rowid", dependency.attemptId);
-                  for (const row of evidenceRows) {
-                    const evidence = this.app.parallel.citation(tx, dependency.attemptId, row.id, 1);
+                  const app = this.app;
+                  function* evidenceItems() {
+                    for (const row of evidenceRows) yield app.parallel.citation(tx, dependency.attemptId, row.id, 1);
+                    yield* app.personal.reads.evidence(tx, dependency.attemptId);
+                  }
+                  for (const evidence of evidenceItems()) {
                     const bytes = Buffer.byteLength(JSON.stringify([...attempt.step.inputs, { ...dependency, evidence: [...dependency.evidence, evidence] }]));
                     if (bytes > 49152) {
                       attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_evidence_omitted" });

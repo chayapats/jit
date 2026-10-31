@@ -300,4 +300,5 @@ test.each(["memory.forget", "memory.publish"] as const)("coding diffs/check logs
   for (const artifact of evidence) expect(() => f.app.artifacts.download(f.auth.actor, artifact.id)).toThrow("artifact_unavailable");
   const view = f.app.coding.view(f.auth.actor, attempt.workId);
   expect(view.available).toBe(false); expect(view.job).toBeNull(); expect(view.checks).toEqual([]);
+  expect(f.store.read(tx => tx.get("SELECT 1 FROM coding_checks WHERE attempt_id=?", attempt.id))).toBeNull();
 });

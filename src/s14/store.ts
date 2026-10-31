@@ -2,12 +2,14 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "../errors";
+import { assertS14OpsUnfenced, assertS14BackupUnfenced } from "./ops-state";
+import { opsPath } from "./ops-files";
 import type { AppTransaction } from "../store";
 
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 16;
+export const s14SchemaVersion = 17;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -30,9 +32,12 @@ export function inspectS14Store(path: string): "missing" | "s14" {
 export class S14Store {
   #db: Database;
   #tx: AppTransaction;
-  constructor(readonly path: string) {
+  constructor(readonly path: string, readonly maintenance?: { lifecyclePath?: string }) {
+    opsPath(path);
+    if (!maintenance) { assertS14OpsUnfenced(path); assertS14BackupUnfenced(path); }
     const state = inspectS14Store(path);
-    const ledgerPath = `${path}.lifecycle.sqlite`;
+    const ledgerPath = maintenance?.lifecyclePath ?? `${path}.lifecycle.sqlite`;
+    opsPath(ledgerPath);
     if (state !== "missing" && (!existsSync(ledgerPath) || lstatSync(ledgerPath).isSymbolicLink())) throw new AppError("s14_lifecycle_ledger_unavailable", 503);
     if (state === "missing" && existsSync(ledgerPath)) throw new AppError("s14_lifecycle_ledger_conflict", 409);
     if (state === "missing") {
@@ -51,7 +56,9 @@ export class S14Store {
       this.#db.exec("PRAGMA busy_timeout=2000");
       this.#db.query("ATTACH DATABASE ? AS lifecycle").run(ledgerPath);
       this.#db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
-      if (state === "missing") this.#db.transaction(() => this.#db.exec(`
+      if (state === "missing") this.#db.transaction(() => {
+        this.assertWritable();
+        this.#db.exec(`
         CREATE TABLE owner (id TEXT PRIMARY KEY CHECK(id='owner'), password_hash TEXT NOT NULL, generation INTEGER NOT NULL);
         CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL);
         CREATE TABLE login_throttle (id INTEGER PRIMARY KEY CHECK(id=1), window_start INTEGER NOT NULL, attempts INTEGER NOT NULL);
@@ -81,6 +88,15 @@ export class S14Store {
         CREATE TABLE memory_shares (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE memory_decisions (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE memory_contexts (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
+        CREATE TABLE personal_drafts (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), request_id TEXT NOT NULL, input_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(attempt_id,request_id));
+        CREATE TABLE personal_draft_versions (id TEXT NOT NULL REFERENCES personal_drafts(id), revision INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(id,revision));
+        CREATE TABLE personal_effect_observations (effect_id TEXT PRIMARY KEY REFERENCES effects(id), record_json TEXT NOT NULL);
+        CREATE TABLE personal_clients (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_flows (id TEXT PRIMARY KEY, state_hash TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
+        CREATE TABLE personal_grants (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_sources (source_id TEXT PRIMARY KEY REFERENCES memory_sources(id), connection_id TEXT NOT NULL REFERENCES personal_connections(id), connection_revision INTEGER NOT NULL, scope_json TEXT NOT NULL);
+        CREATE TABLE personal_reads (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
         CREATE TABLE parallel_settings (id TEXT PRIMARY KEY CHECK(id='parallel'), record_json TEXT NOT NULL);
         INSERT INTO parallel_settings VALUES ('parallel','{"id":"parallel","revision":1,"mode":"anonymous","connectionId":null,"billingAcknowledged":false}');
         CREATE TABLE parallel_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
@@ -156,7 +172,8 @@ export class S14Store {
         CREATE TRIGGER immutable_attempt BEFORE UPDATE ON work_attempts WHEN json_extract(NEW.record_json,'$.snapshot') IS NOT json_extract(OLD.record_json,'$.snapshot') AND NOT EXISTS (SELECT 1 FROM attempt_payload_deletions WHERE attempt_id=OLD.id) BEGIN SELECT RAISE(ABORT,'immutable_attempt'); END;
         CREATE TRIGGER immutable_effect_action BEFORE UPDATE ON effects WHEN NOT EXISTS (SELECT 1 FROM attempt_payload_deletions WHERE attempt_id=OLD.attempt_id) AND json_extract(NEW.record_json,'$.revision') = json_extract(OLD.record_json,'$.revision') AND (json_extract(NEW.record_json,'$.action') IS NOT json_extract(OLD.record_json,'$.action') OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.expiresAt') IS NOT json_extract(OLD.record_json,'$.expiresAt')) BEGIN SELECT RAISE(ABORT,'immutable_effect_action'); END;
         PRAGMA application_id=${s14ApplicationId}; PRAGMA user_version=${s14SchemaVersion};
-      `)).immediate();
+      `);
+      }).immediate();
       if (state === "missing") this.#db.transaction(() => {
         const installation = crypto.randomUUID();
         this.#tx.run("INSERT INTO memory_identity VALUES (?)", installation);
@@ -164,8 +181,9 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 16 retains coding, Git, graph/review/recovery, computer, memory and routine/Bot lifecycle tables; earlier unreleased stores refuse.
+      // Fresh schema 17 retains coding/Git, backup/recovery and personal connector tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
+        this.assertWritable();
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS computer_activity (sequence INTEGER PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('page.opened','screenshot','agent.scroll','system.stop')), at INTEGER NOT NULL);
           CREATE INDEX IF NOT EXISTS computer_activity_by_computer ON computer_activity(computer_id,sequence);
@@ -182,9 +200,22 @@ export class S14Store {
     } catch (e) { this.#db.close(); throw e; }
   }
   /** Reads an owner projection without admitting work or performing inference. */
-  read<T>(fn: (tx: AppTransaction) => T): T { return this.#db.transaction(() => fn(this.#tx)).deferred(); }
+  read<T>(fn: (tx: AppTransaction) => T): T {
+    if (!this.maintenance) assertS14OpsUnfenced(this.path);
+    return this.#db.transaction(() => fn(this.#tx)).deferred();
+  }
   /** Commits one synchronous receipt/state/outbox transition under the writer lock. */
-  transaction<T>(fn: (tx: AppTransaction) => T): T { return this.#db.transaction(() => fn(this.#tx)).immediate(); }
+  transaction<T>(fn: (tx: AppTransaction) => T): T {
+    this.assertWritable();
+    return this.#db.transaction(() => { this.assertWritable(); return fn(this.#tx); }).immediate();
+  }
+  private assertWritable(): void {
+    if (!this.maintenance) { assertS14OpsUnfenced(this.path); assertS14BackupUnfenced(this.path); }
+  }
+  /** Copies a consistent main-database image while its caller holds the exclusive maintenance lock. */
+  snapshotBytes(): Uint8Array { return this.#db.serialize("main"); }
+  /** Copies the current independent ledger for private quarantine; never include it in a backup/export. */
+  snapshotLifecycleBytes(): Uint8Array { return this.#db.serialize("lifecycle"); }
   /** Closes this connection without deleting application, backup or profile data. */
   close(): void { this.#db.close(); }
 }

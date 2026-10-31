@@ -10,12 +10,15 @@ import type { Bot, BotProposal, Conversation, Home, Message, OwnerActor, Reply }
 import { lookupS14Asset } from "./web-assets";
 import type { S14StatementDraft } from "./web-statement";
 import { renderFailure, renderLogin } from "./web-pages";
+import { backupNext, backupSurface, backupView, type S14BackupSurface } from "./web-product-backup";
 import { firstRunCommand, firstRunNext, providerView, redoDraft, setupProviders, type S14FirstRunSurface, type S14SetupProviders } from "./web-product-first-run";
 import { committed, memoryCommand, memoryNext, memoryRecover, memorySurface, memoryView, workResearch, type S14MemorySurface, type S14WorkResearch } from "./web-product-memory";
 import { recoveryCommand, recoveryNext, recoverySummary, recoverySurface, recoveryView, statementRecover, statementSaved, type S14RecoverySummary, type S14RecoverySurface } from "./web-product-recovery";
 import { scopeChoices, sharingCommand, sharingNext, sharingRecover, sharingSurface, sharingView, type S14ScopeChoice, type S14SharingSurface } from "./web-product-sharing";
 import { botLanding, lifecycleCommand, lifecycleNext, lifecycleOverview, lifecycleRecover, lifecycleSurface, lifecycleView, type S14BotLanding, type S14LifecycleSurface } from "./web-product-lifecycle";
 import { codingCommand, codingNext, codingRecover, codingSurface, codingView, gitCard, gitDraft, workCoding, type S14CodingSurface, type S14GitCard, type S14WorkCoding } from "./web-product-coding";
+import { accountSelection, personalBrief, personalCommand, personalNext, personalOverview, personalRecover, personalSurface, personalView, type S14Brief, type S14PersonalOverview, type S14PersonalSurface } from "./web-product-personal";
+import { renderGoogleReturn } from "./web-personal";
 import { routineAttention, routineFormCommand, routineNext, routineRecover, routineReview, routineSurface, routineView, type S14RoutineAttention, type S14RoutineSurface } from "./web-product-routines";
 import type { BotLifecycle } from "./bot-lifecycle-types";
 import { evidenceTargets, limitValues, teamCommand, teamNext, teamOverview, teamRecover, teamSurface, teamView, workTeam, type S14LimitValues, type S14ReportHint, type S14WorkSettings, type S14WorkTeam } from "./web-product-team";
@@ -28,9 +31,9 @@ export const workOutputBytes = 262144;
 export const workLimitBounds = Object.freeze({ concurrent: [1, 8], minutes: [1, 1440], reads: [1, 256] } as const);
 
 /** Composer content preserved across a refused post, so a stale revision never costs the owner their text. */
-export interface S14Draft extends S14LimitValues { text: string; work: boolean; completion: string; evidence: string; bots: string[]; scopes?: string[] }
+export interface S14Draft extends S14LimitValues { text: string; work: boolean; completion: string; evidence: string; bots: string[]; scopes?: string[]; accounts?: string[] }
 /** Work pane tabs that have real data in this slice; later slices add theirs when their data exists. */
-export type S14WorkTab = "progress" | "report" | "grant" | "computer" | "evidence" | "coding";
+export type S14WorkTab = "progress" | "report" | "grant" | "computer" | "evidence" | "coding" | "brief";
 /** Query data only the Bot computer tab needs. `runtime` says one is configured, never that it is ready; `eligible` is advisory and `computer.open` rechecks it. */
 export interface S14ComputerSurface { activity: ComputerActivity[]; runtime: boolean; confirm: "reset" | "delete" | null; input: ComputerInputReceipt | null; eligible: ReturnType<S14Application["computers"]["eligibleWork"]> }
 /** One conversation query as rendered, with open proposal history for the exact-revision diff. */
@@ -52,11 +55,13 @@ export type S14View =
   | S14SharingSurface
   | S14RoutineSurface
   | S14LifecycleSurface
+  | S14PersonalSurface
   | S14RecoverySurface
   | S14CodingSurface
+  | S14BackupSurface
   | S14WorkSettings;
 /** Query projections every signed-in page needs for attention counts and Bot state; never a proof of authority. */
-export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView>; defaults: WorkDefaults; lanes: Record<string, WorkStep[]>; reports: Record<string, S14ReportHint>; scopes?: S14ScopeChoice[]; recovery?: S14RecoverySummary; routines?: S14RoutineAttention; lifecycles?: Record<string, BotLifecycle> }
+export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView>; defaults: WorkDefaults; lanes: Record<string, WorkStep[]>; reports: Record<string, S14ReportHint>; scopes?: S14ScopeChoice[]; recovery?: S14RecoverySummary; routines?: S14RoutineAttention; lifecycles?: Record<string, BotLifecycle>; personal?: S14PersonalOverview }
 /** Product routes behind the authenticated handler; every state change still goes through S14Application.execute. */
 export interface S14Product {
   asset(pathname: string): StaticAsset | null;
@@ -72,7 +77,11 @@ export interface S14Product {
   surface(receipt: S14Receipt, fields?: Record<string, unknown>): string;
   /** Owner-facing page for one no-script input outcome, replacing the JSON redirect of the bare seam. */
   inputSurface(botId: string, requestId: string): string;
+  /** Owner-facing page for one no-script backup request, replacing the JSON receipt of the bare seam. */
+  backupSurface(requestId: string): string;
   next(form: string | null, value: unknown): string;
+  /** Page after Google's redirect. It needs no session and shows nothing private; `refused` names a callback that could not be used. */
+  googleReturn?(locale: Locale, refused: boolean): string;
 }
 
 const single = (fields: Record<string, unknown>, key: string): string => { const v = fields[key]; return typeof v === "string" ? v : ""; };
@@ -105,8 +114,8 @@ const start = (identity: { requestId: string; expectedRevision: number; conversa
   const limits = ownerLimits(fields, limitValues(app.graph.defaults(actor))), lead = app.conversation(actor, identity.conversationId).conversation.botId;
   const bots = prefixed(fields, "bot:").map(id => ({ id, revision: Number(single(fields, `bot:${id}`)) })).sort((a, b) => Number(b.id === lead) - Number(a.id === lead));
   if (bots[0]?.id !== lead) throw new AppError("invalid_bots");
-  const shaped = workLimits(limits, bots.length), targets = evidenceTargets(single(fields, "evidence"));
-  return { kind: "work.start", requestId: identity.requestId, expectedRevision: identity.expectedRevision, payload: { conversationId: identity.conversationId, task: identity.task, ...content, bots, tools: prefixed(fields, "tool:"), scopes: prefixed(fields, "scope:").map(id => ({ kind: "share", id, revision: Number(single(fields, `scope:${id}`)) })), limits: shaped, expiresAt: expiryFor(app, actor, identity.requestId, shaped.wallMs), ...(targets.length ? { requiredEvidence: targets } : {}) } };
+  const shaped = workLimits(limits, bots.length), targets = evidenceTargets(single(fields, "evidence")), accounts = accountSelection(fields);
+  return { kind: "work.start", requestId: identity.requestId, expectedRevision: identity.expectedRevision, payload: { conversationId: identity.conversationId, task: identity.task, ...content, bots, tools: [...prefixed(fields, "tool:"), ...accounts.tools], scopes: [...prefixed(fields, "scope:").map(id => ({ kind: "share" as const, id, revision: Number(single(fields, `scope:${id}`)) })), ...accounts.scopes], limits: shaped, expiresAt: expiryFor(app, actor, identity.requestId, shaped.wallMs), ...(targets.length ? { requiredEvidence: targets } : {}) } };
 };
 /** A retried form reuses its committed expiry, so the same retry key stays the same command and returns one receipt. */
 export function expiryFor(app: S14Application, actor: OwnerActor, requestId: string, wallMs: number): number {
@@ -118,9 +127,9 @@ const route = (fields: Record<string, unknown>, state: Home) => single(fields, "
 const capabilities = (fields: Record<string, unknown>) => ({ tools: prefixed(fields, "tool:"), resources: prefixed(fields, "resource:") });
 const draftOf = (fields: Record<string, unknown>, keepText: boolean, fallback: S14LimitValues): S14Draft => {
   const number = (key: keyof S14LimitValues) => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : fallback[key]; };
-  return { text: keepText ? single(fields, "text") : "", work: single(fields, "work") === "on", concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), completion: single(fields, "completion"), evidence: keepText ? single(fields, "evidence") : "", bots: prefixed(fields, "bot:"), scopes: prefixed(fields, "scope:") };
+  return { text: keepText ? single(fields, "text") : "", work: single(fields, "work") === "on", concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), completion: single(fields, "completion"), evidence: keepText ? single(fields, "evidence") : "", bots: prefixed(fields, "bot:"), scopes: prefixed(fields, "scope:"), accounts: [...prefixed(fields, "account:"), ...prefixed(fields, "account-write:")] };
 };
-const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "report" || name === "grant" || name === "computer" || name === "evidence" || name === "coding" ? name : "progress"; };
+const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "report" || name === "grant" || name === "computer" || name === "evidence" || name === "coding" || name === "brief" ? name : "progress"; };
 const computerPath = (botId: string, suffix = "") => `/team/${botId}?tab=computer${suffix}`;
 const example = (locale: Locale, url: URL, limits: S14LimitValues): S14Draft | null => {
   const key = ({ "1": "s14.home.example_1", "2": "s14.home.example_2" } as Record<string, MessageKey>)[url.searchParams.get("example") ?? ""];
@@ -133,6 +142,8 @@ export function ownerTheme(app: S14Application): ThemePreference {
   return row?.profile_json ? (JSON.parse(row.profile_json) as NonNullable<Home["owner"]>).theme ?? "system" : "system";
 }
 
+/** The owner's saved language for the one page Google's redirect reaches without a session. Display data, like the theme. */
+const ownerLanguage = (app: S14Application): Locale | null => { const row = app.store.read(tx => tx.get<{ profile_json: string | null }>("SELECT profile_json FROM installation")); return row?.profile_json ? (JSON.parse(row.profile_json) as NonNullable<Home["owner"]>).language : null; };
 /** Binds the product routes to one application; it reads queries and builds typed commands, and decides nothing. */
 export function createS14Product(app: S14Application): S14Product {
   const main = (state: Home) => {
@@ -150,14 +161,17 @@ export function createS14Product(app: S14Application): S14Product {
     try { const receipt = app.computers.inputReceipt(actor, requestId); return receipt.computerId === app.computers.view(actor, botId).computer?.id ? receipt : null; }
     catch (error) { if (error instanceof AppError && ["not_found", "invalid_identity"].includes(error.code)) return null; throw error; }
   };
+  /** Team data plus the sourced inputs, read only when this work's grant named account reads. */
+  const paneTeam = (actor: OwnerActor, view: WorkView, url: URL): S14WorkTeam & { brief: S14Brief | null } => ({ ...workTeam(app, actor, view, url), brief: personalBrief(app, actor, view) });
   return {
     asset: lookupS14Asset,
+    googleReturn: (locale, refused) => renderGoogleReturn(ownerLanguage(app) ?? locale, refused, ownerTheme(app)),
     login: (locale, code) => renderLogin(locale, code, !!app.store.read(tx => tx.get("SELECT id FROM owner")), ownerTheme(app)),
     failure: (locale, code, next) => renderFailure(locale, code, next, ownerTheme(app)),
     overview(actor, state, work) {
       const views = work.filter(w => w.grantId).map(w => app.authority.view(actor, w.id)), team = teamOverview(app, actor, views, state.bots);
       for (const reply of state.replies) if (reply.state === "running") team.botStates[reply.snapshot.bot.id] = "working";
-      return { views, effects: views.flatMap(view => view.effects), ...team, scopes: scopeChoices(app, actor, state.bots), recovery: recoverySummary(app, actor, views), routines: routineAttention(app, actor, work), lifecycles: lifecycleOverview(app, actor, state.bots), computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
+      return { views, effects: views.flatMap(view => view.effects), ...team, scopes: scopeChoices(app, actor, state.bots), recovery: recoverySummary(app, actor, views), routines: routineAttention(app, actor, work), lifecycles: lifecycleOverview(app, actor, state.bots), personal: personalOverview(app, actor, views, state), computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
     },
     async view(url, actor, state, locale) {
       if (!state.owner) return { kind: "setup", draft: null, notice: null, providers: await setupProviders(app, actor, url) };
@@ -167,7 +181,7 @@ export function createS14Product(app: S14Application): S14Product {
       if (path === "/team") return { kind: "team" };
       if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences.") };
       if (path === "/settings/provider") return providerView(app, actor);
-      const surface = memoryView(app, url, actor, state) ?? teamView(app, url, actor) ?? sharingView(app, url, actor, state) ?? recoveryView(app, url, actor) ?? routineView(app, url, actor, state) ?? lifecycleView(app, url, actor) ?? codingView(app, url, actor, state); if (surface) return surface;
+      const surface = memoryView(app, url, actor, state) ?? teamView(app, url, actor) ?? sharingView(app, url, actor, state) ?? recoveryView(app, url, actor) ?? routineView(app, url, actor, state, locale) ?? lifecycleView(app, url, actor) ?? personalView(app, url, actor, state) ?? codingView(app, url, actor, state) ?? backupView(app, url, actor); if (surface) return surface;
       const match = /^\/(chats|work|team|proposals|effects)\/([a-zA-Z0-9_-]+)$/.exec(path);
       if (!match) throw new AppError("not_found", 404);
       const [, area, id] = match as unknown as [string, string, string];
@@ -175,11 +189,11 @@ export function createS14Product(app: S14Application): S14Product {
         const read = chat(actor, id), workId = url.searchParams.get("work"), source = read.messages.find(m => m.id === url.searchParams.get("start") && m.role === "owner");
         const pane = workId ? app.authority.view(actor, workId) : null;
         if (pane && pane.work.conversationId !== id) throw new AppError("not_found", 404);
-        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...limits, text: source.text, work: true, completion: "", evidence: "", bots: [] } : redoDraft(app, actor, id, url.searchParams.get("redo")), notice: null, pane: pane ? { view: pane, tab: tab(url), research: workResearch(app, actor, pane), team: workTeam(app, actor, pane, url), coding: tab(url) === "coding" ? workCoding(app, actor, pane) : null } : null };
+        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...limits, text: source.text, work: true, completion: "", evidence: "", bots: [] } : redoDraft(app, actor, id, url.searchParams.get("redo")), notice: null, pane: pane ? { view: pane, tab: tab(url), research: workResearch(app, actor, pane), team: paneTeam(actor, pane, url), coding: tab(url) === "coding" ? workCoding(app, actor, pane) : null } : null };
       }
       if (area === "work") {
         const view = app.authority.view(actor, id), conversation = app.conversation(actor, view.work.conversationId).conversation;
-        return { kind: "work", view, tab: tab(url), research: workResearch(app, actor, view), team: workTeam(app, actor, view, url), conversation, bot: botOf(state, conversation.botId), coding: tab(url) === "coding" ? workCoding(app, actor, view) : null };
+        return { kind: "work", view, tab: tab(url), research: workResearch(app, actor, view), team: paneTeam(actor, view, url), conversation, bot: botOf(state, conversation.botId), coding: tab(url) === "coding" ? workCoding(app, actor, view) : null };
       }
       if (area === "team") {
         const confirm = url.searchParams.get("confirm"), computer = url.searchParams.get("tab") === "computer";
@@ -191,19 +205,19 @@ export function createS14Product(app: S14Application): S14Product {
     },
     command(form, fields, actor, state, locale) {
       const requestId = single(fields, "requestId"), expectedRevision = Number(single(fields, "expectedRevision"));
-      const extended = memoryCommand(app, form, fields, actor) ?? teamCommand(form, fields) ?? firstRunCommand(form, fields) ?? sharingCommand(app, form, fields, actor) ?? recoveryCommand(form, fields) ?? routineFormCommand(app, form, fields, actor, state, locale) ?? lifecycleCommand(form, fields) ?? codingCommand(app, form, fields, actor, locale); if (extended) return extended;
+      const extended = memoryCommand(app, form, fields, actor) ?? teamCommand(form, fields) ?? firstRunCommand(form, fields) ?? sharingCommand(app, form, fields, actor) ?? recoveryCommand(form, fields) ?? routineFormCommand(app, form, fields, actor, state, locale) ?? lifecycleCommand(form, fields) ?? personalCommand(app, form, fields, actor) ?? codingCommand(app, form, fields, actor, locale); if (extended) return extended;
       if (form === "setup") {
         checked(fields, ["csrf", "requestId", "expectedRevision", "ownerName", "language", "routeId"], ["tool:", "resource:"]);
         return { kind: "setup", requestId, expectedRevision, payload: { ownerName: single(fields, "ownerName"), language: single(fields, "language") as Locale, routeId: route(fields, state), capabilities: capabilities(fields) } };
       }
       if (form === "compose") {
-        checked(fields, ["csrf", "requestId", "expectedRevision", "conversationId", "from", "text", "work", "concurrent", "minutes", "reads", "completion", "evidence"], ["bot:", "tool:", "scope:"]);
+        checked(fields, ["csrf", "requestId", "expectedRevision", "conversationId", "from", "text", "work", "concurrent", "minutes", "reads", "completion", "evidence"], ["bot:", "tool:", "scope:", "account:", "account-write:"]);
         const text = single(fields, "text"), conversationId = single(fields, "conversationId");
         if (single(fields, "work") !== "on") return { kind: "message.post", requestId, expectedRevision, payload: { conversationId, text } };
         return start({ requestId, expectedRevision, conversationId, task: null }, { title: inferTitle(text), purpose: text, completionRule: single(fields, "completion").trim() || dictionaries[locale]["s14.work.default_completion"] }, fields, app, actor);
       }
       if (form === "task-start") {
-        checked(fields, ["csrf", "requestId", "expectedRevision", "taskId", "taskRevision", "concurrent", "minutes", "reads", "evidence"], ["bot:", "tool:", "scope:"]);
+        checked(fields, ["csrf", "requestId", "expectedRevision", "taskId", "taskRevision", "concurrent", "minutes", "reads", "evidence"], ["bot:", "tool:", "scope:", "account:", "account-write:"]);
         const task = app.authority.view(actor, single(fields, "taskId")).work;
         return start({ requestId, expectedRevision, conversationId: task.conversationId, task: { id: task.id, revision: Number(single(fields, "taskRevision")) } }, { title: task.title, purpose: task.purpose, completionRule: task.completionRule }, fields, app, actor);
       }
@@ -222,9 +236,9 @@ export function createS14Product(app: S14Application): S14Product {
       if (form === "setup" && state.owner === null) return { kind: "setup", draft: { ownerName: single(fields, "ownerName"), language: single(fields, "language") === "en" ? "en" : "th" }, notice: code, providers: await setupProviders(app, actor, null, single(fields, "routeId")) };
       if (form === "git-propose") {
         const view = app.authority.view(actor, single(fields, "workId")), conversation = app.conversation(actor, view.work.conversationId).conversation;
-        return { kind: "work", view, tab: "coding", research: workResearch(app, actor, view), team: workTeam(app, actor, view, new URL("http://localhost/")), conversation, bot: botOf(state, conversation.botId), coding: workCoding(app, actor, view, code, gitDraft(fields)) };
+        return { kind: "work", view, tab: "coding", research: workResearch(app, actor, view), team: paneTeam(actor, view, new URL("http://localhost/")), conversation, bot: botOf(state, conversation.botId), coding: workCoding(app, actor, view, code, gitDraft(fields)) };
       }
-      if (form !== "compose") return codingRecover(app, form, fields, code, actor, state) ?? memoryRecover(app, form, fields, code, actor, state) ?? teamRecover(app, form, fields, code, actor) ?? sharingRecover(app, form, fields, code, actor, state) ?? statementRecover(app, form, fields, code, actor) ?? routineRecover(app, form, fields, code, actor) ?? lifecycleRecover(app, form, fields, code, actor, state);
+      if (form !== "compose") return codingRecover(app, form, fields, code, actor, state) ?? memoryRecover(app, form, fields, code, actor, state) ?? teamRecover(app, form, fields, code, actor) ?? sharingRecover(app, form, fields, code, actor, state) ?? statementRecover(app, form, fields, code, actor) ?? routineRecover(app, form, fields, code, actor) ?? lifecycleRecover(app, form, fields, code, actor, state) ?? personalRecover(app, form, fields, code, actor, state);
       // Credential-shaped text is not echoed back into the page.
       const draft = draftOf(fields, code !== "credential_content_refused", limitValues(app.graph.defaults(actor))), conversationId = single(fields, "conversationId");
       if (single(fields, "from") === "home") return { kind: "home", ...main(state), draft, notice: code };
@@ -232,7 +246,7 @@ export function createS14Product(app: S14Application): S14Product {
       return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft, notice: code, pane: null };
     },
     surface(receipt, fields) {
-      const extended = memorySurface(receipt, fields) ?? teamSurface(receipt) ?? sharingSurface(receipt) ?? recoverySurface(receipt) ?? routineSurface(receipt) ?? lifecycleSurface(receipt, fields) ?? codingSurface(receipt); if (extended) return extended;
+      const extended = personalSurface(receipt) ?? memorySurface(receipt, fields) ?? teamSurface(receipt) ?? sharingSurface(receipt) ?? recoverySurface(receipt) ?? routineSurface(receipt) ?? lifecycleSurface(receipt, fields) ?? codingSurface(receipt); if (extended) return extended;
       if (receipt.kind === "setup") return "/";
       if (receipt.kind === "conversation.create") return `/chats/${receipt.conversation!.id}`;
       if (receipt.kind === "owner.preferences.set") return `/more?receipt=${receipt.requestId}`;
@@ -245,8 +259,9 @@ export function createS14Product(app: S14Application): S14Product {
       return `/chats/${work.conversationId}?work=${work.id}#latest`;
     },
     inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
+    backupSurface,
     next(form, value) {
-      const extended = codingNext(form, value) ?? routineNext(form, value) ?? lifecycleNext(form, value) ?? memoryNext(form, value) ?? teamNext(app, form, value) ?? firstRunNext(form, value) ?? sharingNext(form, value) ?? recoveryNext(form, value); if (extended) return extended;
+      const extended = codingNext(form, value) ?? personalNext(form, value) ?? routineNext(form, value) ?? lifecycleNext(form, value) ?? memoryNext(form, value) ?? teamNext(app, form, value) ?? firstRunNext(form, value) ?? sharingNext(form, value) ?? recoveryNext(form, value) ?? backupNext(value); if (extended) return extended;
       const data = value as { kind?: string; payload?: Record<string, string>; proposalId?: string; taskId?: string; conversationId?: string } | null;
       if (form === "proposal-accept" || form === "proposal-revise") return `/proposals/${data?.proposalId ?? ""}`;
       if (form === "task-start") return `/work/${data?.taskId ?? ""}`;

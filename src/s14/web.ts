@@ -1,4 +1,6 @@
 import { AppError } from "../errors";
+import type { OnlineBackupCommand } from "./ops-types";
+import { readS14Ops } from "./ops-state";
 import { scopeOptions } from "./scope-options";
 import { ownerSetupCsrf } from "../ops/owner-setup";
 import { ownerSetupPage } from "../web-owner-setup";
@@ -20,8 +22,8 @@ const escape = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
 export const s14ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const baseline: S14Renderer = p => `<html lang="${p.locale}"><meta charset="utf-8"><title>S14</title><body><pre>${escape(JSON.stringify({ state: p.state, work: p.work }, null, 2))}</pre><form method="post" action="/s14/commands"><input type="hidden" name="csrf" value="${p.csrf}"><label>Command<textarea name="command" required></textarea></label><button>Submit</button></form></body></html>`;
 
-/** Web command union keeps async device auth separate from synchronous product mutations. */
-export type S14WebCommand = S14Command | S14SignInCommand;
+/** Web command union includes device auth and bounded online backup separately from synchronous product mutations. */
+export type S14WebCommand = S14Command | S14SignInCommand | OnlineBackupCommand;
 
 /** Auth rendering seam for the UI agent; approval data exists only in the initial POST response. */
 export interface S14AuthRenderer {
@@ -97,6 +99,19 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const token = await app.login(p.password);
         return respond("", 303, "text/html", { Location: "/", "Set-Cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "GET" && url.pathname === "/s14/personal/oauth/callback") try {
+        if ([...url.searchParams.keys()].some(key => !["state", "code", "error", "scope", "authuser", "prompt"].includes(key)) ||
+            [...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1) ||
+            url.searchParams.has("code") === url.searchParams.has("error")) throw new AppError("personal_oauth_stale", 409);
+        app.personal.callback(url.searchParams.get("state") ?? "", url.searchParams.get("code"));
+        return redirect(product?.googleReturn ? "/s14/personal/oauth/done" : "/", { "Referrer-Policy": "no-referrer" });
+      } catch (error) {
+        // A refused callback still must not leave the code in the address bar, in history or in a later Referer.
+        if (!product?.googleReturn) throw error;
+        return redirect("/s14/personal/oauth/done?refused=1", { "Referrer-Policy": "no-referrer" });
+      }
+      // Reached from Google with no session cookie, so it holds nothing private. The address carries no code, and the next navigation starts on this origin.
+      if (request.method === "GET" && url.pathname === "/s14/personal/oauth/done" && product?.googleReturn) return respond(product.googleReturn(browserLocale(), url.searchParams.has("refused")), 200, "text/html", { "Referrer-Policy": "no-referrer", Vary: "Accept-Language" });
       const matches = (request.headers.get("cookie") ?? "").split(";").map(s => s.trim()).filter(s => s.startsWith(`${cookieName}=`));
       if (matches.length !== 1) throw new AppError("authentication_required", 401);
       const auth = app.authenticate(matches[0]!.slice(cookieName.length + 1));
@@ -107,6 +122,41 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);
         return redirect("/s14/login", { "Set-Cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "POST" && ["/api/s14/personal/oauth/complete", "/s14/personal/oauth/complete"].includes(url.pathname)) {
+        const p = await body(request);
+        const form = url.pathname.startsWith("/s14/");
+        app.verifyCsrf(auth.csrf, form ? p.csrf : request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== (form ? "csrf,flowId" : "flowId") || typeof p.flowId !== "string") throw new AppError("invalid_body");
+        if (form && product) next = "/settings/google";
+        const connection = await app.personal.complete(auth.actor, p.flowId);
+        return form ? redirect(product ? `/settings/google/connections/${connection.id}#next` : "/") : json({ connection });
+      }
+      // The no-script twin of the JSON read-back: the same service call under the same session, Origin and CSRF checks.
+      const readback = product && request.method === "POST" ? /^\/s14\/personal\/drafts\/([a-zA-Z0-9_-]+)\/readback$/.exec(url.pathname) : null;
+      if (readback) {
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, p.csrf);
+        if (Object.keys(p).sort().join() !== "actionHash,csrf,expectedRevision" || typeof p.actionHash !== "string") throw new AppError("invalid_body");
+        const effectId = app.personal.effects.view(auth.actor, readback[1]!).effect.id;
+        next = `/effects/${effectId}`;
+        await app.personal.effects.reconcile(auth.actor, readback[1]!, Number(p.expectedRevision), p.actionHash);
+        return redirect(`/effects/${effectId}#slip`);
+      }
+      if (request.method === "GET" && url.pathname === "/api/s14/personal") return json(app.personal.settings(auth.actor));
+      const oauth = /^\/api\/s14\/personal\/oauth\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (request.method === "GET" && oauth) return json(app.personal.authorization(auth.actor, oauth[1]!));
+      const brief = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/brief$/.exec(url.pathname);
+      if (request.method === "GET" && brief) return json(app.personal.reads.brief(auth.actor, brief[1]!));
+      const personalEffect = /^\/api\/s14\/personal\/drafts\/([a-zA-Z0-9_-]+)(\/readback)?$/.exec(url.pathname);
+      if (personalEffect && request.method === "GET" && !personalEffect[2]) return json(app.personal.effects.view(auth.actor, personalEffect[1]!));
+      if (personalEffect && request.method === "POST" && personalEffect[2]) {
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== "actionHash,expectedRevision" || typeof p.expectedRevision !== "number" || typeof p.actionHash !== "string") throw new AppError("invalid_body");
+        return json(await app.personal.effects.reconcile(auth.actor, personalEffect[1]!, p.expectedRevision, p.actionHash));
+      }
+      const personalDrafts = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/drafts$/.exec(url.pathname);
+      if (request.method === "GET" && personalDrafts) return json({ items: app.personal.effects.list(auth.actor, personalDrafts[1]!) });
       const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
       if (request.method === "POST" && input) {
         const isForm = !input[1];
@@ -153,6 +203,11 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           if (url.pathname === "/s14/commands" && authRender.signIn) return html(authRender.signIn(receipt, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
           return json(receipt);
         }
+        if ((command as { kind?: string })?.kind === "backup.create") {
+          const receipt = app.backups.execute(auth.actor, command as OnlineBackupCommand);
+          return url.pathname === "/s14/commands" && product ? redirect(product.backupSurface(receipt.requestId)) : json(receipt, 202);
+        }
+        if (/^(restore|upgrade)\./.test((command as { kind?: string })?.kind ?? "")) throw new AppError("s14_ops_offline_required", 409);
         const typed = command as S14Command;
         const receipt = typed?.kind === "coding.repository.grant" ? await app.coding.execute(auth.actor, typed) : app.execute(auth.actor, typed);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
@@ -185,6 +240,12 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (botLifecycle) return json(botLifecycle[2]
         ? app.botLifecycle.preview(auth.actor, botLifecycle[1]!, botLifecycle[2] as "retire" | "delete")
         : app.botLifecycle.view(auth.actor, botLifecycle[1]!));
+      if (url.pathname === "/api/s14/ops") {
+        const control = readS14Ops(app.store.path);
+        return json({ revision: control.revision, backups: control.backups, stage: control.stage ? { id: control.stage.id, mode: control.stage.mode, state: control.stage.state, reason: control.stage.reason } : null, maintenance: "offline_required", workers: app.backups.busy ? "paused" : "running", backup: app.backups.status(auth.actor) });
+      }
+      const backupReceipt = /^\/api\/s14\/backup-receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (backupReceipt) return json(app.backups.receipt(auth.actor, backupReceipt[1]!));
       if (url.pathname === "/api/s14/routines") return json({ items: app.routines.list(auth.actor) });
       if (url.pathname === "/api/s14/attention") return json(app.attention.view(auth.actor));
       const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

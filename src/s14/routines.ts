@@ -146,7 +146,7 @@ export class S14Routines {
 
   /** Advances bounded coalesced schedule cursors and atomically admits only exact captured work through the normal graph. */
   tick(): void {
-    if (this.app.recovery.booting) return;
+    if ((this.app.recovery.booting || this.app.backups.busy)) return;
     this.app.store.transaction(tx => {
       this.reconcile(tx);
       for (const routine of this.all(tx)) {
@@ -294,7 +294,7 @@ export class S14Routines {
         const needsOwner = occurrence.proposals.length > 0 || work.state === "waiting" || results.some(r => r.waiting);
         const reportMissing = !needsOwner && results.some(r => r.kind === "report") && !tx.all<{ id: string }>("SELECT id FROM reports WHERE work_id=? AND content_json IS NOT NULL", work.id)
           .some(row => this.app.reports.read(tx, row.id).state === "available");
-        const failed = readFailure || reportMissing || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
+        const failed = this.app.personal.reads.failed(tx, work.id) || readFailure || reportMissing || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
         occurrence.outcome = failed ? "failed" : needsOwner ? "needs_owner" : results.every(r => r.kind === "no_update") ? "no_update" : "report";
         occurrence.state = work.state === "stopped" ? "stopped" : failed ? "failed" : "complete";
         occurrence.reason = failed ? results.find(r => r.kind === "failed")?.reason ?? work.reason ?? (reportMissing ? "routine_report_missing" : "routine_failed") : null;

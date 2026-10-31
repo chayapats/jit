@@ -208,6 +208,7 @@ export class S14Computers {
   }
   /** Drains committed lifecycle intents; stale startup completion cannot publish a handle after stop/revoke. */
   async drain(): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) {
       await this.#draining;
       // A committed intent may have arrived after the previous drainer's final empty read.

@@ -37,6 +37,7 @@ export interface BotLifecyclePreview {
   native: { id: string; state: string; mode: string; cleanup: "retire" | "delete" }[];
   routines: { id: string; revision: number; generation: number; state: string }[];
   withdrawals: { kind: string; id: string; mode: string }[];
+  personal: { reads: string[]; drafts: { id: string; revision: number; hash: string }[] };
   retainedEffects: { id: string; revision: number; actionHash: string; state: string }[];
   retainedLineage: "identity_hashes_and_independent_originals";
   disclosedKnowledge: "cannot_recall";

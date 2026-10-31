@@ -566,3 +566,20 @@ test("command lines split on spaces and quotes only, and a browser address gains
   expect(repositoryUrl(" https://github.com/a/b/ ")).toBe("https://github.com/a/b.git");
   expect(repositoryUrl("https://github.com/a/b.git")).toBe("https://github.com/a/b.git");
 });
+
+test.each(["th", "en"] as const)("combined settings navigation reaches provider, web, defaults, backup, personal and Git connections (%s)", async language => {
+  const f = await fixture(language);
+  await f.grant();
+  const menu = await f.get("/more");
+  expect(menu.status).toBe(200);
+  for (const route of ["/settings/provider", "/settings/web", "/settings/work", "/settings/backup", "/settings/google", "/coding"]) {
+    expect(menu.html).toContain(`href="${route}"`);
+    expect((await f.get(route)).status).toBe(200);
+  }
+  const coding = await f.get("/coding");
+  expect(coding.html).toContain('href="/coding/repositories/repo"');
+  const repository = await f.get("/coding/repositories/repo");
+  expect(repository.status).toBe(200);
+  expect(repository.html).toContain('id="connections"');
+  expect(repository.html).toContain('action="/s14/forms/git-connection"');
+});

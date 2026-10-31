@@ -2,7 +2,12 @@ import { S14GitEffects } from "./coding-git";
 import type { GitCommand, GitOptions, GitReceipt } from "./coding-git-types";
 import { S14Coding } from "./coding";
 import type { CodingCommand, CodingOptions, CodingReceipt } from "./coding-types";
+import type { PersonalEffectCommand, PersonalEffectReceipt } from "./personal-effect-types";
+import { S14Personal, type PersonalOptions } from "./personal";
+import type { PersonalCommand, PersonalReceipt } from "./personal-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
+import { S14Backups } from "./backups";
+import type { OpsNativePort } from "./ops-types";
 import type { BotLifecycleCommand, BotLifecycleOptions, BotLifecycleReceipt } from "./bot-lifecycle-types";
 import { S14Attention } from "./attention";
 import { S14Routines } from "./routines";
@@ -38,9 +43,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | CodingCommand | GitCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | CodingCommand | GitCommand | PersonalCommand | PersonalEffectCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | CodingReceipt | GitReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | CodingReceipt | GitReceipt | PersonalReceipt | PersonalEffectReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -57,7 +62,10 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; coding?: CodingOptions; git?: GitOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; personal?: PersonalOptions; coding?: CodingOptions; git?: GitOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions; backups?: OpsNativePort;
+  /** Production composition holds every worker before the first complete REC14 boot, including native close. */
+  requireBootReconciliation?: boolean;
+}
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -77,7 +85,9 @@ export class S14Application {
   readonly botLifecycle: S14BotLifecycle;
   readonly routines: S14Routines;
   readonly attention: S14Attention;
+  readonly personal: S14Personal;
   readonly signIns: S14SignIns;
+  readonly backups: S14Backups;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   #replyRunning = new Map<string, AbortController>();
@@ -93,12 +103,14 @@ export class S14Application {
     this.git = new S14GitEffects(this, options.git);
     this.memory = new S14Memory(this);
     this.sharing = new S14Sharing(this);
+    this.personal = new S14Personal(this, options.personal);
     const externalScopes = options.authority?.scopes;
-    this.authority = new S14Authority(this, { ...options.authority,
-      effects: { ...options.authority?.effects,
-        ...(options.git?.vault ? { push: (action, allowed) => this.git.perform(action, allowed) } : {}),
-      },
-      scopes: { current: (tx, scope) => this.coding.scope(tx, scope) ?? this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+    this.authority = new S14Authority(this, { ...options.authority, effects: {
+      ...(options.personal?.vault ? { send: (action, allowed) => this.personal.effects.perform(action, allowed), calendar: (action, allowed) => this.personal.effects.perform(action, allowed) } : {}),
+      ...options.authority?.effects,
+      ...(options.git?.vault ? { push: (action, allowed) => this.git.perform(action, allowed) } : {}),
+    }, scopes: {
+      current: (tx, scope) => this.personal.owns(tx, scope) ? this.personal.scope(tx, scope) : this.coding.scope(tx, scope) ?? this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
@@ -110,6 +122,7 @@ export class S14Application {
     this.computers = new S14Computers(this, options.computers);
     this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
     this.store.transaction(tx => {
+      this.personal.recover(tx);
       this.botLifecycle.reconcile(tx);
       this.coding.recover(tx);
       this.recovery.reconcileReservations(tx);
@@ -119,6 +132,7 @@ export class S14Application {
       this.routines.reconcile(tx);
     });
     this.signIns = new S14SignIns(this, options.signIn);
+    this.backups = new S14Backups(this, options.backups);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string, capability?: string): Promise<void> {
@@ -234,6 +248,10 @@ export class S14Application {
   execute(actor: OwnerActor, command: CodingCommand): CodingReceipt;
   /** Executes resource-scoped write-only Git connections, exact proposals and reconciliation requests. */
   execute(actor: OwnerActor, command: GitCommand): GitReceipt;
+  /** Revises exact personal drafts through owner receipts, invalidating every earlier approval. */
+  execute(actor: OwnerActor, command: PersonalEffectCommand): PersonalEffectReceipt;
+  /** Executes write-only Google setup and exact per-Bot connection grants under owner receipts. */
+  execute(actor: OwnerActor, command: PersonalCommand): PersonalReceipt;
   /** Accepts an exact report revision separately from coverage, execution and immutable report bytes. */
   execute(actor: OwnerActor, command: ReportCommand): ReportReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
@@ -241,6 +259,7 @@ export class S14Application {
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
     let encoded = canonical(command);
     if (command.kind === "web.parallel.key.set" || command.kind === "git.connection.secret.set" || command.kind === "git.connection.rotate") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
+    if (command.kind === "personal.client.set") encoded = canonical({ ...command, payload: { ...command.payload, clientSecret: "[write-only]" } });
     exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
@@ -253,6 +272,12 @@ export class S14Application {
         result = this.git.apply(tx, command as GitCommand);
       } else if (command.kind.startsWith("coding.")) {
         result = this.coding.apply(tx, command as CodingCommand);
+      } else if (command.kind === "personal.draft.revise") {
+        result = this.personal.effects.apply(tx, command);
+      } else if (command.kind.startsWith("personal.")) {
+        result = this.personal.apply(tx, command as PersonalCommand);
+        this.memory.reconcile(tx);
+        this.personal.reconcile(tx);
       } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
         result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);
         this.botLifecycle.reconcile(tx);
@@ -283,7 +308,9 @@ export class S14Application {
       } else {
         result = this.applyBot(tx, command as BotCommand);
       }
+      this.personal.reconcile(tx);
       this.reports.reconcile(tx);
+      this.coding.reconcile(tx);
       this.routines.reconcile(tx);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
@@ -387,7 +414,7 @@ export class S14Application {
   recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
   /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
   async drainReplies(): Promise<void> {
-    if (this.recovery.booting) return;
+    if (this.recovery.booting || this.backups.busy) return;
     if (this.#replyBusy) return; this.#replyBusy = true;
     try { for (;;) {
       const reply = this.store.transaction(tx => {

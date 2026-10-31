@@ -15,10 +15,14 @@ import { providerSettingsPage, setupPage } from "./web-first-run";
 import { renderMemorySurface } from "./web-memory";
 import { recoveryNotice, recoveryPanel } from "./web-recovery";
 import { recoveryPage } from "./web-recovery-page";
+import { renderBackupSurface } from "./web-backup";
 import { lifecycleLanding, lifecycleLive, lifecyclePill, lifecycleStatus, renderLifecycleSurface } from "./web-lifecycle";
 import { codingTab, renderCodingSurface } from "./web-coding";
 import { gitEffectPage, gitSummarySlip } from "./web-coding-effect";
 import { generalTool, gitAction, type S14WorkCoding } from "./web-product-coding";
+import { briefTab } from "./web-personal-brief";
+import { renderPersonalSurface } from "./web-personal";
+import { personalSlip } from "./web-personal-effect";
 import { renderRoutineSurface, routineFindingNote } from "./web-routines";
 import { renderSharingSurface } from "./web-sharing";
 import { statementBanner, statementBlock, statementStrip, type S14StatementDraft } from "./web-statement";
@@ -128,9 +132,9 @@ const needsOwner = (effect: Effect) => effect.state === "pending" || (effect.sta
 /** Everything that needs the owner, counted once for the nav badge and listed on Home and Work. */
 function attention(page: S14Page) {
   const routines = page.overview.routines, found = new Set(routines?.findings ?? []);
-  return { effects: page.overview.effects.filter(needsOwner), proposals: page.state.proposals.filter(p => p.state === "proposed"), tasks: page.work.filter(w => w.state === "proposed" && !found.has(w.id)), recovery: page.overview.recovery?.open ?? 0, routines: routines?.needs ?? [], updates: routines?.updates ?? [] };
+  return { effects: page.overview.effects.filter(needsOwner), proposals: page.state.proposals.filter(p => p.state === "proposed"), tasks: page.work.filter(w => w.state === "proposed" && !found.has(w.id)), recovery: page.overview.recovery?.open ?? 0, routines: routines?.needs ?? [], updates: routines?.updates ?? [], accounts: page.overview.personal?.needs ?? [] };
 }
-const attentionCount = (page: S14Page) => { const a = attention(page); return a.effects.length + a.proposals.length + a.tasks.length + a.routines.length + (a.recovery ? 1 : 0); };
+const attentionCount = (page: S14Page) => { const a = attention(page); return a.effects.length + a.proposals.length + a.tasks.length + a.routines.length + a.accounts.length + (a.recovery ? 1 : 0); };
 /** Routine rows carry a fixed heading, with the title as escaped small text beneath. At most one row per routine and kind. */
 function routineRow(item: S14RoutineNeed): string {
   const tone: Record<S14RoutineNeed["need"], [string, string, string]> = { decision: ["warn", "!", "#findings"], failed: ["danger", "×", ""], blocked: ["warn", "!", ""] };
@@ -144,6 +148,7 @@ function attentionList(page: S14Page): string {
   const groups = [
     group("effects", a.effects.map(effect => `<li><a href="/effects/${e(effect.id)}#slip"><span>${e(botName(botOf(effect.botId) ?? { id: effect.botId, name: effect.botId }))} ${tr("s14.effect.asks")} ${e(tr(k(`s14.effect_kind.${effect.action.kind}`)))}</span>${effectPill(effect.state)}</a></li>`)),
     group("routines", a.routines.map(routineRow)),
+    group("accounts", a.accounts.map(item => `<li><a href="/settings/google/connections/${e(item.connectionId)}#next"><span><span>${tr(k(`s14.google.need.${item.need}`))}</span><small>${tr(k(`s14.google.service.${item.service}`))} · ${e(item.account)}</small></span>${pill(tr(k(`s14.google.need_word.${item.need}`)), "warn", "!")}</a></li>`)),
     group("proposals", [...a.proposals.map(proposal => `<li><a href="/proposals/${e(proposal.id)}"><span>${tr("s14.proposal.attention")} · r${proposal.revision}</span>${pill(tr("s14.work_state.proposed"), "strong")}</a></li>`),
     ...a.tasks.map(task => `<li><a href="/work/${e(task.id)}"><span>${tr("s14.task.attention")} · r${task.revision}</span>${pill(tr("s14.work_state.proposed"), "strong")}</a></li>`)]),
     group("recovery", a.recovery ? [`<li><a href="/recovery"><span>${tr("s14.recovery.attention")}</span>${pill(`${a.recovery}`, "warn", "!")}</a></li>`] : []),
@@ -181,13 +186,20 @@ export function limitFields(values: { concurrent: number; minutes: number; reads
   const field = (name: "concurrent" | "minutes" | "reads", label: string) => `<label class="s-limit"><input type="number" name="${name}" min="${workLimitBounds[name][0]}" max="${workLimitBounds[name][1]}" value="${values[name]}" inputmode="numeric"><span>${e(label)}</span></label>`;
   return `<fieldset class="s-limits"><legend>${tr(title)}</legend>${field("concurrent", tr("s14.limits.concurrent"))}${field("minutes", tr("s14.limits.minutes"))}${field("reads", tr("s14.limits.reads"))}</fieldset>`;
 }
-const toolOptions = (page: S14Page, bots: Bot[]) => page.policy.tools.filter(tool => generalTool(tool) && bots.some(bot => bot.capabilities.tools.includes(tool)));
+/** `personal_read` never appears here: ticking an account names it, so ordinary work cannot gain an account gap by default. */
+const toolOptions = (page: S14Page, bots: Bot[]) => page.policy.tools.filter(tool => generalTool(tool) && tool !== "personal_read" && bots.some(bot => bot.capabilities.tools.includes(tool)));
 /** Bots and tools the grant may name. The conversation's Bot is fixed; everything else is visible and optional. */
 function grantChoices(page: S14Page, lead: Bot, draft: S14Draft | null, workId: string | null = null): string {
   const others = page.state.bots.filter(bot => bot.id !== lead.id && bot.enabled);
   const tools = toolOptions(page, [lead, ...others]);
   return `${hidden(`bot:${lead.id}`, lead.revision)}${others.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft?.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}
-    ${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${tool.startsWith("effect_") ? "" : " checked"}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}${shareChoices(page, [lead, ...others], draft, workId)}`;
+    ${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${tool.startsWith("effect_") ? "" : " checked"}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}${shareChoices(page, [lead, ...others], draft, workId)}${accountChoices(page, [lead, ...others], draft)}`;
+}
+/** Accounts this start may read, unticked by default. One tick names the slot and the read tool together; the service rechecks Bot, revision and consent. */
+export function accountChoices(page: S14Page, bots: Bot[], draft: Pick<S14Draft, "accounts"> | null, readable = false): string {
+  const items = (page.overview.personal?.accounts ?? []).filter(item => bots.some(bot => bot.id === item.botId) && (item.read || !readable));
+  const row = (item: typeof items[number]) => { const bot = bots.find(entry => entry.id === item.botId)!; return `<label class="s-check"><input type="checkbox" name="${item.read ? "account" : "account-write"}:${e(item.scopeId)}" value="${item.revision}"${draft?.accounts?.includes(item.scopeId) ? " checked" : ""}><span>${tr(k(`s14.google.service.${item.service}`))} · <span class="s-mono">${e(item.account)}</span><small>${tr("s14.google.start_for")} ${e(botName(bot))}${item.read ? "" : ` · ${tr("s14.google.start_write_only")}`}</small></span></label>`; };
+  return items.length ? `<fieldset class="s-field"><legend>${tr("s14.google.start_legend")}</legend>${items.map(row).join("")}<p class="s-note">${tr("s14.google.start_note")}</p></fieldset>` : "";
 }
 /** Shares this start may name, unticked by default. The service rechecks the receiver, work and revision, so a label here grants nothing. */
 export function shareChoices(page: S14Page, bots: Bot[], draft: Pick<S14Draft, "scopes"> | null, workId: string | null): string {
@@ -339,12 +351,13 @@ function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: 
   if (tab === "computer" && usesComputer(view)) return computerTab(page, view);
   if (tab === "coding" && usesCoding(view)) return codingTab(page, view, coding);
   if (tab === "report" && view.work.grantId) return reportTab(page, view, team, research, base);
+  if (tab === "brief") { const sep = base.includes("?") ? "&amp;" : "?"; return briefTab(page, team.brief, `${base}${sep}tab=report`); }
   return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, team, base);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
   if ((tab === "computer" && !usesComputer(view)) || (tab === "coding" && !usesCoding(view))) tab = "progress";
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${usesCoding(view) ? link("coding") : ""}${link("report")}${link("evidence")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${usesCoding(view) ? link("coding") : ""}${link("report")}${view.grant?.tools.includes("personal_read") ? link("brief") : ""}${link("evidence")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
 }
 function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, coding: S14WorkCoding | null = null): string {
   const base = `/chats/${e(conversation.id)}?work=${e(view.work.id)}`;
@@ -353,7 +366,7 @@ function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: 
 
 const reasonOf = (effect: Effect) => effect.reason ? trMaybe(`s14.reason.${effect.reason}`) ?? "" : "";
 const approveLabel = (effect: Effect) => tr(k(`s14.effect_approve.${effect.action.kind}`));
-function effectBanner(effect: Effect, history: Effect[]): string {
+export function effectBanner(effect: Effect, history: Effect[]): string {
   const changedFrom = history.filter(item => item.state === "changed").at(-1);
   if (effect.state === "unknown") return statementBanner(effect);
   if (effect.state === "expired") return banner("", tr("s14.effect_state.expired"), tr("s14.effect.expired_detail"));
@@ -374,6 +387,8 @@ function effectDiff(effect: Effect, history: Effect[]): string {
 function effectSlip(page: S14Page, effect: Effect, history: Effect[], level: "h2" | "h3", draft: S14StatementDraft | null = null): string {
   // A push is decided only on its own page, under its diff and checks.
   if (level === "h3" && gitAction(effect)) return gitSummarySlip(page, effect);
+  const personal = page.overview.personal?.drafts[effect.id];
+  if (personal) return personalSlip(page, personal, history, level, draft);
   const bot = page.state.bots.find(b => b.id === effect.botId), name = botName(bot ?? { id: effect.botId, name: effect.botId }), pending = effect.state === "pending";
   const state = effect.state === "unknown" ? "unknown" : pending ? "pending" : "closed", heading = `${e(name)} ${tr("s14.effect.asks")} ${e(tr(k(`s14.effect_kind.${effect.action.kind}`)))}`;
   const decide = (decision: "approve" | "deny", label: string, cls: string) => commandForm(page.csrf, "approval.decide", effect.revision, { effectId: effect.id, actionHash: effect.actionHash, decision }, label, cls);
@@ -567,7 +582,7 @@ function preferences(page: S14Page): string {
 }
 function morePage(page: S14Page, saved: boolean): string {
   return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}
-    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/coding">${tr("s14.more.coding")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/routines">${tr("s14.more.routine")}</a></li><li><a class="s-link-text" href="/shares">${tr("s14.more.shares")}</a></li><li><a class="s-link-text" href="/coding">${tr("s14.more.coding")}</a></li><li><a class="s-link-text" href="/recovery">${tr("s14.more.recovery")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li><li><a class="s-link-text" href="/settings/google">${tr("s14.more.google")}</a></li>${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li><li><a class="s-link-text" href="/settings/backup">${tr("s14.more.backup")}</a></li></ul></nav>
     <form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
@@ -590,10 +605,12 @@ export function renderS14(page: S14Page): string {
       case "settings-work": return workSettingsPage(page, view);
       case "settings-provider": return providerSettingsPage(page, view);
       case "recovery": return recoveryPage(page, view);
+      case "settings-backup": return renderBackupSurface(page, view);
       case "shares": case "share-new": case "share": return renderSharingSurface(page, view);
       case "routines": case "routine-new": case "routine": return renderRoutineSurface(page, view);
       case "bot-policy": case "bot-end": return renderLifecycleSurface(page, view);
       case "coding": case "coding-new": case "coding-repository": case "coding-start": return renderCodingSurface(page, view);
+      case "google": case "google-guide": case "google-new": case "google-connection": case "google-draft-edit": return renderPersonalSurface(page, view);
       default: return renderMemorySurface(page, view);
     }
   }));

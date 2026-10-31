@@ -8,13 +8,14 @@ import type { AttentionNotice, EnableRoutineCommand, RoutineOccurrence, RoutineP
 import type { Bot, Home, OwnerActor, Route } from "./types";
 import { inferTitle, ownerLimits, workLimits } from "./web-product";
 import { generalTool } from "./web-product-coding";
+import { accountSelection, briefDraft } from "./web-product-personal";
 import { committed } from "./web-product-memory";
 import { limitValues, type S14LimitValues } from "./web-product-team";
 
 /** Schedule shapes the form offers; each maps to one `ScheduleRecurrence` the service validates again. */
 export type S14RoutineSchedule = "daily" | "interval" | "once";
 /** Form values kept exactly as typed across review, edit and refusal. Nothing here is authority until `routine.enable` commits. */
-export interface S14RoutineDraft extends S14LimitValues { purpose: string; completion: string; bots: string[]; tools: string[]; scopes: string[]; schedule: S14RoutineSchedule; time: string; hours: string; at: string; timezone: string; occurrences: string; days: string }
+export interface S14RoutineDraft extends S14LimitValues { purpose: string; completion: string; bots: string[]; tools: string[]; scopes: string[]; accounts: string[]; schedule: S14RoutineSchedule; time: string; hours: string; at: string; timezone: string; occurrences: string; days: string }
 /** Computed review of one draft. `payload` is the exact capture the enable form repeats, and `firstRun` is advisory. */
 export interface S14RoutineReview { requestId: string; conversationId: string; expectedRevision: number; payload: RoutinePurpose; firstRun: number; bots: Bot[]; routes: Route[] }
 /** `/routines/new`: the form, or its review when `review` is set. A review is a read and starts nothing. */
@@ -47,23 +48,23 @@ const lines = (value: string) => value.replace(/\r\n?/g, "\n");
 const hostTimezone = () => { const zone = new Intl.DateTimeFormat().resolvedOptions().timeZone; return validTimezone(zone) ? zone : "UTC"; };
 
 function checkedFields(fields: Record<string, unknown>): void {
-  for (const key of Object.keys(fields)) if (!fixedFields.includes(key) && !["bot:", "tool:", "scope:"].some(prefix => key.startsWith(prefix))) throw new AppError("invalid_body");
+  for (const key of Object.keys(fields)) if (!fixedFields.includes(key) && !["bot:", "tool:", "scope:", "account:"].some(prefix => key.startsWith(prefix))) throw new AppError("invalid_body");
 }
 function freshDraft(app: S14Application, actor: OwnerActor, state: Home): S14RoutineDraft {
   const jit = state.bots.find(bot => bot.id === "jit" && bot.enabled) ?? state.bots.find(bot => bot.enabled);
-  return { ...limitValues(app.graph.defaults(actor)), purpose: "", completion: "", bots: jit ? [jit.id] : [], tools: (jit?.capabilities.tools ?? []).filter(tool => app.policy.tools.includes(tool) && generalTool(tool) && !tool.startsWith("effect_")), scopes: [], schedule: "daily", time: "08:00", hours: "24", at: "", timezone: hostTimezone(), occurrences: "30", days: "90" };
+  return { ...limitValues(app.graph.defaults(actor)), purpose: "", completion: "", bots: jit ? [jit.id] : [], tools: (jit?.capabilities.tools ?? []).filter(tool => app.policy.tools.includes(tool) && generalTool(tool) && !tool.startsWith("effect_") && tool !== "personal_read"), scopes: [], accounts: [], schedule: "daily", time: "08:00", hours: "24", at: "", timezone: hostTimezone(), occurrences: "30", days: "90" };
 }
 function draftOf(app: S14Application, actor: OwnerActor, fields: Record<string, unknown>): S14RoutineDraft {
   const fallback = limitValues(app.graph.defaults(actor)), number = (key: keyof S14LimitValues) => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : fallback[key]; };
   const schedule = single(fields, "schedule");
-  return { concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), purpose: lines(single(fields, "purpose")), completion: lines(single(fields, "completion")), bots: prefixed(fields, "bot:"), tools: prefixed(fields, "tool:"), scopes: prefixed(fields, "scope:"), schedule: schedule === "interval" || schedule === "once" ? schedule : "daily", time: single(fields, "time"), hours: single(fields, "hours"), at: single(fields, "at"), timezone: single(fields, "timezone"), occurrences: single(fields, "occurrences"), days: single(fields, "days") };
+  return { concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), purpose: lines(single(fields, "purpose")), completion: lines(single(fields, "completion")), bots: prefixed(fields, "bot:"), tools: prefixed(fields, "tool:"), scopes: prefixed(fields, "scope:"), accounts: prefixed(fields, "account:"), schedule: schedule === "interval" || schedule === "once" ? schedule : "daily", time: single(fields, "time"), hours: single(fields, "hours"), at: single(fields, "at"), timezone: single(fields, "timezone"), occurrences: single(fields, "occurrences"), days: single(fields, "days") };
 }
 /** A new form from an old capture, for a routine that can never resume. Bots that left the team simply stay out of the selection. */
 function fromRoutine(app: S14Application, actor: OwnerActor, state: Home, routineId: string | null): S14RoutineDraft {
   const fresh = freshDraft(app, actor, state); if (!routineId || !identityPattern.test(routineId)) return fresh;
   const { routine } = app.routines.view(actor, routineId), p = routine.capture.command.payload, deleted = (value: string) => value === "[deleted]" ? "" : value;
   const days = Math.max(1, Math.min(routineBounds.days[1], Math.ceil((p.endsAt - routine.createdAt) / 86400000))), r = p.recurrence;
-  return { ...fresh, concurrent: p.limits.concurrency, minutes: Math.max(1, Math.round(p.limits.wallMs / 60000)), reads: p.limits.reads, purpose: deleted(p.purpose), completion: deleted(p.completionRule), bots: p.bots.map(ref => ref.id).filter(id => state.bots.some(bot => bot.id === id && bot.enabled)), tools: p.tools, schedule: r.kind, time: r.kind === "daily" ? r.time : fresh.time, hours: r.kind === "interval" ? String(Math.max(1, Math.round(r.everyMs / 3600000))) : fresh.hours, timezone: p.timezone, occurrences: String(p.occurrenceBudget), days: String(days) };
+  return { ...fresh, concurrent: p.limits.concurrency, minutes: Math.max(1, Math.round(p.limits.wallMs / 60000)), reads: p.limits.reads, purpose: deleted(p.purpose), completion: deleted(p.completionRule), bots: p.bots.map(ref => ref.id).filter(id => state.bots.some(bot => bot.id === id && bot.enabled)), tools: p.tools, accounts: p.scopes.filter(scope => scope.kind === "resource").map(scope => scope.id), schedule: r.kind, time: r.kind === "daily" ? r.time : fresh.time, hours: r.kind === "interval" ? String(Math.max(1, Math.round(r.everyMs / 3600000))) : fresh.hours, timezone: p.timezone, occurrences: String(p.occurrenceBudget), days: String(days) };
 }
 function bounded(value: string, [min, max]: readonly [number, number]): number {
   const number = value.trim() === "" ? NaN : Number(value);
@@ -90,9 +91,9 @@ function capture(app: S14Application, actor: OwnerActor, state: Home, fields: Re
   if (!validTimezone(draft.timezone)) throw new AppError("invalid_routine_schedule");
   const lead = state.conversations.find(item => item.id === conversationId)?.botId, order = (id: string) => id === lead ? 0 : 1;
   const bots = prefixed(fields, "bot:").map(id => ({ id, revision: Number(single(fields, `bot:${id}`)) })).sort((a, b) => order(a.id) - order(b.id));
-  const limits = workLimits(ownerLimits(fields, limitValues(app.graph.defaults(actor))), bots.length), scopes: ScopeRef[] = prefixed(fields, "scope:").map(id => ({ kind: "share", id, revision: Number(single(fields, `scope:${id}`)) }));
+  const accounts = accountSelection(fields), limits = workLimits(ownerLimits(fields, limitValues(app.graph.defaults(actor))), bots.length), scopes: ScopeRef[] = [...prefixed(fields, "scope:").map(id => ({ kind: "share" as const, id, revision: Number(single(fields, `scope:${id}`)) })), ...accounts.scopes];
   const recurrence = recurrenceOf(draft), pinned = single(fields, "endsAt"), endsAt = /^[1-9][0-9]{0,15}$/.test(pinned) ? Number(pinned) : app.now() + bounded(draft.days, routineBounds.days) * 86400000;
-  return { conversationId, title: inferTitle(purpose), purpose, completionRule: completion, bots, tools: prefixed(fields, "tool:"), scopes, limits, timezone: draft.timezone, recurrence, misfire: "coalesce", occurrenceBudget: recurrence.kind === "once" ? 1 : bounded(draft.occurrences, routineBounds.occurrences), endsAt };
+  return { conversationId, title: inferTitle(purpose), purpose, completionRule: completion, bots, tools: [...new Set([...prefixed(fields, "tool:"), ...accounts.tools])], scopes, limits, timezone: draft.timezone, recurrence, misfire: "coalesce", occurrenceBudget: recurrence.kind === "once" ? 1 : bounded(draft.occurrences, routineBounds.occurrences), endsAt };
 }
 /** The chat a routine reports into: the first ticked Bot's, Jit's when Jit is ticked. */
 function reportChat(state: Home, fields: Record<string, unknown>): string {
@@ -143,10 +144,14 @@ const findingsOf = (views: RoutineView[], work: Work[]): S14RoutineFinding[] => 
   const item = work.find(entry => entry.id === id); return item ? [{ work: item, routineId: routine.id, occurrenceId: occurrence.id }] : [];
 })));
 /** Resolves `/routines`, `/routines/new` and `/routines/:id`; null leaves the path to the other product surfaces. */
-export function routineView(app: S14Application, url: URL, actor: OwnerActor, state: Home): S14RoutineSurface | null {
+export function routineView(app: S14Application, url: URL, actor: OwnerActor, state: Home, locale: Locale): S14RoutineSurface | null {
   const path = url.pathname;
   if (path === "/routines") { const items = app.routines.list(actor); return { kind: "routines", items, findings: findingsOf(items, app.authority.list(actor)).filter(item => item.work.state === "proposed") }; }
-  if (path === "/routines/new") { const from = url.searchParams.get("from"); return { kind: "routine-new", draft: fromRoutine(app, actor, state, from), notice: null, fresh: !from, review: null }; }
+  if (path === "/routines/new") {
+    const from = url.searchParams.get("from"), base = fromRoutine(app, actor, state, from);
+    if (url.searchParams.get("brief") === "1") { const brief = briefDraft(app, actor, state, locale); return { kind: "routine-new", draft: { ...base, ...brief, bots: brief.bots.length ? brief.bots : base.bots }, notice: null, fresh: true, review: null }; }
+    return { kind: "routine-new", draft: base, notice: null, fresh: !from, review: null };
+  }
   const match = /^\/routines\/([a-zA-Z0-9_-]{1,128})$/.exec(path); if (!match) return null;
   const view = app.routines.view(actor, match[1]!), notices = Object.fromEntries(app.attention.view(actor).items.filter(item => view.history.some(run => run.id === item.groupId)).map(item => [item.groupId, item]));
   const receipt = committed<RoutineReceipt>(app, actor, url, "routine.");

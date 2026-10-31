@@ -1,4 +1,10 @@
+import { personalServiceBinding, personalProxyRequest } from "./personal-origin";
+import { PersonalVault } from "./personal-vault";
 import { dirname, join, resolve } from "node:path";
+import { reconcileOnlineBackups } from "./backups";
+import { schwayOpsNative } from "./ops-native";
+import { runS14Ops } from "./ops-cli";
+import { assertS14OpsUnfenced } from "./ops-state";
 import { ConnectionVault } from "../exec/connections";
 import { schwayRecovery } from "./native-recovery";
 import { schwayResearch } from "./research";
@@ -25,6 +31,8 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
+    if (command === "ops") { await runS14Ops(path, args, env); return; }
+    assertS14OpsUnfenced(path);
     const origin = env.JIT_S14_ORIGIN ?? "http://localhost:3001";
     if (command === "owner-link") {
       // This CLI coexists with a running service: only the store's writer lock is needed, never its runtime lock/hosts.
@@ -36,20 +44,20 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       return;
     }
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page", "--no-refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
-    const url = new URL(command === "serve" ? origin : "http://localhost:3001");
-    if (command === "serve" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash)) throw new AppError("s14_loopback_origin_required");
+    const binding = personalServiceBinding(command === "serve" ? origin : "http://localhost:3001");
     const policy = s14Policy(env);
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
+      reconcileOnlineBackups(path);
       store = new S14Store(path);
       policy.resources = [...new Set([...store.read(existingResourceCeilings), ...policy.resources])];
       const chat: import("./types").ChatPort = { reply: (input, signal) => schwayChat(join(dirname(path), "native"), undefined, app.recovery).reply(input, signal) };
       const vaultDirectory = resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault"));
-      const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
+      const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path), resolve("backups"), env.JIT_S14_COMPUTER_ROOT] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
         protectedPaths: [dirname(path), vaultDirectory, resolve(".local"), resolve("backups")], workspaceImage: env.JIT_BOX_IMAGE_BASE ?? "", browserImage: env.JIT_BOX_IMAGE_BROWSER ?? "" }) : undefined;
-      const app: S14Application = new S14Application(store, { policy, chat, git: { vault }, parallel: { vault }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
+      const app: S14Application = new S14Application(store, { policy, chat, git: { vault }, requireBootReconciliation: true, backups: schwayOpsNative(join(dirname(path), "native")), parallel: { vault }, personal: { vault: new PersonalVault(vault), evidenceGuard: env.JIT_S14_PERSONAL_EVIDENCE_GUARD === "1" }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
         if (app.store.read(tx => app.coding.job(tx, attempt.workId))) return app.coding.run(join(dirname(path), "native"), attempt, signal);
         if (attempt.snapshot.tools.includes("computer")) return runComputerWork(app, join(dirname(path), "native"), attempt, signal);
         return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
@@ -66,13 +74,17 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       // Interactive chat is checked before every bounded graph admission; each run has its own host.
       let pumping: Promise<void> | null = null;
       const pump = (): Promise<void> => {
+        if (app.backups.busy) return Promise.resolve();
         if (pumping) return pumping;
         pumping = (async () => {
           for (;;) {
+            if (app.backups.busy) break;
             app.routines.tick();
             await app.drainReplies(); await app.authority.drain();
             await app.git.drain();
             await app.attention.drain();
+            await app.personal.drain();
+            await app.personal.effects.drain();
             await app.botLifecycle.drain(schwayRecovery(join(dirname(path), "native")));
             if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
           }
@@ -81,14 +93,18 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       const handler = createS14Handler(app, origin, renderS14, createS14Product(app), createS14Auth(app));
       const maintainComputers = () => {
+        if (app.backups.busy) return;
         app.routines.tick();
         void pump().catch(() => {});
         app.computers.sweep();
         app.authority.cancelFenced();
         void app.computers.drain().catch(() => {});
       };
-      const server = Bun.serve({ hostname: url.hostname === "[::1]" ? "::1" : url.hostname, port: Number(url.port || 80), async fetch(request) {
-        const response = await handler(request); maintainComputers(); void pump().catch(() => {}); return response;
+      const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
+        let incoming = request;
+        try { if (binding.proxy) incoming = personalProxyRequest(request, origin); }
+        catch { return new Response("host_rejected", { status: 403 }); }
+        const response = await handler(incoming); maintainComputers(); void pump().catch(() => {}); return response;
       } });
       const computerTimer = setInterval(maintainComputers, 1000);
       void pump().catch(() => {});
@@ -96,6 +112,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const shutdown = () => {
         clearInterval(computerTimer); server.stop(true);
         void (async () => {
+          await app.backups.settle();
           await app.authority.shutdown();
           await pumping;
           app.computers.recover(); await app.computers.drain();
@@ -106,7 +123,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1", "app.routine-grants/v1", "app.attention-outbox/v1", "app.bot-lifecycle/v1", "app.coding-work/v1", "app.git-effects/v2"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1", "app.routine-grants/v1", "app.attention-outbox/v1", "app.bot-lifecycle/v1", "app.managed-backup/v1", "app.restore-activation/v1", "app.coding-work/v1", "app.git-effects/v2", "app.personal-read-connectors/v1", "app.personal-effects/v1"], readiness: "configured_unverified" }));
       printS14OwnerSetupLink(store, origin);
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {

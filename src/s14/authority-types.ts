@@ -39,7 +39,7 @@ export interface Admission { botId: string; tools: string[]; scopes: ScopeRef[];
 /** Immutable admission plus separate lifecycle evidence; routes, resources and grant generation are pinned. */
 export interface Attempt { id: string; workId: string; requestId: string; parentId: string | null; snapshot: { grant: WorkGrant; bot: Bot; route: Route; tools: string[]; scopes: ScopePolicy[]; input: string; calls: number; outputBytes: number }; memoryId?: string; step?: { id: string; handler: "research" | "synthesis"; inputs: StepInput[]; gaps: StepGap[] }; state: "running" | "waiting" | "committed" | "settled" | "interrupted"; reason: string | null; createdAt: number }
 /** One exact consequential action; no shell/browser/MCP fallback or always-allow mode exists. */
-export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | "delete"; destination: string; content: string }
+export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | "delete" | "calendar"; destination: string; content: string }
 /** Durable action ledger revision and outcome; unknown is reconcile-only and never claimable again. */
 export interface Effect { id: string; revision: number; workId: string; attemptId: string; botId: string; action: EffectAction; actionHash: string; expiresAt: number; state: "pending" | "approved" | "denied" | "expired" | "executing" | "succeeded" | "failed" | "unknown" | "changed"; resolution?: { basis: "owner_statement"; outcome: "occurred" | "did_not_occur"; note: string; recordedAt: number }; reason: string | null; supported: boolean; payloadState?: "deleted" }
 /** Worker result is evidence for owner review, not an automatic claim that the completion rule is fulfilled. */

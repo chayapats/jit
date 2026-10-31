@@ -1,8 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S14Application } from "../src/s14/application";
+import { Database } from "bun:sqlite";
+import { S14Maintenance } from "../src/s14/ops";
+import { schwayOpsNative } from "../src/s14/ops-native";
+import { schwayRecovery } from "../src/s14/native-recovery";
+import { credentialFreeImage } from "../src/s14/ops-image";
+import { opsRoot } from "../src/s14/ops-state";
+import type { OpsCommand } from "../src/s14/ops-types";
 import { S14Store } from "../src/s14/store";
 import { ConnectionVault } from "../src/exec/connections";
 import { canonical, digest } from "../src/s14/validation";
@@ -55,7 +62,7 @@ class RemoteFixture implements GitRemotePort {
     return { headCommit: this.head, baseCommit: this.base, prs: structuredClone(this.prs), complete: !this.incomplete };
   }
 }
-async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false, separateBot = false) {
+async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false, separateBot = false, sourced = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-git-"))); roots.push(root);
   const runtime = new CodingRuntimeFixture(); roots.push(runtime.root);
   const base = await runtime.seed();
@@ -84,6 +91,9 @@ async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false,
   }
   app.execute(auth.actor, { kind: "coding.repository.grant", requestId: rid(), expectedRevision: 0,
     payload: { id: "repo", botId, url: "https://github.com/fixture/repo.git", baseCommit: base } });
+  const claim = sourced ? app.execute(auth.actor, { kind: "memory.remember", requestId: rid(),
+    expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
+    payload: { conversationId: setup.conversation!.id, text: "Owner coding evidence that may later be withdrawn" } }).claim! : null;
   const work = app.execute(auth.actor, { kind: "coding.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
     payload: { repository: { id: "repo", revision: 1 }, install: null,
       tests: [{ argv: ["sh", "-c", 'test "$(cat answer.txt)" = fixed'], network: "none", timeoutMs: 1000, coverage: "fixture assertion" }],
@@ -115,7 +125,7 @@ async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false,
     return app.execute(auth.actor, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision,
       payload: { effectId: effect.id, actionHash: effect.actionHash, decision: "approve" } });
   }
-  return { root, runtime, remote, store, app, options, auth, token, clock, base, vault, path, work, attempt, botId, stored, secretCommand, propose, approve };
+  return { root, runtime, remote, store, app, options, auth, token, clock, base, vault, path, work, attempt, botId, stored, secretCommand, propose, approve, claim };
 }
 
 test("one exact approval verifies broker-owned objects, pushes once and creates only the exact PR", async () => {
@@ -515,3 +525,125 @@ test("freshly re-enabled capability generation cannot release credentials for an
   expect(f.remote.reads).toBe(reads); expect(f.remote.pushes).toHaveLength(1);
   expect(f.store.read(tx => tx.all("SELECT * FROM git_connection_releases"))).toEqual(releases);
 });
+
+function maintenanceCommand(m: S14Maintenance, kind: OpsCommand["kind"], payload: object = {}): OpsCommand {
+  return { kind, requestId: rid(), expectedRevision: m.control.revision, payload } as OpsCommand;
+}
+async function stopForBackup(f: Awaited<ReturnType<typeof fixture>>) {
+  const computer = f.app.computers.view(f.auth.actor, f.botId).computer!;
+  f.app.execute(f.auth.actor, { kind: "computer.stop", requestId: rid(), expectedRevision: computer.revision, payload: { botId: f.botId, computerId: computer.id, generation: computer.generation } });
+  await f.app.computers.drain();
+  f.store.close();
+}
+
+test.each(["pending", "approved", "push_dispatching", "pr_dispatching", "complete"] as const)("managed coding/Git restore excludes credential sentinels, requires reconnect and never replays %s", async state => {
+  const f = await fixture(), { effect } = f.propose();
+  if (state !== "pending") f.approve(effect);
+  if (state === "complete") expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("succeeded");
+  const reportId = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!.reportId!;
+  const report = f.app.reports.view(f.auth.actor, reportId);
+  if (report.state !== "available") throw Error("Missing coding evidence");
+  const hashes = report.artifacts.map(file => ({ id: file.id, bytes: Buffer.from(f.app.artifacts.download(f.auth.actor, file.id).bytes) }));
+  const vaultId = f.store.read(tx => tx.get<{ vault_id: string }>("SELECT vault_id FROM git_connections WHERE id=?", f.stored.id)!.vault_id);
+  await stopForBackup(f);
+  const m = new S14Maintenance(f.store.path, f.options, schwayOpsNative(join(f.root, "native")));
+  try {
+    const actor = m.app.authenticate(f.token).actor;
+    const backup = await m.execute(actor, maintenanceCommand(m, "backup.create"));
+    expect(backup.state).toBe("complete");
+    const directory = join(opsRoot(f.store.path), "backups", backup.backupId!);
+    for (const name of readdirSync(directory)) {
+      const bytes = readFileSync(join(directory, name));
+      expect(bytes.includes(Buffer.from(secret))).toBe(false);
+      expect(bytes.includes(Buffer.from(vaultId))).toBe(false);
+    }
+    const image = Database.deserialize(readFileSync(join(directory, "application.sqlite")));
+    try {
+      const connection = image.query("SELECT record_json,vault_id FROM git_connections").get() as { record_json: string; vault_id: null };
+      expect(connection.vault_id).toBeNull(); expect(JSON.parse(connection.record_json).secret).toBe("empty");
+      expect(image.query("SELECT count(*) n FROM git_reconciliations").get()).toEqual({ n: 0 });
+    } finally { image.close(); }
+    // Even accidental secrets in retained coding metadata must refuse capture.
+    m.store.transaction(tx => tx.run("UPDATE coding_repositories SET record_json=json_set(record_json,'$.accidentalToken',?)", secret));
+    expect(() => credentialFreeImage(m.store)).toThrow("s14_ops_credential_excluded");
+    m.store.transaction(tx => tx.run("UPDATE coding_repositories SET record_json=json_remove(record_json,'$.accidentalToken')"));
+    if (state === "push_dispatching" || state === "pr_dispatching") m.store.transaction(tx => {
+      tx.run("INSERT INTO lifecycle.withdrawals VALUES ('effect_claim',?,'revision_1')", effect.id);
+      tx.run("UPDATE git_effects SET record_json=json_set(record_json,'$.stage',?) WHERE effect_id=?", state, effect.id);
+    });
+    const before = { pushes: f.remote.pushes.length, creates: f.remote.creates.length, reads: f.remote.reads };
+    const staged = await m.execute(actor, maintenanceCommand(m, "restore.prepare", { backupId: backup.backupId }));
+    expect(staged.state).toBe("validated");
+    expect((await m.execute(actor, maintenanceCommand(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }))).state).toBe("complete");
+    const owner = m.app.authenticate(await m.app.login("git-fixture-owner-password")).actor;
+    expect(f.vault.read(vaultId)).toBe(secret); // A surviving local vault cannot reconnect an archive.
+    expect(m.app.git.connections(owner)[0]).toMatchObject({ id: f.stored.id, secret: "empty" });
+    expect(m.app.git.connections(owner)[0]!.revision).toBeGreaterThan(f.stored.revision);
+    expect(m.store.read(tx => tx.get("SELECT 1 FROM git_connections WHERE vault_id IS NOT NULL"))).toBeNull();
+    const restored = m.app.authority.effect(owner, effect.id).effect;
+    expect(restored.state).toBe(state === "complete" ? "succeeded" : state.endsWith("dispatching") ? "unknown" : "expired");
+    expect(m.app.authority.view(owner, f.work.id).authority?.revoked).toBe(true);
+    for (const file of hashes) expect(Buffer.from(m.app.artifacts.download(owner, file.id).bytes)).toEqual(file.bytes);
+    await m.app.recovery.boot(schwayRecovery(join(f.root, "native")));
+    await m.app.authority.drain(); await m.app.git.drain();
+    expect({ pushes: f.remote.pushes.length, creates: f.remote.creates.length, reads: f.remote.reads }).toEqual(before);
+  } finally { m.close(); }
+}, 30000);
+
+test.each(["memory.forget", "memory.delete"] as const)("managed coding evidence and bundle authority honour later %s", async kind => {
+  const f = await fixture(undefined, false, false, true), { effect } = f.propose();
+  const run = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!;
+  const report = f.app.reports.view(f.auth.actor, run.reportId!);
+  if (report.state !== "available") throw Error("Missing coding evidence");
+  await stopForBackup(f);
+  const m = new S14Maintenance(f.store.path, f.options, schwayOpsNative(join(f.root, "native")));
+  try {
+    const actor = m.app.authenticate(f.token).actor;
+    const backup = await m.execute(actor, maintenanceCommand(m, "backup.create"));
+    m.app.execute(actor, { kind, requestId: rid(), expectedRevision: f.claim!.revision, payload: { claim: f.claim! } });
+    const staged = await m.execute(actor, maintenanceCommand(m, "restore.prepare", { backupId: backup.backupId }));
+    expect(staged.state).toBe("validated");
+    await m.execute(actor, maintenanceCommand(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }));
+    const owner = m.app.authenticate(await m.app.login("git-fixture-owner-password")).actor;
+    expect(m.app.reports.view(owner, run.reportId!).state).toBe("unavailable");
+    expect(m.app.coding.view(owner, f.work.id)).toMatchObject({ available: false, job: null, checks: [] });
+    expect(m.store.read(tx => tx.get("SELECT 1 FROM coding_checks WHERE attempt_id=?", f.attempt.id))).toBeNull();
+    for (const file of report.artifacts) expect(() => m.app.artifacts.download(owner, file.id)).toThrow("artifact_unavailable");
+    expect(() => m.app.execute(owner, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision,
+      payload: { effectId: effect.id, actionHash: effect.actionHash, decision: "approve" } })).toThrow();
+    await m.app.git.drain();
+    expect(f.remote.pushes).toHaveLength(0); expect(f.remote.creates).toHaveLength(0);
+    expect(f.runtime.requests.some(request => { const command = (request as { command?: string }).command; return command?.includes("bundle create") && command?.includes(".jit-"); })).toBe(false);
+  } finally { m.close(); }
+}, 30000);
+
+test("managed coding image cannot resurrect deleted Bot evidence, plans or bundle authority", async () => {
+  const f = await fixture(undefined, false, true), { effect } = f.propose();
+  const run = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!;
+  const report = f.app.reports.view(f.auth.actor, run.reportId!);
+  if (report.state !== "available") throw Error("Missing coding evidence");
+  await stopForBackup(f);
+  const native = schwayOpsNative(join(f.root, "native"));
+  const m = new S14Maintenance(f.store.path, f.options, native);
+  try {
+    const actor = m.app.authenticate(f.token).actor;
+    const backup = await m.execute(actor, maintenanceCommand(m, "backup.create"));
+    const preview = m.app.botLifecycle.preview(actor, f.botId, "delete");
+    m.app.execute(actor, { kind: "bot.delete", requestId: rid(), expectedRevision: preview.bot.revision,
+      payload: { botId: f.botId, previewHash: preview.hash } });
+    await m.app.botLifecycle.drain(schwayRecovery(join(f.root, "native")));
+    expect(m.app.botLifecycle.view(actor, f.botId).lifecycle.state).toBe("deleted");
+    const stage = await m.execute(actor, maintenanceCommand(m, "restore.prepare", { backupId: backup.backupId }));
+    expect(stage.state).toBe("validated");
+    await m.execute(actor, maintenanceCommand(m, "restore.activate", { stageId: stage.stage!.id, actionHash: stage.stage!.actionHash }));
+    const owner = m.app.authenticate(await m.app.login("git-fixture-owner-password")).actor;
+    expect(m.app.botLifecycle.view(owner, f.botId).lifecycle.state).toBe("deleted");
+    expect(m.app.reports.view(owner, run.reportId!).state).toBe("unavailable");
+    expect(m.store.read(tx => tx.get("SELECT 1 FROM coding_checks WHERE attempt_id=?", f.attempt.id))).toBeNull();
+    expect(m.store.read(tx => tx.get("SELECT 1 FROM coding_jobs WHERE work_id=?", f.work.id))).toBeNull();
+    expect(m.app.authority.effect(owner, effect.id).effect.payloadState).toBe("deleted");
+    for (const file of report.artifacts) expect(() => m.app.artifacts.download(owner, file.id)).toThrow("artifact_unavailable");
+    await m.app.git.drain();
+    expect(f.remote.pushes).toHaveLength(0); expect(f.remote.creates).toHaveLength(0);
+  } finally { m.close(); }
+}, 30000);

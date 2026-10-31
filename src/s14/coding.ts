@@ -10,7 +10,7 @@ import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, co
 import { codingEvidenceCheckout, codingSnapshot } from "./coding-evidence";
 import { repositoryBundle } from "./coding-preload";
 import { repositoryCommit } from "./coding-resolve";
-import { resourceConfigured } from "./share-slots";
+import { resourceConfigured, resourceSlotConflict } from "./share-slots";
 import { gitConnection } from "./coding-connections";
 import { codingModel } from "./coding-model";
 import type { ComputerSession } from "./computer-types";
@@ -42,7 +42,7 @@ export class S14Coding {
     const bot = record<Bot>(tx, "bots", p.botId);
     if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
     if (!bot.enabled || !resourceConfigured(this.app.policy, p.id) || !bot.capabilities.resources.includes(p.id) ||
-        tx.get("SELECT 1 FROM snapshot_shares WHERE id=?", p.id) || tx.get("SELECT 1 FROM memory_shares WHERE id=?", p.id) ||
+        resourceSlotConflict(tx, p.id, "coding_repository") ||
         tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share','coding_repository')", p.id)) throw new AppError("coding_resource_denied", 403);
     return bot;
   }
@@ -185,10 +185,16 @@ export class S14Coding {
     this.reconcile(tx);
   }
 
-  /** Removes lifecycle-deleted duplicate plans/checks while preserving immutable effect and artifact identities. */
+  /** Removes duplicate plans/checks under the same deletion and evidence-withdrawal rules as their committed report. */
   reconcile(tx: AppTransaction): void {
     tx.run("DELETE FROM coding_checks WHERE attempt_id IN (SELECT attempt_id FROM attempt_payload_deletions)");
-    tx.run("DELETE FROM coding_jobs WHERE work_id IN (SELECT work_id FROM work_payload_deletions)");
+    tx.run(`DELETE FROM coding_checks WHERE attempt_id IN (
+      SELECT c.attempt_id FROM coding_runs c JOIN reports r ON r.attempt_id=c.attempt_id WHERE r.content_json IS NULL
+    )`);
+    tx.run(`DELETE FROM coding_jobs WHERE work_id IN (
+      SELECT work_id FROM work_payload_deletions
+      UNION SELECT work_id FROM coding_runs WHERE attempt_id IN (SELECT attempt_id FROM attempt_payload_deletions)
+    )`);
   }
 
   private async performCheck(attemptId: string, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal, commit: string | null = null): Promise<CodingCheckResult> {

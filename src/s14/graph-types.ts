@@ -1,5 +1,5 @@
 import type { Admission, WorkGrant } from "./authority-types";
-import type { ExternalEvidence } from "./parallel-types";
+import type { ReportEvidence } from "./report-types";
 import type { Envelope } from "./types";
 
 /** Finite scheduler ceilings; a route means the provider credential route, not a model alias. */
@@ -20,7 +20,7 @@ export interface WorkStep {
   reason: string | null; attemptId: string | null; startedAt: number | null; settledAt: number | null;
 }
 /** Untrusted committed input with source lineage; UTF-8 text is at most 8192 bytes and the serialized input list at most 49152. */
-export interface StepInput { stepId: string; attemptId: string; sourceId: string; text: string; evidence: ExternalEvidence[] }
+export interface StepInput { stepId: string; attemptId: string; sourceId: string; text: string; evidence: ReportEvidence[] }
 /** An explicit missing dependency; successful sibling evidence remains independently committed. */
 export interface StepGap { stepId: string; reason: string }
 /** Owner-only read model for actual lanes, capacity, conservative usage and dependency waits. */

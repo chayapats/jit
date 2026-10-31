@@ -97,6 +97,7 @@ export class S14Attention {
 
   /** Drains finite safe retries; thrown or uncertain remote outcomes are consumed permanently. */
   async drain(): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) return this.#draining;
     this.#draining = this.sendQueued();
     try { await this.#draining; }
