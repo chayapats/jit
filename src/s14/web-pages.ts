@@ -204,8 +204,9 @@ const toolOptions = (page: S14Page, bots: Bot[]) => page.policy.tools.filter(too
 function grantChoices(page: S14Page, lead: Bot, draft: S14Draft | null, workId: string | null = null): string {
   const others = page.state.bots.filter(bot => bot.id !== lead.id && bot.enabled);
   const tools = toolOptions(page, [lead, ...others]);
+  const selected = [lead, ...others.filter(bot => draft?.bots.includes(bot.id))];
   return `${hidden(`bot:${lead.id}`, lead.revision)}${others.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft?.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}
-    ${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${tool.startsWith("effect_") ? "" : " checked"}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}${shareChoices(page, [lead, ...others], draft, workId)}${accountChoices(page, [lead, ...others], draft)}`;
+    ${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${!tool.startsWith("effect_") && selected.some(bot => bot.capabilities.tools.includes(tool)) ? " checked" : ""}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}${shareChoices(page, [lead, ...others], draft, workId)}${accountChoices(page, [lead, ...others], draft)}`;
 }
 /** Accounts this start may read, unticked by default. One tick names the slot and the read tool together; the service rechecks Bot, revision and consent. */
 export function accountChoices(page: S14Page, bots: Bot[], draft: Pick<S14Draft, "accounts"> | null, readable = false): string {

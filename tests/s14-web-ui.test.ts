@@ -154,6 +154,21 @@ test("plain text, @Bot and quoted command JSON stay conversation; only the expli
   expect(countWork(f)).toBe(0);
 });
 
+test("a computer-only Bot starts from unchanged composer defaults without inheriting another Bot's web tools", async () => {
+  const f = await fixture({ tools: ["web_search", "computer"], reply: () => ({ text: "Proposal", proposal: { name: "Computer only", responsibility: "Own computer", routeId: "selected" } }) });
+  send(f, "Propose a computer-only Bot"); await f.app.drainReplies();
+  const proposal = f.app.home(f.auth.actor).proposals[0]!;
+  const accepted = f.app.execute(f.auth.actor, { kind: "bot.proposal.accept", requestId: rid(), expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, capabilities: { tools: ["computer"], resources: [] } } });
+  const conversation = f.app.home(f.auth.actor).conversations.find(c => c.botId === accepted.bot!.id)!;
+  const { response } = await compose(f, "Use my own computer", true, `/chats/${conversation.id}`);
+  expect(response.status).toBe(303);
+  const work = f.app.authority.list(f.auth.actor)[0]!;
+  const grant = f.app.authority.view(f.auth.actor, work.id).grant!;
+  expect(grant.tools).toEqual(["computer"]);
+  expect(grant.bots.map(bot => bot.id)).toEqual([accepted.bot!.id]);
+});
+
 test("work mode submits work.start once with the default limits, and a duplicate form post keeps one grant", async () => {
   const f = await fixture(), { fields, response } = await compose(f, "เปรียบเทียบตัวเลือก\nบรรทัดสอง", true);
   expect(response.status).toBe(303); const work = f.app.authority.list(f.auth.actor)[0]!;
