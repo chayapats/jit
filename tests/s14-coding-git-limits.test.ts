@@ -104,3 +104,47 @@ test("a valid compressed commit with an oversized blob cannot become a verified 
     expect(commands.some(command => command.includes(" fsck ") || command.includes(" diff ") || command.includes(" push "))).toBe(false);
   } finally { mirror.close(); }
 });
+
+test("many small decoded objects can verify an approved mirror with an inventory above 64 KiB", async () => {
+  const limits = new FixtureGitProcessLimits(), directory = limits.createDirectory(); roots.push(directory);
+  const git = async (args: string[], input?: Uint8Array) => {
+    const result = await brokerGit(directory, args, undefined, { limits, ...(input ? { input } : {}) });
+    expect(result.code).toBe(0); return result.stdout.trim();
+  };
+  await git(["init", "-b", "main", directory]);
+  let input = "";
+  for (let i = 1; i <= 24000; i++) input += `blob\nmark :${i}\ndata 12\n${String(i).padStart(12, "0")}\n`;
+  input += "commit refs/heads/main\ncommitter Fixture <fixture@example.invalid> 1800000000 +0000\ndata 0\n";
+  for (let i = 1; i <= 24000; i++) input += `M 100644 :${i} file-${i}\n`;
+  input += "\ndone\n";
+  await git(["fast-import", "--quiet"], Buffer.from(input));
+  const head = await git(["rev-parse", "HEAD"]);
+  let inventoryBytes = 0;
+  await brokerGit(directory, ["cat-file", "--batch-all-objects", "--batch-check=%(objectsize)"], undefined, { limits, inspect: chunk => { inventoryBytes += chunk.length; } });
+  expect(inventoryBytes).toBeGreaterThan(65536);
+  await git(["bundle", "create", join(directory, "small.bundle"), "HEAD"]);
+  const mirror = new CodingGitMirror(limits);
+  try {
+    await mirror.import(readFileSync(join(directory, "small.bundle")), { headCommit: head, repository: { baseCommit: head }, diffHash: createHash("sha256").update("(empty diff)\n").digest("hex") } as GitAction);
+    expect(mirror.verifiedPath()).toBe(mirror.path);
+  } finally { mirror.close(); }
+});
+
+test.each([
+  { chunks: ["335544", "3", "1\n", "1", "\n"], error: null },
+  { chunks: ["335544", "3", "1\n", "2", "\n"], error: "git_decoded_objects_bound" },
+  { chunks: ["214748", "3648\n"], error: "git_decoded_objects_bound" },
+  { chunks: ["1".repeat(17)], error: "git_objects_unverified" },
+])("streamed inventory counts split sizes with bounded pending memory: %j", async ({ chunks, error }) => {
+  const mirror = new CodingGitMirror(new FixtureGitProcessLimits());
+  mirror.git = async (_args, options = {}) => {
+    expect(options.inspect).toBeDefined();
+    for (const chunk of chunks) options.inspect!(Buffer.from(chunk));
+    return { code: 0, stdout: "" };
+  };
+  try {
+    if (error) await expect(mirror.verifyObjectBytes()).rejects.toThrow(error);
+    else await mirror.verifyObjectBytes();
+    expect(() => mirror.verifiedPath()).toThrow("git_objects_unverified");
+  } finally { mirror.close(); }
+});

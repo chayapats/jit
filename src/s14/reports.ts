@@ -155,6 +155,24 @@ export class S14Reports {
     ];
   }
 
+  private budgetError(attempt: Attempt, claims: ReportClaim[], phase: "artifacts" | "snapshot", actualBytes: number): AppError {
+    const costs = new Map<string, { attemptId: string; id: string; revision: number; bytesPerReference: number; references: number }>();
+    for (const claim of claims) for (const source of claim.evidence) {
+      const previous = costs.get(source.id);
+      if (previous) previous.references++;
+      else costs.set(source.id, { attemptId: source.attemptId, id: source.id, revision: source.revision,
+        bytesPerReference: Buffer.byteLength(JSON.stringify(source)), references: 1 });
+    }
+    const bounded: NonNullable<ReturnType<typeof costs.get>>[] = [];
+    for (const cost of costs.values()) {
+      if (bounded.length >= 16 || Buffer.byteLength(JSON.stringify([...bounded, cost])) > 4096) break;
+      bounded.push(cost);
+    }
+    // Only validated identities and measured sizes leave this boundary, never source content or vendor errors.
+    return new AppError("report_output_budget_exhausted", 409, { phase, actualBytes, outputBytes: attempt.snapshot.outputBytes,
+      citationCosts: JSON.stringify(bounded), omittedSources: costs.size - bounded.length });
+  }
+
   /** Commits validated report, source lineage and immutable downloadable snapshots atomically with its producing result. */
   publish(tx: AppTransaction, attempt: Attempt, proposal: ReportProposal, resultBytes: number): Report {
     this.app.authority.guard(tx, attempt.id);
@@ -201,7 +219,7 @@ export class S14Reports {
       claims, covered: [...covered], missing: [...missing.values()], modelMissing, limitations: proposal.limitations.map(item => text(item, 2000)), source: ref(source), artifactIds: [] };
     const generated = this.files(report);
     const total = resultBytes + generated.reduce((sum, file) => sum + file.bytes.length, 0) + staged.reduce((sum, file) => sum + file.bytes.length, 0);
-    if (total > attempt.snapshot.outputBytes) throw new AppError("report_output_budget_exhausted", 409);
+    if (total > attempt.snapshot.outputBytes) throw this.budgetError(attempt, claims, "artifacts", total);
     for (const file of [...staged.map(s => ({ ...s.metadata, bytes: s.bytes })), ...generated.map(file => ({ ...file, id: id() }))]) {
       const artifact: Artifact = { id: file.id, reportId: key, workId: report.workId, attemptId: attempt.id,
         name: file.name, mediaType: file.mediaType, size: file.bytes.length, sha256: artifactHash(file.bytes), source: report.source, createdAt: this.app.now() };
@@ -210,7 +228,7 @@ export class S14Reports {
       report.artifactIds.push(artifact.id);
     }
     const encoded = JSON.stringify(report);
-    if (Buffer.byteLength(encoded) > Math.min(1048576, attempt.snapshot.outputBytes)) throw new AppError("report_output_budget_exhausted", 409);
+    if (Buffer.byteLength(encoded) > Math.min(1048576, attempt.snapshot.outputBytes)) throw this.budgetError(attempt, claims, "snapshot", Buffer.byteLength(encoded));
     tx.run("INSERT INTO reports VALUES (?,?,?,?,?,?)", key, report.workId, attempt.id, revision, canonical({ id: key, workId: report.workId, revision, source: report.source }), encoded);
     this.app.artifacts.discard(tx, attempt.id);
     const review = this.reviewIn(tx, report.workId);

@@ -37,6 +37,8 @@ Pool/runtime failures are not permission to disable service hardening or use a h
 
 The installer and compatible-code `service upgrade` prepare the exact runtime user-namespace image mapping before activation, including reused images. This can take longer than computer startup on slow storage; the 30-second runtime ceiling stays unchanged. Preparation never starts an image or mounts Bot data. An upgrade with configured images refuses activation if mapping preparation or cleanup fails; inspect rootless storage/space and retry the upgrade. Do not manually bypass the phase or clear Podman's image/layer cache while the service runs. After an operator removes that cache or changes subordinate mappings, re-run install/upgrade before measuring cold computer startup. Measure independent bounded fsync/metadata latency as well as prepared cold/warm starts before attributing a timeout to disk or to a Podman major version.
 
+Measure two authorized Bots starting together, including the first pair after reboot. Their lifecycle operations may run concurrently (maximum two); operations on one computer remain ordered. The second Bot keeps its own original 30-second deadline, including queue time. Record a missed deadline as a failure even when a later retry succeeds.
+
 The smoke checks container mounts/namespaces/hardening, kernel CPU/memory/PID/swap limits, bounded unique filesystems, cross-Bot marker/profile/socket denial, direct-network/raw-socket denial, owner-image capture and workspace/profile marker persistence across process recreation. The profile marker is synthetic and proves no real website login. Failure remains a blocker; finite limits may not be weakened.
 
 ## Additional acceptance evidence — all pending
