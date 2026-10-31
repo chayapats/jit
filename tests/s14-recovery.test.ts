@@ -126,6 +126,23 @@ test("pagination discovers multiple orphan identities, while a missing saved ide
   expect(app.recovery.view(actor).native[0]!.discovered).toHaveLength(3);
 });
 
+test.each(["deleted", "unresolved", "retired"] as const)("empty inventory preserves only an acknowledged deleted native identity (%s)", async state => {
+  const f = await fixture(), n = nativeFixture(), intent = f.intent();
+  f.app.recovery.correlate(intent.id, reference());
+  f.store.transaction(tx => {
+    const value = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM native_intents WHERE id=?", intent.id)!.record_json);
+    value.mode = "delete"; value.state = state;
+    tx.run("UPDATE native_intents SET record_json=? WHERE id=?", JSON.stringify(value), intent.id);
+  });
+  const { app, actor } = f.reopen();
+  await app.recovery.boot(n.port);
+  expect(app.recovery.view(actor).native[0]).toMatchObject(state === "deleted"
+    ? { state: "deleted", mode: "delete", reason: null }
+    : { state: "unresolved", reason: "native_reference_missing" });
+  expect(n.controls.deleted).toBe(0);
+  expect(n.controls.retired).toBe(0);
+});
+
 test.each(["owner", "bot", "route", "source", "decision", "graph", "expiry", "budget", "reads", "stop", "step_stop", "revoked"])("changed %s waits with a specific reason and does not refund uncertain usage", async change => {
   const f = await fixture(["web_fetch"]), n = nativeFixture(); f.intent();
   const expected: Record<string, string> = { owner: "owner_authority_changed", bot: "configuration_or_route_changed", route: "configuration_or_route_changed", source: "source_or_context_changed", decision: "source_or_context_changed", graph: "checkpoint_configuration_changed", expiry: "grant_expired", budget: "budget_exhausted", reads: "budget_exhausted", stop: "owner_stopped", step_stop: "owner_stopped_step", revoked: "grant_revoked" };
