@@ -440,9 +440,16 @@ test("a failed owner upgrade keeps the prior release active; nothing is switched
 test("failed health rolls back only to a compatible prior release; after a schema change the recovery point is reported instead", async () => {
   const u = await installedForUpgrade();
   u.fake.upgrade = async () => evidence("activated");
-  const rolled = await upgradePackage({ service: u.l.service, artifactDir: u.second, host: u.host, ownerPassword: password, health: async () => false });
+  let healthCalls = 0;
+  const rolled = await upgradePackage({ service: u.l.service, artifactDir: u.second, host: u.host, ownerPassword: password, health: async () => ++healthCalls === 2 });
+  expect(healthCalls).toBe(2);
   expect(rolled).toMatchObject({ outcome: "rolled-back", activeArtifactId: u.a.artifactId, supervisor: "active" });
   expect(readlinkSync(u.l.service.executablePath)).toBe(join(u.l.dirs.opt, "releases", u.a.artifactId));
+  healthCalls = 0;
+  const failedRollback = await upgradePackage({ service: u.l.service, artifactDir: u.second, host: u.host, ownerPassword: password,
+    health: async () => { healthCalls++; return false; } });
+  expect(healthCalls).toBe(2);
+  expect(failedRollback).toMatchObject({ outcome: "activation-unhealthy", activeArtifactId: u.a.artifactId, supervisor: "unknown" });
   // Simulated schema advance by the new build's activation: the prior release can no longer serve this state.
   u.fake.upgrade = async () => {
     const db = new Database(serviceDatabasePath(u.l.service)); db.exec(`PRAGMA user_version = ${schemaVersion + 1}`); db.close();
@@ -969,7 +976,7 @@ test("release and dependency modes are canonical and sealed; a nested 0600 membe
   const l = layout();
   // A source checkout with a restrictive nested member is canonicalized by the build.
   const src = join(l.root, "checkout");
-  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
+  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
   chmodSync(join(src, "src", "config.ts"), 0o600);
   chmodSync(join(src, "src", "ops"), 0o700);
   const out = join(l.root, "canonical");

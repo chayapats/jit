@@ -11,7 +11,7 @@ import {
   type OperatorHost,
 } from "./service-package";
 import { SystemdSupervisor, spawnRunner, type CommandRunner } from "./supervisor";
-import { assertNoSecretValues, parseServiceConfig } from "../../ops/package/service-config";
+import { assertNoSecretValues, parseServiceConfig, serviceUnit } from "../../ops/package/service-config";
 
 /** Injectable seams for the operator command boundary; production uses the real runner and terminal password. */
 export interface ServiceCliDeps {
@@ -107,6 +107,7 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
       if (!artifact || !flags.get("--config")) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
       // The operator's source configuration lives in ignored .local records; it is validated strictly before anything else.
       const service = policy ? readServiceConfigFile(configPath) : parseServiceConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      if (service.runtime === "s14" && !flags.has("--config-dir")) host.configDir = resolve(configPath, "..");
       if (policy) assertServicePaths(service, host, policy);
       if (command === "plan") {
         const plan = await planInstall({ service, artifactDir: artifactDir!, host });
@@ -118,11 +119,12 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
         nextAction: installed.ok ? "start-service" : plan.checks.find(c => !c.ok)?.nextAction ?? "inspect-supervisor" }) };
     }
     const service = readServiceConfigFile(configPath);
+    if (service.runtime === "s14" && !flags.has("--config-dir")) host.configDir = resolve(configPath, "..");
     if (policy) assertServicePaths(service, host, policy);
-    const supervisor = new SystemdSupervisor(run);
+    const supervisor = new SystemdSupervisor(run, { unit: serviceUnit(service) });
     // As root, directory ownership is judged against the configured identity, never root itself.
     const stateOwnerUid = privileged ? await serviceIdentityUid(run, service.serviceUser) : undefined;
-    const status = async () => ({ supervisor: await supervisor.state(), podman: await inspectServicePodman(run, service.serviceUser,
+    const status = async () => service.runtime === "s14" ? { supervisor: await supervisor.state(), runtime: "s14", readiness: "configured_unverified", computerReason: "computer_local_podman_required" } : ({ supervisor: await supervisor.state(), podman: await inspectServicePodman(run, service.serviceUser,
       stateOwnerUid ?? await serviceIdentityUid(run, service.serviceUser), privileged), service: gatherServiceStatus(readConfig({}), service, {
       ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) }) });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
@@ -138,9 +140,9 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     }
     if (command === "upgrade") {
       const artifact = flags.get("--artifact");
-      if (!artifact || !parsed.passwordStdin || !deps.readPassword) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
+      if (!artifact || service.runtime !== "s14" && (!parsed.passwordStdin || !deps.readPassword)) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
       assertReleaseDestination(service, artifactDir!, policy);
-      const ownerPassword = await deps.readPassword();
+      const ownerPassword = service.runtime === "s14" ? "" : await deps.readPassword!();
       const result = await upgradePackage({ service, artifactDir: artifactDir!, host, ownerPassword,
         ...(deps.health ? { health: deps.health } : {}) });
       return { exitCode: result.outcome === "upgraded" ? 0 : 1, output: sanitized(result) };
