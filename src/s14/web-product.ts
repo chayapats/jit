@@ -21,6 +21,7 @@ import { accountSelection, personalBrief, personalCommand, personalNext, persona
 import { renderGoogleReturn } from "./web-personal";
 import { routineAttention, routineFormCommand, routineNext, routineRecover, routineReview, routineSurface, routineView, type S14RoutineAttention, type S14RoutineSurface } from "./web-product-routines";
 import type { BotLifecycle } from "./bot-lifecycle-types";
+import type { AttentionSetting } from "./routine-types";
 import { evidenceTargets, limitValues, teamCommand, teamNext, teamOverview, teamRecover, teamSurface, teamView, workTeam, type S14LimitValues, type S14ReportHint, type S14WorkSettings, type S14WorkTeam } from "./web-product-team";
 
 /** Owner-confirmed starting defaults, stored as `WorkDefaults` and editable in settings; they are not measured host capacity. */
@@ -49,7 +50,7 @@ export type S14View =
   | { kind: "bot"; bot: Bot; conversation: Conversation | null; computer: S14ComputerSurface | null; landing?: S14BotLanding }
   | { kind: "proposal"; proposal: BotProposal; history: BotProposal[] }
   | { kind: "effect"; effect: Effect; history: Effect[]; saved?: boolean; notice?: string | null; draft?: S14StatementDraft; git?: S14GitCard | null }
-  | { kind: "more"; saved: boolean }
+  | { kind: "more"; saved: boolean; attention?: AttentionSetting; attentionSaved?: boolean }
   | S14FirstRunSurface
   | S14MemorySurface
   | S14SharingSurface
@@ -179,7 +180,7 @@ export function createS14Product(app: S14Application): S14Product {
       if (path === "/") return { kind: "home", ...main(state), draft: example(locale, url, limits), notice: null };
       if (path === "/work") return { kind: "work-list" };
       if (path === "/team") return { kind: "team" };
-      if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences.") };
+      if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences."), attention: app.attention.view(actor).setting, attentionSaved: !!committed(app, actor, url, "attention.set") };
       if (path === "/settings/provider") return providerView(app, actor);
       const surface = memoryView(app, url, actor, state) ?? teamView(app, url, actor) ?? sharingView(app, url, actor, state) ?? recoveryView(app, url, actor) ?? routineView(app, url, actor, state, locale) ?? lifecycleView(app, url, actor) ?? personalView(app, url, actor, state) ?? codingView(app, url, actor, state) ?? backupView(app, url, actor); if (surface) return surface;
       const match = /^\/(chats|work|team|proposals|effects)\/([a-zA-Z0-9_-]+)$/.exec(path);
@@ -246,7 +247,7 @@ export function createS14Product(app: S14Application): S14Product {
       return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft, notice: code, pane: null };
     },
     surface(receipt, fields) {
-      const extended = personalSurface(receipt) ?? memorySurface(receipt, fields) ?? teamSurface(receipt) ?? sharingSurface(receipt) ?? recoverySurface(receipt) ?? routineSurface(receipt) ?? lifecycleSurface(receipt, fields) ?? codingSurface(receipt); if (extended) return extended;
+      const extended = personalSurface(receipt) ?? memorySurface(receipt, fields) ?? teamSurface(receipt) ?? sharingSurface(receipt) ?? recoverySurface(receipt) ?? routineSurface(receipt, fields) ?? lifecycleSurface(receipt, fields) ?? codingSurface(receipt, fields); if (extended) return extended;
       if (receipt.kind === "setup") return "/";
       if (receipt.kind === "conversation.create") return `/chats/${receipt.conversation!.id}`;
       if (receipt.kind === "owner.preferences.set") return `/more?receipt=${receipt.requestId}`;

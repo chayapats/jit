@@ -243,10 +243,10 @@ html, body { height: 100%; }
 /* Setup, sign-in and notice pages */
 .s-page:has(.auth-card) { justify-content: center; }
 .s-page { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; padding: 32px 20px max(32px, env(safe-area-inset-bottom)); background: var(--bg); }
-.s-steps { display: flex; gap: 4px; width: 100%; max-width: 560px; margin: 8px 0 24px; padding: 0; list-style: none; }
-.s-steps li { flex: 1; min-width: 0; padding-top: 8px; border-top: 2px solid var(--line-strong); color: var(--fg-3); font-size: var(--size-xs); }
-.s-steps li[data-step=current] { border-top-color: var(--fg); color: var(--fg); font-weight: 500; }
-.s-steps li[data-step=done] { border-top-color: var(--fg-3); color: var(--fg-2); }
+.s-setup-steps { display: flex; gap: 4px; width: 100%; max-width: 560px; margin: 8px 0 24px; padding: 0; list-style: none; }
+.s-setup-steps li { flex: 1; min-width: 0; padding-top: 8px; border-top: 2px solid var(--line-strong); color: var(--fg-3); font-size: var(--size-xs); }
+.s-setup-steps li[data-step=current] { border-top-color: var(--fg); color: var(--fg); font-weight: 500; }
+.s-setup-steps li[data-step=done] { border-top-color: var(--fg-3); color: var(--fg-2); }
 .s-setup-card { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 16px; }
 .s-setup-card h1 { font-size: var(--size-xl); }
 .s-ready li { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); align-items: flex-start; }
