@@ -42,7 +42,7 @@ function protocol(change?: (event: Seen) => Response | undefined | Promise<Respo
   };
   return { transport, seen };
 }
-async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime } = {}) {
+async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime; wallMs?: number } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-s14-parallel-"))); roots.push(root);
   const path = join(root, "state", "app.sqlite"), store = new S14Store(path); stores.add(store);
   const vault = new ConnectionVault(join(root, "vault"), { forbidden: [join(root, "state"), join(root, "native")] });
@@ -52,8 +52,9 @@ async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "trans
   const app = new S14Application(store, options);
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
+  const wallMs = runtime.wallMs ?? 60000;
   const start = () => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
-    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: clock.now + 60000 } });
+    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs, concurrency: 2, reads: 40 }, expiresAt: clock.now + wallMs } });
   const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes });
   return { root, path, store, vault, app, options, clock, auth, token, start, attempt, work: started.work!, conversationId: setup.conversation!.id, ...wire };
 }
@@ -254,6 +255,57 @@ test("supported Schway host runs two allowlisted tools, charges later inference 
   expect(f.app.home(f.auth.actor).bots).toHaveLength(1);
   expect(readdirSync(join(f.root, "native", "sessions")).some(file => file.endsWith(".host-retired"))).toBe(true);
   expect(f.app.parallel.inspect(f.auth.actor, f.work.id).evidence).toHaveLength(1);
+});
+
+test("research preserves a final inference and commits an honest partial report before exhausting its call slice", async () => {
+  const f = await fixture();
+  const budgets: number[] = [];
+  const model: Model = { provider: "scripted", id: "bounded-research", async *stream(request) {
+    const budget = JSON.parse(request.context.find(section => section.name === "remaining-run-budget")!.content);
+    budgets.push(budget.callsRemainingAfterThisInference);
+    const content = request.tools?.length ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
+      : [{ type: "text" as const, text: JSON.stringify({ text: "Incomplete research, retained for review.", report: { title: "Partial research", claims: [{ id: "gap", text: "The requested conclusion is unverified.", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: ["Further evidence required"], limitations: ["Stopped within the call budget"], artifactIds: [] } }) }];
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal);
+  f.app.authority.commit(f.attempt.id, output);
+  expect(budgets).toEqual([15, 13, 11, 9, 7, 5, 3, 1]);
+  expect(f.app.authority.view(f.auth.actor, f.work.id).reservations!.calls).toBe(15);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial" }, completion: "owner_review_required" });
+});
+
+test("research honors the remaining owner wall budget beyond one minute using the public host fake clock", async () => {
+  const f = await fixture(protocol(), {}, { wallMs: 120000 });
+  const waits: { ms: number; resolve(): void }[] = [];
+  const clock = { now: () => f.clock.now, sleep(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+      waits.push({ ms, resolve });
+      signal?.addEventListener("abort", () => reject(new Error("clock cancelled")), { once: true });
+    });
+  } };
+  const model: Model = { provider: "scripted", id: "slow-research", async *stream(request) {
+    f.clock.now += 61000;
+    for (const wait of waits) if (wait.ms <= 61000) wait.resolve();
+    await Promise.resolve();
+    expect(request.signal?.aborted).toBe(false);
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "Research settled within the actual owner deadline." }] } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model, clock).run(f.attempt, new AbortController().signal);
+  expect(waits.some(wait => wait.ms === 120000)).toBe(true);
+  expect(output.text).toContain("actual owner deadline");
+});
+
+test.each(["quota", "budget"] as const)("research exposes safe %s failure without provider text, retries or route fallback", async kind => {
+  const f = await fixture();
+  let calls = 0;
+  const model: Model = { provider: "scripted", id: "failure", async *stream() {
+    calls++;
+    if (kind === "budget") throw new (await import("../src/errors")).AppError("budget_exhausted", 409);
+    throw Object.assign(new Error("fixture private provider error"), { status: 429 });
+  } };
+  await expect(schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal))
+    .rejects.toThrow(kind === "quota" ? "research_quota_exceeded" : "budget_exhausted");
+  expect(calls).toBe(1);
 });
 
 test("one queued work uses its computer, private memory and both public read tools through the production executor", async () => {
