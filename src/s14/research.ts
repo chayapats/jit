@@ -53,6 +53,7 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
     if (hostCapabilities().releaseContract !== RELEASE_CONTRACT) throw new AppError("unsupported_schway_release");
     if (attempt.snapshot.tools.includes("computer")) await app.computers.prepare(attempt.id);
     const computer = attempt.snapshot.tools.includes("computer") ? app.computers.open(attempt.id) : null;
+    let toolsClosed = false;
     let host;
     try {
       const intent = app.recovery.intent(attempt.id, attempt.memoryId ?? null, attempt.snapshot.route);
@@ -70,7 +71,12 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
               instruction: "The service has installed the selected research/synthesis graph; you do not dispatch Bots. Perform only this lane's independent analysis. A missing delegation tool does not establish that sibling research failed. Sibling outcomes and overlap require recorded service evidence, never an inference from your tool list." }) },
             { name: "committed-step-inputs", content: JSON.stringify(attempt.step) }] : []),
             ...(computer ? [{ name: "computer-boundary", content: "Core tools run only inside this Bot's network-free workspace. Browser sessions, other Bots, credentials, outbound shell actions and arbitrary MCP tools are unavailable. Public reads use only separately granted service-owned web tools. Return bounded evidence and limitations for owner review." }] : [])], sources: [] },
-        tools: { policy: "exact", hostedLookup: "off", definitions: [...(computer ? [...coreToolDefinitions(computer.backend), app.artifacts.definition(attempt, computer.backend)] : []), ...app.parallel.definitions(attempt), ...app.personal.reads.definitions(attempt), ...app.personal.effects.definitions(attempt)] },
+        tools: { policy: "exact", hostedLookup: "off", definitions: [...(computer ? [...coreToolDefinitions(computer.backend), app.artifacts.definition(attempt, computer.backend)] : []), ...app.parallel.definitions(attempt), ...app.personal.reads.definitions(attempt), ...app.personal.effects.definitions(attempt)].map(definition => ({ ...definition,
+          execute: (input, context) => {
+            if (toolsClosed) throw new AppError("research_tools_closed", 403);
+            return definition.execute(input, context);
+          },
+        })) },
         limits: { maxTurns, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 262144, deadlineMs: Math.max(1, attempt.snapshot.grant.expiresAt - app.now()) },
         auth: { lifecycle: s14CredentialLifecycle(), credentialWriteGuard: () => { app.store.read(tx => app.authority.guard(tx, attempt.id)); }, route: attempt.snapshot.route.provider, model: attempt.snapshot.route.model },
       });
@@ -94,9 +100,15 @@ export function schwayResearch(directory: string, app: S14Application, scripted?
           // A tool consumes a call and needs a later inference to produce the final report. Never advertise tools on the last turn.
           const quota = app.store.read(tx => app.parallel.quota(tx, attempt.workId));
           const finish = repairingReport || ++turn >= maxTurns || remaining < 3 || quota !== null;
+          toolsClosed = finish;
           const budget = { callsRemainingAfterThisInference: remaining, maximumFurtherToolCalls: finish ? 0 : Math.floor(remaining / 2), outputBytes: attempt.snapshot.outputBytes, parallelQuota: quota,
             instruction: finish ? "No further tools. Return the final report now using only actual evidence; disclose missing coverage." : "Reserve a final inference for your report. Stop reading once sufficient evidence is available; the whole-work limits are shared with sibling runs." };
-          yield* selected.stream({ ...conversation, context: [...conversation.context, { name: "remaining-run-budget", content: JSON.stringify(budget) }], ...(finish ? { tools: [] } : {}) }, options);
+          for await (const event of selected.stream({ ...conversation, context: [...conversation.context, { name: "remaining-run-budget", content: JSON.stringify(budget) }], ...(finish ? { tools: [] } : {}) }, options)) {
+            // The model's advertised tool list cannot revoke the host's registered callbacks.
+            // Refuse the candidate before native dispatch; callbacks enforce the same barrier.
+            if (finish && event.type === "message_complete" && event.message.content.some(part => part.type === "tool_call")) throw new AppError("research_tools_closed", 403);
+            yield event;
+          }
         } catch (error) {
           failure = researchFailure(error, attempt);
           throw error;

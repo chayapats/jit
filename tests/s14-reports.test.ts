@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -492,6 +492,39 @@ test.each(["quote", "size", "unknown_attempt", "unknown_evidence", "still_invali
     expect(view.report.claims[0]!.citations[0]!.quote).toBe(view.report.claims[0]!.evidence[0]!.content);
     expect(view.artifacts).toHaveLength(2);
   }
+});
+
+test.each(["web_fetch", "artifact_export"] as const)("a tool-free report correction refuses an unexpected %s call before callbacks or charges", async tool => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  f.app.computers.options.runtime = new FakeComputerRuntime();
+  const work = f.start({ tools: ["web_fetch", "computer"] }).work!;
+  const reads = spyOn(f.app.parallel, "read"), stages = spyOn(f.app.artifacts, "stageWorkspace"), charges = spyOn(f.app.authority, "reserveTool");
+  const { schwayResearch } = await import("../src/s14/research");
+  let turns = 0;
+  f.app.authority.options.executor = { run: (a, signal) => schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "unexpected-correction-tool", async *stream(conversation) {
+    let content;
+    if (++turns === 1) content = [{ type: "tool_call" as const, id: rid(), name: "web_fetch", arguments: { url: "https://example.com/article", fullContent: true } }];
+    else if (turns === 2) {
+      const source = f.app.parallel.inspect(f.auth.actor, work.id).evidence[0]!, report = f.proposal(source);
+      report.claims[0]!.citations[0]!.attemptId = a.id;
+      report.claims[0]!.citations[0]!.quote = "A quotation absent from the actual read";
+      content = [{ type: "text" as const, text: JSON.stringify({ text: "Invalid candidate", report }) }];
+    } else if (turns === 3) {
+      expect(conversation.tools).toEqual([]);
+      content = [{ type: "tool_call" as const, id: rid(), name: tool, arguments: tool === "web_fetch" ? { url: "https://example.com/article", fullContent: true } : { ...request } }];
+    } else throw new Error("The tool-free correction must not get another model turn");
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } }).run(a, signal) };
+  try {
+    await f.app.authority.drain();
+    expect({ reads: reads.mock.calls.length, stages: stages.mock.calls.length, toolCharges: charges.mock.calls.length,
+      calls: f.app.authority.view(f.auth.actor, work.id).reservations!.calls, turns,
+      stagedRows: f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifact_staging")!.n) }).toEqual({ reads: 1, stages: 0, toolCharges: 1, calls: 4, turns: 3, stagedRows: 0 });
+    expect(f.app.parallel.inspect(f.auth.actor, work.id).evidence).toHaveLength(1);
+    expect(f.app.reports.list(f.auth.actor, work.id)).toEqual([]);
+    expect(f.app.authority.view(f.auth.actor, work.id).results).toEqual([]);
+    expect(f.app.graph.view(f.auth.actor, work.id).steps[0]).toMatchObject({ state: "failed", reason: "research_tools_closed" });
+  } finally { reads.mockRestore(); stages.mockRestore(); charges.mockRestore(); }
 });
 
 test("synthesis cites only actual accessible committed handoff evidence and a failed sibling forces a partial report", async () => {
