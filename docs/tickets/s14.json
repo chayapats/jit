@@ -1,7 +1,7 @@
 {
   "parent": 244,
   "documentation": 245,
-  "status": "prepared-needs-triage",
+  "status": "implementation-landed-evidence-open",
   "baseline": "a94c19e3917c5bcbebad3ac7831898cc18a64e02",
   "phases": {
     "A": "research MVP",
@@ -22,7 +22,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/BOT14-01.md"
+      "file": "s14/BOT14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "AUTH14-01",
@@ -38,7 +40,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/AUTH14-01.md"
+      "file": "s14/AUTH14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "BOX14-01",
@@ -54,7 +58,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/BOX14-01.md"
+      "file": "s14/BOX14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "MEM14-01",
@@ -70,7 +76,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/MEM14-01.md"
+      "file": "s14/MEM14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "WEB14-01",
@@ -86,7 +94,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/WEB14-01.md"
+      "file": "s14/WEB14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "TEAM14-01",
@@ -99,11 +109,13 @@
         249,
         250
       ],
-      "upstream": "docs/proposals/schway/SCH14-01-shared-credential-lifecycle.md — proposed upstream capability, not yet implemented; retain live routeConcurrency guard until a supported artifact and conformance are pinned.",
+      "upstream": "docs/proposals/schway/SCH14-01-shared-credential-lifecycle.md \u2014 proposed upstream capability, not yet implemented; retain live routeConcurrency guard until a supported artifact and conformance are pinned.",
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/TEAM14-01.md"
+      "file": "s14/TEAM14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "REPORT14-01",
@@ -120,7 +132,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/REPORT14-01.md"
+      "file": "s14/REPORT14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "SHARE14-01",
@@ -136,7 +150,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/SHARE14-01.md"
+      "file": "s14/SHARE14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "REC14-01",
@@ -148,11 +164,13 @@
         245,
         252
       ],
-      "upstream": "https://github.com/chayapats/schway/issues/414 — currently open; required metadata discovery/correlation is not yet a supported artifact. Follow docs/proposals/schway/SCH14-02-session-recovery-414.md.",
+      "upstream": "https://github.com/chayapats/schway/issues/414 \u2014 currently open; required metadata discovery/correlation is not yet a supported artifact. Follow docs/proposals/schway/SCH14-02-session-recovery-414.md.",
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/REC14-01.md"
+      "file": "s14/REC14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "ROUT14-01",
@@ -168,7 +186,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/ROUT14-01.md"
+      "file": "s14/ROUT14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "EVID14-01",
@@ -186,7 +206,9 @@
       "missingDecision": null,
       "humanEvidence": true,
       "readyForAgent": false,
-      "file": "s14/EVID14-01.md"
+      "file": "s14/EVID14-01.md",
+      "state": "OPEN",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "CODE14-01",
@@ -203,7 +225,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/CODE14-01.md"
+      "file": "s14/CODE14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "CODE14-02",
@@ -219,7 +243,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/CODE14-02.md"
+      "file": "s14/CODE14-02.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "LIFE14-01",
@@ -236,7 +262,9 @@
       "missingDecision": "Before unattended implementation, confirm the first email/calendar provider and least-privilege OAuth scopes. Required capability is confirmed; provider-specific consent is not.",
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/LIFE14-01.md"
+      "file": "s14/LIFE14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "LIFE14-02",
@@ -252,7 +280,9 @@
       "missingDecision": "Write scopes and exact provider send/event endpoints must be owner-approved after LIFE14-01 connector review; do not infer write consent from read connection.",
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/LIFE14-02.md"
+      "file": "s14/LIFE14-02.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "BOT14-02",
@@ -269,7 +299,9 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/BOT14-02.md"
+      "file": "s14/BOT14-02.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     },
     {
       "key": "OPS14-01",
@@ -285,13 +317,102 @@
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
-      "file": "s14/OPS14-01.md"
+      "file": "s14/OPS14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
+    },
+    {
+      "key": "UX14-01",
+      "number": 265,
+      "url": "https://github.com/chayapats/jit/issues/265",
+      "title": "[Frontier] [UX14-01] Reach a first S14 conversation from the Web UI with no shell step",
+      "phase": "A",
+      "blockedBy": [
+        246,
+        247
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/UX14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
+    },
+    {
+      "key": "OPS14-02",
+      "number": 266,
+      "url": "https://github.com/chayapats/jit/issues/266",
+      "title": "[Standard] [OPS14-02] Report unreachable subordinate ids in nested user namespaces",
+      "phase": "A",
+      "blockedBy": [],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/OPS14-02.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
+    },
+    {
+      "key": "CUT14-01",
+      "number": 267,
+      "url": "https://github.com/chayapats/jit/issues/267",
+      "title": "[Frontier] [CUT14-01] Flip the default to S14 and install it beside legacy state",
+      "phase": "A",
+      "blockedBy": [
+        256,
+        265
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": true,
+      "readyForAgent": false,
+      "file": "s14/CUT14-01.md",
+      "state": "OPEN",
+      "statusVerifiedAt": "2026-10-31"
+    },
+    {
+      "key": "TEST14-01",
+      "number": 268,
+      "url": "https://github.com/chayapats/jit/issues/268",
+      "title": "[Standard] [TEST14-01] Make the probe deadline uncertainty test deterministic",
+      "phase": "A",
+      "blockedBy": [],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/TEST14-01.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
+    },
+    {
+      "key": "UX14-02",
+      "number": 279,
+      "url": "https://github.com/chayapats/jit/issues/279",
+      "title": "[Standard] [UX14-02] Finish routine and attention controls",
+      "phase": "A",
+      "blockedBy": [
+        255,
+        262
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/UX14-02.md",
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-10-31"
     }
   ],
   "nativeRelations": {
     "parent": 244,
     "subIssues": 16,
     "blockedByEdges": 35,
-    "upstreamRecovery": "https://github.com/chayapats/schway/issues/414"
-  }
+    "upstreamRecovery": "https://github.com/chayapats/schway/issues/414",
+    "note": "Historical publication counts, not a current GitHub relation audit; later tickets are indexed above."
+  },
+  "statusVerifiedAt": "2026-10-31",
+  "statusSource": "gh issue view chayapats/jit (per issue); closed implementation tickets do not certify live acceptance"
 }
