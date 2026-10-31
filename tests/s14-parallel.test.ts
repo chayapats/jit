@@ -42,7 +42,7 @@ function protocol(change?: (event: Seen) => Response | undefined | Promise<Respo
   };
   return { transport, seen };
 }
-async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime; wallMs?: number } = {}) {
+async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime; wallMs?: number; calls?: number } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-s14-parallel-"))); roots.push(root);
   const path = join(root, "state", "app.sqlite"), store = new S14Store(path); stores.add(store);
   const vault = new ConnectionVault(join(root, "vault"), { forbidden: [join(root, "state"), join(root, "native")] });
@@ -52,10 +52,10 @@ async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "trans
   const app = new S14Application(store, options);
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
-  const wallMs = runtime.wallMs ?? 60000;
+  const wallMs = runtime.wallMs ?? 60000, calls = runtime.calls ?? 16;
   const start = () => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
-    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs, concurrency: 2, reads: 40 }, expiresAt: clock.now + wallMs } });
-  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes });
+    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls, outputBytes, wallMs, concurrency: 2, reads: 40 }, expiresAt: clock.now + wallMs } });
+  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls, outputBytes });
   return { root, path, store, vault, app, options, clock, auth, token, start, attempt, work: started.work!, conversationId: setup.conversation!.id, ...wire };
 }
 type F = Awaited<ReturnType<typeof fixture>>;
@@ -272,6 +272,24 @@ test("research preserves a final inference and commits an honest partial report 
   expect(budgets).toEqual([15, 13, 11, 9, 7, 5, 3, 1]);
   expect(f.app.authority.view(f.auth.actor, f.work.id).reservations!.calls).toBe(15);
   expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial" }, completion: "owner_review_required" });
+});
+
+test("computer research keeps tools on earlier turns and finishes on turn eight with calls left", async () => {
+  const f = await fixture(protocol(), {}, { computer: new FakeComputerRuntime(), calls: 32 });
+  let turn = 0;
+  const model: Model = { provider: "scripted", id: "last-computer-turn", async *stream(request) {
+    turn++;
+    const budget = JSON.parse(request.context.find(section => section.name === "remaining-run-budget")!.content);
+    expect(budget.callsRemainingAfterThisInference).toBeGreaterThan(3);
+    expect(request.tools!.length > 0).toBe(turn < 8);
+    const content = request.tools!.length ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
+      : [{ type: "text" as const, text: JSON.stringify({ text: "Partial evidence for review.", report: { title: "Bounded computer research", claims: [{ id: "gap", text: "Further evidence is required.", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: ["Further evidence"], limitations: ["Reached the turn limit"], artifactIds: [] } }) }];
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  const output = await schwayResearch(join(f.root, "native"), f.app, model).run(f.attempt, new AbortController().signal);
+  f.app.authority.commit(f.attempt.id, output);
+  expect(turn).toBe(8);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]).toMatchObject({ state: "available", report: { coverage: "partial" } });
 });
 
 test("research honors the remaining owner wall budget beyond one minute using the public host fake clock", async () => {
