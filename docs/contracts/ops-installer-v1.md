@@ -246,10 +246,7 @@ be repaired by re-running. No fabricated production digest is used.
 `s14.gitScratch` is rendered to `JIT_S14_GIT_SCRATCH` and provisioned by systemd
 `TemporaryFileSystem=` as a private disposable 128 MiB tmpfs, mode 0700 with the
 resolved UID/GID. Host Git independently requires its finite tmpfs/prlimit
-boundary. Persistent per-Bot ext4/cgroup enforcement that the installer cannot
-prove stays unavailable. In particular the current S14 computer runtime refuses
-the hardened service's remote API (`computer_local_podman_required`); image
-provisioning never claims that gap has passed.
+boundary. ADR 0046's confirmed disk pool is provisioned by the root installer: initially eight pairs of finite 1 GiB sparse ext4 images under the S14 computer root, boot-mounted through systemd with loop/nodev/nosuid. Capacity checks cover full remaining sparse growth plus reserve; overcommit refuses before creating images. `--computer-slots N` extends idempotently without shrinking or formatting existing images. Protected root-owned inventory/parents prevent slot replacement; mounted contents use the rootless service mapping. Uninstall retains images and their boot mount units. Runtime claims/wipes/releases through the existing generation-bound lifecycle without root code. The service's verified own local Unix Podman API preserves host disk proof; truly remote clients still refuse. See `app.bot-computer/v1`.
 
 After health, `captureOwnerPipe` runs the exact trusted S14 CLI as that identity,
 with stdin/stdout/stderr discarded and only fd 3 captured in bounded memory

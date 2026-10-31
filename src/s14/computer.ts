@@ -22,7 +22,10 @@ const load = (tx: AppTransaction, botId: string): BotComputer | null => {
   return row ? JSON.parse(row.record_json) : null;
 };
 const leaseOf = (tx: AppTransaction, computerId: string): InputLease => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM input_leases WHERE computer_id=?", computerId)!.record_json);
-const save = (tx: AppTransaction, c: BotComputer) => tx.run("UPDATE bot_computers SET record_json=? WHERE id=?", canonical(c), c.id);
+const save = (tx: AppTransaction, c: BotComputer) => {
+  if (c.diskSlot) c.diskSlot.generation = c.generation;
+  tx.run("UPDATE bot_computers SET record_json=? WHERE id=?", canonical(c), c.id);
+};
 const saveLease = (tx: AppTransaction, lease: InputLease) => tx.run("UPDATE input_leases SET record_json=? WHERE computer_id=?", canonical(lease), lease.computerId);
 
 /** Durable computer lifecycle and single-input barrier; all runtime dispatches revalidate live owner/Bot/work scope. */
@@ -125,6 +128,12 @@ export class S14Computers {
         tx.run("INSERT INTO input_leases VALUES (?,?)", c.id, canonical(lease));
       }
       c.generation++;
+      if (this.options.runtime?.diskSlots && !c.diskSlot) {
+        const used = new Set(tx.all<{ record_json: string }>("SELECT record_json FROM bot_computers").map(row => (JSON.parse(row.record_json) as BotComputer).diskSlot?.id));
+        const slot = this.options.runtime.diskSlots().find(slot => !used.has(slot));
+        if (!slot) throw new AppError("computer_disk_pool_full_rerun_installer_to_extend", 503);
+        c.diskSlot = { id: slot, generation: c.generation, clean: false };
+      }
       c.revision++;
       c.workId = p.workId;
       c.ownerGeneration = grant.ownerGeneration;
@@ -239,6 +248,12 @@ export class S14Computers {
             if (op.kind === "start") {
               const allowed = this.guard(c, "starting");
               allowed();
+              if (c.diskSlot && !c.diskSlot.clean) {
+                await runtime.destroy(structuredClone(c), allowed);
+                allowed();
+                c.diskSlot.clean = true;
+                this.app.store.transaction(tx => save(tx, c));
+              }
               const handle = await runtime.start(structuredClone(c), allowed);
               try { allowed(); this.#handles.set(c.id, handle); }
               catch (error) { await runtime.stop(c); throw error; }
@@ -268,6 +283,8 @@ export class S14Computers {
             current.reason = reason ?? current.reason;
             current.revision++;
             if (!reason && (op.kind === "reset" || op.kind === "delete")) { current.workspaceId = id(); current.profileId = id(); }
+            if (!reason && op.kind === "delete") current.diskSlot = null;
+            if (!reason && op.kind === "reset" && current.diskSlot) current.diskSlot.clean = true;
             save(tx, current);
           }
           tx.run("UPDATE computer_operations SET state='done' WHERE sequence=?", op.sequence);

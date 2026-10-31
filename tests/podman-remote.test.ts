@@ -38,14 +38,17 @@ test("commands use the explicit Unix remote URL, preserve input and never forwar
   const f = fakeExecutable(), run = podmanCommandRunner(f.env, f.binary);
   for (const argv of [["info", "--format", "json"], ["run", "--network", "none", "--tmpfs", "/out:size=1024", "--userns=keep-id:uid=1000,gid=1000", image],
     ["exec", "-i", "box", "/opt/jit/runner"], ["container", "inspect", "box"], ["rm", "--force", "box"], ["pull", "--quiet", image], ["cp", "/fixture/input", "box:/workspace/input"]]) {
-    const value = JSON.parse(Buffer.from((await run(argv, { stdin: Buffer.from("fixture-input"), timeoutMs: 1000 })).stdout).toString());
+    // This checks the actual client protocol, not cold Bun startup speed under a loaded full-suite host.
+    const result = await run(argv, { stdin: Buffer.from("fixture-input"), timeoutMs: 5000 });
+    expect(result.exitCode).toBe(0);
+    const value = JSON.parse(Buffer.from(result.stdout).toString());
     expect(value.args).toEqual([...prefix, ...argv]); expect(value.stdin).toBe("fixture-input");
-    // The runtime directory is not passed in remote mode: inside the hardened unit it appears root-owned (#224 live finding).
-    expect(Object.keys(value.env).sort()).toEqual(["HOME", "PATH"]);
+    // Only the bound service-owned API directory is a usable client runtime directory in the unit.
+    expect(Object.keys(value.env).sort()).toEqual(["HOME", "PATH", "XDG_RUNTIME_DIR"]);
   }
-  const local = JSON.parse(Buffer.from((await podmanCommandRunner({ PATH: f.env.PATH }, f.binary)(["info"], { timeoutMs: 1000 })).stdout).toString());
+  const local = JSON.parse(Buffer.from((await podmanCommandRunner({ PATH: f.env.PATH }, f.binary)(["info"], { timeoutMs: 5000 })).stdout).toString());
   expect(local.args).toEqual(["--remote=false", "info"]);
-});
+}, 30_000);
 
 test("exec -i streams use the same remote selection; sidecar secret values stay in the client environment, off argv", async () => {
   const f = fakeExecutable(), stream = podmanStreamRunner(f.env, f.binary)(["exec", "-i", "--env", "FIXTURE_KEY", "sidecar", "stream-fixture"], { FIXTURE_KEY: "fixture-sidecar-value" });
@@ -189,10 +192,10 @@ test("the displayed doctor command carries only checked unit configuration, quot
   expect(command).toContain("JIT_EXECUTION_DIR='/fixture/path'\\''quote'"); expect(command).not.toContain("fixture-secret");
 });
 
-test("remote mode targets the identity socket by URL without passing the runtime directory the sandbox shows as root-owned", () => {
+test("remote mode targets the identity socket by URL using only the bound service-owned API directory for client runtime", () => {
   const client = podmanClient({ JIT_PODMAN_MODE: "remote", XDG_RUNTIME_DIR: "/run/user/999", PATH: "/usr/bin:/bin", HOME: "/var/lib/jit" });
   expect(client.argv).toEqual(["--remote", "--url", "unix:///run/user/999/podman/podman.sock"]);
-  expect(client.env).toEqual({ PATH: "/usr/bin:/bin", HOME: "/var/lib/jit" });
+  expect(client.env).toEqual({ PATH: "/usr/bin:/bin", HOME: "/var/lib/jit", XDG_RUNTIME_DIR: "/run/user/999/podman" });
   expect(podmanClient({ JIT_PODMAN_MODE: "local", XDG_RUNTIME_DIR: "/run/user/999" }).env.XDG_RUNTIME_DIR).toBe("/run/user/999");
 });
 

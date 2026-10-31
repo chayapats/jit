@@ -9,6 +9,18 @@ scope: S14-D02/D03/D10/D13; supersedes per-project ownership in ADRs 0036 and 00
 
 Each Bot has a persistent isolated computer on the owner's Linux host, with private files and browser sessions. Sharing is explicit. Multiple Bots work concurrently, while input to one browser/desktop has one owner.
 
+## Confirmed disk provisioning decision — 2026-10-31
+
+The owner selects an install-time pool: initially eight slots, each containing one finite 1 GiB sparse ext4 workspace image and one finite 1 GiB sparse ext4 profile image. Root provisions loop mounts through boot-enabled systemd mount units under the S14 data root with nodev/nosuid and ownership mapped to the service's rootless keep-id user namespace. No runtime root helper runs. Before provisioning, available host capacity must cover every image's remaining growth to its full logical size, all new images and the installer reserve. Sparse allocated bytes alone are insufficient.
+
+The installer-owned manifest and parents are protected from the service; only mounted filesystem contents are service-writable. Re-runs preserve image bytes, repair mounts and can extend the pool with `--computer-slots N`; they never shrink or reformat it. Uninstall retains data and its boot mount units.
+
+The application transaction claims an unused slot on first computer use and persists its Bot/computer/generation binding in the computer record. A new claim is dirty until a service-identity wipe verifies success. Idle stop/restart retains the claim and files. Reset stops both components and wipes both filesystem contents; delete returns the slot only after that wipe succeeds. Failed/interrupted wipes retain the claim. New claims always wipe before use, including after stale-store recovery, so another Bot cannot inherit previous contents. A full pool refuses with `computer_disk_pool_full_rerun_installer_to_extend`; there is no unbounded directory fallback.
+
+Local mount proof remains mandatory. A remote-mode client is accepted only at the current service uid's protected, actual Unix Podman socket with matching daemon hostname/rootless uid mapping. TCP/SSH, foreign/missing/linked sockets and unverified local filesystems refuse. The service still checks ext4 mount roots, unique devices, nodev/nosuid, total filesystem capacity, exact container mounts and kernel limits before dispatch.
+
+Requirements remain FR-35/36/38/40; NFR-04/06/07/14. Pool sizing and provisioning are confirmed; the implementation uses the existing lifecycle and public Schway backend. Linux evidence is recorded separately from deterministic tests.
+
 ## Proposed choice
 
 Reuse the rootless Podman/runner integration on Linux x64/arm64 behind a BotComputer service; VM backends remain possible without changing product identity. Bot identity owns persistent volumes, not a disposable run. Idle stop removes processes, not volumes; reset/delete requires an exact owner command and lifecycle handling.
