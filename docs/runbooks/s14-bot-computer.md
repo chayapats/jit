@@ -1,5 +1,7 @@
 # BOX14-01 Linux evidence — opt in only
 
+Current default: bare `install.sh` provisions the independent S14 installation; `--s14` remains an alias and `--legacy` explicitly retains legacy. #256 closed after PR #304 merged at `143ca06`; use the [evidence record](../evidence/s14-mvp-evidence.md) for exact-build/architecture results that supersede the historical pending checkpoints below. Owner-Pi #267 cutover acceptance remains separate. `service status`'s fixed computer requirement label is not an actual readiness/failure probe.
+
 Linux evidence is per architecture/build. The disk-pool follow-up uses a disposable arm64 Linux VM and the installed-service harness below; exact pass/fail results, build identities and raw evidence belong in the ignored `.local/s14-live-hosts.md` record, with a credential-free PR summary. An unprivileged LXC without loop devices cannot provision this pool. x64 VM, reboot, paid inference, website login and UI/device/accessibility acceptance remain separate gates. Fixtures/configured images do not prove Linux support. Requirements: FR-35/36/38/40; NFR-04/06/07/14.
 
 `ops/box/s14-probe.ts` is credential-free. Default/`--diagnostics` probes readiness only. `--smoke` starts two specially named probe computers and writes synthetic markers in dedicated probe filesystems; it never opens application/native state or provider/website sessions. It leaves markers for inspection and removes probe containers in `finally`. Never point it at real Bot storage. It never pulls images or retries another backend.

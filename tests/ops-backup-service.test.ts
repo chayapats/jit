@@ -124,7 +124,7 @@ test("serve's start path selects the concrete native port in schway mode and ref
   const port = 3443;
   const origin = `http://127.0.0.1:${port}`;
   const env = { JIT_DATABASE: join(root, "app.sqlite"), JIT_RUN_PORT: "schway", JIT_PORT: String(port), JIT_HOST: "127.0.0.1", JIT_ORIGIN: origin, PATH: process.env.PATH ?? "" };
-  const setupChild = Bun.spawn([process.execPath, main, "setup", "--password-stdin"], { cwd: root, env, stdin: new TextEncoder().encode(password + "\n"), stdout: "pipe", stderr: "pipe" });
+  const setupChild = Bun.spawn([process.execPath, main, "setup", "--legacy", "--password-stdin"], { cwd: root, env, stdin: new TextEncoder().encode(password + "\n"), stdout: "pipe", stderr: "pipe" });
   expect(await setupChild.exited).toBe(0);
   // `serve` (development profile) is startFullApp + serveFullApp; drive the same start path in-process and
   // its Web handler without a listener, so the check needs no sockets.
@@ -156,7 +156,7 @@ test("serve's start path selects the concrete native port in schway mode and ref
   // Fail-closed startup: a blocked service directory stops serve before any listener exists.
   const blocked = mkdtempSync(join(tmpdir(), "jit-ops-backup-serve-blocked-")); roots.push(blocked);
   writeFileSync(join(blocked, ".jit-host"), "blocker");
-  const refused = Bun.spawn([process.execPath, main, "serve"], { cwd: blocked,
+  const refused = Bun.spawn([process.execPath, main, "serve", "--legacy"], { cwd: blocked,
     env: { ...env, JIT_DATABASE: join(blocked, "app.sqlite") }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(refused.stdout).text(), new Response(refused.stderr).text(), refused.exited]);
   expect(exit).toBe(1);

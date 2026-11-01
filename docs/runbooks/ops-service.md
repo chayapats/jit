@@ -4,12 +4,14 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 
 ## 0. Host prerequisites (owner, not automated)
 
-### Explicit S14 service beside legacy (CUT14-01, default unchanged)
+### Default S14 service beside explicit legacy (CUT14-01)
 
-This installer/service slice prepares #256 live evidence. It does **not** flip
-the default, certify Linux support or install on the owner's existing host.
-Use a fresh, disposable Linux x64/arm64 systemd host for the later authorized
-evidence round. Use an operator terminal: S14 setup capabilities go to
+Bare installation now selects the existing independent S14 layout. #256 closed
+after PR #304 merged at `143ca06`; its evidence is scoped to recorded builds,
+architectures and routes. Owner-Pi installation/first reply, complete consistent
+legacy-byte comparisons and prior-release rollback remain #267 acceptance work;
+follow [the cutover runbook](s14-default-cutover.md). For a separate authorized
+evidence round use a disposable systemd host. Use an operator terminal: S14 setup capabilities go to
 `/dev/tty` only, never redirected stdout/stderr or journald.
 
 From a reviewed checkout at the tested SHA with Bun 1.4.2:
@@ -20,11 +22,11 @@ bun ops/package/installer/release.ts "$PWD" "$PWD/.local/s14-release" s14-eviden
 tar -xzf .local/s14-release/jit-install.tar.gz -C .local/s14-release
 # Transfer the release assets to the disposable host through the operator's trusted path.
 # In the extracted release directory on that host, as the operator:
-./install.sh --s14
+./install.sh
 ```
 
 Alternatively, once that **tested release** has been published, fetch its
-tag-pinned `install.sh` from the release and run `sh install.sh --s14`. Do not
+tag-pinned `install.sh` from the release and run `sh install.sh` (`--s14` remains an alias). Do not
 assume `latest` contains this change. `--yes` skips plan confirmation but still
 requires a controlling terminal for link delivery. The terminal is opened before
 stopping an existing unit; a headless run stops at `owner-terminal` without
@@ -34,10 +36,11 @@ provider login, image digest or scratch configuration is required in the shell.
 Open the link once in Web, create the owner password, then follow the existing
 S14 Web setup/provider device sign-in. Account readiness and first inference
 remain separate live evidence.
+S14 `service status` reports supervisor/configuration only. Its fixed `computerReason: computer_local_podman_required` names a requirement; it is not proof of computer failure or readiness. Use the existing authorized probes/evidence for actual checks.
 Installer and upgrade health probe `/s14/login` with manual redirects. Existing
 owners enter there too; legacy's `/login` response cannot satisfy S14 health.
 
-| Item | Legacy default | Explicit `--s14` |
+| Item | Explicit `--legacy` | S14 default (`--s14` alias) |
 | --- | --- | --- |
 | Identity/home | `jit`, `/var/lib/jit` | `jit-s14`, `/var/lib/jit-s14` |
 | Unit/journal namespace | `jit.service`, `jit` | `jit-s14.service`, `jit-s14` |
@@ -46,7 +49,7 @@ owners enter there too; legacy's `/login` response cannot satisfy S14 health.
 | Application database | `/var/lib/jit/state/app.sqlite` | `/var/lib/jit-s14/state/application.sqlite` |
 | Listener | `127.0.0.1:3000` | `127.0.0.1:3001` |
 
-Run the same `./install.sh --s14` on a host with legacy already installed to
+Run the same bare `./install.sh` on a host with legacy already installed to
 add the separate installation. It preserves legacy database/boxes/backups,
 activation link, Bun, config, unit and keyring; only shared OS packages and
 append-only subordinate-ID allocation are host-wide. Never point S14 at legacy
@@ -89,7 +92,7 @@ only S14 `network.origin` in its root-owned config and re-run `--s14`; the local
 listener stays `127.0.0.1:3001`. Never reuse legacy's ingress route accidentally.
 
 Service lifecycle (these commands intentionally select S14 **by config**, with
-no `--s14` on the legacy service CLI):
+no runtime selector on the config-selected service CLI):
 
 ```sh
 sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service status --config /etc/jit-s14/service-config.json
@@ -97,10 +100,10 @@ sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service stop --config
 sudo /opt/jit-s14/bin/bun /opt/jit-s14/current/src/main.ts service start --config /etc/jit-s14/service-config.json
 journalctl --namespace=jit-s14 -u jit-s14.service
 # Remove only S14's units; retain all S14 and legacy data/keyrings/releases:
-./install.sh --s14 --uninstall
+./install.sh --uninstall
 ```
 
-Re-run `--s14` for compatible-code repair/update. For an upgrade with automatic
+Re-run the bare installer (or retained `--s14`) for compatible-code repair/update. Legacy repair/uninstall requires `--legacy`; bare uninstall never removes legacy units. Existing configs without `runtime` remain legacy and are never converted. For an upgrade with automatic
 compatible-code health rollback, prepare the new artifact and a protected
 root-owned snapshot using section 1 below, substituting `/opt/jit-s14` for
 `/opt/jit`. Keep that snapshot outside both service homes. Then:
@@ -141,16 +144,16 @@ isolation, real research coverage/usefulness and backup/restore/lifecycle proof
 still require the full #256 procedure on each architecture. A passing
 observation or deterministic fixture never closes that gate.
 
-### One-command installation (INST01)
+### Explicit legacy one-command installation (retained INST01 reference)
 
-For a fresh default-layout installation, [ops.installer/v1](../contracts/ops-installer-v1.md)
+For the retained legacy layout, explicitly select `--legacy`. The S14 default is described above. [ops.installer/v1](../contracts/ops-installer-v1.md)
 automates these prerequisites after showing the complete plan and asking once:
 
 ```sh
-curl -fsSL https://github.com/chayapats/jit/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/chayapats/jit/releases/latest/download/install.sh | sh -s -- --legacy
 # Or, from an extracted release:
-./install.sh                 # --yes skips the one plan confirmation
-./install.sh --uninstall     # preserves all data, credentials and releases
+./install.sh --legacy        # --yes skips the one plan confirmation
+./install.sh --legacy --uninstall # legacy units only; preserves both installations' data
 ```
 
 The bootstrap distributed in a release pins its archive URL to that release's

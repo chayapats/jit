@@ -1,6 +1,6 @@
 # Jit Product Requirements Document
 
-Current target: [S14](../specs/S14-bot-first-local-assistant.md), owner-confirmed 2026-10-30. Engineering ADRs 0045–0048 are proposed; current runtime is still project-centric S09–S13. Existing FR/NFR IDs are retained and refined below. Historical behavior is preserved in the earlier specs and Git history, not presented as the new product.
+Current target: [S14](../specs/S14-bot-first-local-assistant.md), owner-confirmed 2026-10-30. Engineering ADRs 0045–0048 retain their proposed broad architecture status; accepted implementation refinements culminate in ADR 0061 default selection. New runs/installations default to S14, while explicit legacy and existing legacy service configs retain S09–S13. Owner-host acceptance remains #267. Existing FR/NFR IDs are retained and refined below. Historical behavior is preserved in the earlier specs and Git history, not presented as the new product.
 
 ## Actors and journeys
 

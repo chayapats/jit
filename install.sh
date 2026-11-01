@@ -5,7 +5,7 @@ set +x
 umask 077
 
 step=arguments
-next='use install.sh [--yes] [--s14] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
+next='use install.sh [--yes] [--s14 | --legacy] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
 scratch=
 reported=false
 # Invoked by the EXIT trap through finish.
@@ -24,9 +24,9 @@ trap 'failed' HUP INT TERM
 
 yes=false
 uninstall=false
-s14=false
+s14=true
+runtime_selected=false
 computer_slots=8
-name=jit
 dry=false
 root=/
 source_dir=
@@ -34,7 +34,10 @@ release_url=https://github.com/chayapats/jit/releases/latest/download
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) yes=true ;;
-    --s14) s14=true; name=jit-s14 ;;
+    --s14|--legacy)
+      [ "$runtime_selected" = false ] || failed
+      runtime_selected=true
+      if [ "$1" = --s14 ]; then s14=true; else s14=false; fi ;;
     --computer-slots) shift; [ "$#" -gt 0 ] || failed; computer_slots=$1 ;;
     --uninstall) uninstall=true ;;
     --dry-run) dry=true ;;
@@ -44,6 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "$s14" = true ]; then name=jit-s14; else name=jit; fi
 case "$computer_slots" in *[!0-9]*|'') failed ;; esac
 [ "$computer_slots" -ge 8 ] && [ "$computer_slots" -le 1024 ] || failed
 case "$root" in /*) ;; *) failed ;; esac
@@ -119,14 +123,22 @@ fi
 
 printf '%s\n' 'Plan (ops.installer/v1):'
 if [ "$s14" = true ]; then
-  printf '%s\n' '  Explicit S14: jit-s14 identity/unit; /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; loopback:3001.' \
-    '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
-    '  Create 8 bounded workspace/profile ext4 pairs at boot; --computer-slots N extends the pool. Refuse sparse overcommit; preserve legacy data.' \
-    '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
+  printf '%s\n' '  Selected runtime: S14 (default; --s14 is also supported). Installation: jit-s14.'
+else
+  printf '%s\n' '  Selected runtime: legacy (--legacy). Installation: jit.'
 fi
 if [ "$uninstall" = true ]; then
-  printf '%s\n' '  Stop/disable Jit and its Secret Service; remove their units and journald config.' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
+  printf '  Action: uninstall %s only. Stop/disable its service and Secret Service; remove their units and journald config.\n' "$name"
+  printf '%s\n' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
+  if [ "$s14" = true ]; then printf '%s\n' '  Retain Bot disk images and mount units. Legacy installation data and services are preserved.'; fi
 else
+  printf '  Action: install or repair %s; preserve existing config and data.\n' "$name"
+  if [ "$s14" = true ]; then
+    printf '%s\n' '  S14 layout: /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; default loopback:3001.' \
+    '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
+    '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
+    printf '  Provision %s bounded workspace/profile ext4 pairs at boot; refuse sparse overcommit and preserve legacy data.\n' "$computer_slots"
+  fi
   printf '%s\n' \
     '  Install core dependencies with apt/dnf, or verify them on other systemd distributions.' \
     "  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/$name/bin/bun." \
@@ -171,7 +183,9 @@ if [ "$(id -u)" != 0 ]; then
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
   fi
   set -- --yes
-  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"; fi
+  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"
+  else set -- "$@" --legacy
+  fi
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
   if [ "$uninstall" = true ]; then set -- "$@" --uninstall; fi
   input_owner=$(id -u)

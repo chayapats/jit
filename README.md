@@ -1,4 +1,4 @@
-> **S14 direction (approved, not shipped):** Jit is moving to persistent Bots and private local computers without required Projects. Research with Parallel is the next MVP; coding-to-PR and email/calendar are required later phases. See the [S14 spec](docs/specs/S14-bot-first-local-assistant.md), [Opus design](docs/design/S14-bot-first-experience.md) and [roadmap](docs/tickets/S14-bot-first-roadmap.md). The screenshots and setup instructions below describe the current project-centric pilot.
+> **S14 is the default for new source runs and installations.** It uses fresh Bot-first state beside retained legacy data. `--s14` remains an alias; `--legacy` selects the project-centric pilot explicitly. Existing service configs without `runtime` remain legacy. The owner-host first reply, consistent legacy-byte comparison and prior-release rollback remain #267 acceptance work. See the [cutover runbook](docs/runbooks/s14-default-cutover.md).
 
 <div align="center">
 
@@ -9,7 +9,7 @@
 
 ### Just in time. Just for you.
 
-A self-hosted AI team for your software projects.<br>
+A self-hosted assistant with persistent Bots and private local computers.<br>
 Chat with one assistant, bring in specialists when needed, and pick up where you left off the next day.
 
 [![GitHub stars](https://img.shields.io/github/stars/chayapats/jit?style=flat-square&logo=github&color=0a0a0a)](https://github.com/chayapats/jit/stargazers)
@@ -21,7 +21,9 @@ Chat with one assistant, bring in specialists when needed, and pick up where you
 
 **English** · [ไทย](README.th.md)
 
-<img src="docs/design/assets/bot05-continued-dark-en.png" alt="A Jit project topic in dark mode" width="860">
+<img src="docs/design/assets/bot05-continued-dark-en.png" alt="Historical legacy project pilot" width="860">
+
+*Historical legacy pilot screenshot; see the [S14 experience](docs/design/S14-bot-first-experience.md) for the current design.*
 
 </div>
 
@@ -29,76 +31,72 @@ Chat with one assistant, bring in specialists when needed, and pick up where you
 
 ## What is Jit?
 
-Jit is a personal assistant that runs on a machine you control: a mini PC, a home server, a VPS or a Raspberry Pi. The service runs on 64-bit Linux (x64 or arm64) with systemd. For development, any OS with Bun works. You talk to **Jit**, the main bot. Jit answers every message, suggests specialists when a topic needs them, and asks them for independent analyses. It remembers decisions, tasks and their sources across projects and across days.
+Jit is a personal assistant that runs on a machine you control: a mini PC, a home server, a VPS or a Raspberry Pi. The service runs on 64-bit Linux (x64 or arm64) with systemd. For development, any OS with Bun works. You talk to **Jit**, the main bot. Jit keeps persistent Bots, conversations, work, decisions and sourced memory across days. A conversation needs no Project. Research can use bounded parallel Bots and publish reports with citations and downloadable artifacts.
 
-Jit uses [Schway](https://github.com/chayapats/schway) as its execution engine. Schway runs the agent loop and the provider sessions. Jit handles everything else: projects, the team, memory, tasks, jobs and channels.
+Jit uses [Schway](https://github.com/chayapats/schway) as its execution engine. Schway runs the agent loop and the provider sessions. Jit owns Bots, work grants, conversations, memory, computers, artifacts and durable jobs.
 
-## Highlights
+## Capabilities
 
-|  |  |
+| Capability | Boundary |
 | --- | --- |
-| **Chat-first** | A Grok-style Web app, dark and light, in Thai and English. You can install it as a PWA. |
-| **A team on demand** | Jit drafts specialists as cards, and a role exists only after you press **Create**. Jit may call existing roles only within the allowance you set. |
-| **Memory with sources** | Every claim links back to where it came from. You can correct it or tell Jit to forget it, and the change carries through everywhere it was used. |
-| **Tasks you accept** | A proposal becomes a task only when you accept that exact revision. Accepting a task does not start any work. |
-| **Private PR review** | Jit reads new pull requests without running them and sends you findings with evidence. |
-| **Quiet by default** | Scheduled runs with nothing new stay silent. You get one notice per finished batch of work, either for everything or only for what needs you. |
-| **Sandboxed execution** | Each project gets one rootless Podman box. Access is Read, Workspace or Full, and only you can raise it. Pushes, deploys and other external effects wait for your approval card. |
-| **Reach it your way** | Web, a loopback CLI (`jit ask`), signed webhooks, and an `.ics` feed of your schedules. The Telegram channel is built, but no live Bot API transport ships yet. |
+| Persistent Bots and conversations | Permanent Bot creation requires acceptance of the exact proposal. Membership grants no access. |
+| Research and reports | Anonymous Parallel reads, finite overlapping work, committed citations/artifacts and explicit source gaps. |
+| Sourced memory | Bot-private claims and explicit revision-bound sharing; correction, forget and deletion follow lineage. |
+| Work and routines | Task acceptance is separate from execution; only current owner grants authorize work. Quiet outcomes retain history. |
+| Bot computers | Separate bounded workspace/profile filesystems and rootless components; no service credentials or state enter a box. |
+| Coding and personal assistance | Scoped repository/Git and email/calendar brokers; exact external actions require approval. Support remains bounded by the [recorded evidence](docs/evidence/s14-mvp-evidence.md). |
+| Web | Thai/English, dark/light first-run, sign-in, inspection and recovery flows. |
 
-## How it works
-
-```mermaid
-flowchart LR
-  you([You]) --> web[Web / PWA]
-  you --> tg[Telegram]
-  you --> cli[CLI and webhooks]
-  web & tg & cli --> jit{{Jit}}
-  jit --> db[(SQLite<br/>on your machine)]
-  jit --> schway[Schway<br/>agent loop]
-  schway --> models[Codex / Grok<br/>subscriptions]
-  jit --> box[[Execution box<br/>rootless Podman]]
-```
+Schway owns execution loops, provider protocols, native sessions, compaction and model retries. Jit consumes its pinned public host contract. A configured route or healthy login page does not prove a working subscription or computer.
 
 ## Principles
 
-- **Authority comes from you.** Model output and retrieved content can never create roles, tasks or decisions, and they cannot widen access.
+- **Authority comes from you.** Model output and retrieved content can never create permanent Bots, grants or owner decisions, and they cannot widen access.
 - **Proposed, accepted and done stay separate.** Every change has a revision and a receipt you can inspect.
-- **Your data stays on your host.** Jit sends no telemetry. Data goes out only to the model providers, channels and repositories you configure.
+- **Your data stays on your host.** Jit sends no telemetry. Relevant data goes to the selected inference provider, authorized Parallel reads and explicitly enabled brokers; local execution does not imply local inference.
 - **Credentials stay out of the box.** No Jit credential, database or backup ever enters the execution box.
 
 ## Status
 
-Jit is in **pilot** with a single owner. The MVP and specs S09–S11 are implemented. Jit is not tied to one device. Its smallest reference host is a Raspberry Pi 5, and on 2026-10-28 an install there passed packaging, restart, reboot and route-readiness gates on the **Codex** route. The Grok route is deferred until its quota resets, and Telegram stays disabled until a live transport ships. Each installation supports one owner.
+Jit is a single-owner pilot. [#256](https://github.com/chayapats/jit/issues/256) closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`; its Linux x64/arm64 evidence remains attributed to the exact builds and routes in the [evidence record](docs/evidence/s14-mvp-evidence.md). Owner-unread reports and deferred assistive-technology/mobile permutations remain disclosed limits. The default change does not certify another host, route, browser or website. #267 still requires actual owner-Pi installation, first reply, byte preservation and prior-release rollback.
 
 ## Quick start
 
-You need [Bun](https://bun.sh) 1.4.2 or later. You do not need a subscription or a Schway build to develop.
+Use Bun 1.4.2 or later for development. The installed service uses pinned Bun 1.4.2.
 
 ```sh
 bun install --frozen-lockfile
-bun run setup        # create the owner (password: 12–256 chars, read from the terminal)
-bun start            # http://localhost:3000
+bun start            # S14, http://localhost:3001
 ```
 
-Open `http://localhost:3000`, sign in, and follow the first-run **ตั้งจิต** flow to set Jit's persona. Replies come from scripted fixtures by default. To use real models, set `JIT_RUN_PORT=schway`. First give the user that runs Jit an unlocked Secret Service and a Schway provider login (see [Pi live round](docs/runbooks/pi-live-round.md), Round B).
+Run foreground `bun start` from an interactive terminal. Open the one-time owner link displayed there, set the password in Web and follow the existing provider device sign-in and setup flow. Redirected/non-TTY output receives no capability. No `JIT_S14_ROUTES` is required. Live replies use the selected Schway route; there is no default scripted or billing fallback. Optional local provisioning remains `bun run setup` (hidden terminal password).
 
-> [!TIP]
-> If you forget the password, run `bun run owner:reset` on the host. It revokes old sessions and keeps your projects. There is no remote reset.
+For a reviewed, published release on Linux x64/arm64 with systemd, run its extracted `./install.sh`. Bare installation selects the independent `jit-s14` service at loopback port 3001. `./install.sh --uninstall` removes only its service units and retains data; legacy repair/uninstall requires `--legacy`. Follow [service installation](docs/runbooks/ops-service.md) and the [cutover procedure](docs/runbooks/s14-default-cutover.md). A moving `latest` URL is not proof of a reviewed build.
 
 ## Configuration
 
-Jit reads its settings from environment variables. The most common ones:
+Source S14 uses independent environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `JIT_DATABASE` | `.local/jit.sqlite` | Application database (ignored by git, mode 0600) |
-| `JIT_ORIGIN` | `http://localhost:3000` | The one exact origin. Use HTTPS for anything other than loopback |
-| `JIT_HOST` / `JIT_PORT` | `127.0.0.1` / `3000` | Listen address |
-| `JIT_RUN_PORT` | `scripted` | `scripted` (fixtures) or `schway` (live routes) |
-| `JIT_SESSION_SECONDS` | `28800` | Browser session lifetime |
+| `JIT_S14_DATABASE` | `.local/s14/application.sqlite` | Fresh schema-17 application store with its own lifecycle database |
+| `JIT_S14_ORIGIN` | `http://localhost:3001` | Exact origin and loopback listener; private HTTPS ingress retains the supported loopback binding |
+| `JIT_S14_VAULT_DIRECTORY` | Sibling `s14-vault` directory | Protected service credentials, outside application state and execution boxes |
+| `JIT_S14_GIT_SCRATCH` | Unconfigured in source | Host Git requires verified bounded tmpfs/prlimit; the installer provisions 128 MiB |
 
-See [`src/config.ts`](src/config.ts) for the full list with limits, including job, Telegram and execution-box settings.
+`JIT_DATABASE` never maps to S14. An unselected source command with that legacy variable refuses; select `--legacy` or explicitly acknowledge separate S14 settings with `--s14`. Unknown/duplicate/conflicting selectors and mismatched service configs refuse before writable application state. See [selection and compatibility](docs/adr/0061-s14-default-selection-and-legacy-compatibility.md).
+
+### Retained legacy pilot
+
+```sh
+bun src/main.ts setup --legacy
+bun src/main.ts serve --legacy          # http://localhost:3000
+bun run owner:reset                     # legacy only; no S14 reset command
+./install.sh --legacy                   # independent retained jit layout
+./install.sh --legacy --uninstall       # retains both installations' data
+```
+
+Project access levels, scripted replies, `jit ask`/`pending`, signed webhooks, Telegram and the legacy schedule feed describe this retained runtime. They are not S14 capabilities. Legacy still uses `JIT_DATABASE` (`.local/jit.sqlite`), `JIT_ORIGIN`/`JIT_PORT` (3000) and `JIT_RUN_PORT` (`scripted` by default); see [`src/config.ts`](src/config.ts). Existing canonical `serve --service-config <legacy-config>` and upgrade descriptors remain supported without adding flags to old builds. Service operator commands select the exact installation via config; S14 uses `--config /etc/jit-s14/service-config.json`, with no auto-discovery or switch to another installation.
 
 > [!IMPORTANT]
 > For remote access, put Jit behind an HTTPS reverse proxy on your VPN that preserves `Host`. Never expose the backend port directly. Jit does not trust `Forwarded` headers, and being on the VPN does not count as owner identity.

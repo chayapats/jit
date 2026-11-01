@@ -331,7 +331,7 @@ test("main preflight and status stay read-only without claiming the scheduler", 
   writeFileSync(join(root, ".local/service-config.json"), JSON.stringify(service));
   const main = join(import.meta.dir, "../src/main.ts");
   const run = async (args: string[]) => {
-    const child = Bun.spawn([process.execPath, main, ...args],
+    const child = Bun.spawn([process.execPath, main, args[0]!, "--legacy", ...args.slice(1)],
       { cwd: root, env: { JIT_DATABASE: join(root, "state/app.sqlite") }, stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { stdout, stderr, exit };

@@ -3,9 +3,7 @@ import { resolve } from "node:path";
 import { assertRootPath, assertRootTree, UnsafeRootPath, type RootPathPolicy } from "../../ops/package/trusted-paths";
 import { assertServicePaths, assertServiceRuntime, rootPathFailure } from "./service-trust";
 import { inspectServicePodman } from "./podman-service";
-import { readConfig } from "../config";
 import type { LedgerGate } from "./lifecycle";
-import { gatherServiceStatus } from "./status";
 import {
   assertReleaseDestination, defaultHostPaths, disableService, installService, installedConfigPath, planInstall, readServiceConfigFile, upgradePackage,
   type OperatorHost,
@@ -51,12 +49,12 @@ const valueFlags = ["--config", "--artifact", "--bun", "--unit-dir", "--journald
 
 function parseArgs(args: string[]): { command: string; flags: Map<string, string>; passwordStdin: boolean } | null {
   const [command, ...rest] = args;
-  if (!command) return null;
+  if (!command || !["plan", "install", "start", "stop", "restart", "status", "upgrade", "disable", "uninstall"].includes(command)) return null;
   const flags = new Map<string, string>();
   let passwordStdin = false;
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i]!;
-    if (flag === "--password-stdin") { passwordStdin = true; continue; }
+    if (flag === "--password-stdin") { if (passwordStdin) return null; passwordStdin = true; continue; }
     if (!(valueFlags as readonly string[]).includes(flag) || flags.has(flag) || i + 1 >= rest.length) return null;
     flags.set(flag, rest[++i]!);
   }
@@ -124,9 +122,15 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     const supervisor = new SystemdSupervisor(run, { unit: serviceUnit(service) });
     // As root, directory ownership is judged against the configured identity, never root itself.
     const stateOwnerUid = privileged ? await serviceIdentityUid(run, service.serviceUser) : undefined;
+    // Legacy composition is loaded only after all protected config/unit/drop-in paths pass.
+    const legacyStatus = async () => {
+      const { readConfig } = await import("../config");
+      const { gatherServiceStatus } = await import("./status");
+      return gatherServiceStatus(readConfig({}), service, {
+        ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) });
+    };
     const status = async () => service.runtime === "s14" ? { supervisor: await supervisor.state(), runtime: "s14", readiness: "configured_unverified", computerReason: "computer_local_podman_required" } : ({ supervisor: await supervisor.state(), podman: await inspectServicePodman(run, service.serviceUser,
-      stateOwnerUid ?? await serviceIdentityUid(run, service.serviceUser), privileged), service: gatherServiceStatus(readConfig({}), service, {
-      ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) }) });
+      stateOwnerUid ?? await serviceIdentityUid(run, service.serviceUser), privileged), service: await legacyStatus() });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
     if (command === "start" || command === "stop" || command === "restart") {
       const done = command === "start" ? await supervisor.start()

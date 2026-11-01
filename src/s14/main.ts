@@ -27,7 +27,7 @@ import { s14CredentialLifecycle } from "./lifecycle";
 import { runComputerWork } from "./computer-work";
 import { openS14BootstrapStore, printS14OwnerSetupLink, requireS14OwnerLinkPipe, writeS14OwnerSetupLink } from "./owner-bootstrap";
 
-/** Explicit opt-in composition root; it imports no legacy application, workers, configuration or store at runtime. */
+/** Default composition root; it imports no legacy application, workers, configuration or store at runtime. */
 export async function runS14(args = process.argv.slice(2), env = process.env): Promise<void> {
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {

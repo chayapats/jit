@@ -160,7 +160,9 @@ export function subordinateIds(uidText: string, gidText: string, user: string,
 
 /** All installer file writes are confined to root; fake roots reject symlink parents and never call host tools. */
 export interface InstallerOptions {
-  root: string; s14?: boolean; computerSlots?: number; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
+  root: string;
+  /** Omission selects a new independent S14 installation; false explicitly retains legacy. */
+  s14?: boolean; computerSlots?: number; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
   run?: CommandRunner; out?: (line: string) => void;
   /** Fake-root scenarios only; production ignores all simulated failures/capabilities. */
   simulation?: { failStep?: string; podman?: boolean; health?: boolean; images?: unknown; serviceActive?: boolean };
@@ -176,7 +178,7 @@ export class InstallerFailure extends Error {
  * Re-runs preserve config/data, repair units and replace compatible artifacts; schema changes retain OPS06 gates.
  */
 export async function runInstaller(options: InstallerOptions): Promise<{ events: string[]; config: ServiceConfig; defaults: InstallerDefaults }> {
-  const s14 = options.s14 === true, name = s14 ? "jit-s14" : "jit";
+  const s14 = options.s14 !== false, name = s14 ? "jit-s14" : "jit";
   const dry = options.dryRun === true, root = dry ? realpathSync(resolve(options.root)) : resolve(options.root), events: string[] = [], defaults = installerDefaults(options.facts);
   if (dry ? root === "/" || !isAbsolute(options.root) : root !== "/" || process.platform !== "linux" || process.getuid?.() !== 0) throw new InstallerFailure("host", "use Linux root, or --dry-run with a disposable absolute --root");
   const at = (path: string) => root === "/" ? path : join(root, path);

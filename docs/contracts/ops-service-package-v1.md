@@ -2,6 +2,18 @@
 
 Owner: Jit #35 (ADR 0022). `ops.service_package/v1` is the install/operate package for the composed Jit application under a Linux supervisor (systemd). It performs no provisioning of users, VPN, credentials, accounts or reboots; those are OPS05 human gates. Consumed contracts: `jit.app.foundation/v1`, `app.owner_identity/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1`, `jobs.session_reconcile/v1`, `delivery.outbox/v1`, `ops.schema_migrations/v1`, `ops.quarantined_restore/v1` (ledger, through a seam), `ops.load_drill/v1`, `jit.schway.bridge/v1`.
 
+## 2026-11-01 — S14 source default and persisted compatibility
+
+New unconfigured `serve`/`setup`/`ops` select S14. The selector validates command, single runtime choice and any named service config before writable state or application imports. Explicit `--legacy` selects prior direct commands; default S14 with `JIT_DATABASE` refuses until an explicit runtime is chosen, and never maps it to `JIT_S14_DATABASE`. `--s14` remains supported, including the exact private `owner-link --s14 --output-fd 3` protocol.
+
+Persisted `ServiceConfig.runtime` omission continues to mean legacy. `parseServiceConfig` retains omission; no installer or serializer injects S14. Canonical `serve --service-config <omitted-runtime-config>` and legacy `upgrade --service-config ... --password-stdin` continue through legacy gates. Explicit selector/config mismatches refuse. S14 does not consume `--service-config` at the source root: use its existing rendered unit/environment. The rendered descriptors remain exactly legacy `serve --service-config ...` and S14 `serve --s14 --no-refusal-page`; no new flag is injected into old immutable artifacts.
+
+`service` remains config-selected with its historical `/etc/jit` operator default. S14 requires exact `--config /etc/jit-s14/service-config.json`; runtime selector flags on `service` refuse. No installation discovery, config copying or cross-runtime activation occurs. Root bootstrap trust precedes operator imports; config/unit/drop-in/release checks precede lazy legacy application/status imports. Normal S14 source boot imports no legacy application/config/store/workers; shared unchanged recurrence/document helpers are isolated from those graphs.
+
+S14 `service status` reports supervisor state and `configured_unverified`. Its historical fixed `computerReason: computer_local_podman_required` is a requirement label, not a measured computer failure or readiness result; use separately authorized evidence/probes for actual observations. Health stays exact `/s14/login` HTTP 200 with manual redirects. Same-schema compatibility and ledger/fence rollback gates below remain unchanged (schema 17→17 maintenance; no downgrade).
+
+ADR 0061; S14-AC01/11/14, NFR-06/08/12/14. #256 closed at merged `143ca06`; #267 owner-host first reply, legacy-byte proof and prior-release rollback remain pending.
+
 ## 2026-10-29 — OPS09 installed container client (#224)
 
 This dated refinement supersedes the original local-Podman/scripted-unit
@@ -107,9 +119,9 @@ bun src/main.ts service upgrade   --artifact <dir> --password-stdin
 | `disableService` (`disable`, `uninstall`) | `disable --now`; `uninstall` also removes only the unit and journald files. Config, releases, state, backups, ledger and secret references are preserved; deleting managed data is a distinct authorized operation. |
 | `upgradePackage` (`upgrade`) | See *Upgrade*. |
 
-## Start: one path for `serve` and the unit
+## Retained legacy start: one path for source and the unit
 
-`bun src/main.ts serve [--service-config <path>]` calls `startFullApp` then `serveFullApp`; the packaged unit runs exactly this with the installed configuration. Without `--service-config` the development profile runs the same path without installation-only gates (config, secrets, artifact) and with the development ledger profile.
+`bun src/main.ts serve --legacy` or canonical `serve --service-config <legacy-path>` calls `startFullApp` then `serveFullApp`; the packaged unit runs exactly this with the installed configuration. Without `--service-config` the development profile runs the same path without installation-only gates (config, secrets, artifact) and with the development ledger profile.
 
 | Public entry (`src/ops/lifecycle.ts`) | Behavior |
 | --- | --- |
@@ -142,7 +154,7 @@ Deterministic (`bun test tests/ops-service-package.test.ts tests/ops-service.tes
 
 Opt-in, not in `bun test`: `JIT_OPS_SMOKE=1 bun run ops:smoke` on Linux arm64 builds, installs and seals dependencies, runs the release's read-only `preflight --service-config` (artifact gate must be ready), launches the release's installed-profile `serve --service-config` against disposable state (the seed establishes the ledger checkpoint) and prints a sanitized summary; it refuses elsewhere. Real systemd install, unattended boot, reboot, Secret Service/credential access and VPN reachability on the Pi are OPS05 (#36) evidence.
 
-## CUT14-01 explicit S14 installation (default unchanged)
+## CUT14-01 independent S14 installation (now the new-install default)
 
 `ServiceConfig.runtime?: "s14"` plus `s14: {vaultDirectory, computerRoot,
 gitScratch, images?: {base,browser}}` selects the independent runtime. Omission
@@ -196,4 +208,4 @@ Linux x64/arm64 root), read-only and credential-free. Its
 `ops.s14-service-evidence/v1` summary distinguishes actual service/identity/
 hardening/tmpfs/keyring/socket/image observations from pending route, computer,
 research, restart/reboot and backup evidence. It starts no container or model.
-Deterministic tests and that summary do not close #256 or flip the default.
+Deterministic tests and that summary alone do not certify a host. The completed #256 evidence remains separately attributed; #267 owner-host acceptance is still required.

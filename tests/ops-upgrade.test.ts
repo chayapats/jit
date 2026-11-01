@@ -696,27 +696,39 @@ test("boot never migrates an older installation; the owner upgrade migrates stag
 }, 120_000);
 
 test("serve refuses an older installation without migrating it, and the offline upgrade CLI fails closed without an engine", async () => {
-  const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-cli-")); roots.push(root);
-  const path = join(root, "state.sqlite");
-  const config = readConfig({ JIT_DATABASE: path });
-  {
-    const store = new TransactionStore(path);
-    await new Application(store, config).setupOwner(password);
-    store.close();
+  for (const named of [false, true]) {
+    const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-cli-")); roots.push(root);
+    const service = named ? serviceFor(root) : null;
+    const configPath = join(root, "legacy 'named config.json");
+    if (service) writeFileSync(configPath, JSON.stringify(service), { mode: 0o600 });
+    const path = service ? join(service.stateDirectory, "app.sqlite") : join(root, "state.sqlite");
+    const config = readConfig({ JIT_DATABASE: path });
+    {
+      const store = new TransactionStore(path);
+      await new Application(store, config).setupOwner(password);
+      store.close();
+    }
+    historical(path, 20);
+    const decoy = join(root, "wrong-installation.sqlite");
+    const env = { ...process.env, JIT_DATABASE: named ? decoy : path, JIT_RUN_PORT: "scripted" };
+    const serve = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "serve", "--legacy", ...(named ? ["--service-config", configPath] : [])], { env, stdout: "pipe", stderr: "pipe" });
+    expect(await serve.exited).toBe(1);
+    const refusal = await new Response(serve.stderr).text();
+    expect(refusal).toContain("Upgrade required: installation schema 20");
+    const command = refusal.match(/Run `([^`]+)`/)?.[1];
+    expect(command).toContain("upgrade --legacy");
+    expect(command?.includes("--service-config")).toBe(named);
+    expect(inspectStoreSchema(path)).toBe(20);
+    // Run the actual displayed shell command, including a named config with spaces and an apostrophe.
+    const cli = Bun.spawn(["/bin/sh", "-c", `${command} --password-stdin`], { cwd: join(import.meta.dir, ".."), env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    cli.stdin.write(`${password}\n`); cli.stdin.end();
+    expect(await cli.exited).toBe(1);
+    const out = JSON.parse((await new Response(cli.stdout).text()).trim()) as { error: string; upgrade: UpgradeJournal };
+    expect(out).toMatchObject({ error: "engine_unavailable", upgrade: { state: "failed", fromSchema: 20, targetSchema: schemaVersion } });
+    expect(inspectStoreSchema(path)).toBe(20);
+    expect(existsSync(upgradeFencePath(path))).toBe(false);
+    expect(existsSync(decoy)).toBe(false);
   }
-  historical(path, 20);
-  const env = { ...process.env, JIT_DATABASE: path, JIT_RUN_PORT: "scripted" };
-  const serve = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "serve"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(await serve.exited).toBe(1);
-  expect(await new Response(serve.stderr).text()).toContain("Upgrade required: installation schema 20");
-  expect(inspectStoreSchema(path)).toBe(20);
-  const cli = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "upgrade", "--password-stdin"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  cli.stdin.write(`${password}\n`); cli.stdin.end();
-  expect(await cli.exited).toBe(1);
-  const out = JSON.parse((await new Response(cli.stdout).text()).trim()) as { error: string; upgrade: UpgradeJournal };
-  expect(out).toMatchObject({ error: "engine_unavailable", upgrade: { state: "failed", fromSchema: 20, targetSchema: schemaVersion } });
-  expect(inspectStoreSchema(path)).toBe(20);
-  expect(existsSync(upgradeFencePath(path))).toBe(false);
 }, 60_000);
 
 test("startFullApp blocks an older installation at the schema gate without migrating it", async () => {

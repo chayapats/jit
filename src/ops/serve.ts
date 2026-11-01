@@ -31,7 +31,9 @@ export async function serveCommand(config: AppConfig, args: string[], options: S
     for (const gate of started.gates.filter(g => g.state === "blocked")) {
       if (gate.gate === "schema" && gate.nextAction === "run-owner-upgrade") {
         const installed = inspectStoreSchema(serviceAppConfig(config, service).databasePath);
-        logLine(`Upgrade required: installation schema ${installed}, this build supports ${schemaVersion}. Run \`bun src/main.ts upgrade\` (owner password) before serving.`);
+        const upgrade = "bun src/main.ts upgrade --legacy" + (service
+          ? ` --service-config '${args[1]!.replaceAll("'", "'\\''")}'` : "");
+        logLine(`Upgrade required: installation schema ${installed}, this build supports ${schemaVersion}. Run \`${upgrade}\` (owner password) before serving.`);
       } else if (gate.gate === "engine" && gate.detail.startsWith("schway bridge unavailable: ")) {
         logLine(`Schway bridge unavailable: ${gate.detail.slice("schway bridge unavailable: ".length)} (next: ${gate.nextAction})`);
       } else {

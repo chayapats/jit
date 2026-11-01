@@ -1,5 +1,5 @@
 import { tr } from "./i18n";
-import { documentPage, escape } from "./web-layout";
+import { documentPage, escape } from "./web-document";
 
 /** Password creation form for an already validated installer capability; the token is never rendered. */
 export function ownerSetupPage(csrf: string): string {

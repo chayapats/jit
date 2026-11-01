@@ -14,9 +14,9 @@ import { AppError } from "./errors";
 import { backupNativePortFor } from "./ops/schway-backup";
 import { upgradeEvidence, type UpgradeJournal } from "./ops/upgrade";
 
-async function secret(): Promise<string> {
+async function secret(args: string[]): Promise<string> {
   if (!process.stdin.isTTY) {
-    if (!process.argv.includes("--password-stdin")) throw new Error("Use an interactive terminal or --password-stdin");
+    if (!args.includes("--password-stdin")) throw new Error("Use an interactive terminal or --password-stdin");
     const input = await Bun.stdin.text();
     if (input.length > 258) throw new Error("Password input is too long");
     return input.replace(/\r?\n$/, "");
@@ -24,10 +24,11 @@ async function secret(): Promise<string> {
   return readHiddenPassword();
 }
 
-async function main(): Promise<void> {
-  const command = process.argv[2];
+/** Runs the explicitly selected legacy CLI after bootstrap selection; args exclude runtime selectors. */
+export async function runLegacy(args: string[]): Promise<void> {
+  const command = args[0];
   // app.local_api/v1 CLI. `status RECEIPT` reads a reply; `status [--service-config <path>]` stays the operator status.
-  const rest = process.argv.slice(3);
+  const rest = args.slice(1);
   if (command === "ask" || command === "pending" || (command === "status" && rest.length > 0 && !rest[0]!.startsWith("--"))) {
     process.exitCode = await localApiCommand(command, rest);
     return;
@@ -35,28 +36,20 @@ async function main(): Promise<void> {
   const config = readConfig();
   if (command === "probe") {
     const { runProbeCommand } = await import("./probe-cli");
-    const result = await runProbeCommand(process.argv.slice(3), process.cwd());
+    const result = await runProbeCommand(args.slice(1), process.cwd());
     console.log(JSON.stringify(result.output));
     process.exitCode = result.exitCode === 0 ? 0 : 1;
     return;
   }
-  if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status", "upgrade", "service"].includes(command ?? "")) {
-    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status, upgrade, service, ask or pending");
-  }
-  if (command === "service") {
-    // Operator package commands (ops.service_package/v1): plan, install, start, stop, status, upgrade, disable, uninstall.
-    const { runServiceCommand } = await import("./ops/service-cli");
-    const result = await runServiceCommand(process.argv.slice(3), { cwd: process.cwd(), readPassword: secret });
-    console.log(JSON.stringify(result.output));
-    process.exitCode = result.exitCode;
-    return;
+  if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status", "upgrade"].includes(command ?? "")) {
+    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status, upgrade, ask or pending");
   }
   if (command === "upgrade") {
-    await upgradeCommand(config, process.argv.slice(3));
+    await upgradeCommand(config, args.slice(1));
     return;
   }
   if (command === "serve") {
-    await serveCommand(config, process.argv.slice(3));
+    await serveCommand(config, args.slice(1));
     return;
   }
   if (command === "diagnose") {
@@ -67,7 +60,7 @@ async function main(): Promise<void> {
   if (command === "preflight" || command === "status") {
     // Operator lifecycle commands. Preflight gates activation; status stays
     // read-only. Neither starts background work or claims the scheduler.
-    const extra = process.argv.slice(3);
+    const extra = args.slice(1);
     let requiredEngine = "jit.schway.bridge/v1";
     let configPath: string | null = null;
     for (let i = 0; i < extra.length; i += 2) {
@@ -95,7 +88,7 @@ async function main(): Promise<void> {
   try {
     const nativeSnapshot = backupNativePortFor(config, store);
     const app = new Application(store, config, nativeSnapshot ? { nativeSnapshot } : {});
-    await app.setupOwner(await secret(), command === "reset-owner");
+    await app.setupOwner(await secret(args), command === "reset-owner");
     console.log("Owner credentials saved; existing browser sessions revoked.");
   } finally { store.close(); }
 }
@@ -108,7 +101,8 @@ async function main(): Promise<void> {
 async function localApiCommand(command: "ask" | "status" | "pending", args: string[]): Promise<number> {
   const { cliExit, cliLocale, runLocalApiCli } = await import("./local-api/cli");
   const { localApiDirectory } = await import("./local-api/server");
-  const index = args.indexOf("--service-config");
+  const separator = args.indexOf("--");
+  const index = (separator < 0 ? args : args.slice(0, separator)).indexOf("--service-config");
   let databasePath: string;
   try {
     const config = readConfig();
@@ -150,7 +144,7 @@ async function upgradeCommand(baseConfig: ReturnType<typeof readConfig>, args: s
   try {
     const nativeSnapshot = backupNativePortFor(config, store);
     const app = new Application(store, config, { ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(service ? { backupDir: service.backupDirectory } : {}) });
-    const token = await app.login(await secret());
+    const token = await app.login(await secret(args));
     const { actor } = app.authenticate(token);
     const status = app.upgradeStatus(actor);
     const requestId = () => crypto.randomUUID().replaceAll("-", "");
@@ -173,10 +167,3 @@ async function upgradeCommand(baseConfig: ReturnType<typeof readConfig>, args: s
     }
   } finally { store.close(); }
 }
-
-main().catch(error => {
-  console.error(error instanceof AppError && error.code === "scheduler_unavailable"
-    ? "Jit job admission is unavailable. Stop the other Jit instance or verify stale scheduler ownership before retrying."
-    : "Jit could not complete the operation. Check local configuration, owner setup and storage.");
-  process.exitCode = 1;
-});

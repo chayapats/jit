@@ -1,6 +1,6 @@
 # Jit
 
-Jit owns persistent Bots, work grants, conversations, memory, tasks, computers, artifacts, durable jobs and channels. Schway owns the execution loop, provider protocols, native sessions, compaction and model retries. S14 is the owner-confirmed target; the current runtime still implements the legacy project-centric store until its replacement tickets land.
+Jit owns persistent Bots, work grants, conversations, memory, tasks, computers, artifacts, durable jobs and channels. Schway owns the execution loop, provider protocols, native sessions, compaction and model retries. New unconfigured runs/installations default to the owner-confirmed S14 runtime. Explicit legacy selection and existing omitted-runtime service configs retain the project-centric store; owner-host cutover acceptance remains separate.
 
 - Before changing behavior, read CONTEXT.md, the relevant spec in docs/specs, its GitHub issue, and the applicable docs/adr records.
 - Treat confirmed decisions, required behavior and proposed engineering choices as distinct. Preserve FR/NFR IDs when refining specs.

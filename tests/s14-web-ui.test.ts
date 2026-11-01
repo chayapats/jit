@@ -394,7 +394,7 @@ test("refusal page explains in both languages, offers no form and writes nothing
   const handler = createS14RefusalHandler(path);
   for (const language of ["th", "en"] as const) {
     const response = handler(new Request(`${origin}/`, { headers: { "accept-language": language } })), html = await response.text();
-    expect(response.status).toBe(409); expect(html).toContain(dictionaries[language]["s14.legacy.untouched"]); expect(html).toContain("JIT_S14_DATABASE="); expect(html).toContain("bun src/main.ts serve</pre>"); expect(html).toContain("legacy.sqlite"); expect(html).not.toContain(root);
+    expect(response.status).toBe(409); expect(html).toContain(dictionaries[language]["s14.legacy.untouched"]); expect(html).toContain("JIT_S14_DATABASE="); expect(html).toContain("bun src/main.ts serve --legacy</pre>"); expect(html).not.toContain("bun src/main.ts serve</pre>"); expect(html).toContain("legacy.sqlite"); expect(html).not.toContain(root);
     expect(html).not.toContain("<form"); expect(html).not.toContain("<button"); strict(html); expect(accessibilityProblems(html, language)).toEqual([]);
   }
   expect(handler(new Request(`${origin}/s14/commands`, { method: "POST" })).status).toBe(409);
