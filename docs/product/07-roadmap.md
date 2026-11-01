@@ -10,6 +10,8 @@ Use vertical slices with observable outcomes and real contract prerequisites. In
 
 Schway work is narrowly scoped to [shared credential lifecycle](../proposals/schway/SCH14-01-shared-credential-lifecycle.md) and existing [#414 recovery](../proposals/schway/SCH14-02-session-recovery-414.md). Jit keeps product scheduling, computers, approvals and memory.
 
+Evidence checkpoint, 2026-11-01: [EVID14-01/#256](../evidence/s14-mvp-evidence.md) has met its required release evidence within the declared scope after parent review of native x64 AC12 at `c051d06d1bc663cbe6d8a785212a70514197b7b3` and later independent complete settlement. Earlier results retain their own build attribution, failures and limits. The corpus remains owner-unread under the approved delegated rubric; VoiceOver is explicitly owner-deferred and mobile coverage unrun. #256 closure awaits reviewed documentation merge. CUT14-01/#267 implementation/default flip and parent #244 remain open; the default runtime remains legacy and this is not whole-product certification.
+
 ## B — coding (required)
 
 Repository/workspace grants, isolated branches/worktrees, edit/install/test evidence, reviewable immutable diff, approved exact push/PR creation and unknown-effect reconciliation. Preserve static-review boundaries as a different work type.
