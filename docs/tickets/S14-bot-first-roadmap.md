@@ -60,3 +60,14 @@ Schway briefs: [shared lifecycle](../proposals/schway/SCH14-01-shared-credential
 New ticket mirrors are in `s14/`. Their issue bodies describe scope at publication and are not rewritten to imply human acceptance. `s14.json` records the separately verified current GitHub states. No ticket is newly marked ready-for-agent by this consolidation.
 
 ADR status review: ADRs 0045–0048 are original proposed architecture, refined by accepted opt-in implementation ADRs 0049–0056 and 0057 offline activation/scoped registry, 0058–0060. CODE14/LIFE14 implementation ADRs 0057 are accepted for opt-in implementation, with live limitations retained in the evidence record. Accepted engineering does not mean that all proposed architecture or release evidence is accepted.
+
+## Completed-evidence checkpoint — 2026-11-01
+
+#256, #267 and parent #244 were rechecked OPEN; the earlier table is a historical state checkpoint. The [canonical evidence](../evidence/s14-mvp-evidence.md) records completed physical/Mac observations and #297/#299/#300/#301 fix/check provenance against `ae417f0e83c72d6d0b1576a16d9862cf28be1a48`:
+
+- Physical helper at `4e719fc`: arm64 4/4 within installed synthetic-authority/controlled-real-transport scope; x64 successful startup followed by case-1 failure, cases 2–4 unrun and cleanup confirmed. x64 AC12 remains required; no running diagnostic result is credited.
+- Actual Mac Firefox at `417ee00` read five retained reports, produced one real reply and downloaded one hash-matching Markdown artifact; delegated usefulness is distinct from direct owner acceptance. Original clipping remains failed history.
+- Supported installed `529cc39`, tree-equal to CI head `08a6178`: actual Firefox 24 focus/four copy passes and native Safari four-capture sample. VoiceOver speech was observer-blocked, real iPhone unrun; these are disclosed limits without an invented owner-only or exhaustive device/AT gate.
+- #300 protects known intervals going forward, without repairing older overwritten times. Historical overlap claims need independent transport provenance wherever later DB intervals are invalid. No new measurements or blanket all-case pass is inferred.
+
+This documentation checkpoint changes no source/design, default, readiness label or issue state. The original ticket mirrors remain historical; new scope-specific facts are appended to EVID14-01. Required behavior and the remaining gate are distinguished from bounded coverage limits in the canonical record.
