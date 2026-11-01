@@ -45,7 +45,7 @@ Jit uses [Schway](https://github.com/chayapats/schway) as its execution engine. 
 | Work and routines | Task acceptance is separate from execution; only current owner grants authorize work. Quiet outcomes retain history. |
 | Bot computers | Separate bounded workspace/profile filesystems and rootless components; no service credentials or state enter a box. |
 | Coding and personal assistance | Scoped repository/Git and email/calendar brokers; exact external actions require approval. Support remains bounded by the [recorded evidence](docs/evidence/s14-mvp-evidence.md). |
-| Web | Existing Opus-authored Thai/English, dark/light first-run, sign-in, inspection and recovery flows. |
+| Web | Thai/English, dark/light first-run, sign-in, inspection and recovery flows. |
 
 Schway owns execution loops, provider protocols, native sessions, compaction and model retries. Jit consumes its pinned public host contract. A configured route or healthy login page does not prove a working subscription or computer.
 
