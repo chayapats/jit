@@ -86,6 +86,28 @@ test("peer close of an actually held reply closes the latch immediately and a st
   gate.release(); expect(f.transport.trace.filter(t => t.stage === "delivered")).toHaveLength(0);
 });
 
+test.each(["timeout", "pipe", "success"])("saved result and actual console output retain distinct diagnostics without private bodies (%s)", async kind => {
+  const directory = root();
+  const child = Bun.spawn([process.execPath, "--no-env-file", join(import.meta.dir, "fixtures/s14-input-evidence-outcome.ts"), kind, directory],
+    { stdout: "pipe", stderr: "pipe" });
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect(exitCode, stderr).toBe(0); expect(stderr).toBe("");
+  const summary = JSON.parse(stdout), savedBytes = readFileSync(join(directory, "result.json"), "utf8"), saved = JSON.parse(savedBytes);
+  const reason = kind === "success" ? null : "input_evidence_gate_closed";
+  const failure = kind === "timeout" ? "input_evidence_gate_timeout" : kind === "pipe" ? "input_evidence_pipe_closed" : null;
+  for (const output of [saved, summary]) {
+    expect(output).toHaveProperty("reason", reason); expect(output).toHaveProperty("transportFailure", failure);
+    expect(output.outcome).toBe(kind === "success" ? "integration_cases_completed" : "failed");
+    expect(output.cleanupConfirmed).toBe(true);
+  }
+  expect(Object.keys(summary).sort()).toEqual(["cleanupConfirmed", "contract", "label", "outcome", "reason", "transportFailure"]);
+  expect(saved.trace[0]).toEqual({ order: 1, pipe: 1, stage: "write", id: 1, method: "Target.getTargets" });
+  expect(stdout + savedBytes).not.toMatch(/fixture-private-protocol-body|bbbbbbbbbbbbbbbb|password|sessionId/);
+  const state = JSON.parse(readFileSync(join(directory, "private.json"), "utf8"));
+  expect(state.password).toBe(kind === "success" ? null : "b".repeat(64));
+  for (const file of ["result.json", "private.json"]) expect(lstatSync(join(directory, file)).mode & 0o077).toBe(0);
+});
+
 test("a delayed timer callback cannot allow an overdue authority commit to release a reply as success", async () => {
   let now = 0;
   const transport = new InputEvidenceTransport(() => () => {}, () => now), pipe = inputEvidencePipe();

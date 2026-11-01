@@ -14,6 +14,21 @@ const check = (ok: unknown, reason: string) => { if (!ok) throw new AppError(rea
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const forbidden = (): never => { throw new AppError("input_evidence_forbidden_native_port"); };
 
+/** Persists the safe result and separate private marker before printing a payload-free outcome summary. */
+export function writeInputEvidenceOutcome(
+  privateState: Pick<ReturnType<typeof prepareInputEvidenceState>, "resultPath" | "statePath" | "state">,
+  result: InputEvidenceResults & { architecture: string; build: Awaited<ReturnType<typeof requireInputEvidenceInstallation>>["build"];
+    outcome: "cleanup_confirmed" | "cleanup_unconfirmed" | "integration_cases_completed" | "failed"; cleanupConfirmed: boolean; reason: string | null },
+  transport: InputEvidenceTransport,
+): void {
+  const record = { contract: "ops.s14-input-evidence/v1", label: "installed-kernel integration with synthetic authority and controlled transport latches",
+    ...result, transportFailure: transport.failure, trace: transport.trace };
+  writeInputEvidencePrivate(privateState.resultPath, record); writeInputEvidencePrivate(privateState.statePath, privateState.state);
+  // No password, raw errors, bodies, screenshot, profile or installation address is printed.
+  console.log(JSON.stringify({ contract: record.contract, label: record.label, outcome: record.outcome, cleanupConfirmed: record.cleanupConfirmed,
+    reason: record.reason, transportFailure: record.transportFailure }));
+}
+
 // Operator entrypoint only. Importing this file never probes a host or starts a runtime.
 async function evidenceMain(totalDeadline: number): Promise<void> {
   check(process.argv.slice(2).length === 0 || process.argv.slice(2).join() === "--cleanup-only", "input_evidence_arguments_refused");
@@ -79,12 +94,9 @@ async function evidenceMain(totalDeadline: number): Promise<void> {
       privateState.state.phase = cleaned ? "cleaned" : passed ? "passed" : "failed";
       // Failures retain the private recovery password even when supported cleanup succeeded.
       if (passed || cleaned) privateState.state.password = null;
-      const record = { contract: "ops.s14-input-evidence/v1", label: "installed-kernel integration with synthetic authority and controlled transport latches",
-        architecture: process.arch, build, outcome: cleanupOnly ? cleaned ? "cleanup_confirmed" : "cleanup_unconfirmed" : passed ? "integration_cases_completed" : "failed",
-        cleanupConfirmed: cleanup, reason, transportFailure: transport.failure, ...results, trace: transport.trace };
-      writeInputEvidencePrivate(privateState.resultPath, record); writeInputEvidencePrivate(privateState.statePath, privateState.state);
-      // No password, raw errors, bodies, screenshot, profile or installation address is printed.
-      console.log(JSON.stringify({ contract: record.contract, label: record.label, outcome: record.outcome, cleanupConfirmed: cleanup, reason, transportFailure: record.transportFailure }));
+      writeInputEvidenceOutcome(privateState, { architecture: process.arch, build,
+        outcome: cleanupOnly ? cleaned ? "cleanup_confirmed" : "cleanup_unconfirmed" : passed ? "integration_cases_completed" : "failed",
+        cleanupConfirmed: cleanup, reason, ...results }, transport);
       if (!(passed || cleaned)) process.exitCode = 1;
     }
   } finally {
