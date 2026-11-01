@@ -75,11 +75,11 @@ test.skipIf(!driverPath || !binary)("Firefox native Tab and Shift+Tab reveal who
         const selector = name === "routine" ? 'form[action="/s14/forms/routine-preview"] button.s-btn.primary' : 'a[download$=".md"]';
         for (const reverse of [false, true]) for (const edge of ["partial", "ring"]) {
           // Fixture setup leaves the target partly clipped at either edge. Only native Tab may reveal it.
-          await evaluate(`
+          const before = await evaluate<{ focused: boolean; top: number; bottom: number; clipTop: number; clipBottom: number }>(`
             const target = document.querySelector(arguments[0]);
             if (!target) throw Error('Fixture target missing');
             const scroller = target.closest('.s-scroll, .s-pane-body');
-            const column = scroller.firstElementChild;
+            const column = scroller.classList.contains('s-pane-body') ? scroller : scroller.firstElementChild;
             const spacer = document.createElement('div');
             spacer.style.cssText = 'height:1600px;flex:none';
             column.prepend(spacer);
@@ -93,8 +93,24 @@ test.skipIf(!driverPath || !binary)("Firefox native Tab and Shift+Tab reveal who
               ? (arguments[1] ? box.top + 2 : box.bottom - rect.height - 2)
               : arguments[1] ? box.top - rect.height / 2 : box.bottom - (arguments[2] === 'routine' ? 19.5 : 27.7);
             scroller.scrollTop += rect.top - desired;
-            return true;
+            const initial = target.getBoundingClientRect(), clip = scroller.getBoundingClientRect();
+            return {focused:document.activeElement===target, top:initial.top, bottom:initial.bottom,
+              clipTop:clip.top, clipBottom:clip.bottom};
           `, [selector, reverse, name, edge]);
+          const initialContext = `${language}/${theme}/${name} ${reverse ? "Shift+Tab" : "Tab"} ${edge} before Tab ${JSON.stringify(before)}`;
+          expect(before.focused, initialContext).toBe(false);
+          if (edge === "partial") {
+            if (reverse) {
+              expect(before.top, initialContext).toBeLessThan(before.clipTop);
+              expect(before.bottom, initialContext).toBeGreaterThan(before.clipTop);
+            } else {
+              expect(before.top, initialContext).toBeLessThan(before.clipBottom);
+              expect(before.bottom, initialContext).toBeGreaterThan(before.clipBottom);
+            }
+          } else {
+            expect(before.top, initialContext).toBeGreaterThanOrEqual(before.clipTop);
+            expect(before.bottom, initialContext).toBeLessThanOrEqual(before.clipBottom);
+          }
           await tab(reverse);
           const result = await evaluate<{ focused: boolean; ring: number; top: number; bottom: number; left: number; right: number; clipTop: number; clipBottom: number; clipLeft: number; clipRight: number; outline: string }>(`
             const target=document.querySelector(arguments[0]), scroller=target.closest('.s-scroll, .s-pane-body');
@@ -106,6 +122,11 @@ test.skipIf(!driverPath || !binary)("Firefox native Tab and Shift+Tab reveal who
           const context = `${language}/${theme}/${name} ${width}x${height} ${reverse ? "Shift+Tab" : "Tab"} ${edge} ${JSON.stringify(result)}`;
           expect(result.focused, context).toBe(true);
           expect(result.outline, context).toBe("solid"); expect(result.ring, context).toBeGreaterThan(0);
+          if (edge === "ring") {
+            // Use the actual focused outline extent to prove that only its ring started clipped.
+            if (reverse) expect(before.top - result.ring, initialContext).toBeLessThan(before.clipTop);
+            else expect(before.bottom + result.ring, initialContext).toBeGreaterThan(before.clipBottom);
+          }
           expect(result.top - result.ring, context).toBeGreaterThanOrEqual(result.clipTop - 0.1);
           expect(result.bottom + result.ring, context).toBeLessThanOrEqual(result.clipBottom + 0.1);
           expect(result.left - result.ring, context).toBeGreaterThanOrEqual(result.clipLeft - 0.1);
