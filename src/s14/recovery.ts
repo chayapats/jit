@@ -267,6 +267,12 @@ export class S14Recovery {
         tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id);
         const checkpoint = this.checkpoints(tx).find(c => c.id === attemptId);
         if (checkpoint) { checkpoint.transport = "settled"; checkpoint.state = "waiting"; checkpoint.reason = "bot_lifecycle_fenced"; this.saveCheckpoint(tx, checkpoint); }
+        if (attempt.step) {
+          const step = record<WorkStep>(tx, "work_steps", attempt.step.id);
+          if (step.attemptId === attempt.id && step.settledAt === null) {
+            step.settledAt = this.app.now(); step.revision++; save(tx, "work_steps", step);
+          }
+        }
         const work = record<Work>(tx, "work_items", attempt.workId);
         if (work.state === "stopping" && !tx.get("SELECT 1 FROM work_attempts WHERE work_id=? AND (json_extract(record_json,'$.state') IN ('running','interrupted') OR EXISTS (SELECT 1 FROM attempt_transports WHERE attempt_id=work_attempts.id AND active=1))", work.id)) {
           work.state = "stopped"; work.revision++; save(tx, "work_items", work);
@@ -361,7 +367,8 @@ export class S14Recovery {
             if (step.attemptId === attempt.id || checkpoint.state === "waiting" && step.attemptId === null && step.state === "queued") {
               step.state = reason ? "blocked" : result?.state === "ready" ? "committed" : result ? "blocked" : "queued";
               step.reason = reason ?? (result?.state === "waiting" ? "handler_waiting" : checkpoint.state === "queued" ? "replay_safe_requeued" : null);
-              step.settledAt = checkpoint.transport === "settled" ? this.app.now() : null;
+              // Reconciliation changes authority/state, not an already observed interval for this attempt.
+              if (step.attemptId === attempt.id && checkpoint.transport === "settled") step.settledAt ??= this.app.now();
               if (checkpoint.state === "queued") step.attemptId = null;
               step.revision++; save(tx, "work_steps", step);
             }
