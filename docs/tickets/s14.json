@@ -425,8 +425,8 @@
       267
     ],
     "releaseGate": "OPEN",
-    "scope": "Completed physical AC12 and actual Mac records only; running x64 diagnostics excluded.",
-    "requiredRemaining": "x64 AC12 physical races; independent transport provenance for historical overlap claims affected by overwritten DB intervals.",
+    "scope": "Completed physical/Mac records, x64 diagnostic and separately authorized setup-corrected failure/cleanup, plus offline final-ledger overlap provenance audit.",
+    "requiredRemaining": "x64 AC12 physical retained-input races; no passing proof yet.",
     "limits": "VoiceOver speech observer-blocked; real iPhone and remaining Safari permutations unrun. No direct owner report acceptance or exhaustive device/AT gate inferred."
   }
 }
