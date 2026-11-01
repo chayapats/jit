@@ -317,32 +317,45 @@ test("pinned public host captures and restores an opaque retired native session 
   expect(schwayOpsNative(directory).supported()).toBe(true);
 });
 
-test("committed application/artifact/native round trip preserves evidence bytes while every old grant remains unusable", async () => {
+test("committed application/artifact/native round trip preserves evidence bytes and transport interval while old grants remain unusable", async () => {
   const f = await fixture();
+  const nativeRoot = join(dirname(f.path), "native");
+  let intentId = "";
+  f.app.authority.options.executor = { async run(attempt) {
+    const intent = f.app.recovery.intent(attempt.id, attempt.memoryId!, attempt.snapshot.route);
+    intentId = intent.id;
+    const host = await createHost({ ...nativeIntentPaths(nativeRoot, intent), context: { policy: "strict", systemPrompt: "Local fixture only", sections: [] }, tools: { policy: "exact", hostedLookup: "off", definitions: [] }, limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 1024, deadlineMs: 1000 } });
+    const session = await host.createSession();
+    f.app.recovery.correlate(intent.id, session.reference);
+    await session.retire(); await session.close(); await host.close(); f.app.recovery.retired(intent.id);
+    f.clock.now += 2000;
+    return { state: "ready", text: "Retained evidence", report: { title: "Retained report", claims: [{ id: "claim", text: "Unverified inference", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Scripted evidence"], artifactIds: [] } };
+  } };
   const started = f.app.execute(f.auth.actor, workCommand(f));
-  const attempt = f.app.authority.admit(started.work!.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "Evidence fixture", calls: 2, outputBytes: 16384 });
-  f.app.authority.commit(attempt.id, { state: "ready", text: "Retained evidence", report: { title: "Retained report", claims: [{ id: "claim", text: "Unverified inference", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Scripted evidence"], artifactIds: [] } });
+  const startedAt = f.clock.now;
+  await f.app.authority.drain();
+  const step = f.app.graph.view(f.auth.actor, started.work!.id).steps[0]!;
+  expect(step).toMatchObject({ state: "committed", startedAt, settledAt: startedAt + 2000 });
   const report = f.app.reports.list(f.auth.actor, started.work!.id)[0]!;
   expect(report.state).toBe("available");
   if (report.state !== "available") throw Error("fixture report unavailable");
   const files = report.artifacts.map(artifact => ({ id: artifact.id, bytes: f.app.artifacts.download(f.auth.actor, artifact.id).bytes }));
-  const packet = f.store.transaction(tx => f.app.memory.assemble(tx, { botId: "jit", conversationId: f.conversationId, purpose: "Retained native", sources: [] }));
-  const intent = f.app.recovery.intent(null, packet.id, f.options.policy.routes[0]!);
-  const nativeRoot = join(dirname(f.path), "native");
-  const host = await createHost({ ...nativeIntentPaths(nativeRoot, intent), context: { policy: "strict", systemPrompt: "Local fixture only", sections: [] }, tools: { policy: "exact", hostedLookup: "off", definitions: [] }, limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 1024, deadlineMs: 1000 } });
-  const session = await host.createSession();
-  f.app.recovery.correlate(intent.id, session.reference);
-  await session.retire(); await session.close(); await host.close(); f.app.recovery.retired(intent.id);
   const { m, actor } = open(f, schwayOpsNative(nativeRoot));
   const id = await backup(m, actor);
+  f.clock.now += 3 * 3600000;
   const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
   expect(staged).toMatchObject({ state: "validated", reason: null });
   await m.execute(actor, command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }));
   const token = await m.app.login("domain-fixture-owner-password"), newActor = m.app.authenticate(token).actor;
   for (const file of files) expect(m.app.artifacts.download(newActor, file.id).bytes).toEqual(file.bytes);
   expect(m.app.authority.view(newActor, started.work!.id).authority!.revoked).toBe(true);
+  expect(m.app.graph.view(newActor, started.work!.id).steps[0]).toMatchObject({ attemptId: step.attemptId, startedAt, settledAt: step.settledAt });
   await expect(Promise.resolve().then(() => m.app.authority.admit(started.work!.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "No replay", calls: 1, outputBytes: 1024 }))).rejects.toThrow("grant_revoked");
-  expect(m.app.recovery.view(newActor).native.find(i => i.id === intent.id)!.state).toBe("retired");
+  expect(m.app.recovery.view(newActor).native.find(i => i.id === intentId)!.state).toBe("retired");
+  f.clock.now += 3600000;
+  await m.app.recovery.boot(schwayOpsNative(nativeRoot));
+  expect(m.app.graph.view(newActor, started.work!.id).steps[0]).toMatchObject({ state: "blocked", attemptId: step.attemptId, startedAt, settledAt: step.settledAt });
+  expect(m.app.authority.view(newActor, started.work!.id).authority!.revoked).toBe(true);
 });
 
 test.each(["candidate_imported", "candidate_reconciled"] as const)("crash at %s leaves active untouched and validates the immutable image again", async point => {

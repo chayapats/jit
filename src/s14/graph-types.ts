@@ -12,12 +12,16 @@ export type StepHandler = "research" | "synthesis";
 export interface StepProposal extends Admission { id: string; handler: StepHandler; dependsOn: string[] }
 /** Immutable service-validated graph configuration bound to the original owner grant. */
 export interface WorkGraph { id: string; revision: number; grantId: string; priority: "interactive" | "background"; nodes: StepProposal[] }
-/** Durable lane and phase starts; null means unobserved, and cancellation alone never sets transport settledAt. */
+/** Durable lane and phase starts; actual transport times belong to the bound attempt and survive later reconciliation. */
 export interface WorkStep {
   id: string; workId: string; revision: number; nodeId: string; botId: string; handler: StepHandler;
   state: "queued" | "waiting_evidence" | "running" | "stopping" | "committed" | "failed" | "cancelled" | "blocked";
   queuedAt: number | null; waitingAt: number | null; queueCeiling: QueueCeiling | null;
-  reason: string | null; attemptId: string | null; startedAt: number | null; settledAt: number | null;
+  reason: string | null; attemptId: string | null;
+  /** Actual admission time; replacement admission starts a fresh interval and clears settledAt. */
+  startedAt: number | null;
+  /** First observed settlement for this attempt; null until confirmed cleanup, never a cancellation or later boot time. */
+  settledAt: number | null;
 }
 /** Untrusted committed input with source lineage; fair summaries share 16384 bytes when evidence exists, each text is at most 8192 and the full serialized list at most 49152. */
 export interface StepInput { stepId: string; attemptId: string; sourceId: string; text: string; evidence: ReportEvidence[] }
