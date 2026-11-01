@@ -2130,7 +2130,7 @@ export const th = {
   "s14.legacy.fresh_title": "เริ่มใหม่ในที่เก็บแยก",
   "s14.legacy.fresh_detail": "หยุดจิตแล้วรันคำสั่งนี้ใน terminal แบบ interactive เพื่อรับลิงก์ตั้งค่า ข้อมูลเดิมยังอยู่ที่เดิม",
   "s14.legacy.back_title": "กลับไปใช้รุ่นเดิม",
-  "s14.legacy.back_detail": "รันโดยไม่มี --s14 แล้วรุ่นเดิมจะเปิดข้อมูลเดิมตามปกติ",
+  "s14.legacy.back_detail": "รัน build นี้ด้วย --legacy และการตั้งค่าของ installation เดิม หากใช้ build รุ่นก่อนที่เก็บไว้ ให้ใช้คำสั่งเดิมของ build นั้น",
   "s14.nav.label": "เมนูหลัก",
   "s14.nav.tabs": "แท็บหลัก",
   "s14.nav.home": "หน้าหลัก",

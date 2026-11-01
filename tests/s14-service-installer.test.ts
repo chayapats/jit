@@ -236,8 +236,18 @@ test("POSIX bare/default and --s14 select S14; --legacy alone selects legacy on 
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect({ stderr, code }).toEqual({ stderr: "", code: 0 }); expect(stdout).not.toContain("?token=");
     const name = flags.includes("--legacy") ? "jit" : "jit-s14", other = name === "jit" ? "jit-s14" : "jit";
+    expect(stdout).toContain(`Selected runtime: ${name === "jit" ? "legacy (--legacy)" : "S14 (default; --s14 is also supported)"}`);
+    expect(stdout).toContain(`Action: install or repair ${name};`);
     expect(existsSync(f.at(`etc/systemd/system/${name}.service`))).toBe(true);
     expect(existsSync(f.at(`var/lib/${other}`))).toBe(false);
+    const cancel = Bun.spawn(["sh", join(source, "install.sh"), "--dry-run", "--root", f.root, ...flags, "--uninstall"], {
+      stdin: new TextEncoder().encode("n\n"), stdout: "pipe", stderr: "pipe",
+    });
+    const [plan, prompt, cancelled] = await Promise.all([new Response(cancel.stdout).text(), new Response(cancel.stderr).text(), cancel.exited]);
+    expect(cancelled).toBe(0); expect(prompt.match(/Apply this plan/g)).toHaveLength(1);
+    expect(plan).toContain(`Action: uninstall ${name} only.`); expect(plan).toContain("Retain identity");
+    for (const claim of ["Provision private", "workspace/profile ext4 pairs at boot", "Deliver first-owner", "Install core dependencies", "Issue a hashed"]) expect(plan).not.toContain(claim);
+    expect(existsSync(f.at(`etc/systemd/system/${name}.service`))).toBe(true);
   }
 }, 30_000);
 

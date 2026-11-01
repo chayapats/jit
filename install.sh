@@ -123,14 +123,22 @@ fi
 
 printf '%s\n' 'Plan (ops.installer/v1):'
 if [ "$s14" = true ]; then
-  printf '%s\n' '  Explicit S14: jit-s14 identity/unit; /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; loopback:3001.' \
-    '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
-    '  Create 8 bounded workspace/profile ext4 pairs at boot; --computer-slots N extends the pool. Refuse sparse overcommit; preserve legacy data.' \
-    '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
+  printf '%s\n' '  Selected runtime: S14 (default; --s14 is also supported). Installation: jit-s14.'
+else
+  printf '%s\n' '  Selected runtime: legacy (--legacy). Installation: jit.'
 fi
 if [ "$uninstall" = true ]; then
-  printf '%s\n' '  Stop/disable Jit and its Secret Service; remove their units and journald config.' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
+  printf '  Action: uninstall %s only. Stop/disable its service and Secret Service; remove their units and journald config.\n' "$name"
+  printf '%s\n' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
+  if [ "$s14" = true ]; then printf '%s\n' '  Retain Bot disk images and mount units. Legacy installation data and services are preserved.'; fi
 else
+  printf '  Action: install or repair %s; preserve existing config and data.\n' "$name"
+  if [ "$s14" = true ]; then
+    printf '%s\n' '  S14 layout: /opt/jit-s14 release/Bun, /etc/jit-s14 config, /var/lib/jit-s14 state; default loopback:3001.' \
+    '  Provision private 128 MiB Git scratch tmpfs in the unit; build and digest-pin both Bot images as jit-s14.' \
+    '  Deliver first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.'
+    printf '  Provision %s bounded workspace/profile ext4 pairs at boot; refuse sparse overcommit and preserve legacy data.\n' "$computer_slots"
+  fi
   printf '%s\n' \
     '  Install core dependencies with apt/dnf, or verify them on other systemd distributions.' \
     "  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/$name/bin/bun." \

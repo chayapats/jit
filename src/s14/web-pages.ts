@@ -101,7 +101,7 @@ export function renderRefusal(locale: Locale, store: string): string {
   return withLocale(locale, () => standalone(tr("s14.legacy.title"), `<div class="s-notice-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr("s14.legacy.title")}</h1><p>${tr("s14.legacy.lead")}</p>
     ${banner("ok", tr("s14.legacy.untouched"), tr("s14.legacy.untouched_detail"))}<dl class="s-kv"><dt>${tr("s14.legacy.selected")}</dt><dd class="s-mono">${e(store)}</dd><dt>${tr("s14.legacy.reason")}</dt><dd>${tr("s14.legacy.reason_detail")}</dd></dl>
     <section class="s-stack" aria-labelledby="s14-fresh"><h2 id="s14-fresh">${tr("s14.legacy.fresh_title")}</h2><p class="s-sub">${tr("s14.legacy.fresh_detail")}</p><pre class="s-exact">JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts serve --s14</pre></section>
-    <section class="s-stack" aria-labelledby="s14-back"><h2 id="s14-back">${tr("s14.legacy.back_title")}</h2><p class="s-sub">${tr("s14.legacy.back_detail")}</p><pre class="s-exact">bun src/main.ts serve</pre></section></div>`));
+    <section class="s-stack" aria-labelledby="s14-back"><h2 id="s14-back">${tr("s14.legacy.back_title")}</h2><p class="s-sub">${tr("s14.legacy.back_detail")}</p><pre class="s-exact">bun src/main.ts serve --legacy</pre></section></div>`));
 }
 
 export const hidden = (name: string, value: string | number) => `<input type="hidden" name="${name}" value="${e(value)}">`;
