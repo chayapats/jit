@@ -2,9 +2,9 @@
 
 Parent: [#244](https://github.com/chayapats/jit/issues/244). Documentation/design: [#245](https://github.com/chayapats/jit/issues/245). [Spec](../specs/S14-bot-first-local-assistant.md).
 
-Status checked with `gh issue view` per issue on 2026-10-31: 22 runtime/evidence/follow-up tickets are indexed in `s14.json`. Implementation tickets #246–#255, #257–#260, #262–#263, #265–#266, #268 and #279 are CLOSED. EVID14-01 (#256) and CUT14-01 (#267) remain OPEN; parent #244 remains OPEN and documentation #245 is CLOSED. Closed implementation work does not certify live acceptance. See the [consolidated evidence](../evidence/s14-mvp-evidence.md) for per-build/per-architecture limits. Original preparation mirrors remain historical issue bodies, not current readiness claims.
+Current closeout checkpoint, 2026-11-01: 22 runtime/evidence/follow-up tickets are indexed in `s14.json`. Implementation tickets #246–#255, #257–#260, #262–#263, #265–#266, #268 and #279 are CLOSED. EVID14-01 (#256) is CLOSED after PR #304; CUT14-01 (#267) and parent #244 remain OPEN pending reviewed closeout, and documentation #245 is CLOSED. Closed implementation work does not certify live acceptance. See the [consolidated evidence](../evidence/s14-mvp-evidence.md) for per-build/per-architecture limits. Original preparation mirrors remain historical issue bodies, not current readiness claims.
 
-Current evidence disposition, 2026-11-01: the parent reviewed actual native x64 AC12 at `c051d06d1bc663cbe6d8a785212a70514197b7b3` and complete independent settlement. Combined with the separately pinned earlier evidence, #256's required release evidence is met within the declared scope; closure awaits reviewed documentation merge. #256/#267/#244 were checked OPEN before this PR. #267 implementation/default flip and #244 remain open. No whole-product/default-runtime certification is implied; see the final checkpoint below.
+Current evidence disposition, 2026-11-01: #256 closed after reviewed PR #304 merged at `143ca06`; its native x64 AC12 and earlier named-build evidence retain their declared limits. PR #305 merged the S14 default at `5eec7aa`. The [owner-Pi cutover record](../evidence/s14-owner-pi-cutover.md) records actual first reply, complete legacy-byte windows and prior-release rollback. Post-reply R4 equality also passed. Reviewed #267/#244 closeout remains pending. No whole-product or later-head recertification is implied; historical checkpoints below retain their original observations.
 
 ## Phase A — research MVP (required)
 
@@ -50,12 +50,12 @@ Schway briefs: [shared lifecycle](../proposals/schway/SCH14-01-shared-credential
 
 ## Later tickets and current gate
 
-| Ticket | GitHub state verified 2026-10-31 | Scope/status distinction |
+| Ticket | GitHub state checked 2026-11-01 for closeout | Scope/status distinction |
 | --- | --- | --- |
 | [UX14-01 #265](https://github.com/chayapats/jit/issues/265) | CLOSED | First-owner Web setup and conversation commands; device acceptance remains separate. |
 | [OPS14-01 #263](https://github.com/chayapats/jit/issues/263) | CLOSED | Backup/restore implementation and recorded round trips; remaining lifecycle permutations stay in evidence. |
 | [OPS14-02 #266](https://github.com/chayapats/jit/issues/266) | CLOSED | Nested subordinate-ID diagnosis; no host-configuration change implied. |
-| [CUT14-01 #267](https://github.com/chayapats/jit/issues/267) | OPEN | Opt-in install/service delivery exists; implementation/default flip and owner-host installation remain separate work after #256's reviewed documentation merge. |
+| [CUT14-01 #267](https://github.com/chayapats/jit/issues/267) | OPEN | Default merged in #305; actual owner-Pi host criteria recorded. Post-reply R4 passed; reviewed closeout pending. |
 | [TEST14-01 #268](https://github.com/chayapats/jit/issues/268) | CLOSED | Deterministic probe uncertainty test. |
 | [UX14-02 #279](https://github.com/chayapats/jit/issues/279) | CLOSED | Routine and attention controls; actual AC13 keyboard/render samples and deferred/unrun coverage limits are recorded separately. |
 
@@ -85,3 +85,7 @@ Parent independently verified 101 indexed hashes/45 trace rows. Helper cleanup a
 Earlier native/emulated failures and scratch setup failures remain unchanged. A separate single getTargets response in 5,840.669 ms under the normal 15 s supports helper phase selection, not old causation or installed AC12 acceptance. N supplies installed-kernel/synthetic-authority/controlled-real-transport proof only. Earlier arm64, kernel/route/research/rubric/overlap/lifecycle/Mac evidence stays pinned to its own builds, without later-head recertification or a newly run model/website/owner UI/effect/reboot/idle journey.
 
 The required #256 release evidence is met within the declared scope and may close after reviewed documentation merge. Owner-deferred VoiceOver and unrun iPhone/Safari permutations remain disclosed limits. The corpus is explicitly owner-unread; original delegated rubric/usefulness authority does not require direct owner report acceptance. #267 implementation/default flip and parent #244 remain open. This documentation PR changes no product code, UX, feature, default or GitHub issue state; parent owns immutable review/merge and issue-state verification.
+
+## Owner-host cutover checkpoint — 2026-11-01
+
+The [separate owner-Pi record](../evidence/s14-owner-pi-cutover.md) supersedes earlier default/cutover-pending conclusions for its exact `5eec7aa` arm64 installation. It records fresh separate S14 state, one native-approved tool-free Codex reply, full R0/R1 and R2/R3 preservation with independent recoveries, actual retained prior legacy-release health, and same-owned S14 reactivation. Failed helper invocations remain failed and are distinguished from independent successful observations. Post-reply R4 equality also passed. Reviewed #267/#244 closeout remains pending; neither issue is claimed closed here. Owner-unread reports, owner-deferred VoiceOver, unrun real iPhone and all earlier named-build limits remain unchanged.

@@ -1,5 +1,5 @@
 ---
-status: accepted for CUT14-01 code delivery; owner-host acceptance remains pending
+status: accepted for CUT14-01 code delivery and named owner-host evidence
 date: 2026-11-01
 scope: S14-D12/D13/D14/D16; S14-AC01/11/13/14; FR-01/19/22/23/25; NFR-06/08/11/12/14
 ---
@@ -41,8 +41,12 @@ Retain eight finite 1 GiB workspace/profile ext4 pairs, full sparse commitment p
 
 Same-schema code rollback keeps supported service upgrade gates and prior artifact argv. OPS14 maintenance supports schema 17→17 with current independent lifecycle/fence/native reconciliation; no downgrade, manual symlink cutover or replacement of the current ledger is introduced. No schema, vendor, provider, model, account, backend, network or default grant changes participate.
 
-## Validation and outstanding acceptance
+## Validation and owner-host evidence
 
 Deterministic source/package tests cover default/alias/legacy, omission compatibility, invalid selectors/commands/configs before state, exact fd 3, import isolation, rendered old argv, scripted packaged Web first run, internal/shell/re-exec selection, x64/arm64 fake-root coexistence/repair/uninstall, health/rollback/trust and finite disk regressions. They do not establish actual Pi behavior.
 
-#267 remains open until an actual fresh default install on the owner-selected Pi reaches its first real reply, complete consistent legacy-byte comparisons pass and the actual retained prior legacy release is rehearsed and S14 reactivated. Use `Refs #267` for this code PR. Refusal guidance selects `--legacy` with the current build while retaining original argv for earlier builds. Installer consent names the selected runtime and install/repair or uninstall action; uninstall lists no provisioning or setup-link steps. Existing first-run/sign-in flows are unchanged. The [cutover runbook](../runbooks/s14-default-cutover.md) records the remaining evidence sequence. #256's exact-build support, owner-unread reports and deferred AT/mobile coverage remain separately attributed.
+Host closeout requires an actual fresh default install on the owner-selected Pi to reach its first real reply, complete consistent legacy-byte comparisons and rehearsal of the actual retained prior legacy release followed by S14 reactivation. The code-delivery PR used `Refs #267`. Refusal guidance selects `--legacy` with the current build while retaining original argv for earlier builds. Installer consent names the selected runtime and install/repair or uninstall action; uninstall lists no provisioning or setup-link steps. Existing first-run/sign-in flows are unchanged. The [cutover runbook](../runbooks/s14-default-cutover.md) records the host evidence sequence. #256's exact-build support, owner-unread reports and deferred AT/mobile coverage remain separately attributed.
+
+## 2026-11-01 owner-Pi checkpoint
+
+PR #305 merged at `5eec7aa7adb73858b5f7091348ef1611949cc82a` with the same tree as its six-shard CI head. The [separate cutover record](../evidence/s14-owner-pi-cutover.md) records the actual arm64 bare-default installation, one receipt-correlated tool-free Codex `gpt-6.1-sol` reply, complete R0/R1 and R2/R3 legacy-byte equality, independent Pi/Mac recoveries and actual retained prior legacy-release health. The failed start-control helper remains a failed invocation; its later independent health observation is the rollback evidence. No credential migration, legacy deletion or prior-S14 rollback is implied. Post-reply R4 equality also passed. Reviewed #267/#244 closeout remains pending; the historical engineering and evidence above keep their original attribution.

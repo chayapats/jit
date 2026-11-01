@@ -13,7 +13,7 @@ Bare `--uninstall` targets only S14. `--legacy --uninstall` targets only legacy.
 
 S14 remains `jit-s14`, `/opt/jit-s14`, `/etc/jit-s14`, `/var/lib/jit-s14`, loopback 3001. All trust, finite resource/disk commitment, image preparation, controlling-terminal/private fd 3, health and recovery contracts below are retained. The original legacy profile below is selected explicitly with `--legacy`. ADR 0061 refines historical ADRs 0042/0049/0059 without changing their attributed evidence. Requirements: S14-AC01/11/14; FR-01/19/22/23/25; NFR-06/08/12/14.
 
-#256 closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`. Actual owner-Pi first reply, consistent legacy-byte proof and prior-release rollback remain #267 acceptance work; deterministic fixtures do not close it.
+#256 closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`. The [owner-Pi cutover record](../evidence/s14-owner-pi-cutover.md) supplies actual first reply, full legacy-byte windows and prior-release rollback at `5eec7aa`; post-reply R4 equality also passed. Reviewed #267 closeout remains pending. Deterministic fixtures do not substitute for those observations.
 
 ## Entry points and consent
 

@@ -603,3 +603,23 @@ test("service evidence summary drops arbitrary diagnostics and retains unrun evi
   expect(summary.checks.serviceActive).toBe(false);
   expect(calls.some(argv => argv.includes("start") || argv.includes("run") || argv.includes("exec"))).toBe(false);
 });
+
+test("service evidence checks both Bot image references without treating build provenance as an image", async () => {
+  const f = fixture(), { config } = await runInstaller(f.options);
+  const images = { base: `localhost/base@sha256:${"c".repeat(64)}`, browser: `localhost/browser@sha256:${"d".repeat(64)}`, buildInputsHash: "e".repeat(64) };
+  const configured = parseServiceConfig({ ...config, s14: { ...config.s14, images } });
+  for (const browser of ["present", "absent", "timeout"]) {
+    const refs: string[] = [];
+    const summary = await collectS14ServiceEvidence(configured, async argv => {
+      if (argv[0] === "getent") return { exitCode: 0, timedOut: false, stdout: "jit-s14:x:123:123::/var/lib/jit-s14:/usr/sbin/nologin" };
+      if (argv.at(-3) === "image" && argv.at(-2) === "exists") {
+        const ref = argv.at(-1)!; refs.push(ref);
+        const present = ref === images.base || ref === images.browser && browser !== "absent";
+        return { exitCode: present ? 0 : 1, timedOut: ref === images.browser && browser === "timeout", stdout: "" };
+      }
+      return { exitCode: 1, timedOut: false, stdout: "" };
+    });
+    expect(refs).toEqual([images.base, images.browser]);
+    expect(summary.checks.botImages).toBe(browser === "present");
+  }
+});

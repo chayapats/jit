@@ -8,10 +8,12 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 
 Bare installation now selects the existing independent S14 layout. #256 closed
 after PR #304 merged at `143ca06`; its evidence is scoped to recorded builds,
-architectures and routes. Owner-Pi installation/first reply, complete consistent
-legacy-byte comparisons and prior-release rollback remain #267 acceptance work;
-follow [the cutover runbook](s14-default-cutover.md). For a separate authorized
-evidence round use a disposable systemd host. Use an operator terminal: S14 setup capabilities go to
+architectures and routes. The [owner-Pi cutover record](../evidence/s14-owner-pi-cutover.md)
+records installation/first reply, complete byte-preservation windows and actual
+prior-release rollback, including complete post-reply R4 equality. Reviewed #267
+closeout remains pending. Follow [the cutover runbook](s14-default-cutover.md) for
+a separate authorized change window; use a disposable systemd host for a separate
+authorized evidence round. Use an operator terminal: S14 setup capabilities go to
 `/dev/tty` only, never redirected stdout/stderr or journald.
 
 From a reviewed checkout at the tested SHA with Bun 1.4.2:

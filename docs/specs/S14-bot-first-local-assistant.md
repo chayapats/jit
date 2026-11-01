@@ -3,11 +3,11 @@
 Tracker: https://github.com/chayapats/jit/issues/244
 Documentation delivery: https://github.com/chayapats/jit/issues/245
 
-Status: owner-confirmed product direction, 2026-10-30. The original engineering proposals below retain their recorded status; accepted scoped implementation ADRs refine them. New unconfigured source runs/installations default to S14 under ADR 0061, retaining the project-centric S09–S13 runtime explicitly and preserving old service configs. #267 owner-host cutover acceptance remains separate. This document is the authority for the new direction where earlier specs conflict. Existing FR/NFR identifiers are retained in the [PRD](../product/02-prd.md).
+Status: owner-confirmed product direction, 2026-10-30. The original engineering proposals below retain their recorded status; accepted scoped implementation ADRs refine them. New unconfigured source runs/installations default to S14 under ADR 0061, retaining the project-centric S09–S13 runtime explicitly and preserving old service configs. The [separate owner-Pi record](../evidence/s14-owner-pi-cutover.md) records actual cutover acceptance; post-reply R4 equality also passed. Reviewed #267/#244 closeout remains pending. This document is the authority for the new direction where earlier specs conflict. Existing FR/NFR identifiers are retained in the [PRD](../product/02-prd.md).
 
 ## Problem and intended outcome
 
-Jit currently makes Project the root of conversations, roles, permissions, memory and computers. The owner wants a personal team of persistent Bots that can take work to completion on the owner's computer, without creating or selecting a Project. CopilotKit/OpenBot and OpenDuet are references for behavior; Jit remains its own application over Schway.
+The preceding project-centric runtime made Project the root of conversations, roles, permissions, memory and computers. The owner wants a personal team of persistent Bots that can take work to completion on the owner's computer, without creating or selecting a Project. CopilotKit/OpenBot and OpenDuet are references for behavior; Jit remains its own application over Schway.
 
 The research MVP must accept one authenticated request, use multiple enabled Bots concurrently when useful, search and read through Parallel, produce a persisted report with citations and downloadable artifacts, and remain inspectable across interruption. Coding to a reviewable PR and email/calendar assistance are required subsequent phases.
 

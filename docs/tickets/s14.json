@@ -1,7 +1,7 @@
 {
   "parent": 244,
   "documentation": 245,
-  "status": "implementation-landed-evidence-met-pending-documentation-merge",
+  "status": "implementation-and-cutover-evidence-met-pending-reviewed-closeout",
   "baseline": "a94c19e3917c5bcbebad3ac7831898cc18a64e02",
   "phases": {
     "A": "research MVP",
@@ -109,7 +109,7 @@
         249,
         250
       ],
-      "upstream": "docs/proposals/schway/SCH14-01-shared-credential-lifecycle.md \u2014 proposed upstream capability, not yet implemented; retain live routeConcurrency guard until a supported artifact and conformance are pinned.",
+      "upstream": "Historical preparation note, not current contract readiness: docs/proposals/schway/SCH14-01-shared-credential-lifecycle.md \u2014 proposed upstream capability, not yet implemented; retain live routeConcurrency guard until a supported artifact and conformance are pinned.",
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
@@ -164,7 +164,7 @@
         245,
         252
       ],
-      "upstream": "https://github.com/chayapats/schway/issues/414 \u2014 currently open; required metadata discovery/correlation is not yet a supported artifact. Follow docs/proposals/schway/SCH14-02-session-recovery-414.md.",
+      "upstream": "Historical preparation note, not current contract readiness: https://github.com/chayapats/schway/issues/414 \u2014 currently open; required metadata discovery/correlation is not yet a supported artifact. Follow docs/proposals/schway/SCH14-02-session-recovery-414.md.",
       "missingDecision": null,
       "humanEvidence": false,
       "readyForAgent": false,
@@ -207,8 +207,10 @@
       "humanEvidence": true,
       "readyForAgent": false,
       "file": "s14/EVID14-01.md",
-      "state": "OPEN",
-      "statusVerifiedAt": "2026-11-01"
+      "state": "CLOSED",
+      "statusVerifiedAt": "2026-11-01",
+      "evidenceStatus": "MET_WITHIN_DECLARED_SCOPE",
+      "closedBy": "https://github.com/chayapats/jit/pull/304"
     },
     {
       "key": "CODE14-01",
@@ -370,7 +372,8 @@
       "readyForAgent": false,
       "file": "s14/CUT14-01.md",
       "state": "OPEN",
-      "statusVerifiedAt": "2026-11-01"
+      "statusVerifiedAt": "2026-11-01",
+      "evidenceStatus": "HOST_ACCEPTANCE_MET_PENDING_REVIEWED_MERGE"
     },
     {
       "key": "TEST14-01",
@@ -413,22 +416,21 @@
     "upstreamRecovery": "https://github.com/chayapats/schway/issues/414",
     "note": "Historical publication counts, not a current GitHub relation audit; later tickets are indexed above."
   },
-  "statusVerifiedAt": "2026-10-31",
-  "statusSource": "gh issue view chayapats/jit (per issue); closed implementation tickets do not certify live acceptance",
+  "statusVerifiedAt": "2026-11-01",
+  "statusSource": "GitHub current closeout inventory and per-issue #256/#267/#244 reads; required evidence is distinct from reviewed merge and issue closure",
   "evidenceCheckpoint": {
     "recordedAt": "2026-11-01",
     "base": "c051d06d1bc663cbe6d8a785212a70514197b7b3",
     "file": "../evidence/s14-mvp-evidence.md",
     "verifiedOpenIssues": [
       244,
-      256,
       267
     ],
     "releaseGate": "MET_WITHIN_DECLARED_SCOPE",
     "scope": "Parent-reviewed native x64 AC12 four-case/five-assertion pass and later complete independent settlement, combined with separately pinned kernel/route/research/rubric/overlap/lifecycle/arm64/Mac evidence.",
     "requiredRemaining": [],
     "limits": "VoiceOver explicitly owner-deferred after observer block; real iPhone and remaining Safari permutations unrun. Corpus explicitly owner-unread; delegated rubric/usefulness is separate from direct report acceptance. No whole-product or later-head recertification.",
-    "closure": "Issue #256 remains OPEN until reviewed documentation merge; parent owns merge and issue-state verification.",
+    "closure": "Issue #256 CLOSED after reviewed PR #304 merged at 143ca067e3728af94badfc2eb677b4f04a5cdb59.",
     "openFollowUps": [
       267,
       244
@@ -436,6 +438,25 @@
     "testedHelperHead": "8dd84e3c797480d3f2d45a2fdb2045b9560f6c3f",
     "sourceTree": "01bb80d393ae0244701cce93798d151f46a117ad",
     "settlement": "Helper cleanup and 83.758 s result precede independent parent absence of all 44 residual monitors, containers, claims and transports; monitors settled naturally, own verified custody lock released, VM running/retained.",
-    "statusSource": "GitHub issue reads before this documentation PR: #244/#256/#267 OPEN; no issue state changed."
-  }
+    "statusSource": "Current closeout: #256 CLOSED; #267/#244 OPEN. Historical N observations retain their tested source attribution."
+  },
+  "cutoverCheckpoint": {
+    "recordedAt": "2026-11-01",
+    "sourceCommit": "5eec7aa7adb73858b5f7091348ef1611949cc82a",
+    "sourceTree": "c98a8a2d44283bee0b72e894f58012e1458932dd",
+    "codePr": "https://github.com/chayapats/jit/pull/305",
+    "file": "../evidence/s14-owner-pi-cutover.md",
+    "hostAcceptance": "HOST_ACCEPTANCE_MET_PENDING_REVIEWED_MERGE",
+    "firstReply": "SUCCEEDED_TOOL_FREE_CODEX_GPT_6_1_SOL_NO_RETRY",
+    "legacyPreservation": "FULL_R0_R1_AND_R2_R3_R4_EQUALITY_586905_ENTRIES_EACH",
+    "priorLegacyRollback": "ACTUAL_SUPERVISED_HEALTH_PASS_FAILED_START_HELPER_RETAINED",
+    "postReplyR4": "FULL_R2_R3_R4_EQUALITY_586905_ENTRIES_INDEPENDENTLY_VERIFIED",
+    "verifiedOpenIssues": [
+      267,
+      244
+    ],
+    "closureOrder": "Reviewed closeout merge, verify #267 closed, then parent #244 closeout",
+    "limits": "Owner-unread reports and deferred VoiceOver/real iPhone limits unchanged. No later-build, website, effect, CPU or reboot certification."
+  },
+  "statusContext": "PRE_MERGE_ISSUE_STATE_SNAPSHOT; GitHub is authoritative after the reviewed closeout merge."
 }
