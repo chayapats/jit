@@ -1,4 +1,5 @@
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import { safeAlias } from "../../src/evidence/contract";
 
 /** Trusted operator configuration for one service installation. No secret values exist here. */
@@ -63,6 +64,13 @@ export interface ServiceConfig {
     maxBoxes: number; memoryMb: number; cpus: number; pidsLimit: number; idleMinutes: number;
     registryHosts: string[]; fullAllowed: boolean;
   };
+}
+
+/** Reads one bounded regular trusted config without importing an application or opening its state. */
+export function readServiceConfigFile(path: string): ServiceConfig {
+  const file = resolve(path), stats = lstatSync(file);
+  if (!stats.isFile() || stats.isSymbolicLink() || (stats.mode & 0o022) !== 0 || stats.size > 16384) throw new Error("unsafe_service_config_file");
+  return parseServiceConfig(JSON.parse(readFileSync(file, "utf8")));
 }
 
 /** Secret reference name the Telegram channel reads its bot token through. */

@@ -13,6 +13,7 @@ import { prepareS14Image } from "../../ops/package/installer/s14-images";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
   serviceEnvironment, serviceJournal, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnit, serviceLoginPath,
+  readServiceConfigFile,
   type ServiceConfig, type ServicePlanChange,
 } from "../../ops/package/service-config";
 
@@ -95,12 +96,7 @@ export function installedConfigPath(host: Pick<OperatorHost, "configDir">): stri
 }
 
 /** Reads a bounded JSON configuration file that must not be writable by group/other. */
-export function readServiceConfigFile(path: string): ServiceConfig {
-  const file = resolve(path);
-  const stats = lstatSync(file);
-  if (!stats.isFile() || stats.isSymbolicLink() || (stats.mode & 0o022) !== 0 || stats.size > 16384) throw new Error("unsafe_service_config_file");
-  return parseServiceConfig(JSON.parse(readFileSync(file, "utf8")));
-}
+export { readServiceConfigFile };
 
 async function identity(run: CommandRunner, user: string): Promise<{ check: OperatorCheck; uid: number | null; gid: number | null; home: string | null }> {
   const none = (check: OperatorCheck) => ({ check, uid: null, gid: null, home: null });

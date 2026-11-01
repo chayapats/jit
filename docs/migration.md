@@ -25,3 +25,10 @@ Source inspection อ้าง Schway commit eb41354cc35a6e191c0e89747e150c2aff2
 SSH target ของ Pi อยู่เฉพาะ ignored installation-local notes ไม่มี credentials ถูกย้ายในงานนี้ และไม่มี runtime installation, live inference หรือ reboot จากการสร้าง repository/specs
 
 Repository Jit เริ่มเป็น private พร้อม MIT LICENSE ระหว่างเตรียม specs การเปิด public และ support policy ยังเป็น release decision ภายหลัง
+
+
+## 2026-11-01 — S14 fresh-state default (CUT14-01)
+
+This is an installation cutover, separate from the historical repository-discovery migration above. New bare source serve/setup/ops and bare installer runs select S14 with independent state, identity and credentials. `--s14` remains supported; `--legacy` explicitly retains the old source/installer path. Existing service config omission continues to mean legacy, and old immutable builds keep their original argv. No data conversion, credential transfer, schema downgrade or legacy deletion is provided.
+
+The release-evidence prerequisite #256 closed after reviewed PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`; #265 is closed. The [default-selection ADR](adr/0061-s14-default-selection-and-legacy-compatibility.md) documents compatibility. The [owner-host cutover runbook](runbooks/s14-default-cutover.md) requires a separate fresh S14 installation on the owner-selected Pi, complete consistent legacy-byte comparisons, an actual first reply and rehearsed rollback to the retained prior legacy release. Those #267 criteria remain pending and are not supplied by deterministic tests. Installation-specific identity/addresses/recovery commands stay ignored and private.

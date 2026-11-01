@@ -1,3 +1,5 @@
+import { documentPage, escape, renderWith, type ThemePreference } from "./web-document";
+export { documentPage, escape, renderWith, type ThemePreference } from "./web-document";
 import type { RouteCatalogs } from "./team/route-catalog";
 import type { ProviderReadiness } from "./device-sign-in";
 import { providerSignInCards } from "./web-sign-in";
@@ -8,10 +10,9 @@ import type { Topic } from "./conversation";
 import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
 import type { Job, JobLimits, JobPolicy } from "./jobs/types";
-import { currentLocale, systemText, tr, withLocale, type Locale, type MessageKey } from "./i18n";
+import { currentLocale, systemText, tr, type Locale, type MessageKey } from "./i18n";
 import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
-import { colorTokens } from "./web-design";
 import { effectiveAccess, type AccessLevel, type ProjectAccess } from "./exec/access";
 import type { ConnectionView } from "./exec/connections";
 import type { McpProposalView } from "./exec/mcp";
@@ -32,9 +33,6 @@ import { noRouteModels, routeText, type RouteModels } from "./team/route-options
 import type { AttachmentView } from "./attachments/records";
 import { attachmentBoxNotice, attachmentBackupNotice, attachmentComposerChips, attachmentComposerControl, attachmentComposerNote, attachmentComposerScript, attachmentFormAttributes, messageAttachmentList, type AttachmentComposerView } from "./web-attachments";
 
-/** Escapes literal untrusted content before it enters HTML text or attributes. */
-export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const paths = {
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10H3Z"/>',
   chat: '<path d="M20 11.5a8 8 0 0 1-8 8H5l-3 2 1.5-5A8 8 0 1 1 20 11.5Z"/>',
@@ -67,38 +65,6 @@ export function time(value: number): string {
   return `<time datetime="${date.toISOString()}" title="${date.toISOString()}">${escape(format.format(date))} UTC</time>`;
 }
 
-/** Owner appearance choice: `system` follows `prefers-color-scheme`. */
-export type ThemePreference = "system" | "dark" | "light";
-let activeTheme: ThemePreference = "system";
-/**
- * Renders synchronously in the given language and theme. Page renderers read both from this scope,
- * so every page, including errors and sign-in, uses the same shell and dictionaries.
- */
-export function renderWith<T>(ui: { locale: Locale; theme: ThemePreference }, render: () => T): T {
-  const previous = activeTheme;
-  activeTheme = ui.theme;
-  try { return withLocale(ui.locale, render); } finally { activeTheme = previous; }
-}
-
-/** Browser chrome colour (web.pwa/v1): the page background of the theme in use, or of each system theme. */
-function themeColor(): string {
-  const meta = (theme: "dark" | "light", media = "") => `<meta name="theme-color" content="${colorTokens[theme].bg}"${media ? ` media="(prefers-color-scheme: ${media})"` : ""}>`;
-  return activeTheme === "system" ? `${meta("dark", "dark")}${meta("light", "light")}` : meta(activeTheme);
-}
-/**
- * The full HTML document around a page body: theme, language, stylesheet, icons, web app manifest, fonts and the one
- * enhancement script. `viewport-fit=cover` lets the layout pad itself with the device safe areas; zoom stays allowed.
- */
-export function documentPage(title: string, content: string): string {
-  const theme = activeTheme === "system" ? "" : ` data-theme="${activeTheme}"`;
-  return `<!doctype html><html lang="${currentLocale()}"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-    <meta name="color-scheme" content="${activeTheme === "system" ? "dark light" : activeTheme}">${themeColor()}<title>${escape(title)} · Jit</title>
-    <link rel="stylesheet" href="${assetUrl("app.css")}"><link rel="icon" type="image/svg+xml" href="${assetUrl("favicon.svg")}">
-    <link rel="manifest" href="${assetUrl("manifest.webmanifest")}"><link rel="apple-touch-icon" href="${assetUrl("apple-touch-icon.png")}">
-    <link rel="preload" href="${assetUrl("inter.woff2")}" as="font" type="font/woff2" crossorigin><link rel="preload" href="${assetUrl("noto-sans-thai.woff2")}" as="font" type="font/woff2" crossorigin>
-    <script type="module" src="${assetUrl("app.js")}"></script></head><body>
-    <a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${content}</body></html>`;
-}
 /** Sidebar data: the workspace page plus, when known, counts of items waiting on the owner per project. */
 export type NavigationWorkspace = Workspace & { attention?: Readonly<Record<string, ProjectAttention>>; access?: ReadonlyMap<string, ProjectAccess> };
 /**

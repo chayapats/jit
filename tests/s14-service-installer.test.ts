@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { installerHealth, installerOwnerLink, installerS14Schema, prepareInstallerHome, runInstaller, type InstallerOptions } from "../ops/package/installer/installer";
@@ -28,12 +28,117 @@ function fixture() {
   for (const name of ["uid_map", "gid_map"]) writeFileSync(join(root, "proc/self", name), "0 0 4294967295\n");
   writeFileSync(join(root, "host.json"), JSON.stringify(facts));
   const lines: string[] = [];
-  const options: InstallerOptions = { root, source, bunPath: process.execPath, facts, dryRun: true, s14: true, out: line => lines.push(line),
+  const options: InstallerOptions = { root, source, bunPath: process.execPath, facts, dryRun: true, out: line => lines.push(line),
     run: async () => { throw new Error("host commands forbidden"); } };
   return { root, lines, options, at: (path: string) => join(root, path) };
 }
 
-test("explicit S14 coexists with byte-identical legacy state/config/unit/keyring and repairs idempotently", async () => {
+function installationBytes(f: ReturnType<typeof fixture>, name: "jit" | "jit-s14") {
+  const tree = (path: string): unknown => {
+    if (!existsSync(path)) return null;
+    const stat = lstatSync(path);
+    return { mode: stat.mode, uid: stat.uid, gid: stat.gid, link: stat.isSymbolicLink() ? readlinkSync(path) : null,
+      bytes: stat.isFile() ? readFileSync(path).toString("hex") : null,
+      children: stat.isDirectory() ? Object.fromEntries(readdirSync(path).sort().map(name => [name, tree(join(path, name))])) : null };
+  };
+  return [`var/lib/${name}`, `opt/${name}`, `etc/${name}`, `etc/systemd/system/${name}.service`, `etc/systemd/journald@${name}.conf`].map(path => tree(f.at(path)));
+}
+
+test.each(["x64", "arm64"])("default install/repair/uninstall and explicit legacy actions preserve the other complete installation: %s", async arch => {
+  const f = fixture(), options = { ...f.options, facts: { ...f.options.facts, arch } };
+  await runInstaller({ ...options, s14: false });
+  const sentinels = ["state/app.sqlite", "state/app.sqlite-wal", "state/app.sqlite-shm", "state/native/session", "boxes/work/file", "boxes/profile/cookies", "backups/image", ".local/share/keyrings/login.keyring", ".schway/native", "ledger/checkpoint.json"];
+  for (const name of ["jit", "jit-s14"]) {
+    if (name === "jit-s14") await runInstaller(options);
+    for (const path of sentinels) {
+      const full = f.at(`var/lib/${name}/${path}`); mkdirSync(resolve(full, ".."), { recursive: true }); writeFileSync(full, `${name} retained ${path}`);
+    }
+  }
+  const legacy = installationBytes(f, "jit"), s14Config = readFileSync(f.at("etc/jit-s14/service-config.json"));
+  await runInstaller(options);
+  expect(readFileSync(f.at("etc/jit-s14/service-config.json"))).toEqual(s14Config);
+  expect(installationBytes(f, "jit")).toEqual(legacy);
+  // After S14 repair, replace only fake mount images with compact byte sentinels for the other-runtime actions.
+  // Real logical-size/commitment/repair preservation is covered by s14-disk-pool.test.ts.
+  const compactFakeImages = (path: string) => {
+    const stat = lstatSync(path);
+    if (stat.isDirectory()) for (const name of readdirSync(path)) compactFakeImages(join(path, name));
+    else if (stat.isFile() && stat.size >= 1024 ** 3) writeFileSync(path, `retained fake disk ${path}`);
+  };
+  compactFakeImages(f.at("var/lib/jit-s14/computers"));
+  const s14 = installationBytes(f, "jit-s14");
+  await runInstaller({ ...options, s14: false });
+  expect(installationBytes(f, "jit-s14")).toEqual(s14);
+  await runInstaller({ ...options, s14: false, uninstall: true });
+  expect(installationBytes(f, "jit-s14")).toEqual(s14);
+  expect(existsSync(f.at("etc/systemd/system/jit.service"))).toBe(false);
+  const retainedLegacy = installationBytes(f, "jit");
+  await runInstaller({ ...options, uninstall: true });
+  expect(installationBytes(f, "jit")).toEqual(retainedLegacy);
+  expect(existsSync(f.at("etc/systemd/system/jit-s14.service"))).toBe(false);
+  for (const name of ["jit", "jit-s14"]) for (const path of sentinels) expect(readFileSync(f.at(`var/lib/${name}/${path}`), "utf8")).toBe(`${name} retained ${path}`);
+  expect(readFileSync(f.at("etc/jit-s14/service-config.json"))).toEqual(s14Config);
+});
+
+test("internal apply omission defaults to S14; explicit false and low-level omitted helper flags remain legacy", async () => {
+  for (const flags of [[], ["--s14", "false"], ["--s14", "true"]]) {
+    const f = fixture(), child = Bun.spawn([process.execPath, join(source, "ops/package/installer/main.ts"), "apply", "--root", f.root, "--dry-run", "true", "--source", source, ...flags], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" }); expect(stdout).not.toContain("?token=");
+    expect(existsSync(f.at(`etc/systemd/system/${flags.includes("false") ? "jit" : "jit-s14"}.service`))).toBe(true);
+  }
+  const f = fixture(), home = f.at("helper-home"); mkdirSync(home); prepareInstallerHome(home);
+  expect(existsSync(join(home, "ledger/checkpoint.json"))).toBe(true);
+  expect(existsSync(join(home, "vault"))).toBe(false);
+});
+
+test("shell selectors refuse conflicts/duplicates before detection, consent or any writes", async () => {
+  for (const flags of [["--s14", "--legacy"], ["--legacy", "--s14"], ["--legacy", "--legacy"], ["--s14", "--s14"]]) {
+    const f = fixture(), before = readdirSync(f.root).sort();
+    const child = Bun.spawn(["sh", join(source, "install.sh"), "--dry-run", "--root", f.root, ...flags], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code).toBe(1); expect(stdout).toBe(""); expect(stderr).toContain("Failed at arguments"); expect(stderr).not.toContain("Apply this plan");
+    expect(readdirSync(f.root).sort()).toEqual(before);
+  }
+});
+
+test("invalid internal selections and a legacy config at the S14 path refuse before mutable installation changes", async () => {
+  for (const flags of [["--s14", "invalid"], ["--s14", "false", "--s14", "true"], ["--legacy", "true"]]) {
+    const f = fixture(), before = readdirSync(f.root).sort();
+    const child = Bun.spawn([process.execPath, join(source, "ops/package/installer/main.ts"), "apply", "--root", f.root, "--dry-run", "true", "--source", source, ...flags], { stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).toBe(1);
+    expect(await new Response(child.stdout).text()).toBe("");
+    expect(await new Response(child.stderr).text()).toContain("Failed at installer-input");
+    expect(readdirSync(f.root).sort()).toEqual(before);
+  }
+  const f = fixture(); await runInstaller({ ...f.options, s14: false });
+  mkdirSync(f.at("etc/jit-s14"));
+  const legacyConfig = readFileSync(f.at("etc/jit/service-config.json"));
+  writeFileSync(f.at("etc/jit-s14/service-config.json"), legacyConfig);
+  const legacy = installationBytes(f, "jit"), s14 = installationBytes(f, "jit-s14");
+  await expect(runInstaller(f.options)).rejects.toThrow("Failed at configuration");
+  expect(installationBytes(f, "jit")).toEqual(legacy); expect(installationBytes(f, "jit-s14")).toEqual(s14);
+});
+
+test("actual sudo re-exec block carries explicit legacy/default S14 through local and downloaded bootstrap paths", async () => {
+  const script = readFileSync(join(source, "install.sh"), "utf8");
+  const block = script.slice(script.indexOf("step=privileges\n"), script.indexOf("PATH=/usr/sbin:/usr/bin:/sbin:/bin\n"));
+  for (const s14 of [true, false]) for (const downloaded of [true, false]) {
+    const f = fixture(), harness = f.at("reexec.sh"), recorded = f.at("argv.json"), recorder = f.at("record.ts");
+    writeFileSync(recorder, 'await Bun.write(process.env.RECORDED!, JSON.stringify({argv:process.argv.slice(2),script:await Bun.stdin.text()}));\n');
+    writeFileSync(harness, `set -eu\ns14=${s14}\ncomputer_slots=8\nsource_dir=${downloaded ? "" : source}\nuninstall=true\nrelease_url=https://release.example.test\nscratch=\nreported=false\nfailed() { exit 90; }\ntrusted_input() { :; }\nid() { printf '1001\\n'; }\ncurl() { for fetched in "$@"; do :; done; cp "$BOOTSTRAP" "$fetched"; }\nsudo() { "$TEST_BUN" "$RECORDER" "$@"; }\n${block}`);
+    // curl's output argument is positional in the real bootstrap; record without any network or sudo.
+    const env = { PATH: process.env.PATH, HOME: f.root, BOOTSTRAP: join(source, "install.sh"), TEST_BUN: process.execPath, RECORDER: recorder, RECORDED: recorded };
+    const child = Bun.spawn(downloaded ? ["sh", "-s"] : ["sh", harness], { cwd: f.root, env, stdin: downloaded ? new TextEncoder().encode(readFileSync(harness, "utf8")) : "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ code, stderr, stdout }).toEqual({ code: 0, stderr: "", stdout: "" });
+    const result = JSON.parse(readFileSync(recorded, "utf8"));
+    expect(result.argv).toEqual(["sh", "-s", "--", "--yes", ...(s14 ? ["--s14", "--computer-slots", "8"] : ["--legacy"]), ...(!downloaded ? ["--source", source] : []), "--uninstall"]);
+    expect(result.script).toBe(downloaded ? script : readFileSync(harness, "utf8"));
+  }
+});
+
+test("default S14 coexists with byte-identical legacy state/config/unit/keyring and repairs idempotently", async () => {
   const f = fixture();
   await runInstaller({ ...f.options, s14: false });
   writeFileSync(f.at("var/lib/jit/state/app.sqlite"), "legacy database sentinel");
@@ -48,6 +153,11 @@ test("explicit S14 coexists with byte-identical legacy state/config/unit/keyring
   for (const text of ["User=jit-s14", "/opt/jit-s14/bin/bun", "serve --s14 --no-refusal-page", "ProtectSystem=strict", "ProtectHome=tmpfs", "NoNewPrivileges=true", "RestrictSUIDSGID=true", "PrivateTmp=true", "ProtectControlGroups=true", "ProtectKernelTunables=true", "LogNamespace=jit-s14", "/.schway", "BindPaths=/run/user/1001/bus", "BindPaths=-/run/user/1001/podman", "JIT_PODMAN_MODE=remote", "size=128M,mode=0700,uid=1001,gid=1001", "Environment=JIT_S14_GIT_SCRATCH="]) expect(unit).toContain(text);
   expect(unit).not.toContain("JIT_DATABASE="); expect(unit).not.toContain("--service-config");
   expect(Object.fromEntries(serviceEnvironment(config)).JIT_S14_DATABASE).toBe(serviceDatabasePath(config));
+  const owned = new S14Store(serviceDatabasePath(config));
+  const ownerApp = new S14Application(owned, { policy: s14Policy(), chat: { async reply() { throw new Error("model forbidden"); } } });
+  await ownerApp.provisionOwner("fixture-retained-owner-267");
+  const owner = owned.read(tx => tx.get("SELECT * FROM owner")); owned.close();
+  const databaseBytes = readFileSync(serviceDatabasePath(config)), ledgerBytes = readFileSync(`${serviceDatabasePath(config)}.lifecycle.sqlite`);
   const configBytes = readFileSync(f.at("etc/jit-s14/service-config.json")), unlock = readFileSync(f.at("var/lib/jit-s14/keyring-unlock"));
   const ranges = readFileSync(f.at("etc/subuid"));
   writeFileSync(join(config.stateDirectory, "keep"), "S14 state");
@@ -56,9 +166,19 @@ test("explicit S14 coexists with byte-identical legacy state/config/unit/keyring
   expect(readFileSync(f.at("var/lib/jit-s14/keyring-unlock"))).toEqual(unlock);
   expect(readFileSync(f.at("etc/subuid"))).toEqual(ranges);
   expect(readFileSync(join(config.stateDirectory, "keep"), "utf8")).toBe("S14 state");
+  expect(readFileSync(serviceDatabasePath(config))).toEqual(databaseBytes);
+  expect(readFileSync(`${serviceDatabasePath(config)}.lifecycle.sqlite`)).toEqual(ledgerBytes);
+  // Inspect a private copy: even a normal writable SQLite open can advance the original header.
+  const ownerCopy = f.at("owner-verification.sqlite");
+  cpSync(serviceDatabasePath(config), ownerCopy);
+  cpSync(`${serviceDatabasePath(config)}.lifecycle.sqlite`, `${ownerCopy}.lifecycle.sqlite`);
+  const repaired = new S14Store(ownerCopy);
+  try { expect(repaired.read(tx => tx.get("SELECT * FROM owner"))).toEqual(owner); }
+  finally { repaired.close(); }
   await runInstaller({ ...f.options, uninstall: true });
   expect(existsSync(f.at("etc/systemd/system/jit-s14.service"))).toBe(false);
   expect(existsSync(f.at("etc/jit-s14/service-config.json"))).toBe(true);
+  expect(readFileSync(serviceDatabasePath(config))).toEqual(databaseBytes);
   legacy.forEach((path, index) => expect(readFileSync(f.at(path))).toEqual(before[index]!));
   expect(f.lines.join("\n")).not.toContain("?token=");
 });
@@ -108,15 +228,18 @@ test("installer and upgrade health use the actual S14 sign-in route; legacy's ro
   } finally { fetchSpy.mockRestore(); store.close(); }
 });
 
-test("POSIX --s14 dry-run passes selection through and defaults to legacy without host commands", async () => {
-  const f = fixture();
-  for (const flags of [["--s14"], []]) {
+test("POSIX bare/default and --s14 select S14; --legacy alone selects legacy on both architectures", async () => {
+  for (const arch of ["x64", "arm64"]) for (const flags of [[], ["--s14"], ["--legacy"]]) {
+    const f = fixture();
+    writeFileSync(f.at("host.json"), JSON.stringify({ ...f.options.facts, arch }));
     const child = Bun.spawn(["sh", join(source, "install.sh"), "--yes", "--dry-run", "--root", f.root, ...flags], { stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     expect({ stderr, code }).toEqual({ stderr: "", code: 0 }); expect(stdout).not.toContain("?token=");
-    expect(existsSync(f.at(`etc/systemd/system/${flags.length ? "jit-s14" : "jit"}.service`))).toBe(true);
+    const name = flags.includes("--legacy") ? "jit" : "jit-s14", other = name === "jit" ? "jit-s14" : "jit";
+    expect(existsSync(f.at(`etc/systemd/system/${name}.service`))).toBe(true);
+    expect(existsSync(f.at(`var/lib/${other}`))).toBe(false);
   }
-});
+}, 30_000);
 
 test("installer runs the actual owner-link CLI via private fd 3 and terminal-only output while logs stay empty", async () => {
   const f = fixture(), db = f.at("application.sqlite"), origin = "http://127.0.0.1:3001", terminal: string[] = [];
@@ -371,6 +494,25 @@ test("rendered service argv/environment boots the packaged S14 entrypoint and re
     expect(existsSync(`${serviceDatabasePath(config)}.owner-setup.json`)).toBe(false);
     expect(existsSync(join(config.stateDirectory, "app.sqlite"))).toBe(false);
   }
+}, 30_000);
+
+test("actual packaged entrypoint completes scripted first-owner Web setup, device sign-in and one persisted reply", async () => {
+  const f = fixture(), { config } = await runInstaller(f.options), release = await artifact(f.root, "first-run", true);
+  const env = Object.fromEntries(serviceEnvironment(config));
+  const child = Bun.spawn([process.execPath, "--preload", join(source, "tests/fixtures/s14-packaged-first-run.ts"), join(release, "src/main.ts"), "serve"], {
+    cwd: config.workingDirectory, env, stdout: "pipe", stderr: "pipe",
+  });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]).finally(() => clearTimeout(timer));
+  expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+  expect(stdout.trim().split("\n").map(line => JSON.parse(line).state)).toEqual(["s14_listening", "packaged_first_reply"]);
+  expect(stdout).not.toContain("?token=");
+  expect(existsSync(join(config.stateDirectory, "app.sqlite"))).toBe(false);
+  const store = new S14Store(serviceDatabasePath(config));
+  try {
+    expect(store.read(tx => tx.get<{ count: number }>("SELECT count(*) AS count FROM owner"))!.count).toBe(1);
+    expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE name='projects'"))).toBeNull();
+  } finally { store.close(); }
 }, 30_000);
 
 test("S14 service package install/upgrade/compatible rollback select only its unit and never legacy upgrade or password", async () => {

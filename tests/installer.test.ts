@@ -18,7 +18,7 @@ function fixture(overrides: Partial<HostFacts> = {}) {
   for (const name of ["uid_map", "gid_map"]) writeFileSync(join(root, "proc/self", name), "0 0 4294967295\n");
   const hardware = { ...facts, ...overrides }; writeFileSync(join(root, "host.json"), JSON.stringify(hardware));
   const lines: string[] = [], calls: string[][] = [];
-  const options: InstallerOptions = { root, facts: hardware, source, bunPath: process.execPath, dryRun: true, out: line => lines.push(line),
+  const options: InstallerOptions = { root, s14: false, facts: hardware, source, bunPath: process.execPath, dryRun: true, out: line => lines.push(line),
     run: async argv => { calls.push(argv); throw new Error("fake root must never execute a host command"); } };
   return { root, lines, calls, options, at: (path: string) => join(root, path) };
 }
@@ -264,7 +264,7 @@ test("POSIX scripted dry run asks once; cancellation makes no changes; --yes rep
   const f = fixture(), traps = join(f.root, "traps"), called = join(f.root, "host-command-called"); mkdirSync(traps);
   for (const tool of ["sudo", "systemctl", "apt-get", "dnf", "loginctl", "runuser", "podman", "useradd"]) writeFileSync(join(traps, tool), `#!/bin/sh\nprintf called >> '${called}'\nexit 99\n`, { mode: 0o755 });
   const exec = async (args: string[], input: string) => {
-    const child = Bun.spawn(["sh", join(source, "install.sh"), "--dry-run", "--root", f.root, ...args], { env: { ...process.env, PATH: `${traps}:${process.env.PATH}` }, stdin: new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(["sh", join(source, "install.sh"), "--legacy", "--dry-run", "--root", f.root, ...args], { env: { ...process.env, PATH: `${traps}:${process.env.PATH}` }, stdin: new TextEncoder().encode(input), stdout: "pipe", stderr: "pipe" });
     const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     return { stdout, stderr, exit };
   };
@@ -285,9 +285,14 @@ test("release tarball carries an intact artifact and can dry-run before installi
   expect(await unpack.exited).toBe(0);
   expect(validateArtifact(join(extracted, "artifact")).ok).toBe(true);
   expect(existsSync(join(extracted, "artifact/node_modules"))).toBe(false);
-  const child = Bun.spawn(["sh", join(extracted, "install.sh"), "--dry-run", "--yes", "--root", f.root], { stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" }); expect(stdout).toContain("Dry run complete");
+  for (const arch of ["x64", "arm64"]) {
+    const target = fixture({ arch });
+    const child = Bun.spawn(["sh", join(extracted, "install.sh"), "--dry-run", "--yes", "--root", target.root], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" }); expect(stdout).toContain("Dry run complete");
+    expect(existsSync(target.at("etc/systemd/system/jit-s14.service"))).toBe(true);
+    expect(existsSync(target.at("var/lib/jit"))).toBe(false);
+  }
 });
 
 test("OPS09 an unavailable user socket reports chat-only, preserves hardening and remains repairable without host commands", async () => {

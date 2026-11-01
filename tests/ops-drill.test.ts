@@ -944,7 +944,7 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
 test("main diagnose path inspects without claiming scheduler ownership or starting work", async () => {
   const root = setup();
   const main = join(import.meta.dir, "../src/main.ts");
-  const child = Bun.spawn([process.execPath, main, "diagnose"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, main, "diagnose", "--legacy"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect(stderr).toBe("");
   expect(exit).toBe(0);
@@ -955,7 +955,7 @@ test("main diagnose path inspects without claiming scheduler ownership or starti
   new TransactionStore(join(root, "diag.sqlite")).close();
   chmodSync(join(root, "diag.sqlite"), 0o640);
   const before = { bytes: readFileSync(join(root, "diag.sqlite")), mode: statSync(join(root, "diag.sqlite")).mode };
-  const again = Bun.spawn([process.execPath, main, "diagnose"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
+  const again = Bun.spawn([process.execPath, main, "diagnose", "--legacy"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
   const [againOut, , againExit] = await Promise.all([new Response(again.stdout).text(), new Response(again.stderr).text(), again.exited]);
   expect(againExit).toBe(0);
   expect(JSON.parse(againOut)).toMatchObject({ queue: { available: true } });

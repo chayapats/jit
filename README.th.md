@@ -1,4 +1,5 @@
-> **ทิศทาง S14 (ยืนยันแล้ว ยังไม่ส่งมอบ runtime):** Jit จะใช้ทีม Bot ถาวรและ computer ส่วนตัวบนเครื่องคุณ โดยไม่บังคับ Project เริ่ม MVP ด้วย research ผ่าน Parallel ส่วน coding จนพร้อมเปิด PR และ email/calendar ต้องทำในเฟสถัดไป ดู [spec](docs/specs/S14-bot-first-local-assistant.md), [design โดย Opus](docs/design/S14-bot-first-experience.md) และ [roadmap](docs/tickets/S14-bot-first-roadmap.md) ภาพและคำสั่งติดตั้งด้านล่างเป็น pilot แบบ Project ที่ใช้อยู่ปัจจุบัน
+> **S14 default (2026-11-01):** Bare source serve/setup and new installation select fresh S14 state; `--s14` is retained and `--legacy` explicitly selects the historical pilot below. Existing configs with omitted `runtime` stay legacy. #267 owner-Pi first reply, consistent legacy bytes and prior-release rollback remain pending. See [cutover](docs/runbooks/s14-default-cutover.md).
+
 
 <div align="center">
 
@@ -26,6 +27,24 @@
 </div>
 
 ---
+
+## S14 command reference
+
+```sh
+bun install --frozen-lockfile
+bun start                         # S14, http://localhost:3001; interactive one-time owner link
+bun run setup                     # optional local S14 owner provisioning
+./install.sh                      # jit-s14; /opt/jit-s14, /etc/jit-s14, /var/lib/jit-s14
+./install.sh --uninstall           # S14 units only; data retained
+./install.sh --legacy              # explicit legacy installation/repair
+./install.sh --legacy --uninstall  # legacy units only; S14 retained
+```
+
+S14 uses `JIT_S14_DATABASE=.local/s14/application.sqlite` and `JIT_S14_ORIGIN=http://localhost:3001`; it never maps `JIT_DATABASE`. Web handles owner password setup and provider device sign-in; no `JIT_S14_ROUTES` is required. Foreground/non-TTY capability rules, finite computers and recorded support limits are described in [README.md](README.md). Service commands select S14 with `--config /etc/jit-s14/service-config.json`. A config without `runtime` and its existing unit remain legacy.
+
+## Retained legacy pilot (explicit --legacy)
+
+The following historical descriptions, screenshots, project/scripted/Telegram/webhook/local-CLI features and configuration apply only to legacy. `bun run owner:reset` is legacy-only. S14 has no new reset or conversion flow.
 
 ## Jit คืออะไร
 
@@ -77,8 +96,8 @@ Jit อยู่ในช่วง **pilot** กับ owner คนเดีย�
 
 ```sh
 bun install --frozen-lockfile
-bun run setup        # สร้าง owner (รหัสผ่าน 12–256 ตัว รับจาก terminal แบบไม่แสดงตัวอักษร)
-bun start            # http://localhost:3000
+bun src/main.ts setup --legacy  # สร้าง owner (รหัสผ่าน 12–256 ตัว รับจาก terminal แบบไม่แสดงตัวอักษร)
+bun src/main.ts serve --legacy  # http://localhost:3000
 ```
 
 เปิด `http://localhost:3000` เข้าสู่ระบบ แล้วทำขั้นตอน **ตั้งจิต** เพื่อตั้ง persona ของจิต ค่าเริ่มต้นจะตอบด้วย scripted fixtures ถ้าต้องการใช้ model จริงให้ตั้ง `JIT_RUN_PORT=schway` โดยก่อนหน้านั้น user ที่รัน Jit ต้องมี Secret Service ที่ปลดล็อกแล้วและ login provider ใน Schway แล้ว (ดู [Pi live round](docs/runbooks/pi-live-round.md) Round B)

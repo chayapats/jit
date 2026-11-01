@@ -25,14 +25,17 @@ try {
     const link = installerOwnerLink(parseServiceConfig(JSON.parse(readFileSync(flags.get("--config")!, "utf8"))), command === "owner-link");
     if (link) process.stdout.write(link + "\n"); // Captured by installer; never sent to journald or another log.
   } else if (command === "apply" || command === "plan") {
+    const allowed = ["--dry-run", "--root", "--source", "--uninstall", "--s14", "--computer-slots", "--family", "--arch", "--ram-mb", "--cpus", "--disk-total", "--disk-free"];
+    if ([...flags].some(([key, value]) => !allowed.includes(key) || ["--s14", "--dry-run", "--uninstall"].includes(key) && !["true", "false"].includes(value))) throw new Error("invalid-installer-arguments");
+    const s14 = flags.get("--s14") !== "false";
     const dry = flags.get("--dry-run") === "true", root = flags.get("--root") ?? "/";
     const facts = dry ? JSON.parse(readFileSync(resolve(root, "host.json"), "utf8")) as HostFacts : {
       family: flags.get("--family")!, arch: flags.get("--arch")!, ramMb: Number(flags.get("--ram-mb")), cpus: Number(flags.get("--cpus")),
       diskBytes: Number(flags.get("--disk-total")), freeBytes: Number(flags.get("--disk-free")),
     };
     const defaults = installerDefaults(facts);
-    if (command === "plan") console.log(JSON.stringify({ contract: "ops.installer/v1", facts, defaults }));
-    else await runInstaller({ root, s14: flags.get("--s14") === "true", computerSlots: flags.has("--computer-slots") ? Number(flags.get("--computer-slots")) : undefined, dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
+    if (command === "plan") console.log(JSON.stringify({ contract: "ops.installer/v1", runtime: s14 ? "s14" : "legacy", facts, defaults }));
+    else await runInstaller({ root, s14, computerSlots: flags.has("--computer-slots") ? Number(flags.get("--computer-slots")) : undefined, dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
   } else throw new Error("invalid-installer-command");
 } catch (error) {
   console.error(error instanceof InstallerFailure ? error.message : "Failed at installer-input. Next: verify the release, arguments and fake-root host.json, then re-run.");

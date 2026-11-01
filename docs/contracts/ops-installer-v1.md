@@ -5,6 +5,16 @@ NFR-07 and NFR-09, using `ops.service_package/v1`, `app.owner_identity/v1` and
 `app.setup/v1`. Engineering decisions: ADR 0042. It does not certify real-host
 readiness, authorize model inference, or bypass `ops.schema_migrations/v1`.
 
+## 2026-11-01 — Default selection (CUT14-01)
+
+Bare shell installation and internal `apply`/`runInstaller` omission now select the existing independent S14 layout below. `--s14` remains an alias; `--legacy` selects the retained INST01 layout. Shell selectors are exclusive and single-use: duplicates/conflicts refuse at `arguments` before detection, consent, host commands or mutation. Resolve once and forward the explicit selection through source/download bootstrap and sudo re-exec. Internal `--s14 true|false` retains its boolean protocol; `InstallerOptions.s14: false` explicitly preserves legacy callers. Low-level home/schema helper defaults are unchanged.
+
+Bare `--uninstall` targets only S14. `--legacy --uninstall` targets only legacy. Both retain state, sidecars, identity, config, keyring, releases, backups and S14 disk images/mount units. Neither discovers or selects another installation. Persisted `ServiceConfig.runtime` omission remains legacy forever under this contract; never add `runtime: "s14"` to an existing legacy config. An incompatible config at the selected S14 path refuses rather than being converted.
+
+S14 remains `jit-s14`, `/opt/jit-s14`, `/etc/jit-s14`, `/var/lib/jit-s14`, loopback 3001. All trust, finite resource/disk commitment, image preparation, controlling-terminal/private fd 3, health and recovery contracts below are retained. The original legacy profile below is selected explicitly with `--legacy`. ADR 0061 refines historical ADRs 0042/0049/0059 without changing their attributed evidence. Requirements: S14-AC01/11/14; FR-01/19/22/23/25; NFR-06/08/12/14.
+
+#256 closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`. Actual owner-Pi first reply, consistent legacy-byte proof and prior-release rollback remain #267 acceptance work; deterministic fixtures do not close it.
+
 ## Entry points and consent
 
 `curl -fsSL <release>/install.sh | sh` or `./install.sh` from an extracted release
@@ -39,7 +49,7 @@ only inside that root, rejects symlink parents, never invokes sudo/systemctl,
 a package manager or Podman, and creates no setup credential. It is a scripted
 fixture rather than live host evidence.
 
-## Provisioning and resources
+## Retained explicit legacy profile: provisioning and resources
 
 The root bootstrap performs approved administrative steps from its root-owned
 snapshot with a minimal environment and protected cwd. It uses the existing
@@ -216,15 +226,15 @@ substitute a dry run or desktop suite for real install/reboot/account evidence.
 
 ## S14 bootstrap seam (UX14-01)
 
-`issueOwnerSetupLink` now accepts the minimal `OwnerSetupStore` implemented by both `TransactionStore` and `S14Store`; its capability security and private one-time delivery contract are unchanged. An S14 installation must invoke it against the selected fresh S14 database and display the returned link once, then password setup and provider device sign-in proceed through Web commands without another owner shell command. No public Web route may mint that capability. The existing production installer/service still selects the legacy runtime: switching it to S14 is a later explicit cutover, not an implicit database conversion in this logic slice. Legacy stores remain byte-preserving refusals before S14 locks or workers, with the refusal page enabled by default for browser serve.
+`issueOwnerSetupLink` now accepts the minimal `OwnerSetupStore` implemented by both `TransactionStore` and `S14Store`; its capability security and private one-time delivery contract are unchanged. An S14 installation must invoke it against the selected fresh S14 database and display the returned link once, then password setup and provider device sign-in proceed through Web commands without another owner shell command. No public Web route may mint that capability. The default installer now selects the separate S14 runtime; existing omitted-runtime configs and explicit `--legacy` retain the legacy profile. This never converts a database. Legacy stores remain byte-preserving refusals before S14 locks or workers, with the refusal page enabled by default for browser serve.
 
 
 UX14-01 supplies the trusted S14 CLI for CUT14-01 (#267): as the service identity run `<trusted-bun> <trusted-release>/src/main.ts owner-link --s14 --output-fd 3` with the exact service `JIT_S14_DATABASE` and browser `JIT_S14_ORIGIN`. Supply fd 3 as a dedicated inherited private pipe; capture/validate it privately and display once on the operator terminal after health. Stdout is empty; existing owner means no link. The CLI refuses regular files and stdout/stderr aliases, uses writer serialization alongside the service runtime lock, and keeps the same hashed/expiring/single-use capability. Do not call legacy `installerOwnerLink` for an S14 store. Non-TTY installer/journald/log output must never receive a capability. The detailed delivery and failure contract is in [s14-foundation-http.md](s14-foundation-http.md#ux14-01-remaining-gap-integration-2026-10-31).
 
-## CUT14-01 opt-in installer/service delivery
+## CUT14-01 independent S14 installer/service delivery
 
-`install.sh --s14` selects an independent `runtime: "s14"` installation;
-omission retains legacy behavior. Its identity is `jit-s14` with home
+`install.sh` (or its retained `--s14` alias) selects an independent `runtime: "s14"` installation;
+`--legacy` retains legacy behavior. Its identity is `jit-s14` with home
 `/var/lib/jit-s14`, config `/etc/jit-s14/service-config.json`, Bun/releases/current
 under `/opt/jit-s14`, unit `jit-s14.service`, journal namespace `jit-s14`, database
 `state/application.sqlite` and loopback port 3001. The legacy identity, paths,
@@ -261,6 +271,5 @@ and redirects cannot count as S14 readiness.
 
 Compatible-code upgrade/rollback uses the S14 service-package contract below;
 schema changes remain owner-authenticated staged OPS14 maintenance, never
-implicit installer migration. This delivers only the installer/service half of
-#267. Default flip, host installation and all #256 evidence remain separate.
+implicit installer migration. This delivers the installer/service and default-selection code for #267. Owner-Pi installation/first reply, consistent byte-preservation and prior-release rollback remain separate acceptance work. #256 evidence is complete within its recorded scope.
 Requirements: S14-AC01/11/14; NFR-06/08/12/14.

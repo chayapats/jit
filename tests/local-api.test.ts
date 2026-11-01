@@ -320,7 +320,7 @@ test("the Web settings form turns the API on and off with session, Origin and CS
 
 /** Runs the real CLI in a subprocess against the in-process listener. */
 async function cli(f: Fixture, args: string[]) {
-  const child = Bun.spawn(["bun", "src/main.ts", ...args], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe", stdin: "ignore",
+  const child = Bun.spawn(["bun", "src/main.ts", args[0]!, "--legacy", ...args.slice(1)], { cwd: join(import.meta.dir, ".."), stdout: "pipe", stderr: "pipe", stdin: "ignore",
     env: { ...process.env, JIT_DATABASE: f.path, LANG: "en_US.UTF-8", LC_ALL: "", LC_MESSAGES: "" } });
   const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { stdout, stderr, code };

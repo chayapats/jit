@@ -706,11 +706,11 @@ test("serve refuses an older installation without migrating it, and the offline 
   }
   historical(path, 20);
   const env = { ...process.env, JIT_DATABASE: path, JIT_RUN_PORT: "scripted" };
-  const serve = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "serve"], { env, stdout: "pipe", stderr: "pipe" });
+  const serve = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "serve", "--legacy"], { env, stdout: "pipe", stderr: "pipe" });
   expect(await serve.exited).toBe(1);
   expect(await new Response(serve.stderr).text()).toContain("Upgrade required: installation schema 20");
   expect(inspectStoreSchema(path)).toBe(20);
-  const cli = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "upgrade", "--password-stdin"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const cli = Bun.spawn(["bun", join(import.meta.dir, "..", "src", "main.ts"), "upgrade", "--legacy", "--password-stdin"], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   cli.stdin.write(`${password}\n`); cli.stdin.end();
   expect(await cli.exited).toBe(1);
   const out = JSON.parse((await new Response(cli.stdout).text()).trim()) as { error: string; upgrade: UpgradeJournal };

@@ -5,7 +5,7 @@ set +x
 umask 077
 
 step=arguments
-next='use install.sh [--yes] [--s14] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
+next='use install.sh [--yes] [--s14 | --legacy] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
 scratch=
 reported=false
 # Invoked by the EXIT trap through finish.
@@ -24,9 +24,9 @@ trap 'failed' HUP INT TERM
 
 yes=false
 uninstall=false
-s14=false
+s14=true
+runtime_selected=false
 computer_slots=8
-name=jit
 dry=false
 root=/
 source_dir=
@@ -34,7 +34,10 @@ release_url=https://github.com/chayapats/jit/releases/latest/download
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) yes=true ;;
-    --s14) s14=true; name=jit-s14 ;;
+    --s14|--legacy)
+      [ "$runtime_selected" = false ] || failed
+      runtime_selected=true
+      if [ "$1" = --s14 ]; then s14=true; else s14=false; fi ;;
     --computer-slots) shift; [ "$#" -gt 0 ] || failed; computer_slots=$1 ;;
     --uninstall) uninstall=true ;;
     --dry-run) dry=true ;;
@@ -44,6 +47,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+if [ "$s14" = true ]; then name=jit-s14; else name=jit; fi
 case "$computer_slots" in *[!0-9]*|'') failed ;; esac
 [ "$computer_slots" -ge 8 ] && [ "$computer_slots" -le 1024 ] || failed
 case "$root" in /*) ;; *) failed ;; esac
@@ -171,7 +175,9 @@ if [ "$(id -u)" != 0 ]; then
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
   fi
   set -- --yes
-  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"; fi
+  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"
+  else set -- "$@" --legacy
+  fi
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
   if [ "$uninstall" = true ]; then set -- "$@" --uninstall; fi
   input_owner=$(id -u)

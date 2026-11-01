@@ -3,7 +3,7 @@
 Tracker: https://github.com/chayapats/jit/issues/244
 Documentation delivery: https://github.com/chayapats/jit/issues/245
 
-Status: owner-confirmed product direction, 2026-10-30. Engineering choices below are proposed, not implemented. The running build still implements the project-centric S09–S13 model. This document is the authority for the new direction where earlier specs conflict. Existing FR/NFR identifiers are retained in the [PRD](../product/02-prd.md).
+Status: owner-confirmed product direction, 2026-10-30. The original engineering proposals below retain their recorded status; accepted scoped implementation ADRs refine them. New unconfigured source runs/installations default to S14 under ADR 0061, retaining the project-centric S09–S13 runtime explicitly and preserving old service configs. #267 owner-host cutover acceptance remains separate. This document is the authority for the new direction where earlier specs conflict. Existing FR/NFR identifiers are retained in the [PRD](../product/02-prd.md).
 
 ## Problem and intended outcome
 

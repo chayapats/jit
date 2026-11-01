@@ -9,7 +9,7 @@
   "scripts": {
     "start": "bun src/main.ts serve",
     "setup": "bun src/main.ts setup",
-    "owner:reset": "bun src/main.ts reset-owner",
+    "owner:reset": "bun src/main.ts reset-owner --legacy",
     "host:evidence": "bun src/evidence-cli.ts",
     "host:probe": "bun src/probe-cli.ts",
     "ops:drill": "bun src/ops-cli.ts",

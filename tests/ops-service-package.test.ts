@@ -320,7 +320,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
   expect(readFileSync(join(l.dirs.unit, "jit.service"), "utf8")).not.toContain("FIXTURE_TOKEN_VALUE");
   // Owner provisioning is a trusted local step with the unit's environment, never part of service start.
   const env = Object.fromEntries([...readFileSync(join(l.dirs.unit, "jit.service"), "utf8").matchAll(/^Environment=([A-Z_]+)=(.*)$/gm)].map(m => [m[1]!, m[2]!]));
-  const setup = Bun.spawn([process.execPath, join(l.service.executablePath, "src", "main.ts"), "setup", "--password-stdin"],
+  const setup = Bun.spawn([process.execPath, join(l.service.executablePath, "src", "main.ts"), "setup", "--legacy", "--password-stdin"],
     { cwd: l.dirs.work, env: { ...env, PATH: process.env.PATH ?? "" }, stdin: new TextEncoder().encode(password + "\n"), stdout: "pipe", stderr: "pipe" });
   expect(await setup.exited).toBe(0);
   expect((await cli(["start"], fake, l)).exitCode).toBe(0);
