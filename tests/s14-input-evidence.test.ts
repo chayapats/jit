@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CdpClient } from "../src/exec/cdp-stream";
-import type { CommandRunner } from "../src/exec/podman-runtime";
+import { CdpClient, cdpCommandMs } from "../src/exec/cdp-stream";
+import type { CommandResult, CommandRunner } from "../src/exec/podman-runtime";
 import { S14Store } from "../src/s14/store";
 import { InputEvidenceTransport, inputEvidenceBounds, type EvidenceTimer } from "../ops/box/input-evidence-transport";
 import { InputEvidenceProcesses, inputEvidenceOverride, requireUnusedInputEvidencePool } from "../ops/box/input-evidence-host";
@@ -20,10 +20,11 @@ function clock() {
   let now = 0;
   const pending = new Map<() => void, number>();
   const timer: EvidenceTimer = (callback, ms) => { pending.set(callback, now + ms); return () => { pending.delete(callback); }; };
-  return { timer, advance(ms: number) { now += ms; for (const [callback, due] of [...pending]) if (due <= now) { pending.delete(callback); callback(); } }, pending };
+  return { timer, now: () => now,
+    advance(ms: number, callbacks = true) { now += ms; if (callbacks) for (const [callback, due] of [...pending]) if (due <= now) { pending.delete(callback); callback(); } }, pending };
 }
 function protocol(auto = false) {
-  const time = clock(), transport = new InputEvidenceTransport(time.timer), pipe = inputEvidencePipe(auto);
+  const time = clock(), transport = new InputEvidenceTransport(time.timer, time.now), pipe = inputEvidencePipe(auto);
   const stream = transport.streams(() => pipe.stream)(argv, {}), client = new CdpClient(stream);
   cleanups.push(async () => { transport.close(); await transport.join(); });
   return { time, transport, pipe, stream, client };
@@ -43,7 +44,7 @@ test("only an actually received reply reaches a latch; coalesced replies preserv
   const f = protocol(), gate = f.transport.arm("Input.dispatchMouseEvent");
   let settled = false;
   const first = f.client.send("Input.dispatchMouseEvent", { type: "mouseWheel" }).then(() => { settled = true; });
-  expect(gate.state).toBe("armed"); expect(() => gate.release()).toThrow("input_evidence_reply_not_received");
+  expect(gate.state).toBe("dispatched"); expect(() => gate.release()).toThrow("input_evidence_reply_not_received");
   const second = f.client.send("Input.dispatchKeyEvent", { type: "keyDown" });
   const bytes = Buffer.concat([cdpFrame({ id: 1, result: {} }), cdpFrame({ id: 2, result: {} })]);
   f.pipe.emit(bytes.subarray(0, 7)); f.pipe.emit(bytes.subarray(7));
@@ -66,8 +67,67 @@ test("output events and replies pass through byte-for-byte without copying bodie
   expect(JSON.stringify(transport.trace)).not.toMatch(/never-retain|opaque-body|fixtureEvent/);
 });
 
+test("lazy getTargets beyond 4500 ms leaves the future attach its own unchanged acquisition-plus-hold deadline", async () => {
+  const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  expect(cdpCommandMs).toBe(15000); expect(inputEvidenceBounds.gateMs).toBe(4500);
+  const ready = f.client.send("Target.getTargets");
+  f.time.advance(5841);
+  expect(f.time.pending.size).toBe(0); expect(f.pipe.closed).toBe(false);
+  f.pipe.emit(cdpFrame({ id: 1, result: { targetInfos: [] } })); await ready;
+  const attach = f.client.send("Target.attachToTarget");
+  f.time.advance(1000);
+  f.pipe.emit(cdpFrame({ id: 2, result: { sessionId: "fixture" } })); await gate.reached;
+  f.time.advance(3499); gate.release(); await attach;
+  expect(f.time.pending.size).toBe(0); expect(f.transport.failure).toBeNull();
+  expect(f.transport.trace.map(t => `${t.method}/${t.stage}`)).toEqual([
+    "Target.getTargets/write", "Target.getTargets/received", "Target.getTargets/delivered",
+    "Target.attachToTarget/write", "Target.attachToTarget/received", "Target.attachToTarget/delivered",
+  ]);
+});
+
+test.each([false, true])("pre-arm and other pipe/id replies cannot steal or rebind the next matching dispatch (early receipt %s)", async early => {
+  const f = protocol(), old = f.client.send("Target.attachToTarget");
+  const gate = f.transport.arm("Target.attachToTarget");
+  if (early) { f.pipe.emit(cdpFrame({ id: 1, result: {} })); await old; expect(gate.state).toBe("prepared"); }
+  const exact = f.client.send("Target.attachToTarget"), later = f.client.send("Target.attachToTarget");
+  const other = inputEvidencePipe(), otherClient = new CdpClient(f.transport.streams(() => other.stream)(argv, {}));
+  const otherFirst = otherClient.send("Target.attachToTarget"), otherSameId = otherClient.send("Target.attachToTarget");
+  if (!early) { f.pipe.emit(cdpFrame({ id: 1, result: {} })); await old; }
+  other.emit(Buffer.concat([cdpFrame({ id: 2, result: {} }), cdpFrame({ id: 1, result: {} })]));
+  await Promise.all([otherFirst, otherSameId]);
+  f.pipe.emit(cdpFrame({ id: 3, result: {} })); await later;
+  expect(gate.state).toBe("dispatched"); expect(f.transport.held).toBe(0);
+  const bytes = cdpFrame({ id: 2, result: { sessionId: "fixture" } });
+  f.pipe.emit(bytes.subarray(0, 8)); f.pipe.emit(bytes.subarray(8)); await gate.reached;
+  expect(f.transport.trace.filter(t => t.pipe === 1 && t.id === 2).map(t => t.stage)).toEqual(["write", "received"]);
+  gate.release(); await exact;
+  expect(f.time.pending.size).toBe(0); expect(f.transport.failure).toBeNull();
+});
+
+test("a duplicate older reply fails closed without capturing the selected future command", async () => {
+  const f = protocol(), old = f.client.send("Target.attachToTarget");
+  f.pipe.emit(cdpFrame({ id: 1, result: {} })); await old;
+  const gate = f.transport.arm("Target.attachToTarget"), exact = f.client.send("Target.attachToTarget").catch(error => error);
+  f.pipe.emit(cdpFrame({ id: 1, result: {} }));
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+  expect((await exact).code).toBe("cdp_closed");
+  expect(f.transport.failure).toBe("input_evidence_reply_failed"); expect(f.time.pending.size).toBe(0);
+  expect(f.transport.trace.some(t => t.id === 2 && t.stage === "received")).toBe(false);
+});
+
+test.each([false, true])("closing %s before matching dispatch creates no gate timer and promptly settles preparation", async pipeClose => {
+  const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  if (pipeClose) f.stream.close(); else f.transport.close();
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+  f.time.advance(20000);
+  expect(f.time.pending.size).toBe(0); expect(f.pipe.writes).toHaveLength(0);
+  expect(() => f.stream.write(cdpFrame({ id: 1, method: "Target.attachToTarget" }))).toThrow();
+  expect(f.transport.failure).toBe(pipeClose ? "input_evidence_pipe_closed" : null);
+});
+
 test.each([false, true])("fake-clock gate timeout before/after receipt (%s) closes the actual pipe and settles the client", async received => {
   const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  f.time.advance(6000);
   const result = f.client.send("Target.attachToTarget").catch(error => error);
   if (received) { f.pipe.emit(cdpFrame({ id: 1, result: { sessionId: "fixture" } })); await gate.reached; }
   f.time.advance(inputEvidenceBounds.gateMs);
@@ -75,6 +135,19 @@ test.each([false, true])("fake-clock gate timeout before/after receipt (%s) clos
   expect((await result).code).toBe("cdp_closed"); expect(f.time.pending.size).toBe(0);
   gate.release(); expect(gate.state).toBe("closed");
   await f.transport.join();
+});
+
+test.each([false, true])("delayed timer callbacks still enforce 4500 ms from dispatch at receipt/release (%s)", async received => {
+  const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  f.time.advance(6000);
+  const reply = f.client.send("Target.attachToTarget").catch(error => error);
+  if (received) { f.time.advance(1000); f.pipe.emit(cdpFrame({ id: 1, result: {} })); await gate.reached; }
+  f.time.advance(received ? 3500 : 4500, false);
+  if (received) expect(() => gate.release()).toThrow("input_evidence_gate_timeout");
+  else f.pipe.emit(cdpFrame({ id: 1, result: {} }));
+  expect((await reply).code).toBe("cdp_closed");
+  expect(f.transport.failure).toBe("input_evidence_gate_timeout"); expect(f.time.pending.size).toBe(0);
+  expect(f.transport.trace.some(t => t.stage === "delivered")).toBe(false);
 });
 
 test("peer close of an actually held reply closes the latch immediately and a stale release cannot replay it", async () => {
@@ -142,15 +215,98 @@ test("aggregate byte and trace limits close the fixture pipe without retaining l
   expect(g.transport.failure).not.toBeNull();
 });
 
-test.each(["error", "unmatched", "malformed", "truncated", "oversize"])("failed %s response closes transport without fabricating success", async kind => {
-  const f = protocol(), result = f.client.send("Target.attachToTarget").catch(error => error);
+test.each(["error", "unmatched", "malformed", "truncated", "oversize", "EOF", "read", "exit"].flatMap(kind => [false, true].map(matched => [kind, matched] as const)))("failed %s response settles a prepared/matched gate (%s)", async (kind, matched) => {
+  const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  const result = f.client.send(matched ? "Target.attachToTarget" : "Target.getTargets").catch(error => error);
   if (kind === "error") f.pipe.emit(cdpFrame({ id: 1, error: { code: -1, message: "private error" } }));
   if (kind === "unmatched") f.pipe.emit(cdpFrame({ id: 99, result: {} }));
   if (kind === "malformed") f.pipe.emit(new TextEncoder().encode("bad\0"));
   if (kind === "truncated") { f.pipe.emit(new TextEncoder().encode('{"id":')); f.pipe.stream.close(); }
   if (kind === "oversize") f.pipe.emit(new Uint8Array(inputEvidenceBounds.frameBytes + 1).fill(1));
+  if (kind === "EOF") f.pipe.stream.close();
+  if (kind === "read") f.pipe.failRead();
+  if (kind === "exit") f.pipe.failExit();
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
   expect((await result).code).toBe("cdp_closed"); await f.transport.join();
+  expect(f.transport.failure).not.toBeNull(); expect(f.time.pending.size).toBe(0);
   expect(f.transport.trace.filter(t => t.stage === "delivered")).toHaveLength(0);
+});
+
+test("a stream-open throw settles prepared gates before any write or timer", async () => {
+  const time = clock(), transport = new InputEvidenceTransport(time.timer, time.now), gate = transport.arm("Target.attachToTarget");
+  expect(() => transport.streams(() => { throw new Error("fixture start failed"); })(argv, {})).toThrow("fixture start failed");
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed"); await transport.join();
+  expect(transport.failure).toBe("input_evidence_pipe_failed"); expect(time.pending.size).toBe(0);
+  expect(transport.trace).toHaveLength(0);
+});
+
+test.each([false, true])("a raw write throw settles a prepared/matched gate (%s) and retains the first failure", async matched => {
+  const f = protocol(), gate = f.transport.arm("Target.attachToTarget");
+  f.pipe.stream.write = () => { throw new Error("fixture write failed"); };
+  const result = f.client.send(matched ? "Target.attachToTarget" : "Target.getTargets").catch(error => error);
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+  expect((await result).code).toBe("cdp_closed"); await f.transport.join();
+  f.transport.abort("later_failure");
+  expect(f.transport.failure).toBe("input_evidence_dispatch_failed"); expect(f.time.pending.size).toBe(0);
+});
+
+const runnerArgv = ["exec", "-i", "fixture", "/opt/jit/runner"];
+const runnerRequest = { stdin: new TextEncoder().encode('{"op":"spawn"}'), timeoutMs: 1000 };
+const runnerSuccess = (): CommandResult => ({ exitCode: 0, stdout: new TextEncoder().encode('{"v":1,"ok":true,"result":{"exitCode":0,"timedOut":false,"stdout":"eA=="}}'), stderr: new Uint8Array() });
+
+test.each(["start", "reject", "exit", "EOF", "malformed", "error", "process"])("runner %s failure settles both matched and still-prepared gates and permits cleanup", async kind => {
+  const time = clock(), transport = new InputEvidenceTransport(time.timer, time.now);
+  const gate = transport.arm("runner.spawn"), prepared = transport.arm("Target.attachToTarget");
+  const calls: string[] = [];
+  const actual: CommandRunner = (argv) => {
+    calls.push(argv[0]!);
+    if (argv[0] === "rm") return Promise.resolve(runnerSuccess());
+    if (kind === "start") throw new Error("fixture runner start failed");
+    if (kind === "reject") return Promise.reject(new Error("fixture runner rejected"));
+    const result = runnerSuccess();
+    if (kind === "exit") result.exitCode = 1;
+    if (kind === "EOF") result.stdout = new Uint8Array();
+    if (kind === "malformed") result.stdout = new TextEncoder().encode("bad");
+    if (kind === "error") result.stdout = new TextEncoder().encode('{"v":1,"ok":false}');
+    if (kind === "process") result.stdout = new TextEncoder().encode('{"v":1,"ok":true,"result":{"exitCode":1}}');
+    return Promise.resolve(result);
+  };
+  const run = transport.commands(actual), result = run(runnerArgv, runnerRequest).catch(error => error);
+  await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+  await expect(prepared.reached).rejects.toThrow("input_evidence_gate_closed"); await result; await transport.join();
+  expect(transport.failure).toBe("input_evidence_runner_failed"); expect(time.pending.size).toBe(0);
+  await run(["rm", "--force", "--ignore", "exact-fixture-name"], { timeoutMs: 1000 });
+  expect(calls).toEqual(["exec", "rm"]);
+});
+
+test("an earlier runner result cannot capture the next spawn, and abort joins the actual command lifetime", async () => {
+  const time = clock(), transport = new InputEvidenceTransport(time.timer, time.now);
+  const first = Promise.withResolvers<CommandResult>(), second = Promise.withResolvers<CommandResult>();
+  let calls = 0;
+  const run = transport.commands(() => (++calls === 1 ? first : second).promise);
+  const old = run(runnerArgv, runnerRequest), gate = transport.arm("runner.spawn");
+  time.advance(6000);
+  const exact = run(runnerArgv, runnerRequest).catch(error => error);
+  first.resolve(runnerSuccess()); await old;
+  expect(gate.state).toBe("dispatched"); expect(transport.held).toBe(0);
+  time.advance(4500); await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+  let joined = false;
+  const join = transport.join().then(() => { joined = true; }); await Promise.resolve();
+  expect(joined).toBe(false);
+  second.resolve(runnerSuccess()); expect((await exact).code).toBe("input_evidence_gate_timeout"); await join;
+  expect(transport.failure).toBe("input_evidence_gate_timeout"); expect(time.pending.size).toBe(0);
+});
+
+test("closing transport joins the actual stream exit rather than just its latch/read settlement", async () => {
+  const time = clock(), transport = new InputEvidenceTransport(time.timer, time.now), pipe = inputEvidencePipe();
+  const exit = Promise.withResolvers<number>();
+  const client = new CdpClient(transport.streams(() => ({ ...pipe.stream, exited: exit.promise }))(argv, {}));
+  const gate = transport.arm("Target.attachToTarget"), reply = client.send("Target.getTargets").catch(error => error);
+  transport.close(); await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed"); await reply;
+  let joined = false;
+  const join = transport.join().then(() => { joined = true; }); await Promise.resolve();
+  expect(joined).toBe(false); exit.resolve(-1); await join;
+  expect(time.pending.size).toBe(0);
 });
 
 test("forbidden dispatch never reaches the underlying writer or opens extra raw-CDP/control streams", async () => {
@@ -177,6 +333,37 @@ test("two received latches maximum; interruption releases them, joins actual run
   await f.transport.join(); expect(f.transport.held).toBe(0); expect(f.time.pending.size).toBe(0);
   await wrapped(["rm", "--force", "--ignore", "exact-fixture-name"], { timeoutMs: 1000 }); expect(actual).toBe(2);
   expect(() => wrapped(["exec", "fixture", "/opt/jit/runner"], { timeoutMs: 1000 })).toThrow("input_evidence_interrupted");
+});
+
+test("closed prepared gates cannot select later writes and the total gate bound remains 16", async () => {
+  const f = protocol(true);
+  for (let i = 0; i < 16; i++) {
+    const gate = f.transport.arm("Target.attachToTarget"); gate.close();
+    await expect(gate.reached).rejects.toThrow("input_evidence_gate_closed");
+    await f.client.send("Target.attachToTarget");
+  }
+  expect(f.time.pending.size).toBe(0); expect(f.transport.held).toBe(0);
+  expect(() => f.transport.arm("Target.attachToTarget")).toThrow("input_evidence_gate_capacity");
+  expect(f.pipe.writes).toHaveLength(16);
+});
+
+test.each([false, true])("case waiter ends when its operation settles without ever dispatching the prepared match (%s)", async rejected => {
+  const directory = root(), time = clock(), transport = new InputEvidenceTransport(time.timer, time.now);
+  const f = inputEvidenceRuntime(join(directory, "pool"), transport), store = new S14Store(join(directory, "state/application.sqlite"));
+  cleanups.push(async () => { transport.close(); await transport.join(); store.close(); });
+  const app = inputEvidenceApplication(store, f.runtime);
+  await app.provisionOwner("fixture-password-not-live"); const actor = app.authenticate(await app.login("fixture-password-not-live")).actor;
+  await app.recovery.boot({ async open() { throw new Error("native forbidden"); } });
+  const setup = app.execute(actor, { kind: "setup", requestId: "fixture_setup", expectedRevision: 0,
+    payload: { ownerName: "Fixture", language: "th", routeId: "evidence", capabilities: { tools: ["computer", "effect_publish"], resources: [] } } });
+  app.computers.agentInput = async () => { if (rejected) throw new Error("fixture pre-dispatch authority failure"); };
+  const results: InputEvidenceResults = { transportKernelFacts: [], controlledAssertions: [], unrun: ["physical_transport"] };
+  await expect(runInputEvidenceCases(app, actor, setup.conversation!.id, transport, { async remember() {}, async absent() {} }, results))
+    .rejects.toThrow(rejected ? "fixture pre-dispatch authority failure" : "input_evidence_reply_not_received");
+  expect(time.pending.size).toBe(0); expect(transport.trace).toHaveLength(0);
+  expect(transport.failure).toBe("input_evidence_case_failed");
+  await cleanupInputEvidence(app, actor, join(directory, "pool"), async () => {});
+  expect(f.infos.size).toBe(0);
 });
 
 test("four synthetic cases exercise real application and BotPodmanRuntime guards over scripted protocols only", async () => {

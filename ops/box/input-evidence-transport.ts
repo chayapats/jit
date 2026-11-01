@@ -12,30 +12,47 @@ export type EvidenceTimer = (callback: () => void, ms: number) => () => void;
 const realTimer: EvidenceTimer = (callback, ms) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); };
 const fail = (code: string): never => { throw new AppError(code); };
 
-/** One bounded latch can hold only an actual, successfully received response, never a fabricated ACK. */
+/**
+ * Prepares the next matching dispatch, then binds once to its exact pipe/id. Its unchanged 4500 ms monotonic
+ * deadline covers acquisition plus hold from that dispatch, not arm-to-release or unrelated lazy initialization.
+ * Only that command's real successful reply can be held; early failure/close settles the prepared gate too.
+ */
 export class ReceivedReplyGate {
   readonly #reached = Promise.withResolvers<void>();
   readonly #released = Promise.withResolvers<void>();
   readonly reached = this.#reached.promise;
   readonly released = this.#released.promise;
-  readonly #cancel: () => void;
-  readonly #deadline: number;
-  #state: "armed" | "held" | "released" | "closed" = "armed";
-  constructor(readonly method: string, timer: EvidenceTimer, readonly now: () => number, readonly onTimeout: () => void) {
+  #cancel?: () => void;
+  #deadline?: number;
+  #binding?: { pipe: number; id: number };
+  #state: "prepared" | "dispatched" | "held" | "released" | "closed" = "prepared";
+  constructor(readonly method: string, readonly timer: EvidenceTimer, readonly now: () => number, readonly onTimeout: () => void) {
     // Register rejection handling even when dispatch fails before the caller awaits reached.
     void this.reached.catch(() => {});
-    this.#deadline = now() + inputEvidenceBounds.gateMs;
-    this.#cancel = timer(() => this.expire(), inputEvidenceBounds.gateMs);
   }
-  private expire(): void { this.close(); this.onTimeout(); }
+  private expire(): void {
+    if (this.#state !== "dispatched" && this.#state !== "held") return;
+    this.close(); this.onTimeout();
+  }
   private beforeDeadline(): void {
     // A slow synchronous authority commit may delay JS timers. It must never turn an overdue hold into a pass.
-    if (this.now() >= this.#deadline) { this.expire(); fail("input_evidence_gate_timeout"); }
+    if (this.#deadline !== undefined && this.now() >= this.#deadline) { this.expire(); fail("input_evidence_gate_timeout"); }
   }
   get state() { return this.#state; }
-  /** Called by the pass-through reader after the real response has arrived. */
-  capture(): void {
-    if (this.#state !== "armed") fail("input_evidence_gate_stale");
+  /** Binds synchronously just before forwarding the matching command; no later dispatch can rebind it. */
+  dispatch(pipe: number, id: number): void {
+    if (this.#state !== "prepared") fail("input_evidence_gate_stale");
+    this.#binding = { pipe, id }; this.#state = "dispatched";
+    this.#deadline = this.now() + inputEvidenceBounds.gateMs;
+    this.#cancel = this.timer(() => this.expire(), inputEvidenceBounds.gateMs);
+  }
+  /** Exact routing identity, independent of method equality and reply arrival order. */
+  matches(pipe: number, id: number): boolean {
+    return this.#state === "dispatched" && this.#binding?.pipe === pipe && this.#binding.id === id;
+  }
+  /** Called by the pass-through reader only after the exact bound real response has arrived. */
+  capture(pipe: number, id: number): void {
+    if (!this.matches(pipe, id)) fail("input_evidence_gate_stale");
     this.beforeDeadline();
     this.#state = "held"; this.#reached.resolve();
   }
@@ -44,12 +61,12 @@ export class ReceivedReplyGate {
     if (this.#state === "released" || this.#state === "closed") return;
     if (this.#state !== "held") fail("input_evidence_reply_not_received");
     this.beforeDeadline();
-    this.#state = "released"; this.#cancel(); this.#released.resolve();
+    this.#state = "released"; this.#cancel?.(); this.#released.resolve();
   }
   /** Failure/interruption closes the latch and unblocks its reader; it never synthesizes a response. */
   close(): void {
     if (this.#state === "closed" || this.#state === "released") return;
-    this.#state = "closed"; this.#cancel();
+    this.#state = "closed"; this.#cancel?.();
     this.#reached.reject(new AppError("input_evidence_gate_closed")); this.#released.resolve();
   }
 }
@@ -79,7 +96,11 @@ function message(frame: Uint8Array): Record<string, unknown> {
 }
 const methods = new Set(["Target.getTargets", "Target.attachToTarget", "Input.dispatchMouseEvent", "Input.dispatchKeyEvent"]);
 
-/** Bounded observation/latches around actual public runners; writes remain synchronous, byte-for-byte pass-through. */
+/**
+ * Bounded observation/latches around actual public runners; writes stay synchronous and byte-for-byte.
+ * Prepared gates do not time unrelated getTargets (the runtime still allows 15 s). Normal command failures,
+ * work bounds, 180 s admission and the outer 240 s cap still bound preparation; 30 s runtime startup is unchanged.
+ */
 export class InputEvidenceTransport {
   readonly trace: InputTrace[] = [];
   readonly #gates = new Set<ReceivedReplyGate>();
@@ -94,10 +115,10 @@ export class InputEvidenceTransport {
   constructor(readonly timer: EvidenceTimer = realTimer, readonly now: () => number = () => performance.now()) {}
   get failure() { return this.#failure; }
   get held() { return [...this.#gates].filter(g => g.state === "held").length; }
-  /** Arms the next matching real reply; at most two latches may be armed/held together. */
+  /** Prepares the next future matching dispatch; at most two prepared/dispatched/held gates and 16 total. */
   arm(method: "Target.attachToTarget" | "Input.dispatchMouseEvent" | "runner.spawn"): ReceivedReplyGate {
     this.check();
-    const active = [...this.#gates].filter(g => ["armed", "held"].includes(g.state));
+    const active = [...this.#gates].filter(g => ["prepared", "dispatched", "held"].includes(g.state));
     if (active.length >= 2 || this.#gates.size >= 16 || active.some(g => g.method === method)) fail("input_evidence_gate_capacity");
     const gate = new ReceivedReplyGate(method, this.timer, this.now, () => this.abort("input_evidence_gate_timeout"));
     this.#gates.add(gate); return gate;
@@ -111,26 +132,34 @@ export class InputEvidenceTransport {
     if (this.trace.length >= inputEvidenceBounds.traceEntries) fail("input_evidence_trace_bound");
     this.trace.push({ order: this.trace.length + 1, pipe, stage, id, method });
   }
+  private dispatched(pipe: number, id: number, method: string): void {
+    this.record(pipe, "write", id, method);
+    [...this.#gates].find(g => g.method === method && g.state === "prepared")?.dispatch(pipe, id);
+  }
   private async received(pipe: number, id: number, method: string): Promise<void> {
     this.record(pipe, "received", id, method);
-    const gate = [...this.#gates].find(g => g.method === method && g.state === "armed");
-    if (gate) { gate.capture(); await gate.released; }
+    const gate = [...this.#gates].find(g => g.matches(pipe, id));
+    if (gate) { gate.capture(pipe, id); await gate.released; }
     this.check(); this.record(pipe, "delivered", id, method);
   }
   /** Accepts only the runtime's exact protected-browser exec, with no extra environment or raw-CDP sender. */
   streams(actual: StreamRunner): StreamRunner {
     return (argv, extra) => {
-      this.check();
-      if (argv.length !== 4 || argv[0] !== "exec" || argv[1] !== "-i" || !/^jit-s14-[a-f0-9]{32}-browser$/.test(argv[2]!) || argv[3] !== cdpRelayPath || Object.keys(extra).length) fail("input_evidence_stream_refused");
-      if (++this.#pipe > inputEvidenceBounds.streams) fail("input_evidence_stream_bound");
-      const pipe = this.#pipe, raw = actual(argv, extra), input = new Frames(), output = new Frames();
+      let raw: BoxStream;
+      try {
+        this.check();
+        if (argv.length !== 4 || argv[0] !== "exec" || argv[1] !== "-i" || !/^jit-s14-[a-f0-9]{32}-browser$/.test(argv[2]!) || argv[3] !== cdpRelayPath || Object.keys(extra).length) fail("input_evidence_stream_refused");
+        if (++this.#pipe > inputEvidenceBounds.streams) fail("input_evidence_stream_bound");
+        raw = actual(argv, extra);
+      } catch (error) { this.abort(error instanceof AppError ? error.code : "input_evidence_pipe_failed"); throw error; }
+      const pipe = this.#pipe, input = new Frames(), output = new Frames();
       const pending = new Map<number, string>(), readDone = Promise.withResolvers<void>();
       let closed = false;
       const close = () => {
         if (!closed) {
           closed = true; raw.close();
           // Peer/client failure while a response is latched closes it immediately, before the timer.
-          if ([...this.#gates].some(g => g.method !== "runner.spawn" && ["armed", "held"].includes(g.state))) this.abort("input_evidence_pipe_closed");
+          if ([...this.#gates].some(g => ["prepared", "dispatched", "held"].includes(g.state))) this.abort("input_evidence_pipe_closed");
         }
       };
       const self = this;
@@ -143,7 +172,7 @@ export class InputEvidenceTransport {
             input.push(bytes, frame => {
               const m = message(frame), id = m.id, method = m.method;
               if (!Number.isSafeInteger(id) || (id as number) < 1 || typeof method !== "string" || !methods.has(method) || pending.has(id as number) || pending.size >= inputEvidenceBounds.pending) fail("input_evidence_dispatch_refused");
-              pending.set(id as number, method as string); self.record(pipe, "write", id as number, method as string);
+              pending.set(id as number, method as string); self.dispatched(pipe, id as number, method as string);
             });
             // No await, promise, rewrite or second CDP command between the final runtime guard and dispatch.
             raw.write(bytes);
@@ -174,7 +203,7 @@ export class InputEvidenceTransport {
             if (!closed) { self.abort(error instanceof AppError ? error.code : "input_evidence_pipe_failed"); throw error; }
           } finally { close(); self.#pipes.delete(wrapped); readDone.resolve(); }
         })(),
-        exited: raw.exited,
+        exited: raw.exited.then(code => { close(); return code; }, () => { self.abort("input_evidence_pipe_failed"); return -1; }),
         close,
       };
       this.#pipes.add(wrapped);
@@ -182,32 +211,36 @@ export class InputEvidenceTransport {
       return wrapped;
     };
   }
-  /** Holds only an already returned actual runner.spawn response; its process has completed, not remained executing. */
+  /** Binds runner.spawn at actual invocation using pipe 0/id; holds only its successful result after process completion. */
   commands(actual: CommandRunner): CommandRunner {
     const run: CommandRunner = (argv, request) => {
       // Closing evidence transport must still permit the runtime's supported named stop/drain cleanup.
       const cleanup = argv[0] === "rm" || argv[0] === "info" || argv[0] === "network" && ["exists", "rm"].includes(argv[1] ?? "");
       if (!cleanup) this.check();
-      let method: string | null = null;
-      if (argv.at(-1) === "/opt/jit/runner") {
-        if (!request.stdin || request.stdin.length > 8192) fail("input_evidence_runner_bound");
-        const op = JSON.parse(new TextDecoder().decode(request.stdin)).op;
-        if (!["spawn", "write"].includes(op)) fail("input_evidence_runner_refused");
-        method = `runner.${op}`;
-      }
-      const id = method ? ++this.#runnerId : 0;
-      if (method) this.record(0, "write", id, method);
-      const task = (async () => {
-        const result = await actual(argv, request);
-        if (method) {
-          this.count(result.stdout.length + result.stderr.length);
-          if (result.stdout.length + result.stderr.length > inputEvidenceBounds.frameBytes || result.exitCode !== 0) fail("input_evidence_runner_failed");
-          const parsed = JSON.parse(new TextDecoder().decode(result.stdout));
-          if (parsed.v !== 1 || parsed.ok !== true) fail("input_evidence_runner_failed");
-          if (method === "runner.spawn" && (parsed.result?.exitCode !== 0 || parsed.result?.timedOut !== false || typeof parsed.result?.stdout !== "string" || !parsed.result.stdout)) fail("input_evidence_runner_failed");
-          await this.received(0, id, method);
+      let method: string | null = null, id = 0;
+      try {
+        if (argv.at(-1) === "/opt/jit/runner") {
+          if (!request.stdin || request.stdin.length > 8192) fail("input_evidence_runner_bound");
+          const op = JSON.parse(new TextDecoder().decode(request.stdin)).op;
+          if (!["spawn", "write"].includes(op)) fail("input_evidence_runner_refused");
+          method = `runner.${op}`;
         }
-        return result;
+        id = method ? ++this.#runnerId : 0;
+        if (method) this.dispatched(0, id, method);
+      } catch (error) { this.abort(error instanceof AppError ? error.code : "input_evidence_dispatch_failed"); throw error; }
+      const task = (async () => {
+        try {
+          const result = await actual(argv, request);
+          if (method) {
+            this.count(result.stdout.length + result.stderr.length);
+            if (result.stdout.length + result.stderr.length > inputEvidenceBounds.frameBytes || result.exitCode !== 0) fail("input_evidence_runner_failed");
+            const parsed = JSON.parse(new TextDecoder().decode(result.stdout));
+            if (parsed.v !== 1 || parsed.ok !== true) fail("input_evidence_runner_failed");
+            if (method === "runner.spawn" && (parsed.result?.exitCode !== 0 || parsed.result?.timedOut !== false || typeof parsed.result?.stdout !== "string" || !parsed.result.stdout)) fail("input_evidence_runner_failed");
+            await this.received(0, id, method);
+          }
+          return result;
+        } catch (error) { this.abort(error instanceof AppError ? error.code : "input_evidence_runner_failed"); throw error; }
       })();
       this.#commands.add(task);
       void task.finally(() => this.#commands.delete(task)).catch(() => {});
@@ -215,7 +248,7 @@ export class InputEvidenceTransport {
     };
     return Object.assign(run, actual.client ? { client: actual.client } : {});
   }
-  /** Closes every held reply and actual pipe; diagnostic metadata remains bounded and payload-free. */
+  /** Closes every prepared/dispatched/held gate and actual pipe; metadata stays bounded and payload-free. */
   abort(reason = "input_evidence_interrupted"): void { this.#failure ??= reason; this.close(); }
   close(): void {
     this.#closed = true;
