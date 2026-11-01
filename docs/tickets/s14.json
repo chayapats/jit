@@ -1,7 +1,7 @@
 {
   "parent": 244,
   "documentation": 245,
-  "status": "implementation-landed-evidence-open",
+  "status": "implementation-landed-evidence-met-pending-documentation-merge",
   "baseline": "a94c19e3917c5bcbebad3ac7831898cc18a64e02",
   "phases": {
     "A": "research MVP",
@@ -417,16 +417,25 @@
   "statusSource": "gh issue view chayapats/jit (per issue); closed implementation tickets do not certify live acceptance",
   "evidenceCheckpoint": {
     "recordedAt": "2026-11-01",
-    "base": "ae417f0e83c72d6d0b1576a16d9862cf28be1a48",
+    "base": "c051d06d1bc663cbe6d8a785212a70514197b7b3",
     "file": "../evidence/s14-mvp-evidence.md",
     "verifiedOpenIssues": [
       244,
       256,
       267
     ],
-    "releaseGate": "OPEN",
-    "scope": "Completed physical/Mac records, x64 diagnostic and separately authorized setup-corrected failure/cleanup, plus offline final-ledger overlap provenance audit.",
-    "requiredRemaining": "x64 AC12 physical retained-input races; no passing proof yet.",
-    "limits": "VoiceOver speech observer-blocked; real iPhone and remaining Safari permutations unrun. No direct owner report acceptance or exhaustive device/AT gate inferred."
+    "releaseGate": "MET_WITHIN_DECLARED_SCOPE",
+    "scope": "Parent-reviewed native x64 AC12 four-case/five-assertion pass and later complete independent settlement, combined with separately pinned kernel/route/research/rubric/overlap/lifecycle/arm64/Mac evidence.",
+    "requiredRemaining": [],
+    "limits": "VoiceOver explicitly owner-deferred after observer block; real iPhone and remaining Safari permutations unrun. Corpus explicitly owner-unread; delegated rubric/usefulness is separate from direct report acceptance. No whole-product or later-head recertification.",
+    "closure": "Issue #256 remains OPEN until reviewed documentation merge; parent owns merge and issue-state verification.",
+    "openFollowUps": [
+      267,
+      244
+    ],
+    "testedHelperHead": "8dd84e3c797480d3f2d45a2fdb2045b9560f6c3f",
+    "sourceTree": "01bb80d393ae0244701cce93798d151f46a117ad",
+    "settlement": "Helper cleanup and 83.758 s result precede independent parent absence of all 44 residual monitors, containers, claims and transports; monitors settled naturally, own verified custody lock released, VM running/retained.",
+    "statusSource": "GitHub issue reads before this documentation PR: #244/#256/#267 OPEN; no issue state changed."
   }
 }

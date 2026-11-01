@@ -4,6 +4,8 @@ Parent: [#244](https://github.com/chayapats/jit/issues/244). Documentation/desig
 
 Status checked with `gh issue view` per issue on 2026-10-31: 22 runtime/evidence/follow-up tickets are indexed in `s14.json`. Implementation tickets #246–#255, #257–#260, #262–#263, #265–#266, #268 and #279 are CLOSED. EVID14-01 (#256) and CUT14-01 (#267) remain OPEN; parent #244 remains OPEN and documentation #245 is CLOSED. Closed implementation work does not certify live acceptance. See the [consolidated evidence](../evidence/s14-mvp-evidence.md) for per-build/per-architecture limits. Original preparation mirrors remain historical issue bodies, not current readiness claims.
 
+Current evidence disposition, 2026-11-01: the parent reviewed actual native x64 AC12 at `c051d06d1bc663cbe6d8a785212a70514197b7b3` and complete independent settlement. Combined with the separately pinned earlier evidence, #256's required release evidence is met within the declared scope; closure awaits reviewed documentation merge. #256/#267/#244 were checked OPEN before this PR. #267 implementation/default flip and #244 remain open. No whole-product/default-runtime certification is implied; see the final checkpoint below.
+
 ## Phase A — research MVP (required)
 
 | Key | Observable vertical slice | Genuine prerequisites | Evidence |
@@ -22,7 +24,7 @@ Status checked with `gh issue view` per issue on 2026-10-31: 22 runtime/evidence
 | [OPS14-01](https://github.com/chayapats/jit/issues/263) | Owner backs up and restores the fresh S14 store, artifacts and opaque native snapshots through quarantine and current-ledger reconciliation before workers start. | BOT14-02 and its artifact/share/native recovery prerequisites | consistent manifest, corrupt/incompatible/crash cutover, credential exclusion, lifecycle anti-resurrection and opt-in Linux round trip |
 | [EVID14-01](https://github.com/chayapats/jit/issues/256) | Owner runs the research journey on supported Linux x64/arm64 with recorded limits, actual Parallel sources and restart evidence. | All Phase A slices including BOT14-02 and OPS14-01; real route and host configured by owner | ready-for-human opt-in corpus/host evidence, not paid CI |
 
-BOT14-02 owns existing-Bot capability edits, retirement and deletion; BOX14-01 computer reset does not cover them. OPS14-01 owns the usable backup/restore/upgrade path for the new store; fresh state waives legacy conversion, not NFR-08. OPS14-01 and BOT14-02 are closed implementation prerequisites; EVID14-01 still requires the outstanding live permutations and owner evidence.
+BOT14-02 owns existing-Bot capability edits, retirement and deletion; BOX14-01 computer reset does not cover them. OPS14-01 owns the usable backup/restore/upgrade path for the new store; fresh state waives legacy conversion, not NFR-08. OPS14-01 and BOT14-02 are closed implementation prerequisites. EVID14-01's required scoped evidence is now met, with unrun permutations labelled as limits in the canonical record.
 
 BOT14-01 and AUTH14-01 are independently useful new-store paths; they must not wait on an unrelated live subscription smoke. Engine prerequisites block activation of the dependent capability, not deterministic fixture work. A placeholder or missing upstream contract is never marked verified.
 
@@ -53,15 +55,17 @@ Schway briefs: [shared lifecycle](../proposals/schway/SCH14-01-shared-credential
 | [UX14-01 #265](https://github.com/chayapats/jit/issues/265) | CLOSED | First-owner Web setup and conversation commands; device acceptance remains separate. |
 | [OPS14-01 #263](https://github.com/chayapats/jit/issues/263) | CLOSED | Backup/restore implementation and recorded round trips; remaining lifecycle permutations stay in evidence. |
 | [OPS14-02 #266](https://github.com/chayapats/jit/issues/266) | CLOSED | Nested subordinate-ID diagnosis; no host-configuration change implied. |
-| [CUT14-01 #267](https://github.com/chayapats/jit/issues/267) | OPEN | Opt-in install/service delivery exists; default flip and owner-host install await #256 and required evidence. |
+| [CUT14-01 #267](https://github.com/chayapats/jit/issues/267) | OPEN | Opt-in install/service delivery exists; implementation/default flip and owner-host installation remain separate work after #256's reviewed documentation merge. |
 | [TEST14-01 #268](https://github.com/chayapats/jit/issues/268) | CLOSED | Deterministic probe uncertainty test. |
-| [UX14-02 #279](https://github.com/chayapats/jit/issues/279) | CLOSED | Routine and attention controls; AC13 owner browser/device evidence remains pending. |
+| [UX14-02 #279](https://github.com/chayapats/jit/issues/279) | CLOSED | Routine and attention controls; actual AC13 keyboard/render samples and deferred/unrun coverage limits are recorded separately. |
 
 New ticket mirrors are in `s14/`. Their issue bodies describe scope at publication and are not rewritten to imply human acceptance. `s14.json` records the separately verified current GitHub states. No ticket is newly marked ready-for-agent by this consolidation.
 
 ADR status review: ADRs 0045–0048 are original proposed architecture, refined by accepted opt-in implementation ADRs 0049–0056 and 0057 offline activation/scoped registry, 0058–0060. CODE14/LIFE14 implementation ADRs 0057 are accepted for opt-in implementation, with live limitations retained in the evidence record. Accepted engineering does not mean that all proposed architecture or release evidence is accepted.
 
 ## Completed-evidence checkpoint — 2026-11-01
+
+Historical pre-N checkpoint; the final parent-reviewed checkpoint below supersedes its pending x64 gate conclusion.
 
 #256, #267 and parent #244 were rechecked OPEN; the earlier table is a historical state checkpoint. The [canonical evidence](../evidence/s14-mvp-evidence.md) records completed physical/Mac observations and #297/#299/#300/#301 fix/check provenance against `ae417f0e83c72d6d0b1576a16d9862cf28be1a48`:
 
@@ -71,3 +75,13 @@ ADR status review: ADRs 0045–0048 are original proposed architecture, refined 
 - #300 protects known intervals going forward, without repairing older overwritten times. A completed 53-input audit and independent arithmetic check verify overlapping dispatched terminal-read invocations for all ten final cases, with identity/context/grant/queue/synthesis checks. Invalid later DB ends stay unusable; native lifetime is not continuous CPU time and per-work peak does not certify service-wide peak.
 
 This documentation checkpoint changes no source/design, default, readiness label or issue state. The original ticket mirrors remain historical; new scope-specific facts are appended to EVID14-01. Required behavior and the remaining gate are distinguished from bounded coverage limits in the canonical record.
+
+## Final parent-reviewed evidence checkpoint — 2026-11-01
+
+Build N at `c051d06d1bc663cbe6d8a785212a70514197b7b3` passed four actual installed native x64 AC12 cases and five controlled assertions in 83.758 s, with one helper, no cleanup-only and null reason/transportFailure. #303's unchanged 4,500 ms latch now starts at the exact future matching pipe/id-bound dispatch and includes acquisition plus hold; normal CDP/startup/admission/total/idle bounds and all guards remain unchanged. Its deterministic checks and identical tested-head tree are recorded separately from actual N proof.
+
+Parent independently verified 101 indexed hashes/45 trace rows. Helper cleanup and later complete host settlement are separate: all 44 residual monitors settled naturally before the parent probe, with zero residual processes/containers/claims/transports and no signal, API/manager stop, helper replay, prune, wipe or VM shutdown. Only the verified own custody lock was released. S14 is stopped with normal descriptor; legacy remains healthy with the same process and the VM remains running/retained. Sensitive original/current recovery archives and recoverable quarantine remain private; no new VM/OS/legacy reset occurred, and the existing Ubuntu 26.04 AppArmor/pasta prerequisite remains explicit.
+
+Earlier native/emulated failures and scratch setup failures remain unchanged. A separate single getTargets response in 5,840.669 ms under the normal 15 s supports helper phase selection, not old causation or installed AC12 acceptance. N supplies installed-kernel/synthetic-authority/controlled-real-transport proof only. Earlier arm64, kernel/route/research/rubric/overlap/lifecycle/Mac evidence stays pinned to its own builds, without later-head recertification or a newly run model/website/owner UI/effect/reboot/idle journey.
+
+The required #256 release evidence is met within the declared scope and may close after reviewed documentation merge. Owner-deferred VoiceOver and unrun iPhone/Safari permutations remain disclosed limits. The corpus is explicitly owner-unread; original delegated rubric/usefulness authority does not require direct owner report acceptance. #267 implementation/default flip and parent #244 remain open. This documentation PR changes no product code, UX, feature, default or GitHub issue state; parent owns immutable review/merge and issue-state verification.
