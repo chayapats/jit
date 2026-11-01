@@ -63,14 +63,14 @@ function missingRow(item: ReportGap, view: WorkView, steps: WorkStep[], evidence
     case "failed_url": return `<li>${tr("s14.report.miss.failed")} <span class="s-mono">${e(item.url)}</span> · <span class="s-mono">${e(item.failureKind)}</span></li>`;
   }
 }
-/** Covered, missing and limitations sit before any claim, so a reader cannot reach the claims without passing them. */
+/** Bounded source checks, missing evidence and limitations precede claims; target prose is not machine-verified. */
 function coverageBlock(report: Report, view: WorkView, team: S14WorkTeam, evidenceHref: string, nameOf: (step: WorkStep) => string): string {
   const targets = targetsOf(view), steps = team.graph?.steps ?? [], other = report.modelMissing;
   const typed = report.missing.map(item => missingRow(item, view, steps, evidenceHref, nameOf));
   const covered = report.covered.map(id => { const target = targets.find(t => t.id === id); return `<li>${target ? e(target.label) : `<span class="s-mono">${e(id)}</span>`}</li>`; }).join("");
   const bot = (items: string[], label: string) => untrusted(`<ul class="s-reach-list">${items.map(item => `<li>${e(item)}</li>`).join("")}</ul>`, label);
   const missing = typed.length || other.length ? `<div class="s-stack"><p class="s-exact-label">${tr("s14.report.missing")}</p>${typed.length ? `<p class="s-note">${tr("s14.report.missing_service")}</p><ul class="s-reach-list">${typed.join("")}</ul>` : ""}${other.length ? bot(other, tr("s14.report.missing_bot")) : ""}</div>` : `<p class="s-sub">${tr("s14.report.nothing_listed")}</p>`;
-  return `<section class="s-card s-stack" aria-labelledby="s14-coverage"><h3 id="s14-coverage">${tr("s14.report.coverage_title")}</h3>${covered ? `<div><p class="s-exact-label">${tr("s14.report.covered")}</p><ul class="s-reach-list">${covered}</ul></div>` : ""}${missing}${report.limitations.length ? `<div class="s-stack"><p class="s-exact-label">${tr("s14.report.limitations")}</p>${bot(report.limitations, tr("s14.report.untrusted"))}</div>` : ""}</section>`;
+  return `<section class="s-card s-stack" aria-labelledby="s14-coverage"><h3 id="s14-coverage">${tr("s14.report.coverage_title")}</h3>${covered ? `<div><p class="s-exact-label">${tr("s14.report.covered")}</p><p class="s-note">${tr("s14.report.covered_scope")}</p><ul class="s-reach-list">${covered}</ul></div>` : ""}${missing}${report.limitations.length ? `<div class="s-stack"><p class="s-exact-label">${tr("s14.report.limitations")}</p>${bot(report.limitations, tr("s14.report.untrusted"))}</div>` : ""}</section>`;
 }
 /** One exact citation. The URL is literal text, never a link: only the row in Evidence is one click away. */
 function citationRow(claim: ReportClaim, index: number, numbers: Map<string, number>, base: string): string {

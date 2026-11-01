@@ -15,6 +15,9 @@ export function s14StyleSheet(): string {
 }
 html, body { height: 100%; }
 .s-app { display: flex; height: 100dvh; overflow: hidden; background: var(--bg); }
+/* Native focus scrolling needs the existing column gutter plus clearance beyond the shared focus ring. */
+.s-app :is(a, button, summary, input, textarea, select, [tabindex]) { scroll-margin-block: var(--radius-control); }
+.s-scroll, .s-pane-body { scroll-padding-block: 24px; }
 .s-nav { width: var(--nav-w); flex: none; display: flex; flex-direction: column; gap: 2px; padding: 16px 12px 12px; background: var(--surface-1); border-right: 1px solid var(--line); overflow-y: auto; }
 .s-lockup { display: flex; align-items: center; min-height: 44px; padding: 0 8px 12px; color: var(--fg); }
 .s-lockup .jit-lockup { height: 36px; width: auto; }
