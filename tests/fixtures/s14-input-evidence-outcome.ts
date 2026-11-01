@@ -17,12 +17,14 @@ let reason: string | null = null;
 try {
   const gate = kind === "success" ? undefined : transport.arm("Target.attachToTarget");
   const reply = client.send("Target.getTargets", { private: "fixture-private-protocol-body" }).catch(error => error);
+  // Timeout now belongs to the selected future attach dispatch, not the unrelated readiness query.
+  const attach = kind === "timeout" ? client.send("Target.attachToTarget").catch(error => error) : undefined;
   if (kind === "timeout") expire!();
   if (kind === "pipe") stream.close();
   if (gate) {
     try { await gate.reached; } catch (error) { if (!(error instanceof AppError)) throw error; reason = error.code; }
   }
-  await reply;
+  await Promise.all([reply, attach]);
 } finally { transport.close(); await transport.join(); }
 writeInputEvidenceOutcome({ resultPath: join(directory, "result.json"), statePath: join(directory, "private.json"),
   state: { contract: "ops.s14-input-evidence-state/v1", runId: "a".repeat(32), phase: kind === "success" ? "passed" : "failed",

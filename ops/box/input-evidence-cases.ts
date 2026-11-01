@@ -65,6 +65,12 @@ export async function runInputEvidenceCases(app: S14Application, actor: OwnerAct
     const settled = promise.then(value => ({ status: "fulfilled" as const, value }), reason => ({ status: "rejected" as const, reason }));
     pending.add(settled); void settled.then(() => pending.delete(settled)); return settled;
   };
+  const waitForReply = (gate: ReturnType<InputEvidenceTransport["arm"]>, operation: Promise<PromiseSettledResult<unknown>>) =>
+    Promise.race([gate.reached, operation.then(outcome => {
+      // Preparation has no gate timer: a normal runtime/authority failure must still end the case promptly.
+      if (outcome.status === "rejected") throw outcome.reason;
+      throw new AppError("input_evidence_reply_not_received");
+    })]);
   const rejected = async (result: Promise<PromiseSettledResult<unknown>>, codes: string[]) => {
     const outcome = await result;
     check(outcome.status === "rejected" && codes.includes(outcome.reason instanceof AppError ? outcome.reason.code : outcome.reason?.code), "input_evidence_expected_fence_missing");
@@ -127,7 +133,7 @@ export async function runInputEvidenceCases(app: S14Application, actor: OwnerAct
     }
     const old = tracked(app.computers.agentInput(a.attempt.id, a.session.lease, { kind: "scroll", deltaY: 1 }));
     try {
-      await gate.reached; takeover("takeover.start"); gate.release();
+      await waitForReply(gate, old); takeover("takeover.start"); gate.release();
       await rejected(old, ["input_lease_fenced"]);
       check(inputFrames(begin).length === 0, "input_evidence_attach_race_sent_input");
       const ownerLease = JSON.stringify(view().lease);
@@ -148,7 +154,7 @@ export async function runInputEvidenceCases(app: S14Application, actor: OwnerAct
     const s0 = tracked(app.computers.agentInput(b.attempt.id, b.session.lease, { kind: "scroll", deltaY: 1 }));
     let s1: ReturnType<typeof tracked> | undefined, owner: Promise<PromiseSettledResult<{ requestId: string; state: "succeeded" | "unknown" }>> | undefined;
     try {
-      await ack.reached;
+      await waitForReply(ack, s0);
       s1 = tracked(app.computers.agentInput(b.attempt.id, b.session.lease, { kind: "scroll", deltaY: 2 }));
       takeover("takeover.start");
       const v = view();
@@ -177,10 +183,10 @@ export async function runInputEvidenceCases(app: S14Application, actor: OwnerAct
       let heldRunner: ReturnType<InputEvidenceTransport["arm"]> | undefined;
       let output = 0;
       try {
-        await heldInput.reached;
+        await waitForReply(heldInput, scroll);
         heldRunner = transport.arm("runner.spawn");
         runner = tracked(x.session.backend.spawn({ command: "printf synthetic-input-evidence", cwd: "/workspace", timeoutMs: 1000, onOutput: () => { output++; } }));
-        await heldRunner.reached; // The actual runner process has returned; only its response is latched.
+        await waitForReply(heldRunner, runner); // The actual runner process has returned; only its response is latched.
         const before = c();
         if (index === 3) app.execute(actor, { kind: "computer.stop", requestId: rid(), expectedRevision: before.revision,
           payload: { botId: "jit", computerId: before.id, generation: before.generation } });

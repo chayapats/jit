@@ -27,7 +27,9 @@ export function inputEvidencePipe(autoReply = false) {
     stdout, exited: exit.promise,
     close() { if (!closed) { closed = true; try { controller.close(); } catch { /* Reader cancellation already closed it. */ } exit.resolve(-1); } },
   };
-  return { stream, writes, emit(bytes: Uint8Array) { controller.enqueue(bytes); }, get closed() { return closed; } };
+  return { stream, writes, emit(bytes: Uint8Array) { controller.enqueue(bytes); },
+    failRead() { controller.error(new Error("fixture read failed")); },
+    failExit() { exit.reject(new Error("fixture exit failed")); }, get closed() { return closed; } };
 }
 
 /** Scripted host probes around the real BotPodmanRuntime input path; no host command is executed. */
