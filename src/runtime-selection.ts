@@ -13,11 +13,16 @@ const legacyCommands = ["serve", "setup", "reset-owner", "probe", "diagnose", "p
  * Selects S14 for unconfigured serve/setup/ops, retaining --s14 and explicit --legacy.
  * A validated named legacy service config preserves prior argv; omitted persisted runtime stays legacy.
  * All selector/command/config conflicts refuse before application imports or writable state.
+ * Arguments after the first -- remain literal data for the selected command.
  */
 export function selectRuntime(args: string[], env: NodeJS.ProcessEnv = process.env): RuntimeSelection {
-  const selectors = args.filter(arg => arg === "--s14" || arg === "--legacy");
+  const separator = args.indexOf("--");
+  const options = separator < 0 ? args : args.slice(0, separator);
+  const literal = separator < 0 ? [] : args.slice(separator);
+  const selectors = options.filter(arg => arg === "--s14" || arg === "--legacy");
   if (selectors.length > 1) refuse("conflicting_or_duplicate_runtime_selector");
-  const [command, ...rest] = args.filter(arg => arg !== "--s14" && arg !== "--legacy");
+  const [command, ...optionRest] = options.filter(arg => arg !== "--s14" && arg !== "--legacy");
+  const rest = [...optionRest, ...literal];
   if (!command || args[0] !== command) refuse("invalid_runtime_command");
   const explicit = selectors[0] === "--s14" ? "s14" : selectors[0] === "--legacy" ? "legacy" : undefined;
   if (command === "service") {
@@ -26,11 +31,11 @@ export function selectRuntime(args: string[], env: NodeJS.ProcessEnv = process.e
     return { runtime: "service", args: [command, ...rest] };
   }
   if (![...legacyCommands, "ops", "owner-link"].includes(command)) refuse("invalid_runtime_command");
-  const configs = rest.filter(arg => arg === "--service-config");
+  const configs = optionRest.filter(arg => arg === "--service-config");
   if (configs.length > 1) refuse("invalid_service_config_arguments");
   let configured: "legacy" | undefined;
   if (configs.length) {
-    const index = rest.indexOf("--service-config"), path = rest[index + 1];
+    const index = optionRest.indexOf("--service-config"), path = optionRest[index + 1];
     if (!path || path.startsWith("--") || !["serve", "preflight", "status", "upgrade", "ask", "pending"].includes(command)) refuse("invalid_service_config_arguments");
     const config = readServiceConfigFile(path!);
     if (config.runtime === "s14") refuse("s14_service_requires_rendered_environment");

@@ -326,6 +326,22 @@ async function cli(f: Fixture, args: string[]) {
   return { stdout, stderr, code };
 }
 
+test("jit CLI preserves literal runtime and config flags after -- in the committed owner message", async () => {
+  const f = await fixture();
+  setLocalApi(f, true);
+  listen(f).start();
+  for (const literal of [["--s14"], ["--legacy"], ["--service-config"], ["--s14", "--legacy", "--service-config", "/not-a-config.json"]]) {
+    const sent = await cli(f, ["ask", f.topic.id, "--json", "--", ...literal]);
+    expect(sent.code).toBe(cliExit.done);
+    expect(JSON.parse(sent.stdout).outcome).toBe("accepted");
+    const stored = f.store.read(tx => tx.get<{ text: string }>(`SELECT v.content_text AS text FROM messages m JOIN source_versions v
+      ON v.source_id = m.source_id AND v.revision = m.source_revision AND v.generation = m.source_generation
+      WHERE m.topic_id = ? AND json_extract(m.attribution_json, '$.kind') = 'owner' ORDER BY m.sequence DESC LIMIT 1`, f.topic.id));
+    expect(stored?.text).toBe(literal.join(" "));
+    expect(sent.stdout + sent.stderr).not.toContain(files(f).token);
+  }
+});
+
 test("jit CLI: ask --wait, a pending owner question, timeout, a disabled API and bad flags use the ADR exit codes", async () => {
   const f = await fixture();
   // Real clocks: the subprocess waits on wall time.

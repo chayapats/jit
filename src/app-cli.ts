@@ -101,7 +101,8 @@ export async function runLegacy(args: string[]): Promise<void> {
 async function localApiCommand(command: "ask" | "status" | "pending", args: string[]): Promise<number> {
   const { cliExit, cliLocale, runLocalApiCli } = await import("./local-api/cli");
   const { localApiDirectory } = await import("./local-api/server");
-  const index = args.indexOf("--service-config");
+  const separator = args.indexOf("--");
+  const index = (separator < 0 ? args : args.slice(0, separator)).indexOf("--service-config");
   let databasePath: string;
   try {
     const config = readConfig();

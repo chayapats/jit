@@ -2126,7 +2126,7 @@ export const en: Record<MessageKey, string> = {
   "s14.legacy.fresh_title": "Start fresh in a separate store",
   "s14.legacy.fresh_detail": "Stop Jit and run this command in an interactive terminal for a setup link. Earlier data stays where it is",
   "s14.legacy.back_title": "How to go back",
-  "s14.legacy.back_detail": "Run this build with --legacy and your legacy installation's settings. For a retained earlier build, use its original command",
+  "s14.legacy.back_detail": "Run this build with --legacy and the settings from your legacy installation. For a retained earlier build, use its original command",
   "s14.nav.label": "Main menu",
   "s14.nav.tabs": "Main tabs",
   "s14.nav.home": "Home",
