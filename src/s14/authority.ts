@@ -681,7 +681,7 @@ export class S14Authority {
               attempt.step.inputs = handoff.inputs; attempt.step.gaps = handoff.gaps;
               save(tx, "work_attempts", attempt);
               step.attemptId = attempt.id; step.state = "running"; step.reason = null; step.queueCeiling = null;
-              step.startedAt = this.app.now(); step.revision++;
+              step.startedAt = this.app.now(); step.settledAt = null; step.revision++;
               save(tx, "work_steps", step);
               this.app.recovery.prepare(tx, attempt);
               tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id);

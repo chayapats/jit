@@ -12,12 +12,13 @@ import type { NativeIntent, NativeRecoveryPort, ReconcileEffectCommand } from ".
 import { nativeIntentPaths, schwayRecovery } from "../src/s14/native-recovery";
 import { replayPolicy } from "../src/s14/replay-policy";
 import { createS14Handler } from "../src/s14/web";
+import { domainFixture, workCommand, type DomainFixture } from "./fixtures/s14-domain";
 
-const roots: string[] = [], stores = new Set<S14Store>();
+const roots: string[] = [], stores = new Set<S14Store>(), domains: DomainFixture[] = [];
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const reference = (): HostSessionReference => ({ id: crypto.randomUUID(), branchId: "main" });
 const barrier = () => Promise.withResolvers<void>();
-afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { for (const f of domains.splice(0)) f.dispose(); for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}, pendingNodes: StepProposal[] = [], remember = false) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-recovery-")); roots.push(root);
   const path = join(root, "app.sqlite"), store = new S14Store(path); stores.add(store);
@@ -85,6 +86,123 @@ function nativeFixture() {
   } };
   return { port, ledger, controls };
 }
+
+test("completed transport interval survives later boots, native uncertainty and grant revocation without replay", async () => {
+  const f = await domainFixture(), n = nativeFixture(); domains.push(f);
+  let runs = 0;
+  const executor = f.app.authority.options.executor = { async run(attempt) {
+    runs++;
+    const intent = f.app.recovery.intent(attempt.id, attempt.memoryId!, attempt.snapshot.route), ref = reference();
+    f.app.recovery.correlate(intent.id, ref);
+    n.ledger.set(intent.id, [{ reference: ref, state: "retired" }]);
+    f.app.recovery.retired(intent.id);
+    f.clock.now += 2000;
+    return { state: "ready", text: "Retained evidence" };
+  } };
+  const command = workCommand(f);
+  command.payload.limits.wallMs = 6 * 3600000;
+  command.payload.expiresAt = f.clock.now + command.payload.limits.wallMs;
+  const work = f.app.execute(f.auth.actor, command).work!, startedAt = f.clock.now;
+  await f.app.authority.drain();
+  const original = f.app.graph.view(f.auth.actor, work.id).steps[0]!;
+  expect(original).toMatchObject({ state: "committed", startedAt, settledAt: startedAt + 2000 });
+  f.clock.now += 3 * 3600000;
+  f.reopen(); await f.app.recovery.boot(n.port);
+  f.app.authority.options.executor = executor;
+  await f.app.authority.drain();
+  expect(f.app.graph.view(f.auth.actor, work.id).steps[0]).toMatchObject({ attemptId: original.attemptId, startedAt, settledAt: original.settledAt });
+  f.store.transaction(tx => tx.run("INSERT INTO lifecycle.withdrawals VALUES ('grant',?,'revoked')", work.grantId!));
+  n.controls.corrupt = true;
+  f.clock.now += 3600000;
+  await f.app.recovery.boot(n.port);
+  expect(f.app.recovery.view(f.auth.actor).checkpoints[0]).toMatchObject({ transport: "unknown", state: "waiting", reason: "grant_revoked" });
+  expect(f.app.graph.view(f.auth.actor, work.id).steps[0]).toMatchObject({ state: "blocked", startedAt, settledAt: original.settledAt });
+  n.controls.corrupt = false;
+  f.clock.now += 3600000;
+  await f.app.recovery.boot(n.port); await f.app.authority.drain();
+  expect(f.app.graph.view(f.auth.actor, work.id).steps[0]).toMatchObject({ state: "blocked", startedAt, settledAt: original.settledAt });
+  expect(() => f.store.read(tx => f.app.authority.guard(tx, original.attemptId!))).toThrow();
+  expect(runs).toBe(1);
+});
+
+test("unsettled committed transport records cleanup completion rather than report or boot start time", async () => {
+  const f = await fixture(), n = nativeFixture(), intent = f.intent(), ref = reference();
+  f.app.recovery.correlate(intent.id, ref); n.ledger.set(intent.id, [{ reference: ref, state: "active" }]);
+  const startedAt = f.clock.now;
+  f.clock.now += 500;
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Committed before cleanup" });
+  f.clock.now += 10000; n.controls.busy = true;
+  const { app, actor, store } = f.reopen();
+  await app.recovery.boot(n.port);
+  expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ startedAt, settledAt: null });
+  expect(store.read(tx => tx.get("SELECT active FROM attempt_transports WHERE attempt_id=?", f.attempt.id))).toEqual({ active: 1 });
+  n.controls.busy = false;
+  const closing = barrier(), release = barrier();
+  const port: NativeRecoveryPort = { async open(value) {
+    const host = await n.port.open(value);
+    return { ...host, async close() { closing.resolve(); await release.promise; await host.close(); } };
+  } };
+  const boot = app.recovery.boot(port); await closing.promise;
+  try {
+    expect(app.graph.view(actor, f.workId).steps[0]!.settledAt).toBeNull();
+    expect(store.read(tx => tx.get("SELECT active FROM attempt_transports WHERE attempt_id=?", f.attempt.id))).toEqual({ active: 1 });
+    f.clock.now += 3000;
+  } finally { release.resolve(); await boot; }
+  const settledAt = f.clock.now;
+  expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ startedAt, settledAt });
+  expect(store.read(tx => tx.get("SELECT active FROM attempt_transports WHERE attempt_id=?", f.attempt.id))).toEqual({ active: 0 });
+  f.clock.now += 5000; await app.recovery.boot(n.port);
+  expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ startedAt, settledAt });
+});
+
+test("replacement attempt clears the old settlement and ignores late old finalizers", async () => {
+  const f = await fixture(), n = nativeFixture(); f.intent();
+  const { app, actor, store } = f.reopen();
+  f.clock.now += 1000; await app.recovery.boot(n.port);
+  const oldSettlement = f.clock.now;
+  expect(app.graph.view(actor, f.workId).steps[0]!.settledAt).toBe(oldSettlement);
+  f.clock.now += 1000;
+  const entered = barrier(), release = barrier();
+  let replacementId: string | null = null;
+  app.authority.options.executor = { async run(attempt) {
+    replacementId = attempt.id;
+    entered.resolve(); await release.promise;
+    return { state: "ready", text: "Replacement evidence" };
+  } };
+  const drain = app.authority.drain();
+  try {
+    await entered.promise;
+    expect(replacementId).not.toBe(f.attempt.id);
+    expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ attemptId: replacementId, startedAt: oldSettlement + 1000, settledAt: null });
+    store.transaction(tx => app.graph.finish(tx, f.attempt, "late_old_finalizer"));
+    expect(app.graph.view(actor, f.workId).steps[0]!.settledAt).toBeNull();
+    f.clock.now += 3000;
+  } finally { release.resolve(); await drain; }
+  const step = app.graph.view(actor, f.workId).steps[0]!;
+  expect(step).toMatchObject({ state: "committed", startedAt: oldSettlement + 1000, settledAt: oldSettlement + 4000 });
+  f.clock.now += 1000;
+  const attempt = app.authority.view(actor, f.workId).attempts.find(a => a.id === step.attemptId)!;
+  store.transaction(tx => app.graph.finish(tx, attempt, null));
+  expect(app.graph.view(actor, f.workId).steps[0]!.settledAt).toBe(step.settledAt);
+});
+
+test("confirmed Bot native cleanup records settlement before a later boot without reviving its grant", async () => {
+  const f = await fixture(), n = nativeFixture(), intent = f.intent(), ref = reference();
+  f.app.recovery.correlate(intent.id, ref); n.ledger.set(intent.id, [{ reference: ref, state: "active" }]);
+  f.store.transaction(tx => tx.run("INSERT INTO lifecycle.withdrawals VALUES ('grant',?,'revoked')", f.attempt.snapshot.grant.id));
+  f.app.authority.recover();
+  n.controls.busy = true;
+  expect(await f.app.recovery.cleanupBot("jit", "retire", n.port)).toBe(false);
+  expect(f.app.graph.view(f.actor, f.workId).steps[0]!.settledAt).toBeNull();
+  n.controls.busy = false; f.clock.now += 3000;
+  expect(await f.app.recovery.cleanupBot("jit", "retire", n.port)).toBe(true);
+  const settledAt = f.clock.now;
+  expect(f.app.graph.view(f.actor, f.workId).steps[0]!.settledAt).toBe(settledAt);
+  f.clock.now += 10000;
+  const { app, actor } = f.reopen(); await app.recovery.boot(n.port);
+  expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ state: "blocked", settledAt });
+  expect(app.recovery.view(actor).checkpoints[0]!.reason).toBe("grant_revoked");
+});
 
 test.each(["before_creation", "after_native_persistence", "after_app_correlation"])("crash %s discovers/fences before safe requeue and retains spent reservations", async window => {
   const f = await fixture(), n = nativeFixture(), intent = f.intent(), ref = reference();
@@ -385,9 +503,11 @@ test.each(["attempts", "steps", "output_bytes"])("exhausted %s reservations bloc
 
 test("unknown usage with no discoverable correlation stays unsettled rather than inventing zero or transport termination", async () => {
   const f = await fixture(), n = nativeFixture();
+  f.clock.now += 10000;
   const { app, actor } = f.reopen(); await app.recovery.boot(n.port);
   expect(app.recovery.view(actor).checkpoints[0]).toMatchObject({ transport: "unknown", reason: "old_transport_unsettled", state: "waiting" });
   expect(app.recovery.view(actor).actualUsage).toBeNull();
+  expect(app.graph.view(actor, f.workId).steps[0]).toMatchObject({ startedAt: f.clock.now - 10000, settledAt: null });
 });
 
 test("owner resolution works after grant expiry, rolls back atomically and cannot claim verified read-back", async () => {

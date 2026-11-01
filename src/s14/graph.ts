@@ -210,7 +210,7 @@ export class S14Graph {
     if (!reason && result?.state === "waiting") reason = "handler_waiting";
     step.queueCeiling = null;
     step.reason = step.reason ?? reason;
-    step.settledAt = this.app.now();
+    step.settledAt ??= this.app.now();
     step.revision++;
     save(tx, "work_steps", step);
   }
