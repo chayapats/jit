@@ -78,6 +78,8 @@ Prerequisites for that later operator round:
 
 After stopping the ordinary service, the later operator may install this exact root-owned temporary drop-in at `/run/systemd/system/jit-s14.service.d/90-input-evidence.conf`, substituting only the installed descriptor's Bun binary path if needed:
 
+The owned parent directory must be root:root mode 0755 and the file root:root mode 0644, with no group/other write. Verify the effective modes after the caller's umask and confirm that the real service UID can stat/read the unchanged public override before invoking the helper. A restrictive umask can turn a requested 0755 directory into 0700; changing only the file to 0644 does not restore directory traversal. Private evidence directories/markers retain their separate 0700/0600 requirements.
+
 ```ini
 [Service]
 ExecStart=

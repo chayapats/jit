@@ -208,7 +208,7 @@
       "readyForAgent": false,
       "file": "s14/EVID14-01.md",
       "state": "OPEN",
-      "statusVerifiedAt": "2026-10-31"
+      "statusVerifiedAt": "2026-11-01"
     },
     {
       "key": "CODE14-01",
@@ -370,7 +370,7 @@
       "readyForAgent": false,
       "file": "s14/CUT14-01.md",
       "state": "OPEN",
-      "statusVerifiedAt": "2026-10-31"
+      "statusVerifiedAt": "2026-11-01"
     },
     {
       "key": "TEST14-01",
@@ -414,5 +414,19 @@
     "note": "Historical publication counts, not a current GitHub relation audit; later tickets are indexed above."
   },
   "statusVerifiedAt": "2026-10-31",
-  "statusSource": "gh issue view chayapats/jit (per issue); closed implementation tickets do not certify live acceptance"
+  "statusSource": "gh issue view chayapats/jit (per issue); closed implementation tickets do not certify live acceptance",
+  "evidenceCheckpoint": {
+    "recordedAt": "2026-11-01",
+    "base": "ae417f0e83c72d6d0b1576a16d9862cf28be1a48",
+    "file": "../evidence/s14-mvp-evidence.md",
+    "verifiedOpenIssues": [
+      244,
+      256,
+      267
+    ],
+    "releaseGate": "OPEN",
+    "scope": "Completed physical/Mac records, x64 diagnostic and separately authorized setup-corrected failure/cleanup, plus offline final-ledger overlap provenance audit.",
+    "requiredRemaining": "x64 AC12 physical retained-input races; no passing proof yet.",
+    "limits": "VoiceOver speech observer-blocked; real iPhone and remaining Safari permutations unrun. No direct owner report acceptance or exhaustive device/AT gate inferred."
+  }
 }
