@@ -81,10 +81,10 @@ async function evidenceMain(totalDeadline: number): Promise<void> {
       if (passed || cleaned) privateState.state.password = null;
       const record = { contract: "ops.s14-input-evidence/v1", label: "installed-kernel integration with synthetic authority and controlled transport latches",
         architecture: process.arch, build, outcome: cleanupOnly ? cleaned ? "cleanup_confirmed" : "cleanup_unconfirmed" : passed ? "integration_cases_completed" : "failed",
-        cleanupConfirmed: cleanup, reason, ...results, trace: transport.trace };
+        cleanupConfirmed: cleanup, reason, transportFailure: transport.failure, ...results, trace: transport.trace };
       writeInputEvidencePrivate(privateState.resultPath, record); writeInputEvidencePrivate(privateState.statePath, privateState.state);
       // No password, raw errors, bodies, screenshot, profile or installation address is printed.
-      console.log(JSON.stringify({ contract: record.contract, label: record.label, outcome: record.outcome, cleanupConfirmed: cleanup, reason }));
+      console.log(JSON.stringify({ contract: record.contract, label: record.label, outcome: record.outcome, cleanupConfirmed: cleanup, reason, transportFailure: record.transportFailure }));
       if (!(passed || cleaned)) process.exitCode = 1;
     }
   } finally {
