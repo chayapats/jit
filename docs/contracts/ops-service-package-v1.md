@@ -12,7 +12,7 @@ Persisted `ServiceConfig.runtime` omission continues to mean legacy. `parseServi
 
 S14 `service status` reports supervisor state and `configured_unverified`. Its historical fixed `computerReason: computer_local_podman_required` is a requirement label, not a measured computer failure or readiness result; use separately authorized evidence/probes for actual observations. Health stays exact `/s14/login` HTTP 200 with manual redirects. Same-schema compatibility and ledger/fence rollback gates below remain unchanged (schema 17→17 maintenance; no downgrade).
 
-ADR 0061; S14-AC01/11/14, NFR-06/08/12/14. #256 closed at merged `143ca06`; #267 owner-host first reply, legacy-byte proof and prior-release rollback remain pending.
+ADR 0061; S14-AC01/11/14, NFR-06/08/12/14. #256 closed at merged `143ca06`; [Owner-Pi first reply, legacy-byte proof and prior-release rollback](../evidence/s14-owner-pi-cutover.md) are separately recorded at `5eec7aa`; post-reply R4 equality also passed. Reviewed #267 closeout remains pending.
 
 ## 2026-10-29 — OPS09 installed container client (#224)
 
@@ -208,4 +208,4 @@ Linux x64/arm64 root), read-only and credential-free. Its
 `ops.s14-service-evidence/v1` summary distinguishes actual service/identity/
 hardening/tmpfs/keyring/socket/image observations from pending route, computer,
 research, restart/reboot and backup evidence. It starts no container or model.
-Deterministic tests and that summary alone do not certify a host. The completed #256 evidence remains separately attributed; #267 owner-host acceptance is still required.
+Deterministic tests and that summary alone do not certify a host. The completed #256 evidence and [owner-Pi #267 acceptance](../evidence/s14-owner-pi-cutover.md) remain separately attributed; post-reply R4 equality also passed. Reviewed issue closeout remains pending.

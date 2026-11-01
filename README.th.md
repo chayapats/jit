@@ -1,4 +1,4 @@
-> **S14 default (2026-11-01):** Bare source serve/setup and new installation select fresh S14 state; `--s14` is retained and `--legacy` explicitly selects the historical pilot below. Existing configs with omitted `runtime` stay legacy. #267 owner-Pi first reply, consistent legacy bytes and prior-release rollback remain pending. See [cutover](docs/runbooks/s14-default-cutover.md).
+> **S14 default (2026-11-01):** Bare source serve/setup and new installation select fresh S14 state; `--s14` is retained and `--legacy` explicitly selects the historical pilot below. Existing configs with omitted `runtime` stay legacy. Owner-Pi first reply, full legacy-byte preservation through post-reply R4 and prior-release rollback are [recorded](docs/evidence/s14-owner-pi-cutover.md). See [cutover](docs/runbooks/s14-default-cutover.md).
 
 
 <div align="center">

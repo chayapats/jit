@@ -47,7 +47,9 @@ export async function collectS14ServiceEvidence(config: ServiceConfig, run: Comm
     const podman = ["podman", "--remote", "--url", `unix:///run/user/${uid}/podman/podman.sock`];
     const socket = await call(asUser([...podman, "info", "--format", "{{.Host.Security.Rootless}}"]));
     checks.podmanSocket = socket.exitCode === 0 && !socket.timedOut && socket.stdout.trim() === "true";
-    if (config.s14!.images) checks.botImages = (await Promise.all(Object.values(config.s14!.images).map(ref => call(asUser([...podman, "image", "exists", ref]))))).every(result => result.exitCode === 0 && !result.timedOut);
+    const images = config.s14!.images;
+    // buildInputsHash records provenance; only the two image references are Podman operands.
+    if (images) checks.botImages = (await Promise.all([images.base, images.browser].map(ref => call(asUser([...podman, "image", "exists", ref]))))).every(result => result.exitCode === 0 && !result.timedOut);
   }
   return { contract: "ops.s14-service-evidence/v1", architecture: process.arch, artifactId, schema, checks,
     computerReason: "computer_local_podman_required", readiness: "service_observations_only",

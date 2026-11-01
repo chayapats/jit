@@ -1,4 +1,4 @@
-> **S14 is the default for new source runs and installations.** It uses fresh Bot-first state beside retained legacy data. `--s14` remains an alias; `--legacy` selects the project-centric pilot explicitly. Existing service configs without `runtime` remain legacy. The owner-host first reply, consistent legacy-byte comparison and prior-release rollback remain #267 acceptance work. See the [cutover runbook](docs/runbooks/s14-default-cutover.md).
+> **S14 is the default for new source runs and installations.** It uses fresh Bot-first state beside retained legacy data. `--s14` remains an alias; `--legacy` selects the project-centric pilot explicitly. Existing service configs without `runtime` remain legacy. The owner-Pi first reply, complete legacy-byte preservation through post-reply R4, and actual prior-release rollback are recorded in the [cutover evidence](docs/evidence/s14-owner-pi-cutover.md). See the [cutover runbook](docs/runbooks/s14-default-cutover.md).
 
 <div align="center">
 
@@ -58,7 +58,7 @@ Schway owns execution loops, provider protocols, native sessions, compaction and
 
 ## Status
 
-Jit is a single-owner pilot. [#256](https://github.com/chayapats/jit/issues/256) closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`; its Linux x64/arm64 evidence remains attributed to the exact builds and routes in the [evidence record](docs/evidence/s14-mvp-evidence.md). Owner-unread reports and deferred assistive-technology/mobile permutations remain disclosed limits. The default change does not certify another host, route, browser or website. #267 still requires actual owner-Pi installation, first reply, byte preservation and prior-release rollback.
+Jit is a single-owner pilot. [#256](https://github.com/chayapats/jit/issues/256) closed after PR #304 merged at `143ca067e3728af94badfc2eb677b4f04a5cdb59`; its Linux x64/arm64 evidence remains attributed to the exact builds and routes in the [evidence record](docs/evidence/s14-mvp-evidence.md). Owner-unread reports and deferred assistive-technology/mobile permutations remain disclosed limits. The default change does not certify another host, route, browser or website. The separate [owner-Pi record](docs/evidence/s14-owner-pi-cutover.md) supplies actual installation, one tool-free first reply, full byte-preservation windows and prior-release rollback evidence. Complete post-reply R4 equality also passed.
 
 ## Quick start
 
