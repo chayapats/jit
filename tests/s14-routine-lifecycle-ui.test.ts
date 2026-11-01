@@ -278,6 +278,7 @@ test.each(["th", "en"] as const)("%s adding web tools shows the exact before and
   const landed = await propose(g, "jit", { "tool:web_search": "on", "tool:web_fetch": "on" });
   safe(landed.html, language);
   expect(landed.path).toContain("/team/jit/capabilities?proposal=");
+  expect(landed.html).toContain(words["s14.life.discard"]); expect(landed.html).not.toContain(words["s14.destroy.cancel"]);
   for (const value of [words["s14.life.now"], words["s14.life.after"], words["s14.life.adds"], words["s14.life.gain.web_search"], words["s14.life.not_1"], words["s14.life.impact_none"]]) expect(landed.html).toContain(value);
   expect(g.app.botLifecycle.view(g.auth.actor, "jit").bot).toEqual(before);
   const fields = formFields(landed.html, "/s14/forms/capability-accept");
@@ -352,6 +353,7 @@ test.each(["th", "en"] as const)("%s retire previews what stops and stays, then 
   const conversationId = g.app.home(g.auth.actor).conversations.find(item => item.botId === bot.id)!.id;
   await g.enable("Bot routine", { schedule: "interval", hours: "1", occurrences: "3", [`bot:${bot.id}`]: String(bot.revision) });
   const preview = await g.page(`/team/${bot.id}/retire`); safe(preview, language);
+  expect(preview).toContain(words["s14.life.retire.cancel"]); expect(preview).not.toContain(words["s14.destroy.cancel"]);
   for (const value of [words["s14.life.stops"], words["s14.life.stays"], words["s14.life.retire.stops_2"], words["s14.life.retire.stays_1"], words["s14.life.retire.again"], words["s14.life.computer_note"], words["s14.life.manifest"], "data-focus-on-load"]) expect(preview).toContain(value);
   expect(commandOf(preview, "bot.retire").payload).toMatchObject({ botId: bot.id, retain: { history: true, evidence: true } });
   expect(buttons(preview)).toContain(words["s14.life.retire.confirm"]);
@@ -377,6 +379,7 @@ test.each(["th", "en"] as const)("%s retire previews what stops and stays, then 
 test.each(["th", "en"] as const)("%s delete shows the exact binding and honest limits, and a deleted Bot has no way back", async language => {
   const g = await fixture(language), { words } = g, bot = await secondBot(g);
   const preview = await g.page(`/team/${bot.id}/delete`); safe(preview, language);
+  expect(preview).toContain(words["s14.life.delete.cancel"]); expect(preview).not.toContain(words["s14.destroy.cancel"]);
   for (const value of [words["s14.life.delete.lost"], words["s14.life.delete.does_1"], words["s14.life.delete.not_1"], words["s14.life.delete.not_3"], words["s14.life.delete.not_5"], words["s14.life.delete.kept"], words["s14.life.computer_note"], words["s14.life.manifest"]]) expect(preview).toContain(value);
   const command = commandOf(preview, "bot.delete"), current = g.app.botLifecycle.preview(g.auth.actor, bot.id, "delete");
   expect(command.payload.previewHash).toBe(current.hash); expect(preview).toContain(current.hash); expect(preview).toContain(current.conversations[0]!.id);

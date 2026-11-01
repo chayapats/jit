@@ -267,6 +267,7 @@ test.each(["th", "en"] as const)("each Bot is allowed one by one, with revocatio
   expect(commandOf(stopped.html, "personal.grant.set")).toMatchObject({ expectedRevision: 2, payload: { scopeId: command.payload.scopeId, active: true } });
   const revoke = await page(`/settings/google/connections/${connection.id}?action=revoke`);
   safe(revoke, language);
+  expect(revoke).toContain(words["s14.google.revoke.cancel"]); expect(revoke).not.toContain(words["s14.destroy.cancel"]);
   expect(revoke).toContain(words["s14.google.revoke.not_1"]); expect(revoke).toContain(words["s14.google.revoke.sibling"]);
   const revoked = await press(revoke, "personal.connection.revoke");
   expect(revoked.html).toContain(words["s14.google.state.revoked"]); expect(revoked.html).toContain(words["s14.google.revoked.remote_pending"]);
@@ -441,6 +442,7 @@ test("editing makes a new card with a field diff, invalidates the old hash, and 
   const before = await page(`/effects/${view.effect.id}`);
   const edit = await page(`/effects/${view.effect.id}?edit=1`), form = formFields(edit, "/s14/forms/draft-revise");
   safe(edit, "en");
+  expect(edit).toContain(words["s14.google.edit.cancel"]); expect(edit).not.toContain(words["s14.destroy.cancel"]);
   expect(form).toMatchObject({ to: "ada@example.test", cc: "ben@example.test", bcc: "cho@example.test", subject: "Quarterly numbers", draftHash: view.draft.hash });
   expect(edit).not.toContain('name="account"');
   const refused = await post("/s14/forms/draft-revise", { ...form, to: "not an address", subject: "Kept subject" }), refusedBody = await refused.text();
