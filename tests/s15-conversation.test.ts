@@ -29,7 +29,7 @@ function fixture(options: { turns?: ((turn: number, request: ModelRequest) => Pr
   const issued: ConversationAuthority = { id: "authority", purposeId: "assigned", policyRevision: 1, resources: ["workspace"], route: { provider: "codex", model: "scripted" }, limits: { modelCalls: 4, toolCalls: 4, outputBytes: 16384, activeMs: 60000 } };
   const policy: ConversationPolicy<Actor, Work> = {
     requireOwner(input) { if (!actors.has(input) || expired) throw new AppError("authentication_required", 401); return { id: "owner", generation: 1 }; },
-    prepareInterpretation(input) { this.requireOwner(input); return { state: "admitted", authority: { ...structuredClone(issued), limits: { ...issued.limits, modelCalls: 1, toolCalls: 0 } }, purposes: ["assigned"], resources: ["workspace"] }; },
+    prepareInterpretation(input) { this.requireOwner(input); return { state: "admitted", authority: { ...structuredClone(issued), resources: [], limits: { ...issued.limits, modelCalls: 1, toolCalls: 0 } }, purposes: ["assigned"], resources: ["workspace"] }; },
     admit(input, _request, intent) { this.requireOwner(input); if (revoked) return { state: "held", code: "authority_revoked" }; if (/new business/i.test(intent.instruction)) return { state: "proposed", code: "outside_scope" }; return { state: "admitted", authority: structuredClone(issued) }; },
     open(authority) { if (authority.policyRevision !== issued.policyRevision) throw new AppError("stale_authority"); const work = { authority }; contexts.add(work); return work; },
     guard(work) { if (!contexts.has(work) || revoked) throw new AppError("authority_revoked"); },
@@ -289,4 +289,11 @@ test("isolated owner-only context resolves a prior selection without treating as
   const other = fixture({ interpret: async () => ({ intent: "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: "issue:42" }) }), unselected = message("Start it");
   other.app.submit(other.actor, unselected); await other.app.drain();
   expect(other.app.view(other.actor, unselected.requestId)).toMatchObject({ state: "held", code: "material_ambiguity" }); expect(other.counts().calls).toBe(0);
+});
+
+test("missing interpretation budget holds before any inference, context disclosure or tool open", async () => {
+  const f = fixture(), command = message(); f.policy.prepareInterpretation = () => ({ state: "held", code: "finite_budget_required" });
+  f.app.submit(f.actor, command); await f.app.drain();
+  expect(f.app.view(f.actor, command.requestId)).toMatchObject({ state: "held", code: "finite_budget_required", authority: null, interpretation: null });
+  expect(f.interpretationRequests).toEqual([]); expect(f.counts()).toMatchObject({ opens: 0, calls: 0, charges: 0 });
 });
