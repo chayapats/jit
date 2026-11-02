@@ -1,5 +1,7 @@
 # Jit visual system
 
+The owner-approved S14 Plain replacement uses its warm monochrome palette and shell dimensions from `src/s14/web-design.ts`, preserving the same contrast, local-font and token-lint rules. See [S14 Plain](S14-plain-experience.md) and [ADR 0062](../adr/0062-s14-browser-navigation-and-drafts.md). The shared tokens and historical legacy evidence below remain unchanged.
+
 Status: confirmed direction for [S09](../specs/S09-main-bot-and-chat-first-ui.md) (owner decisions S09-D05, D06, D08, D10–D13). UX01 checked the token values below against contrast tests. One value changed: light `--warn` went from `#a16207` to `#8f5706`, because the original was 4.47:1 on `--surface-2`. They are now implemented in `src/web-design.ts` (`ui.design_tokens/v1`, see [the contract](../contracts/web-design-system-v1.md)). Change values there and here together.
 
 ## Principles

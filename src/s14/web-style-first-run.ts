@@ -7,7 +7,7 @@ export function s14FirstRunStyleSheet(): string {
 .s-setup-card .s-sub { line-height: 1.6; }
 .s-setup-card form { margin: 0; }
 .s-providers { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.s-provider { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 16px; background: var(--surface-1); border: 1px solid var(--line-strong); border-radius: var(--radius-card); min-width: 0; }
+.s-provider { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 16px 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; }
 .s-provider[data-ready] { border-color: var(--ok-line); }
 .s-provider > div:first-child { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .s-provider b { font-weight: 600; font-size: var(--size-chat); }

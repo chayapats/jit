@@ -11,6 +11,7 @@ import { s14RoutineStyleSheet } from "./web-style-routines";
 import { s14PersonalStyleSheet } from "./web-style-personal";
 import { s14SharingStyleSheet } from "./web-style-sharing";
 import { s14TeamStyleSheet } from "./web-style-team";
+import { CREDENTIAL_PATTERNS } from "../security/credentials";
 
 /** S14-only hashed assets; the legacy table keeps serving the fonts, base stylesheet and favicon unchanged. */
 export type S14AssetName = "s14.css" | "s14.js";
@@ -20,7 +21,8 @@ function asset(name: S14AssetName, contentType: string, source: string): StaticA
 }
 const own: ReadonlyMap<S14AssetName, StaticAsset> = new Map<S14AssetName, StaticAsset>([
   ["s14.css", asset("s14.css", "text/css; charset=utf-8", s14StyleSheet() + s14MemoryStyleSheet() + s14TeamStyleSheet() + s14FirstRunStyleSheet() + s14SharingStyleSheet() + s14RoutineStyleSheet() + s14CodingStyleSheet() + s14BackupStyleSheet() + s14PersonalStyleSheet())],
-  ["s14.js", asset("s14.js", "text/javascript; charset=utf-8", readFileSync(join(import.meta.dir, "web-enhance.js"), "utf8"))],
+  // Only public detector shapes enter the browser. Registered secrets/fingerprints never leave the service.
+  ["s14.js", asset("s14.js", "text/javascript; charset=utf-8", `const s14DraftCredentialPatterns = ${JSON.stringify(CREDENTIAL_PATTERNS.map(({ pattern }) => [pattern.source, pattern.flags.replace("g", "")]))}.map(([source, flags]) => new RegExp(source, flags));\n` + readFileSync(join(import.meta.dir, "web-enhance.js"), "utf8"))],
 ]);
 const byPath = new Map([...own.values()].map(item => [item.path, item]));
 /** Content-hashed URL of one S14 or shared browser asset. */

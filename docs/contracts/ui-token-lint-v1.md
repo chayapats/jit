@@ -1,5 +1,7 @@
 # `ui.token_lint/v1` — token-only stylesheet check
 
+The owner-approved S14 Plain palette and shell dimensions live in `src/s14/web-design.ts`; legacy/shared values remain in `src/web-design.ts`. All existing S14 stylesheet targets retain the same literal-value, hover and motion checks. Plain theme contrast is additionally verified in `tests/s14-browser-navigation.test.ts` against the same foreground/background pairs.
+
 Owner: Jit #112 (S10 UX04). Status: implemented. Spec: [S10](../specs/S10-reliability-and-owner-integrations.md) (S10-AC10, NFR-13, NFR-11). Visual values: [design/README.md](../design/README.md). Tokens: `ui.design_tokens/v1` (see [web-design-system-v1](web-design-system-v1.md)).
 
 | Contract | Public entry and behavior |

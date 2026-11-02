@@ -42,8 +42,7 @@ export interface S14Chat { conversation: Conversation; messages: Message[]; prop
 /** Server-rendered surface selected from the URL; every variant carries only typed query data. */
 export type S14View =
   | { kind: "setup"; draft: { ownerName: string; language: Locale } | null; notice: string | null; providers: S14SetupProviders }
-  | { kind: "home"; conversation: Conversation; bot: Bot; draft: S14Draft | null; notice: string | null }
-  | { kind: "chat"; chat: S14Chat; bot: Bot; draft: S14Draft | null; notice: string | null; pane: { view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null; team: S14WorkTeam; coding?: S14WorkCoding | null } | null }
+  | { kind: "chat"; chat: S14Chat; bot: Bot; draft: S14Draft | null; notice: string | null; sent?: string | null; pane: { view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null; team: S14WorkTeam; coding?: S14WorkCoding | null } | null }
   | { kind: "work-list" }
   | { kind: "work"; view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null; team: S14WorkTeam; conversation: Conversation; bot: Bot; coding?: S14WorkCoding | null }
   | { kind: "team" }
@@ -70,7 +69,7 @@ export interface S14Product {
   failure(locale: Locale, code: string, next: string): string;
   overview(actor: OwnerActor, state: Home, work: Work[]): S14Overview;
   /** Awaited because provider readiness reads the protected store; it stays local and makes no inference. */
-  view(url: URL, actor: OwnerActor, state: Home, locale: Locale): S14View | Promise<S14View>;
+  view(url: URL, actor: OwnerActor, state: Home, locale: Locale, navigation?: { lastJitConversationId: string | null }): S14View | Promise<S14View>;
   command(form: string, fields: Record<string, unknown>, actor: OwnerActor, state: Home, locale: Locale): S14Command;
   /** A read-only step of a form: it renders a review and commits nothing. A refused review takes the same path as a refused command. */
   review?(form: string, fields: Record<string, unknown>, actor: OwnerActor, state: Home, locale: Locale): S14View | null;
@@ -148,7 +147,7 @@ const ownerLanguage = (app: S14Application): Locale | null => { const row = app.
 /** Binds the product routes to one application; it reads queries and builds typed commands, and decides nothing. */
 export function createS14Product(app: S14Application): S14Product {
   const main = (state: Home) => {
-    const conversation = state.conversations.find(c => c.botId === "jit") ?? state.conversations[0], bot = state.bots.find(b => b.id === conversation?.botId);
+    const conversation = state.conversations.find(c => c.botId === "jit") ?? app.store.read(tx => tx.get<Conversation>("SELECT id,bot_id AS botId,revision FROM conversations WHERE bot_id='jit' ORDER BY rowid DESC LIMIT 1")), bot = state.bots.find(b => b.id === conversation?.botId);
     if (!conversation || !bot) throw new AppError("not_found", 404); return { conversation, bot };
   };
   const botOf = (state: Home, id: string) => { const bot = state.bots.find(b => b.id === id); if (!bot) throw new AppError("not_found", 404); return bot; };
@@ -174,10 +173,17 @@ export function createS14Product(app: S14Application): S14Product {
       for (const reply of state.replies) if (reply.state === "running") team.botStates[reply.snapshot.bot.id] = "working";
       return { views, effects: views.flatMap(view => view.effects), ...team, scopes: scopeChoices(app, actor, state.bots), recovery: recoverySummary(app, actor, views), routines: routineAttention(app, actor, work), lifecycles: lifecycleOverview(app, actor, state.bots), personal: personalOverview(app, actor, views, state), computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
     },
-    async view(url, actor, state, locale) {
+    async view(url, actor, state, locale, navigation) {
       if (!state.owner) return { kind: "setup", draft: null, notice: null, providers: await setupProviders(app, actor, url) };
       const path = url.pathname, limits = limitValues(app.graph.defaults(actor));
-      if (path === "/") return { kind: "home", ...main(state), draft: example(locale, url, limits), notice: null };
+      if (path === "/") {
+        let target = main(state).conversation.id;
+        if (navigation?.lastJitConversationId) try {
+          const read = app.conversation(actor, navigation.lastJitConversationId);
+          if (read.conversation.botId === "jit") target = read.conversation.id;
+        } catch (error) { if (!(error instanceof AppError) || !["not_found", "invalid_identity"].includes(error.code)) throw error; }
+        return { kind: "chat", chat: chat(actor, target), bot: botOf(state, "jit"), draft: example(locale, url, limits), notice: null, pane: null };
+      }
       if (path === "/work") return { kind: "work-list" };
       if (path === "/team") return { kind: "team" };
       if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences."), attention: app.attention.view(actor).setting, attentionSaved: !!committed(app, actor, url, "attention.set") };
@@ -190,7 +196,9 @@ export function createS14Product(app: S14Application): S14Product {
         const read = chat(actor, id), workId = url.searchParams.get("work"), source = read.messages.find(m => m.id === url.searchParams.get("start") && m.role === "owner");
         const pane = workId ? app.authority.view(actor, workId) : null;
         if (pane && pane.work.conversationId !== id) throw new AppError("not_found", 404);
-        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...limits, text: source.text, work: true, completion: "", evidence: "", bots: [] } : redoDraft(app, actor, id, url.searchParams.get("redo")), notice: null, pane: pane ? { view: pane, tab: tab(url), research: workResearch(app, actor, pane), team: paneTeam(actor, pane, url), coding: tab(url) === "coding" ? workCoding(app, actor, pane) : null } : null };
+        const receipt = committed<{ kind: string; requestId: string; conversation?: Conversation; work?: Work }>(app, actor, url, "");
+        const sent = receipt && ((receipt.kind === "message.post" && receipt.conversation?.id === id) || (receipt.kind === "work.start" && receipt.work?.conversationId === id)) ? receipt.requestId : null;
+        return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft: source ? { ...limits, text: source.text, work: true, completion: "", evidence: "", bots: [] } : redoDraft(app, actor, id, url.searchParams.get("redo")), notice: null, sent, pane: pane ? { view: pane, tab: tab(url), research: workResearch(app, actor, pane), team: paneTeam(actor, pane, url), coding: tab(url) === "coding" ? workCoding(app, actor, pane) : null } : null };
       }
       if (area === "work") {
         const view = app.authority.view(actor, id), conversation = app.conversation(actor, view.work.conversationId).conversation;
@@ -242,7 +250,6 @@ export function createS14Product(app: S14Application): S14Product {
       if (form !== "compose") return codingRecover(app, form, fields, code, actor, state) ?? memoryRecover(app, form, fields, code, actor, state) ?? teamRecover(app, form, fields, code, actor) ?? sharingRecover(app, form, fields, code, actor, state) ?? statementRecover(app, form, fields, code, actor) ?? routineRecover(app, form, fields, code, actor) ?? lifecycleRecover(app, form, fields, code, actor, state) ?? personalRecover(app, form, fields, code, actor, state);
       // Credential-shaped text is not echoed back into the page.
       const draft = draftOf(fields, code !== "credential_content_refused", limitValues(app.graph.defaults(actor))), conversationId = single(fields, "conversationId");
-      if (single(fields, "from") === "home") return { kind: "home", ...main(state), draft, notice: code };
       const read = chat(actor, conversationId);
       return { kind: "chat", chat: read, bot: botOf(state, read.conversation.botId), draft, notice: code, pane: null };
     },
@@ -251,13 +258,13 @@ export function createS14Product(app: S14Application): S14Product {
       if (receipt.kind === "setup") return "/";
       if (receipt.kind === "conversation.create") return `/chats/${receipt.conversation!.id}`;
       if (receipt.kind === "owner.preferences.set") return `/more?receipt=${receipt.requestId}`;
-      if (receipt.kind === "message.post") return `/chats/${receipt.conversation!.id}#latest`;
+      if (receipt.kind === "message.post") return `/chats/${receipt.conversation!.id}?receipt=${receipt.requestId}#latest`;
       if (receipt.kind === "bot.proposal.accept") return `/team/${receipt.bot!.id}`;
       if (receipt.kind === "bot.proposal.reject" || receipt.kind === "bot.proposal.revise") return `/proposals/${receipt.proposal!.id}`;
       if (receipt.kind === "approval.decide") return `/effects/${receipt.effect!.id}`;
       if (receipt.kind.startsWith("computer.") || receipt.kind.startsWith("takeover.")) return computerPath((receipt as ComputerReceipt).computer!.botId, receipt.kind === "takeover.start" ? "#screen" : "");
       const work = (receipt as AuthorityReceipt).work!;
-      return `/chats/${work.conversationId}?work=${work.id}#latest`;
+      return `/chats/${work.conversationId}?work=${work.id}${receipt.kind === "work.start" ? `&receipt=${receipt.requestId}` : ""}#latest`;
     },
     inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
     backupSurface,

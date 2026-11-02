@@ -139,17 +139,17 @@ test.each(["th", "en"] as const)("%s quiet runs make no noise while failures and
   await g.run(61);
   const quiet = await g.page(`/routines/${id}`); safe(quiet, language);
   expect(quiet).toContain(words["s14.routine.run.quiet"]); expect(quiet).toContain(words["s14.routine.quiet_note"]);
-  const calm = await g.page("/"); expect(calm).not.toContain(words["s14.attention.routine.failed"]); expect(calm).toContain(words["s14.attention.none"]);
+  const calm = await g.page("/work"); expect(calm).not.toContain(words["s14.attention.routine.failed"]); expect(calm).toContain(words["s14.attention.none"]);
   expect(g.app.attention.view(g.auth.actor).items).toHaveLength(0);
   g.holder.output = { state: "ready", text: '{"outcome":"failed","reason":"source was down"}' };
   await g.run(61);
-  const home = await g.page("/"); safe(home, language);
+  const home = await g.page("/work"); safe(home, language);
   expect(home).toContain(words["s14.attention.group.routines"]); expect(home).toContain(words["s14.attention.routine.failed"]); expect(home).toContain("Quiet routine"); expect(home).toContain(`href="/routines/${id}"`);
   const failed = await g.page(`/routines/${id}`); expect(failed).toContain(words["s14.routine.latest_failed"]); expect(failed).toContain(words["s14.routine.run.failed"]);
   expect(await g.page("/work")).toContain(words["s14.attention.routine.failed"]);
   g.holder.output = { state: "ready", text: '{"outcome":"no_update"}' };
   await g.run(61);
-  expect(await g.page("/")).not.toContain(words["s14.attention.routine.failed"]);
+  expect(await g.page("/work")).not.toContain(words["s14.attention.routine.failed"]);
   expect(await g.page(`/routines/${id}`)).toContain(words["s14.routine.run.failed"]);
 });
 
@@ -160,7 +160,7 @@ test("a run report shows once per routine and is listed without raising the badg
   g.app.execute(g.auth.actor, { kind: "attention.set", requestId: retryId(), expectedRevision: 0, payload: { level: "all" } });
   await g.enable("Report routine", { schedule: "interval", hours: "1", occurrences: "6" });
   await g.run(61); await g.run(61);
-  const home = await g.page("/");
+  const home = await g.page("/work");
   expect(home).toContain(words["s14.attention.group.updates"]); expect(home.match(new RegExp(words["s14.attention.routine.report"], "g"))).toHaveLength(1);
   expect(home).not.toContain(`${words["s14.nav.waiting"]} 1`);
 });
@@ -189,8 +189,8 @@ test.each(["no_update", "failed"] as const)("old open routine decisions survive 
   expect(() => g.app.routines.attention({ ownerId: "owner" })).toThrow("authentication_required");
   for (const path of ["/", "/work"]) {
     const html = await g.page(path);
-    expect(html).toContain(g.words["s14.attention.routine.decision"]);
-    expect(html).toContain(`href="/routines/${routineId}#findings"`);
+    if (path === "/") expect(html).toContain('href="/work#s14-work-waiting"');
+    else { expect(html).toContain(g.words["s14.attention.routine.decision"]); expect(html).toContain(`href="/routines/${routineId}#findings"`); }
     expect(html).toContain(`${g.words["s14.nav.waiting"]} ${summary.needs.length}`);
   }
   const proposal = g.app.authority.list(g.auth.actor).find(work => work.title === "Old open finding")!;
@@ -203,7 +203,7 @@ test.each(["th", "en"] as const)("%s findings are proposals that grant nothing, 
   const g = await fixture(language, { state: "ready", text: "Found something", proposals: [finding] }), { words } = g;
   await g.enable(hostile, { schedule: "interval", hours: "1", occurrences: "3" });
   await g.run(61);
-  const routine = g.routines()[0]!.routine, list = await g.page("/routines"), detail = await g.page(`/routines/${routine.id}`), home = await g.page("/");
+  const routine = g.routines()[0]!.routine, list = await g.page("/routines"), detail = await g.page(`/routines/${routine.id}`), home = await g.page("/work");
   for (const html of [list, detail, home]) safe(html, language);
   expect(buttons(detail).join(" ")).not.toContain("Approve all"); expect(buttons(list).join(" ")).not.toContain("Approve all");
   expect(detail).toContain(words["s14.routine.finding_note"]); expect(detail).toContain(words["s14.routine.finding_tag"]);
@@ -254,9 +254,9 @@ test("exhausted routines say so and a changed Bot blocks a routine until the own
   const blocked = await g.page(`/routines/${bound.id}`); safe(blocked, "en");
   expect(blocked).toContain(words["s14.routine.blocked_title"]); expect(blocked).toContain(words["s14.routine.reason.bot_authority_changed"]);
   expect(hasCommand(blocked, "routine.resume")).toBe(false); expect(hasCommand(blocked, "routine.revoke")).toBe(true);
-  expect(await g.page("/")).toContain(words["s14.attention.routine.blocked"]);
+  expect(await g.page("/work")).toContain(words["s14.attention.routine.blocked"]);
   await g.press(blocked, "routine.revoke");
-  expect(await g.page("/")).not.toContain(words["s14.attention.routine.blocked"]);
+  expect(await g.page("/work")).not.toContain(words["s14.attention.routine.blocked"]);
 });
 
 test("an unknown or failed optional notification stays honest in history", async () => {
@@ -267,7 +267,7 @@ test("an unknown or failed optional notification stays honest in history", async
   f.clock.now += 61000; f.app.routines.tick(); await f.app.authority.drain(); f.app.store.transaction(tx => f.app.routines.reconcile(tx)); await f.app.attention.drain();
   const html = await page(`/routines/${routine.id}`);
   expect(html).toContain(dictionaries.en["s14.routine.delivery.unknown"]);
-  expect(await page("/")).toContain(dictionaries.en["s14.routine.delivery.unknown"]);
+  expect(await page("/work")).toContain(dictionaries.en["s14.routine.delivery.unknown"]);
 });
 
 test.each(["th", "en"] as const)("%s adding web tools shows the exact before and after, and acceptance reads as intent until it settles", async language => {

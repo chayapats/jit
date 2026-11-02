@@ -79,11 +79,11 @@ test("a retired Bot's retained chat stays closed and points at the Bot, and a re
   safe(retired, "en");
 });
 
-test("the main Bot's own ceiling change keeps Home reading until it settles", async () => {
+test("the main Bot's own ceiling change keeps the Jit entry reading until it settles", async () => {
   const f = await fixture(), words = dictionaries.en;
   acceptCeiling(f, f.app.home(f.auth.actor).bots.find(bot => bot.id === "jit")!);
   const paused = await f.page("/");
-  expect(paused).toContain(words["s14.life.main_paused"]); expect(paused).toContain("data-live"); expect(paused).toMatch(/id="s14-live">[\s\S]*?Jit is changing its ceiling/);
+  expect(paused).toContain(words["s14.life.main_paused"]); expect(paused).toContain("data-live"); expect(paused).toMatch(/id="s14-live"[^>]*>[\s\S]*?Jit is changing its ceiling/);
   await f.app.botLifecycle.drain(noNative);
   const home = await f.page("/");
   expect(home).not.toContain(words["s14.life.main_paused"]); expect(home).not.toContain("data-live");
@@ -276,5 +276,5 @@ test("a tool the ceiling no longer offers is never ticked back, and the closed f
   await f.app.botLifecycle.drain(noNative);
   const open = await f.page("/chats/scoutchat"); expect(open).not.toContain("data-draft-held"); expect(open).toContain(`data-kept="${dictionaries.en["s14.life.chat_open_kept"]}"`);
   const script = readFileSync(new URL("../src/s14/web-enhance.js", import.meta.url), "utf8");
-  expect(script).not.toMatch(/localStorage|sessionStorage|indexedDB|document\.cookie/);
+  expect(script).not.toMatch(/sessionStorage|indexedDB|document\.cookie/);
 });

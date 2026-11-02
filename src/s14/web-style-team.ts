@@ -61,7 +61,7 @@ export function s14TeamStyleSheet(): string {
 .s-revs small { color: var(--fg-3); font-size: var(--size-xs); }
 .s-rev-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--fg-3); font-size: var(--size-xs); }
 @media (hover: hover) and (pointer: fine) { .s-revs a:hover { background: var(--surface-2); } }
-.s-claim { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-card); min-width: 0; scroll-margin-top: 72px; }
+.s-claim { display: flex; flex-direction: column; gap: 10px; padding: 16px 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; scroll-margin-top: 72px; }
 .s-claim:target { border-color: var(--fg); }
 .s-pane .s-claim { background: var(--bg); }
 .s-cites { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
@@ -70,7 +70,7 @@ export function s14TeamStyleSheet(): string {
 .s-cite { flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--radius-control); color: var(--fg); font-size: var(--size-xs); }
 @media (hover: hover) and (pointer: fine) { .s-cite:hover { background: var(--fg); color: var(--on-fg); border-color: var(--fg); } }
 .s-files { display: flex; flex-direction: column; gap: 8px; }
-.s-file { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-control); min-width: 0; }
+.s-file { display: flex; flex-direction: column; gap: 10px; padding: 16px 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; }
 .s-pane .s-file { background: var(--bg); }
 .s-file .s-btn { align-self: flex-start; }
 .s-review { scroll-margin-top: 72px; }

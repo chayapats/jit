@@ -137,7 +137,7 @@ async function firstConversation() {
   expect(setup).toMatchObject({ language: "th", "tool:web_search": "on", "tool:web_fetch": "on" });
   expect(Object.keys(setup)).toContain("routeId"); expect(setup.routeId).toBe("codex");
   const posted = await f.post("/s14/forms/setup", { ...setup, ownerName: "พลอย" }); expect(posted.status).toBe(303); expect(posted.headers.get("location")).toBe("/");
-  const home = await (await f.get("/")).text(); expect(home).toContain("พลอย"); strict(home, "th");
+  const home = await (await f.get("/")).text(); expect(home).toContain(words["s14.chat.empty_jit"]); expect(await (await f.get("/more")).text()).toContain("พลอย"); strict(home, "th");
   const compose = fields(formsFor(home, "/s14/forms/compose")[0]!);
   const sent = await f.post("/s14/forms/compose", { ...compose, text: "สวัสดีจิต" }); expect(sent.status).toBe(303);
   await f.app.drainReplies();
@@ -313,7 +313,7 @@ test("a reply that fails names one next step, and the home page keeps its way to
   await f.post("/s14/forms/compose", { ...fieldsOf, text: "hello" }); await f.app.drainReplies();
   const html = await f.page(`/chats/${f.conversationId}`);
   expect(html).toContain(f.words["s14.reply.blocked"]); expect(html).not.toContain(`href="/settings/provider">${f.words["s14.reply.check_provider"]}`); expect(html).not.toContain("provider said no");
-  expect(await f.page("/")).toContain('class="s-home-chats"');
+  expect(await f.page("/")).toContain('class="s-mobile-nav"'); expect(await f.page("/")).toContain('class="s-chat-list"');
 });
 
 test("the refusal page is the default, read-only, explains in both languages and offers no form", async () => {
