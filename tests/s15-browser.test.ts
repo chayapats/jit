@@ -254,3 +254,9 @@ test('P1 cancellation withholds an observation captured after the tool signal wa
   expect(result.isError).toBe(true); expect(JSON.parse(result.content)).toMatchObject({ state: 'denied', code: 'cancelled' });
   expect(result.content).not.toContain('Observed content');
 });
+
+test('P1 an engine readiness timeout reports uncertainty without a successful input or any send', async () => {
+  const f = await setup(); f.engine.beforeInput = async () => { const error = new Error('fixture deadline'); error.name = 'TimeoutError'; throw error; };
+  expect(await f.execute({ kind: 'click', target: 'e1_1' })).toMatchObject({ state: 'unknown', code: 'operation_timeout' });
+  expect(f.engine.physicalInputs).toBe(0); expect(f.engine.sent).toBe(1);
+});

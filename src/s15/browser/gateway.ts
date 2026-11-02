@@ -71,6 +71,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         for (const action of s.verified) continuity.settle(action);
         return { state: 'ok', generation };
       } catch (e) {
+        if (e instanceof Error && e.name === 'TimeoutError') interrupt(s, 'operation_timeout');
         if (s.failure) return failure(s);
         if (s.released) { interrupt(s, 'operation_unavailable'); return failure(s); }
         return { state: 'unsupported', code: e instanceof BrowserError ? e.code : 'operation_unavailable' };
@@ -152,6 +153,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       s.held.resolve({ state: 'held', code: prepared.decision.code, action: ref(prepared.action) });
       await completion.promise;
     } catch (error) {
+      if (error instanceof Error && error.name === 'TimeoutError') interrupt(s, 'operation_timeout');
       const code = error instanceof BrowserError || error instanceof Error && 'code' in error && typeof error.code === 'string' ? (error as { code: string }).code : 'request_unavailable';
       if (wire.document) s?.held.resolve({ state: 'unsupported', code });
       await wire.deny();
