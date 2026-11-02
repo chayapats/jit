@@ -1,7 +1,7 @@
 import { readServiceConfigFile } from "../ops/package/service-config";
 
 /** Resolved CLI dispatch; args contain only the selected runtime's supported spelling. */
-export interface RuntimeSelection { runtime: "s14" | "legacy" | "service"; args: string[] }
+export interface RuntimeSelection { runtime: "s14" | "legacy" | "service" | "adoption"; args: string[] }
 
 /** Safe bootstrap refusal; selection never opens application databases, locks, hosts or credentials. */
 export class RuntimeSelectionError extends Error {}
@@ -19,11 +19,16 @@ export function selectRuntime(args: string[], env: NodeJS.ProcessEnv = process.e
   const separator = args.indexOf("--");
   const options = separator < 0 ? args : args.slice(0, separator);
   const literal = separator < 0 ? [] : args.slice(separator);
-  const selectors = options.filter(arg => arg === "--s14" || arg === "--legacy");
+  const selectors = options.filter(arg => arg === "--s14" || arg === "--legacy" || arg === "--s15");
   if (selectors.length > 1) refuse("conflicting_or_duplicate_runtime_selector");
-  const [command, ...optionRest] = options.filter(arg => arg !== "--s14" && arg !== "--legacy");
+  const [command, ...optionRest] = options.filter(arg => arg !== "--s14" && arg !== "--legacy" && arg !== "--s15");
   const rest = [...optionRest, ...literal];
   if (!command || args[0] !== command) refuse("invalid_runtime_command");
+  if (command === "adoption") {
+    if (selectors[0] !== "--s15" || literal.length || optionRest.length !== 3 || optionRest[0] !== "--report" || optionRest[1] !== "--config" || !optionRest[2] || optionRest[2].startsWith("--")) refuse("explicit_s15_adoption_report_required");
+    return { runtime: "adoption", args: [command, "--s15", ...optionRest] };
+  }
+  if (selectors[0] === "--s15") refuse("s15_requires_explicit_adoption");
   const explicit = selectors[0] === "--s14" ? "s14" : selectors[0] === "--legacy" ? "legacy" : undefined;
   if (command === "service") {
     // Operator selection remains explicit/config-selected, including its historical /etc/jit default.
