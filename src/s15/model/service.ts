@@ -11,7 +11,7 @@ const clone = <T>(value: T): T => JSON.parse(canonical(value)) as T;
 const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 function route(value: ApprovedModelRoute): void {
   canonical(value); exact(value, ['selection', 'provider', 'modelId', 'account', 'billing', 'recipient', 'charge', 'availability', 'efforts', 'effortEvidence', 'upperBound', 'rank']);
-  selection(value.selection); id(value.modelId); [value.account, value.billing, value.recipient].forEach(ref);
+  selection(value.selection); string(value.modelId, 128); if (!value.modelId) fail('route_unavailable'); [value.account, value.billing, value.recipient].forEach(ref);
   if (!['codex', 'grok'].includes(value.provider) || !['subscription', 'metered'].includes(value.charge) || !['available', 'unavailable', 'quota'].includes(value.availability) || !['requested_only', 'adapter_mapped'].includes(value.effortEvidence)) fail('route_unavailable');
   if (!Array.isArray(value.efforts) || value.efforts.some(level => !levels.includes(level)) || !value.efforts.includes(value.selection.effort as ThinkingLevel)) fail('effort_unsupported');
   if (value.upperBound !== null) { vector(value.upperBound); if (value.upperBound.calls < 1 || value.upperBound.activeMs < 1 || value.upperBound.steps < 1) fail('cost_unknown'); }

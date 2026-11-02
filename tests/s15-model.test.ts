@@ -27,6 +27,11 @@ test('ordinary and difficult steps select approved models and record exact ratio
   const published: string[] = []; service.publish(source.actor!, 'hard', text => published.push(text)); expect(published).toEqual(['Completed the selected step.']);
 });
 
+test('actual approved provider model names preserve punctuation independently of catalog ref IDs', async () => {
+  const { f, source, service } = setup(); f.routes[0]!.modelId = 'fixture.model.v1';
+  expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'completed', route: { modelId: 'fixture.model.v1', selection: ordinary } });
+});
+
 test('explicit owner model/effort pins are honored, and unavailable pinned authors never fall back', async () => {
   const { f, source, service, requests } = setup(); f.pins = { route: null, model: difficult.model, effort: 'high' };
   expect(await service.runStep(source.actor!, step())).toMatchObject({ reason: 'owner_pin', route: { selection: difficult } });
