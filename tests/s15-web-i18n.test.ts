@@ -4,8 +4,6 @@ import { join } from "node:path";
 import { dictionaries } from "../src/i18n";
 import { s15WebEn } from "../src/i18n/s15-web-en";
 import { s15WebTh } from "../src/i18n/s15-web-th";
-import { s15ActionsEn } from "../src/i18n/s15-actions-en";
-import { s15ActionsTh } from "../src/i18n/s15-actions-th";
 
 // UX15-01 dictionary freeze: every key the S15 Web UI can render exists in Thai and English.
 const directory = join(import.meta.dir, "../src/s15/web");
@@ -42,7 +40,6 @@ test("every S15 Web key, literal or computed, exists in both Thai and English wi
     expect({ locale, key, present: typeof value === "string" && value.trim().length > 0 }).toEqual({ locale, key, present: true });
   }
   expect(Object.keys(s15WebEn).sort()).toEqual(Object.keys(s15WebTh).sort());
-  expect(Object.keys(s15ActionsEn).sort()).toEqual(Object.keys(s15ActionsTh).sort());
 });
 
 test("the handoff §10.2 core keys used by UX15-01 keep their authored Thai and English copy", () => {
@@ -55,6 +52,12 @@ test("the handoff §10.2 core keys used by UX15-01 keep their authored Thai and 
     ["s15.budget.unknown", "ไม่ทราบ", "Unknown"], ["s15.model.no_switch", "จิตไม่เปลี่ยนไปใช้บัญชีอื่นเอง", "Jit won’t switch to another account on its own"],
   ];
   for (const [key, thai, english] of authored) { expect((dictionaries.th as Record<string, string>)[key]).toBe(thai); expect((dictionaries.en as Record<string, string>)[key]).toBe(english); }
+});
+
+test("UX15-02/03/06 Thai product copy lives only in th.ts, with no extra Thai dictionary module", () => {
+  const i18n = join(import.meta.dir, "../src/i18n"), th = readFileSync(join(i18n, "th.ts"), "utf8");
+  expect(readdirSync(i18n).filter(name => name.startsWith("s15-actions"))).toEqual([]);
+  for (const key of ["s15.hold.send_once", "s15.slip.page_title", "s15.duty.title", "s15.browser.hand_back", "s15.rules.recurring_set"]) expect(th).toContain(`"${key}":`);
 });
 
 test("the handoff §10.2 keys used by UX15-02/03/06 keep their authored Thai and English copy", () => {
