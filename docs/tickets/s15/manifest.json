@@ -327,7 +327,20 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/BROW15-01.md"
+      "path": "docs/tickets/s15/BROW15-01.md",
+      "boundedPreparation": {
+        "status": "proposed_pre_admission_documentation_only",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contract": "docs/contracts/s15-protected-browser-v1.md",
+        "adr": "docs/adr/0068-s15-protected-browser-operations-and-evidence.md",
+        "evidence": "docs/evidence/s15-browser-contract-preparation.md",
+        "fixtures": "docs/contracts/fixtures/s15-protected-browser-v1.json",
+        "schema": "docs/contracts/fixtures/s15-protected-browser-v1.schema.json",
+        "nativeBlocker": 321,
+        "implementationAdmission": false,
+        "finalFreeze": false,
+        "acceptanceSatisfied": false
+      }
     },
     {
       "key": "CHAT15-01",

@@ -81,3 +81,7 @@ UX15-00 supplies the required authored handoff across all cases; EVID15-01 recor
 - Every implementation PR closes only its own ticket, records tested SHA/contracts/evidence, and is not merged by its implementer. The current documentation PR closes DOC15-01, not the S15 design parent.
 
 Native GitHub parent/blocking relations mirror the direct dependency keys in [the manifest](s15/manifest.json). Verify actual graph edges and labels after publication. No implement-parallel/coordinator/claim workflow applies.
+
+## BROW15-01 bounded preparation
+
+Owner-authorized documentation-only step 1 preparation proposes [s15-protected-browser/v1](../contracts/s15-protected-browser-v1.md), [ADR 0068](../adr/0068-s15-protected-browser-operations-and-evidence.md), complete unexecuted synthetic definitions and a [preparation record](../evidence/s15-browser-contract-preparation.md) against main `64f3a94726fdbce2283aec0944884ca7406d9934`. #322 remains blocked / needs triage with native #321 OPEN and every implementation acceptance criterion outstanding. Exact reviewed #318/#320/#321 inputs remain unmerged proposals pending reconciliation with their actual merged reviewed revisions and implementation evidence. This advances no runtime admission, final freeze, live browser/VM support, UI/UX or activation; RT15-01 and RF15-G01–G08 remain unproven. Open runtime blockers do not prohibit bounded static preparation. The preparation PR uses Refs #322 and leaves the issue open with no merge.

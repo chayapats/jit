@@ -1,0 +1,3810 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jit.invalid/contracts/s15-protected-browser-v1.schema.json",
+  "$ref": "#/$defs/DocumentV1",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "Nat": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Pos": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Text": {
+      "type": "string",
+      "maxLength": 32768
+    },
+    "RefV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "generation": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "BlobV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "mediaType": {
+          "enum": [
+            "text/plain",
+            "image/png",
+            "application/octet-stream",
+            "application/json"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "bytes",
+        "mediaType"
+      ],
+      "additionalProperties": false
+    },
+    "BytesV1": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string",
+          "maxLength": 2796204
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "base64",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "VectorV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "$ref": "#/$defs/Nat"
+        },
+        "steps": {
+          "$ref": "#/$defs/Nat"
+        },
+        "calls": {
+          "$ref": "#/$defs/Nat"
+        },
+        "reads": {
+          "$ref": "#/$defs/Nat"
+        },
+        "outputBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "activeMs": {
+          "$ref": "#/$defs/Nat"
+        },
+        "spendMinor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,29})$"
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "UsageV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reads": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeMs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendMinor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,29})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "AdapterV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "version": {
+          "$ref": "#/$defs/Pos"
+        },
+        "schemaHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "schemaHash"
+      ],
+      "additionalProperties": false
+    },
+    "ActionRefV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "actionHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "actionHash"
+      ],
+      "additionalProperties": false
+    },
+    "LimitsV1": {
+      "type": "object",
+      "properties": {
+        "requestBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "responseBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "outputBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "downloadBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "operationMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "connectMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "idleMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cleanupMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "queue": {
+          "$ref": "#/$defs/Pos"
+        },
+        "processes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cpuMillis": {
+          "$ref": "#/$defs/Pos"
+        },
+        "memoryBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "pids": {
+          "$ref": "#/$defs/Pos"
+        },
+        "diskBytes": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "requestBytes",
+        "responseBytes",
+        "outputBytes",
+        "downloadBytes",
+        "operationMs",
+        "connectMs",
+        "idleMs",
+        "cleanupMs",
+        "queue",
+        "processes",
+        "cpuMillis",
+        "memoryBytes",
+        "pids",
+        "diskBytes"
+      ],
+      "additionalProperties": false
+    },
+    "RegistrationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-registration/v1"
+          ]
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "profile": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "adapter": {
+          "$ref": "#/$defs/AdapterV1"
+        },
+        "limits": {
+          "$ref": "#/$defs/LimitsV1"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "installationId",
+        "manager",
+        "endpoint",
+        "profile",
+        "adapter",
+        "limits",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "BindingV1": {
+      "type": "object",
+      "properties": {
+        "registration": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "profile": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "session": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "processGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "ownerGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "inputLease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "takeoverGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "observationGeneration": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "registration",
+        "profile",
+        "session",
+        "managerEpoch",
+        "controllerEpoch",
+        "processGeneration",
+        "ownerGeneration",
+        "work",
+        "attempt",
+        "inputLease",
+        "takeoverGeneration",
+        "observationGeneration"
+      ],
+      "additionalProperties": false
+    },
+    "PolicyBindingV1": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "authority": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "authorityHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuityId": {
+          "$ref": "#/$defs/Id"
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "policy",
+        "policyHash",
+        "authority",
+        "authorityHash",
+        "resources",
+        "lineage",
+        "recipients",
+        "budget",
+        "continuityId",
+        "upperBound",
+        "costBasis",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "SupportV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-support/v1"
+          ]
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "adapter": {
+          "$ref": "#/$defs/AdapterV1"
+        },
+        "browserArtifactHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "semanticsHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "proofHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "navigate",
+              "read",
+              "interact",
+              "download"
+            ]
+          },
+          "maxItems": 4,
+          "uniqueItems": true
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "input",
+              "local_state",
+              "navigation",
+              "redirect",
+              "frame",
+              "popup",
+              "script",
+              "service_worker",
+              "download",
+              "upload",
+              "clipboard",
+              "file_chooser",
+              "websocket",
+              "webrtc",
+              "dns",
+              "credentials",
+              "alternate_guest_routes"
+            ]
+          },
+          "maxItems": 17,
+          "uniqueItems": true
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "adapter",
+        "browserArtifactHash",
+        "semanticsHash",
+        "proofHash",
+        "operations",
+        "coverage",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "EffectClassV1": {
+      "enum": [
+        "ordinary_edit",
+        "communication",
+        "financial",
+        "github_publish",
+        "github_merge",
+        "production",
+        "disclosure",
+        "major_change"
+      ]
+    },
+    "HeaderV1": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "value": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "WebRequestV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "source": {
+          "enum": [
+            "navigation",
+            "redirect",
+            "frame",
+            "popup",
+            "script",
+            "service_worker",
+            "download",
+            "input"
+          ]
+        },
+        "parentRequestId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frame": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "HEAD",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "OPTIONS"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeaderV1"
+          },
+          "maxItems": 32
+        },
+        "body": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectClassV1"
+          },
+          "maxItems": 8,
+          "uniqueItems": true
+        },
+        "targetVersion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Text"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semanticsHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "id",
+        "source",
+        "parentRequestId",
+        "frame",
+        "method",
+        "url",
+        "headers",
+        "body",
+        "recipients",
+        "classes",
+        "targetVersion",
+        "semanticsHash"
+      ],
+      "additionalProperties": false
+    },
+    "OperationBodyV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "navigate"
+              ]
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "read"
+              ]
+            },
+            "frame": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "document": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "format": {
+              "enum": [
+                "text",
+                "image"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "frame",
+            "document",
+            "format"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "interact"
+              ]
+            },
+            "observationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "document": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "target": {
+              "$ref": "#/$defs/Id"
+            },
+            "interaction": {
+              "enum": [
+                "click",
+                "fill",
+                "select",
+                "scroll"
+              ]
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Text"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "deltaY": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -800,
+                  "maximum": 800
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "observationHash",
+            "document",
+            "target",
+            "interaction",
+            "value",
+            "deltaY"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "download"
+              ]
+            },
+            "observationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "request": {
+              "$ref": "#/$defs/WebRequestV1"
+            }
+          },
+          "required": [
+            "kind",
+            "observationHash",
+            "request"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "OperationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-operation/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/Id"
+        },
+        "registrationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "policy": {
+          "$ref": "#/$defs/PolicyBindingV1"
+        },
+        "support": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "supportHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "body": {
+          "$ref": "#/$defs/OperationBodyV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "slotId",
+        "registrationHash",
+        "binding",
+        "policy",
+        "support",
+        "supportHash",
+        "body",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ActionPayloadV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-action-payload/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/Id"
+        },
+        "registrationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "policy": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "policyHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "authority": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "authorityHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "resources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RefV1"
+              },
+              "maxItems": 64
+            },
+            "lineage": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RefV1"
+              },
+              "maxItems": 64
+            },
+            "recipients": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RefV1"
+              },
+              "maxItems": 64
+            },
+            "budget": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "continuityId": {
+              "$ref": "#/$defs/Id"
+            },
+            "upperBound": {
+              "$ref": "#/$defs/VectorV1"
+            },
+            "costBasis": {
+              "$ref": "#/$defs/BlobV1"
+            },
+            "action": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "policy",
+            "policyHash",
+            "authority",
+            "authorityHash",
+            "resources",
+            "lineage",
+            "recipients",
+            "budget",
+            "continuityId",
+            "upperBound",
+            "costBasis",
+            "action"
+          ],
+          "additionalProperties": false
+        },
+        "support": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "supportHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "body": {
+          "$ref": "#/$defs/OperationBodyV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "slotId",
+        "registrationHash",
+        "binding",
+        "policy",
+        "support",
+        "supportHash",
+        "body",
+        "createdAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "WebActionPayloadV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-web-action/v1"
+          ]
+        },
+        "operationProjectionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "request": {
+          "$ref": "#/$defs/WebRequestV1"
+        }
+      },
+      "required": [
+        "contract",
+        "operationProjectionHash",
+        "request"
+      ],
+      "additionalProperties": false
+    },
+    "ClaimV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-claim/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "policyClaimId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "continuityGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Id"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "operationId",
+        "operationHash",
+        "policyClaimId",
+        "reservationId",
+        "continuityGeneration",
+        "invocationId",
+        "nonce",
+        "controllerEpoch",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "CodeV1": {
+      "enum": [
+        "authentication_required",
+        "invalid_shape",
+        "invalid_data",
+        "hash_mismatch",
+        "request_id_conflict",
+        "already_claimed",
+        "context_lost",
+        "context_consumed",
+        "adapter_unproven",
+        "effect_semantics_unknown",
+        "authority_revoked",
+        "action_denied",
+        "stale_authority",
+        "expired",
+        "lineage_withdrawn",
+        "outside_scope",
+        "budget_exhausted",
+        "finite_budget_required",
+        "capacity_busy",
+        "approval_required",
+        "recipient_approval_required",
+        "merge_authority_required",
+        "production_approval_required",
+        "owner_direction_required",
+        "takeover_active",
+        "stale_observation",
+        "input_busy",
+        "protocol_error",
+        "limit_exceeded",
+        "transport_unknown",
+        "effect_unknown",
+        "settlement_required",
+        "aborted",
+        "login_required",
+        "two_factor_required",
+        "secret_boundary",
+        "download_quarantined",
+        "import_unsupported",
+        "continuity_required",
+        "scope_unproven",
+        "evidence_refused"
+      ]
+    },
+    "BrowserDecisionV1": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "allow",
+            "hold",
+            "deny",
+            "unsupported"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-receipt/v1"
+          ]
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "held",
+            "denied",
+            "unsupported"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "requestId",
+        "operationId",
+        "operationHash",
+        "state",
+        "code",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ObservationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-observation/v1"
+          ]
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bindingHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "frame": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "document": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "requestHashes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Hash"
+          },
+          "maxItems": 64
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "source": {
+          "enum": [
+            "browser_text",
+            "browser_image",
+            "download"
+          ]
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "untrusted": {
+          "const": true
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "operationHash",
+        "bindingHash",
+        "frame",
+        "document",
+        "requestHashes",
+        "capturedAt",
+        "source",
+        "payload",
+        "lineage",
+        "coverage",
+        "truncated",
+        "untrusted",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "TargetV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "observationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bindingHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "frame": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "document": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "id",
+        "observationHash",
+        "bindingHash",
+        "frame",
+        "document",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "PriorCaptureV1": {
+      "type": "object",
+      "properties": {
+        "observation": {
+          "$ref": "#/$defs/ObservationV1"
+        },
+        "output": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TargetV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "observation",
+        "output",
+        "targets"
+      ],
+      "additionalProperties": false
+    },
+    "DownloadV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-download/v1"
+          ]
+        },
+        "artifact": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "observationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "requestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "filename": {
+          "$ref": "#/$defs/Id"
+        },
+        "importState": {
+          "enum": [
+            "quarantined"
+          ]
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "artifact",
+        "observationHash",
+        "requestHash",
+        "lineage",
+        "filename",
+        "importState",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "BoundaryV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "kind": {
+          "enum": [
+            "login_required",
+            "two_factor_required",
+            "owner_control",
+            "released",
+            "session_changed"
+          ]
+        },
+        "bindingHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "at": {
+          "$ref": "#/$defs/Nat"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "bindingHash",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "ResponseV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "jit.protected-browser/v1"
+          ]
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Id"
+        },
+        "bindingHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "captured",
+            "boundary",
+            "refused"
+          ]
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BytesV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "download": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DownloadV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "boundary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BoundaryV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "operationId",
+        "operationHash",
+        "invocationId",
+        "nonce",
+        "bindingHash",
+        "state",
+        "observation",
+        "output",
+        "download",
+        "boundary",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "FactsV1": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "enum": [
+            "not_sent",
+            "sent",
+            "unknown"
+          ]
+        },
+        "network": {
+          "enum": [
+            "not_sent",
+            "sent",
+            "unknown"
+          ]
+        },
+        "responseHash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "channel": {
+          "enum": [
+            "not_started",
+            "open",
+            "closed"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "quiescent",
+            "stopped"
+          ]
+        },
+        "process": {
+          "enum": [
+            "not_started",
+            "running",
+            "stopped",
+            "unknown"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "not_dispatched",
+            "observed",
+            "unknown"
+          ]
+        },
+        "cancel": {
+          "enum": [
+            "none",
+            "requested",
+            "unknown"
+          ]
+        },
+        "charged": {
+          "type": "boolean"
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        },
+        "published": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "input",
+        "network",
+        "responseHash",
+        "channel",
+        "scope",
+        "process",
+        "outcome",
+        "cancel",
+        "charged",
+        "actual",
+        "published"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-evidence/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "session": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "processGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "invocationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "scope_quiescent",
+            "process_stopped",
+            "channel_closed"
+          ]
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "proofHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "manager",
+        "managerEpoch",
+        "session",
+        "processGeneration",
+        "invocationId",
+        "kind",
+        "capturedAt",
+        "proofHash",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "OperationObservationV1": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "facts": {
+          "$ref": "#/$defs/FactsV1"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "operationId",
+        "operationHash",
+        "facts",
+        "evidenceIds"
+      ],
+      "additionalProperties": false
+    },
+    "ResultReadV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "available"
+              ]
+            },
+            "code": {
+              "type": "null"
+            },
+            "observation": {
+              "$ref": "#/$defs/OperationObservationV1"
+            },
+            "response": {
+              "$ref": "#/$defs/ResponseV1"
+            }
+          },
+          "required": [
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "pending",
+                "withheld"
+              ]
+            },
+            "code": {
+              "$ref": "#/$defs/CodeV1"
+            },
+            "observation": {
+              "$ref": "#/$defs/OperationObservationV1"
+            },
+            "response": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "CancelObservationV1": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "not_requested",
+            "requested",
+            "unknown"
+          ]
+        },
+        "signalRequested": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/OperationObservationV1"
+        }
+      },
+      "required": [
+        "operationId",
+        "operationHash",
+        "state",
+        "signalRequested",
+        "observation"
+      ],
+      "additionalProperties": false
+    },
+    "OwnerCommandV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-owner-command/v1"
+          ]
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "bindingHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "expectedLease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "takeover.start",
+            "takeover.end",
+            "takeover.renew"
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "requestId",
+        "bindingHash",
+        "expectedLease",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "OwnerReceiptV1": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "state": {
+          "enum": [
+            "recorded",
+            "succeeded",
+            "unknown"
+          ]
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "takeoverGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "inputSettled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "requestId",
+        "state",
+        "lease",
+        "takeoverGeneration",
+        "inputSettled"
+      ],
+      "additionalProperties": false
+    },
+    "WireRequestV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "jit.protected-browser/v1"
+          ]
+        },
+        "operation": {
+          "$ref": "#/$defs/OperationV1"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "nonce": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": [
+        "contract",
+        "operation",
+        "invocationId",
+        "nonce"
+      ],
+      "additionalProperties": false
+    },
+    "PortFactsV1": {
+      "type": "object",
+      "properties": {
+        "now": {
+          "$ref": "#/$defs/Nat"
+        },
+        "monotonicElapsedMs": {
+          "$ref": "#/$defs/Nat"
+        },
+        "targetRegistered": {
+          "type": "boolean"
+        },
+        "actor": {
+          "enum": [
+            "registered_work",
+            "copied",
+            "registered_owner"
+          ]
+        },
+        "context": {
+          "enum": [
+            "original",
+            "recovered",
+            "consumed",
+            "none"
+          ]
+        },
+        "verifier": {
+          "enum": [
+            "registered",
+            "copied",
+            "owner_statement",
+            "none"
+          ]
+        },
+        "policy": {
+          "enum": [
+            "allow",
+            "hold",
+            "deny",
+            "unsupported"
+          ]
+        },
+        "policyCode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supportRegistered": {
+          "type": "boolean"
+        },
+        "currentBinding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "continuityCurrent": {
+          "type": "boolean"
+        },
+        "remaining": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "actionRevision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "actionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "approval": {
+          "enum": [
+            "absent",
+            "exact",
+            "denied"
+          ]
+        },
+        "ownerInput": {
+          "enum": [
+            "none",
+            "write_only"
+          ]
+        },
+        "githubMode": {
+          "enum": [
+            "default",
+            "personal_publish",
+            "personal_merge"
+          ]
+        },
+        "deployment": {
+          "enum": [
+            "none",
+            "would_deploy",
+            "protected_gate",
+            "unknown"
+          ]
+        },
+        "secretRetained": {
+          "const": false
+        }
+      },
+      "required": [
+        "now",
+        "monotonicElapsedMs",
+        "targetRegistered",
+        "actor",
+        "context",
+        "verifier",
+        "policy",
+        "policyCode",
+        "supportRegistered",
+        "currentBinding",
+        "continuityCurrent",
+        "remaining",
+        "actionRevision",
+        "actionHash",
+        "approval",
+        "ownerInput",
+        "githubMode",
+        "deployment",
+        "secretRetained"
+      ],
+      "additionalProperties": false
+    },
+    "SelectionV1": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "model": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "effort": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": [
+        "route",
+        "model",
+        "effort"
+      ],
+      "additionalProperties": false
+    },
+    "GithubV1": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selectedIssue": {
+          "$ref": "#/$defs/Pos"
+        },
+        "targetRef": {
+          "$ref": "#/$defs/Text"
+        },
+        "baseOid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "headOid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "evidence": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "production": {
+          "enum": [
+            "none",
+            "protected_gate",
+            "would_deploy",
+            "unknown"
+          ]
+        },
+        "deploymentGate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "selectedIssue",
+        "targetRef",
+        "baseOid",
+        "headOid",
+        "evidence",
+        "production",
+        "deploymentGate"
+      ],
+      "additionalProperties": false
+    },
+    "DetailsV1": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/Id"
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectClassV1"
+          },
+          "maxItems": 8,
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "target": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "targetVersion": {
+          "$ref": "#/$defs/Text"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/Text"
+              },
+              "payload": {
+                "$ref": "#/$defs/BlobV1"
+              }
+            },
+            "required": [
+              "name",
+              "payload"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 64
+        },
+        "transaction": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "payee": {
+                  "$ref": "#/$defs/RefV1"
+                },
+                "account": {
+                  "$ref": "#/$defs/RefV1"
+                },
+                "currency": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{3}$"
+                },
+                "amountMinor": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]{0,29})$"
+                },
+                "frequency": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/RefV1"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "payee",
+                "account",
+                "currency",
+                "amountMinor",
+                "frequency"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "github": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GithubV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disclosure": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "recipients": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/RefV1"
+                  },
+                  "maxItems": 64
+                },
+                "payloads": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/BlobV1"
+                  },
+                  "maxItems": 64
+                }
+              },
+              "required": [
+                "recipients",
+                "payloads"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "impact": {
+          "enum": [
+            "reversible",
+            "major",
+            "unknown"
+          ]
+        },
+        "directionDecision": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "operation",
+        "classes",
+        "target",
+        "targetVersion",
+        "recipients",
+        "payload",
+        "attachments",
+        "transaction",
+        "github",
+        "disclosure",
+        "impact",
+        "directionDecision"
+      ],
+      "additionalProperties": false
+    },
+    "PreparedActionV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-prepared-action/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "effectKey": {
+          "$ref": "#/$defs/Id"
+        },
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "ownerGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "policy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "purpose": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "adapter": {
+          "$ref": "#/$defs/AdapterV1"
+        },
+        "details": {
+          "$ref": "#/$defs/DetailsV1"
+        },
+        "vm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputLease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "actionHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "revision",
+        "installationId",
+        "effectKey",
+        "work",
+        "attempt",
+        "ownerGeneration",
+        "policy",
+        "policyHash",
+        "purpose",
+        "bot",
+        "selection",
+        "resources",
+        "lineage",
+        "budget",
+        "adapter",
+        "details",
+        "vm",
+        "inputLease",
+        "upperBound",
+        "costBasis",
+        "createdAt",
+        "expiresAt",
+        "actionHash"
+      ],
+      "additionalProperties": false
+    },
+    "RequestBindingV1": {
+      "type": "object",
+      "properties": {
+        "requestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "payload": {
+          "$ref": "#/$defs/WebActionPayloadV1"
+        },
+        "preparedAction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreparedActionV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "readReservationId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "requestHash",
+        "payload",
+        "preparedAction",
+        "readReservationId"
+      ],
+      "additionalProperties": false
+    },
+    "WorldV1": {
+      "type": "object",
+      "properties": {
+        "priorCaptures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PriorCaptureV1"
+          },
+          "maxItems": 64
+        },
+        "untrustedInput": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BytesV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priorReceipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiptV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preparedAction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PreparedActionV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestBindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RequestBindingV1"
+          },
+          "maxItems": 64
+        },
+        "scriptedResponse": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registration": {
+          "$ref": "#/$defs/RegistrationV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/OperationV1"
+        },
+        "support": {
+          "$ref": "#/$defs/SupportV1"
+        },
+        "claim": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaimV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WebRequestV1"
+          },
+          "maxItems": 64
+        },
+        "response": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResponseV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceV1"
+          },
+          "maxItems": 64
+        },
+        "facts": {
+          "$ref": "#/$defs/FactsV1"
+        },
+        "ports": {
+          "$ref": "#/$defs/PortFactsV1"
+        }
+      },
+      "required": [
+        "priorCaptures",
+        "untrustedInput",
+        "priorReceipt",
+        "preparedAction",
+        "requestBindings",
+        "scriptedResponse",
+        "registration",
+        "operation",
+        "support",
+        "claim",
+        "requests",
+        "response",
+        "evidence",
+        "facts",
+        "ports"
+      ],
+      "additionalProperties": false
+    },
+    "EventV1": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "prepare",
+            "accept",
+            "claim",
+            "continue_original",
+            "dispatch_input",
+            "dispatch_request",
+            "capture_response",
+            "close_channel",
+            "observe_scope",
+            "observe_process",
+            "cancel",
+            "publish",
+            "read_result",
+            "reconcile",
+            "restart",
+            "revoke",
+            "withdraw",
+            "takeover_start",
+            "takeover_end",
+            "stale_release",
+            "owner_input",
+            "login_boundary",
+            "two_factor_boundary",
+            "action_decide",
+            "import_download",
+            "reject_evidence",
+            "transport_error",
+            "validate_frame"
+          ]
+        },
+        "request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebRequestV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "note": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": [
+        "kind",
+        "request",
+        "evidence",
+        "note"
+      ],
+      "additionalProperties": false
+    },
+    "ExpectedV1": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "enum": [
+            "allow",
+            "hold",
+            "deny",
+            "unsupported",
+            "recorded",
+            "available",
+            "pending",
+            "withheld",
+            "unknown"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "networkCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "requestClaimCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "requestReservationCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "cancelCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "claimCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "reservationCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "payloadAvailable": {
+          "type": "boolean"
+        },
+        "facts": {
+          "$ref": "#/$defs/FactsV1"
+        },
+        "actionRevision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "actionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "takeoverGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "secretRetained": {
+          "const": false
+        }
+      },
+      "required": [
+        "decision",
+        "code",
+        "inputCount",
+        "networkCount",
+        "requestClaimCount",
+        "requestReservationCount",
+        "cancelCount",
+        "claimCount",
+        "reservationCount",
+        "payloadAvailable",
+        "facts",
+        "actionRevision",
+        "actionHash",
+        "lease",
+        "takeoverGeneration",
+        "secretRetained"
+      ],
+      "additionalProperties": false
+    },
+    "ScenarioV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Text"
+        },
+        "input": {
+          "$ref": "#/$defs/WorldV1"
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EventV1"
+          },
+          "maxItems": 32
+        },
+        "expected": {
+          "$ref": "#/$defs/ExpectedV1"
+        },
+        "status": {
+          "enum": [
+            "UNEXECUTED"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "input",
+        "events",
+        "expected",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "FrameV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "direction": {
+          "enum": [
+            "request",
+            "response"
+          ]
+        },
+        "recordType": {
+          "enum": [
+            "WireRequestV1",
+            "ResponseV1"
+          ]
+        },
+        "record": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/WireRequestV1"
+            },
+            {
+              "$ref": "#/$defs/ResponseV1"
+            }
+          ]
+        },
+        "bytes": {
+          "$ref": "#/$defs/BytesV1"
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "recordType",
+        "record",
+        "bytes"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-fixtures/v1"
+          ]
+        },
+        "status": {
+          "enum": [
+            "UNEXECUTED_DOCUMENTATION"
+          ]
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Id"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Id"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Hash"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Hash"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Nat"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Nat"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Pos"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Pos"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "Text"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Text"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "RefV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/RefV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BlobV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BlobV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BytesV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BytesV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "VectorV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/VectorV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "UsageV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/UsageV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "AdapterV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/AdapterV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ActionRefV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ActionRefV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "LimitsV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/LimitsV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "RegistrationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/RegistrationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BindingV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BindingV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "PolicyBindingV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/PolicyBindingV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "SupportV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/SupportV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "EffectClassV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/EffectClassV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "HeaderV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/HeaderV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "WebRequestV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/WebRequestV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "OperationBodyV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/OperationBodyV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "OperationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/OperationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ActionPayloadV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ActionPayloadV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "WebActionPayloadV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/WebActionPayloadV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ClaimV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ClaimV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "CodeV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/CodeV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BrowserDecisionV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BrowserDecisionV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ReceiptV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ReceiptV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ObservationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ObservationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "TargetV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/TargetV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "PriorCaptureV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/PriorCaptureV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "DownloadV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/DownloadV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BoundaryV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BoundaryV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ResponseV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ResponseV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "FactsV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/FactsV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "EvidenceV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/EvidenceV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "OperationObservationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/OperationObservationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ResultReadV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ResultReadV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "CancelObservationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/CancelObservationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "OwnerCommandV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/OwnerCommandV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "OwnerReceiptV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/OwnerReceiptV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "WireRequestV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/WireRequestV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "PortFactsV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/PortFactsV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "SelectionV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/SelectionV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "GithubV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/GithubV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "DetailsV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/DetailsV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "PreparedActionV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/PreparedActionV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "RequestBindingV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/RequestBindingV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "EventV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/EventV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ExpectedV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ExpectedV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "maxItems": 128
+        },
+        "frames": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrameV1"
+          },
+          "maxItems": 16
+        },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScenarioV1"
+          },
+          "maxItems": 128
+        }
+      },
+      "required": [
+        "contract",
+        "status",
+        "records",
+        "frames",
+        "scenarios"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
