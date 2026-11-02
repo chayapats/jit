@@ -52,7 +52,7 @@ Browser data may be cleared by the browser or explicit logout. Public credential
 
 **Confirmed:** the owner authorized bounded local evidence for #309, a task-specific UI/UX author exception, commit/push and a stacked evidence PR. The launch-bound branch is `t3/plain14-02-device-coverage`, initially clean at `1844be4309c3f5670ffa2c217350682c892823a3`, directly above implementation `388c119773bcb1244912fa70ec3ec67b5cd0544d`. Before edits, #309 had no assignee/comments, no competing #309 PR/branch was found, and PR #310 remained OPEN on the separate implementation branch. This work changes documentation only and does not take over #310.
 
-Evidence review is [PR #312](https://github.com/chayapats/jit/pull/312), OPEN against `t3/plain-handoff-scope-review` while #310 remains unmerged. It closes only #309 after reviewed merge; no issue was closed by fixture success.
+Evidence review is [PR #312](https://github.com/chayapats/jit/pull/312), OPEN against `t3/plain-handoff-scope-review` while #310 remains unmerged. Its body contains `Closes #309` only; actual closure remains pending reviewed integration into the default branch. No issue was closed by fixture success.
 
 The tested runtime is exactly `388c119` at checkout `1844be4`. All **22 per-file source/test hashes** in the original fingerprint manifest matched the current files; `git diff 388c119..1844be4 -- src tests` is empty. The original source/test fingerprint remains `f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4`. Served S14 assets were `/assets/s14.fa3b0cd6f2eb420a.css` and `/assets/s14.b4a7196b19fe1f3b.js`. This record does not certify a later source or asset revision.
 
