@@ -13,6 +13,7 @@ export function s15StageConfig(directory: string, origin: string): S15RuntimeCon
     conversation: { ownerId: 'owner', bot: ref('jit'), selection, route: { provider: 'codex', model: 'gpt-6.1-sol' }, limits: { modelCalls: 6, toolCalls: 16, outputBytes: 32768, activeMs: 300000 }, modelCallUpperBound: bound },
     models: [{ selection, provider: 'codex', modelId: 'gpt-6.1-sol', account: ref('codex_account'), billing: ref('codex_subscription'), recipient: ref('codex_provider'), charge: 'subscription', availability: 'unavailable', efforts: ['high'], effortEvidence: 'requested_only', upperBound: bound, rank: { ordinary: 0, difficult: 0 } }],
     modelLimits: { turns: 6, attempts: 1, activeMs: 300000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 },
+    disclosure: { sources: [], approvals: [], githubRecipient: null, googleRecipient: null, browser: [], acquisitions: [], registries: [] },
     vm: { id: 'working', resource: ref('computer'), limaInstance: null, upperBound: { ...zero(), calls: 1, reads: 1, outputBytes: 1048576, activeMs: 120000 } }, team: { maxConcurrentOperations: 2, memory: 'off' }, browser: null, google: null, github: null };
 }
 if (import.meta.main) {
