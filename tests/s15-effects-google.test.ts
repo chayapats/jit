@@ -122,7 +122,7 @@ test('a recurring calendar series is a multi-occurrence impact, independent of t
   const prepared = g.prepare(actor, 'calendar', p); expect(prepared.decision.state).toBe('hold'); expect(prepared.action.classes).toContain('major_change');
 });
 
-test('Gmail reconciliation charges both actual reads and refuses an exhausted recovery profile before I/O', async () => {
+test('Gmail reconciliation charges both physical reads in its explicit recovery profile', async () => {
   const g = setup(), actor = g.f.admit().actor!, prepared = g.prepare(actor, 'mail', mail()); g.f.approve(ar(prepared.action)); g.loseNextResponse = true; await g.f.service.work.dispatch(actor, ar(prepared.action));
   const before = g.f.service.control.usage().charged; await g.f.service.owner.reconcile(g.f.owner, ar(prepared.action), 'readback_budget');
   expect(g.f.service.control.usage().charged.calls - before.calls).toBe(2); expect(g.f.service.control.usage().charged.reads - before.reads).toBe(2); expect(g.mutationCalls).toBe(1);

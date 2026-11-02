@@ -32,7 +32,11 @@ export function createEffectsConversationTools(policy: S15PolicyService, options
     /** Host-only exact action dispatcher. A stale/expired/lost context refuses; it cannot be reconstructed. */
     async dispatchAction(authority: ConversationAuthority, action: ActionRef): Promise<Observation> {
       const original = held.get(action.id);
-      if (!original) return policy.work.dispatch(policy.control.bindWork(authority.id), action);
+      if (!original) {
+        const actor = policy.control.bindWork(authority.id);
+        if (policy.work.guardBeforeDispatch(actor, action).adapter === 'protected_browser') fail('request_unavailable');
+        return policy.work.dispatch(actor, action);
+      }
       if (original.work.authority.id !== authority.id || !equal(original.action, action)) fail('stale_action');
       try {
         const result = await original.browser.resume(action);
