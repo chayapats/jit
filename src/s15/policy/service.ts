@@ -18,6 +18,9 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   if (options.runtime !== 's15') v.fail('s15_opt_in_required');
   v.id(options.installationId); v.nat(options.ownerGeneration(), true);
   const now = options.now ?? Date.now;
+  const subscription = options.subscriptionModels;
+  if (subscription) { v.exact(subscription, ['current', 'concurrency', 'perWork']); if (typeof subscription.current !== 'function') v.fail('invalid_shape'); v.nat(subscription.concurrency, true); v.exact(subscription.perWork, ['calls', 'steps', 'activeMs']); for (const value of Object.values(subscription.perWork)) v.nat(value, true); }
+  const subscriptionBounds = subscription ? clone({ concurrency: subscription.concurrency, perWork: subscription.perWork }) : null;
   const ledger = new PolicyLedger(options.path, options.create, options.installationId);
   const owners = new WeakMap<T.OwnerActor, { proof: unknown; id: string; generation: number }>();
   const workers = new WeakMap<T.WorkActor, string>();
@@ -104,9 +107,18 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   const unsettled = (): number => ledger.all<{ json: string }>('SELECT json FROM reservations').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
   const ordinaryUnsettled = (): number => ledger.all<{ json: string }>('SELECT r.json FROM reservations r WHERE NOT EXISTS (SELECT 1 FROM recovery_reads recovery WHERE recovery.reservation_id=r.id)').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
-  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean, recovery = false): void {
+  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean, recovery = false, model?: { workId: string; selection: T.Selection }): void {
     const budget = policyCurrent().budget;
-    if (!budget) v.fail('finite_budget_required'); if (!bound) v.fail('cost_unknown');
+    if (!budget) {
+      if (!model || !subscription || !subscriptionBounds || !subscription.current(clone(model.selection))) v.fail('finite_budget_required');
+      if (!bound || bound.spendMinor !== '0' || bound.calls < 1 || bound.steps < 1 || bound.activeMs < 1 || bound.reads !== 0) v.fail('cost_unknown');
+      const used = ledger.all<{ json: string }>('SELECT json FROM reservations WHERE json_extract(json,\'$.workId\')=?', model.workId).reduce((total, row) => v.add(total, (JSON.parse(row.json) as T.Reservation).upperBound), v.zero());
+      const next = continuation ? used : v.add(used, bound);
+      if (ledger.meta('budgetOverrun') || next.calls > subscriptionBounds.perWork.calls || next.steps > subscriptionBounds.perWork.steps || next.activeMs > subscriptionBounds.perWork.activeMs) v.fail('budget_exhausted');
+      if (!continuation && ordinaryUnsettled() >= subscriptionBounds.concurrency) v.fail('capacity_busy');
+      return;
+    }
+    if (!bound) v.fail('cost_unknown');
     if (time() < budget.startsAt || time() >= budget.expiresAt) v.fail('expired');
     const charged = ledger.meta<T.BudgetVector>('charged'); if (!charged) v.fail('continuity_unavailable');
     if (ledger.meta('budgetOverrun') || !v.within(charged, budget.ceiling) || (!continuation && !v.within(v.add(charged, bound), budget.ceiling))) v.fail('budget_exhausted');
@@ -170,11 +182,11 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     }
   }
   function requireAllowed(decision: T.Decision): asserts decision is Extract<T.Decision, { state: 'allow' }> { if (decision.state !== 'allow') v.fail(decision.code); }
-  function reserve(w: T.WorkAuthority, requestId: string, bound: T.BudgetVector, payload: unknown, recovery = false): T.Reservation {
+  function reserve(w: T.WorkAuthority, requestId: string, bound: T.BudgetVector, payload: unknown, recovery = false, modelSelection?: T.Selection): T.Reservation {
     const key = w.id + ':' + requestId, hash = v.digest('s15.reservation.v1', payload);
     const old = ledger.get<{ hash: string; json: string }>('SELECT hash,json FROM reservations WHERE dedupe=?', key);
     if (old) { if (old.hash !== hash) v.fail('request_id_conflict'); v.fail('reservation_already_claimed'); }
-    budgetCheck(bound, false, recovery);
+    budgetCheck(bound, false, recovery, modelSelection ? { workId: w.id, selection: modelSelection } : undefined);
     const result: T.Reservation = { id: uid(), workId: w.id, requestId, upperBound: clone(bound), actual: v.unknownUsage(), transportSettled: false, createdAt: time() };
     ledger.put('charged', v.add(ledger.meta<T.BudgetVector>('charged')!, bound));
     ledger.run('INSERT INTO reservations VALUES (?,?,?,?)', result.id, key, hash, v.canonical(result)); return result;
@@ -428,6 +440,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     }); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; return { state: ['finite_budget_required', 'cost_unknown', 'capacity_busy'].includes(error.code) ? 'hold' : 'deny', code: error.code }; } },
     guardRead(actor, claimId) { return tx(() => guardReadClaim(actor, claimId, true)); },
     guard(actor) { return tx(() => clone(workAuth(actor))); },
+    modelSelections(actor) { return tx(() => {
+      const w = workAuth(actor), p = policyCurrent();
+      return p.selections.filter(selection => {
+        if (w.request.selectionPin && !v.equal(w.request.selectionPin, selection)) return false;
+        try { currentRef('route', selection.route); currentRef('model', selection.model); }
+        catch (error) { if (error instanceof v.PolicyError) return false; throw error; }
+        return options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(selection) } }, null);
+      }).map(clone);
+    }); },
     reserveModelCall(actor, input) {
       const reservation = tx(() => {
         v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound);
@@ -437,7 +458,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned');
         currentRef('route', input.selection.route); currentRef('model', input.selection.model);
         if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope');
-        const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection);
+        const r = reserve(w, input.requestId, input.upperBound, input, false, input.selection); r.selection = clone(input.selection); r.billing = p.budget ? 'metered' : 'subscription';
         ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r);
       });
       modelInvocations.set(reservation.id, actor); return reservation;
@@ -448,7 +469,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       if (ledger.get('SELECT reservation_id FROM model_dispatches WHERE reservation_id=?', reservationId)) v.fail('already_claimed');
       if (modelInvocations.get(reservationId) !== actor) v.fail('reconciliation_required');
       const p = policyCurrent(); if (!v.contains(p.selections, r.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, r.selection))) v.fail('selection_pinned');
-      currentRef('route', r.selection.route); currentRef('model', r.selection.model); budgetCheck(r.upperBound, true);
+      currentRef('route', r.selection.route); currentRef('model', r.selection.model); budgetCheck(r.upperBound, true, false, { workId: w.id, selection: r.selection });
       if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(r.selection) } }, null)) v.fail('outside_scope');
       ledger.run('INSERT INTO model_dispatches VALUES (?,?)', reservationId, time()); return clone(r);
     }); modelInvocations.delete(reservationId); return reservation; },
@@ -539,6 +560,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     settleReservation(id, usage, transportSettled) { tx(() => settleReservation(id, usage, transportSettled)); },
     publishable(actor, ref) { return tx(() => { const w = workAuth(actor), a = loadAction(ref); checkAction(w, a); const result = observationFor(a); if (!result) v.fail('observation_required'); return clone(result); }); },
     usage() { return tx(() => ({ charged: clone(ledger.meta<T.BudgetVector>('charged')!), unsettled: unsettled() })); },
+    reservations(workId) { return tx(() => { if (workId !== undefined) v.id(workId); return ledger.all<{ json: string }>('SELECT json FROM reservations').map(row => JSON.parse(row.json) as T.Reservation).filter(row => workId === undefined || row.workId === workId).map(clone); }); },
+    subscriptionLimits() { return tx(() => clone(subscriptionBounds)); },
     close() { if (!closed) { closed = true; ledger.db.close(); } },
   };
   return Object.freeze({ owner: Object.freeze(owner), work: Object.freeze(work), control: Object.freeze(control) });
