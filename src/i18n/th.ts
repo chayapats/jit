@@ -12,6 +12,8 @@ export const th = {
   "s15.policy.lineage_withdrawn": "แหล่งข้อมูลถูกถอนแล้ว ไม่สามารถอ่าน exact payload ได้",
   "s15.policy.payload_withdrawn": "privacy rules ปัจจุบันไม่อนุญาตให้อ่าน payload นี้",
   "s15.policy.personal_profile_separate": "ตั้งค่า personal GitHub exceptions แยกต่างหากหลัง first run",
+  "s15.policy.production_impact_required": "ระบุผลต่อ production ให้ชัดเจนก่อนตรวจสอบ action นี้",
+  "s15.policy.github_evidence_required": "ตรวจสอบ acceptance, checks และ reviews ที่จำเป็นก่อนอนุมัติ merge",
   "s15.policy.allow": "อนุญาตภายใต้ policy ปัจจุบัน",
   "s15.policy.hold": "รอการตัดสินใจจากเจ้าของสำหรับ action นี้",
   "s15.policy.deny": "ไม่สามารถ execute action นี้ได้",

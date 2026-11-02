@@ -9,6 +9,8 @@ export const en: Record<MessageKey, string> = {
   "s15.policy.lineage_withdrawn": "The source was withdrawn. Its exact payload is unavailable.",
   "s15.policy.payload_withdrawn": "Current privacy rules prevent access to this payload.",
   "s15.policy.personal_profile_separate": "Configure personal GitHub exceptions separately after first run.",
+  "s15.policy.production_impact_required": "Resolve production consequences before reviewing this action.",
+  "s15.policy.github_evidence_required": "Verify required acceptance, checks and reviews before merge approval.",
   "s15.policy.allow": "Allowed within current policy.",
   "s15.policy.hold": "Waiting for an exact owner decision.",
   "s15.policy.deny": "This action cannot execute.",

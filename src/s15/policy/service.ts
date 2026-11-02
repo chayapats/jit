@@ -128,6 +128,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       budgetCheck(a.upperBound, continuation);
       if (!rules.length) return { state: 'hold', code: 'policy_match_required' };
       if (a.impact === 'unknown') return { state: 'hold', code: 'owner_direction_required' };
+      if (a.github?.production === 'unknown') return { state: 'hold', code: 'production_impact_required' };
+      if (a.classes.includes('github_merge') && a.github && (!a.github.checksPassed || !a.github.reviewsPassed || !a.github.acceptancePassed)) return { state: 'hold', code: 'github_evidence_required' };
       const approved = approvals.findLast(x => x.decision === 'approve' && x.action.actionHash === a.actionHash && x.ownerGeneration === options.ownerGeneration() && x.policyHash === a.policyHash && time() < x.expiresAt);
       const selected = new Set<string>();
       for (const c of a.classes) {
@@ -227,13 +229,20 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     let decision: T.Decision;
     try { decision = evaluate(currentWork(a.workId), a); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; decision = { state: 'deny', code: error.code }; }
     const reason = decision.state === 'allow' ? null : decision.code;
-    const state: T.ActionSlip['state'] = changed ? 'changed' : activeDispatches.has(a.id) ? 'executing' : observed ? observed.outcome === 'not_dispatched' ? observed.code === 'expired' ? 'expired' : 'failed' : observed.outcome : decision.state === 'unsupported' ? 'unsupported' : reason === 'expired' ? 'expired' : reason === 'stale_authority' ? 'stale_rules' : decision.state === 'deny' ? 'denied' : decision.state === 'hold' ? 'pending' : 'approved';
+    let state: T.ActionSlip['state'];
+    if (changed) state = 'changed';
+    else if (activeDispatches.has(a.id)) state = 'executing';
+    else if (observed) state = observed.outcome === 'not_dispatched' ? observed.code === 'expired' ? 'expired' : 'failed' : observed.outcome;
+    else if (decision.state === 'unsupported') state = 'unsupported';
+    else if (reason === 'expired') state = 'expired';
+    else if (reason === 'stale_authority') state = 'stale_rules';
+    else state = decision.state === 'deny' ? 'denied' : decision.state === 'hold' ? 'pending' : 'approved';
     const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId))!;
     const originalPolicy = parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', a.policyRevision));
     const originalClaim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id));
     const recurring = !changed && originalClaim ? originalClaim.recurring : recurringProjection(a, w, originalPolicy?.rules ?? []);
     const statements = ledger.all<{ json: string }>("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')='owner_statement' ORDER BY seq", a.id).map(r => ({ outcome: (JSON.parse(r.json) as T.Observation).code as 'occurred' | 'did_not_occur' }));
-    return { contract: 's15-action-slip/v1', action: clone(a), payloadBytesBase64: Buffer.from(v.canonical(a.payload)).toString('base64'), state, expiresAt: a.expiresAt, reasonCode: changed ? 'stale_action' : activeDispatches.has(a.id) ? null : observed ? observed.code : reason, canApprove: state === 'pending' && !['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'owner_direction_required'].includes(reason ?? ''), replacement: changed ? actionRef(currentAction) : null, observation: observed, recurring, statements };
+    return { contract: 's15-action-slip/v1', action: clone(a), payloadBytesBase64: Buffer.from(v.canonical(a.payload)).toString('base64'), state, expiresAt: a.expiresAt, reasonCode: changed ? 'stale_action' : activeDispatches.has(a.id) ? null : observed ? observed.code : reason, canApprove: state === 'pending' && !['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'owner_direction_required', 'production_impact_required', 'github_evidence_required'].includes(reason ?? ''), replacement: changed ? actionRef(currentAction) : null, observation: observed, recurring, statements };
   }
   function proposal(input: T.PolicyInput | null): T.PolicyProposal {
     if (input !== null) v.policy(input);
@@ -297,7 +306,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     decide(actor, input) { tx(() => { v.exact(input, ['requestId', 'action', 'decision', 'expiresAt']); v.id(input.requestId); v.nat(input.expiresAt, true); if (!['approve', 'deny'].includes(input.decision)) v.fail('invalid_shape'); receipt(actor, input.requestId, { kind: 'action.decide', input }, () => {
       const a = loadAction(input.action), w = currentWork(a.workId); checkAction(w, a); if (claimed(a)) v.fail('already_claimed');
       if (input.expiresAt > a.expiresAt || input.expiresAt <= time()) v.fail('expired');
-      const evaluated = evaluate(w, a); if (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required'].includes(evaluated.code))) v.fail(evaluated.code);
+      const evaluated = evaluate(w, a); if (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'production_impact_required', 'github_evidence_required'].includes(evaluated.code))) v.fail(evaluated.code);
       const approved = { ...clone(input), id: uid(), ownerGeneration: w.ownerGeneration, policyHash: w.policyHash };
       ledger.run('INSERT INTO approvals VALUES (?,?,?,?)', approved.id, a.id, a.revision, v.canonical(approved)); return { recorded: true };
     }); }); },
