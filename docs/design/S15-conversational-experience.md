@@ -2,8 +2,6 @@
 
 Status: **authored UI/UX handoff for [UX15-00 #337](https://github.com/chayapats/jit/issues/337)**, revision 1, 2026-11-03. It is a design target for UX15 implementation slices, not an implemented S15 surface, a runtime contract freeze, a live grant or acceptance evidence. S14 remains the implemented default.
 
-Author: Claude Opus 5.5 (`claude-opus-5-5`), effort high, as the UI/UX design sub-agent required by [AGENTS.md](../../AGENTS.md). The orchestrator reviews architecture and contracts only; it did not author these flows, layouts or copy.
-
 Interactive review artifact: [s15-conversational-prototype.html](s15-conversational-prototype.html). It is self-contained, uses fixture data and connects to nothing.
 
 Inputs read at integration main `adaba2c` (after PR #351): [S15 spec](../specs/S15-conversational-autonomy.md) (S15-D01–D23, S15-AC01–AC16), [PRD](../product/02-prd.md), [CONTEXT.md](../../CONTEXT.md), [workflow](../agents/workflow.md), ADRs [0064](../adr/0064-conversational-authority-and-protected-control-plane.md)–[0071](../adr/0071-s15-mediated-team-resources-and-fenced-handoffs.md), the S15 contracts ([runtime feasibility](../contracts/s15-runtime-feasibility-v1.md), [state transition](../contracts/s15-state-transition-v1.md), [standing policy](../contracts/s15-standing-policy-v1.md), [working VM](../contracts/s15-working-vm-v1.md), [protected browser](../contracts/s15-protected-browser-v1.md), [conversation](../contracts/s15-conversation-v1.md), [model selection](../contracts/s15-model-selection-v1.md), [team resources](../contracts/s15-team-resources-v1.md)), the existing [S14 Plain](S14-plain-experience.md) and [S14 bot-first](S14-bot-first-experience.md) designs, the [design brief](S14-design-brief.md), the [visual system](README.md), the current Web code in `src/s14/web*.ts` and `src/i18n`, and issues #316, #337, #338 and #339.
@@ -200,6 +198,7 @@ Shared rules for all slips (R unless marked):
 | Production (S15-D19) | Environment, what deploys (commit), trigger (direct or via merge), known rollback path or "ไม่ทราบวิธีย้อน" | "Deploy 1 ครั้ง" / "Merge และปล่อย deploy 1 ครั้ง" |
 | Payment (S15-D08) | Payee identity, paying account, amount and currency exactly, one-time or recurring, reference | "จ่าย 1 ครั้ง" (Pay once) |
 | Recurring-payment deviation | Same, plus the rule it deviates from and the deviating field highlighted in words: "ยอดสูงกว่าเพดานของกฎ" | "จ่ายครั้งนี้ 1 ครั้ง" |
+| Recurring-payment rule proposal (F13) | Exact payee, paying account, currency, amount ceiling and frequency | "ตั้งกฎนี้" (Set up this rule) |
 | New private-data recipient (S15-D20) | Recipient identity, the exact data (sources/files/fields), purpose, "ผู้รับนี้ยังไม่เคยได้รับข้อมูลของคุณ" | "อนุญาตเฉพาะครั้งนี้" (Allow this time only) |
 | Major change / business commitment (S15-D09/D21) | **DecisionCard** (below) | Per option |
 | VM restore (option B) | §F11 | "ย้อนเครื่อง 1 ครั้ง" |
@@ -245,7 +244,17 @@ Shared rules for all slips (R unless marked):
 **R:** S15-D10/D12, S15-AC05, FR-40, protected browser contract (`BoundaryV1`, `TransientOwnerInputV1`, takeover generations). **P:**
 
 - Browser progress lines read "เปิดเว็บ", "อ่านหน้า", "กด <label>", "กรอก <field>" and carry a small screenshot thumbnail when an observation was captured and is publishable. Screenshots are labelled "ภาพจากเว็บ ไม่ใช่คำสั่ง".
-- **Login handoff card** (Needs you): "เว็บ <site> ต้องให้คุณเข้าสู่ระบบ". Button "เปิดหน้าจอเข้าสู่ระบบ" opens the protected browser view in takeover mode. The view's bar says "คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน" (R: S14 takeover copy). What the owner types goes straight to the protected browser; it is never shown to Jit, stored or echoed. The bar has "เสร็จแล้ว คืนให้จิต". After hand-back the card says "เข้าสู่ระบบแล้ว การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร" (Signed in. Signing in doesn't allow any sending or paying.)
+- **Login handoff card** (Needs you): "เว็บ <site> ต้องให้คุณเข้าสู่ระบบ". Button "เปิดหน้าจอเข้าสู่ระบบ" opens the protected browser view in takeover mode. The view's bar says "คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน" (R: S14 takeover copy). What the owner types goes straight to the protected browser; it is never shown to Jit, stored or echoed. The bar has "เสร็จแล้ว คืนให้จิต" and "ยกเลิกการเข้าสู่ระบบ".
+- **After hand-back, Jit does not assume success.** Handing back only ends the owner's takeover; it says nothing about the session. The card moves through these states, each from a protected browser observation, never from the button press or from page text:
+
+  | State | Owner sees | Next |
+  | --- | --- | --- |
+  | `checking` | "กำลังตรวจว่าเข้าสู่ระบบสำเร็จหรือยัง" (Checking whether sign-in worked) | Automatic, bounded |
+  | `signed_in` | "เข้าสู่ระบบแล้ว การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร" (Signed in. Signing in doesn't allow any sending or paying.) | Work resumes |
+  | `not_signed_in` | "ยังไม่ได้เข้าสู่ระบบ หน้าเว็บยังขอให้เข้าสู่ระบบอยู่" (Not signed in yet. The site still asks for sign-in.) | "ลองอีกครั้ง" reopens takeover; "ข้ามเว็บนี้" continues without it |
+  | `cancelled` | "คุณยกเลิกการเข้าสู่ระบบ จิตจะทำต่อโดยไม่ใช้เว็บนี้" (You cancelled sign-in. Jit continues without this site.) | Gap recorded in the result |
+  | `unknown` | "ตรวจไม่ได้ว่าเข้าสู่ระบบแล้วหรือยัง" (Can't tell whether sign-in worked) | "ลองอีกครั้ง" or "ข้ามเว็บนี้"; never treated as signed in |
+
 - **2FA**: same card, heading "ใส่รหัสยืนยันของ <site>".
 - While the card waits, the work is "รอคุณเข้าสู่ระบบ" (waiting, not stalled; no active budget use).
 - **Unsupported step (LimitNotice):** "จิตทำขั้นนี้ไม่ได้: ยังพิสูจน์ไม่ได้ว่าการกด ‘ยืนยัน’ บนเว็บนี้จะส่งอะไรออกไป" with three choices: "คุมเองแล้วทำขั้นนี้ด้วยตัวเอง" (owner takeover; the owner acts), "ข้ามขั้นนี้" and "ดูรายละเอียด". Uploads, file choosers and clipboard are shown as "เวอร์ชันนี้ยังอัปโหลดไฟล์บนเว็บไม่ได้" (R: no generic upload port in v1).
@@ -279,7 +288,7 @@ Shared rules for all slips (R unless marked):
 - "คอยดูแล PR #352 จนผ่าน" creates a **ResponsibilityCard** in the conversation and on `/work`: the owner's words quoted, the subject, "จบเมื่อ" (completion rule), "จิตทำเองได้" (from current rules) and "ยังถามคุณก่อน". States: working · รอ CI · รอรีวิว · รอคุณ · หยุดพัก (stalled) · เสร็จ · หยุดแล้ว.
 - **Durable waits** read "รอ CI อยู่ จิตจะกลับมาดูเองเมื่อเสร็จ ไม่ต้องทำอะไร" and never appear in Needs you. After a restart: "ยังดูแลอยู่หลังรีสตาร์ต" (R: waits survive restart).
 - **Out-of-purpose finding:** a proposal slip "พบเรื่องนอกหน้าที่: …" with "รับเป็นงานใหม่" and "ไม่สนใจ". Accepting keeps it as a task; starting it is an ordinary message (R: proposals are not new authority).
-- **Stall report** (Needs you): "หยุดพักไว้: ลอง 3 วิธีแล้วยังไม่คืบ" with a numbered list of attempts (approach, evidence link, what happened), budget used for this work as words and a meter ("ใช้ไปประมาณครึ่งหนึ่งของงบงานนี้" or "ไม่ทราบบางส่วน"), Jit's recommendation in an UntrustedFrame, and three choices: "ลองตามที่แนะนำ" (prefills that instruction), "บอกวิธีอื่น" (focuses the composer) and "หยุดงานนี้". Other authorized work continues and the report says so.
+- **Stall report** (Needs you): "หยุดพักไว้: ลอง 3 วิธีแล้วยังไม่คืบ" with a numbered list of attempts (approach, evidence link, what happened), budget used for this work as words and a meter ("ใช้ไปประมาณครึ่งหนึ่งของงบงานนี้" or "ไม่ทราบบางส่วน"), Jit's recommendation in an UntrustedFrame, and three choices: "ลองตามที่แนะนำ" (prefills that instruction), "บอกวิธีอื่น" (focuses the composer) and "หยุดงานนี้". Other authorized work continues and the report says so. Each choice leads to a visible next state on the same report: after the owner sends the recommendation or their own approach, the report shows that owner message, "ทำต่อแล้ว · หน้าที่เดิม" (Resumed · same responsibility) and the new attempt as a progress line; after stop, "สั่งหยุดแล้ว · กำลังรอให้สิ่งที่ค้างจบจริง" and then "หยุดแล้ว". The report never sits unchanged after an owner reply.
 - **Stop** names its scope: "หยุดเฉพาะ ‘ดูแล PR #352’ · งานอื่น 2 งานยังทำต่อ". Afterwards: "สั่งหยุดแล้ว · กำลังรอให้สิ่งที่ค้างจบจริง" until settlement, then "หยุดแล้ว". Late results after stop are not shown as new results (R).
 - **Partial result:** pill "ได้บางส่วน" and a Gaps section that lists exactly what is missing; partial never appears as done.
 
@@ -312,6 +321,16 @@ Shared rules for all slips (R unless marked):
 - "จำกัดให้เฉพาะ…" opens a Bot checklist; narrowing applies immediately; widening back to the team is an explicit owner action.
 - Items from S14 show "ส่วนตัวของ <Bot> จาก S14 · ยังไม่แชร์ให้ทีม" (R: no silent declassification). Converting one is an exact card "แชร์ <item> ให้ทั้งทีม" that names the item, revision and receivers; it is never offered as "แชร์ทั้งหมด" (R: no broad conversion).
 - Browser input conflicts appear in progress as "รอใช้เบราว์เซอร์ <site> · <Bot> ใช้อยู่", not as an error.
+
+### F13. Recurring-payment rules [payment]
+
+**R:** S15-D08, S15-AC08, standing policy `RuleV1.mode:'recurring_payment'` with `recurrence {payee, account, currency, amountCeilingMinor, frequency}`; the claim verifies frequency and cumulative use; deviations hold. **P:**
+
+- **From a held payment.** A payment slip shows a quiet secondary control below its OwnerStrip: "ตั้งเป็นกฎจ่ายประจำ" (Make this a recurring rule). It never replaces the one-time decision: approving the current payment and creating a rule are separate owner actions. Pressing it opens a **RuleProposal slip** prefilled from the exact payment: payee and paying account (fixed), currency (fixed), amount ceiling (prefilled with this payment's exact amount; the owner may change it) and frequency (the owner picks from frequencies the adapter supports; nothing is preselected unless the payment source states one).
+- **From `/rules`.** "เพิ่มกฎจ่ายประจำ" (Add a recurring-payment rule) offers payees from past approved payments only. A new payee cannot be typed in, because a new payee is itself a held decision. The same RuleProposal slip follows.
+- **RuleProposal slip:** heading "จิตเสนอกฎจ่ายประจำ" when Jit proposes it, "กฎจ่ายประจำใหม่" when the owner starts it; exact rows for payee, account, currency, ceiling, frequency and expiry; the consequence in plain words: "จ่ายได้เองเมื่อผู้รับ บัญชี สกุลเงินตรง ยอดไม่เกินเพดาน และไม่เกินความถี่นี้ อย่างอื่นจะถามคุณก่อน" (Pays on its own only when payee, account and currency match, the amount is within the ceiling and within this frequency. Anything else asks you first). The primary button "ตั้งกฎนี้" (Set up this rule) posts the owner's rule-install command for that exact proposal; "ไม่ตั้ง" discards it. Any suggestion text from Jit sits in an UntrustedFrame.
+- **Use.** A matching payment appears as a ledger line "จ่ายแล้วตามกฎจ่ายประจำ r2 · ครั้งที่ 1 ของเดือนนี้" (Paid under recurring rule r2 · 1st this month). A deviation produces the F4 deviation slip. A rule never raises its own ceiling or frequency.
+- **Revoke.** Each rule row on `/rules` has "หยุดใช้กฎนี้" (Stop using this rule) with "หยุดทันที การจ่ายที่ทำไปแล้วไม่ถูกย้อน" (Stops immediately. Payments already made are not reversed). Revoking only narrows authority, so this exact control is enough.
 
 ## 6. State vocabulary
 
@@ -509,7 +528,15 @@ Real device, screen-reader and browser evidence must be labelled separately when
 | `s15.browser.open_login` | เปิดหน้าจอเข้าสู่ระบบ | Open the sign-in screen | Handoff button |
 | `s15.browser.driving` | คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน | You're driving · Jit can't send input until you hand back | Takeover bar |
 | `s15.browser.hand_back` | เสร็จแล้ว คืนให้จิต | Done, hand back to Jit | Takeover button |
-| `s15.browser.login_no_power` | เข้าสู่ระบบแล้ว การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร | Signed in. Signing in doesn't allow any sending or paying. | After hand-back |
+| `s15.browser.checking` | กำลังตรวจว่าเข้าสู่ระบบสำเร็จหรือยัง | Checking whether sign-in worked | After hand-back |
+| `s15.browser.login_no_power` | เข้าสู่ระบบแล้ว การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร | Signed in. Signing in doesn't allow any sending or paying. | Observed signed-in session |
+| `s15.browser.not_signed_in` | ยังไม่ได้เข้าสู่ระบบ หน้าเว็บยังขอให้เข้าสู่ระบบอยู่ | Not signed in yet. The site still asks for sign-in. | Observed failure |
+| `s15.browser.cancelled` | คุณยกเลิกการเข้าสู่ระบบ จิตจะทำต่อโดยไม่ใช้เว็บนี้ | You cancelled sign-in. Jit continues without this site. | Owner cancel |
+| `s15.browser.login_unknown` | ตรวจไม่ได้ว่าเข้าสู่ระบบแล้วหรือยัง | Can't tell whether sign-in worked | Never treated as signed in |
+| `s15.rules.recurring_from_payment` | ตั้งเป็นกฎจ่ายประจำ | Make this a recurring rule | From a payment slip |
+| `s15.rules.recurring_set` | ตั้งกฎนี้ | Set up this rule | RuleProposal primary |
+| `s15.rules.recurring_scope` | จ่ายได้เองเมื่อผู้รับ บัญชี สกุลเงินตรง ยอดไม่เกินเพดาน และไม่เกินความถี่นี้ อย่างอื่นจะถามคุณก่อน | Pays on its own only when payee, account and currency match, the amount is within the ceiling and within this frequency. Anything else asks you first. | RuleProposal consequence |
+| `s15.rules.revoke` | หยุดใช้กฎนี้ | Stop using this rule | Revoke |
 | `s15.browser.limit` | จิตทำขั้นนี้ไม่ได้: {reason} | Jit can't do this step: {reason} | LimitNotice |
 | `s15.browser.do_it_myself` | คุมเองแล้วทำขั้นนี้ด้วยตัวเอง | Take over and do this step yourself | LimitNotice |
 | `s15.browser.no_upload` | เวอร์ชันนี้ยังอัปโหลดไฟล์บนเว็บไม่ได้ | This version can't upload files to websites yet | Unsupported upload |
@@ -644,7 +671,7 @@ These are UI-driven requirements for the owning slices; each must be frozen ther
 | S15-D05 email final review, one approval | F4 |
 | S15-D06 messages to others; owner replies are ordinary | F4, F2 result |
 | S15-D07 finite operating budget, no amount | F1 budget, F10 |
-| S15-D08 payments and recurring rules | F4 payment rows, F12 rules page (`/rules`) |
+| S15-D08 payments and recurring rules | F4 payment and deviation rows; F13 recurring-rule setup, use and revoke on `/rules` |
 | S15-D09 business records vs new commitments | F4 DecisionCard |
 | S15-D10 browser core, login/2FA handoff | F6 |
 | S15-D11 shared team resources | F12 |
@@ -672,7 +699,7 @@ These are UI-driven requirements for the owning slices; each must be frozen ther
 | S15-AC05 | F6 handoff, takeover, LimitNotice, held website effects | Browser mediation proof (BROW15, RF15-G03) |
 | S15-AC06 | F2 ordinary edits without cards; invitations and new terms reach F4 | Broker behaviour (EDIT15/BIZ15) |
 | S15-AC07 | F4 exact slips, chat approval, changed/expired/unknown states | Alternate-route bypass proof (SEND15, RF15-G05) |
-| S15-AC08 | F1 budget entry, F10 meters and holds, F4 payment and recurring deviation | Reservation enforcement (PAY15/MODEL15) |
+| S15-AC08 | F1 budget entry, F10 meters and holds, F4 payment and recurring deviation, F13 recurring-rule setup | Reservation enforcement (PAY15/MODEL15) |
 | S15-AC09 | F4 DecisionCard with options, evidence, recommendation, retained direction | Impact classification (POLICY15) |
 | S15-AC10 | F5 profile badge, ledger, eligibility checklist, production before merge | Merge gate enforcement (GIT15-02/03) |
 | S15-AC11 | F4 new-recipient slip | Disclosure enforcement (DATA15) |
@@ -688,24 +715,32 @@ FR-04/05/06/07/10/11/12/13/14/15/16/17/18/19/23/24/25/26/27/28/29/30/35/36/37/38
 
 ## 14. Implementation split
 
-**P.** #338 and #339 are each too broad for one reviewable PR: each mixes contracts from several unfinished slices. The narrower slices below keep vertical outcomes, follow [the workflow](../agents/workflow.md), and remain **Frontier** until their contracts freeze. A Standard extraction (dictionary keys, static page markup) becomes possible only after the listed contract is merged with exact signatures. Issue creation and blocker edits are the orchestrator's call; this document does not create or relabel issues.
+**Orchestrator decision (2026-11-03):** no new UX issues are created. The scope is consolidated into the two existing issues. The slice letters below are **internal milestones** inside each issue, kept so review stays incremental; each milestone should be a reviewable PR or commit series under its issue. All milestones remain **Frontier** until their contracts freeze. A Standard extraction (dictionary keys, static page markup) becomes possible only after the listed contract is merged with exact signatures.
 
-| Slice | Outcome | Scope from this document | Blocked by | Acceptance |
+### #338 — UX15-01: setup, ordinary chat, memory, models and budget
+
+| Milestone | Outcome | Scope from this document | Needs (merged, reviewed) | Acceptance |
 | --- | --- | --- | --- | --- |
-| **UX15-01a** (keep #338) | First tool-backed result from ordinary chat | §2 composer change; F2 receipt, intent line, scope line, progress, result; F3 readiness table and prefill chip; Needs-you link | #323, #320, #337 | S15-AC01, AC02 (UI) |
-| **UX15-01b** (new) | One-page setup with working computer, accounts, rules and budget | F1 all sections; F7 capability rows; `/resources/computer` status | #321, #320, #326, UX15-01a | S15-AC01 setup, AC03 (UI), AC08 budget entry |
-| **UX15-02a** (keep #339) | Review and approve one held action once | F4 slips for email/message, payment and recurring deviation, new recipient; chat approval; all slip states; `/actions/:id`; `/needs` | #320, #332, #333, #335 (new-recipient slip), #337 | S15-AC07, AC08 (transactions), AC11 |
-| **UX15-02b** (new) | GitHub default and personal profiles through merge and production | F5 badge, slips, ledger, checklist, production-before-merge; `/rules` personal profile | #329, #330, UX15-02a | S15-AC10, AC02 follow-through |
-| **UX15-02c** (new) | Responsibilities, waits, stalls, stop and recovery | F9; F11 evidence tab, reconnect banner, recovery list | #327, UX15-01a | S15-AC12, AC15 |
-| **UX15-03** (new) | Browser handoff and honest limits | F6 handoff, takeover view, LimitNotice, website slips | #322, UX15-02a | S15-AC05 |
-| **UX15-04** (new) | Memory inspect, correct and forget | F8 | #325, UX15-01a | S15-AC13 |
-| **UX15-05** (new) | Model disclosure and budget settings | F10 | #326, UX15-01b | S15-AC14, AC08 (operating budget) |
-| **UX15-06** (new) | Team resources, VM restore and adoption status | F12; F11 restore slip and adoption status | #324, #321, #336, UX15-01b | S15-AC04, AC16 (status only) |
-| DecisionCard | Folded into UX15-02a | F4 DecisionCard and retained direction | #320 (impact classes), #334 | S15-AC09 |
+| UX15-01a | First tool-backed result from ordinary chat | §2 composer change; F2 receipt, intent line, scope line, progress, result; F3 readiness table and prefill chip; Needs-you link | #323, #320 | S15-AC01, AC02 (UI) |
+| UX15-01b | One-page setup with working computer, accounts, rules and budget | F1 all sections; F7 capability rows; `/resources/computer` status | #321, #320, #326; after 01a | S15-AC01 setup, AC03 (UI), AC08 budget entry |
+| UX15-04 | Memory inspect, correct and forget | F8 | #325; after 01a | S15-AC13 |
+| UX15-05 | Model disclosure and budget settings | F10 | #326; after 01b | S15-AC14, AC08 (operating budget) |
 
-EVID15-01 #340 currently depends on #338 and #339; if the new slices are created, its blockers should include them for the acceptance cases they own.
+### #339 — UX15-02: held actions, GitHub, responsibilities, browser and resources
 
-Each UX slice must, before ready-for-agent: freeze the exact dictionary keys in both `th` and `en`, name the exact routes and render functions, list the deterministic DOM/handler fixtures per state in §6 and §F4, and keep real device and assistive-technology evidence separate.
+| Milestone | Outcome | Scope from this document | Needs (merged, reviewed) | Acceptance |
+| --- | --- | --- | --- | --- |
+| UX15-02a | Review and approve one held action once | F4 slips for email/message, payment and recurring deviation, new recipient; chat approval; all slip states; `/actions/:id`; `/needs` | #320, #332, #333, #335 (new-recipient slip) | S15-AC07, AC08 (transactions), AC11 |
+| DecisionCard | Major changes and business commitments | F4 DecisionCard and retained direction | #320 (impact classes), #334; with 02a | S15-AC09 |
+| Recurring-rule setup | Create, use and revoke recurring-payment rules | F13 RuleProposal slip, ledger line, `/rules` revoke | #320, #333; after 02a | S15-AC08 (recurring) |
+| UX15-02b | GitHub default and personal profiles through merge and production | F5 badge, slips, ledger, checklist, production-before-merge; `/rules` personal profile | #329, #330; after 02a | S15-AC10, AC02 follow-through |
+| UX15-02c | Responsibilities, waits, stalls, stop and recovery | F9; F11 evidence tab, reconnect banner, recovery list | #327 | S15-AC12, AC15 |
+| UX15-03 | Browser handoff and honest limits | F6 handoff with checking and result states, takeover view, LimitNotice, website slips | #322; after 02a | S15-AC05 |
+| UX15-06 | Team resources, VM restore and adoption status | F12; F11 restore slip and adoption status | #324, #321, #336 | S15-AC04, AC16 (status only) |
+
+The issue-level blockers of #338 and #339 should cover the "Needs" column of their milestones; the orchestrator owns any blocker edits. EVID15-01 #340 keeps depending on #338 and #339, which now carry every UX acceptance case above.
+
+Before implementation starts, each milestone must freeze the exact dictionary keys in both `th` and `en`, name the exact routes and render functions, list the deterministic DOM/handler fixtures per state in §6 and F4, and keep real device and assistive-technology evidence separate.
 
 ## 15. Open questions
 
@@ -718,7 +753,7 @@ Each UX slice must, before ready-for-agent: freeze the exact dictionary keys in 
 | Q5 | Should MemoryNote appear on every reply that retained something, or only in a daily digest? | Every reply, collapsed |
 | Q6 | Should "Needs you" include proposals from responsibilities? | Yes, as the lowest group |
 
-None blocks implementation of UX15-01a.
+The orchestrator accepted these defaults on 2026-11-03. None blocks implementation of UX15-01a.
 
 ## 16. Prototype guide
 

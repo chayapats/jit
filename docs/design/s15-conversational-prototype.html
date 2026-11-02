@@ -238,19 +238,27 @@ const scenes = {
     <div class="line">${pill(L("ตัดสินใจไว้แล้ว 2 พ.ย. · ทางเลือก B", "Decided on 2 Nov · option B"), "ok", "✓")}<span class="meta">${L("(ตัวอย่างเมื่อเคยตัดสินใจเรื่องเดียวกันแล้ว จะไม่ถามซ้ำ)", "(example: an earlier decision on the same change isn't asked again)")}</span></div>`;
   } },
   browser: { t: ["เว็บ เข้าสู่ระบบ และข้อจำกัด", "Browser sign-in and limits"], nav: "chat", pane: true, render() {
-    const done = st.browser === "back";
+    const b = st.browser || "needed", ok = b === "signed_in";
+    const head = { needed: L("เว็บ school.example ต้องให้คุณเข้าสู่ระบบ", "school.example needs you to sign in"), checking: L("กำลังตรวจว่าเข้าสู่ระบบสำเร็จหรือยัง", "Checking whether sign-in worked"), signed_in: L("เข้าสู่ระบบแล้ว", "Signed in"), not_signed_in: L("ยังไม่ได้เข้าสู่ระบบ", "Not signed in yet"), cancelled: L("คุณยกเลิกการเข้าสู่ระบบ", "You cancelled sign-in"), unknown: L("ตรวจไม่ได้ว่าเข้าสู่ระบบแล้วหรือยัง", "Can't tell whether sign-in worked") }[b];
+    const tone = { needed: pill(L("รอคุณเข้าสู่ระบบ", "Waiting for your sign-in"), "warn", "!"), checking: pill(L("กำลังตรวจ", "Checking"), "", "…"), signed_in: pill(L("กำลังทำ", "Working")), not_signed_in: pill(L("รอคุณเข้าสู่ระบบ", "Waiting for your sign-in"), "warn", "!"), cancelled: pill(L("ข้ามเว็บนี้", "Skipped this site")), unknown: pill(L("ไม่ทราบ", "Unknown"), "danger", "?") }[b];
+    const detail = { needed: `<div class="row">${btn(L("เปิดหน้าจอเข้าสู่ระบบ", "Open the sign-in screen"), "open-pane", "primary")}</div><p class="note">${L("สิ่งที่คุณพิมพ์ในหน้าจอนั้นไปที่เบราว์เซอร์ที่ป้องกันไว้โดยตรง จิตไม่เห็นและไม่เก็บ", "What you type there goes straight to the protected browser. Jit doesn't see or keep it.")}</p>`,
+      checking: `<p style="margin:0">${L("การคืนการควบคุมยังไม่ได้บอกว่าเข้าสู่ระบบสำเร็จ จิตรอให้เบราว์เซอร์ที่ป้องกันไว้ตรวจก่อน", "Handing back doesn't mean sign-in worked. Jit waits for the protected browser to check.")}</p><p class="exact-l">${L("จำลองผลที่เบราว์เซอร์ตรวจได้", "Simulate what the browser observes")}</p><div class="row">${btn(L("พบว่าเข้าสู่ระบบแล้ว", "Signed-in session observed"), "browser:signed_in", "quiet")}${btn(L("หน้าเว็บยังขอเข้าสู่ระบบ", "Site still asks for sign-in"), "browser:not_signed_in", "quiet")}${btn(L("ตรวจไม่ได้", "Can't tell"), "browser:unknown", "quiet")}</div>`,
+      signed_in: `<p style="margin:0">${L("การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร", "Signing in doesn't allow any sending or paying.")}</p>`,
+      not_signed_in: `<p style="margin:0">${L("หน้าเว็บยังขอให้เข้าสู่ระบบอยู่", "The site still asks for sign-in.")}</p><div class="row">${btn(L("ลองอีกครั้ง", "Try again"), "open-pane", "primary")}${btn(L("ข้ามเว็บนี้", "Skip this site"), "browser:cancelled")}</div>`,
+      cancelled: `<p style="margin:0">${L("จิตจะทำต่อโดยไม่ใช้เว็บนี้ และบันทึกไว้ในสิ่งที่ยังขาด", "Jit continues without this site and records it under what's missing.")}</p>`,
+      unknown: `<p style="margin:0">${L("จิตจะไม่ถือว่าเข้าสู่ระบบแล้ว", "Jit won't treat this as signed in.")}</p><div class="row">${btn(L("ลองอีกครั้ง", "Try again"), "open-pane", "primary")}${btn(L("ข้ามเว็บนี้", "Skip this site"), "browser:cancelled")}</div>` }[b];
     return `${owner(L("เข้าเว็บโรงเรียนลูก ดูว่าการบ้านสัปดาห์นี้มีอะไรบ้าง", "Go to my kid's school site and list this week's homework"))}
     ${intent(L("ตรวจดูอย่างเดียว ไม่แก้ไขอะไร", "Looking only. Nothing will be changed."))}
     ${prog([[L("เปิดเว็บ: school.example (ตัวอย่าง)", "Open site: school.example (example)"), 1]])}
-    <article class="card"><div class="card-hd"><h3>${done ? L("เข้าสู่ระบบแล้ว", "Signed in") : L("เว็บ school.example ต้องให้คุณเข้าสู่ระบบ", "school.example needs you to sign in")}</h3>${done ? pill(L("กำลังทำ", "Working")) : pill(L("รอคุณเข้าสู่ระบบ", "Waiting for your sign-in"), "warn", "!")}</div>
-    ${done ? `<p style="margin:0">${L("การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร", "Signing in doesn't allow any sending or paying.")}</p>` : `<div class="row">${btn(L("เปิดหน้าจอเข้าสู่ระบบ", "Open the sign-in screen"), "open-pane", "primary")}</div><p class="note">${L("สิ่งที่คุณพิมพ์ในหน้าจอนั้นไปที่เบราว์เซอร์ที่ป้องกันไว้โดยตรง จิตไม่เห็นและไม่เก็บ", "What you type there goes straight to the protected browser. Jit doesn't see or keep it.")}</p>`}</article>
-    ${done ? `<article class="card"><div class="card-hd"><h3>${L("จิตทำขั้นนี้ไม่ได้", "Jit can't do this step")}</h3>${pill(L("ยังทำไม่ได้", "Not supported yet"), "", "×")}</div><p style="margin:0">${L("ยังพิสูจน์ไม่ได้ว่าการกด ‘ส่งการบ้าน’ บนเว็บนี้จะส่งอะไรออกไป", "Jit can't yet prove what pressing “Submit homework” on this site would send.")}</p><div class="row">${btn(L("คุมเองแล้วทำขั้นนี้ด้วยตัวเอง", "Take over and do this step yourself"), "open-pane")}${btn(L("ข้ามขั้นนี้", "Skip this step"), "noop")}${btn(L("ดูรายละเอียด", "Details"), "noop", "quiet")}</div></article>
-    ${untrusted(L("คำตอบจากจิต", "Jit's answer"), `<p style="margin:0">${L("การบ้าน 3 วิชา: คณิต (พฤ.), อังกฤษ (ศ.), วิทย์ (จ.)", "Homework in 3 subjects: maths (Thu), English (Fri), science (Mon)")}</p>`)}<div><p class="exact-l">${L("สิ่งที่ยังขาด", "What's missing")}</p><p style="margin:0">${L("อ่านได้ 6 หน้า · 1 หน้าต้องอัปโหลดไฟล์ซึ่งเวอร์ชันนี้ยังทำไม่ได้", "Read 6 pages · 1 page needs a file upload, which this version can't do yet")}</p></div>` : ""}`;
+    <article class="card"><div class="card-hd"><h3>${head}</h3>${tone}</div>${detail}</article>
+    ${ok ? `<article class="card"><div class="card-hd"><h3>${L("จิตทำขั้นนี้ไม่ได้", "Jit can't do this step")}</h3>${pill(L("ยังทำไม่ได้", "Not supported yet"), "", "×")}</div><p style="margin:0">${L("ยังพิสูจน์ไม่ได้ว่าการกด ‘ส่งการบ้าน’ บนเว็บนี้จะส่งอะไรออกไป", "Jit can't yet prove what pressing “Submit homework” on this site would send.")}</p><div class="row">${btn(L("คุมเองแล้วทำขั้นนี้ด้วยตัวเอง", "Take over and do this step yourself"), "open-pane")}${btn(L("ข้ามขั้นนี้", "Skip this step"), "noop")}${btn(L("ดูรายละเอียด", "Details"), "noop", "quiet")}</div></article>
+    ${untrusted(L("คำตอบจากจิต", "Jit's answer"), `<p style="margin:0">${L("การบ้าน 3 วิชา: คณิต (พฤ.), อังกฤษ (ศ.), วิทย์ (จ.)", "Homework in 3 subjects: maths (Thu), English (Fri), science (Mon)")}</p>`)}<div><p class="exact-l">${L("สิ่งที่ยังขาด", "What's missing")}</p><p style="margin:0">${L("อ่านได้ 6 หน้า · 1 หน้าต้องอัปโหลดไฟล์ซึ่งเวอร์ชันนี้ยังทำไม่ได้", "Read 6 pages · 1 page needs a file upload, which this version can't do yet")}</p></div>` : ""}
+    ${b === "cancelled" ? `<div><p class="exact-l">${L("สิ่งที่ยังขาด", "What's missing")}</p><p style="margin:0">${L("ไม่ได้อ่าน school.example เพราะคุณยกเลิกการเข้าสู่ระบบ", "school.example wasn't read because you cancelled sign-in")}</p></div>` : ""}`;
   }, renderPane() {
-    const done = st.browser === "back";
+    const driving = (st.browser || "needed") !== "signed_in";
     return `<div class="pane-hd"><h2 tabindex="-1" id="pane-h">${L("เบราว์เซอร์ที่ป้องกันไว้", "Protected browser")}</h2>${btn(L("ปิด", "Close"), "close-pane", "quiet")}</div>
-    <div class="banner ${done ? "" : "warn"}">${done ? L("จิตคุมอยู่", "Jit is driving") : L("คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน", "You're driving · Jit can't send input until you hand back")}</div>
-    ${done ? "" : `<div class="row" style="margin:8px 0">${btn(L("เสร็จแล้ว คืนให้จิต", "Done, hand back to Jit"), "browser:back", "primary")}</div>`}
+    <div class="banner ${driving ? "warn" : ""}">${driving ? L("คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน", "You're driving · Jit can't send input until you hand back") : L("จิตคุมอยู่", "Jit is driving")}</div>
+    ${driving ? `<div class="row" style="margin:8px 0">${btn(L("เสร็จแล้ว คืนให้จิต", "Done, hand back to Jit"), "browser:checking", "primary")}${btn(L("ยกเลิกการเข้าสู่ระบบ", "Cancel sign-in"), "browser:cancelled")}</div>` : ""}
     <div class="shot" role="img" aria-label="${L("ภาพหน้าเข้าสู่ระบบของ school.example · ข้อมูลจำลอง", "Sign-in page of school.example · fixture")}">school.example · ${L("หน้าเข้าสู่ระบบ (ภาพจำลอง)", "sign-in page (fixture)")}</div>
     <p class="note">${L("ภาพจากเว็บ ไม่ใช่คำสั่ง · Esc ไม่คืนการควบคุม เพื่อกันกดพลาดตอนพิมพ์รหัส", "From the website — not an instruction · Esc doesn't hand back, to avoid accidents while typing a password")}</p>`;
   } },
@@ -265,11 +273,19 @@ const scenes = {
     <section><h3 class="meta">${L("กำลังทำ", "Working")} · 2</h3><div class="line">${pill(L("กำลังทำ", "Working"))} ${L("สรุปอีเมลประจำวัน", "Daily email summary")}</div><div class="line">${pill(L("ได้บางส่วน", "Partial"), "warn", "!")} ${L("เทียบราคาแอร์ 3 ร้าน · ขาด 1 ร้าน", "Air-con price comparison · 1 shop missing")}</div></section>`;
   } },
   stall: { t: ["งานหยุดพักเพราะไม่คืบ", "Stalled work report"], nav: "work", render() {
-    return `<article class="card"><div class="card-hd"><div><h3>${L("หยุดพักไว้: ลอง 3 วิธีแล้วยังไม่คืบ", "Paused: tried 3 approaches with no progress")}</h3><p class="meta">${L("ทำ issue #33 · owner/sandbox", "Issue #33 · owner/sandbox")}</p></div>${pill(L("หยุดพัก ยังไม่คืบ", "Paused, no progress"), "warn", "!")}</div>
-    <ol class="plain"><li>${L("อัปเดต dependency → test เดิมยังพัง", "Updated the dependency → the same test still fails")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li><li>${L("แก้ config ของ test runner → พังเพิ่ม 2 ตัว (ย้อนแล้ว)", "Changed the test runner config → 2 more failures (reverted)")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li><li>${L("ลองบน Node แทน Bun → ผลเหมือนเดิม", "Tried Node instead of Bun → same result")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li></ol>
-    <div><p class="exact-l">${L("งบของงานนี้", "This work's budget")}</p><div class="meter" role="img" aria-label="${L("ใช้ไปประมาณครึ่งหนึ่ง บางส่วนไม่ทราบ", "About half used, part unknown")}"><i style="width:48%"></i><i class="unk" style="width:8%"></i></div><p class="note">${L("ใช้ไปประมาณครึ่งหนึ่ง · ไม่ทราบบางส่วน · หยุดก่อนงบหมด", "About half used · part unknown · paused before running out")}</p></div>
-    ${untrusted(L("จิตแนะนำ", "Jit recommends"), `<p style="margin:0">${L("ปัญหาน่าจะอยู่ใน library ต้นทาง แนะนำให้ pin เวอร์ชันก่อนหน้าแล้วเปิด issue ที่ต้นทาง", "The problem is likely upstream. Pin the previous version and open an upstream issue.")}</p>`)}
-    ${strip(btn(L("ลองตามที่แนะนำ", "Try the recommendation"), `prefill:${L("ลองตามที่แนะนำ: pin เวอร์ชันก่อนหน้า", "Try the recommendation: pin the previous version")}`) + btn(L("บอกวิธีอื่น", "Suggest another way"), "focus-composer") + btn(L("หยุดงานนี้", "Stop this work"), "noop", "danger"), L("งานอื่นที่อนุมัติไว้ยังทำต่อ", "Other approved work keeps going"))}</article>`;
+    const v = st.stall || "paused";
+    const report = `<ol class="plain"><li>${L("อัปเดต dependency → test เดิมยังพัง", "Updated the dependency → the same test still fails")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li><li>${L("แก้ config ของ test runner → พังเพิ่ม 2 ตัว (ย้อนแล้ว)", "Changed the test runner config → 2 more failures (reverted)")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li><li>${L("ลองบน Node แทน Bun → ผลเหมือนเดิม", "Tried Node instead of Bun → same result")} · <a href="#">${L("หลักฐาน", "Evidence")}</a></li></ol>
+    <div><p class="exact-l">${L("งบของงานนี้", "This work's budget")}</p><div class="meter" role="img" aria-label="${L("ใช้ไปประมาณครึ่งหนึ่ง บางส่วนไม่ทราบ", "About half used, part unknown")}"><i style="width:48%"></i><i class="unk" style="width:8%"></i></div><p class="note">${L("ใช้ไปประมาณครึ่งหนึ่ง · ไม่ทราบบางส่วน · หยุดก่อนงบหมด", "About half used · part unknown · paused before running out")}</p></div>`;
+    const status = { paused: pill(L("หยุดพัก ยังไม่คืบ", "Paused, no progress"), "warn", "!"), resumed: pill(L("กำลังทำ", "Working")), owner_way: pill(L("กำลังทำ", "Working")), asking: pill(L("รอวิธีจากคุณ", "Waiting for your approach"), "warn", "!"), stopping: pill(L("กำลังหยุด", "Stopping")), stopped: pill(L("หยุดแล้ว", "Stopped")) }[v];
+    let next = "";
+    if (v === "paused") next = `${untrusted(L("จิตแนะนำ", "Jit recommends"), `<p style="margin:0">${L("ปัญหาน่าจะอยู่ใน library ต้นทาง แนะนำให้ pin เวอร์ชันก่อนหน้าแล้วเปิด issue ที่ต้นทาง", "The problem is likely upstream. Pin the previous version and open an upstream issue.")}</p>`)}
+    ${strip(btn(L("ลองตามที่แนะนำ", "Try the recommendation"), "stall:resumed") + btn(L("บอกวิธีอื่น", "Suggest another way"), "stall:asking") + btn(L("หยุดงานนี้", "Stop this work"), "stall:stopping", "danger"), L("งานอื่นที่อนุมัติไว้ยังทำต่อ", "Other approved work keeps going"))}`;
+    if (v === "asking") next = `<form class="field" onsubmit="return false"><label for="stall-way">${L("วิธีที่คุณอยากให้ลอง", "The approach you want Jit to try")}</label><textarea id="stall-way" rows="2" class="exact">${esc(st.stallWay || "")}</textarea><div class="acts">${btn(L("ส่ง", "Send"), "stall:owner_way", "primary")}${btn(L("ยกเลิก", "Cancel"), "stall:paused")}</div></form>`;
+    if (v === "resumed") next = `${owner(L("ลองตามที่แนะนำ", "Try the recommendation"))}${intent(L("ทำต่อแล้ว · หน้าที่เดิม · ตามกฎประจำ r4", "Resumed · same responsibility · under standing rules r4"))}${prog([[L("วิธีที่ 4: pin เวอร์ชันก่อนหน้าของ library", "Approach 4: pin the library's previous version"), 0]])}`;
+    if (v === "owner_way") next = `${owner(st.stallWay || L("ลอง mock นาฬิกาใน test แทน", "Try mocking the clock in the test instead"))}${intent(L("ทำต่อแล้ว · ลองตามวิธีของคุณ", "Resumed · trying your approach"))}${prog([[L("วิธีที่ 4: ตามที่คุณบอก", "Approach 4: as you described"), 0]])}`;
+    if (v === "stopping") next = `<div class="banner">${L("สั่งหยุดแล้ว · กำลังรอให้สิ่งที่ค้างจบจริง", "Stop requested · waiting for open steps to really finish")}</div><div class="row">${btn(L("จำลอง: สิ่งที่ค้างจบแล้ว", "Simulate: open steps finished"), "stall:stopped", "quiet")}</div>`;
+    if (v === "stopped") next = `<div class="banner">${L("หยุดแล้ว · หลักฐานที่บันทึกไว้ยังเปิดดูได้", "Stopped · saved evidence stays available")}</div>`;
+    return `<article class="card"><div class="card-hd"><div><h3>${L("หยุดพักไว้: ลอง 3 วิธีแล้วยังไม่คืบ", "Paused: tried 3 approaches with no progress")}</h3><p class="meta">${L("ทำ issue #33 · owner/sandbox", "Issue #33 · owner/sandbox")}</p></div>${status}</div>${report}${next}</article>`;
   } },
   memory: { t: ["ความจำ", "Memory"], nav: "memory", render() {
     const rows = [[L("คุณใช้ Bun รัน test ใน repo นี้", "You run tests in this repo with Bun"), L("ข้อเท็จจริง", "Fact"), L("แชต 3 พ.ย. 10:42", "Chat 3 Nov 10:42"), L("ทีม", "Team"), ""], [L("คุณน่าจะชอบรายงานสั้น", "You probably prefer short reports"), L("ข้อสันนิษฐาน", "Inference"), L("จาก 4 แชต", "From 4 chats"), L("ทีม", "Team"), ""], [L("ร้านประจำคือร้าน ก (แก้เป็น ร้าน ข)", "Usual shop is Shop A (corrected to Shop B)"), L("ข้อเท็จจริง", "Fact"), L("คุณแก้ 1 พ.ย.", "You corrected 1 Nov"), L("ทีม", "Team"), L("ถูกแก้โดยคุณ", "Corrected by you")], [L("บันทึกงานวิจัยเรื่องประกัน", "Insurance research notes"), L("ข้อเท็จจริง", "Fact"), "S14", L("ส่วนตัวของ นักค้น จาก S14 · ยังไม่แชร์ให้ทีม", "Private to Scout from S14 · not shared with the team"), ""]];
@@ -331,7 +347,12 @@ function shell() {
   const body = scene === "setup" ? sc.render() : `<div class="thread">${sc.render()}</div>`;
   const composer = isChat ? `<div class="composer"><form onsubmit="return false"><span class="to">${L("ถึง", "To")} ${L("จิต", "Jit")}</span><label class="sr" for="txt">${L("ข้อความถึงจิต", "Message to Jit")}</label><textarea id="txt" rows="1" placeholder="${L("พิมพ์ถึงจิตได้เลย…", "Message Jit…")}"></textarea><button class="send" type="submit" aria-label="${L("ส่ง", "Send")}">↑</button></form></div>` : "";
   const pane = sc.pane && st.pane ? `<aside class="pane" aria-label="${L("รายละเอียด", "Details")}">${sc.renderPane()}</aside>` : "";
-  return `${nav}<div class="main"><div class="col"><header class="hdr"><h1>${esc(L(...sc.t))}</h1><a href="#" class="needs on" data-go="needs">${L("รอคุณ", "Needs you")} ${needs}</a></header><main class="scroll" id="main">${body}</main>${composer}</div>${pane}</div>`;
+  return `${nav}<div class="main"><div class="col"><header class="hdr"><h1>${esc(L(...sc.t))}</h1><a href="#" class="needs on" data-go="needs">${L("รอคุณ", "Needs you")} ${needs}</a></header><main class="scroll" id="main" tabindex="-1">${body}</main>${composer}</div>${pane}</div>`;
+}
+/* Restore keyboard focus after #frame is replaced: the same control if it still exists, otherwise a given fallback, otherwise the main landmark. */
+function restoreFocus(selector, fallback) {
+  const el = (selector && document.querySelector(selector)) || (fallback && document.querySelector(fallback)) || document.getElementById("main");
+  el?.focus();
 }
 function render(focusPane) {
   document.documentElement.lang = lang;
@@ -347,27 +368,40 @@ document.getElementById("lang-th").addEventListener("click", () => { lang = "th"
 document.getElementById("lang-en").addEventListener("click", () => { lang = "en"; document.getElementById("lang-en").setAttribute("aria-pressed", "true"); document.getElementById("lang-th").setAttribute("aria-pressed", "false"); render(); });
 document.getElementById("theme").addEventListener("click", e => { const light = document.documentElement.dataset.theme !== "light"; document.documentElement.dataset.theme = light ? "light" : "dark"; e.target.setAttribute("aria-pressed", String(light)); });
 document.getElementById("width").addEventListener("click", e => { const m = document.getElementById("frame").classList.toggle("mobile"); e.target.setAttribute("aria-pressed", String(m)); });
-document.addEventListener("keydown", e => { if (e.key === "Escape" && st.pane && scene !== "browser") { st.pane = false; render(); } });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && st.pane && scene !== "browser") { st.pane = false; render(); restoreFocus('[data-act="open-pane"]'); } });
 document.getElementById("frame").addEventListener("input", e => { if (e.target.id === "vmaddr") st.vmaddr = e.target.value; if (e.target.id === "budget") { st.budget = e.target.value; const pos = e.target.selectionStart; render(); const el = document.getElementById("budget"); el.focus(); el.setSelectionRange(pos, pos); } });
 document.getElementById("frame").addEventListener("click", e => {
   const go = e.target.closest("[data-go]");
-  if (go) { e.preventDefault(); const map = { needs: "duty", work: "duty", chat: "chat", memory: "memory", computer: "restore", models: "models", rules: "github", accounts: "setup", recovery: "unknown", new: "chat", scout: "chat" }; scene = map[go.dataset.go] || "chat"; st = {}; render(); return; }
+  if (go) { e.preventDefault(); const map = { needs: "duty", work: "duty", chat: "chat", memory: "memory", computer: "restore", models: "models", rules: "github", accounts: "setup", recovery: "unknown", new: "chat", scout: "chat" }; scene = map[go.dataset.go] || "chat"; st = {}; render(); restoreFocus(`[data-go="${go.dataset.go}"]`); return; }
   const b = e.target.closest("[data-act]"); if (!b) return;
   const act = b.dataset.act;
+  const again = `[data-act="${act}"]`;
   if (act === "noop") { announce(L("ต้นแบบ: ไม่ได้ส่งอะไร", "Prototype: nothing was sent")); return; }
   if (act.startsWith("prefill:")) { const t = document.getElementById("txt"); if (t) { t.value = act.slice(8); t.focus(); } announce(L("เติมข้อความแล้ว กดส่งเอง", "Message filled in. Press send yourself.")); return; }
   if (act === "focus-composer") { document.getElementById("txt")?.focus(); return; }
   if (act === "open-pane") { st.pane = true; render(true); return; }
-  if (act === "close-pane") { st.pane = false; render(); return; }
-  if (act === "vm-check") { if (!(st.vmaddr || "").trim()) { announce(L("ใส่ที่อยู่ของเครื่องก่อน", "Enter the machine address first")); document.getElementById("vmaddr").focus(); return; } st.vmChecked = true; render(); announce(L("ตรวจเครื่องแล้ว", "Machine checked")); return; }
-  if (act === "vm-use") { st.vmUsed = true; render(); announce(L("ใช้เครื่องนี้แล้ว", "Working computer in use")); return; }
-  if (act === "vm-nosnap") { st.noSnap = !st.noSnap; render(); return; }
-  if (act.startsWith("email:")) { st.email = act.slice(6); render(st.pane); announce(L("สถานะอีเมลเปลี่ยน", "Email state changed")); return; }
-  if (act.startsWith("gh:")) { st.personal = act === "gh:personal"; render(); return; }
-  if (act === "browser:back") { st.browser = "back"; st.pane = false; render(); announce(L("คืนให้จิตแล้ว", "Handed back to Jit")); return; }
-  if (act === "duty:stop") { st.dutyStop = true; render(); announce(L("สั่งหยุดแล้ว", "Stop requested")); return; }
-  if (act === "mem:forget") { st.forget = true; render(); return; }
-  if (act === "mem:close") { st.forget = false; render(); return; }
+  if (act === "close-pane") { st.pane = false; render(); restoreFocus('[data-act="open-pane"]'); return; }
+  if (act === "vm-check") { if (!(st.vmaddr || "").trim()) { announce(L("ใส่ที่อยู่ของเครื่องก่อน", "Enter the machine address first")); document.getElementById("vmaddr").focus(); return; } st.vmChecked = true; render(); restoreFocus('[data-act="vm-use"]', again); announce(L("ตรวจเครื่องแล้ว", "Machine checked")); return; }
+  if (act === "vm-use") { st.vmUsed = true; render(); restoreFocus(again); announce(L("ใช้เครื่องนี้แล้ว", "Working computer in use")); return; }
+  if (act === "vm-nosnap") { st.noSnap = !st.noSnap; render(); restoreFocus(again); return; }
+  if (act.startsWith("email:")) { st.email = act.slice(6); render(st.pane); if (!st.pane) restoreFocus(again, '[data-act="open-pane"]'); announce(L("สถานะอีเมลเปลี่ยน", "Email state changed")); return; }
+  if (act.startsWith("gh:")) { st.personal = act === "gh:personal"; render(); restoreFocus(again); return; }
+  if (act.startsWith("browser:")) {
+    st.browser = act.slice(8); st.pane = false; render();
+    restoreFocus(st.browser === "checking" ? '[data-act="browser:signed_in"]' : '[data-act="open-pane"]', "#main");
+    announce({ checking: L("คืนให้จิตแล้ว กำลังตรวจการเข้าสู่ระบบ", "Handed back. Checking sign-in"), signed_in: L("เข้าสู่ระบบแล้ว", "Signed in"), not_signed_in: L("ยังไม่ได้เข้าสู่ระบบ", "Not signed in yet"), cancelled: L("ยกเลิกการเข้าสู่ระบบแล้ว", "Sign-in cancelled"), unknown: L("ตรวจไม่ได้ว่าเข้าสู่ระบบแล้วหรือยัง", "Can't tell whether sign-in worked") }[st.browser]);
+    return;
+  }
+  if (act.startsWith("stall:")) {
+    if (act === "stall:owner_way") st.stallWay = document.getElementById("stall-way")?.value.trim() || "";
+    st.stall = act.slice(6); render();
+    restoreFocus({ asking: "#stall-way", stopping: '[data-act="stall:stopped"]', paused: '[data-act="stall:resumed"]' }[st.stall], "#main");
+    announce({ resumed: L("ทำต่อแล้ว", "Resumed"), owner_way: L("ทำต่อตามวิธีของคุณ", "Resumed with your approach"), asking: L("พิมพ์วิธีที่อยากให้ลอง", "Type the approach to try"), stopping: L("สั่งหยุดแล้ว", "Stop requested"), stopped: L("หยุดแล้ว", "Stopped"), paused: L("หยุดพักไว้", "Paused") }[st.stall]);
+    return;
+  }
+  if (act === "duty:stop") { st.dutyStop = true; render(); restoreFocus(again); announce(L("สั่งหยุดแล้ว", "Stop requested")); return; }
+  if (act === "mem:forget") { st.forget = true; render(); restoreFocus("#fg ~ .acts .btn:last-child"); return; }
+  if (act === "mem:close") { st.forget = false; render(); restoreFocus('[data-act="mem:forget"]'); return; }
 });
 render();
 </script>
