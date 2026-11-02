@@ -26,7 +26,7 @@ All current slices are Frontier because they retain authority/isolation, lifecyc
 | [POLICY15-01](https://github.com/chayapats/jit/issues/320) | Enforce standing policy and exact held actions outside working agents | [ARCH15-01](https://github.com/chayapats/jit/issues/318), [STATE15-01](https://github.com/chayapats/jit/issues/319) | Blocked / needs triage |
 | [VM15-01](https://github.com/chayapats/jit/issues/321) | Run ordinary administration in the approved working VM | [POLICY15-01](https://github.com/chayapats/jit/issues/320) | Blocked / needs triage |
 | [BROW15-01](https://github.com/chayapats/jit/issues/322) | Complete a website task through a protected general browser | [VM15-01](https://github.com/chayapats/jit/issues/321) | Blocked / needs triage |
-| [CHAT15-01](https://github.com/chayapats/jit/issues/323) | Start requested tool work directly from ordinary conversation | [VM15-01](https://github.com/chayapats/jit/issues/321) | Blocked / needs triage |
+| [CHAT15-01](https://github.com/chayapats/jit/issues/323) | Start requested tool work directly from ordinary conversation | [VM15-01](https://github.com/chayapats/jit/issues/321) | Blocked / needs triage; bounded contract proposal only |
 | [TEAM15-01](https://github.com/chayapats/jit/issues/324) | Let authorized team members share work resources without repeated grants | [CHAT15-01](https://github.com/chayapats/jit/issues/323) | Blocked / needs triage |
 | [MEM15-01](https://github.com/chayapats/jit/issues/325) | Remember useful owner knowledge automatically and honor corrections | [TEAM15-01](https://github.com/chayapats/jit/issues/324) | Blocked / needs triage |
 | [MODEL15-01](https://github.com/chayapats/jit/issues/326) | Choose approved models and effort without widening accounts or spend | [CHAT15-01](https://github.com/chayapats/jit/issues/323) | Blocked / needs triage |
@@ -81,3 +81,7 @@ UX15-00 supplies the required authored handoff across all cases; EVID15-01 recor
 - Every implementation PR closes only its own ticket, records tested SHA/contracts/evidence, and is not merged by its implementer. The current documentation PR closes DOC15-01, not the S15 design parent.
 
 Native GitHub parent/blocking relations mirror the direct dependency keys in [the manifest](s15/manifest.json). Verify actual graph edges and labels after publication. No implement-parallel/coordinator/claim workflow applies.
+
+## CHAT15-01 bounded preparation
+
+The proposed [conversation contract](../contracts/s15-conversation-v1.md), [ADR0069](../adr/0069-s15-conversational-admission-and-result-continuity.md) and [preparation record](../evidence/s15-chat-contract-preparation.md) prepare #323 implementation step 1 only. Synthetic scenarios are UNEXECUTED documentation. Native #321 remains OPEN; no criterion, ready label, dependency or runtime admission advances. Exact reviewed #318/#320/#321/#322 revisions remain unmerged proposals requiring reconciliation with actual merged reviewed prerequisites and implementation evidence. S14 remains default; RT15-01/RF15-G01–G08 remain unproven. Required UX authoring remains separately unavailable without retry/substitution. No runtime/DDL/live probes, UI/UX, activation or merge.

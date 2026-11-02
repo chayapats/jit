@@ -30,7 +30,7 @@
         "Publish the parent/sub-issues and direct dependency graph; verify remote issue bodies, labels, artifact links and local mirrors."
       ],
       "accept": [
-        "S15-D01\u2013D23 and S15-AC01\u2013AC16 remain complete and consistent with the owner confirmation.",
+        "S15-D01–D23 and S15-AC01–AC16 remain complete and consistent with the owner confirmation.",
         "Default versus opt-in personal GitHub policy, report-only issue discovery, production holds and deferred Jod interoperability are explicit.",
         "Every child has the workflow-required sections, a tier justification, concrete tests and real blockers; the spec parent is never ready-for-agent.",
         "Pending required UI/UX authoring is explicitly tracked and blocks dependent tickets; no primary-authored design or completed-handoff claim is substituted.",
@@ -41,7 +41,7 @@
         "Validate an acyclic graph, actual issue IDs, native parent/blocker relations and readiness labels against prerequisites.",
         "Run git diff --check; runtime tests are unnecessary for documentation-only changes."
       ],
-      "requirements": "FR-01\u2013FR-42; NFR-01\u2013NFR-14",
+      "requirements": "FR-01–FR-42; NFR-01–NFR-14",
       "contract": "Records S15 spec, ADR 0064, experience and delivery index; delivers no new runtime contract.",
       "out": "Runtime implementation, live tools, deployment, Jod integration and merging this PR.",
       "kind": "documentation",
@@ -346,7 +346,7 @@
       ],
       "deliver": "An authenticated normal-chat request performs an actual authorized tool-backed task without Work mode, while inspect/recommend intent remains report-only.",
       "steps": [
-        "Define versioned conversational admission/reply contracts over standing policy; retain exact current S14 behavior until explicit activation.",
+        "Define versioned conversational admission/reply contracts over standing policy; retain exact current S14 behavior until explicit activation. The bounded proposal prepares review only; CHAT15-FZ01–FZ07 remain open and native #321 is not bypassed.",
         "Replace the tool-free one-turn execution path for admitted S15 work using Schway public loops/tools; do not build a new Jit loop.",
         "Record request, purpose, resource/policy references, finite limits and deduplicated queue intent; interpret methods inside existing authority.",
         "Expose progress/result/needs-me events to the delegated experience contract; selection and start may be one clear owner reply."
@@ -364,7 +364,7 @@
         "Duplicate/restart and revoked-policy barriers -> one intent/no stale tool or result."
       ],
       "requirements": "FR-06/07/17/19/22/23/27/29/32; NFR-02/05/07/10",
-      "contract": "Delivers conversational work ingress/events over POLICY15-01; concrete UI follows the Opus handoff.",
+      "contract": "Proposes s15-conversation/v1 closed ingress/interpretation/admission/reply/event schemas and trusted ports, ADR0069, complete UNEXECUTED synthetic definitions and CHAT15-FZ01–FZ07; bounded pre-admission preparation only. Runtime acceptance/native #321 remain outstanding; exact unmerged inputs require merged-revision reconciliation. Concrete UI follows the required Opus handoff.",
       "out": "Live deployment, autonomous issue selection, new billing/account scope and UI/UX invention.",
       "kind": "implementation",
       "number": 323,
@@ -378,7 +378,14 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/CHAT15-01.md"
+      "path": "docs/tickets/s15/CHAT15-01.md",
+      "preparation": {
+        "scope": "documentation-only implementation step 1 preparation; no runtime admission or final freeze",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contractPath": "docs/contracts/s15-conversation-v1.md",
+        "evidencePath": "docs/evidence/s15-chat-contract-preparation.md",
+        "status": "proposed; UNEXECUTED documentation; all implementation acceptance criteria and native dependencies unchanged"
+      }
     },
     {
       "key": "TEAM15-01",
@@ -1063,7 +1070,7 @@
         "tests/s14-input-evidence.test.ts",
         "tests/s14-host-conformance.test.ts"
       ],
-      "deliver": "An exact-build evidence dossier exercises S15-AC01\u2013AC16, the primary GitHub workflow and guest/browser/effect boundaries without overstating unrun capabilities.",
+      "deliver": "An exact-build evidence dossier exercises S15-AC01–AC16, the primary GitHub workflow and guest/browser/effect boundaries without overstating unrun capabilities.",
       "steps": [
         "Prepare deterministic conformance and a separately enabled controlled-VM/test-account protocol, with explicit costs, cleanup and owner-required inputs.",
         "Run actual guest-admin, browser-session, egress, approval, disclosure and production-triggering-merge adversarial cases on approved fixtures/hosts.",
@@ -1082,7 +1089,7 @@
         "Explicit opt-in VM/browser/test-repository runs -> actual boundary and end-to-end outcomes.",
         "Default/personal/unknown-effect/production-consequence matrix -> honest release gate with provenance."
       ],
-      "requirements": "FR-01\u2013FR-42; NFR-01\u2013NFR-14",
+      "requirements": "FR-01–FR-42; NFR-01–NFR-14",
       "contract": "Consumes all reviewed S15 contracts and delivers exact-build evidence/coverage manifest; no new API.",
       "out": "Inventing host access, live-bank certification, deployments or silently waiving failed/not-run evidence.",
       "kind": "evidence",
@@ -1194,7 +1201,7 @@
         "The handoff names concrete existing integration surfaces and proposed contracts separately, with coverage and a reviewable implementation split."
       ],
       "tests": [
-        "Review design coverage against S15-D01\u2013D23 and AC01\u2013AC16.",
+        "Review design coverage against S15-D01–D23 and AC01–AC16.",
         "Review keyboard/focus/async/exact-approval transition requirements and translation intent; do not claim actual browser/device testing from Markdown.",
         "Run git diff --check and validate artifact links; runtime tests are unnecessary for this design-only output."
       ],
