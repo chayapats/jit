@@ -23,6 +23,9 @@ export function createConversationMemory(memory: MemoryService): ConversationMem
       if (request.interpretationRequest.requestId !== request.command.requestId) messages.push({ command: request.interpretationRequest, at: ingress?.receivedAt ?? request.receipt.receivedAt });
       const retained = scope ? messages.flatMap(({ command, at }) => memory.retain(current, { id: `message_${command.requestId}`, text: command.text, origin: { kind: "owner_message", id: command.requestId, conversationId: request.receipt.conversationId, at }, scope, resources: [], parents: [] })) : [];
       const packet = memory.prepare(current, request.receipt.rootRequestId, request.intent.instruction);
+      // Schway receives the complete owner instruction regardless of memory ranking. Its retained
+      // claims must fence the reply even when they are absent from the bounded ranked source subset.
+      memory.include(current, packet.id, retained.map(claim => claim.id));
       return { section: packet.section, retained: retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin })) };
     },
     guard(work, requestId) { memory.guard(context(work, requestId), requestId); },

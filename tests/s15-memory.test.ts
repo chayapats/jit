@@ -176,3 +176,24 @@ test("P1: the full 128-parent context preserves every distinct source and withdr
   expect(() => f.team.source(context, descendant.provenance.teamSourceId!)).toThrow("lineage_withdrawn");
   expect(f.team.isWithdrawn(descendant.provenance.teamSourceId!)).toBe(true);
 });
+
+test("P1: normalized claim and arbitrary quote spans stay suppressed inside history after restart", () => {
+  const f = fixture(), context = f.context();
+  const claim = f.memory.retain(context, f.source("A paint sample is evergreen."), [{ kind: "inference", category: "preference", text: "The owner likes forests.", quote: "green" }])[0]!;
+  f.memory.command(f.f.owner, command("memory.forget", claim));
+  f.reopen();
+  expect(f.memory.allowHistory("older_quote", "Consider EVERGREEN paint.")).toBe(false);
+  expect(f.memory.allowHistory("older_claim", "Prior note: THE OWNER\n  likes\tforests. More context.")).toBe(false);
+  expect(f.memory.allowHistory("unrelated", "Consider another subject.")).toBe(true);
+  expect(f.memory.view(f.f.owner).claims[0]).toMatchObject({ lifecycle: "forgotten", text: "", quote: "" });
+});
+
+test("legacy source tombstones without span metadata withhold history conservatively", () => {
+  const f = fixture(), context = f.context(), claim = f.memory.retain(context, f.source())[0]!;
+  f.memory.command(f.f.owner, command("memory.forget", claim));
+  const row = f.memory.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(claim.sourceId)!;
+  const record = JSON.parse(row.record_json); delete record.withdrawnSpans;
+  f.memory.store.db.query("UPDATE sources SET record_json=? WHERE id=?").run(JSON.stringify(record), claim.sourceId);
+  f.reopen();
+  expect(f.memory.allowHistory("legacy_held", "Other context containing concise replies.")).toBe(false);
+});

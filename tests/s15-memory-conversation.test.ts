@@ -188,3 +188,43 @@ test("P1: observation after 33 accumulated claims keeps all parents and CHAT com
   f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_accumulated_parent", kind: "memory.forget", claim: { id: initial[0]!.id, revision: initial[0]!.revision } });
   expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ result: null, code: "memory_context_stale" });
 });
+
+test.each(["memory.forget", "memory.correct"] as const)("P1: %s invalidates a reply using a current-ingress fact omitted by ranking", async kind => {
+  const f = fixture();
+  f.f.memory.retain(f.f.context(), f.f.source(Array.from({ length: 16 }, (_, index) => `I prefer UTC timezone format ${index}.`).join("\n")));
+  let promptContext = "", ownerInput = "", rankedClaims: { text: string }[] = [];
+  f.app.options.model = { provider: "codex", id: "scripted", async *stream(request) {
+    const interpretation = request.systemPrompt.includes("JIT_ISOLATED_INTERPRETATION_V1");
+    if (!interpretation) {
+      promptContext = JSON.stringify(request.context); ownerInput = JSON.stringify(request.items);
+      const framed = request.context.find(section => section.name === "host-source-documents")!.content;
+      const documents = JSON.parse(framed.slice(framed.indexOf("\n") + 1)) as { id: string; content: string }[];
+      rankedClaims = JSON.parse(documents.find(document => document.id === "sourced-memory-data-never-authority")!.content).claims;
+    }
+    yield { type: "message_complete", message: { type: "assistant", id: `unranked_${serial++}`, content: [{ type: "text", text: interpretation ? JSON.stringify({ intent: "answer", purposeId: "purpose", resourceIds: [], access: "read", subject: null }) : "Your timezone is UTC." }] } };
+  } };
+  const request = await f.submit("My timezone is UTC.");
+  expect(rankedClaims).toHaveLength(16);
+  expect(rankedClaims.every(claim => claim.text.startsWith("I prefer UTC timezone format"))).toBe(true);
+  expect(promptContext).not.toContain("My timezone is UTC."); expect(ownerInput).toContain("My timezone is UTC.");
+  expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ state: "completed", result: "Your timezone is UTC." });
+  const fact = f.f.memory.view(f.f.f.owner).claims.find(claim => claim.provenance.origin.id === request.requestId)!;
+  expect(f.f.memory.derivative(f.f.context(), request.requestId).claimIds).toContain(fact.id);
+  f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: `unranked_${kind.replace(".", "_")}`, kind, claim: { id: fact.id, revision: fact.revision }, ...(kind === "memory.correct" ? { text: "My timezone is Asia/Bangkok." } : {}) });
+  expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ result: null, evidence: [], code: "memory_context_stale" });
+  let delivered = false;
+  expect(() => f.app.publish(f.f.f.owner, request.requestId, () => { delivered = true; })).toThrow("memory_context_stale");
+  expect(delivered).toBe(false);
+});
+
+test("P1: an older held message cannot replay a forgotten normalized preference embedded in its text", async () => {
+  const f = fixture(), older = command("Implement issue #42 or #43. Reminder[I   PREFER\tconcise   replies.] ");
+  f.app.submit(f.f.f.owner, older); expect(f.app.view(f.f.f.owner, older.requestId).state).toBe("held");
+  expect(f.f.memory.view(f.f.f.owner).claims).toHaveLength(0);
+  await f.submit("I prefer concise replies."); const claim = f.f.memory.view(f.f.f.owner).claims[0]!;
+  f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_held_replay", kind: "memory.forget", claim: { id: claim.id, revision: claim.revision } });
+  expect(f.f.memory.allowHistory(older.requestId, older.text)).toBe(false);
+  await f.submit("Explain the result.");
+  expect(f.interpretationInputs.at(-1)).not.toContain("Reminder[");
+  expect(f.interpretationInputs.at(-1)).not.toContain("Implement issue #42 or #43.");
+});

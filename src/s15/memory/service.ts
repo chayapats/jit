@@ -7,9 +7,11 @@ import { extractMemory } from "./extract";
 import { MEMORY_SCHEMA_V1 } from "./store";
 import type { ForgetImpact, MemoryCandidate, MemoryClaim, MemoryCommand, MemoryDerivative, MemoryInput, MemoryOptions, MemoryPacket, MemoryProvenance, MemoryView, OwnerActor, TeamContext } from "./types";
 
-interface SourceRecord extends MemoryProvenance { id: string; active: boolean }
+interface SuppressedSpan { fingerprint: string; length: number }
+interface SourceRecord extends MemoryProvenance { id: string; active: boolean; withdrawnSpans?: SuppressedSpan[] }
 const id = () => crypto.randomUUID().replaceAll("-", "");
-const fingerprint = (text: string) => digest(text.trim().toLocaleLowerCase("en").replace(/\s+/gu, " "));
+const normalize = (text: string) => text.trim().toLocaleLowerCase("en").replace(/\s+/gu, " ");
+const fingerprint = (text: string) => digest(normalize(text));
 
 /**
  * Automatic sourced memory under current standing retention policy. Model extraction and retrieved
@@ -177,8 +179,25 @@ export class MemoryService {
   /** Ordinary CHAT history/replay cannot reintroduce forgotten/corrected source or retired summaries. */
   allowHistory(requestId: string, text: string): boolean {
     identity(requestId);
-    if (this.store.db.query("SELECT 1 FROM suppressions WHERE fingerprint=?").get(digest(text))) return false;
-    if (this.rows<SourceRecord>("sources").some(source => (!source.active || source.teamSourceId !== null && this.options.team.isWithdrawn(source.teamSourceId)) && source.origin.id === requestId)) return false;
+    const fingerprints = new Set(this.store.db.query<{ fingerprint: string }, []>("SELECT fingerprint FROM suppressions").all().map(row => row.fingerprint));
+    const normalized = normalize(text);
+    if (fingerprints.has(digest(text)) || fingerprints.has(digest(normalized))) return false;
+    const covered = new Set<string>(), lengths = new Set<number>();
+    for (const source of this.rows<SourceRecord>("sources")) {
+      if (source.active && (source.teamSourceId === null || !this.options.team.isWithdrawn(source.teamSourceId))) continue;
+      // Legacy tombstones or an interrupted cross-store withdrawal cannot prove a history fragment
+      // safe. Withhold history until current metadata is available; never resurrect forgotten bytes.
+      if (source.origin.id === requestId || source.withdrawnSpans === undefined) return false;
+      covered.add(source.sourceHash);
+      for (const span of source.withdrawnSpans) { covered.add(span.fingerprint); if (fingerprints.has(span.fingerprint)) lengths.add(span.length); }
+    }
+    if ([...fingerprints].some(value => !covered.has(value))) return false;
+    // Hash only saved normalized span lengths, including quotes embedded inside larger sentences
+    // or words. Refuse excessive comparison work rather than passing unchecked history to a model.
+    if ([...lengths].reduce((total, length) => total + Math.max(0, normalized.length - length + 1), 0) > 65536) return false;
+    for (const length of lengths) for (let start = 0; start + length <= normalized.length; start++) {
+      if (fingerprints.has(digest(normalized.slice(start, start + length)))) return false;
+    }
     const row = this.store.db.query<{ state: string }, [string]>("SELECT state FROM derivatives WHERE id=?").get(requestId);
     return row?.state !== "retired";
   }
@@ -221,7 +240,17 @@ export class MemoryService {
       this.owner(actor); this.store.capacity();
       if (this.claim(root.id).revision !== input.claim.revision) throw new AppError("stale_revision", 409);
       const replacementId = input.kind === "memory.correct" ? id() : null;
+      const spansBySource = new Map<string, Map<string, SuppressedSpan>>();
+      for (const claim of affected.claims) for (const text of [claim.text, claim.quote]) if (text) {
+        const span = { fingerprint: fingerprint(text), length: normalize(text).length };
+        let spans = spansBySource.get(claim.sourceId);
+        if (!spans) { spans = new Map(); spansBySource.set(claim.sourceId, spans); }
+        spans.set(span.fingerprint, span);
+      }
       for (const source of affected.sources) {
+        const spans = new Map((source.withdrawnSpans ?? []).map(span => [span.fingerprint, span]));
+        for (const [fingerprint, span] of spansBySource.get(source.id) ?? []) spans.set(fingerprint, span);
+        if (spans.size || source.withdrawnSpans !== undefined) source.withdrawnSpans = [...spans.values()];
         source.active = false; this.saveSource(source);
         this.store.db.query("INSERT OR IGNORE INTO suppressions VALUES (?,?)").run(source.sourceHash, this.now());
       }
