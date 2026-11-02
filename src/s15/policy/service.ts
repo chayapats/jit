@@ -230,6 +230,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   function observationFor(a: T.PreparedAction): T.Observation | null {
     return parse<T.Observation>(ledger.get("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')!='owner_statement' ORDER BY seq DESC LIMIT 1", a.id)) ?? (claimed(a) ? { outcome: 'unknown', basis: 'uncertain', code: 'reconciliation_required', actual: v.unknownUsage(), transportSettled: false } : null);
   }
+  // Dispatch/recovery are control paths. Private bodies remain only in guarded evidence projections.
+  function controlObservation(observation: T.Observation): T.Observation { const { evidence: _, ...facts } = observation; return clone(facts); }
   function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled'], ['evidence']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); if (result.evidence !== undefined) v.canonical(result.evidence); }
   function savePolicy(input: T.PolicyInput, expectedRevision: number, allowRecurring = false): T.StandingPolicy {
     v.policy(input); v.nat(expectedRevision);
@@ -380,7 +382,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         ledger.run('INSERT INTO recovery_reads(reservation_id,action_id,active) VALUES (?,?,1)', reservation.id, a.id);
         return { a, claim, adapter, result: null, reservation };
       });
-      if (start.result) return start.result;
+      if (start.result) return controlObservation(start.result);
       let result: T.AdapterResult, readSettled = false, readCalls = 0, recoveryLive = true;
       try {
         result = await start.adapter.reconcile!(clone(start.a), { beforeRead() { tx(() => {
@@ -406,7 +408,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         settleReservation(start.reservation!.id, readUsage, readSettled, true);
         ledger.run('UPDATE recovery_reads SET observation=? WHERE reservation_id=?', v.canonical(observed), start.reservation!.id);
       });
-      return tx(() => observe(start.a, start.claim, observed));
+      return tx(() => controlObservation(observe(start.a, start.claim, observed)));
     },
     recordStatement(actor, ref, requestId, outcome) { tx(() => { if (!['occurred', 'did_not_occur'].includes(outcome)) v.fail('invalid_shape'); receipt(actor, requestId, { kind: 'effect.statement', ref, outcome }, () => { const a = loadAction(ref); if (!claimed(a)) v.fail('reconciliation_required'); ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical({ outcome: 'unknown', basis: 'owner_statement', code: outcome, actual: v.unknownUsage(), transportSettled: false })); return { recorded: true }; }); }); },
   };
@@ -547,12 +549,12 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       } catch (error) {
         if (!started) {
           const safe: T.Observation = { outcome: 'not_dispatched', basis: 'local_guard', code: error instanceof v.PolicyError ? error.code : 'adapter_unproven', actual: v.unknownUsage(), transportSettled: true };
-          return tx(() => observe(a, claim, safe));
+          return tx(() => controlObservation(observe(a, claim, safe)));
         }
         result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false };
       } finally { consumed = true; activeDispatches.delete(a.id); }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
-      return tx(() => observe(a, claim, observed));
+      return tx(() => controlObservation(observe(a, claim, observed)));
     },
   };
   const control: T.ControlPort = {

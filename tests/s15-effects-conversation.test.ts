@@ -42,6 +42,8 @@ test('normal send-it conversation holds the exact email; one presented chat appr
   const view = conversationOwnerView(c.app, g.f.owner, 'conversation'); expect(view.needsYou).toHaveLength(1); expect(view.needsYou[0]!.slip!.action.classes).toEqual(['communication']);
   const approve = command('Approve'); c.app.submit(g.f.owner, approve); await c.app.drain(); expect(g.mutationCalls).toBe(1); expect(c.app.view(g.f.owner, approve.requestId).decision!.observation!.outcome).toBe('succeeded');
   c.app.submit(g.f.owner, approve); await c.app.drain(); expect(g.mutationCalls).toBe(1); expect(conversationOwnerView(c.app, g.f.owner, 'conversation').needsYou).toHaveLength(0);
+  expect(c.app.store.request(approve.requestId).decision!.observation).not.toHaveProperty('evidence');
+  g.f.allow = false; expect(JSON.stringify(c.app.view(g.f.owner, approve.requestId))).not.toContain(mail().body);
 });
 
 test.each([false, true])('conversational controlled document save with notification=%s uses the same browser request and exact gate', async notify => {

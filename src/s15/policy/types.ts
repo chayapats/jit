@@ -59,7 +59,7 @@ export interface ApprovalInput { requestId: string; action: ActionRef; decision:
 export interface ModelCallInput { requestId: string; selection: Selection; upperBound: BudgetVector }
 /** Durable charge and transport capacity, not a dispatch token. guardReservation consumes model send permission once for its original live actor; recovery/rebinding cannot adopt it. Unknown usage/capacity remains charged. */
 export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number; selection?: Selection; billing?: 'subscription' | 'metered' }
-/** Safe observation, never provider errors or credentials. Unknown is permanently reconcile-only. */
+/** Safe observation, never provider errors or credentials. Dispatch/reconciliation omit evidence; only guarded projections include it. Unknown is permanently reconcile-only. */
 export interface Observation { outcome: 'not_dispatched' | 'succeeded' | 'failed' | 'unknown'; basis: 'local_guard' | 'remote_verified' | 'uncertain' | 'owner_statement'; code: string | null; actual: Usage; transportSettled: boolean; /** Bounded credential-free service evidence, retained under the action's access/lineage guards. */ evidence?: JsonValue }
 /** Trusted adapter result: failed requires conclusive remote rejection; exceptions/malformed replies become unknown. */
 export interface AdapterResult { outcome: 'succeeded' | 'failed' | 'unknown'; actual: Usage; transportSettled: boolean; /** Exact observed result/undo metadata, never a model-authored success assertion. */ evidence?: JsonValue }

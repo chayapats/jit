@@ -41,7 +41,8 @@ export function createEffectsConversationTools(policy: S15PolicyService, options
       try {
         const result = await original.browser.resume(action);
         if (result.state !== 'ok' && result.state !== 'unknown') fail('code' in result ? result.code : 'request_unavailable');
-        return policy.control.publishable(original.work.actor, action);
+        const { evidence: _, ...facts } = policy.control.publishable(original.work.actor, action);
+        return facts;
       } finally { held.delete(action.id); original.browser.release(); }
     },
     /** Protected cleanup for host shutdown/stop, never a model-selected new browser session. */

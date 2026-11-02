@@ -172,8 +172,8 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
         const slot = kind === 'mail' ? 'final_message' : 'calendar_' + digest('s15.calendar.slot.v1', (proposal as CalendarProposal).eventId ?? 'create');
         const prepared = host().work.prepare(work.actor, { slot, adapter: kind === 'mail' ? 'gmail_send' : 'google_calendar', proposal }); const a = actionRef(prepared.action); input.onAction(a);
         if (prepared.decision.state !== 'allow') return { content: canonical({ state: prepared.decision.state, code: prepared.decision.code, action: a }), isError: true };
-        input.guard(); const observed = await host().work.dispatch(work.actor, a); input.guard(); host().control.publishable(work.actor, a);
-        return { content: canonical({ state: observed.outcome, action: a, evidence: observed.evidence ?? null }), isError: observed.outcome !== 'succeeded' };
+        input.guard(); const observed = await host().work.dispatch(work.actor, a); input.guard(); const published = host().control.publishable(work.actor, a);
+        return { content: canonical({ state: observed.outcome, action: a, evidence: published.evidence ?? null }), isError: observed.outcome !== 'succeeded' };
       },
     } });
     return { tools: [{ access: 'read' as const, definition: { name: 'calendar_read', description: 'Read one approved calendar event and bind its actual version to this work.', inputSchema: { type: 'object', properties: { eventId: { type: 'string' } }, required: ['eventId'], additionalProperties: false }, execution: 'exclusive' as const, effect: 'read-only' as const, async execute(value: unknown) { exact(value, ['eventId']); string(value.eventId); input.guard(); const observed = await readEvent(work.actor, value.eventId, 'event_' + digest('s15.event.read.slot.v1', { work: work.authority.id, sequence: ++sequence }), input.signal); input.guard(); return { content: canonical(observed) }; } } }, ...(input.mode === 'execute' ? [actionTool('mail'), actionTool('calendar')] : [])], async cancel() {}, async close() {} };
