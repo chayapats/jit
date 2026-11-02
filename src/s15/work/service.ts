@@ -8,11 +8,11 @@ const clone = <T>(v: T): T => JSON.parse(canonical(v)) as T;
 const kinds = ['ci', 'review', 'owner', 'schedule', 'assigned'];
 function evidence(refs: string[]): void { if (!Array.isArray(refs) || refs.length > 64 || new Set(refs).size !== refs.length) fail('invalid_shape'); refs.forEach(id); }
 function observation(o: AttemptSettlement): void {
-  exact(o, ['transportSettled', 'effects', 'progress', 'evidenceRefs', 'recommendation', 'usage'], ['complete']);
-  if (typeof o.transportSettled !== 'boolean' || !['known', 'unknown'].includes(o.effects) || !['none', 'made'].includes(o.progress) || (o.complete !== undefined && typeof o.complete !== 'boolean')) fail('invalid_shape');
+  exact(o, ['transportSettled', 'executionSettled', 'effects', 'progress', 'evidenceRefs', 'recommendation', 'usage'], ['complete']);
+  if (typeof o.transportSettled !== 'boolean' || typeof o.executionSettled !== 'boolean' || !['known', 'unknown'].includes(o.effects) || !['none', 'made'].includes(o.progress) || (o.complete !== undefined && typeof o.complete !== 'boolean')) fail('invalid_shape');
   evidence(o.evidenceRefs); string(o.recommendation, 4096); if (!o.recommendation) fail('recommendation_required'); usage(o.usage);
   if (o.progress === 'made' && !o.evidenceRefs.length) fail('progress_evidence_required');
-  if (o.complete && (!o.transportSettled || o.effects !== 'known' || o.progress !== 'made')) fail('completion_evidence_required');
+  if (o.complete && (!o.transportSettled || !o.executionSettled || o.effects !== 'known' || o.progress !== 'made')) fail('completion_evidence_required');
 }
 
 /** Opens a fresh opt-in protected responsibility journal. Waiting never creates a host/session.
@@ -22,7 +22,8 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
   if (options.runtime !== 's15') fail('s15_opt_in_required');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a575135);
   const now = () => { const value = (options.now ?? Date.now)(); nat(value); return value; };
-  const handles = new WeakMap<AttemptHandle, { responsibilityId: string; attemptId: string }>();
+  const handles = new WeakMap<AttemptHandle, { responsibilityId: string; attemptId: string; controller: AbortController }>();
+  const running = new Map<string, AbortController>();
   function current(r: Responsibility): WorkAuthority {
     if (r.stopRequested) fail('stopped');
     if (!r.workId) fail('execution_not_authorized');
@@ -40,7 +41,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
   }
   function stall(r: Responsibility, recommendation: string): void {
     let count = new Set<string>();
-    for (const a of r.attempts) { if (a.progress === 'made') count = new Set(); else if (a.progress === 'none' && a.state === 'settled') count.add(a.approach); }
+    for (const a of r.attempts.slice(r.stallCheckpoint)) { if (a.progress === 'made') count = new Set(); else if (a.progress === 'none' && a.state === 'settled') count.add(a.approach); }
     const remaining = r.workId ? options.remainingCalls(r.workId) : null;
     if (remaining !== null) nat(remaining);
     if (count.size >= r.stallPolicy.noProgressApproaches) pause(r, 'no_progress', recommendation);
@@ -62,9 +63,9 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
     }
     // Facts may advance after stop/revoke; neither current authority nor a new dispatch is required.
     for (const k of Object.keys(a.usage) as (keyof typeof a.usage)[]) if (a.usage[k] !== null && (o.usage[k] === null || BigInt(o.usage[k]!) < BigInt(a.usage[k]!))) fail('settlement_conflict');
-    if (!a.capacityHeld && !o.transportSettled) fail('settlement_conflict');
-    a.capacityHeld = !o.transportSettled; a.endedAt = Math.max(a.startedAt, now()); a.usage = clone(o.usage);
-    a.state = o.transportSettled && o.effects === 'known' ? 'settled' : 'unknown';
+    if (!a.capacityHeld && (!o.transportSettled || !o.executionSettled)) fail('settlement_conflict');
+    a.capacityHeld = !o.transportSettled || !o.executionSettled; a.endedAt = Math.max(a.startedAt, now()); a.usage = clone(o.usage);
+    a.state = !a.capacityHeld && o.effects === 'known' ? 'settled' : 'unknown';
     a.progress = o.progress; a.evidenceRefs = [...new Set([...a.evidenceRefs, ...o.evidenceRefs])]; a.recommendation = o.recommendation;
     a.publicationFenced ||= recovered || r.stopRequested || a.state === 'unknown';
     if (r.stopRequested) r.state = held(r) ? 'stopping' : 'stopped';
@@ -94,7 +95,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
         const r: Responsibility = { contract: 's15-responsibility/v1', id: digest('s15.work.source.v1', source.receipt.rootRequestId), sourceRequestId: source.receipt.rootRequestId, conversationId: source.receipt.conversationId, originalText: source.command.text,
           ownerGeneration: source.owner.generation, workId: work?.id ?? null, purpose: work?.request.purpose ?? null, resources: clone(work?.request.resources ?? []), subject: source.intent.subject, completion: input.completion,
           triggers: [...input.triggers], stallPolicy: clone(input.stallPolicy), state: work ? 'ready' : 'accepted', wait: null, attempts: [], report: null, proposals: [], readyEventId: source.receipt.rootRequestId,
-          stopRequested: false, resumedAfterRestart: false, createdAt: now(), updatedAt: now() };
+          stallCheckpoint: 0, stopRequested: false, resumedAfterRestart: false, createdAt: now(), updatedAt: now() };
         return save(r);
       });
     }); },
@@ -106,7 +107,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       if (r.state !== 'ready') { save(r); return null; }
       const a: WorkAttempt = { id: digest('s15.work.attempt.v1', { responsibilityId, eventId: input.eventId }), eventId: input.eventId, approach: input.approach, startedAt: now(), endedAt: null, state: 'active', capacityHeld: true, publicationFenced: false, progress: 'unknown', evidenceRefs: [], recommendation: null, usage: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null } };
       r.attempts.push(a); r.state = 'working'; r.wait = null; r.readyEventId = null; save(r);
-      const handle = Object.freeze({}) as AttemptHandle; handles.set(handle, { responsibilityId, attemptId: a.id }); return handle;
+      const handle = Object.freeze({}) as AttemptHandle, controller = new AbortController(); handles.set(handle, { responsibilityId, attemptId: a.id, controller }); running.set(a.id, controller); return handle;
     }); if (!handle) fail('work_paused'); return handle; },
     wait(responsibilityId, input) { return journal.tx(() => {
       exact(input, ['requestId', 'kind', 'key', 'evidenceRefs']); id(input.requestId); id(input.key); evidence(input.evidenceRefs);
@@ -133,7 +134,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
         return save(r);
       });
     }); },
-    settle(handle, o) { return journal.tx(() => { const h = handle && handles.get(handle); if (!h) fail('attempt_context_lost'); const r = journal.get<Responsibility>(h.responsibilityId), a = r.attempts.find(a => a.id === h.attemptId); if (!a) fail('attempt_context_lost'); return settle(r, a, o, false); }); },
+    settle(handle, o) { return journal.tx(() => { const h = handle && handles.get(handle); if (!h) fail('attempt_context_lost'); const r = journal.get<Responsibility>(h.responsibilityId), a = r.attempts.find(a => a.id === h.attemptId); if (!a) fail('attempt_context_lost'); const result = settle(r, a, o, false); if (!a.capacityHeld) running.delete(a.id); return result; }); },
     reconcile(responsibilityId, attemptId, o) { return journal.tx(() => { id(attemptId); const r = journal.get<Responsibility>(responsibilityId), a = r.attempts.find(a => a.id === attemptId); if (!a || a.state !== 'unknown') fail('reconciliation_required'); return settle(r, a, o, true); }); },
     stop(owner, responsibilityId, requestId) { return journal.tx(() => {
       id(requestId); const r = journal.get<Responsibility>(responsibilityId); ownerCheck(owner, r);
@@ -141,11 +142,38 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       if (r.workId) options.policy.owner.revoke(owner, 'ws_' + digest('s15.work.stop.v1', { responsibilityId, requestId }), { kind: 'work', id: r.workId });
       r.stopRequested = true; r.wait = null; r.readyEventId = null; r.attempts.forEach(a => { a.publicationFenced = true; }); r.state = held(r) ? 'stopping' : 'stopped'; return save(r);
     }); },
+    resume(owner, responsibilityId, sourceRequestId) { return journal.tx(() => {
+      id(sourceRequestId); const r = journal.get<Responsibility>(responsibilityId); ownerCheck(owner, r); current(r);
+      const source = options.conversation.view(owner, sourceRequestId);
+      const scope = source.intent.scope;
+      if (r.state !== 'paused' || held(r) || source.intent.kind !== 'execute' || source.receipt.conversationId !== r.conversationId || source.intent.subject !== r.subject || !scope || scope.purposeId !== r.purpose?.id || scope.resourceIds.some(id => !r.resources.some(ref => ref.id === id))) fail('outside_scope');
+      if (sourceRequestId === r.sourceRequestId) fail('fresh_instruction_required');
+      return journal.once('rs_' + digest('s15.work.resume.id.v1', { responsibilityId, sourceRequestId }), digest('s15.work.resume.v1', { responsibilityId, sourceRequestId }), () => {
+        r.state = 'ready'; r.stallCheckpoint = r.attempts.length; r.readyEventId = sourceRequestId; return save(r);
+      });
+    }); },
+    guard(handle) { journal.tx(() => {
+      const h = handle && handles.get(handle); if (!h) fail('attempt_context_lost'); const r = journal.get<Responsibility>(h.responsibilityId), a = r.attempts.find(a => a.id === h.attemptId);
+      current(r); if (!a || a.state !== 'active' || a.publicationFenced || r.state !== 'working') fail('attempt_not_active');
+    }); },
+    signal(handle) { const h = handle && handles.get(handle); if (!h) fail('attempt_context_lost'); return h.controller.signal; },
+    publish(handle, consume) { journal.tx(() => {
+      const h = handle && handles.get(handle); if (!h) fail('attempt_context_lost'); const r = journal.get<Responsibility>(h.responsibilityId), a = r.attempts.find(a => a.id === h.attemptId);
+      current(r); if (!a || a.state !== 'settled' || a.publicationFenced || a.capacityHeld) fail('publication_withheld'); consume(clone(a));
+    }); },
     project(owner, responsibilityId): ResponsibilityProjection { return journal.tx(() => {
       const r = journal.get<Responsibility>(responsibilityId); ownerCheck(owner, r);
-      return { ...clone(r), budget: summarizeReservations(r.workId ? options.policy.control.reservations(r.workId) : []), stopImpact: { responsibilityIds: [r.id], heldAttempts: r.attempts.filter(a => a.capacityHeld).map(a => a.id), otherResponsibilities: journal.all<Responsibility>().filter(other => other.id !== r.id && !['stopped', 'completed'].includes(other.state)).length } };
+      const totals = summarizeReservations(r.workId ? options.policy.control.reservations(r.workId) : []);
+      return { ...clone(r), budget: { ...totals, charged: { ...totals.charged, spendMinor: options.policy.owner.current(owner)?.budget ? totals.charged.spendMinor : null } }, stopImpact: { responsibilityIds: [r.id], heldAttempts: r.attempts.filter(a => a.capacityHeld).map(a => a.id), otherResponsibilities: journal.all<Responsibility>().filter(other => other.id !== r.id && !['stopped', 'completed'].includes(other.state)).length } };
     }); },
-    close() { journal.close(); },
+    close() { for (const controller of running.values()) controller.abort(); running.clear(); journal.close(); },
+  };
+  const stop = service.stop;
+  service.stop = (owner, responsibilityId, requestId) => {
+    const result = stop(owner, responsibilityId, requestId);
+    // Dispatch of abort listeners follows the durable stop fence and never holds the journal writer lock.
+    for (const attempt of result.attempts) running.get(attempt.id)?.abort();
+    return result;
   };
   return service;
 }

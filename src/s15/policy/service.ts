@@ -552,6 +552,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     publishable(actor, ref) { return tx(() => { const w = workAuth(actor), a = loadAction(ref); checkAction(w, a); const result = observationFor(a); if (!result) v.fail('observation_required'); return clone(result); }); },
     usage() { return tx(() => ({ charged: clone(ledger.meta<T.BudgetVector>('charged')!), unsettled: unsettled() })); },
     reservations(workId) { return tx(() => { if (workId !== undefined) v.id(workId); return ledger.all<{ json: string }>('SELECT json FROM reservations').map(row => JSON.parse(row.json) as T.Reservation).filter(row => workId === undefined || row.workId === workId).map(clone); }); },
+    subscriptionLimits() { return tx(() => clone(subscriptionBounds)); },
     close() { if (!closed) { closed = true; ledger.db.close(); } },
   };
   return Object.freeze({ owner: Object.freeze(owner), work: Object.freeze(work), control: Object.freeze(control) });

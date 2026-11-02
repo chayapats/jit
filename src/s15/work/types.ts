@@ -20,7 +20,7 @@ export interface Responsibility {
   state: 'accepted' | 'ready' | 'working' | 'waiting' | 'paused' | 'reconcile_only' | 'completed' | 'stopping' | 'stopped';
   wait: ResponsibilityWait | null; attempts: WorkAttempt[]; report: StallReport | null;
   proposals: { eventId: string; code: 'outside_purpose'; evidenceRefs: string[] }[];
-  readyEventId: string | null; stopRequested: boolean; resumedAfterRestart: boolean; createdAt: number; updatedAt: number;
+  readyEventId: string | null; stallCheckpoint: number; stopRequested: boolean; resumedAfterRestart: boolean; createdAt: number; updatedAt: number;
 }
 declare const attemptBrand: unique symbol;
 /** Process-local original attempt identity; serializing/copying it never authorizes effects or publication. */
@@ -36,7 +36,7 @@ export interface WorkOptions {
 }
 /** A trusted scoped settlement observation. Only owning transports/VM/effect services may attest settled;
  * a model result, timeout or guest exit is insufficient. Unknown effects always require reconciliation. */
-export interface AttemptSettlement { transportSettled: boolean; effects: 'known' | 'unknown'; progress: 'none' | 'made'; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean }
+export interface AttemptSettlement { transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; progress: 'none' | 'made'; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean }
 /** Stable host-only API consumed by GitHub babysitting. All event/settlement inputs are trusted service
  * observations, not model claims. Each new attempt still needs POLICY and owning-tool final I/O guards. */
 export interface ResponsibilityPort {
@@ -54,11 +54,20 @@ export interface ResponsibilityPort {
   reconcile(id: string, attemptId: string, observation: AttemptSettlement): Responsibility;
   /** Authenticated scoped stop fences this responsibility and its POLICY work; capacity remains until settlement. */
   stop(owner: OwnerActor, id: string, requestId: string): Responsibility;
+  /** Resume only from a fresh authenticated CHAT execution message within this exact original scope.
+   * The new message cannot install authority or revive stopped/revoked work. Historical reports remain. */
+  resume(owner: OwnerActor, id: string, sourceRequestId: string): Responsibility;
+  /** Rechecks the original live attempt and current POLICY authority before owning-service I/O. */
+  guard(handle: AttemptHandle): void;
+  /** Original-scope cooperative cancellation signal. Abort is not settlement or remote non-occurrence. */
+  signal(handle: AttemptHandle): AbortSignal;
+  /** Synchronous current publication of an eligible settled attempt; copied/recovered/stopped handles refuse. */
+  publish(handle: AttemptHandle, consume: (attempt: WorkAttempt) => void): void;
   /** Authenticated read-only JSON projection; reads never start a model, VM, effect or replacement issue. */
   project(owner: OwnerActor, id: string): ResponsibilityProjection;
 }
 /** UI data for F9/12.3. Unknown components stay explicit, and scope lists only this responsibility. */
 export interface ResponsibilityProjection extends Responsibility {
-  budget: { charged: import('../policy').BudgetVector; measured: Usage; unknown: (keyof Usage)[] };
+  budget: { charged: Usage; measured: Usage; unknown: (keyof Usage)[] };
   stopImpact: { responsibilityIds: string[]; heldAttempts: string[]; otherResponsibilities: number };
 }

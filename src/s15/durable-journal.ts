@@ -6,7 +6,7 @@ import { canonical, fail, id } from './policy/validation';
 /** Fresh protected opt-in journal with an OS-backed exclusive process lease. This is not an S14
  * migration or an ordinary snapshot. Lost claims survive SIGKILL; opening never recreates missing state. */
 export class DurableJournal {
-  readonly db: Database;
+  readonly db!: Database;
   #lease: Database;
   #closed = false;
   constructor(path: string, installation: string, create: boolean, applicationId: number) {
@@ -45,7 +45,12 @@ export class DurableJournal {
   tx<T>(fn: () => T): T { if (this.#closed) fail('service_closed'); return this.db.transaction(fn).immediate(); }
   get<T>(key: string): T { id(key); const row = this.db.query<{ json: string }, [string]>('SELECT json FROM records WHERE id=?').get(key); if (!row) fail('not_found'); return JSON.parse(row.json) as T; }
   all<T>(): T[] { return this.db.query<{ json: string }, []>('SELECT json FROM records ORDER BY rowid').all().map(row => JSON.parse(row.json) as T); }
-  put(key: string, value: unknown): void { id(key); const json = canonical(value); this.db.query('INSERT INTO records VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(key, json); }
+  put(key: string, value: unknown): void {
+    id(key); const json = canonical(value);
+    const { n, bytes } = this.db.query<{ n: number; bytes: number }, []>('SELECT count(*) AS n,coalesce(sum(length(CAST(json AS BLOB))),0) AS bytes FROM records').get()!;
+    if (n >= 10000 || bytes + Buffer.byteLength(json) > 64 * 1024 * 1024) fail('continuity_capacity');
+    this.db.query('INSERT INTO records VALUES (?,?) ON CONFLICT(id) DO UPDATE SET json=excluded.json').run(key, json);
+  }
   once<T>(key: string, hash: string, action: () => T): T {
     id(key); const old = this.db.query<{ hash: string; json: string }, [string]>('SELECT hash,json FROM commands WHERE id=?').get(key);
     if (old) { if (old.hash !== hash) fail('request_id_conflict'); return JSON.parse(old.json) as T; }
