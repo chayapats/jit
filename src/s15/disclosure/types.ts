@@ -38,6 +38,9 @@ export interface DisclosureOptions {
 /** Additive protected browser hook. inspect must precede every broker release; guard rechecks final
  * bytes/current lineage after waits. Private observations are recorded before publication. */
 export interface BrowserDisclosurePort {
+  /** Exchange accumulated protected-profile/work ancestry before native input. A lease change or
+   * navigation cannot make private DOM/storage/form state public. */
+  input(work: WorkAuthority): void;
   inspect(work: WorkAuthority, request: BrowserRequest): Pick<ActionDraft, 'classes' | 'recipients' | 'fences' | 'disclosure'>;
   guard(work: WorkAuthority, request: BrowserRequest, expected?: DisclosureDetails): void;
   record(work: WorkAuthority, url: string, format: 'response' | 'text' | 'image'): void;
@@ -76,7 +79,9 @@ export interface DisclosureService {
   vmOutput(actor: object, vmId: string): void;
   /** Compose with mandatory POLICY owning-service consent/privacy ceilings. */
   catalogs(base: CatalogPort): CatalogPort;
-  browser(route: string): BrowserDisclosurePort;
+  /** profile is the stable protected profile identity across leases/restores, never an input
+   * generation. A new identity requires a genuinely new empty profile; omission shares route ancestry. */
+  browser(route: string, profile?: Ref): BrowserDisclosurePort;
   model(route: (candidate: ApprovedModelRoute) => string): ModelDisclosurePort;
   /** Narrow VM registry proxy seam: exact approved destination only. Opaque CONNECT bytes cannot
    * obtain an exact-disclosure approval. Content/covert-channel prevention is not claimed. */

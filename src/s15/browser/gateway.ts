@@ -260,6 +260,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
             }
             if (continuity.uncertain()) return { state: 'unknown', code: 'reconciliation_required' };
             if (input.kind !== 'navigate') safe();
+            options.disclosure?.input(service().work.guard(workActor));
             generation = continuity.advance();
             const s = scope(workActor, false, () => { if (busy === lock) busy = null; }, signal);
             active = s; deferredUnlock = true;

@@ -8,7 +8,7 @@ import type { DataClass, DisclosureOptions, DisclosureService, DisclosureSource 
 
 const classes: DataClass[] = ['public', 'private', 'personal', 'business'];
 const clone = <T>(value: T): T => JSON.parse(canonical(value)) as T;
-type Record = { kind: 'work' | 'vm'; id: string; sources: Ref[] } | { kind: 'derived'; id: string; ref: Ref; workId: string; format: string; sources: Ref[] };
+type Record = { kind: 'work' | 'vm' | 'browser'; id: string; sources: Ref[] } | { kind: 'derived'; id: string; ref: Ref; workId: string; format: string; sources: Ref[] };
 /** Credential screening is defense in depth, not private-data discovery. Inspect common encoded wire
  * fields before any payload is persisted; opaque/binary bodies need a protected registered validator. */
 function screen(payload: unknown): void {
@@ -190,12 +190,23 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
         return recipients(action.recipients).every(r => approved(work, r, lineage) || action.classes.includes('disclosure') && lineage.every(s => s.classification === 'public' || s.ownerReleasable));
       } catch { return false; }
     } }; },
-    browser(route) {
+    browser(route, profile) {
       if (routes.get(route)?.kind !== 'browser') fail('route_unknown');
+      if (profile !== undefined) ref(profile);
+      // Omitting a profile key conservatively shares ancestry across this protected route.
+      const key = 'browser_' + digest('s15.disclosure.browser.v1', { route, profile: profile ?? null });
+      const input = (work: WorkAuthority) => journal.tx(() => {
+        const inherited = journal.all<Record>().find(row => row.kind === 'browser' && row.id === key)?.sources ?? [];
+        const merged = [...new Map([...sources(work).map(s => s.ref), ...inherited.map(r => source(work, r).ref)].map(r => [canonical(r), r])).values()];
+        if (merged.length > 64) fail('lineage_capacity');
+        journal.put(workKey(work), { kind: 'work', id: workKey(work), sources: merged });
+        journal.put(key, { kind: 'browser', id: key, sources: merged });
+      });
       return {
-        inspect: (work, request) => inspect(work, route, requestPayload(request)),
-        guard(work, request, expected) { const d = inspect(work, route, requestPayload(request)); if (expected ? !equal(d.disclosure, expected) : d.classes.length) fail('disclosure_changed'); },
-        record(work, url, format) { const s = options.browserSource?.(clone(work), url, format); if (!s) fail('classification_unknown'); result.read(service().control.bindWork(work.id), s); },
+        input,
+        inspect(work, request) { input(work); return inspect(work, route, requestPayload(request)); },
+        guard(work, request, expected) { input(work); const d = inspect(work, route, requestPayload(request)); if (expected ? !equal(d.disclosure, expected) : d.classes.length) fail('disclosure_changed'); },
+        record(work, url, format) { input(work); const s = options.browserSource?.(clone(work), url, format); if (!s) fail('classification_unknown'); result.read(service().control.bindWork(work.id), s); input(work); },
       };
     },
     model(routeFor) {

@@ -74,3 +74,15 @@ test('read and screenshot publication retain the browser source before later mod
   const outbound = x.d.browser('browser').inspect(x.f.service.work.guard(sibling), x.get(x.origin + '/new?q=summary'));
   expect(outbound.classes).toContain('disclosure'); expect(outbound.disclosure?.dataClasses).toContain('private');
 });
+
+test.each(['observed_page', 'typed_input'] as const)('a new browser lease inherits private %s state before any new recipient request', async kind => {
+  const x = await setup(); await x.execute({ kind: 'navigate', url: x.origin + (kind === 'observed_page' ? '/private' : '/public') });
+  if (kind === 'typed_input') {
+    x.d.read(x.actor, ref('private'));
+    expect((await x.work.execute({ kind: 'type', target: 'e1_1', value: 'Private form value', generation: x.work.state().generation })).state).toBe('ok');
+  }
+  x.work.release(); const sibling = x.f.admit({ access: 'effect' }).actor!, work = x.gateway.open(sibling);
+  const held = await work.execute({ kind: 'navigate', url: x.origin + '/new?q=private-profile-state', generation: work.state().generation });
+  expect(held.state).toBe('held'); expect(x.received.some(r => r.url.includes('/new'))).toBe(false);
+  if (held.state === 'held') expect(x.f.service.owner.actionSlip(x.f.owner, held.action).action.disclosure?.dataClasses).toContain('private');
+});
