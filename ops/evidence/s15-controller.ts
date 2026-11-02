@@ -68,10 +68,10 @@ try {
   cases.browserCommunicationHold = { passed: true, state: held.state };
   const takeover = await service.browser!.owner.takeover(owner); service.browser!.owner.handBack(owner, takeover.generation, true); await browser.settled(); browser.release();
   const fresh = service.browser!.open(actor), attackNavigation = await fresh.execute({ kind: 'navigate', url: site.origin + '/attacks', generation: fresh.state().generation });
-  await new Promise(resolve => setTimeout(resolve, 1200));
   const attackRead = await fresh.execute({ kind: 'read', generation: fresh.state().generation });
   report.browserAttackObservation = { navigation: attackNavigation, read: attackRead.state, observedProbeText: attackRead.state === 'observed' && attackRead.observation.text.includes('All network probes attempted') };
   check(attackRead.state === 'observed' && attackRead.observation.text.includes('All network probes attempted'), 'attack_script_not_observed');
+  await new Promise(resolve => setTimeout(resolve, 1200));
   const forbidden = ['/background', '/beacon', '/socket', '/events', '/popup', '/frame', '/hidden-submit', '/worker.js']; check(forbidden.every(path => !site.received.some(r => r.path === path)), 'browser_network_bypass'); cases.browserBypass = { passed: true, navigation: attackNavigation.state, blocked: forbidden }; await fresh.settled(); fresh.release();
   const prepared = service.policy.work.prepare(actor, { slot: 'financial', adapter: 'fixture_payment', proposal: { quoteId: 'fixture_invoice', quoteVersion: 'v1' } }); check(prepared.decision.state === 'hold' && payment.mutationCalls === 0, 'financial_bypassed'); cases.paymentPolicy = { passed: true, realSettlement: 'not_run', decision: prepared.decision };
   report.usage = service.policy.control.usage(); report.status = 'passed';

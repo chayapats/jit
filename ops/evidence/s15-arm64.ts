@@ -32,6 +32,7 @@ export async function runS15Arm64Evidence() {
   const working = JSON.parse(await run(['limactl', 'list', '--json', 'jit-work-arm']));
   const sshConfig = join(homedir(), '.lima/jit-s15-arm/ssh.config'), relayPort = 43151, bootstrapPort = 43152;
   let tunnel: ReturnType<typeof Bun.spawn> | null = null;
+  const build = `/home/jit-s15/releases/${sha}`;
   const output = `/home/jit-s15/evidence/run-${sha.slice(0, 12)}-${Date.now()}`;
   try {
     const before = await run(['limactl', 'snapshot', 'list', 'jit-work-arm', '--quiet']); writeFileSync(join(directory, 'snapshots-before.txt'), before, { mode: 0o600 });
@@ -41,10 +42,10 @@ export async function runS15Arm64Evidence() {
     if (!browser) throw Error('controller_chromium_not_installed');
     const archive = await run(['git', 'archive', '--format=tar', `--output=${join(directory, 'build.tar')}`, 'HEAD']); void archive;
     await run(['limactl', 'copy', join(directory, 'build.tar'), 'jit-s15-arm:/tmp/jit-s15-build.tar']);
-    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', 'sh', '-c', 'tar -xf /tmp/jit-s15-build.tar -C /home/jit-s15/build && chown -R jit-s15:jit-s15 /home/jit-s15/build']);
-    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'env', 'HOME=/home/jit-s15', 'sh', '-c', 'cd /home/jit-s15/build && bun install --frozen-lockfile']);
+    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', 'sh', '-c', `install -d -m 700 -o jit-s15 -g jit-s15 ${build} && tar -xf /tmp/jit-s15-build.tar -C ${build} && chown -R jit-s15:jit-s15 ${build}`]);
+    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'env', 'HOME=/home/jit-s15', 'sh', '-c', `cd ${build} && bun install --frozen-lockfile`]);
     const payload = Buffer.from(JSON.stringify({ relay: `http://127.0.0.1:${relayPort}`, bootstrap: `http://127.0.0.1:${bootstrapPort}`, credential, user: working.config.user.name, port: working.sshLocalPort, sha, browser, output }));
-    const executed = await vmHostCommand(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'env', 'HOME=/home/jit-s15', 'JIT_S15_ARM64_EVIDENCE=1', 'sh', '-c', 'cd /home/jit-s15/build && bun ops/evidence/s15-controller.ts'], { timeoutMs: 600000, maxBytes: 1048576, input: payload });
+    const executed = await vmHostCommand(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'env', 'HOME=/home/jit-s15', 'JIT_S15_ARM64_EVIDENCE=1', 'sh', '-c', `cd ${build} && bun ops/evidence/s15-controller.ts`], { timeoutMs: 600000, maxBytes: 1048576, input: payload });
     const result = Buffer.from(executed.stdout).toString();
     writeFileSync(join(directory, 'controller-summary.json'), result, { mode: 0o600 });
     await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', 'sh', '-c', `cp ${output}/results.json /tmp/jit-s15-results.json && chmod 644 /tmp/jit-s15-results.json`]);
