@@ -1,5 +1,5 @@
 import { canonical, digest, fail, id, nat } from './validation';
-import type { ActionRef, OwnerActor, Rule, S15PolicyService, StandingPolicy } from './types';
+import type { ActionRef, OwnerActor, Ref, Rule, S15PolicyService, Selection, StandingPolicy } from './types';
 
 /** One frequency the protected payment adapter supports, as a minimum interval between claims. Never inferred. */
 export interface RecurringFrequency { id: string; minIntervalMs: number }
@@ -16,9 +16,9 @@ export interface RecurringRules {
 }
 
 /**
- * Derives a recurring-payment rule only from protected data: the exact payment action (payee, account, currency,
- * precision, adapter, operation, resources and recipients) and its live work authority (purpose, Bot, model
- * selection). The owner supplies only the amount ceiling and picks a configured frequency. The rule never
+ * Derives a recurring-payment rule only from protected data: the exact owner-readable payment action (payee, account,
+ * currency, precision, adapter, operation, resources and recipients) and its work's historical purpose, Bot and model,
+ * each re-bound by id to the current standing policy. The owner supplies only the amount ceiling and picks a configured frequency. The rule never
  * covers any class other than `financial`; installation still goes through POLICY's separate recurring
  * approval command, and revocation installs the current policy without that rule, which only narrows.
  */
@@ -37,14 +37,20 @@ export function createRecurringRules(host: S15PolicyService, options: RecurringR
       const slip = host.owner.actionSlip(owner, input.action), a = slip.action, t = a.transaction;
       if (!t || !a.classes.includes('financial') || a.classes.some(c => c !== 'financial')) fail('recurring_scope_unsupported');
       if (!['pending', 'approved', 'executing', 'succeeded'].includes(slip.state)) fail('stale_action');
-      const work = host.work.guard(host.control.bindWork(a.workId)), at = now();
-      const total = (BigInt(input.amountCeilingMinor) * BigInt(options.maxPayments)).toString();
+      // Historical, owner-readable facts of that payment's work; the original work may have expired or been revoked.
+      const scope = host.owner.actionScope?.(owner, input.action); if (!scope) fail('recurring_scope_unsupported');
+      // Every reference is re-bound by id to the CURRENT policy; anything no longer installed refuses rather than reviving it.
+      const pick = (list: readonly Ref[], wanted: Ref): Ref => { const found = list.find(item => item.id === wanted.id); if (!found) fail('outside_scope'); return { ...found }; };
+      const selections = policy.selections.filter(item => item.route.id === scope.selection.route.id && item.model.id === scope.selection.model.id && item.effort === scope.selection.effort).map(item => JSON.parse(canonical(item)) as Selection);
+      if (!selections.length) fail('outside_scope');
+      const at = now(), total = (BigInt(input.amountCeilingMinor) * BigInt(options.maxPayments)).toString();
       const rule: Rule = {
         id: `recurring_${digest('s15.policy.recurring.rule.v1', { payee: t.payee.id, account: t.account.id, currency: t.currency }).slice(0, 32)}`, mode: 'recurring_payment',
-        purposes: [work.request.purpose], bots: [work.request.bot], resources: a.resources.map(r => ({ ...r })), recipients: a.recipients.map(r => ({ ...r })), selections: [work.request.selection],
+        purposes: [pick(policy.purposes, scope.purpose)], bots: [pick(policy.bots, scope.bot)], resources: a.resources.map(r => pick(policy.resources, r)), recipients: a.recipients.map(r => pick(policy.recipients, r)), selections,
         adapters: [a.adapter], operations: [a.operation], classes: ['financial'], expiresAt: Math.min(policy.expiresAt, at + options.ruleLifetimeMs),
-        recurrence: { payee: { ...t.payee }, account: { ...t.account }, currency: t.currency, minorUnit: t.minorUnit, amountCeilingMinor: input.amountCeilingMinor, minIntervalMs: frequency.minIntervalMs, maxPayments: options.maxPayments, totalCeilingMinor: total, startsAt: at },
+        recurrence: { payee: pick(policy.recipients, t.payee), account: pick(policy.resources, t.account), currency: t.currency, minorUnit: t.minorUnit, amountCeilingMinor: input.amountCeilingMinor, minIntervalMs: frequency.minIntervalMs, maxPayments: options.maxPayments, totalCeilingMinor: total, startsAt: at },
       };
+      if (rule.expiresAt <= at) fail('expired');
       const body = { contract: 's15-recurring-rule-proposal/v1' as const, source: { id: a.id, revision: a.revision, actionHash: a.actionHash }, expectedRevision: policy.revision, ownerGeneration: policy.ownerGeneration, rule };
       const proposal: RecurringRuleProposal = { ...body, proposalHash: digest('s15.policy.recurring.proposal.v1', body) };
       proposals.set(proposal.proposalHash, JSON.parse(canonical(proposal)) as RecurringRuleProposal);

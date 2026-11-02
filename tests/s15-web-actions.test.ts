@@ -212,3 +212,23 @@ test("the owner can deny a pending action that cannot be approved, and approval 
   expect(approvals(f)).toBe(1); expect(f.f.calls).toBe(0); expect(latest(f).state).toBe("denied");
   expect((await f.html(`/actions/${slip.action.id}`)).html).toContain("คุณไม่อนุมัติ");
 });
+
+test("a past payment whose work was revoked and whose policy revision advanced still yields a rule checked against the current policy", async () => {
+  const f = setup();
+  await f.hold({ operation: "pay", classes: ["financial"], resources: [ref("account")], recipients: [ref("payee")], payload: { memo: "Rent" }, transaction: { payee: ref("payee"), account: ref("account"), currency: "USD", minorUnit: 2, amountMinor: "5000", quoteId: "rent1", quoteVersion: "v1", quoteExpiresAt: 80000 } }, "Pay rent");
+  const pay = latest(f);
+  await f.post("/s15/forms/action/decide", { ...refFields(pay), decision: "approve" }); await f.app.drain();
+  expect(latest(f).state).toBe("succeeded");
+  f.f.service.owner.revoke(f.owner, "revoke_rent_work", { kind: "work", id: pay.action.workId });
+  const before = f.f.service.owner.current(f.owner)!.revision; f.f.install();
+  expect(f.f.service.owner.current(f.owner)!.revision).toBe(before + 1);
+  const rules = (await f.html("/rules")).html;
+  expect(rules).toContain(`/rules/recurring?from=${pay.action.id}`);
+  const proposed = await f.post("/s15/forms/recurring/propose", { actionId: pay.action.id, revision: String(pay.action.revision), actionHash: pay.action.actionHash, ceiling: "50.00", frequencyId: "monthly" });
+  expect(proposed.status).toBe(200); const body = await proposed.text(); expect(body).toContain("ตั้งกฎนี้");
+  const hash = /name="proposalHash" value="([a-f0-9]{64})"/.exec(body)![1]!;
+  expect((await f.post("/s15/forms/recurring/install", { proposalHash: hash })).status).toBe(303);
+  const installed = f.f.service.owner.current(f.owner)!.rules.find(rule => rule.mode === "recurring_payment")!;
+  expect(installed.purposes.map(r => r.id)).toEqual(["purpose"]); expect(installed.recurrence).toMatchObject({ amountCeilingMinor: "5000", currency: "USD" });
+  expect(f.f.calls).toBe(1);
+});
