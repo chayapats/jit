@@ -321,6 +321,25 @@ test("listing and search reject intermediate/final symlink escapes before openin
   expect(local.result.entries.some((entry: { name: string }) => entry.name === "local/ok.txt")).toBe(true);
   expect(local.result.entries.some((entry: { name: string }) => entry.name.includes("private.txt"))).toBe(false);
 });
+test("descriptor-anchored search preserves real rg file/directory paths and empty results", async () => {
+  const { mkdirSync, writeFileSync, symlinkSync } = await import("node:fs");
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "jit-vm-search-"))); directories.push(directory);
+  const root = `${directory}/workspace`, tmp = `${root}/.tmp`, rg = Bun.which("rg"); expect(rg).not.toBeNull();
+  mkdirSync(tmp, { recursive: true }); writeFileSync(`${root}/file.txt`, "local marker\n"); writeFileSync(`${directory}/private.txt`, "outside-marker\n"); symlinkSync(`${directory}/private.txt`, `${root}/escape`);
+  // Host-local stand-in changes only the executable location; production uses the fixed Linux /usr/bin/rg.
+  const source = vmRunnerSource.replace("'/usr/bin/rg'", JSON.stringify(rg));
+  const search = async (path: string, pattern = "marker") => {
+    const result = await vmHostCommand(["python3", "-I", "-c", source], { input: Buffer.from(vmCanonical({ v: 1, id: "rg", op: "search", root, tmp, cap: 65536, cwd: root, path, pattern, limit: 10, ignoreCase: false, glob: null, timeoutMs: 1000 })), timeoutMs: 3000, maxBytes: 262144 });
+    const response = JSON.parse(Buffer.from(result.stdout).toString()); expect(response.ok).toBe(true);
+    const output = Buffer.from(response.result.stdout, "base64").toString(); expect(response.result.totalBytes).toBe(Buffer.byteLength(output) + Buffer.from(response.result.stderr, "base64").length);
+    return { result: response.result, matches: output.split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(event => event.type === "match") };
+  };
+  for (const path of [root, `${root}/file.txt`]) {
+    const found = await search(path); expect(found.result.exitCode).toBe(0); expect(found.matches).toHaveLength(1);
+    expect(found.matches[0].data.path.text).toBe(`${root}/file.txt`); expect(found.matches[0].data.lines.text).toBe("local marker\n");
+    const absent = await search(path, "unmatched-pattern"); expect(absent.result.exitCode).toBe(1); expect(absent.matches).toHaveLength(0);
+  }
+});
 test("policy hold before a system snapshot leaves the VM available and sends no management mutation", async () => {
   const f = fixture(); f.setBeforeClaim(async () => { throw new Error("held"); });
   await expect(open(f, "admin", { mode: "system" })).rejects.toThrow("held");

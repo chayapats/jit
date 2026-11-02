@@ -108,7 +108,7 @@ try:
     targetFd=anchored(r['path']);opened.append(targetFd);targetStat=os.fstat(targetFd);searchDirectory=stat.S_ISDIR(targetStat.st_mode)
     if not searchDirectory and not stat.S_ISREG(targetStat.st_mode): fail('EACCES')
     cwdFd=targetFd if searchDirectory else cwdFd
-    command=['/usr/bin/rg','--json','--no-follow','--max-count',str(r['limit'])]+(['--ignore-case'] if r['ignoreCase'] else [])+(['--glob',r['glob']] if r['glob'] is not None else [])+([] if searchDirectory else ['--label',r['path']])+['--',r['pattern'],'.' if searchDirectory else '-']
+    command=['/usr/bin/rg','--json','--no-follow','--max-count',str(r['limit'])]+(['--ignore-case'] if r['ignoreCase'] else [])+(['--glob',r['glob']] if r['glob'] is not None else [])+['--',r['pattern'],'.' if searchDirectory else '-']
     proc=subprocess.Popen(command,preexec_fn=lambda:os.fchdir(cwdFd),pass_fds=(cwdFd,),env=environment,stdin=subprocess.DEVNULL if searchDirectory else targetFd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
    finally:
     for fd in opened: os.close(fd)
@@ -128,11 +128,13 @@ try:
   if timed:
    for key in list(sel.get_map().values()): key.fileobj.close()
   sel.close(); code=proc.wait(timeout=2)
-  if op=='search' and searchDirectory and not timed and not truncated:
+  if op=='search' and not timed and not truncated:
    rewritten=bytearray()
    for line in out['stdout'].splitlines():
     event=json.loads(line); item=event.get('data',{}).get('path',{})
-    if isinstance(item.get('text'),str) and item['text'].startswith('./'): item['text']=r['path']+'/'+item['text'][2:]
+    if isinstance(item.get('text'),str):
+     if searchDirectory and item['text'].startswith('./'): item['text']=r['path']+'/'+item['text'][2:]
+     elif not searchDirectory and item['text']=='<stdin>': item['text']=r['path']
     data=(json.dumps(event,separators=(',',':'),ensure_ascii=False)+'\n').encode();budget=max(0,cap-len(out['stderr'])-len(rewritten));rewritten.extend(data[:budget])
     if len(data)>budget: truncated=True;break
    out['stdout']=rewritten;total=len(rewritten)+len(out['stderr'])+(1 if truncated else 0)
