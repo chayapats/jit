@@ -17,6 +17,7 @@ import type { PersonalConnection } from '../s14/personal-types';
 import { s14CredentialLifecycle } from '../s14/lifecycle';
 import { composeS15, type S15CompositionOptions } from './composition';
 import { LimaVmManagement } from './vm';
+import { RemoteVmManagement } from './vm/remote';
 import { equal, canonical } from './policy/validation';
 import type { CatalogKind, PolicyInput, Ref } from './policy';
 import type { ApprovedModelRoute, ModelRunLimits } from './model';
@@ -32,7 +33,7 @@ export interface S15RuntimeConfig {
   /** Optional narrower per-Bot resource ceilings. Absence never imports an S14-private resource. */
   resourceBots: { resourceId: string; botIds: string[] }[];
   conversation: S15CompositionOptions['conversation']; models: ApprovedModelRoute[]; modelLimits: ModelRunLimits;
-  vm: { id: string; resource: Ref; limaInstance: string | null; upperBound: import('./policy').BudgetVector };
+  vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };
@@ -84,7 +85,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         return resources.every(resource => { const restriction = config.resourceBots.find(r => r.resourceId === resource.id); return !restriction || restriction.botIds.includes(work.request.bot.id); });
       },
     };
-    const managers = new Map(config.vm.limaInstance ? [['working', new LimaVmManagement({ instance: config.vm.limaInstance })]] : []);
+    if (config.vm.limaInstance && config.vm.remote) throw new AppError('vm_management_scope_denied');
+    const managers = new Map<string, import('./vm').VmManagement>(config.vm.remote ? [['working', new RemoteVmManagement({ origin: config.vm.remote.origin, credential: () => vault.read(config.vm.remote!.credentialRef), allowLoopback: true })]] : config.vm.limaInstance ? [['working', new LimaVmManagement({ instance: config.vm.limaInstance })]] : []);
     const account = (id: string | null): GoogleEffectAccount | null => {
       if (!id || !config.google) return null;
       try {
@@ -115,7 +117,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || url.pathname.startsWith('/assets/s14') ? auth(incoming) : service!.fetch(incoming);
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
-    const shutdown = async () => { server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
+    const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
+    const shutdown = async () => { clearInterval(wake); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));

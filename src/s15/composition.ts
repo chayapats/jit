@@ -72,6 +72,7 @@ export async function composeS15(options: S15CompositionOptions) {
   }
   const cleanup: (() => void | Promise<void>)[] = [];
   let closing = false;
+  let draining: Promise<void> | null = null;
   try {
     const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create); cleanup.push(() => store.close());
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
@@ -152,6 +153,8 @@ export async function composeS15(options: S15CompositionOptions) {
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
     return { policy, conversation, vm, vmStore, enrollment, models, work, github, browser, authentication,
+      /** One protected scheduler wake; waiting records alone hold no VM/native session. */
+      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {
@@ -166,7 +169,7 @@ export async function composeS15(options: S15CompositionOptions) {
         } catch (error) { return Response.json({ error: error instanceof AppError ? error.code : 's15_unavailable' }, { status: error instanceof AppError ? error.status : 503, headers: { 'Cache-Control': 'no-store' } }); }
       },
       /** Await all model/tool cleanup before releasing protected stores. Unknown VM/effects remain fenced. */
-      async close() { if (closing) return; closing = true; await conversation.shutdown(); for (const close of cleanup.reverse()) await close(); },
+      async close() { if (closing) return; closing = true; await conversation.shutdown(); await draining; for (const close of cleanup.reverse()) await close(); },
     };
   } catch (error) { for (const close of cleanup.reverse()) try { await close(); } catch {} throw error; }
 }
