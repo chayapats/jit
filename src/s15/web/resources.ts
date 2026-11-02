@@ -1,4 +1,4 @@
-import { tr } from "../../i18n";
+import { tr, trMaybe } from "../../i18n";
 import { ownerStrip } from "../../s14/web-pages";
 import type { ConversationNeedsYou } from "../conversation";
 import type { VmStatus } from "../vm";
@@ -33,10 +33,17 @@ export function needsBody(input: { items: S15NeedItem[]; decisions: S15SlipDecis
   return `<div class="s-col s-attention-groups">${body || `<p class="s-sub">${tr("s15.needs.none")}</p>`}<p class="s-note">${tr("s15.needs.decide_note")}</p></div>`;
 }
 
+/** One TEAM15 restriction code in words. `deny:<bot>` and `purpose:<id>` carry trusted registry ids; unknown codes stay visible as codes. */
+function restriction(code: string): string {
+  if (code.startsWith("deny:")) return e(fill("s15.resources.restriction.deny", { bot: code.slice(5) }));
+  if (code.startsWith("purpose:")) return e(fill("s15.resources.restriction.purpose", { purpose: code.slice(8) }));
+  if (code === "s14_private") return "";
+  return e(trMaybe(`s15.resources.restriction.${code}`) ?? code);
+}
 /** `/resources/accounts` (F12): team resources with who may use them, S14-private labels, and website sign-ins. */
 export function accountsBody(input: { team: S15TeamResource[] | null; accounts: S15AccountRow[] | null; browsers: { browser: S15BrowserInfo; state: S15BrowserProgress | undefined }[]; csrf: string }): string {
   const who = (r: S15TeamResource) => r.scope.kind === "bot" && r.scope.origin === "s14" ? fill("s15.memory.s14_private", { bot: r.scope.botId }) : r.whoCanUse === "enabled_team" ? tr("s15.resources.team") : fill("s15.resources.only", { bots: r.whoCanUse.join(", ") });
-  const team = input.team === null ? notYet("s15.resources.not_composed") : input.team.length ? `<ul class="s15-accounts">${input.team.map(r => `<li><div class="s-grow"><p><b>${e(r.label)}</b> <span class="s-meta">${tr(key(`s15.resources.kind.${r.kind}`))}</span></p><p class="s-meta">${r.operations.map(op => tr(key(`s15.resources.op.${op}`))).join(" · ")} · ${e(who(r))}</p>${r.restrictions.length ? `<p class="s-sub">${r.restrictions.map(code => e(codeText(code))).join(" · ")}</p>` : ""}${r.scope.kind === "bot" && r.scope.origin === "s14" ? `<p class="s-note">${tr("s15.resources.no_broad_share")}</p>` : ""}</div>${pill(tr(r.active ? "s15.resources.active" : "s15.resources.inactive"), r.active ? "ok" : "", r.active ? "✓" : "")}</li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.resources.none")}</p>`;
+  const team = input.team === null ? notYet("s15.resources.not_composed") : input.team.length ? `<ul class="s15-accounts">${input.team.map(r => `<li><div class="s-grow"><p><b>${e(r.label)}</b> <span class="s-meta">${tr(key(`s15.resources.kind.${r.kind}`))}</span></p><p class="s-meta">${r.operations.map(op => tr(key(`s15.resources.op.${op}`))).join(" · ")} · ${e(who(r))}</p>${r.restrictions.length ? `<p class="s-sub">${r.restrictions.map(restriction).filter(Boolean).join(" · ")}</p>` : ""}${r.scope.kind === "bot" && r.scope.origin === "s14" ? `<p class="s-note">${tr("s15.resources.no_broad_share")}</p>` : ""}</div>${pill(tr(r.active ? "s15.resources.active" : "s15.resources.inactive"), r.active ? "ok" : "", r.active ? "✓" : "")}</li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.resources.none")}</p>`;
   const accounts = input.accounts?.length ? `<ul class="s15-accounts">${input.accounts.map(a => `<li><div class="s-grow"><p><b>${e(a.label)}</b></p><p class="s-meta">${a.uses.map(use => tr(key(`s15.accounts.use.${use}`))).join(" · ")}</p></div>${pill(tr(key(`s15.accounts.state.${a.state}`)))}</li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.resources.no_accounts")}</p>`;
   const sites = input.browsers.length ? input.browsers.map(({ browser, state }) => loginCard(browser, state, input.csrf)).join("") : `<p class="s-sub">${tr("s15.resources.no_sites")}</p>`;
   return `<div class="s-col"><section class="s-card" aria-labelledby="s15-res-team"><h2 id="s15-res-team">${tr("s15.resources.team_title")}</h2>${team}</section>

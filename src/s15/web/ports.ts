@@ -1,9 +1,11 @@
 import type { GithubReadiness, GithubService } from "../github";
 import type { EffectDecisionCard } from "../effects";
+import type { MemoryOwnerApi } from "../memory";
+import type { TeamService } from "../team";
 import type { ActionRef, OwnerActor, S15PolicyService, WorkActor } from "../policy";
 import type { RecurringRules } from "../policy/recurring";
 import type { ResponsibilityPort, ResponsibilityProjection } from "../work";
-import type { S15DecisionCard, S15ReadinessReport, S15WebActions, S15WebDuties, S15WebGithub, S15WebRecurring } from "./types";
+import type { S15DecisionCard, S15ReadinessReport, S15WebActions, S15WebDuties, S15WebGithub, S15WebMemory, S15WebRecurring, S15WebTeam } from "./types";
 
 /**
  * Composition adapters from the real protected S15 modules to the Web consumer seams. Each adapter maps the
@@ -37,4 +39,12 @@ const factKind = (code: string): S15ReadinessReport["rows"][number]["facts"][num
 export function s15ReadinessFromGithub(repository: string, rows: readonly GithubReadiness[]): S15ReadinessReport {
   return { repository, rows: rows.map(row => ({ issue: row.issue, title: row.title, state: row.state === "has_pr" ? "open_pr" : row.state,
     facts: row.reasons.map(reason => ({ kind: factKind(reason.code), ok: reason.passed, detail: reason.code.startsWith("prerequisite_") ? `#${reason.code.slice(13)}` : reason.code, href: reason.evidence.map(source => source.ref).find(ref => /^https:\/\//.test(ref)) ?? null })) })) };
+}
+/** TEAM15 owner resources view (`TeamService.resources`). Restrictions stay the service's own codes. */
+export function s15TeamPort<Actor>(team: Pick<TeamService, "resources">, owner: S15OwnerOf<Actor>): S15WebTeam<Actor> {
+  return { view: actor => team.resources(owner(actor)) };
+}
+/** MEM15 owner API (`MemoryService.view`/`command`, `s15-memory-view/v1` and revision-bound `s15-memory-command/v1`). */
+export function s15MemoryPort<Actor>(memory: MemoryOwnerApi, owner: S15OwnerOf<Actor>): S15WebMemory<Actor> {
+  return { view: actor => memory.view(owner(actor)), command: (actor, input) => memory.command(owner(actor), input) };
 }

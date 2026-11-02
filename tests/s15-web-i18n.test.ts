@@ -28,7 +28,7 @@ const families: Record<string, readonly string[]> = {
   "s15.github.production": ["none", "protected_gate", "would_deploy", "unknown"], "s15.github.mode": ["personal_github_publish", "personal_github_merge"],
   "s15.decision.option": ["apply_exact", "investigate", "keep"], "s15.decision.evidence": ["fact", "inference", "missing"], "s15.slip.statement": ["occurred", "did_not_occur"],
   "s15.slip.data_class": ["public", "private", "personal", "business"], "s15.duty.trigger": ["ci", "review", "owner", "schedule", "assigned"], "s15.duty.attempt": ["active", "settled", "unknown"],
-  "s15.stall.progress": ["unknown", "none", "made"], "s15.resources.kind": ["account", "browser", "workspace", "data"], "s15.resources.op": ["read", "write", "input"],
+  "s15.stall.progress": ["unknown", "none", "made"], "s15.resources.kind": ["account", "browser", "workspace", "data"], "s15.resources.op": ["read", "write", "input"], "s15.resources.restriction": ["deny", "purpose", "inactive", "bot_private", "current_standing_policy", "mediated_credentials"],
   "s15.adoption.runtime": ["s14", "legacy", "s15"], "s15.adoption.state": ["preparing", "validated", "activating", "active_fenced", "complete", "rolling_back", "rolled_back", "discarded", "blocked"],
   "s15.rules.saved": ["recurring_installed", "recurring_revoked", "github_installed", "github_revoked"], "s15.rules.frequency": ["hours", "daily", "weekly", "monthly"],
   "s15.code": ["stall_no_progress", "stall_attempt_limit", "stall_budget_headroom", "login_required", "stale_input", "input_busy"],
