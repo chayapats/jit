@@ -33,6 +33,7 @@ export interface S15RuntimeConfig {
   /** Optional narrower per-Bot resource ceilings. Absence never imports an S14-private resource. */
   resourceBots: { resourceId: string; botIds: string[] }[];
   conversation: S15CompositionOptions['conversation']; models: ApprovedModelRoute[]; modelLimits: ModelRunLimits;
+  team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector };
   github: GithubRuntimeConfig | null;
@@ -100,6 +101,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       classify(request) { const u = new URL(request.url); return config.browser?.publicOrigins.includes(u.origin) && request.method === 'GET' && request.navigation && !request.bodyBase64 && !u.search ? { kind: 'read', private: false } : null; } };
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: setup, installationId: config.installationId, origin: config.origin,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
+      ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
       model: { limits: config.modelLimits, registry: { list: () => config.models, current: selection => config.models.find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) } },
       ...(git ? { github: git.github, reads: [git.readHandler] } : {}),

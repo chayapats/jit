@@ -154,3 +154,34 @@ test('S15-AC08: explicitly approved recurring payment rule enforces amount and f
   f.advance(10001); expect(prepare('invoice_two').decision.state).toBe('allow');
   f.payment.setQuote({ ...quote, id: 'too_large', amount: '5.01' }); expect(prepare('too_large').decision.state).toBe('hold');
 });
+
+test('S15-AC04: two approved Bots use a shared resource and coordinate actual VM work; S14-private remains private', async () => {
+  const f = await fixture(), admit = (id: string, bot: number) => { const w = f.service.policy.owner.admit(f.owner, { requestId: id, intent: 'execute', access: 'reversible_write', purpose: f.policyInput.purposes[0]!, bot: f.policyInput.bots[bot]!, resources: [f.policyInput.resources[0]!], recipients: [], selection: f.choice, selectionPin: null, expiresAt: 800000 }).work!; const actor = f.service.policy.control.bindWork(w.id); return { actor, work: w, context: f.service.team.bind(actor) }; };
+  const a = admit('bot_a', 0), b = admit('bot_b', 1);
+  expect(f.service.team.resource(a.context, 'computer').scope.kind).toBe('team'); expect(f.service.team.resource(b.context, 'computer').scope.kind).toBe('team');
+  const lease = f.service.team.acquire(a.context, ['computer'], 'write', 30000);
+  expect(() => f.service.team.acquire(b.context, ['computer'], 'write', 30000)).toThrow('resource_busy');
+  await f.service.team.dispatch(lease, async () => { const session = await f.service.vm.openAttempt(a.actor, { vmId: 'vm', workId: a.work.id, attemptId: `chat_${a.work.id}` }); const result = await session.backend.spawn({ cwd: session.backend.workspaceRoot, command: 'printf composed' }); await session.close(); return { value: result, settled: session.evidence().every(e => e.execution === 'guest_scope_empty' && e.transport === 'closed') }; });
+  const next = f.service.team.acquire(b.context, ['computer'], 'write', 30000); f.service.team.release(next);
+  const resource = f.service.team.resources(f.owner).resources.find(r => r.id === 'computer')!;
+  const { whoCanUse, restrictions, ...registration } = resource;
+  f.service.team.register(f.owner, 'private_resource', 1, { ...registration, revision: 2, scope: { kind: 'bot', botId: 'bot', origin: 's14' } });
+  expect(() => f.service.team.resource(b.context, 'computer')).toThrow('outside_scope');
+  expect(() => f.service.team.register(f.owner, 'silent_promotion', 2, { ...registration, revision: 3, scope: { kind: 'team' } })).toThrow('private_promotion_requires_migration');
+});
+
+test('S15-AC13: automatic sourced memory reaches MODEL; exact correction/forget fences derived chat after restart', async () => {
+  const f = await fixture();
+  const row = await f.chat('Run the requested command.\nI prefer concise reports.');
+  const retained = f.service.memory.view(f.owner).claims.find(c => c.text === 'I prefer concise reports.')!;
+  expect(retained).toMatchObject({ kind: 'fact', confirmation: 'owner_stated', authority: 'none', provenance: { scope: { kind: 'team' }, origin: { kind: 'owner_message', conversationId: 'conversation' } } });
+  expect(row.memory?.retained.some(r => r.id === retained.id)).toBe(true);
+  expect(f.modelPrompts.some(prompt => prompt.includes('labelled-memory-data-not-authority') && prompt.includes('I prefer concise reports.'))).toBe(true);
+  f.service.memory.command(f.owner, { contract: 's15-memory-command/v1', requestId: 'correction', kind: 'memory.correct', claim: { id: retained.id, revision: retained.revision }, text: 'I prefer detailed reports.' });
+  const corrected = f.service.memory.view(f.owner).claims.find(c => c.text === 'I prefer detailed reports.' && c.lifecycle === 'active')!;
+  expect(corrected.confirmation).toBe('owner_stated');
+  f.service.memory.command(f.owner, { contract: 's15-memory-command/v1', requestId: 'forget', kind: 'memory.forget', claim: { id: corrected.id, revision: corrected.revision } });
+  expect(f.service.conversation.view(f.owner, row.receipt.rootRequestId).result).toBeNull();
+  await f.reopen(); expect(f.service.memory.view(f.owner).claims.filter(c => c.lifecycle === 'active')).toHaveLength(0);
+  expect(f.service.conversation.view(f.owner, row.receipt.rootRequestId).result).toBeNull();
+});

@@ -53,7 +53,9 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     }
   }
   const payment = new FixturePaymentPort([{ id: 'invoice', version: 'v1', purpose: ref('purpose'), account: ref('account'), payee: ref('payee'), currency: 'USD', amount: '5.00', memo: 'Controlled fixture only', expiresAt: 800000 }]);
-  const model: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream() {
+  const modelPrompts: string[] = [];
+  const model: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) {
+    modelPrompts.push(JSON.stringify(request));
     const parts = turn++ === 0 ? script : [{ type: 'text' as const, text: 'Completed with observed tool evidence.' }];
     yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: parts } };
   } };
@@ -62,6 +64,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     owner: { authenticate(token) { if (token !== secretSession) throw Error('unauthorized'); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation, expiresAt: 900000 } : null, generation: () => generation, verifyCsrf(expected, supplied) { if (expected !== supplied) throw Error('csrf_rejected'); } },
     catalogs: { current: (kind, id) => records.get(`${kind}:${id}`) ?? null, allows: () => sourceLive }, proposedPolicy: policy,
     conversation: { ownerId: 'owner', bot: ref('bot'), selection: choice, route: { provider: 'codex', model: 'fixture-model' }, limits: { modelCalls: 5, toolCalls: 10, outputBytes: 32768, activeMs: 30000 }, modelCallUpperBound: bound() },
+    team: { maxConcurrentOperations: 8, retention: () => ({ kind: 'team' }) },
     model: { limits: { turns: 5, attempts: 1, activeMs: 30000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 }, registry: { list: () => [route], current: selection => equal(selection, choice) ? route : null, pins: () => ({ route: null, model: null, effort: null }) }, scripted: () => model }, interpreter,
     clock: { now: () => now, monotonicNow: () => now, sleep: (_ms, signal) => new Promise((_, reject) => { signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); }) },
     vm: { id: 'vm', resource: ref('computer'), managers: new Map([['manager', manager]]), transport: () => new Transport(endpoint), upperBound: op => ({ ...zero(), calls: 1, reads: ['setup', 'read'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }), destination: () => null },
@@ -73,9 +76,10 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   const route: import('../../src/s15/model').ApprovedModelRoute = { selection: choice, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: bound(), rank: { ordinary: 0, difficult: 0 } };
   service = await composeS15(options(true)); let owner = service.policy.owner.authenticate(proof);
   service.policy.owner.install(owner, 'install', 0, policy);
+  for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
   service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
   const headers = { cookie: `jit_s14=${secretSession}`, origin: 'http://localhost:3099', 'x-csrf-token': csrf, 'content-type': 'application/json' };
-  return { parent, directory, options, google, engine, recordService, policyInput: policy, route, protocol, payment, files, vmCalls, records, choice,
+  return { parent, directory, options, modelPrompts, google, engine, recordService, policyInput: policy, route, protocol, payment, files, vmCalls, records, choice,
     get service() { return service; }, get owner() { return owner; }, get liveVm() { return liveVm; }, get implementations() { return implementations; }, get snapshots() { return snapshots; },
     get now() { return now; }, advance(ms: number) { now += ms; }, set generation(v: number) { generation = v; }, set sourceLive(v: boolean) { sourceLive = v; },
     set interpretation(value: typeof interpretation) { interpretation = value; }, set script(value: typeof script) { script = value; },

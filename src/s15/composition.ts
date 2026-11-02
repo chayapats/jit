@@ -12,6 +12,8 @@ import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffec
 import { openModelService, createModelProjectionHandler, type ModelOptions } from './model';
 import { openWorkService, createResponsibilityProjectionHandler, type WorkOptions } from './work';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
+import { TeamService, type DataScope, type TeamOptions } from './team';
+import { MemoryService, createConversationMemory } from './memory';
 import { createS15WebHandler, s15ConversationPort, type S15WebPorts } from './web';
 
 /** Existing protected owner service. Proofs are process-local actors, never JSON/VM bearer credentials. */
@@ -38,7 +40,8 @@ export interface S15CompositionOptions {
   adapters?: readonly ActionAdapter[];
   reads?: readonly ReadHandler[];
   tools?: readonly { resourceId: string; port: ConversationToolPort<ConversationPolicyWork> }[];
-  web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'memory' | 'locale'>;
+  team?: { maxConcurrentOperations: number; retention(work: import('./policy').WorkAuthority): DataScope | null };
+  web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'locale'>;
 }
 
 /** Combine the modules' closed read validators. Every request must pass one actual owning handler. */
@@ -59,7 +62,7 @@ export function composeS15ReadHandlers(handlers: readonly ReadHandler[]): ReadHa
 export async function composeS15(options: S15CompositionOptions) {
   if (options.runtime !== 's15' || !isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError('s15_opt_in_required');
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', ...(options.browser ? ['browser.sqlite'] : []), ...(options.github ? ['github.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.browser ? ['browser.sqlite'] : []), ...(options.github ? ['github.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -91,6 +94,9 @@ export async function composeS15(options: S15CompositionOptions) {
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
     cleanup.push(() => policy.control.close()); browser?.attach(policy); google?.attach(policy);
+    const team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
+    const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
+    const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
     const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers: options.vm.managers, requireOwner,
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
@@ -119,27 +125,31 @@ export async function composeS15(options: S15CompositionOptions) {
         return current.budget ? Math.max(0, current.budget.ceiling.calls - policy.control.usage().charged.calls) : options.subscriptionModels ? Math.max(0, options.subscriptionModels.perWork.calls - used) : null;
       }, ...(options.clock ? { now: options.clock.now } : {}) } satisfies WorkOptions); cleanup.push(() => work.close());
     const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model,
-      guardWork: workId => { policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
+      guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
     const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, workspace: options.github.workspace({ policy, vm }), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(vm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
       ...(options.github && github ? options.github.repositories.map(r => ({ resourceId: r.resource.id, port: createGithubConversationTools(github, r.resource.id) })) : []), ...(options.tools ?? [])];
-    conversation = new ConversationApplication(store, { policy: conversationPolicy, nativeDirectory: join(root, 'native-chat'), ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       tools: { async open(current, input) {
+        const context = team.bind(current.actor);
+        const scopedGuard = () => { input.guard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id); };
+        scopedGuard();
         const opened = [] as Awaited<ReturnType<ConversationToolPort<ConversationPolicyWork>['open']>>[];
         try {
-          for (const registration of ports) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, input));
-          if (google || browser) opened.push(await effects.tools.open(current, input));
-          return { tools: opened.flatMap(p => p.tools), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
+          for (const registration of ports) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, { ...input, guard: scopedGuard }));
+          if (google || browser) opened.push(await effects.tools.open(current, { ...input, guard: scopedGuard }));
+          return { tools: opened.flatMap(p => p.tools).map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
       async runWork(input) {
-        input.guard(); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction,
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions }, input.signal);
+        input.guard(); activeGuards.set(input.work.authority.id, input.guard);
+        try { const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction,
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal);
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
-        return { text, usage: null };
+        return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
-    const web = createS15WebHandler({ authentication, conversation: s15ConversationPort(conversation), models,
+    const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
       computer: { vmId: options.vm.id, managerId: options.vm.managers.keys().next().value ?? null, hypervisor: null,
         begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id) },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
@@ -152,7 +162,7 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, vm, vmStore, enrollment, models, work, github, browser, authentication,
+    return { policy, conversation, team, memory, vm, vmStore, enrollment, models, work, github, browser, authentication,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
@@ -160,6 +170,16 @@ export async function composeS15(options: S15CompositionOptions) {
         try {
           if (closing) throw new AppError('service_closed', 503);
           const path = new URL(request.url).pathname;
+          if (path === '/s15/team/resources' || path === '/s15/memory') {
+            const owner = authenticate(request);
+            if (request.method === 'GET') return Response.json(path === '/s15/memory' ? memory.view(owner) : team.resources(owner), { headers: { 'Cache-Control': 'no-store' } });
+            const reader = request.body?.getReader(); if (!reader) throw new AppError('invalid_body'); const chunks = []; let bytes = 0;
+            try { for (;;) { const r = await reader.read(); if (r.done) break; bytes += r.value.length; if (bytes > 32768) { await reader.cancel(); throw new AppError('body_too_large', 413); } chunks.push(r.value); } } finally { reader.releaseLock(); }
+            const body = JSON.parse(Buffer.concat(chunks).toString());
+            if (path === '/s15/memory') return Response.json(memory.command(owner, body));
+            if (Object.keys(body).sort().join() !== 'expectedRevision,requestId,resource') throw new AppError('invalid_body');
+            return Response.json(team.register(owner, body.requestId, body.expectedRevision, body.resource));
+          }
           if (path.startsWith('/api/s15/')) return chatHandler(request);
           if (path.startsWith('/s15/vm/')) { authenticate(request); return vmHandler(request); }
           if (path === '/s15/models') { authenticate(request); return modelHandler(request); }

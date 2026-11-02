@@ -18,7 +18,7 @@ export interface ApprovedModelRegistry { list(): readonly ApprovedModelRoute[]; 
 export interface ModelRunLimits { turns: number; attempts: number; activeMs: number; outputBytes: number; contextWindow: number; inputChars: number }
 /** Each step preserves original decisions and source labels in strict context. Tools are trusted scoped
  * closures whose owning services guard actual effects; selection confers no tool/effect permission. */
-export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[] }
+export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string }
 /** Durable disclosure and actual observations. Requested/mapped effort is never proof of computation. */
 export interface ModelSelectionRecord {
   contract: 's15-model-selection/v1'; id: string; workId: string; stepId: string; inputHash: string;

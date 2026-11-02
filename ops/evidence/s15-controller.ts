@@ -35,6 +35,7 @@ const service = await composeS15({ runtime: 's15', directory: join(input.output,
   adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
 });
 const owner = service.policy.owner.authenticate(proof); service.policy.owner.install(owner, 'evidence_policy', 0, policy);
+for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'browser', scope: { kind: 'team' }, purposes: ['evidence'], allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
 const sessions: Awaited<ReturnType<typeof service.vm.openAttempt>>[] = [];
 const admit = (resource: 'computer' | 'account' = 'computer') => {
   const work = service.policy.owner.admit(owner, { requestId: crypto.randomUUID().replaceAll('-', ''), intent: 'execute', access: 'effect', purpose: ref('evidence'), bot: ref('bot'), resources: [ref(resource)], recipients: [ref('payee')], selection, selectionPin: null, expiresAt: until - 1000, readLimit: 1000 }).work!;
