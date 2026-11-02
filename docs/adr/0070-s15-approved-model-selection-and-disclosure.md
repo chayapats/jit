@@ -16,6 +16,8 @@ Durable responsibility belongs to a separate protected journal with an exclusive
 
 Remote-verified reconciliation may close a responsibility whose assigned outcome actually completed, even after execution expiry. This factual terminal update is distinct from publishing the old attempt: its publication fence remains latched and no old handle/result is revived. Unknown/uncertain and owner-statement-only reconciliation retains Needs-you/reconcile-only state and cannot certify settlement or grant execution.
 
+DATA15-01 adds a protected candidate/stream/publication hook and POLICY `CatalogPort.allowsModel` intersection for accumulated private lineage. A provider unapproved for any private ancestor is excluded before model disclosure; tools that read new private sources fence the following stream. This does not repair the documented provider-internal physical-send limitation or authorize new providers/accounts. The [executable private-data contract](../contracts/s15-private-data-v1.md) defines host composition and limits.
+
 ## Historical proposal
 
 ## Confirmed inputs and bounded status

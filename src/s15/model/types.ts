@@ -39,6 +39,8 @@ export interface ModelOptions {
   scripted?: (route: ApprovedModelRoute) => Model;
   /** Optional responsibility guard, invoked before streams/tools/publication after every wait. */
   guardWork?: (workId: string) => void;
+  /** Protected DATA15 recipient/source filter; mandatory in private-lineage host composition. */
+  disclosure?: import('../disclosure').ModelDisclosurePort;
 }
 /** Read-only F10/12.3 projection; absent monetary ceiling/unknown measurements are explicit nulls. */
 export interface ModelBudgetView {

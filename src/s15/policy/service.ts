@@ -475,6 +475,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned');
         currentRef('route', input.selection.route); currentRef('model', input.selection.model);
         if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope');
+        if (options.catalogs.allowsModel && !options.catalogs.allowsModel(clone(w), clone(input.selection))) v.fail('recipient_unapproved');
         const r = reserve(w, input.requestId, input.upperBound, input, false, input.selection); r.selection = clone(input.selection); r.billing = p.budget ? 'metered' : 'subscription';
         ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r);
       });
@@ -488,6 +489,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       const p = policyCurrent(); if (!v.contains(p.selections, r.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, r.selection))) v.fail('selection_pinned');
       currentRef('route', r.selection.route); currentRef('model', r.selection.model); budgetCheck(r.upperBound, true, false, { workId: w.id, selection: r.selection });
       if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(r.selection) } }, null)) v.fail('outside_scope');
+      if (options.catalogs.allowsModel && !options.catalogs.allowsModel(clone(w), clone(r.selection))) v.fail('recipient_unapproved');
       ledger.run('INSERT INTO model_dispatches VALUES (?,?)', reservationId, time()); return clone(r);
     }); modelInvocations.delete(reservationId); return reservation; },
     prepare(actor, input) { return tx(() => {
@@ -528,8 +530,17 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         return { a, claim, adapter: adapters.get(a.adapter)! };
       });
       activeDispatches.add(a.id);
-      let consumed = false, started = false, pending: Promise<T.AdapterResult> | null = null;
-      const context: T.DispatchContext = Object.freeze({ commit(finalPayload: T.JsonValue, send: () => Promise<T.AdapterResult>): Promise<T.AdapterResult> {
+      let consumed = false, started = false, live = true, pending: Promise<T.AdapterResult> | null = null;
+      const context: T.DispatchContext = Object.freeze({ guard() {
+        if (!live || !started) v.fail('context_lost');
+        tx(() => {
+          const decision = evaluate(workAuth(actor), loadAction(ref), true); requireAllowed(decision);
+          if (!v.equal(decision, claim.decision)) v.fail('stale_authority');
+          const stored = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id));
+          const reservation = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', claim.reservationId));
+          if (!stored || !v.equal(stored, claim) || !reservation || reservation.transportSettled) v.fail('context_lost');
+        });
+      }, commit(finalPayload: T.JsonValue, send: () => Promise<T.AdapterResult>): Promise<T.AdapterResult> {
         if (consumed) v.fail('already_claimed'); consumed = true; if (typeof send !== 'function') v.fail('adapter_unproven');
         tx(() => {
           const w = workAuth(actor), current = loadAction(ref); const decision = evaluate(w, current, true); requireAllowed(decision);
@@ -554,7 +565,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           return tx(() => controlObservation(observe(a, claim, safe)));
         }
         result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false };
-      } finally { consumed = true; activeDispatches.delete(a.id); }
+      } finally { consumed = true; live = false; activeDispatches.delete(a.id); }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
       return tx(() => controlObservation(observe(a, claim, observed)));
     },

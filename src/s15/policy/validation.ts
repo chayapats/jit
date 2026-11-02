@@ -80,7 +80,15 @@ export function workRequest(v: unknown): asserts v is WorkRequest {
   if (v.subject !== undefined && v.subject !== null) { exact(v.subject, ['resource', 'issue']); ref(v.subject.resource); nat(v.subject.issue, true); }
 }
 export function draft(v: unknown): asserts v is ActionDraft {
-  exact(v, ['operation', 'classes', 'resources', 'recipients', 'payload', 'fences', 'upperBound', 'expiresAt', 'transaction', 'github', 'impact'], ['snapshot']); id(v.operation); array(v.classes, x => { if (!classes.includes(x as ActionClass)) fail('adapter_unproven'); }, true); refs(v.resources); refs(v.recipients); canonical(v.payload); fences(v.fences); if (v.snapshot !== undefined && v.snapshot !== null) fences([v.snapshot]); if (v.upperBound !== null) vector(v.upperBound); nat(v.expiresAt, true); if (!['reversible', 'major', 'unknown'].includes(v.impact as string)) fail('adapter_unproven');
+  exact(v, ['operation', 'classes', 'resources', 'recipients', 'payload', 'fences', 'upperBound', 'expiresAt', 'transaction', 'github', 'impact'], ['snapshot', 'disclosure']); id(v.operation); array(v.classes, x => { if (!classes.includes(x as ActionClass)) fail('adapter_unproven'); }, true); refs(v.resources); refs(v.recipients); canonical(v.payload); fences(v.fences); if (v.snapshot !== undefined && v.snapshot !== null) fences([v.snapshot]); if (v.upperBound !== null) vector(v.upperBound); nat(v.expiresAt, true); if (!['reversible', 'major', 'unknown'].includes(v.impact as string)) fail('adapter_unproven');
+  if (v.disclosure !== undefined) {
+    const d = v.disclosure; exact(d, ['recipients', 'purpose', 'sources', 'dataClasses', 'exactBytes']); refs(d.recipients); ref(d.purpose);
+    array(d.sources, s => { exact(s, ['ref', 'resource', 'classification']); ref(s.ref); ref(s.resource); if (!['public', 'private', 'personal', 'business'].includes(s.classification as string)) fail('classification_unknown'); });
+    array(d.dataClasses, c => { if (!['public', 'private', 'personal', 'business'].includes(c as string)) fail('classification_unknown'); });
+    exact(d.exactBytes, ['length', 'sha256']); nat(d.exactBytes.length); hash(d.exactBytes.sha256);
+    const bytes = canonical(v.payload);
+    if (!equal(d.recipients, v.recipients) || d.exactBytes.length !== Buffer.byteLength(bytes) || d.exactBytes.sha256 !== createHash('sha256').update(bytes).digest('hex')) fail('hash_mismatch');
+  }
   const financial = (v.classes as string[]).includes('financial');
   if (financial !== (v.transaction !== null)) fail('adapter_unproven');
   if (v.transaction !== null) { const t = v.transaction; exact(t, ['payee', 'account', 'currency', 'minorUnit', 'amountMinor', 'quoteId', 'quoteVersion', 'quoteExpiresAt']); ref(t.payee); ref(t.account); currency(t.currency); nat(t.minorUnit); if (t.minorUnit > 6) fail('invalid_currency'); minor(t.amountMinor); if (BigInt(t.amountMinor) === 0n) fail('invalid_minor'); id(t.quoteId); string(t.quoteVersion); if (!t.quoteVersion) fail('invalid_quote'); nat(t.quoteExpiresAt, true); if (!contains(v.resources as Ref[], t.account) || !contains(v.recipients as Ref[], t.payee)) fail('adapter_unproven'); }

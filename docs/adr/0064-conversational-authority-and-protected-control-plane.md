@@ -85,4 +85,6 @@ UI/UX implementation needs the required Claude Opus 5.5/high author. No concrete
 
 ## Evidence
 
+DATA15-01 implements protected monotonic work/derived/shared-VM ancestry and exact new-recipient gates through the [private-data contract](../contracts/s15-private-data-v1.md). Reuse POLICY's immutable ActionSlip/approval/claim path and add owning BROW/MODEL/VM/adapter hooks; do not create a second approval authority or classify private data by patterns. Private host composition must install these catalogs/hooks before releasing data. The real registry proxy checks protected recipient scope but remains destination control only; allowed-destination covert channels are explicitly outside its prevention guarantee. Shared guest-root ancestry is installation continuity and cannot be cleared by a fresh work/session/reboot. Deterministic fixtures do not provide new real-host bypass or adoption evidence.
+
 Evaluate S15-AC01–AC16 with deterministic owner-ingress/policy/effect fixtures and independent real VM/browser enforcement evidence. Include guest-admin bypass attempts, stale generations, cross-profile authorization, new-recipient uploads, production-triggering merges, duplicate/unknown effects, wait recovery and stalled progress. Report actual limitations before claiming a supported release.

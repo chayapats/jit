@@ -7,6 +7,8 @@ import { vmFail, vmHash, vmInteger } from "./validation";
 export interface VmArtifactRequest { url: string; sha256: string; maxBytes: number }
 /** Protected I/O seams for deterministic deadline/DNS tests; no guest-provided resolver or timer is accepted. */
 export interface VmArtifactOptions {
+  /** Protected original-claim fence before DNS and immediately before the actual HTTPS request. */
+  beforeRequest?: () => void;
   resolve?: (host: string) => Promise<readonly { address: string; family: number }[]>;
   deadline?: (milliseconds: number, expire: () => void) => () => void;
   request?: typeof request;
@@ -25,11 +27,13 @@ export async function fetchVmArtifact(input: VmArtifactRequest, signal?: AbortSi
   const clearDeadline = (options.deadline ?? ((ms, expire) => { const timer = setTimeout(expire, ms); return () => clearTimeout(timer); }))(30000, () => { expired = true; controller.abort(); });
   try {
     if (signal?.aborted) abort();
+    options.beforeRequest?.();
     const addresses = await Promise.race([(options.resolve ?? (host => lookup(host, { all: true })))(url.hostname), stopped]);
     if (controller.signal.aborted) throw abortError();
     if (!addresses.length || addresses.some(a => !vmPublicAddress(a.address))) vmFail("vm_destination_denied", 403);
     return await Promise.race([new Promise<Uint8Array>((resolve, reject) => {
     const address = addresses[0]!, chunks: Uint8Array[] = []; let total = 0;
+    options.beforeRequest?.();
     const req = (options.request ?? request)(url, { method: "GET", agent: false, headers: { "Accept-Encoding": "identity", "User-Agent": "Jit-artifact/1" },
       lookup: (_hostname, _options, callback) => callback(null, address.address, address.family), signal: controller.signal }, response => {
       if (response.statusCode !== 200 || response.headers["content-encoding"] && response.headers["content-encoding"] !== "identity") { response.destroy(); req.destroy(); reject(new Error("vm_acquisition_failed")); return; }

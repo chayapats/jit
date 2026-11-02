@@ -15,6 +15,13 @@ export interface GoogleEffectsOptions {
   token(account: GoogleEffectAccount, scope: 'gmail.readonly' | 'gmail.send' | 'calendar.readonly' | 'calendar.events'): Promise<string>;
   recipients: () => readonly CommunicationRecipient[]; attachment(id: string, revision: number): MailAttachment | null;
   bounds: EffectBounds; now: () => number;
+  /** Protected DATA15 composition. Bind Google and every actual person recipient before POLICY
+   * registration; read guards run before credentials and final GET, and source stamping precedes output. */
+  disclosure?: {
+    protectAdapter(adapter: ActionAdapter): ActionAdapter;
+    beforeRead(work: WorkAuthority, payload: JsonValue): void;
+    recordRead(actor: WorkActor, observation: { account: GoogleEffectAccount; eventId: string; version: string }): void;
+  };
 }
 interface EventSnapshot { id: string; version: string; timezone: string; event: PersonalEventFields; organizer: string | null; series: boolean }
 interface Wire { url: string; method: 'POST' | 'PATCH'; headers: Record<string, string>; body: string }
@@ -23,6 +30,7 @@ const json = (v: unknown): JsonValue => JSON.parse(canonical(v)) as JsonValue;
 const actionRef = (a: ActionRef): ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
 const result = (outcome: AdapterResult['outcome'], settled = true): AdapterResult => ({ outcome, transportSettled: settled, actual: unknownUsage() });
 const endpoint = (a: GoogleEffectAccount) => `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(a.calendarId!)}/events`;
+const readPayload = (a: GoogleEffectAccount, eventId: string): JsonValue => json({ contract: 's15-google-read/v1', account: a, wire: { url: endpoint(a) + '/' + encodeURIComponent(eventId), method: 'GET' } });
 function eventSnapshot(data: unknown): EventSnapshot {
   const d = googleObject(data), start = googleObject(d.start), end = googleObject(d.end);
   if (d.attendees !== undefined && !Array.isArray(d.attendees) || d.eventType !== undefined && d.eventType !== 'default' || d.status === 'cancelled') fail('calendar_observation_unsupported');
@@ -148,7 +156,8 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
   const readHandler: ReadHandler = { operation: 'read', validate(value, context) {
     exact(value, ['contract', 'eventId']); if (value.contract !== 's15-calendar-read/v1') fail('read_operation_unavailable');
     string(value.eventId, 256); if (!/^[A-Za-z0-9_-]{1,256}$/.test(value.eventId)) fail('invalid_event');
-    if (!equal(context.resource, account('calendar', 'calendar.readonly').resource)) fail('outside_scope');
+    const a = account('calendar', 'calendar.readonly'); if (!equal(context.resource, a.resource)) fail('outside_scope');
+    options.disclosure?.beforeRead(context.work, readPayload(a, value.eventId));
   } };
   /** A bounded actually-observed event snapshot; a caller-provided etag never populates this cache. */
   async function readEvent(actor: WorkActor, eventId: string, requestId: string, signal?: AbortSignal): Promise<EventSnapshot> {
@@ -158,10 +167,11 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     let sent = false, returned = false, settled = false;
     try {
       const token = await options.token(a, 'calendar.readonly'); if (!equal(a, account('calendar', 'calendar.readonly'))) fail('personal_account_changed');
-      const data = await options.google.request(endpoint(a) + '/' + encodeURIComponent(eventId), { headers: { Authorization: `Bearer ${token}` } }, () => { host().work.guardRead(actor, admitted.claim.id); sent = true; }, signal);
+      const data = await options.google.request(endpoint(a) + '/' + encodeURIComponent(eventId), { headers: { Authorization: `Bearer ${token}` } }, () => { options.disclosure?.beforeRead(host().work.guard(actor), readPayload(a, eventId)); host().work.guardRead(actor, admitted.claim.id); sent = true; }, signal);
       returned = true; const observed = eventSnapshot(data); if (observed.id !== eventId) fail('invalid_event');
       const bytes = Buffer.byteLength(canonical(observed)); if (bytes > bounds.read.outputBytes) fail('output_limit');
       host().control.settleRead(admitted.claim.id, { outcome: 'succeeded', basis: 'remote_verified', code: null, actual: { ...unknownUsage(), outputBytes: bytes }, transportSettled: true }, digest('s15.event.observation.v1', observed)); settled = true;
+      options.disclosure?.recordRead(actor, { account: a, eventId, version: observed.version });
       host().control.publishRead(actor, admitted.claim.id); const work = host().work.guard(actor); observations.set(`${work.id}:${eventId}`, observed); return structuredClone(observed);
     } catch (e) { if (!settled) host().control.settleRead(admitted.claim.id, { outcome: sent ? 'unknown' : 'not_dispatched', basis: sent ? 'uncertain' : 'local_guard', code: 'calendar_read_failed', actual: unknownUsage(), transportSettled: returned || !sent }, null); throw e; }
   }
@@ -182,7 +192,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     } });
     return { tools: [{ access: 'read' as const, definition: { name: 'calendar_read', description: 'Read one approved calendar event and bind its actual version to this work.', inputSchema: { type: 'object', properties: { eventId: { type: 'string' } }, required: ['eventId'], additionalProperties: false }, execution: 'exclusive' as const, effect: 'read-only' as const, async execute(value: unknown) { exact(value, ['eventId']); string(value.eventId); input.guard(); const observed = await readEvent(work.actor, value.eventId, 'event_' + digest('s15.event.read.slot.v1', { work: work.authority.id, sequence: ++sequence }), input.signal); input.guard(); return { content: canonical(observed) }; } } }, ...(input.mode === 'execute' ? [actionTool('mail'), actionTool('calendar')] : [])], async cancel() {}, async close() {} };
   } };
-  return { adapters: [adapter('mail'), adapter('calendar')], readHandler, tools, readEvent,
+  return { adapters: [adapter('mail'), adapter('calendar')].map(a => options.disclosure?.protectAdapter(a) ?? a), readHandler, tools, readEvent,
     attach(service: S15PolicyService) { if (policy) fail('policy_already_attached'); policy = service; },
     /** Current guarded work evidence, with no implicit read, retry or owner authority. */
     evidence(actor: WorkActor, a: ActionRef): EffectEvidence | null { const observed = host().control.publishable(actor, a); return observed.evidence ? structuredClone(observed.evidence) as unknown as EffectEvidence : null; },

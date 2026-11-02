@@ -54,6 +54,8 @@ export interface VmPolicyOperation {
 }
 /** Claim belongs to one operation. The implementation rechecks current authority at actual I/O and publication. */
 export interface VmPolicyClaim {
+  /** Original live action fence after transport preparation waits; never a replay/new claim. */
+  guard?(): void;
   dispatch<T>(start: () => Promise<T>): Promise<T>;
   publish<T>(consume: () => T): T;
   observe(evidence: VmEvidence): void;
@@ -64,6 +66,9 @@ export interface VmPolicyClaim {
 export interface VmPolicyPort {
   assertCurrent(actor: object, scope: { vmId: string; workId: string; attemptId: string; mode: "work" | "system" }): void;
   claim(actor: object, operation: Readonly<VmPolicyOperation>): Promise<VmPolicyClaim>;
+  /** Protected host lifecycle cleanup, including expired/revoked sessions. Drops only unclaimed held
+   * invocation data for this exact session scope; durable actions, approvals and claims remain intact. */
+  releaseSession?(scope: Pick<VmPolicyOperation, "vmId" | "workId" | "attemptId" | "sessionId" | "generation">): void;
 }
 /** Safe metadata only. All command results are guest-reported; scoped cgroup checks are cooperative, not root-proof. */
 export interface VmEvidence {

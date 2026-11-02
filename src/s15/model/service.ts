@@ -48,6 +48,7 @@ export function openModelService(options: ModelOptions): ModelService {
   function guard(actor: WorkActor, record: ModelSelectionRecord): void {
     const work = options.policy.work.guard(actor); if (work.id !== record.workId) fail('outside_scope');
     options.guardWork?.(work.id);
+    if (options.disclosure && !options.disclosure.allows(work, record.route)) fail('recipient_unapproved');
     const current = options.registry.current(record.route.selection); if (!current) fail('route_unavailable'); route(current);
     if (!equal({ ...current, availability: record.route.availability }, record.route)) fail('route_changed');
     if (current.availability !== 'available') fail(current.availability === 'quota' ? 'quota_exceeded' : 'route_unavailable');
@@ -80,7 +81,9 @@ export function openModelService(options: ModelOptions): ModelService {
       }
       const approved = options.policy.work.modelSelections?.(actor) ?? [work.request.selection];
       const candidates = registry().filter(candidate => approved.some(selection => equal(selection, candidate.selection)) && candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
-      const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
+      const eligible = candidates.filter(candidate => !options.disclosure || options.disclosure.allows(work, candidate));
+      if (candidates.length && !eligible.length) fail('recipient_unapproved');
+      const available = eligible.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
       const chosen = available[0]; if (!chosen) fail((pin.route || pin.model || pin.effort || work.request.selectionPin) ? 'selection_pinned' : 'route_unavailable');
       if (!chosen.upperBound) fail('cost_unknown');
       // Pin and account decisions are not model-provided; POLICY performs the final approved-list intersection.
@@ -127,7 +130,7 @@ export function openModelService(options: ModelOptions): ModelService {
           record.reservations.push(reservation.id); const sample = { reservationId: reservation.id, usage: null as ModelUsage | null }; record.tokenSamples.push(sample); save();
           let dispatched = false, complete = false, outputBytes = 0; const started = (clock.monotonicNow ?? clock.now)();
           try {
-            guard(actor, record); options.policy.work.guardReservation(actor, reservation.id); dispatched = true;
+            guard(actor, record); options.disclosure?.guard(options.policy.work.guard(actor), record.route, JSON.parse(JSON.stringify(request))); options.policy.work.guardReservation(actor, reservation.id); dispatched = true;
             for await (const event of selected.stream({ ...request, thinking: record.route.selection.effort as ThinkingLevel }, callOptions)) {
               if (event.type === 'usage') { validateTokens(event.usage); sample.usage = mergeTokens(sample.usage, event.usage); record.tokens = totalTokens(record.tokenSamples.map(s => s.usage)); save(); }
               if (event.type === 'message_complete') { complete = true; outputBytes = Buffer.byteLength(JSON.stringify(event.message.content)); }

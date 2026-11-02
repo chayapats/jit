@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { GithubService, GithubStore, HttpProtectedGithubGateway, createGithubActionAdapter, githubReadHandler, type GithubCodingEvidence, type GithubEffect, type GithubEffectResult, type GithubLimits, type GithubRepository, type GithubSnapshot } from "../../src/s15/github";
 import { openWorkService, type AttemptSettlement, type ResponsibilityPort, type WorkOptions } from "../../src/s15/work/index";
 import type { ConversationRequest } from "../../src/s15/conversation";
+import type { ActionAdapter, CatalogPort, Ref } from "../../src/s15/policy";
 import { canonical, digest } from "../../src/s15/github/validation";
 import { fixture, ref } from "./s15-policy";
 
@@ -56,11 +57,11 @@ export class GithubProtocolFixture {
   close() { this.server.stop(true); }
 }
 
-export function githubFixture(profile: "default" | "publish" | "personal" = "default") {
+export function githubFixture(profile: "default" | "publish" | "personal" = "default", composition: { adapter?: (adapter: ActionAdapter) => ActionAdapter; catalogs?: (base: CatalogPort) => CatalogPort; recipients?: Ref[] } = {}) {
   const protocol = new GithubProtocolFixture(); let store: GithubStore, now = 1000;
   const limits: GithubLimits = { snapshotMaxAgeMs: 20000, waitMs: 10, stallMs: 10000, maxNoProgress: 2, maxAttempts: 4, readUpperBound: { attempts: 0, steps: 0, calls: 1, reads: 1, outputBytes: 0, activeMs: 0, spendMinor: "0" }, actionUpperBound: { attempts: 0, steps: 0, calls: 1, reads: 0, outputBytes: 0, activeMs: 0, spendMinor: "0" } };
   const adapter = createGithubActionAdapter({ get store() { return store; }, gateway: protocol.gateway, limits, now: () => now, policy: () => f.service });
-  const f = fixture({ adapters: [adapter], reads: [githubReadHandler([repo])] });
+  const f = fixture({ adapters: [composition.adapter?.(adapter) ?? adapter], reads: [githubReadHandler([repo])], ...(composition.catalogs ? { catalogs: composition.catalogs } : {}) });
   store = new GithubStore(join(f.dir, "github.sqlite"), "github_test", true);
   f.add("lineage", ref("bundle")); f.add("resource", ref("deployment_gate"));
   f.input.budget!.ceiling = { attempts: 200, steps: 200, calls: 500, reads: 500, outputBytes: 100000, activeMs: 100000, spendMinor: "1000" }; f.input.budget!.concurrency = 50;
@@ -73,7 +74,7 @@ export function githubFixture(profile: "default" | "publish" | "personal" = "def
   }
   let implementations = 0, liveVm = 0, next = coding(), assignments = 0, waits = 0, attempts = 0;
   const inspect = f.admit({ intent: "inspect", access: "read", resources: [ref("repo")], recipients: [], readLimit: 200 });
-  const work = f.admit({ intent: "execute", access: "effect", resources: [ref("repo")], recipients: [], readLimit: 200, subject: { resource: ref("repo"), issue: 42 } });
+  const work = f.admit({ intent: "execute", access: "effect", resources: [ref("repo")], recipients: composition.recipients ?? [], readLimit: 200, subject: { resource: ref("repo"), issue: 42 } });
   const command = { contract: "s15-conversation/v1" as const, requestId: "chat_root", conversationId: "conversation", text: "Implement issue #42 and follow its PR until safely settled.", continuation: null };
   // Controlled completed CHAT source over a real POLICY admission. WORK itself is the production service.
   const chatSource: ConversationRequest = { receipt: { contract: "s15-conversation-receipt/v1", requestId: "chat_root", rootRequestId: "chat_root", conversationId: "conversation", receivedAt: now }, command, interpretationRequest: command, owner: { id: "owner", generation: 1 }, revision: 1,
