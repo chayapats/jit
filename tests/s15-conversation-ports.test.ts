@@ -13,7 +13,7 @@ const definition = (name: string, effect: "read-only" | "mutating" = "read-only"
 
 test("VM consumer denies dynamic read hints and shell writes under report-only scope", async () => {
   const opened: unknown[] = [];
-  const vm: ConversationWorkingVm = { async openAttempt(actor, input) { opened.push({ actor, input }); return { definitions: [definition("read"), definition("bash", "read-only"), definition("write", "read-only"), definition("send_message", "read-only")], async cancel() {}, async close() {} }; } };
+  const vm: ConversationWorkingVm = { async openAttempt(actor, input) { opened.push({ actor, input }); return { id: "session", get backend(): never { throw Error("raw_backend_not_requested"); }, evidence: () => [], definitions: [definition("read"), definition("bash", "read-only"), definition("write", "read-only"), definition("send_message", "read-only")], async cancel() {}, async close() {} }; } };
   const tools = createConversationVmTools(vm, { vmId: "vm", resourceId: "workspace" });
   const signal = new AbortController().signal;
   const inspection = await tools.open(work, { mode: "inspect", signal, guard() {} });
@@ -21,14 +21,15 @@ test("VM consumer denies dynamic read hints and shell writes under report-only s
   const execution = await tools.open(work, { mode: "execute", signal, guard() {} });
   expect(execution.tools.map(tool => [tool.definition.name, tool.access])).toEqual([["read", "read"], ["bash", "reversible_write"], ["write", "reversible_write"]]);
   expect(opened).toHaveLength(2);
-  expect(opened[0]).toMatchObject({ actor: work.actor, input: { vmId: "vm", workId: "work", attemptId: "chat_work", mode: "work" } });
+  expect(opened[0]).toMatchObject({ actor: work.actor, input: { vmId: "vm", workId: "work", attemptId: "chat_work", mode: "work", access: "inspect" } });
+  expect(opened[1]).toMatchObject({ input: { access: "execute" } });
   await expect(createConversationVmTools(vm, { vmId: "vm", resourceId: "unapproved" }).open(work, { mode: "execute", signal, guard() {} })).rejects.toThrow("outside_scope");
   expect(opened).toHaveLength(2);
 });
 
 test("revocation while VM opens fences tools and requests only the original session cleanup", async () => {
   const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>(); let revoked = false, cancels = 0, closes = 0;
-  const vm: ConversationWorkingVm = { async openAttempt() { entered.resolve(); await finish.promise; return { definitions: [definition("bash")], async cancel() { cancels++; }, async close() { closes++; } }; } };
+  const vm: ConversationWorkingVm = { async openAttempt() { entered.resolve(); await finish.promise; return { id: "session", get backend(): never { throw Error("raw_backend_not_requested"); }, evidence: () => [], definitions: [definition("bash")], async cancel() { cancels++; }, async close() { closes++; } }; } };
   const opening = createConversationVmTools(vm, { vmId: "vm", resourceId: "workspace" }).open(work, { mode: "execute", signal: new AbortController().signal, guard() { if (revoked) throw new AppError("authority_revoked"); } });
   await entered.promise; revoked = true; finish.resolve();
   await expect(opening).rejects.toThrow("authority_revoked"); expect(cancels).toBe(1); expect(closes).toBe(1);

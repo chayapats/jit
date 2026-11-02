@@ -6,7 +6,7 @@ export { conversationOwnerView } from "./owner-view";
 export { createConversationPolicy } from "./policy-port";
 export type { ConversationPolicyWork, ModelCallBound } from "./policy-port";
 export { createConversationVmTools } from "./vm-port";
-export type { ConversationWorkingVm } from "./vm-port";
+export type { ConversationWorkingVm, ConversationVmSession, ConversationVmEvidence } from "./vm-port";
 export { createConversationPolicyTools } from "./policy-tools";
 export type { ConversationPolicyRead, ConversationPolicyAction } from "./policy-tools";
 export type * from "./types";
