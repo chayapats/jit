@@ -80,3 +80,11 @@ test('new-price direction is approved once for the same exact action; later chan
   f.approve(held.action); expect((await f.work.resume(held.action)).state).toBe('ok'); expect(f.service.owner.actionSlip(f.owner, held.action).state).toBe('succeeded');
   await f.navigate(); const changed = await f.execute(f.server.request('business', f.edit({ priceMinor: '7000' }, { version: 2 }))); expect(changed.state).toBe('held'); expect(f.server.mutationCount).toBe(1);
 });
+
+test('a held DecisionCard keeps its exact historical evidence while changed source versions fence dispatch', async () => {
+  const f = await setup('static', businessRecord()); f.server.putEvidence({ id: 'source', revision: 1, recordId: 'business', field: 'note', value: 'Original inference', status: 'inference', active: true });
+  const held = await f.execute(f.server.request('business', f.edit({ note: 'Original inference' }, { evidence: [{ id: 'source', revision: 1 }] }))); if (held.state !== 'held') throw Error('expected_hold');
+  f.server.putEvidence({ id: 'source', revision: 2, recordId: 'business', field: 'note', value: 'New verified fact', status: 'fact', active: true });
+  expect(f.server.decisionCard(f.owner, f.service, held.action)!.evidence).toEqual([{ id: 'source', revision: 1, value: 'Original inference', status: 'inference' }]);
+  f.approve(held.action); expect((await f.work.resume(held.action)).state).not.toBe('ok'); expect(f.server.mutationCount).toBe(0);
+});
