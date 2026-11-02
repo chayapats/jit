@@ -9,7 +9,7 @@
     "title": "[Frontier] [S15] Conversational autonomy with protected approvals",
     "url": "https://github.com/chayapats/jit/issues/316"
   },
-  "documentationPullRequest": null,
+  "documentationPullRequest": "https://github.com/chayapats/jit/pull/343",
   "tickets": [
     {
       "key": "DOC15-01",
@@ -1490,5 +1490,10 @@
     "EDIT15-02",
     "EVID15-01",
     "CUT15-01"
-  ]
+  ],
+  "publicationStatus": "published",
+  "nativeRelations": {
+    "subIssues": 26,
+    "blockingEdges": 46
+  }
 }

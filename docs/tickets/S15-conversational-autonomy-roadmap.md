@@ -6,6 +6,8 @@ Canonical scope: [S15](../specs/S15-conversational-autonomy.md), [PRD](../produc
 
 ## Publication and readiness
 
+Documentation PR: https://github.com/chayapats/jit/pull/343
+
 Parent: https://github.com/chayapats/jit/issues/316
 
 The documentation delivery is already in progress. All other tickets remain needs-triage while their direct blockers and actual reviewed contract revisions are outstanding. ARCH15-01 and STATE15-01 are the first candidates after DOC15-01 merges; they are bounded audits, not permission to run live guests/accounts. A closed upstream issue alone is insufficient. Confirm assignees, comments, branches/PRs, exact integration base and referenced evidence before adding ready-for-agent. Human/live evidence uses ready-for-human only after technical prerequisites and owner inputs are actually available.
