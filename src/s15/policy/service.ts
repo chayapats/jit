@@ -353,7 +353,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     decide(actor, input) { tx(() => { v.exact(input, ['requestId', 'action', 'decision', 'expiresAt']); v.id(input.requestId); v.nat(input.expiresAt, true); if (!['approve', 'deny'].includes(input.decision)) v.fail('invalid_shape'); receipt(actor, input.requestId, { kind: 'action.decide', input }, () => {
       const a = loadAction(input.action), w = currentWork(a.workId); checkAction(w, a); if (claimed(a)) v.fail('already_claimed');
       if (input.expiresAt > a.expiresAt || input.expiresAt <= time()) v.fail('expired');
-      const evaluated = evaluate(w, a); if (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'production_impact_required', 'github_evidence_required'].includes(evaluated.code))) v.fail(evaluated.code);
+      // Denial only narrows authority: the owner may veto any unclaimed revision, even one that cannot be approved.
+      const evaluated = input.decision === 'deny' ? null : evaluate(w, a); if (evaluated && (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'production_impact_required', 'github_evidence_required'].includes(evaluated.code)))) v.fail(evaluated.code);
       const approved = { ...clone(input), id: uid(), ownerGeneration: w.ownerGeneration, policyHash: w.policyHash };
       ledger.run('INSERT INTO approvals VALUES (?,?,?,?)', approved.id, a.id, a.revision, v.canonical(approved)); return { recorded: true };
     }); }); },

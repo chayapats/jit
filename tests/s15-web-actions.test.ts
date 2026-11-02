@@ -198,3 +198,17 @@ test("revise and prepare-again only prefill the composer with dictionary text; t
   expect(chat).toContain(">แก้รายการนี้: </textarea>"); expect(approvals(f)).toBe(0);
   expect((await f.html(`/chats/${conversationId}?revise=unknownaction`)).html).not.toContain("แก้รายการนี้");
 });
+
+test("the owner can deny a pending action that cannot be approved, and approval of it still refuses", async () => {
+  const f = setup(); await f.hold({ upperBound: null }, "Send with an unknown cost");
+  const slip = latest(f);
+  expect(slip).toMatchObject({ state: "pending", canApprove: false, reasonCode: "cost_unknown" });
+  const html = (await f.html(`/actions/${slip.action.id}`)).html;
+  expect(html).not.toContain('name="decision" value="approve"'); expect(html).toContain('name="decision" value="deny"');
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(slip), decision: "approve" })).status).toBe(409);
+  expect(approvals(f)).toBe(0);
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(slip), decision: "deny" })).status).toBe(303);
+  await f.app.drain();
+  expect(approvals(f)).toBe(1); expect(f.f.calls).toBe(0); expect(latest(f).state).toBe("denied");
+  expect((await f.html(`/actions/${slip.action.id}`)).html).toContain("คุณไม่อนุมัติ");
+});

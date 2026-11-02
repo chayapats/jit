@@ -136,7 +136,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         const same = (a: ActionRef) => a.id === input.action.id && a.revision === input.action.revision && a.actionHash === input.action.actionHash;
         if (!presented || !same((JSON.parse(presented.record_json) as { action: ActionRef }).action)) throw new AppError("stale_action", 409);
         const current = this.options.policy.actionSlips?.(actor, [input.action]) ?? [];
-        if (!current.some(slip => same(slip.action) && slip.state === "pending" && slip.canApprove)) throw new AppError("stale_action", 409);
+        // Approval needs an approvable revision; a denial (which only narrows authority) needs only a pending one.
+        if (!current.some(slip => same(slip.action) && slip.state === "pending" && (slip.canApprove || input.decision === "deny"))) throw new AppError("stale_action", 409);
       }
       return this.submit(actor, { contract: "s15-conversation/v1", requestId: input.requestId, conversationId: input.conversationId, text, continuation: null });
     });
