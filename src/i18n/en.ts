@@ -4839,4 +4839,11 @@ export const en: Record<MessageKey, string> = {
   "s15.model.unknown": "Unknown",
   "s15.model.finite_budget_required": "Metered work is waiting for a finite budget",
   "s15.model.route_unavailable": "Approved account unavailable; no account switch",
+  "s15.github.default": "GitHub: default (asks before push)",
+  "s15.github.personal": "GitHub: personal r{n}",
+  "s15.github.ledger_push": "Pushed under personal rule r{n}",
+  "s15.github.prod_before_merge": "This merge would deploy to production. It needs your approval before merging.",
+  "s15.github.not_messaging": "Not a general permission to send messages",
+  "s15.readiness.no_pick": "Jit won't choose which one to do",
+  "s15.readiness.do_this": "Do this one",
 };

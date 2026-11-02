@@ -4843,4 +4843,11 @@ export const th = {
   "s15.model.unknown": "ไม่ทราบ",
   "s15.model.finite_budget_required": "งานที่คิดค่าบริการตามใช้กำลังรองบใช้งานที่มีขอบเขต",
   "s15.model.route_unavailable": "บัญชีที่อนุมัติใช้ไม่ได้ตอนนี้ · จิตไม่เปลี่ยนบัญชีเอง",
+  "s15.github.default": "GitHub: ค่าเริ่มต้น (ถามก่อน push)",
+  "s15.github.personal": "GitHub: ส่วนตัว r{n}",
+  "s15.github.ledger_push": "Push แล้วตามกฎส่วนตัว r{n}",
+  "s15.github.prod_before_merge": "Merge นี้จะ deploy production ต้องให้คุณอนุมัติก่อน merge",
+  "s15.github.not_messaging": "ไม่ใช่สิทธิ์ส่งข้อความทั่วไป",
+  "s15.readiness.no_pick": "จิตจะไม่เลือกเองว่าจะทำข้อไหน",
+  "s15.readiness.do_this": "ทำข้อนี้",
 } as const;

@@ -1,0 +1,41 @@
+# S15 protected GitHub execution
+
+Implemented opt-in contract for GIT15-01/02/03 (#328–#330), preserving S15-D15–D19/D22, S15-AC01/02/07/10/15 and the tickets' FR/NFR IDs. Runtime contracts are the exported TSDoc in [github/index.ts](../../src/s15/github/index.ts). S14 remains the default; construction installs neither a personal profile nor an account credential.
+
+## Discovery and selected execution
+
+`discover` performs a charged protected read, commits checked readiness rows with timestamps/evidence, and returns `waitingForSelection:true`. Scope, acceptance criteria, prerequisites, assignees and existing branches/PRs are independent reasons. Closed prerequisites without actual supported-contract evidence remain blocked. The concrete GitHub reader bounds complete issue/comment/branch/PR pages and refuses incomplete pagination; prerequisite support requires a protected owning-service resolver. Readiness is not a model ranking or assignment.
+
+CHAT's original authenticated execute/subject authority supplies the selected repository and issue. `select` rechecks report, issue version, base and ownership, then retains one deduplicated intent. Inspect/acceptance/model actors cannot select. The conversation adapter cannot take an issue number from the model. A duplicate ingress returns the existing intent; a changed choice conflicts.
+
+`createGithubVmWorkspace` uses VM15's public backend/tools and Schway's public host loop. Protected preload supplies approved repository bytes without a token. It creates a raw evidence checkout, runs the configured actual commands, checks for changes during tests, and exports a full immutable bundle plus diff/test hashes. A mandatory trusted criterion verifier receives the observed results, diff and changed paths; model completion text does not certify acceptance. Workflow/CODEOWNERS changes refuse this technical remediation route. Tests are guest-reported observations, not host-attestation or arbitrary-program correctness proofs. VM close is separate from execution/transport settlement; uncertain execution cannot become reviewable evidence.
+
+## Publication and personal profile
+
+Each push, PR create/update, technical review reply and merge has its own exact POLICY action. The payload binds repository, target/branch, selected issue, head/base, bundle/diff/evidence, exact content/thread/PR and captured remote version. Default publication/replies hold for exact single-use approval. Publication never grants merge or another PR.
+
+Owner JSON capture returns the configured approved repositories, target refs, actual branch protection/check/review requirements, production consequence, profile state and revoke data. Explicit `installPersonal` installs only the selected captured repository rules through POLICY; no upgrade/default setup infers opt-in. The separately installed merge rule names required checks, approval count and code-owner requirement. Revocation changes current POLICY immediately. `policyForWork` is a host-only current-policy lookup; it exposes no owner actor or guest capability.
+
+`ProtectedGithubPush` imports only a bounded bundle into a fresh protected bare mirror, verifies object sizes/fsck/ancestry/exact diff, and sends one explicit refspec with `--force-with-lease`. Hooks, guest config and credential helpers do not cross the boundary. Kernel Git limits are mandatory in production; fixtures explicitly replace them. Credentials are resolved in protected host code, never VM/model inputs, tracked files or ordinary exports. `GithubApiGateway` uses fixed GitHub HTTPS endpoints, no redirect/retry, exact payloads and safe errors. `HttpProtectedGithubGateway` is an optional fixed protected transport, not a generic authenticated network proxy.
+
+## Merge enforcement boundary
+
+Personal automatic merge requires **GitHub-enforced branch protection** with the captured required status checks and reviews, strict “require branches to be up to date,” stale-review dismissal, conversation resolution and enforcement for administrators. The implementation supports this branch-protection API route; a repository relying only on an uninspected ruleset remains unavailable. Missing/weaker/unknown protection is reported and held, never silently replaced by read-then-write auto-merge. Code-owner requirements additionally require affirmative review evidence.
+
+The protected adapter rereads protection immediately before merge, compares it with the installed rule, and calls GitHub's merge endpoint with the exact `sha`. **GitHub**, not a local full-vector CAS claim, atomically enforces head identity and strict freshness/check/review requirements. Jit's protected fence serializes its own attempts per PR. A conclusive GitHub refusal is not a merge: retain it, reread and reevaluate. A new attempt is permitted only after conclusive non-occurrence and fresh remote facts; unknown/claimed outcomes remain reconcile-only. Unclaimed changed preparations supersede the previous exact POLICY revision.
+
+This boundary follows the orchestrator's 2026-11-03 decision and GitHub's [merge API](https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request), [branch protection API](https://docs.github.com/en/rest/branches/branch-protection) and [required-check behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks). It does not claim atomic serialization of arbitrary external metadata changes or evidence of live host/network enforcement.
+
+Production `would_deploy` requires exact production approval **before merge**; `unknown` cannot dispatch. A `protected_gate` requires current externally enforced deployment-fence evidence and a current POLICY resource generation. Green CI is not production authority. The production classifier is protected configuration, never repository/review/model text.
+
+## Durable responsibility and JSON consumers
+
+Babysitting binds only the selected PR to WORK15's original CHAT responsibility. `assign` reuses that exact authority; `source_reconciliation_required` must wait/reconcile rather than blindly assign again. CI/review waits retain no VM/native session. Scoped remediation uses `beginAttempt`, current `guard`, cooperative `signal` and monotonic transport/execution/effect settlement; publication is guarded separately. No review is requested automatically. Repeated no-progress approaches stop before the configured attempt/time/headroom limits, retaining evidence and a recommendation. A disconnected/restarted wait resumes as responsibility; an interrupted active coding claim stays reconcile-only. No replacement issue starts.
+
+The owner JSON handler mounts explicitly under `/s15/github/work/:workId/` with existing authenticated session/CSRF and exact Host/Origin checks. It supports discovery, selection/implementation, exact action preparation/dispatch, personal capture/install/revoke and babysitting projections. Protected composition resolves each work ID through authenticated CHAT. Projection reads do not start work. UI copy comes from the existing Claude-authored F3/F5 handoff; no visual UI is implemented here.
+
+## Evidence and pending activation
+
+Deterministic Bun suites cover stateful HTTP GitHub fixtures, the actual REST merge protocol with server-side race refusals, POLICY default/personal/production/revocation gates, unknown read-back, dedupe/restart, scoped remediation/stalls, authenticated JSON surfaces, and a real generated Bun/TypeScript project edited by a scripted Schway model through a VM protocol fixture. These prove implemented logic and protocol behavior, not guest-root isolation, real branch protection, deployment enforcement or subscription readiness.
+
+Live end-to-end execution through Jit remains pending the owner's repository-scoped credential and separate RF15 host/account evidence. The orchestrator's `gh` identity is never installed into Jit. Installation-specific live notes belong only in ignored `.local` records.
