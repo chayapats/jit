@@ -2,6 +2,7 @@ import type { ExecutionBackend, ToolDefinition } from "schway/host";
 
 /** Finite transport/session ceilings; none grants a spending allowance. */
 export interface VmLimits {
+  /** Runtime ceiling for owner-editable per-VM capacity; new enrollments still default to two. */
   maxSessions: number;
   sessionMs: number;
   commandMs: number;
@@ -11,7 +12,7 @@ export interface VmLimits {
   networkProbeMs: number;
 }
 /** Conservative editable execution ceilings, independently narrowed by standing policy. */
-export const defaultVmLimits: Readonly<VmLimits> = Object.freeze({ maxSessions: 2, sessionMs: 900_000,
+export const defaultVmLimits: Readonly<VmLimits> = Object.freeze({ maxSessions: 16, sessionMs: 900_000,
   commandMs: 120_000, outputBytes: 1_048_576, fileBytes: 1_048_576, calls: 512, networkProbeMs: 60_000 });
 /** Protected setup data. Addresses and key paths never appear in model tools/evidence. */
 export interface VmEndpoint { host: string; port: number; user: string; identityFile: string; knownHostsFile: string }

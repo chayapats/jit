@@ -232,3 +232,10 @@ test("decoded/sanitized process output stays inside its UTF-8 byte ceiling", asy
   const invalid = Buffer.alloc(32, 0xff), backend = createVmBackend({ async call() { return { stdout: invalid.toString("base64"), stderr: "", exitCode: 0, timedOut: false, truncated: false, totalBytes: 32 }; } }, "/workspace", "/workspace/.tmp", { ...limits, outputBytes: 32 });
   const result = await backend.spawn({ command: "fixture", cwd: "/workspace" }); expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(32); expect(result.stderr).toContain("truncated");
 });
+
+test("owner-edited session settings replace the initial default of two", async () => {
+  const f = fixture(), row = f.store.registration("vm1"); row.maxSessions = 3; f.store.save(row);
+  const a = await open(f, "one"), b = await open(f, "two"); let c;
+  try { c = await open(f, "three"); await expect(open(f, "four")).rejects.toMatchObject({ code: "vm_capacity" }); }
+  finally { await Promise.all([a.close(), b.close(), c?.close()]); }
+});
