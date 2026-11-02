@@ -9,7 +9,7 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
 
-const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable"]);
+const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "memory_context_stale", "resource_busy", "stale_lease"]);
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
@@ -44,6 +44,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   #owners = new Map<string, { actor: OwnerActor; commandId: string }>();
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
     this.clock = options.clock ?? clock;
+    if (!options.memory && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.memory')='object' LIMIT 1").get()) throw new AppError("memory_required", 503);
     // Store lifetime holds the exclusive process lock; another live worker cannot be declared lost.
     this.store.transaction(() => {
       for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='running'").all()) {
@@ -168,7 +169,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   }
   private publication(request: ConversationRequest): void {
     if (request.state !== "completed" || request.result === null || !request.authority) throw new AppError("result_unavailable", 409);
-    this.options.policy.guard(this.options.policy.open(request.authority), "publication");
+    const work = this.options.policy.open(request.authority);
+    this.options.policy.guard(work, "publication");
+    if (request.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, request.receipt.rootRequestId); }
   }
   /** Stops only this request. Unknown guest/effect claims remain retained by their owning service. */
   stop(actor: OwnerActor, requestId: string): void {
@@ -230,6 +233,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (current.code) throw new AppError(current.code);
       if (this.clock.now() - startedAt >= (current.phase === "interpretation" ? current.interpretation!.authority : current.authority!).limits.activeMs) throw new AppError("expired");
       this.options.policy.guard(work, stage);
+      if (current.phase === "work" && current.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, id); }
     };
     const cancelTools = () => { if (tools && !cancel) cancel = Promise.resolve().then(() => tools!.cancel()).catch(() => {}); };
     abort.signal.addEventListener("abort", cancelTools, { once: true });
@@ -280,6 +284,14 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (request.state !== "running") return;
       work = this.options.policy.open(request.authority!); guard("model");
       clearTimeout(timer); startedAt = this.clock.now(); timer = setTimeout(() => abort.abort(), request.authority!.limits.activeMs);
+      // Persist continuity dependency before MEM can retain/withdraw anything. A later boot without
+      // that protected service must refuse rather than replay raw owner/history or publish old data.
+      if (this.options.memory) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
+      const memory = this.options.memory?.prepare(work!, request);
+      if (memory) {
+        this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
+        request = this.store.request(id); guard("model");
+      }
       const mode = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
         tools = await this.options.tools.open(work!, { mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
@@ -322,6 +334,10 @@ export class ConversationApplication<OwnerActor, WorkContext> {
                 this.store.event(this.store.request(id), "evidence", this.clock.now());
               });
               guard();
+              if (request.memory && this.options.memory?.observe) {
+                const retained = this.options.memory.observe(work!, request, evidence);
+                if (retained.length) this.store.transaction(() => { const current = this.store.request(id); current.memory!.retained.push(...retained); this.store.save(current); });
+              }
               return { content: result.content, isError: evidence.isError };
             } catch (error) {
               const code = safeCode(error);
@@ -334,7 +350,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
             }
           } };
       });
-      const output = await runConversation({ directory: this.options.nativeDirectory, request, definitions, signal: abort.signal, clock: this.clock, scripted: this.options.model,
+      const output = await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model,
         guard: () => guard("model"),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);
@@ -348,6 +364,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         guard("publication"); const current = this.store.request(id), evidence = this.store.evidence(id);
         if (current.code) throw new AppError(current.code);
         if (current.intent.kind !== "answer" && !evidence.some(item => !item.isError)) throw new AppError("result_unavailable");
+        if (current.memory) this.options.memory?.complete(work!, id, output.text);
         current.state = "completed"; current.code = current.intent.hold ? "owner_start_required" : null; current.result = output.text; current.usage = output.usage; current.revision++;
         this.store.save(current); this.store.event(current, "result", this.clock.now());
         if (current.code) this.store.event(current, "needs_me", this.clock.now(), current.code);
@@ -366,6 +383,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       abort.signal.removeEventListener("abort", cancelTools);
       await cancel;
       try { await tools?.close(); } catch { /* Adapter retains unsettled capacity; no retries or raw diagnostics. */ }
+      this.options.memory?.release(id);
       this.#running.delete(id);
       if (this.#owners.get(id)?.commandId === registration?.commandId) this.#owners.delete(id);
     }
@@ -378,6 +396,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       WHERE r.conversation_id=? AND c.rowid<(SELECT rowid FROM commands WHERE id=?) AND r.id<>? ORDER BY c.rowid DESC LIMIT 8`).all(request.receipt.conversationId, request.interpretationRequest.requestId, request.receipt.rootRequestId);
     for (const row of prior) {
       const value = this.store.request(row.id);
+      if (this.options.memory && !this.options.memory.allowHistory(value.interpretationRequest.requestId, value.command.text)) continue;
       if (value.owner.id !== request.owner.id || value.owner.generation !== request.owner.generation) continue;
       const ownerCommand = JSON.parse(row.command_json) as ConversationCommand;
       const next: { role: "owner" | "assistant"; text: string }[] = [{ role: "owner", text: ownerCommand.text }];

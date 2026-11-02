@@ -99,16 +99,27 @@ export interface ConversationRequest {
   interpretationCallAttempt?: number;
   /** Durable ingress event sequence: interpretation cannot use subsequently authored context. */
   contextSequence?: number;
+  memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   actions: ActionRef[];
   /** Owner-only exact decision/dispatch. It cannot resume a model loop or grant another purpose. */
   decision: { action: ActionRef; decision: "approve" | "deny"; expiresAt: number; observation: Observation | null } | null;
+}
+/** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
+export interface ConversationMemoryPort<WorkContext> {
+  prepare(work: WorkContext, request: ConversationRequest): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
+  guard(work: WorkContext, requestId: string): void;
+  observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence): NonNullable<ConversationRequest["memory"]>["retained"];
+  complete(work: WorkContext, requestId: string, text: string): void;
+  allowHistory(requestId: string, originalText: string): boolean;
+  release(requestId: string): void;
 }
 /** Protected composition explicitly opts in. Scripted model injection is a deterministic test seam only. */
 export interface ConversationOptions<OwnerActor, WorkContext> {
   policy: ConversationPolicy<OwnerActor, WorkContext>;
   tools: ConversationToolPort<WorkContext>;
   nativeDirectory: string;
+  memory?: ConversationMemoryPort<WorkContext>;
   clock?: HostClock;
   model?: Model;
   /** Optional separate scripted interpreter; production uses the preapproved public host auth route. */

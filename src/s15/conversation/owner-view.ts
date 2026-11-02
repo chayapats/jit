@@ -19,6 +19,7 @@ export interface ConversationOwnerRow {
   result: { status: "done"; text: string } | null;
   needsYou: ConversationNeedsYou | null;
   slips: ActionSlip[];
+  memory: ConversationRequest["memory"] | null;
   /** The owner's latest clarification reply when it differs from the root message; owner bytes, not model text. */
   reply: string | null;
   /** Material clarification hold only: issue references taken from the owner's own original bytes. They are reply labels, not a selection. */
@@ -73,7 +74,7 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       intentLine: request.phase === "decision" ? null : request.state === "accepted" ? "obligation_only" : request.phase === "interpretation" ? request.state === "held" ? "question" : null : request.intent.kind === "inspect" ? "report_only" : request.intent.kind === "execute" ? "started_work" : null,
       scopeLine: request.authority && request.intent.scope ? { authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
-      result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, question,
+      result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, memory: request.memory ?? null, question,
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text };
 }
 

@@ -14,6 +14,8 @@ export interface ConversationHttpAuthentication<OwnerActor> {
  * cancels or resubmits a task. The supplied cookie belongs to the installation's existing owner login.
  */
 export function createConversationHandler<OwnerActor, WorkContext>(app: ConversationApplication<OwnerActor, WorkContext>, options: {
+  resources?: (actor: OwnerActor) => unknown;
+  memory?: { view(actor: OwnerActor): unknown; command(actor: OwnerActor, input: unknown): unknown };
   origin: string; authentication: ConversationHttpAuthentication<OwnerActor>; cookieName: string;
 }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
@@ -38,6 +40,9 @@ export function createConversationHandler<OwnerActor, WorkContext>(app: Conversa
       if (cookies.length !== 1) throw new AppError("authentication_required", 401);
       const authenticated = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1));
       if (request.method === "POST") options.authentication.verifyCsrf(authenticated.csrf, request.headers.get("x-csrf-token"));
+      if (url.pathname === "/api/s15/resources" && request.method === "GET" && options.resources) return json(options.resources(authenticated.actor));
+      if (url.pathname === "/api/s15/memory" && request.method === "GET" && options.memory) return json(options.memory.view(authenticated.actor));
+      if (url.pathname === "/api/s15/memory/commands" && request.method === "POST" && options.memory) return json(options.memory.command(authenticated.actor, await body(request)));
       const ownerView = /^\/api\/s15\/conversations\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
       if (ownerView && request.method === "GET") return json(conversationOwnerView(app, authenticated.actor, ownerView[1]!));
       const conversation = /^\/api\/s15\/conversations\/([A-Za-z0-9_-]+)\/(messages|events)$/.exec(url.pathname);
