@@ -4,6 +4,7 @@
  */
 export function s15StyleSheet(): string {
   return `
+.s15-app .s-scroll { position: relative; }
 .s15-thread { display: flex; flex-direction: column; gap: 22px; }
 .s15-row { display: flex; flex-direction: column; gap: 8px; }
 .s15-text { white-space: pre-wrap; overflow-wrap: anywhere; }
