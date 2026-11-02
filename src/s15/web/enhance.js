@@ -1,0 +1,165 @@
+// S15 progressive enhancement (UX15-01, handoff §9 and §11). Every surface works without this script.
+// It never submits anything on its own: reconnect and refresh only read; a resend reuses the same request id,
+// so the service returns the original receipt. Drafts are browser-local text only, never an approval or rule.
+/* global s15CredentialPatterns */
+const draftDays = 30;
+const doc = document;
+const phase = doc.getElementById("s15-phase");
+const app = doc.querySelector(".s15-app");
+const conversation = app && app.dataset ? app.dataset.conversation || "" : "";
+
+function draftKey() { return conversation ? `s15-draft:${conversation}` : ""; }
+function sensitive(text) { return typeof s15CredentialPatterns !== "undefined" && s15CredentialPatterns.some(pattern => pattern.test(text)); }
+function storage() { try { return globalThis.localStorage || null; } catch { return null; } }
+function status(form, name) {
+  const bar = form.querySelector("[data-draft-bar]"), line = form.querySelector("[data-draft-status]");
+  if (!bar || !line) return;
+  bar.hidden = !name; line.textContent = name ? line.dataset[name] || "" : "";
+}
+function saveDraft(form) {
+  const key = draftKey(), store = storage(), area = form.querySelector("textarea");
+  if (!key || !store || !area) return;
+  const text = area.value;
+  if (!text) { store.removeItem(key); status(form, ""); return; }
+  if (sensitive(text)) { store.removeItem(key); status(form, "sensitive"); return; }
+  store.setItem(key, JSON.stringify({ text, at: Date.now() }));
+  status(form, "saved");
+}
+function restoreDraft(form) {
+  const key = draftKey(), store = storage(), area = form.querySelector("textarea");
+  if (!key || !store || !area || area.value) return;
+  try {
+    const saved = JSON.parse(store.getItem(key) || "null");
+    if (!saved || typeof saved.text !== "string" || Date.now() - saved.at > draftDays * 86400000) { store.removeItem(key); return; }
+    area.value = saved.text; status(form, "restored");
+  } catch { store.removeItem(key); }
+}
+function clearDraft(form) { const key = draftKey(), store = storage(); if (key && store) store.removeItem(key); status(form, ""); }
+
+/** Replaces stable regions from a fresh server render. A region holding focus is left alone. */
+function swapRegions(fresh, keepComposer) {
+  const thread = doc.getElementById("s15-thread"), next = fresh.getElementById("s15-thread");
+  if (thread && next) {
+    const latest = doc.getElementById("latest");
+    for (const row of next.querySelectorAll(".s15-row")) {
+      const current = doc.getElementById(row.id);
+      if (!current) { if (latest && latest.parentNode === thread) thread.insertBefore(doc.importNode(row, true), latest); else thread.appendChild(doc.importNode(row, true)); announce(row); continue; }
+      if (current.dataset.sig === row.dataset.sig || current.contains(doc.activeElement)) continue;
+      if (current.dataset.phase !== row.dataset.phase) announce(row);
+      current.replaceWith(doc.importNode(row, true));
+    }
+    const empty = thread.querySelector(".s-empty-thread");
+    if (empty && next.querySelector(".s15-row")) empty.remove();
+  }
+  const composer = doc.getElementById("s15-composer"), fresher = fresh.getElementById("s15-composer");
+  if (composer && fresher && !composer.contains(doc.activeElement)) {
+    const copy = doc.importNode(fresher, true);
+    if (keepComposer) {
+      // A live refresh keeps what the owner typed and the request id a resend must reuse.
+      const area = composer.querySelector("textarea"), freshArea = copy.querySelector("textarea");
+      if (area && freshArea) freshArea.value = area.value;
+      const id = composer.querySelector("input[name=requestId]"), freshId = copy.querySelector("input[name=requestId]");
+      if (id && freshId) freshId.value = id.value;
+    }
+    composer.replaceWith(copy); wireComposer(copy);
+  }
+  const live = fresh.querySelector("[data-live]"), scroll = doc.querySelector(".s-scroll");
+  if (scroll) { if (live) scroll.setAttribute("data-live", "true"); else scroll.removeAttribute("data-live"); }
+  const freshApp = fresh.querySelector(".s15-app");
+  if (app && freshApp && freshApp.dataset.cursor) app.dataset.cursor = freshApp.dataset.cursor;
+}
+/** At most one polite line per phase change; progress lines are never announced one by one. */
+function announce(row) {
+  if (!phase || !row.dataset) return;
+  const word = { working: "working", inspecting: "working", needs_you: "needs", question: "needs", budget_hold: "needs", unknown: "needs", done: "done", partial: "done" }[row.dataset.phase];
+  if (word && phase.dataset[word]) phase.textContent = phase.dataset[word];
+}
+function banner(text) {
+  const slot = doc.getElementById("s15-banner"); if (!slot || !text) return;
+  slot.innerHTML = '<div class="s-banner" role="status"><div><p><b></b></p></div></div>';
+  slot.querySelector("b").textContent = text;
+}
+
+async function fetchPage() {
+  const response = await fetch(location.href.split("#")[0], { credentials: "same-origin", headers: { Accept: "text/html" } });
+  return new DOMParser().parseFromString(await response.text(), "text/html");
+}
+
+function wireComposer(form) {
+  if (!form || form.dataset.wired) return;
+  form.dataset.wired = "true";
+  const area = form.querySelector("textarea");
+  restoreDraft(form);
+  if (area) {
+    area.addEventListener("input", () => saveDraft(form));
+    area.addEventListener("keydown", event => {
+      // Enter sends; Shift+Enter is a newline; an IME composition Enter never sends.
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+      event.preventDefault(); if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+  }
+  const clear = form.querySelector("[data-draft-clear]");
+  if (clear) clear.addEventListener("click", () => { if (area) area.value = ""; clearDraft(form); if (area) area.focus(); });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (form.dataset.busy) return;
+    form.dataset.busy = "true";
+    const sending = form.querySelector("[data-sending]"), unknown = form.querySelector("[data-unknown]");
+    if (sending) sending.hidden = false; if (unknown) unknown.hidden = true;
+    let response;
+    try { response = await fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)), credentials: "same-origin", headers: { Accept: "text/html" } }); }
+    catch {
+      // The receipt is unknown. The same request id stays in the form, so pressing send again cannot duplicate work.
+      delete form.dataset.busy; if (sending) sending.hidden = true; if (unknown) unknown.hidden = false; return;
+    }
+    delete form.dataset.busy; if (sending) sending.hidden = true;
+    const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
+    if (response.ok) clearDraft(form);
+    const composer = doc.getElementById("s15-composer");
+    if (composer && doc.activeElement && composer.contains(doc.activeElement)) doc.activeElement.blur();
+    swapRegions(fresh, false);
+    const next = doc.getElementById("s15-text"); if (next) next.focus();
+    schedule(400);
+  });
+}
+
+/** Delegated, so chips in rows replaced by a live refresh keep working. */
+function onPrefill(event) {
+  const chip = event.target && event.target.closest ? event.target.closest("[data-prefill]") : null;
+  const area = doc.getElementById("s15-text"); if (!chip || !area) return;
+  // A chip only fills the composer with trusted typed text. Nothing is sent until the owner sends it.
+  event.preventDefault(); area.value = chip.dataset.prefill; area.focus();
+  const form = doc.getElementById("s15-composer"); if (form) saveDraft(form);
+}
+function wireCopy(root) {
+  for (const button of root.querySelectorAll("[data-copy]")) {
+    const source = doc.getElementById(button.dataset.copy);
+    if (!source || !globalThis.navigator || !navigator.clipboard) continue;
+    button.hidden = false;
+    button.addEventListener("click", async () => { try { await navigator.clipboard.writeText(source.textContent); button.textContent = button.dataset.copied; } catch {} });
+  }
+}
+
+let timer = null, offline = false;
+function schedule(ms) { if (timer === null && conversation) timer = setTimeout(poll, ms); }
+async function poll() {
+  timer = null;
+  const live = !!doc.querySelector("[data-live]");
+  try {
+    const cursor = app && app.dataset.cursor || "0";
+    const response = await fetch(`/chats/${conversation}/events?after=${cursor}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
+    if (response.status === 409) { swapRegions(await fetchPage(), true); banner(phase && phase.dataset.reset); schedule(2000); return; }
+    if (!response.ok) throw new Error("unavailable");
+    const data = await response.json();
+    if (offline) { offline = false; banner(phase && phase.dataset.reconnected); }
+    const count = doc.querySelector("[data-needs-count]");
+    if (count && typeof data.needs === "number") count.textContent = data.needs ? String(data.needs) : "";
+    if (data.events && data.events.length) swapRegions(await fetchPage(), true);
+  } catch { offline = true; }
+  if (live || offline || doc.querySelector("[data-live]")) schedule(offline ? 5000 : 2000);
+}
+
+const initial = doc.getElementById("s15-composer");
+if (initial) wireComposer(initial);
+doc.addEventListener("click", onPrefill); wireCopy(doc);
+if (conversation && doc.querySelector("[data-live]")) schedule(2000);
