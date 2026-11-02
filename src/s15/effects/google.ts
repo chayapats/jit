@@ -56,7 +56,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
   if (options.runtime !== 's15') fail('runtime_opt_in_required');
   vector(options.bounds.read); vector(options.bounds.mutation); vector(options.bounds.reconciliation); nat(options.bounds.expiresInMs, true);
   if (options.bounds.read.reads < 1 || options.bounds.read.calls < 1 || options.bounds.mutation.calls < 3 || options.bounds.mutation.reads < 2 || options.bounds.reconciliation.calls < 2 || options.bounds.reconciliation.reads < 2) fail('effect_bound_required');
-  const bounds = structuredClone(options.bounds), observations = new Map<string, EventSnapshot>(), evidence = new Map<string, EffectEvidence>();
+  const bounds = structuredClone(options.bounds), observations = new Map<string, EventSnapshot>();
   let policy: S15PolicyService | null = null;
   const host = () => policy ?? fail('policy_not_attached');
   function account(kind: 'mail' | 'calendar', scope: GoogleEffectAccount['scopes'][number]): GoogleEffectAccount {
@@ -110,8 +110,8 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
         if (e.id !== providerId || e.timezone !== p.calendar!.timezone || !equal(e.event, p.calendar!.event)) return result('unknown');
         observed = e; version = e.version;
       }
-      evidence.set(a.actionHash, { contract: 's15-effect-evidence/v1', action: actionRef(a), providerId, version, observed, undo: p.before ? { operation: 'update', eventId: providerId, version, timezone: p.before.timezone, sendUpdates: 'none', event: p.before.event } : null });
-      return result('succeeded');
+      const evidence: EffectEvidence = { contract: 's15-effect-evidence/v1', action: actionRef(a), providerId, version, observed, undo: p.before ? { operation: 'update', eventId: providerId, version, timezone: p.before.timezone, sendUpdates: 'none', event: p.before.event } : null };
+      return { ...result('succeeded'), evidence: json(evidence) };
     } catch { return result('unknown', false); }
   }
   function adapter(kind: 'mail' | 'calendar'): ActionAdapter {
@@ -172,7 +172,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
         const prepared = host().work.prepare(work.actor, { slot, adapter: kind === 'mail' ? 'gmail_send' : 'google_calendar', proposal }); const a = actionRef(prepared.action); input.onAction(a);
         if (prepared.decision.state !== 'allow') return { content: canonical({ state: prepared.decision.state, code: prepared.decision.code, action: a }), isError: true };
         input.guard(); const observed = await host().work.dispatch(work.actor, a); input.guard(); host().control.publishable(work.actor, a);
-        return { content: canonical({ state: observed.outcome, action: a, evidence: evidence.get(a.actionHash) ?? null }), isError: observed.outcome !== 'succeeded' };
+        return { content: canonical({ state: observed.outcome, action: a, evidence: observed.evidence ?? null }), isError: observed.outcome !== 'succeeded' };
       },
     } });
     return { tools: [{ access: 'read' as const, definition: { name: 'calendar_read', description: 'Read one approved calendar event and bind its actual version to this work.', inputSchema: { type: 'object', properties: { eventId: { type: 'string' } }, required: ['eventId'], additionalProperties: false }, execution: 'exclusive' as const, effect: 'read-only' as const, async execute(value: unknown) { exact(value, ['eventId']); string(value.eventId); input.guard(); const observed = await readEvent(work.actor, value.eventId, 'event_' + digest('s15.event.read.slot.v1', { work: work.authority.id, sequence: ++sequence }), input.signal); input.guard(); return { content: canonical(observed) }; } } }, ...(input.mode === 'execute' ? [actionTool('mail'), actionTool('calendar')] : [])], async cancel() {}, async close() {} };
@@ -180,6 +180,6 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
   return { adapters: [adapter('mail'), adapter('calendar')], readHandler, tools, readEvent,
     attach(service: S15PolicyService) { if (policy) fail('policy_already_attached'); policy = service; },
     /** Current guarded work evidence, with no implicit read, retry or owner authority. */
-    evidence(actor: WorkActor, a: ActionRef): EffectEvidence | null { host().control.publishable(actor, a); return structuredClone(evidence.get(a.actionHash) ?? null); },
+    evidence(actor: WorkActor, a: ActionRef): EffectEvidence | null { const observed = host().control.publishable(actor, a); return observed.evidence ? structuredClone(observed.evidence) as unknown as EffectEvidence : null; },
   };
 }

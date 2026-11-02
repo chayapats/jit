@@ -230,7 +230,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   function observationFor(a: T.PreparedAction): T.Observation | null {
     return parse<T.Observation>(ledger.get("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')!='owner_statement' ORDER BY seq DESC LIMIT 1", a.id)) ?? (claimed(a) ? { outcome: 'unknown', basis: 'uncertain', code: 'reconciliation_required', actual: v.unknownUsage(), transportSettled: false } : null);
   }
-  function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); }
+  function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled'], ['evidence']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); if (result.evidence !== undefined) v.canonical(result.evidence); }
   function savePolicy(input: T.PolicyInput, expectedRevision: number, allowRecurring = false): T.StandingPolicy {
     v.policy(input); v.nat(expectedRevision);
     const old = getPolicy(); if ((old?.revision ?? 0) !== expectedRevision) v.fail('stale_policy');

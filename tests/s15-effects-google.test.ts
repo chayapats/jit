@@ -133,3 +133,10 @@ test('reconciliation rechecks owner/privacy after credential waits without anoth
   const calls = g.calls; g.onToken = async () => { g.f.allow = false; };
   expect((await g.f.service.owner.reconcile(g.f.owner, ar(prepared.action), 'blocked_readback')).outcome).toBe('unknown'); expect(g.calls).toBe(calls); expect(g.mutationCalls).toBe(1);
 });
+
+test('verified event identity, actual content and fresh-version undo survive policy process restart', async () => {
+  const g = setup(), actor = g.f.admit().actor!, p = calendar(), a = g.prepare(actor, 'calendar', p).action;
+  await g.f.service.work.dispatch(actor, ar(a)); const before = g.registration.evidence(actor, ar(a));
+  g.f.reopen(); const owner = g.f.service.owner.authenticate('fixture_owner_session');
+  expect(g.f.service.owner.inspect(owner, ar(a)).observation!.evidence).toEqual(JSON.parse(canonical(before))); expect(g.mutationCalls).toBe(1);
+});
