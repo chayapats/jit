@@ -6,6 +6,14 @@ scope: CHAT15-01 (#323) step 1 preparation; FR-06/07/17/19/22/23/27/29/32; NFR-0
 
 # Conversational admission and result continuity
 
+## Implemented CHAT15-01 refinement, 2026-11-03
+
+`src/s15/conversation/` implements a smaller opt-in server/API contract. A conservative deterministic original-text grammar replaces the proposed model/bootstrap/opaque-grounding pipeline: supported clear English/Thai requests start directly; unknown material scope is held. Installed standing policy still supplies purpose/resources/finite cost limits, and trusted VM/broker adapters own actual I/O gates. No model output can acquire owner authority. S14 remains the default and retains its own store/commands.
+
+One protected SQLite journal with exclusive process ownership commits request identities, queues, claims, observed tool evidence and events. Policy admission is idempotent; a stranded policy admission cannot dispatch without the local committed queue. Every physical Schway stream is guarded/charged; every tool call is claimed before invocation. A lost claimed run is reconcile-only, while retained results are read without rerunning work and recheck current policy. This avoids implementing the speculative full schema, cross-domain transaction coordinator, conversational approval parsing or another agent loop. Runtime contracts are exported TSDoc, with deterministic public-host tests; real VM/browser/host acceptance remains separate.
+
+The owner selected RT15-01 option B on 2026-11-03: root in an expendable working VM, valuable data/credentials/external effects outside it, protected snapshot recovery; arm64 uses Lima and x64 uses an owner-created Proxmox VM later. This resolves the previously open owner tradeoff, without claiming actual isolation/egress/platform proof or activating any host. Historical preparation statements below describe the earlier proposal rather than the current decision.
+
 ## Confirmed inputs and bounded status
 
 [S15](../specs/S15-conversational-autonomy.md) requires normal authenticated conversation to start clear requested work under standing policy, without a Work switch, repeated resource grants or a second confirmation. Accepting an obligation and inspecting/recommending remain distinct from implementation. Selection and a clear start may be one reply. Human-required gates stay outside working-agent authority; the general browser and administrable VM remain required capabilities.
