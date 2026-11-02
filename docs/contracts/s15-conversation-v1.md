@@ -1,5 +1,11 @@
 # s15-conversation/v1
 
+## TEAM/MEM additive integration (2026-11-03)
+
+An optional protected `ConversationMemoryPort` retains relevant original owner facts/preferences after work admission and working knowledge from actual successful tool evidence. It supplies sourced data through Schway's public source-document context, outside isolated interpretation. Model/tool/publication guards recheck the current packet; observed evidence extends complete lineage even without citations. Correction/forget withholds prior result/evidence bodies and excludes withdrawn owner history/derived summaries from later interpretation. New requests use fresh native sessions, retired in the existing cleanup path. A journal that has used memory refuses startup without its protected memory service, so dropping optional composition cannot bypass withdrawal continuity. Requests/owner rows expose retained claim IDs, kind/category and source/time for the future memory disclosure.
+
+The same authenticated Host/Origin/session/CSRF handler optionally mounts `GET /api/s15/resources`, `GET /api/s15/memory` and `POST /api/s15/memory/commands`; the latter accepts exact revision-bound correction, forget and impact commands. Visual UI remains #338/#339. See [team](s15-team-resources-v1.md) and [memory](s15-memory-v1.md) for schemas, lifecycle and limits. No default runtime, policy installation or S14 semantics change.
+
 ## Executable CHAT15-01 slice (2026-11-03)
 
 The opt-in implementation is in `src/s15/conversation/`; exported TSDoc there defines its actual API. `ConversationApplication.submit` records authenticated original text and a conservative English/Thai grammar ceiling. One isolated, preapproved, tool-free model call interprets natural requests using only original owner text and owner/assistant conversation without retrieved/tool content. Its closed purpose/resource/access proposal is intersected with the narrower grammar/current-policy ceiling and frozen before work tools. Clear execution/selection-start starts automatically; inspection exposes only trusted reads; acceptance retains an obligation; material ambiguity holds once. Exact issue clarification narrows the original request. No model-generated policy installation or approval endpoint exists.

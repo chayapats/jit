@@ -6,7 +6,15 @@ scope: TEAM15-01 (#324); FR-02/03/05/14/16/21/31/35/38/40; NFR-05/07/08/14; S15-
 
 # Mediated team resources and fenced independent handoffs
 
-## Confirmed inputs and admission boundary
+## Executable TEAM/MEM refinement — 2026-11-03
+
+The owner authorized implementation of #324/#325. `src/s15/team/` now uses real POLICY work actors, credential-free owner resource registrations, immutable sourced subsets and independent receiver contexts. `src/s15/memory/` adds automatic bounded sourced facts/preferences/working knowledge, correction/forget and conservative derived lineage. Their versioned schemas and public TSDoc replace the proposed serialized world/plan/operation design below. [Team contract revision 2](../contracts/s15-team-resources-v1.md) and [memory contract](../contracts/s15-memory-v1.md) describe the implemented surface.
+
+Whole-resource alias locks deliberately replace path-footprint scheduling. They serialize conflicting cooperative writes/input and retain unresolved capacity through restart, without claiming hostile-root CAS. Existing VM/browser/POLICY brokers keep external effects, credentials, accounting, physical generations and settlement ownership. No second effect authority or budget is introduced. RT15-01 option B is owner-resolved; real enforcement/adoption evidence remains separate.
+
+TEAM and MEM each keep explicit schema-1 protected continuity outside guest/ordinary images. Memory withdraws TEAM ancestry before committing its own correction/forget. A failed second commit can only withhold more data; retrieval and history also consult the first withdrawal. Retrying the exact owner command completes retirement without reviving content. Corrections retain inherited privacy/resource ceilings. Fresh public Schway sessions retire on close; active memory changes fence subsequent model/tool/result use, and retired contexts are never replayed. Source hashes/claim lifecycle/command identities must be preserved by MIG15; this implementation does not import S14, activate a host or implement Jod.
+
+## Historical proposed choices and admission boundary
 
 [S15](../specs/S15-conversational-autonomy.md) confirms enabled Bots sharing approved team resources/accounts for the actual authorized purpose without repeated per-Bot grants, with independent context, genuine safe overlap and narrower restrictions. Existing S14-private data is not silently declassified. [ADR 0064](0064-conversational-authority-and-protected-control-plane.md) retains full administration/general-browser targets and unresolved protected enforcement. [ADR 0065](0065-s15-state-preservation-and-policy-adoption.md) retains one current continuity authority, private scopes, original bytes, nondispatchable historical authority and conditional rollback.
 
