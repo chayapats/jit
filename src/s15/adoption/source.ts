@@ -19,14 +19,28 @@ const ledgerSchema = '7ab58eadf4138d44af04011156ada695130b9d28ad7d43eeee1035be54
 const maximumBytes = 64 * 1024 * 1024, maximumRows = 200000;
 const maximumOriginalBytes = 64 * 1024 ** 4;
 type FileEntry = { path: string; bytes: number; hash: string };
+// Current protected formats from their owning stores. Reading headers never invokes recovery/migration.
+const priorS15Formats = new Map([
+  [0x4a503135, 'policy'], [0x4a473135, 'github'], [0x4a4d5135, 'model'], [0x4a575135, 'work'],
+  [0x4a523135, 'effects'], [0x4a495435, 'conversation'], [0x4a495436, 'team'], [0x4a495437, 'memory'],
+  [0x4a495456, 'vm'], [0x4a495432, 'adoption'],
+]);
 /** Large private volumes are hashed in bounded buffers, never copied into the candidate or allocated in memory. */
-function fileEntry(path: string): FileEntry {
+function fileEntry(path: string, protectedState = false): FileEntry {
   opsPath(path);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd);
     if (!before.isFile() || before.nlink !== 1 || !Number.isSafeInteger(before.size) || before.size < 0 || before.size > maximumOriginalBytes) adoptionFail('transition_bounds');
     const digest = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024);
+    if (before.size >= 100) {
+      if (readSync(fd, buffer, 0, 100, 0) !== 100) adoptionFail('transition_source_changed');
+      if (buffer.toString('ascii', 0, 16) === 'SQLite format 3\0') {
+        const kind = priorS15Formats.get(buffer.readUInt32BE(68));
+        if (kind) adoptionFail(`transition_existing_s15_${kind}_unsupported`);
+        if (protectedState && buffer.readUInt32BE(68) !== 0x4a495431) adoptionFail('transition_unclassified_store_unsupported');
+      }
+    }
     let offset = 0;
     while (offset < before.size) {
       const count = readSync(fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
@@ -69,7 +83,7 @@ function inventory(o: AdoptionOptions): FileEntry[] {
   const config = readServiceConfigFile(o.source.configPath);
   const visit = (path: string): void => {
     opsPath(path);
-    if (path === fence || path === `${o.source.database}.runtime-lock.sqlite`) return;
+    if (path === fence || ['', '-journal', '-wal', '-shm'].some(suffix => path === `${o.source.database}.runtime-lock.sqlite${suffix}`)) return;
     if (++visited > 8192) adoptionFail('transition_bounds');
     const stat = lstatSync(path, { throwIfNoEntry: false });
     if (!stat) return;
@@ -77,10 +91,12 @@ function inventory(o: AdoptionOptions): FileEntry[] {
     if (stat.isDirectory()) { for (const child of readdirSync(path).sort()) visit(join(path, child)); return; }
     if (entries.has(path)) return;
     if (entries.size >= 4096 || !stat.isFile() || total + stat.size > maximumOriginalBytes) adoptionFail('transition_bounds');
-    const entry = fileEntry(path); total += entry.bytes;
+    const protectedState = containsPath(config.stateDirectory, path) && !containsPath(join(config.stateDirectory, 'native'), path) && !containsPath(`${o.source.database}.ops`, path) && path !== `${o.source.database}.lifecycle.sqlite`;
+    if (protectedState && /-(wal|shm|journal)$/.test(path)) adoptionFail('transition_sqlite_settlement_required');
+    const entry = fileEntry(path, protectedState); total += entry.bytes;
     entries.set(path, entry);
   };
-  [o.source.database, `${o.source.database}.lifecycle.sqlite`, `${o.source.database}.ops`, `${o.source.database}.owner-setup.json`,
+  [config.stateDirectory, o.source.database, `${o.source.database}.lifecycle.sqlite`, `${o.source.database}.ops`, `${o.source.database}.owner-setup.json`,
     `${join(dirname(o.source.database), 'native')}.session-store.json`, join(dirname(o.source.database), 'native'),
     ...(config.s14 ? [config.s14.vaultDirectory, config.s14.computerRoot, config.s14.gitScratch] : []),
     o.source.configPath, o.source.build.path, ...o.source.preservedPaths].forEach(visit);
@@ -103,7 +119,7 @@ function readSnapshot(o: AdoptionOptions): SourceSnapshot {
   const config = readServiceConfigFile(o.source.configPath);
   if (config.runtime !== 's14' || serviceDatabasePath(config) !== o.source.database ||
       encode(o.source.argv) !== encode(['serve', '--s14', '--no-refusal-page'])) adoptionFail('transition_installation_mismatch');
-  if ([config.s14!.vaultDirectory, config.s14!.computerRoot, config.s14!.gitScratch].some(path => containsPath(path, o.directory) || containsPath(o.directory, path))) adoptionFail('transition_path_overlap');
+  if ([config.stateDirectory, config.s14!.vaultDirectory, config.s14!.computerRoot, config.s14!.gitScratch].some(path => containsPath(path, o.directory) || containsPath(o.directory, path))) adoptionFail('transition_path_overlap');
   assertNoSidecars(o.source.database); assertNoSidecars(`${o.source.database}.lifecycle.sqlite`);
   const before = inventory(o);
   if (!before.some(x => x.path === `${o.source.database}.lifecycle.sqlite`) ||

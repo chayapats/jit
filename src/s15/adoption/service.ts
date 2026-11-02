@@ -61,6 +61,10 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
   function assertFence(stage: Stage): void {
     if (!existsSync(fencePath) || opsRead(fencePath, 4096).toString() !== fenceBytes(stage)) adoptionFail('transition_prior_boot_fence_missing');
   }
+  function assertStagedTarget(): void {
+    const own = new Set(['adoption.sqlite', 'adoption.sqlite.runtime-lock.sqlite', 'adoption.sqlite.runtime-lock.sqlite-journal', 'policy.sqlite']);
+    if (readdirSync(o.directory).some(name => !own.has(name))) adoptionFail('transition_existing_s15_state_unsupported');
+  }
   function releaseSource(stage: Stage): void {
     if (!lstatSync(fencePath, { throwIfNoEntry: false })) return;
     assertFence(stage); unlinkSync(fencePath); opsSyncDirectory(`${o.source.database}.ops`);
@@ -119,6 +123,7 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     });
   }
   function unchanged(stage: Stage): void {
+    if (['preparing', 'validated', 'activating', 'active_fenced'].includes(stage.state)) assertStagedTarget();
     if (stage.state !== 'preparing' || existsSync(fencePath)) assertFence(stage);
     boundary(stage); verifySourceFiles(o, stage.files);
     if (stage.candidateHash && candidateHash() !== stage.candidateHash) adoptionFail('transition_integrity_failed');
@@ -136,6 +141,7 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     }
   }
   function resumePrepare(stage: Stage, actor: T.AdoptionOwner): Stage {
+    assertStagedTarget();
     if (!existsSync(fencePath)) {
       const control = join(`${o.source.database}.ops`, 'control.json');
       if (existsSync(control)) {
