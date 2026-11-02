@@ -1,0 +1,678 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jit.invalid/contracts/s15-conversation-v1.schema.json",
+  "title": "Proposed s15-conversation/v1 documentation schemas; not runtime authentication",
+  "$ref": "#/$defs/FixtureDocumentV1",
+  "$defs": {
+    "Id": {"type":"string","pattern":"^[A-Za-z0-9_-]{1,128}$"},
+    "Hash": {"type":"string","pattern":"^[a-f0-9]{64}$"},
+    "Nat": {"type":"integer","minimum":0,"maximum":9007199254740991},
+    "Pos": {"type":"integer","minimum":1,"maximum":9007199254740991},
+    "Time": {"$ref":"#/$defs/Nat"},
+    "Text": {"type":"string","minLength":1,"maxLength":32768},
+    "CodeV1": {
+      "enum": [
+        "authentication_required",
+        "host_rejected",
+        "origin_rejected",
+        "csrf_rejected",
+        "channel_unverified",
+        "channel_forwarded",
+        "invalid_shape",
+        "invalid_data",
+        "body_too_large",
+        "credential_content_refused",
+        "hash_mismatch",
+        "continuity_unavailable",
+        "continuity_capacity",
+        "request_id_conflict",
+        "source_event_conflict",
+        "stale_revision",
+        "authority_revoked",
+        "stale_authority",
+        "expired",
+        "lineage_withdrawn",
+        "selection_pinned",
+        "outside_scope",
+        "route_unavailable",
+        "recipient_approval_required",
+        "finite_budget_required",
+        "cost_unknown",
+        "budget_exhausted",
+        "capacity_busy",
+        "material_ambiguity",
+        "grounding_unproven",
+        "approval_required",
+        "stale_approval",
+        "action_denied",
+        "already_claimed",
+        "context_lost",
+        "aborted",
+        "settlement_pending",
+        "publication_fenced",
+        "cursor_invalid",
+        "cursor_expired",
+        "result_unavailable",
+        "unknown_outcome",
+        "adapter_unproven",
+        "production_approval_required",
+        "merge_authority_required",
+        "owner_direction_required",
+        "interpretation_unknown"
+      ]
+    },
+    "RefV1": {"type":"object","properties":{"id":{"$ref":"#/$defs/Id"},"revision":{"$ref":"#/$defs/Pos"},"generation":{"$ref":"#/$defs/Pos"}},"required":["id","revision","generation"],"additionalProperties":false},
+    "BlobV1": {"type":"object","properties":{"id":{"$ref":"#/$defs/Id"},"sha256":{"$ref":"#/$defs/Hash"},"bytes":{"type":"integer","minimum":0,"maximum":1048576},"mediaType":{"type":"string","maxLength":128,"minLength":1}},"required":["id","sha256","bytes","mediaType"],"additionalProperties":false},
+    "BytesV1": {
+      "type": "object",
+      "properties": {"base64":{"type":"string","maxLength":5592408,"pattern":"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"},"bytes":{"type":"integer","minimum":0,"maximum":4194304},"sha256":{"$ref":"#/$defs/Hash"}},
+      "required": ["base64","bytes","sha256"],
+      "additionalProperties": false
+    },
+    "SelectionV1": {"type":"object","properties":{"route":{"$ref":"#/$defs/RefV1"},"model":{"$ref":"#/$defs/RefV1"},"effort":{"$ref":"#/$defs/Id"}},"required":["route","model","effort"],"additionalProperties":false},
+    "VectorV1": {
+      "type": "object",
+      "properties": {"attempts":{"$ref":"#/$defs/Nat"},"steps":{"$ref":"#/$defs/Nat"},"calls":{"$ref":"#/$defs/Nat"},"reads":{"$ref":"#/$defs/Nat"},"outputBytes":{"$ref":"#/$defs/Nat"},"activeMs":{"$ref":"#/$defs/Nat"},"spendMinor":{"type":"string","pattern":"^(0|[1-9][0-9]{0,29})$"}},
+      "required": ["attempts","steps","calls","reads","outputBytes","activeMs","spendMinor"],
+      "additionalProperties": false
+    },
+    "UsageV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "steps": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "calls": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "reads": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "outputBytes": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "activeMs": {"anyOf":[{"$ref":"#/$defs/Nat"},{"type":"null"}]},
+        "spendMinor": {"anyOf":[{"type":"string","pattern":"^(0|[1-9][0-9]{0,29})$"},{"type":"null"}]}
+      },
+      "required": ["attempts","steps","calls","reads","outputBytes","activeMs","spendMinor"],
+      "additionalProperties": false
+    },
+    "SubjectV1": {"type":"object","properties":{"resource":{"$ref":"#/$defs/RefV1"},"key":{"type":"string","minLength":1,"maxLength":4096}},"required":["resource","key"],"additionalProperties":false},
+    "SpanV1": {"type":"object","properties":{"source":{"$ref":"#/$defs/RefV1"},"startByte":{"$ref":"#/$defs/Nat"},"endByte":{"$ref":"#/$defs/Pos"}},"required":["source","startByte","endByte"],"additionalProperties":false},
+    "SourceV1": {
+      "type": "object",
+      "properties": {"ref":{"$ref":"#/$defs/RefV1"},"origin":{"enum":["owner_text","owner_decision","quote","attachment","tool","model","memory"]},"content":{"$ref":"#/$defs/BytesV1"},"lineage":{"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64}},
+      "required": ["ref","origin","content","lineage"],
+      "additionalProperties": false
+    },
+    "SubmitBodyV1": {
+      "type": "object",
+      "properties": {
+        "kind": {"const":"submit"},
+        "conversation": {"$ref":"#/$defs/RefV1"},
+        "text": {"type":"string","minLength":1,"maxLength":16384},
+        "attachments": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":8},
+        "sources": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "continuation": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]}
+      },
+      "required": ["kind","conversation","text","attachments","sources","continuation"],
+      "additionalProperties": false
+    },
+    "StopBodyV1": {"type":"object","properties":{"kind":{"const":"stop"},"request":{"$ref":"#/$defs/RefV1"}},"required":["kind","request"],"additionalProperties":false},
+    "CommandV1": {
+      "type": "object",
+      "properties": {"contract":{"const":"s15-conversation-command/v1"},"requestId":{"$ref":"#/$defs/Id"},"expectedRevision":{"$ref":"#/$defs/Nat"},"body":{"oneOf":[{"$ref":"#/$defs/SubmitBodyV1"},{"$ref":"#/$defs/StopBodyV1"}]}},
+      "required": ["contract","requestId","expectedRevision","body"],
+      "additionalProperties": false
+    },
+    "ProvenanceV1": {
+      "type": "object",
+      "properties": {"transport":{"enum":["http","local","channel"]},"binding":{"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},"recipient":{"$ref":"#/$defs/RefV1"},"sourceEventId":{"anyOf":[{"$ref":"#/$defs/Id"},{"type":"null"}]},"verifier":{"$ref":"#/$defs/RefV1"}},
+      "required": ["transport","binding","recipient","sourceEventId","verifier"],
+      "additionalProperties": false
+    },
+    "IngressV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-ingress/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "installationId": {"$ref":"#/$defs/Id"},
+        "ownerGeneration": {"$ref":"#/$defs/Pos"},
+        "requestId": {"$ref":"#/$defs/Id"},
+        "commandHash": {"$ref":"#/$defs/Hash"},
+        "conversation": {"$ref":"#/$defs/RefV1"},
+        "source": {"$ref":"#/$defs/RefV1"},
+        "provenance": {"$ref":"#/$defs/ProvenanceV1"},
+        "receivedAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","installationId","ownerGeneration","requestId","commandHash","conversation","source","provenance","receivedAt","hash"],
+      "additionalProperties": false
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-receipt/v1"},
+        "requestId": {"$ref":"#/$defs/Id"},
+        "ingress": {"$ref":"#/$defs/RefV1"},
+        "commandHash": {"$ref":"#/$defs/Hash"},
+        "interpretQueueId": {"anyOf":[{"$ref":"#/$defs/Id"},{"type":"null"}]},
+        "state": {"enum":["received","stop_recorded"]},
+        "committedAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","requestId","ingress","commandHash","interpretQueueId","state","committedAt","hash"],
+      "additionalProperties": false
+    },
+    "CurrentV1": {
+      "type": "object",
+      "properties": {
+        "installationId": {"$ref":"#/$defs/Id"},
+        "ownerGeneration": {"$ref":"#/$defs/Pos"},
+        "conversation": {"$ref":"#/$defs/RefV1"},
+        "policy": {"$ref":"#/$defs/RefV1"},
+        "policyHash": {"$ref":"#/$defs/Hash"},
+        "purpose": {"$ref":"#/$defs/RefV1"},
+        "bots": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "resources": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "selections": {"type":"array","items":{"$ref":"#/$defs/SelectionV1"},"maxItems":64},
+        "selectionPin": {"anyOf":[{"$ref":"#/$defs/SelectionV1"},{"type":"null"}]},
+        "recipients": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "budget": {"$ref":"#/$defs/RefV1"},
+        "continuityId": {"$ref":"#/$defs/Id"},
+        "continuityGeneration": {"$ref":"#/$defs/Pos"},
+        "ceiling": {"$ref":"#/$defs/VectorV1"},
+        "expiresAt": {"$ref":"#/$defs/Time"},
+        "lineage": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64}
+      },
+      "required": ["installationId","ownerGeneration","conversation","policy","policyHash","purpose","bots","resources","selections","selectionPin","recipients","budget","continuityId","continuityGeneration","ceiling","expiresAt","lineage"],
+      "additionalProperties": false
+    },
+    "InterpretationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-interpretation/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "ingress": {"$ref":"#/$defs/RefV1"},
+        "receiptHash": {"$ref":"#/$defs/Hash"},
+        "policy": {"$ref":"#/$defs/RefV1"},
+        "policyHash": {"$ref":"#/$defs/Hash"},
+        "purpose": {"$ref":"#/$defs/RefV1"},
+        "bot": {"$ref":"#/$defs/RefV1"},
+        "selection": {"$ref":"#/$defs/SelectionV1"},
+        "recipients": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "sources": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "budget": {"$ref":"#/$defs/RefV1"},
+        "upperBound": {"$ref":"#/$defs/VectorV1"},
+        "costBasis": {"$ref":"#/$defs/BlobV1"},
+        "expiresAt": {"$ref":"#/$defs/Time"},
+        "maxModelCalls": {"type":"integer","minimum":1,"maximum":4},
+        "maxBytes": {"type":"integer","minimum":1,"maximum":262144},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","ingress","receiptHash","policy","policyHash","purpose","bot","selection","recipients","sources","budget","upperBound","costBasis","expiresAt","maxModelCalls","maxBytes","hash"],
+      "additionalProperties": false
+    },
+    "ActionBindingV1": {
+      "type": "object",
+      "properties": {
+        "id": {"$ref":"#/$defs/Id"},
+        "revision": {"$ref":"#/$defs/Pos"},
+        "actionHash": {"$ref":"#/$defs/Hash"},
+        "policy": {"$ref":"#/$defs/RefV1"},
+        "policyHash": {"$ref":"#/$defs/Hash"},
+        "work": {"$ref":"#/$defs/RefV1"},
+        "purpose": {"$ref":"#/$defs/RefV1"},
+        "recipients": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "payload": {"$ref":"#/$defs/BlobV1"},
+        "expiresAt": {"$ref":"#/$defs/Time"}
+      },
+      "required": ["id","revision","actionHash","policy","policyHash","work","purpose","recipients","payload","expiresAt"],
+      "additionalProperties": false
+    },
+    "MeaningV1": {"enum":["answer","accept_obligation","inspect","execute","select_start","material_ambiguity","approve_action","deny_action"]},
+    "ProposalV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-proposal/v1"},
+        "ingress": {"$ref":"#/$defs/RefV1"},
+        "meaning": {"$ref":"#/$defs/MeaningV1"},
+        "purpose": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "subject": {"anyOf":[{"$ref":"#/$defs/SubjectV1"},{"type":"null"}]},
+        "outcome": {"$ref":"#/$defs/BlobV1"},
+        "completion": {"$ref":"#/$defs/BlobV1"},
+        "bots": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "resources": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "selections": {"type":"array","items":{"$ref":"#/$defs/SelectionV1"},"maxItems":64},
+        "recipients": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "spans": {"type":"array","items":{"$ref":"#/$defs/SpanV1"},"maxItems":64},
+        "heldAction": {"anyOf":[{"$ref":"#/$defs/ActionBindingV1"},{"type":"null"}]},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ingress","meaning","purpose","subject","outcome","completion","bots","resources","selections","recipients","spans","heldAction","hash"],
+      "additionalProperties": false
+    },
+    "AdmissionV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-admission/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "rootIngress": {"$ref":"#/$defs/RefV1"},
+        "requestIngress": {"$ref":"#/$defs/RefV1"},
+        "receiptHash": {"$ref":"#/$defs/Hash"},
+        "proposalHash": {"$ref":"#/$defs/Hash"},
+        "intent": {"$ref":"#/$defs/MeaningV1"},
+        "state": {"enum":["queued","accepted","reply_only","held","approval_recorded","denied"]},
+        "purpose": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "outcome": {"$ref":"#/$defs/BlobV1"},
+        "completion": {"$ref":"#/$defs/BlobV1"},
+        "subject": {"anyOf":[{"$ref":"#/$defs/SubjectV1"},{"type":"null"}]},
+        "current": {"$ref":"#/$defs/CurrentV1"},
+        "work": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "workAuthorityHash": {"anyOf":[{"$ref":"#/$defs/Hash"},{"type":"null"}]},
+        "queueId": {"anyOf":[{"$ref":"#/$defs/Id"},{"type":"null"}]},
+        "hold": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "createdAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","rootIngress","requestIngress","receiptHash","proposalHash","intent","state","purpose","outcome","completion","subject","current","work","workAuthorityHash","queueId","hold","createdAt","hash"],
+      "additionalProperties": false
+    },
+    "HoldV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-hold/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "rootIngress": {"$ref":"#/$defs/RefV1"},
+        "requestHash": {"$ref":"#/$defs/Hash"},
+        "proposalHash": {"$ref":"#/$defs/Hash"},
+        "code": {"$ref":"#/$defs/CodeV1"},
+        "missing": {"enum":["subject","scope","recipient","direction","authentication","policy","action"]},
+        "action": {"anyOf":[{"$ref":"#/$defs/ActionBindingV1"},{"type":"null"}]},
+        "createdAt": {"$ref":"#/$defs/Time"},
+        "expiresAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","rootIngress","requestHash","proposalHash","code","missing","action","createdAt","expiresAt","hash"],
+      "additionalProperties": false
+    },
+    "ContextPacketV1": {
+      "type": "object",
+      "properties": {
+        "request": {"$ref":"#/$defs/RefV1"},
+        "planHash": {"$ref":"#/$defs/Hash"},
+        "sources": {"type":"array","items":{"$ref":"#/$defs/SourceV1"},"maxItems":64},
+        "decisions": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "omitted": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "bytes": {"$ref":"#/$defs/Nat"},
+        "payload": {"$ref":"#/$defs/BytesV1"}
+      },
+      "required": ["request","planHash","sources","decisions","omitted","bytes","payload"],
+      "additionalProperties": false
+    },
+    "AdapterV1": {"type":"object","properties":{"id":{"$ref":"#/$defs/Id"},"version":{"$ref":"#/$defs/Pos"},"schemaHash":{"$ref":"#/$defs/Hash"}},"required":["id","version","schemaHash"],"additionalProperties":false},
+    "RunLimitsV1": {
+      "type": "object",
+      "properties": {
+        "maxTurns": {"type":"integer","minimum":1,"maximum":64},
+        "maxAttempts": {"type":"integer","minimum":1,"maximum":4},
+        "maxModelCalls": {"type":"integer","minimum":1,"maximum":64},
+        "maxToolCalls": {"type":"integer","minimum":1,"maximum":64},
+        "maxConcurrentTools": {"type":"integer","minimum":1,"maximum":8},
+        "contextWindow": {"type":"integer","minimum":1,"maximum":262144},
+        "maxInputChars": {"type":"integer","minimum":1,"maximum":262144},
+        "deadlineMs": {"type":"integer","minimum":1,"maximum":3600000}
+      },
+      "required": ["maxTurns","maxAttempts","maxModelCalls","maxToolCalls","maxConcurrentTools","contextWindow","maxInputChars","deadlineMs"],
+      "additionalProperties": false
+    },
+    "RunPlanV1": {
+      "type": "object",
+      "properties": {
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "admission": {"$ref":"#/$defs/RefV1"},
+        "selection": {"$ref":"#/$defs/SelectionV1"},
+        "tools": {"type":"array","items":{"$ref":"#/$defs/AdapterV1"},"maxItems":64},
+        "input": {"$ref":"#/$defs/BlobV1"},
+        "sources": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "recipients": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "limits": {"$ref":"#/$defs/RunLimitsV1"},
+        "budget": {"$ref":"#/$defs/RefV1"},
+        "upperBound": {"$ref":"#/$defs/VectorV1"},
+        "costBasis": {"$ref":"#/$defs/BlobV1"},
+        "expiresAt": {"$ref":"#/$defs/Time"}
+      },
+      "required": ["ref","admission","selection","tools","input","sources","recipients","limits","budget","upperBound","costBasis","expiresAt"],
+      "additionalProperties": false
+    },
+    "RunCaptureV1": {
+      "type": "object",
+      "properties": {
+        "attempt": {"$ref":"#/$defs/RefV1"},
+        "admission": {"$ref":"#/$defs/RefV1"},
+        "nativeIntentId": {"$ref":"#/$defs/Id"},
+        "planHash": {"$ref":"#/$defs/Hash"},
+        "output": {"anyOf":[{"$ref":"#/$defs/BlobV1"},{"type":"null"}]},
+        "evidence": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "usage": {"$ref":"#/$defs/UsageV1"},
+        "hostOutcome": {"enum":["completed","error","cancelled","max_turns","limit_exceeded","images-unsupported","images-unavailable"]},
+        "transport": {"enum":["not_started","unsettled","settled"]},
+        "scope": {"enum":["not_started","unsettled","quiescent"]}
+      },
+      "required": ["attempt","admission","nativeIntentId","planHash","output","evidence","usage","hostOutcome","transport","scope"],
+      "additionalProperties": false
+    },
+    "ChargeV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-charge/v1"},
+        "id": {"$ref":"#/$defs/Id"},
+        "slotId": {"$ref":"#/$defs/Id"},
+        "request": {"$ref":"#/$defs/RefV1"},
+        "attempt": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "budget": {"$ref":"#/$defs/RefV1"},
+        "continuityId": {"$ref":"#/$defs/Id"},
+        "continuityGeneration": {"$ref":"#/$defs/Pos"},
+        "kind": {"enum":["model","read","tool","delivery","cleanup"]},
+        "inputHash": {"$ref":"#/$defs/Hash"},
+        "charged": {"$ref":"#/$defs/VectorV1"},
+        "actual": {"$ref":"#/$defs/UsageV1"},
+        "chargedAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","id","slotId","request","attempt","budget","continuityId","continuityGeneration","kind","inputHash","charged","actual","chargedAt","hash"],
+      "additionalProperties": false
+    },
+    "FactsV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-facts/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "request": {"$ref":"#/$defs/RefV1"},
+        "attempt": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "claimed": {"type":"boolean"},
+        "runDispatched": {"type":"boolean"},
+        "responseHash": {"anyOf":[{"$ref":"#/$defs/Hash"},{"type":"null"}]},
+        "evidenceCommitted": {"type":"boolean"},
+        "channelClosed": {"type":"boolean"},
+        "scope": {"enum":["not_started","unsettled","quiescent"]},
+        "process": {"enum":["not_started","running","stopped"]},
+        "inputSent": {"type":"boolean"},
+        "networkRequestHashes": {"type":"array","items":{"$ref":"#/$defs/Hash"},"maxItems":64},
+        "charges": {"type":"array","items":{"$ref":"#/$defs/ChargeV1"},"maxItems":256},
+        "actualUsage": {"$ref":"#/$defs/UsageV1"},
+        "publication": {"enum":["unpublished","published","withheld"]},
+        "cancel": {"enum":["none","requested","unknown"]},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","request","attempt","claimed","runDispatched","responseHash","evidenceCommitted","channelClosed","scope","process","inputSent","networkRequestHashes","charges","actualUsage","publication","cancel","hash"],
+      "additionalProperties": false
+    },
+    "ReplyV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-reply/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "request": {"$ref":"#/$defs/RefV1"},
+        "work": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "attempt": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "status": {"enum":["complete","partial","blocked","cancelled"]},
+        "text": {"$ref":"#/$defs/BlobV1"},
+        "evidence": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "gaps": {"type":"array","items":{"$ref":"#/$defs/CodeV1"},"maxItems":64},
+        "unblock": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "lineage": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "recipient": {"$ref":"#/$defs/RefV1"},
+        "createdAt": {"$ref":"#/$defs/Time"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","request","work","attempt","status","text","evidence","gaps","unblock","lineage","recipient","createdAt","hash"],
+      "additionalProperties": false
+    },
+    "EventPayloadV1": {
+      "oneOf": [
+        {"type":"object","properties":{"kind":{"const":"received"},"receiptHash":{"$ref":"#/$defs/Hash"}},"required":["kind","receiptHash"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"admitted"},"admissionHash":{"$ref":"#/$defs/Hash"}},"required":["kind","admissionHash"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"needs_me"},"hold":{"$ref":"#/$defs/RefV1"},"code":{"$ref":"#/$defs/CodeV1"}},"required":["kind","hold","code"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"evidence_committed"},"reply":{"$ref":"#/$defs/RefV1"},"replyHash":{"$ref":"#/$defs/Hash"}},"required":["kind","reply","replyHash"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"settlement"},"attempt":{"$ref":"#/$defs/RefV1"},"factsHash":{"$ref":"#/$defs/Hash"}},"required":["kind","attempt","factsHash"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"result"},"reply":{"$ref":"#/$defs/RefV1"},"replyHash":{"$ref":"#/$defs/Hash"}},"required":["kind","reply","replyHash"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"state"},"state":{"enum":["queued","running","waiting","stopping","stopped","blocked"]},"code":{"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]}},"required":["kind","state","code"],"additionalProperties":false}
+      ]
+    },
+    "EventV1": {
+      "type": "object",
+      "properties": {
+        "contract": {"const":"s15-conversation-event/v1"},
+        "ref": {"$ref":"#/$defs/RefV1"},
+        "conversation": {"$ref":"#/$defs/RefV1"},
+        "request": {"$ref":"#/$defs/RefV1"},
+        "sequence": {"$ref":"#/$defs/Pos"},
+        "createdAt": {"$ref":"#/$defs/Time"},
+        "payload": {"$ref":"#/$defs/EventPayloadV1"},
+        "hash": {"$ref":"#/$defs/Hash"}
+      },
+      "required": ["contract","ref","conversation","request","sequence","createdAt","payload","hash"],
+      "additionalProperties": false
+    },
+    "ProgressV1": {
+      "type": "object",
+      "properties": {"kind":{"const":"progress"},"request":{"$ref":"#/$defs/RefV1"},"attempt":{"$ref":"#/$defs/RefV1"},"ordinal":{"$ref":"#/$defs/Pos"},"text":{"type":"string","minLength":1,"maxLength":1024},"at":{"$ref":"#/$defs/Time"},"transient":{"const":true}},
+      "required": ["kind","request","attempt","ordinal","text","at","transient"],
+      "additionalProperties": false
+    },
+    "CursorV1": {"type":"object","properties":{"conversationId":{"$ref":"#/$defs/Id"},"sequence":{"$ref":"#/$defs/Nat"},"epoch":{"$ref":"#/$defs/Pos"}},"required":["conversationId","sequence","epoch"],"additionalProperties":false},
+    "EventQueryV1": {"type":"object","properties":{"conversation":{"$ref":"#/$defs/RefV1"},"after":{"anyOf":[{"$ref":"#/$defs/CursorV1"},{"type":"null"}]},"limit":{"type":"integer","minimum":1,"maximum":64}},"required":["conversation","after","limit"],"additionalProperties":false},
+    "EventPageV1": {
+      "type": "object",
+      "properties": {"state":{"enum":["events","reset"]},"items":{"type":"array","items":{"$ref":"#/$defs/EventV1"},"maxItems":64},"next":{"$ref":"#/$defs/CursorV1"},"snapshot":{"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]}},
+      "required": ["state","items","next","snapshot"],
+      "additionalProperties": false
+    },
+    "ReplyReadV1": {
+      "oneOf": [
+        {"type":"object","properties":{"state":{"const":"available"},"code":{"const":null},"reply":{"$ref":"#/$defs/ReplyV1"},"content":{"$ref":"#/$defs/BytesV1"}},"required":["state","code","reply","content"],"additionalProperties":false},
+        {"type":"object","properties":{"state":{"enum":["pending","withheld"]},"code":{"$ref":"#/$defs/CodeV1"},"reply":{"const":null},"content":{"const":null}},"required":["state","code","reply","content"],"additionalProperties":false}
+      ]
+    },
+    "CancelObservationV1": {
+      "type": "object",
+      "properties": {"request":{"$ref":"#/$defs/RefV1"},"attempt":{"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},"state":{"enum":["not_requested","requested","unknown"]},"signalRequested":{"anyOf":[{"type":"boolean"},{"type":"null"}]},"facts":{"$ref":"#/$defs/FactsV1"}},
+      "required": ["request","attempt","state","signalRequested","facts"],
+      "additionalProperties": false
+    },
+    "DeliveryObservationV1": {
+      "type": "object",
+      "properties": {"event":{"$ref":"#/$defs/RefV1"},"recipient":{"$ref":"#/$defs/RefV1"},"state":{"enum":["not_sent","acknowledged","unknown"]},"proof":{"anyOf":[{"$ref":"#/$defs/BlobV1"},{"type":"null"}]},"actual":{"$ref":"#/$defs/UsageV1"},"transportSettled":{"type":"boolean"}},
+      "required": ["event","recipient","state","proof","actual","transportSettled"],
+      "additionalProperties": false
+    },
+    "GroundingSetupV1": {
+      "type": "object",
+      "properties": {"meaning":{"$ref":"#/$defs/MeaningV1"},"verdict":{"enum":["allow","hold","deny"]},"code":{"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]},"spans":{"type":"array","items":{"$ref":"#/$defs/SpanV1"},"maxItems":64},"subject":{"anyOf":[{"$ref":"#/$defs/SubjectV1"},{"type":"null"}]}},
+      "required": ["meaning","verdict","code","spans","subject"],
+      "additionalProperties": false
+    },
+    "DecisionSetupV1": {"type":"object","properties":{"state":{"enum":["allow","hold","deny","unsupported"]},"code":{"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]}},"required":["state","code"],"additionalProperties":false},
+    "FixtureSetupV1": {
+      "type": "object",
+      "properties": {
+        "evidenceVerdict": {"enum":["registered_committed","missing","forged"]},
+        "signal": {"enum":["live","already_aborted"]},
+        "provenance": {"$ref":"#/$defs/ProvenanceV1"},
+        "actor": {"enum":["registered_owner","forged_copy","expired_owner","registered_worker"]},
+        "transportVerdict": {"enum":["verified_http","verified_local","verified_channel","bad_host","bad_origin","bad_csrf","unverified_channel","forwarded_channel"]},
+        "continuity": {"enum":["current","missing","conflicting","full"]},
+        "current": {"$ref":"#/$defs/CurrentV1"},
+        "currentVerdict": {"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]},
+        "bootstrapVerdict": {"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]},
+        "grounding": {"$ref":"#/$defs/GroundingSetupV1"},
+        "policyDecision": {"$ref":"#/$defs/DecisionSetupV1"},
+        "remaining": {"$ref":"#/$defs/VectorV1"},
+        "originalContext": {"enum":["registered_unconsumed","lost","consumed","absent"]},
+        "sources": {"type":"array","items":{"$ref":"#/$defs/SourceV1"},"maxItems":64},
+        "plan": {"$ref":"#/$defs/InterpretationV1"},
+        "runPlan": {"$ref":"#/$defs/RunPlanV1"},
+        "packet": {"$ref":"#/$defs/ContextPacketV1"},
+        "scriptedProposal": {"$ref":"#/$defs/ProposalV1"},
+        "scriptedCapture": {"$ref":"#/$defs/RunCaptureV1"},
+        "scriptedReply": {"$ref":"#/$defs/ReplyV1"}
+      },
+      "required": ["evidenceVerdict","signal","provenance","actor","transportVerdict","continuity","current","currentVerdict","bootstrapVerdict","grounding","policyDecision","remaining","originalContext","sources","plan","runPlan","packet","scriptedProposal","scriptedCapture","scriptedReply"],
+      "additionalProperties": false
+    },
+    "ApprovalFactV1": {"type":"object","properties":{"decision":{"enum":["approve","deny"]},"actionRevision":{"$ref":"#/$defs/Pos"},"actionHash":{"$ref":"#/$defs/Hash"},"ingressReceipt":{"$ref":"#/$defs/Hash"}},"required":["decision","actionRevision","actionHash","ingressReceipt"],"additionalProperties":false},
+    "RetainedV1": {
+      "type": "object",
+      "properties": {
+        "ingresses": {"type":"array","items":{"$ref":"#/$defs/IngressV1"},"maxItems":64},
+        "receipts": {"type":"array","items":{"$ref":"#/$defs/ReceiptV1"},"maxItems":64},
+        "admissions": {"type":"array","items":{"$ref":"#/$defs/AdmissionV1"},"maxItems":64},
+        "holds": {"type":"array","items":{"$ref":"#/$defs/HoldV1"},"maxItems":64},
+        "replies": {"type":"array","items":{"$ref":"#/$defs/ReplyV1"},"maxItems":64},
+        "events": {"type":"array","items":{"$ref":"#/$defs/EventV1"},"maxItems":64},
+        "facts": {"$ref":"#/$defs/FactsV1"},
+        "charges": {"type":"array","items":{"$ref":"#/$defs/ChargeV1"},"maxItems":256},
+        "action": {"anyOf":[{"$ref":"#/$defs/ActionBindingV1"},{"type":"null"}]},
+        "approval": {"anyOf":[{"$ref":"#/$defs/ApprovalFactV1"},{"type":"null"}]},
+        "deliveries": {"type":"array","items":{"$ref":"#/$defs/DeliveryObservationV1"},"maxItems":64}
+      },
+      "required": ["ingresses","receipts","admissions","holds","replies","events","facts","charges","action","approval","deliveries"],
+      "additionalProperties": false
+    },
+    "StepV1": {
+      "oneOf": [
+        {"type":"object","properties":{"op":{"const":"submit"},"command":{"$ref":"#/$defs/CommandV1"}},"required":["op","command"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"interpret"},"ingress":{"$ref":"#/$defs/RefV1"}},"required":["op","ingress"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"admit"},"ingress":{"$ref":"#/$defs/RefV1"},"proposal":{"$ref":"#/$defs/ProposalV1"}},"required":["op","ingress","proposal"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"dispatch"},"queueId":{"$ref":"#/$defs/Id"}},"required":["op","queueId"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"model_call"},"slotId":{"$ref":"#/$defs/Id"}},"required":["op","slotId"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"tool_call"},"slotId":{"$ref":"#/$defs/Id"},"mutating":{"type":"boolean"}},"required":["op","slotId","mutating"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"capture"},"capture":{"$ref":"#/$defs/RunCaptureV1"}},"required":["op","capture"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"settle"},"scope":{"enum":["channel","operation","process"]},"verified":{"type":"boolean"}},"required":["op","scope","verified"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"publish"},"reply":{"$ref":"#/$defs/RefV1"},"hash":{"$ref":"#/$defs/Hash"}},"required":["op","reply","hash"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"cancel"},"attempt":{"$ref":"#/$defs/RefV1"}},"required":["op","attempt"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"reconnect"},"query":{"$ref":"#/$defs/EventQueryV1"}},"required":["op","query"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"restart"},"epoch":{"$ref":"#/$defs/Pos"}},"required":["op","epoch"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"current_change"},"code":{"$ref":"#/$defs/CodeV1"},"current":{"$ref":"#/$defs/CurrentV1"}},"required":["op","code","current"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"approve"},"binding":{"$ref":"#/$defs/ActionBindingV1"},"decision":{"enum":["approve","deny"]}},"required":["op","binding","decision"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"reconcile"},"attempt":{"$ref":"#/$defs/RefV1"}},"required":["op","attempt"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"progress"},"progress":{"$ref":"#/$defs/ProgressV1"}},"required":["op","progress"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"delivery"},"event":{"$ref":"#/$defs/RefV1"}},"required":["op","event"],"additionalProperties":false},
+        {"type":"object","properties":{"op":{"const":"fault"},"boundary":{"enum":["ingress_commit","admission_commit","after_claim","after_publication"]}},"required":["op","boundary"],"additionalProperties":false}
+      ]
+    },
+    "CountsV1": {
+      "type": "object",
+      "properties": {
+        "receipts": {"$ref":"#/$defs/Nat"},
+        "interpretationQueues": {"$ref":"#/$defs/Nat"},
+        "workAuthorities": {"$ref":"#/$defs/Nat"},
+        "workQueues": {"$ref":"#/$defs/Nat"},
+        "modelCalls": {"$ref":"#/$defs/Nat"},
+        "toolCalls": {"$ref":"#/$defs/Nat"},
+        "mutationCalls": {"$ref":"#/$defs/Nat"},
+        "logicalDeliveries": {"$ref":"#/$defs/Nat"},
+        "approvalAppends": {"$ref":"#/$defs/Nat"}
+      },
+      "required": ["receipts","interpretationQueues","workAuthorities","workQueues","modelCalls","toolCalls","mutationCalls","logicalDeliveries","approvalAppends"],
+      "additionalProperties": false
+    },
+    "ExpectedV1": {
+      "type": "object",
+      "properties": {
+        "disposition": {"enum":["answer","accepted","inspect","execute","held","denied","duplicate","conflict","pending","published","stopping","stopped","reconcile_only","approval_recorded","reset"]},
+        "code": {"anyOf":[{"$ref":"#/$defs/CodeV1"},{"type":"null"}]},
+        "counts": {"$ref":"#/$defs/CountsV1"},
+        "facts": {"$ref":"#/$defs/FactsV1"},
+        "preparedAction": {"anyOf":[{"$ref":"#/$defs/ActionBindingV1"},{"type":"null"}]},
+        "approval": {"anyOf":[{"$ref":"#/$defs/ApprovalFactV1"},{"type":"null"}]},
+        "events": {"type":"array","items":{"$ref":"#/$defs/EventV1"},"maxItems":64},
+        "retainedEvidence": {"type":"array","items":{"$ref":"#/$defs/RefV1"},"maxItems":64},
+        "hold": {"anyOf":[{"$ref":"#/$defs/RefV1"},{"type":"null"}]},
+        "receipt": {"anyOf":[{"$ref":"#/$defs/ReceiptV1"},{"type":"null"}]},
+        "admission": {"anyOf":[{"$ref":"#/$defs/AdmissionV1"},{"type":"null"}]},
+        "holdRecord": {"anyOf":[{"$ref":"#/$defs/HoldV1"},{"type":"null"}]},
+        "reply": {"anyOf":[{"$ref":"#/$defs/ReplyV1"},{"type":"null"}]},
+        "eventPage": {"anyOf":[{"$ref":"#/$defs/EventPageV1"},{"type":"null"}]}
+      },
+      "required": ["disposition","code","counts","facts","preparedAction","approval","events","retainedEvidence","hold","receipt","admission","holdRecord","reply","eventPage"],
+      "additionalProperties": false
+    },
+    "WorldV1": {
+      "type": "object",
+      "properties": {
+        "id": {"$ref":"#/$defs/Id"},
+        "title": {"$ref":"#/$defs/Text"},
+        "status": {"const":"UNEXECUTED"},
+        "requirements": {"type":"array","items":{"type":"string","pattern":"^(FR-[0-9]{2}|NFR-[0-9]{2}|S15-AC[0-9]{2})$"},"maxItems":64},
+        "setup": {"$ref":"#/$defs/FixtureSetupV1"},
+        "input": {"$ref":"#/$defs/CommandV1"},
+        "retained": {"$ref":"#/$defs/RetainedV1"},
+        "steps": {"type":"array","items":{"$ref":"#/$defs/StepV1"},"maxItems":64},
+        "expected": {"$ref":"#/$defs/ExpectedV1"}
+      },
+      "required": ["id","title","status","requirements","setup","input","retained","steps","expected"],
+      "additionalProperties": false
+    },
+    "NamedRecordV1": {
+      "oneOf": [
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CodeV1"},"value":{"$ref":"#/$defs/CodeV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"RefV1"},"value":{"$ref":"#/$defs/RefV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"BlobV1"},"value":{"$ref":"#/$defs/BlobV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"BytesV1"},"value":{"$ref":"#/$defs/BytesV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"SelectionV1"},"value":{"$ref":"#/$defs/SelectionV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"VectorV1"},"value":{"$ref":"#/$defs/VectorV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"UsageV1"},"value":{"$ref":"#/$defs/UsageV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"SubjectV1"},"value":{"$ref":"#/$defs/SubjectV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"SpanV1"},"value":{"$ref":"#/$defs/SpanV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"SourceV1"},"value":{"$ref":"#/$defs/SourceV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"SubmitBodyV1"},"value":{"$ref":"#/$defs/SubmitBodyV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"StopBodyV1"},"value":{"$ref":"#/$defs/StopBodyV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CommandV1"},"value":{"$ref":"#/$defs/CommandV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ProvenanceV1"},"value":{"$ref":"#/$defs/ProvenanceV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"IngressV1"},"value":{"$ref":"#/$defs/IngressV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ReceiptV1"},"value":{"$ref":"#/$defs/ReceiptV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CurrentV1"},"value":{"$ref":"#/$defs/CurrentV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"InterpretationV1"},"value":{"$ref":"#/$defs/InterpretationV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ActionBindingV1"},"value":{"$ref":"#/$defs/ActionBindingV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"MeaningV1"},"value":{"$ref":"#/$defs/MeaningV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ProposalV1"},"value":{"$ref":"#/$defs/ProposalV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"AdmissionV1"},"value":{"$ref":"#/$defs/AdmissionV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"HoldV1"},"value":{"$ref":"#/$defs/HoldV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ContextPacketV1"},"value":{"$ref":"#/$defs/ContextPacketV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"AdapterV1"},"value":{"$ref":"#/$defs/AdapterV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"RunLimitsV1"},"value":{"$ref":"#/$defs/RunLimitsV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"RunPlanV1"},"value":{"$ref":"#/$defs/RunPlanV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"RunCaptureV1"},"value":{"$ref":"#/$defs/RunCaptureV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ChargeV1"},"value":{"$ref":"#/$defs/ChargeV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"FactsV1"},"value":{"$ref":"#/$defs/FactsV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ReplyV1"},"value":{"$ref":"#/$defs/ReplyV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"EventPayloadV1"},"value":{"$ref":"#/$defs/EventPayloadV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"EventV1"},"value":{"$ref":"#/$defs/EventV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ProgressV1"},"value":{"$ref":"#/$defs/ProgressV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CursorV1"},"value":{"$ref":"#/$defs/CursorV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"EventQueryV1"},"value":{"$ref":"#/$defs/EventQueryV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"EventPageV1"},"value":{"$ref":"#/$defs/EventPageV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ReplyReadV1"},"value":{"$ref":"#/$defs/ReplyReadV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CancelObservationV1"},"value":{"$ref":"#/$defs/CancelObservationV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"DeliveryObservationV1"},"value":{"$ref":"#/$defs/DeliveryObservationV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"GroundingSetupV1"},"value":{"$ref":"#/$defs/GroundingSetupV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"DecisionSetupV1"},"value":{"$ref":"#/$defs/DecisionSetupV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"FixtureSetupV1"},"value":{"$ref":"#/$defs/FixtureSetupV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ApprovalFactV1"},"value":{"$ref":"#/$defs/ApprovalFactV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"RetainedV1"},"value":{"$ref":"#/$defs/RetainedV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"StepV1"},"value":{"$ref":"#/$defs/StepV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"CountsV1"},"value":{"$ref":"#/$defs/CountsV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"ExpectedV1"},"value":{"$ref":"#/$defs/ExpectedV1"}},"required":["name","type","value"],"additionalProperties":false},
+        {"type":"object","properties":{"name":{"$ref":"#/$defs/Id"},"type":{"const":"WorldV1"},"value":{"$ref":"#/$defs/WorldV1"}},"required":["name","type","value"],"additionalProperties":false}
+      ]
+    },
+    "BlobBytesV1": {"type":"object","properties":{"ref":{"$ref":"#/$defs/BlobV1"},"content":{"$ref":"#/$defs/BytesV1"}},"required":["ref","content"],"additionalProperties":false},
+    "FixtureDocumentV1": {
+      "type": "object",
+      "properties": {
+        "blobs": {"type":"array","items":{"$ref":"#/$defs/BlobBytesV1"},"maxItems":512},
+        "contract": {"const":"s15-conversation-fixtures/v1"},
+        "status": {"const":"UNEXECUTED"},
+        "records": {"type":"array","items":{"$ref":"#/$defs/NamedRecordV1"},"maxItems":64},
+        "worlds": {"type":"array","items":{"$ref":"#/$defs/WorldV1"},"maxItems":256}
+      },
+      "required": ["blobs","contract","status","records","worlds"],
+      "additionalProperties": false
+    }
+  }
+}
