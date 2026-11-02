@@ -22,7 +22,7 @@ type FileEntry = { path: string; bytes: number; hash: string };
 // Current protected formats from their owning stores. Reading headers never invokes recovery/migration.
 const priorS15Formats = new Map([
   [0x4a503135, 'policy'], [0x4a473135, 'github'], [0x4a4d5135, 'model'], [0x4a575135, 'work'],
-  [0x4a523135, 'effects'], [0x4a495435, 'conversation'], [0x4a495436, 'team'], [0x4a495437, 'memory'],
+  [0x4a523135, 'effects'], [0x4a445135, 'disclosure'], [0x4a495435, 'conversation'], [0x4a495436, 'team'], [0x4a495437, 'memory'],
   [0x4a495456, 'vm'], [0x4a495432, 'adoption'],
 ]);
 /** Large private volumes are hashed in bounded buffers, never copied into the candidate or allocated in memory. */
@@ -55,7 +55,7 @@ function fileEntry(path: string, protectedState = false): FileEntry {
 /** Internal bounded snapshot; original files are read with ordinary no-follow reads, never opened by writable SQLite. */
 export interface SourceSnapshot {
   report: AdoptionReport; files: FileEntry[]; rows: AdoptionRow[]; facts: AdoptionRow[];
-  requests: { id: string; payloadHash: string; outcomeHash: string }[];
+  requests: { id: string; payloadHash: string | null; outcomeHash: string | null }[];
   ownerGeneration: number;
   reservations: NonNullable<PolicyOptions['initialReservations']>;
 }
@@ -81,6 +81,8 @@ function inventory(o: AdoptionOptions): FileEntry[] {
   const entries = new Map<string, FileEntry>(); let total = 0, visited = 0;
   const fence = join(`${o.source.database}.ops`, 'fence.json');
   const config = readServiceConfigFile(o.source.configPath);
+  const protectedRoots = [config.stateDirectory, ...o.source.preservedPaths];
+  const opaqueCustodyRoots = [join(config.stateDirectory, 'native'), `${o.source.database}.ops`, ...(config.s14 ? [config.s14.computerRoot, config.s14.gitScratch] : [])];
   const visit = (path: string): void => {
     opsPath(path);
     if (path === fence || ['', '-journal', '-wal', '-shm'].some(suffix => path === `${o.source.database}.runtime-lock.sqlite${suffix}`)) return;
@@ -91,7 +93,7 @@ function inventory(o: AdoptionOptions): FileEntry[] {
     if (stat.isDirectory()) { for (const child of readdirSync(path).sort()) visit(join(path, child)); return; }
     if (entries.has(path)) return;
     if (entries.size >= 4096 || !stat.isFile() || total + stat.size > maximumOriginalBytes) adoptionFail('transition_bounds');
-    const protectedState = containsPath(config.stateDirectory, path) && !containsPath(join(config.stateDirectory, 'native'), path) && !containsPath(`${o.source.database}.ops`, path) && path !== `${o.source.database}.lifecycle.sqlite`;
+    const protectedState = protectedRoots.some(root => containsPath(root, path)) && !opaqueCustodyRoots.some(root => containsPath(root, path)) && path !== `${o.source.database}.lifecycle.sqlite`;
     if (protectedState && /-(wal|shm|journal)$/.test(path)) adoptionFail('transition_sqlite_settlement_required');
     const entry = fileEntry(path, protectedState); total += entry.bytes;
     entries.set(path, entry);
@@ -189,10 +191,16 @@ function readSnapshot(o: AdoptionOptions): SourceSnapshot {
       const cells: AdoptionRow['cells'] = [['id', cell(row.id)], ['record_json', cell(encode({ id: row.id, revision: effect.revision, actionHash: effect.actionHash, state, executable: false }))]];
       facts.push({ table: 'continuity.effects', ordinal, cells, hash: hashValue(cells) });
     }
-    const requests = (db.query('SELECT request_id,payload_hash,result_json FROM command_receipts ORDER BY request_id').all() as { request_id: string; payload_hash: string; result_json: string }[]).map(r => {
+    const requestIds = new Map<string, SourceSnapshot['requests'][number]>();
+    for (const r of db.query('SELECT request_id,payload_hash,result_json FROM command_receipts ORDER BY request_id').all() as { request_id: string; payload_hash: string; result_json: string }[]) {
       id(r.request_id); hash(r.payload_hash);
-      return { id: r.request_id, payloadHash: r.payload_hash, outcomeHash: hashBytes(r.result_json) };
-    });
+      requestIds.set(r.request_id, { id: r.request_id, payloadHash: r.payload_hash, outcomeHash: hashBytes(r.result_json) });
+    }
+    // Input IDs are consumed separately from command receipts. Neither private input nor its HMAC/process metadata transfers.
+    for (const r of db.query("SELECT request_id FROM computer_inputs WHERE state IN ('succeeded','unknown') UNION SELECT request_id FROM audit WHERE kind='takeover.input' ORDER BY request_id").all() as { request_id: string }[]) {
+      id(r.request_id); requestIds.set(r.request_id, { id: r.request_id, payloadHash: null, outcomeHash: null });
+    }
+    const requests = [...requestIds.values()];
     if (history.length + facts.length + requests.length > maximumRows || facts.some(row => containsCredential(encode(row)))) adoptionFail('transition_bounds_or_credential_content');
     verifySourceFiles(o, before);
     const boundary = o.boundary.observe(); id(boundary.hostId); hash(boundary.evidenceHash);

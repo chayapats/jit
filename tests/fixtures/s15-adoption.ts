@@ -11,8 +11,8 @@ export const policyInput = (): PolicyInput => ({ purposes: [ref('purpose')], bot
 export const workRequest = () => ({ requestId: retryId(), intent: 'execute' as const, purpose: ref('purpose'), bot: ref('bot'), resources: [], recipients: [], selection, selectionPin: null, expiresAt: 90000 });
 
 /** Real S14 domain state plus explicit no-network protected host/authentication seams and a fake clock. */
-export async function adoptionFixture(seed?: (f: Awaited<ReturnType<typeof domainFixture>>) => void | Promise<void>) {
-  const f = await domainFixture();
+export async function adoptionFixture(seed?: (f: Awaited<ReturnType<typeof domainFixture>>) => void | Promise<void>, overrides: Parameters<typeof domainFixture>[0] = {}) {
+  const f = await domainFixture(overrides);
   const claim = f.app.execute(f.auth.actor, { kind: 'memory.remember', requestId: retryId(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: 'Private S14 owner knowledge' } }).claim!;
   const work = f.app.execute(f.auth.actor, workCommand(f));
   f.store.transaction(tx => {

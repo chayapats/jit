@@ -186,6 +186,8 @@ export const th = {
   "s15.adoption.complete": "S15 ทำงานภายใต้ policy ที่เจ้าของติดตั้งแล้ว",
   "s15.adoption.history_preserved": "เก็บประวัติ S14 ต้นฉบับทั้งหมดไว้",
   "s15.adoption.private_preserved": "ข้อมูลส่วนตัวจาก S14 ยังเป็นส่วนตัวและยังไม่แชร์ให้ทีม",
+  "s15.adoption.policy_revoked": "policy ที่ผูกไว้ถูก revoke แล้ว workers ยังถูก fence",
+  "s15.adoption.policy_expired": "policy ที่ผูกไว้หมดอายุแล้ว workers ยังถูก fence",
   "s15.adoption.policy_required": "ติดตั้ง standing-policy proposal ที่ตรงกันก่อนปล่อย workers",
   "s15.adoption.rollback_available": "กลับไปใช้ runtime เดิมที่เก็บไว้ได้ก่อนมี S15 activity",
   "s15.adoption.rollback_unsupported": "ข้อเท็จจริงใหม่ใน S15 ต้องใช้ reverse projection ที่ตรวจสอบแล้ว ทั้งสอง runtime ยังถูก fence",

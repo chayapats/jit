@@ -6,7 +6,7 @@ export interface AdoptionBuild { commit: string; path: string; sha256: string }
 export interface AdoptionSource {
   runtime: 's14' | 'legacy'; database: string; installationId: string; build: AdoptionBuild;
   configPath: string; argv: string[];
-  /** Explicit additional native/volume/profile/control recovery roots. Bytes remain in their original custody. */
+  /** Explicit additional protected recovery roots. Named S14 native/computer/scratch custody remains opaque; unknown control stores refuse. */
   preservedPaths: string[];
 }
 /** Re-observed by trusted host code outside the working guest. A JSON hash supplied by an agent is insufficient. */

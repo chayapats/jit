@@ -61,12 +61,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!current || !current.active) v.fail('authority_revoked');
     if (!v.equal(current.ref, r)) v.fail('stale_authority');
   }
-  function policyCurrent(): T.StandingPolicy {
-    options.activityGuard?.();
+  function usablePolicy(): T.StandingPolicy {
     const p = getPolicy(); if (!p) v.fail('policy_required');
     if (ledger.meta('policyRevoked') || p.ownerGeneration !== options.ownerGeneration()) v.fail('authority_revoked');
     if (time() >= p.expiresAt) v.fail('expired');
     return p;
+  }
+  function policyCurrent(): T.StandingPolicy {
+    options.activityGuard?.();
+    return usablePolicy();
   }
   function checkRequest(p: T.StandingPolicy, r: T.WorkRequest): void {
     if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
@@ -323,7 +326,11 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   const owner: T.OwnerPort = {
     authenticate(proof) { return tx(() => { const principal = options.verifyOwner(proof); if (!principal || principal.generation !== options.ownerGeneration() || principal.expiresAt <= time()) v.fail('authentication_required'); v.id(principal.id); v.nat(principal.generation, true); const actor = Object.freeze({}) as T.OwnerActor; owners.set(actor, { proof, id: principal.id, generation: principal.generation }); ownerAuth(actor); return actor; }); },
-    current(actor) { return tx(() => { ownerAuth(actor); return clone(getPolicy()); }); },
+    current(actor, options) { return tx(() => {
+      ownerAuth(actor);
+      if (options !== undefined) { v.exact(options, ['requireUsable']); if (options.requireUsable !== true) v.fail('invalid_shape'); }
+      return clone(options?.requireUsable ? usablePolicy() : getPolicy());
+    }); },
     prepareInterpretation(actor, input) { return tx(() => {
       v.exact(input, ['requestId', 'selection', 'expiresAt']); v.id(input.requestId); v.selection(input.selection); v.nat(input.expiresAt, true);
       return receipt(actor, input.requestId, { kind: 'interpretation.prepare', input }, () => {

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { opsDirectory, opsRead, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
 import { acquireS14RuntimeLock } from '../../s14/runtime-lock';
-import { openPolicyService } from '../policy';
+import { openPolicyService, PolicyError } from '../policy';
 import type { AuthenticatedOwner, S15PolicyService, StandingPolicy, PolicyOptions } from '../policy';
 import { ProtectedDataStore } from '../team/store';
 import { snapshotSource, verifySourceFiles, type SourceSnapshot } from './source';
@@ -15,7 +15,7 @@ const ddl = `
 CREATE TABLE meta (key TEXT PRIMARY KEY, json TEXT NOT NULL);
 CREATE TABLE history (source_table TEXT NOT NULL, ordinal INTEGER NOT NULL, source_hash TEXT NOT NULL, cells_json TEXT NOT NULL, PRIMARY KEY(source_table,ordinal));
 CREATE TABLE facts (source_table TEXT NOT NULL, ordinal INTEGER NOT NULL, source_hash TEXT NOT NULL, cells_json TEXT NOT NULL, PRIMARY KEY(source_table,ordinal));
-CREATE TABLE source_requests (id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, outcome_hash TEXT NOT NULL);
+CREATE TABLE source_requests (id TEXT PRIMARY KEY, payload_hash TEXT, outcome_hash TEXT);
 CREATE TABLE receipts (id TEXT PRIMARY KEY, hash TEXT NOT NULL, result_json TEXT NOT NULL);
 CREATE TABLE activity (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL);
 CREATE TRIGGER history_no_update BEFORE UPDATE ON history BEGIN SELECT RAISE(ABORT,'immutable_history'); END;
@@ -96,10 +96,18 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
       requestGuard: requestId => { if (db.query('SELECT 1 FROM source_requests WHERE id=?').get(requestId)) adoptionFail('transition_historical_request_no_replay'); },
     });
   }
-  function currentPolicy(actor: T.AdoptionOwner): StandingPolicy | null {
+  function currentPolicy(actor: T.AdoptionOwner, requireUsable = false): StandingPolicy | null {
     const entry = auth(actor);
     if (!policy) return null;
-    return policy.owner.current(policy.owner.authenticate(entry.proof));
+    try { return policy.owner.current(policy.owner.authenticate(entry.proof), requireUsable ? { requireUsable: true } : undefined); }
+    catch (error) {
+      if (requireUsable && error instanceof PolicyError) {
+        if (error.code === 'authority_revoked') adoptionFail('transition_policy_revoked');
+        if (error.code === 'expired') adoptionFail('transition_policy_expired');
+        if (error.code === 'policy_required') adoptionFail('transition_policy_install_required');
+      }
+      throw error;
+    }
   }
   const activity = () => !!db.query('SELECT 1 FROM activity').get();
   function rollbackHash(stage: Stage): string {
@@ -180,7 +188,8 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     } finally { expected.close(); }
     if (priorConfig === null) store.transaction(() => put('config', configHash));
     const stage = get<Stage>('stage');
-    if (stage && !['preparing', 'discarded'].includes(stage.state) && !existsSync(join(o.directory, 'policy.sqlite'))) adoptionFail('transition_continuity_unavailable');
+    const discardingBeforeCandidate = stage?.state === 'rolling_back' && !stage.candidateHash && get<Pending>('pending')?.command.kind === 'discard';
+    if (stage && !['preparing', 'discarded'].includes(stage.state) && !discardingBeforeCandidate && !existsSync(join(o.directory, 'policy.sqlite'))) adoptionFail('transition_continuity_unavailable');
     if (stage?.candidateHash && candidateHash() !== stage.candidateHash) adoptionFail('transition_integrity_failed');
     // Terminal journals cannot accidentally fence/reselect another installation on reopen.
     if (stage && !['rolled_back', 'discarded'].includes(stage.state)) sourceUnlock = acquireS14RuntimeLock(o.source.database);
@@ -202,9 +211,9 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     guardActivity,
     historicalRequest(actor, requestId, payloadHash) {
       auth(actor); id(requestId); hash(payloadHash);
-      const row = db.query<{ payload_hash: string }, [string]>('SELECT payload_hash FROM source_requests WHERE id=?').get(requestId);
+      const row = db.query<{ payload_hash: string | null }, [string]>('SELECT payload_hash FROM source_requests WHERE id=?').get(requestId);
       if (!row) return null;
-      if (row.payload_hash !== payloadHash) adoptionFail('transition_request_id_conflict');
+      if (row.payload_hash !== null && row.payload_hash !== payloadHash) adoptionFail('transition_request_id_conflict');
       return 'historical_request_no_replay';
     },
     command(actor, command) {
@@ -281,13 +290,16 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
           store.transaction(() => { put('activated', true); finish(stage!, actor); }); checkpoint('active_fenced');
         } else if (command.kind === 'release') {
           if (stage.state !== 'active_fenced' || command.hash !== stage.releaseHash) adoptionFail('transition_stale_validation');
-          unchanged(stage); const p = currentPolicy(actor);
-          if (!p || !p.budget || p.expiresAt <= now() || p.budget.expiresAt <= now() || hashValue(p) !== stage.policyHash) adoptionFail('transition_policy_install_required');
+          unchanged(stage); const p = currentPolicy(actor, true);
+          if (!p || !p.budget || hashValue(p) !== stage.policyHash) adoptionFail('transition_policy_install_required');
+          if (p.expiresAt <= now() || p.budget.expiresAt <= now()) adoptionFail('transition_policy_expired');
+          if (now() < p.budget.startsAt) adoptionFail('transition_policy_not_started');
           begin();
           stage.state = 'complete'; stage.revision++; finish(stage, actor); checkpoint('workers_released');
         } else if (command.kind === 'rollback' || command.kind === 'discard') {
           const discard = command.kind === 'discard';
-          if (discard ? !['preparing', 'validated'].includes(stage.state) : !['activating', 'active_fenced', 'complete', 'rolling_back', 'rolled_back'].includes(stage.state)) adoptionFail('transition_invalid_state');
+          const recordedDiscard = discard && stage.state === 'rolling_back' && pending?.command.kind === 'discard';
+          if (discard ? !['preparing', 'validated'].includes(stage.state) && !recordedDiscard : !['activating', 'active_fenced', 'complete', 'rolling_back', 'rolled_back'].includes(stage.state)) adoptionFail('transition_invalid_state');
           if (command.hash !== rollbackHash(stage)) adoptionFail('transition_stale_validation');
           if (activity() || stage.policyBaseline !== null && policyFilesHash() !== stage.policyBaseline ||
               readdirSync(o.directory).some(x => !['adoption.sqlite', 'adoption.sqlite.runtime-lock.sqlite', 'adoption.sqlite.runtime-lock.sqlite-journal', 'policy.sqlite'].includes(x))) {

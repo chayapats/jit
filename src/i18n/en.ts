@@ -183,6 +183,8 @@ export const en: Record<MessageKey, string> = {
   "s15.adoption.complete": "S15 is active under the owner-installed policy.",
   "s15.adoption.history_preserved": "All original S14 history is preserved.",
   "s15.adoption.private_preserved": "Private S14 items remain private and are not shared with the team.",
+  "s15.adoption.policy_revoked": "The bound policy was revoked. Workers remain fenced.",
+  "s15.adoption.policy_expired": "The bound policy expired. Workers remain fenced.",
   "s15.adoption.policy_required": "Install the exact standing-policy proposal before releasing workers.",
   "s15.adoption.rollback_available": "The preserved prior runtime can be restored before S15 activity.",
   "s15.adoption.rollback_unsupported": "Newer S15 facts need a verified reverse projection. Both runtimes remain fenced.",
