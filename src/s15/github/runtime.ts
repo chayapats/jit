@@ -29,9 +29,10 @@ export function githubRuntime(config: GithubRuntimeConfig, input: {
   const credential = (repo: GithubRepository) => { const r = config.repositories.find(r => r.repository.resource.id === repo.resource.id); if (!r) throw new AppError('outside_scope'); return input.credential(r.credentialRef); };
   const gateway = new GithubApiGateway({ repositories, credential, production: repo => config.repositories.find(r => r.repository.resource.id === repo.resource.id)?.production ?? { consequence: 'unknown', fence: null, evidence: [] }, push: new ProtectedGithubPush({ bundle }) });
   const github: NonNullable<S15CompositionOptions['github']> = { repositories, gateway, limits: config.limits,
-    workspace: ({ policy, vm }) => createGithubVmWorkspace({ vm, vmId: input.vmId, policy, nativeDirectory: join(input.directory, 'native-github'), route: input.route,
+    workspace: ({ policy, vm, disclosure, guardModel, beforeRead, recordRead }) => createGithubVmWorkspace({ vm, vmId: input.vmId, policy, nativeDirectory: join(input.directory, 'native-github'), route: input.route,
       modelCallUpperBound: input.modelCallUpperBound, maxTurns: config.maxTurns, activeMs: config.activeMs, maxBundleBytes: config.maxBundleBytes, tests: config.tests,
-      preload: createGithubPreload({ policy, repositories, credential, upperBound: config.limits.readUpperBound }),
+      preload: createGithubPreload({ policy, repositories, credential, upperBound: config.limits.readUpperBound, ...(beforeRead ? { beforeRead } : {}), ...(recordRead ? { recordRead } : {}) }),
+      ...(guardModel ? { guardModel } : {}), ...(disclosure ? { recordArtifact: (actor, artifact) => disclosure.derive(actor, artifact, 'artifact') } : {}),
       capture(bytes, hash) { const ref = { id: 'bundle_' + hash, revision: 1, generation: 1 }; const file = path(ref); try { writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; if (!bundle(ref).equals(Buffer.from(bytes))) throw new AppError('artifact_conflict'); } return ref; },
       verifyCriteria({ criteria, evidence }) { return criteria.map(c => { const configured = config.criteria.find(p => p.id === c.id && p.text === c.text); return { id: c.id, passed: !!configured?.commands.length && configured.commands.every(command => evidence.tests.some(t => t.command === command && t.exitCode === 0)), evidence: [evidence.source] }; }); },
     }) };

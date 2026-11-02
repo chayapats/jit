@@ -8,7 +8,7 @@ export type ModelCallBound = BudgetVector;
 /** Registered POLICY actor plus immutable data, held only by trusted CHAT/VM composition. */
 export interface ConversationPolicyWork<Worker extends object = WorkActor> { actor: Worker; authority: WorkAuthority }
 
-const known = new Set(["authentication_required", "authority_revoked", "stale_authority", "expired", "outside_scope", "finite_budget_required", "cost_unknown", "budget_exhausted", "capacity_busy", "selection_pinned", "recipient_approval_required", "lineage_withdrawn", "payload_withdrawn", "approval_reference_required", "stale_action", "already_claimed", "approval_required", "action_denied", "reconciliation_required", "read_bound_exhausted", "read_operation_unavailable"]);
+const known = new Set(["authentication_required", "authority_revoked", "stale_authority", "expired", "outside_scope", "finite_budget_required", "cost_unknown", "budget_exhausted", "capacity_busy", "selection_pinned", "recipient_approval_required", "lineage_withdrawn", "payload_withdrawn", "approval_reference_required", "stale_action", "already_claimed", "approval_required", "action_denied", "reconciliation_required", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable"]);
 function mapped(error: unknown): AppError {
   const code = (error instanceof PolicyError || error instanceof AppError) && known.has(error.code) ? error.code : "policy_match_required";
   return new AppError(code, code === "authentication_required" ? 401 : 409);
@@ -52,7 +52,7 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         if (!purpose) return { state: "proposed", code: "outside_scope" };
         const subjects = input.subjectResourceIds ? resources.filter(r => input.subjectResourceIds!.includes(r.id)) : resources;
         if (intent.subject && subjects.length !== 1) return { state: "held", code: "material_ambiguity" };
-        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: scope.access === "effect" ? policy.recipients : [], selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
+        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
         if (!admitted.work) throw new AppError("outside_scope");
         return { state: "admitted", authority: snapshot(admitted.work) };
       } catch (error) { const code = mapped(error).code; return { state: code === "outside_scope" ? "proposed" : "held", code }; }

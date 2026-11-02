@@ -29,6 +29,8 @@ export function createGithubVmWorkspace(options: {
   preload(backend: ExecutionBackend, selection: GithubSelection, guard: () => void): Promise<string>;
   /** Immutable protected artifact sink. Validates Git objects separately before any publication; no hooks/config are imported. */
   capture(bytes: Uint8Array, hash: string): Ref;
+  guardModel?(work: import('../policy').WorkAuthority, request: unknown): void;
+  recordArtifact?(actor: import('../policy').WorkActor, artifact: Ref): void;
   verifyCriteria(input: { criteria: readonly { id: string; text: string }[]; evidence: Omit<GithubCodingEvidence, "criteria" | "bundle" | "settlement">; diff: string; changedPaths: readonly string[] }): GithubCodingEvidence["criteria"];
 }): GithubWorkspace {
   integer(options.maxTurns, 1); integer(options.activeMs, 1); integer(options.maxBundleBytes, 1);
@@ -57,6 +59,7 @@ export function createGithubVmWorkspace(options: {
       if (model.provider !== provider && !(options.scripted && model.provider === options.route.provider) || model.id !== options.route.model) fail("selection_pinned");
       let calls = 0;
       const guarded: Model = { provider: model.provider, id: model.id, async *stream(request, streamOptions) {
+        options.guardModel?.(options.policy.work.guard(actor), JSON.parse(JSON.stringify(request)));
         input.guard(); const r = options.policy.work.reserveModelCall(actor, { requestId: `${attemptId}_${++calls}`, selection: input.authority.request.selection, upperBound: options.modelCallUpperBound });
         options.policy.work.guardReservation(actor, r.id);
         try { yield* model.stream(request, streamOptions); }
@@ -87,6 +90,7 @@ export function createGithubVmWorkspace(options: {
         const chunks: Uint8Array[] = []; let size = 0;
         for await (const chunk of backend.readFile(bundlePath)) { size += chunk.length; if (size > options.maxBundleBytes) fail("github_bundle_too_large"); chunks.push(chunk); }
         input.guard(); const bytes = Buffer.concat(chunks), bundle = options.capture(bytes, createHash("sha256").update(bytes).digest("hex"));
+        options.recordArtifact?.(actor, bundle);
         const evidence = { head, base: input.selection.base, diffHash, tests: results, source: { ref: `vm:${attemptId}`, observedAt: options.clock?.now() ?? Date.now() } };
         retained = { ...evidence, bundle, criteria: options.verifyCriteria({ criteria: input.issue.criteria, evidence, diff, changedPaths }), settlement: { transportSettled: false, executionSettled: false } }; return retained;
       }, abort.signal);

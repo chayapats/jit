@@ -26,6 +26,7 @@ import type { ApprovedModelRoute, ModelRunLimits } from './model';
 import type { EffectBounds, GoogleEffectAccount } from './effects';
 import type { BrowserSitePolicy } from './browser';
 import { githubRuntime, type GithubRuntimeConfig } from './github/runtime';
+import { runtimeDisclosure, type RuntimeDisclosureConfig } from './disclosure/runtime';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
@@ -36,6 +37,7 @@ export interface S15RuntimeConfig {
   resourceBots: { resourceId: string; botIds: string[] }[];
   conversation: S15CompositionOptions['conversation']; models: ApprovedModelRoute[]; modelLimits: ModelRunLimits;
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
+  disclosure?: RuntimeDisclosureConfig;
   vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector };
   github: GithubRuntimeConfig | null;
@@ -49,6 +51,7 @@ export function readS15RuntimeConfig(path: string): S15RuntimeConfig {
   const value = JSON.parse(readFileSync(path, 'utf8')) as S15RuntimeConfig; canonical(value);
   if (value.contract !== 's15-runtime/v1' || !isAbsolute(value.directory) || !/^[A-Za-z0-9_-]{1,128}$/.test(value.installationId) || new URL(value.origin).origin !== value.origin || !Array.isArray(value.catalog) || !Array.isArray(value.models) || !value.models.length) throw new AppError('invalid_s15_config');
   if (!value.models.some(r => equal(r.selection, value.conversation.selection) && r.modelId === value.conversation.route.model && r.provider === value.conversation.route.provider)) throw new AppError('route_unavailable');
+  if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }
 
@@ -90,7 +93,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     };
     const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: config.vm.id, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => vault.read(ref) }) : null;
     const catalogs: S15CompositionOptions['catalogs'] = {
-      current: (kind, id) => (kind === 'lineage' ? git?.current(id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
+      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
         const resources = action?.resources ?? work.request.resources;
         return resources.every(resource => { const restriction = config.resourceBots.find(r => r.resourceId === resource.id); return !restriction || restriction.botIds.includes(work.request.bot.id); });
@@ -111,11 +114,17 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       classify(request) { const u = new URL(request.url); return config.browser?.publicOrigins.includes(u.origin) && request.method === 'GET' && request.navigation && !request.bodyBase64 && !u.search ? { kind: 'read', private: false } : null; } };
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
+      ...(config.disclosure ? { disclosure: runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? []) } : {}),
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
       model: { limits: config.modelLimits, registry: { list: () => config.models, current: selection => config.models.find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) } },
       ...(git ? { github: git.github, reads: [git.readHandler] } : {}),
-      vm: { id: config.vm.id, resource: config.vm.resource, managers, upperBound: () => config.vm.upperBound, destination: () => null },
+      web: { accounts: { list(actor) { service!.policy.owner.current(actor); return [
+        ...config.models.map(model => ({ id: model.account.id, kind: 'model' as const, label: model.provider, state: model.availability === 'available' ? 'configured' as const : 'unavailable' as const, uses: ['model' as const], signInHref: '/settings/provider' })),
+        ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
+        ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
+      ]; } } },
+      vm: { id: config.vm.id, resource: config.vm.resource, managers, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => { const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_connections WHERE json_extract(record_json,'$.account')=? AND json_extract(record_json,'$.revision')=?", binding.account, binding.resource.revision); if (!row) throw new AppError('personal_connection_unavailable'); const value = JSON.parse(row.record_json) as PersonalConnection; if (!value.scopes.includes(scope)) throw new AppError('personal_consent_required'); return ownerApp.personal.connection(tx, value.id, value.revision); });
@@ -126,7 +135,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const binding = personalServiceBinding(config.origin), auth = createS14Handler(ownerApp, config.origin, renderS14, createS14Product(ownerApp), createS14Auth(ownerApp));
     const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
       try { const incoming = binding.proxy ? personalProxyRequest(request, config.origin) : request, url = new URL(incoming.url);
-        return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || !!lookupS14Asset(url.pathname) ? auth(incoming) : service!.fetch(incoming);
+        return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || url.pathname.startsWith('/api/s14/sign-in/') || ['/api/s14/providers', '/api/s14/personal', '/settings/provider'].includes(url.pathname) || url.pathname.startsWith('/settings/google') || url.pathname.startsWith('/api/s14/personal/oauth/') || !!lookupS14Asset(url.pathname) ? auth(incoming) : service!.fetch(incoming);
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);

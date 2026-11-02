@@ -38,6 +38,7 @@ export class GithubService {
     runtime: "s15"; store: GithubStore; policy: S15PolicyService; repositories: readonly GithubRepository[];
     gateway: ProtectedGithubGateway; workspace: GithubWorkspace; responsibilities: ResponsibilityPort;
     limits: GithubLimits; now?: () => number;
+    disclosure?: { beforeRead(work: WorkAuthority, payload: import('../policy').JsonValue): void; recordRead(actor: WorkActor, repository: GithubRepository, snapshot: GithubSnapshot): void };
   }) {
     if (options.runtime !== "s15") fail("s15_opt_in_required");
     this.repos = structuredClone(options.repositories); this.repos.forEach(repository); this.now = options.now ?? Date.now;
@@ -90,17 +91,21 @@ export class GithubService {
     return row.state;
   }
   private async read(actor: WorkActor, repo: GithubRepository, pull: number | null, selectedIssue?: number): Promise<GithubSnapshot> {
-    this.guard(actor, repo);
+    const work = this.guard(actor, repo);
+    const payload = { kind: "github_snapshot", repository: repo.name, pull, selectedIssue: selectedIssue ?? null };
+    this.options.disclosure?.beforeRead(work, payload);
     const p = this.options.policy, admitted = p.work.reserveRead(actor, { requestId: `gr_${crypto.randomUUID().replaceAll("-", "")}`, resource: repo.resource, operation: "read", exactPayload: { kind: "github_snapshot", repository: repo.name, pull, selectedIssue: selectedIssue ?? null }, upperBound: this.options.limits.readUpperBound, fences: [] });
     if (admitted.state !== "allow") fail(admitted.code);
     let returned = false;
     try {
       p.work.guardRead(actor, admitted.claim.id);
+      this.options.disclosure?.beforeRead(this.guard(actor, repo), payload);
       const value = await this.options.gateway.snapshot(repo, pull, selectedIssue); returned = true;
       snapshot(value, repo, this.now(), this.options.limits.snapshotMaxAgeMs);
       if (pull !== null && value.pull?.number !== pull) fail("github_pull_changed");
       this.guard(actor, repo);
       p.control.settleRead(admitted.claim.id, { outcome: "succeeded", basis: "remote_verified", code: null, actual: unknownUsage(), transportSettled: true }, digest(canonical(value)));
+      this.options.disclosure?.recordRead(actor, repo, value);
       p.control.publishRead(actor, admitted.claim.id); return structuredClone(value);
     } catch (e) {
       p.control.settleRead(admitted.claim.id, { outcome: returned ? "failed" : "unknown", basis: returned ? "remote_verified" : "uncertain", code: "github_read_unavailable", actual: unknownUsage(), transportSettled: returned }, null); throw e;

@@ -16,6 +16,7 @@ export async function runConversation(input: {
   memorySection?: string | undefined;
   signal: AbortSignal; clock: HostClock; scripted: Model | undefined;
   interpretation?: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[]; context: readonly { role: "owner" | "assistant"; text: string }[] };
+  guardContext?: (request: unknown) => void;
   guard: () => void; reserveModel: () => { settle(): void }; correlated: (sessionId: string, branchId: string) => void;
 }): Promise<{ text: string; usage: HostRunUsage }> {
   if (hostCapabilities().releaseContract !== RELEASE_CONTRACT) throw new AppError("unsupported_schway_release");
@@ -36,8 +37,9 @@ export async function runConversation(input: {
     input.guard();
     const provider = authority.route.provider === "codex" ? "codex-subscription" : "xai";
     if (selected.id !== authority.route.model || selected.provider !== provider && !(input.scripted && selected.provider === authority.route.provider)) throw new AppError("selection_pinned", 403);
+    let privacyRefusal: unknown;
     const guarded: Model = { provider: selected.provider, id: selected.id, async *stream(request, options) {
-      input.guard(); const reservation = input.reserveModel();
+      input.guard(); try { input.guardContext?.(JSON.parse(JSON.stringify(request))); } catch (error) { privacyRefusal = error; throw error; } const reservation = input.reserveModel();
       try { yield* selected.stream(request, options); }
       finally { reservation.settle(); }
     } };
@@ -47,6 +49,7 @@ export async function runConversation(input: {
       input.guard();
       const result = await session.submit({ text: input.interpretation ? input.request.interpretationRequest.text : input.request.intent.instruction }, guarded, { signal: input.signal, clock: input.clock });
       input.guard();
+      if (privacyRefusal) throw privacyRefusal;
       if (result.outcome !== "completed") throw new AppError(result.outcome === "cancelled" ? "aborted" : "conversation_run_incomplete");
       const text = session.readResult(result.result).content.filter(part => part.type === "text").map(part => part.text).join("\n");
       content(text, authority.limits.outputBytes);

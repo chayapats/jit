@@ -12,7 +12,10 @@ import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffec
 import { openModelService, createModelProjectionHandler, type ModelOptions } from './model';
 import { openWorkService, createResponsibilityProjectionHandler, type WorkOptions } from './work';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
+import { openDisclosureService } from './disclosure';
+import type { ComposedDisclosure } from './disclosure/composition';
 import { TeamService, type DataScope, type TeamOptions } from './team';
+import { coordinateWorkingVm } from './team/vm';
 import { MemoryService, createConversationMemory } from './memory';
 import { createS15WebHandler, s15ConversationPort, type S15WebPorts } from './web';
 
@@ -29,13 +32,14 @@ export interface S15CompositionOptions {
   owner: S15OwnerAuthentication; catalogs: CatalogPort;
   conversation: Omit<Parameters<typeof createConversationPolicy>[1], 'ownerGeneration'>;
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
+  disclosure?: ComposedDisclosure;
   interpreter?: Model; clock?: HostClock; subscriptionModels?: SubscriptionModels;
   /** A proposal is displayed for authenticated installation; constructing a service never installs it. */
   proposedPolicy: PolicyInput | null;
   vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'] };
   browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine> };
   google?: GoogleEffectsOptions;
-  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; workspace(input: { policy: S15PolicyService; vm: WorkingVmService }): GithubWorkspace };
+  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
   adapters?: readonly ActionAdapter[];
   reads?: readonly ReadHandler[];
@@ -61,8 +65,10 @@ export function composeS15ReadHandlers(handlers: readonly ReadHandler[]): ReadHa
  */
 export async function composeS15(options: S15CompositionOptions) {
   if (options.runtime !== 's15' || !isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError('s15_opt_in_required');
+  if (!options.disclosure && (options.browser || options.google || options.github)) throw new AppError('classification_unknown');
+  if (options.disclosure && (options.browser && !options.disclosure.browserRoute || options.google && !options.disclosure.googleRoute || options.github && !options.disclosure.githubRoute)) throw new AppError('route_unknown');
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.browser ? ['browser.sqlite'] : []), ...(options.github ? ['github.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github ? ['github.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -79,30 +85,34 @@ export async function composeS15(options: S15CompositionOptions) {
   try {
     const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create); cleanup.push(() => store.close());
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
+    const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
+    if (disclosure) cleanup.push(() => disclosure.close());
     const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (id !== options.vm.id) throw new AppError('outside_scope'); return options.vm.resource; },
-      attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination });
-    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create }, profilePath: join(root, 'profiles') }, options.browser.factory) : undefined;
+      attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination, ...(disclosure && options.disclosure?.acquisitionRoute ? { disclosure: disclosure.acquisition(options.disclosure.acquisitionRoute) } : {}) });
+    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
     if (browser) cleanup.push(() => browser.close());
-    const google = options.google ? registerGoogleEffects(options.google) : undefined;
+    const google = options.google ? registerGoogleEffects({ ...options.google, ...(disclosure && options.disclosure?.googleRoute ? { disclosure: { protectAdapter: adapter => disclosure.protectAdapter(adapter, options.disclosure!.googleRoute!), beforeRead: (work, payload) => disclosure.guardRead(work, options.disclosure!.googleRoute!, payload), recordRead: actor => { const work = policy.work.guard(actor); for (const source of options.disclosure!.workSources(work)) disclosure.read(actor, source); } } } : {}) }) : undefined;
     const githubStore = options.github ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create) : undefined;
     if (githubStore) cleanup.push(() => githubStore.close());
     let policy!: S15PolicyService;
     let team!: TeamService;
-    const currentCatalogs: CatalogPort = { current: (kind, id) => (kind === 'resource' ? team?.currentResource(id) : null) ?? options.catalogs.current(kind, id),
+    const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => (kind === 'resource' ? team?.currentResource(id) : null) ?? options.catalogs.current(kind, id),
       allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
-    const githubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
+    const baseGithubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
+    const githubAdapter = baseGithubAdapter && disclosure && options.disclosure?.githubRoute ? disclosure.protectAdapter(baseGithubAdapter, options.disclosure.githubRoute) : baseGithubAdapter;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
-      ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(currentCatalogs),
-      adapters: [vmIntegration.adapter, ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? [])],
+      ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
+      adapters: [vmIntegration.adapter, ...(disclosure ? [disclosure.adapter] : []), ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? []).map(adapter => disclosure && options.disclosure?.adapterRoutes?.[adapter.id] ? disclosure.protectAdapter(adapter, options.disclosure.adapterRoutes[adapter.id]!) : adapter)],
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
-    cleanup.push(() => policy.control.close()); browser?.attach(policy); google?.attach(policy);
+    cleanup.push(() => policy.control.close()); disclosure?.attach(policy); browser?.attach(policy); google?.attach(policy);
     team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
-    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers: options.vm.managers, requireOwner,
+    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers: options.vm.managers, requireOwner, ...(disclosure ? { disclosure } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
+    const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id);
     const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers: options.vm.managers,
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     const authentication = { authenticate(token: string) { const auth = options.owner.authenticate(token); return { actor: policy.owner.authenticate(auth.proof), csrf: auth.csrf }; }, verifyCsrf: options.owner.verifyCsrf };
@@ -127,13 +137,25 @@ export async function composeS15(options: S15CompositionOptions) {
         const current = policy.control.policyForWork(workId), used = policy.control.reservations(workId).reduce((n, row) => n + row.upperBound.calls, 0);
         return current.budget ? Math.max(0, current.budget.ceiling.calls - policy.control.usage().charged.calls) : options.subscriptionModels ? Math.max(0, options.subscriptionModels.perWork.calls - used) : null;
       }, ...(options.clock ? { now: options.clock.now } : {}) } satisfies WorkOptions); cleanup.push(() => work.close());
-    const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model,
+    const modelDisclosure = disclosure && options.disclosure ? disclosure.model(options.disclosure.modelRoute) : undefined;
+    const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
-    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, workspace: options.github.workspace({ policy, vm }), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
-    const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(vm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
+    const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
+    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, workspace: options.github.workspace({ policy, vm: workingVm, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
       ...(options.github && github ? options.github.repositories.map(r => ({ resourceId: r.resource.id, port: createGithubConversationTools(github, r.resource.id) })) : []), ...(options.tools ?? [])];
     conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+      ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown) {
+        const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
+        const standing = policy.control.policyForWork(current.authority.id);
+        // Privacy check conservatively covers all standing resources because isolated owner/assistant
+        // history can contain derived results. This projection is never admitted or used for tools.
+        const privacy = { ...current.authority, request: { ...current.authority.request, resources: standing.resources } };
+        privacy.request.fences = [...(privacy.request.fences ?? []), ...options.disclosure!.workSources(privacy).map(ref => ({ kind: 'lineage' as const, ref }))];
+        modelDisclosure.guard(privacy, candidate, payload);
+      } } : {}),
       tools: { async open(current, input) {
+        if (disclosure && options.disclosure) for (const source of options.disclosure.workSources(current.authority)) disclosure.read(current.actor, source);
         const context = team.bind(current.actor);
         const scopedGuard = () => { input.guard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id); };
         scopedGuard();
@@ -145,7 +167,9 @@ export async function composeS15(options: S15CompositionOptions) {
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
       async runWork(input) {
-        input.guard(); activeGuards.set(input.work.authority.id, input.guard);
+        input.guard();
+        if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
+        activeGuards.set(input.work.authority.id, input.guard);
         try { const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction,
           ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal);
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
@@ -165,7 +189,7 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, team, memory, vm, vmStore, enrollment, models, work, github, browser, authentication,
+    return { policy, conversation, team, memory, disclosure, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
