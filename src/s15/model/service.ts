@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { createHost, type HostClock, type Model, type ModelUsage, type ThinkingLevel } from 'schway/host';
+import { createHost, type HostClock, type Model, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
 import { add, canonical, digest, equal, exact, fail, id, nat, ref, selection, string, unknownUsage, vector, zero } from '../policy/validation';
@@ -9,6 +9,12 @@ import type { ApprovedModelRoute, ModelBudgetView, ModelOptions, ModelPins, Mode
 
 const clone = <T>(value: T): T => JSON.parse(canonical(value)) as T;
 const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+function toolSchema(tool: ToolDefinition): Record<string, unknown> {
+  // Public VM core schemas carry TypeBox symbols; only their JSON schema is model input.
+  const schema = JSON.parse(JSON.stringify(tool.inputSchema)) as Record<string, unknown>;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) fail('invalid_shape');
+  canonical(schema); return schema;
+}
 function route(value: ApprovedModelRoute): void {
   canonical(value); exact(value, ['selection', 'provider', 'modelId', 'account', 'billing', 'recipient', 'charge', 'availability', 'efforts', 'effortEvidence', 'upperBound', 'rank']);
   selection(value.selection); string(value.modelId, 128); if (!value.modelId) fail('route_unavailable'); [value.account, value.billing, value.recipient].forEach(ref);
@@ -58,7 +64,7 @@ export function openModelService(options: ModelOptions): ModelService {
     return journal.tx(() => {
       const work = options.policy.work.guard(actor); options.guardWork?.(work.id);
       if (input.sources.some(source => !work.request.fences?.some(fence => fence.kind === 'lineage' && equal(fence.ref, source.ref)))) fail('lineage_withdrawn');
-      const stepKey = key(work.id, input.stepId), inputHash = digest('s15.model.input.v1', { text: input.text, difficulty: input.difficulty, ownerDecisions: input.ownerDecisions, sources: input.sources, tools: (input.tools ?? []).map(tool => ({ name: tool.name, inputSchema: tool.inputSchema })) });
+      const stepKey = key(work.id, input.stepId), inputHash = digest('s15.model.input.v1', { text: input.text, difficulty: input.difficulty, ownerDecisions: input.ownerDecisions, sources: input.sources, tools: (input.tools ?? []).map(tool => ({ name: tool.name, inputSchema: toolSchema(tool) })) });
       const previous = journal.all<ModelSelectionRecord>().find(row => row.id === stepKey);
       if (previous) { if (previous.inputHash !== inputHash) fail('request_id_conflict'); fail(previous.state === 'reconcile_only' ? 'reconciliation_required' : 'already_claimed'); }
       if (journal.all<ModelSelectionRecord>().some(row => row.workId === work.id && ['selected', 'running', 'reconcile_only'].includes(row.state))) fail('reconciliation_required');
@@ -97,7 +103,7 @@ export function openModelService(options: ModelOptions): ModelService {
             { name: 'current-owner-decisions', content: JSON.stringify(input.ownerDecisions) },
             { name: 'labelled-sources', content: JSON.stringify(input.sources) },
             { name: 'admitted-responsibility', content: JSON.stringify(options.policy.work.guard(actor).request) }], sources: [] },
-          tools: { policy: 'exact', definitions: (input.tools ?? []).map(tool => ({ ...tool, async execute(value, context) {
+          tools: { policy: 'exact', definitions: (input.tools ?? []).map(tool => ({ ...tool, inputSchema: toolSchema(tool), async execute(value, context) {
             guard(actor, record);
             const output = await tool.execute(value, { ...context, onOutput: chunk => { guard(actor, record); context.onOutput?.(chunk); } });
             guard(actor, record); return output;

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import type { Model, ModelRequest, ModelUsage, ToolDefinition } from 'schway/host';
+import { coreToolDefinitions, type ExecutionBackend, type Model, type ModelRequest, type ModelUsage, type ToolDefinition } from 'schway/host';
 import { openModelService, type ModelService, type ModelStepInput } from '../src/s15/model';
 import { summarizeReservations } from '../src/s15/model/usage';
 import { modelWorkFixture, difficult, ordinary, ref, type modelBound } from './fixtures/s15-model-work';
@@ -30,6 +30,17 @@ test('ordinary and difficult steps select approved models and record exact ratio
 test('actual approved provider model names preserve punctuation independently of catalog ref IDs', async () => {
   const { f, source, service } = setup(); f.routes[0]!.modelId = 'fixture.model.v1';
   expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'completed', route: { modelId: 'fixture.model.v1', selection: ordinary } });
+});
+
+test('public VM core-tool schemas retain JSON semantics without exposing TypeBox symbols to the model', async () => {
+  const forbidden = async (): Promise<never> => { throw Error('fixture_backend_must_not_run'); };
+  const backend: ExecutionBackend = { workspaceRoot: '/workspace', temporaryDirectory: '/tmp', realpath: forbidden, stat: forbidden, async *readFile() { throw Error('fixture_read_must_not_run'); }, observeFile: forbidden, writeFileAtomically: forbidden, writePrivateFile: forbidden, list: forbidden, async *glob() { throw Error('fixture_glob_must_not_run'); }, search: forbidden, spawn: forbidden };
+  const tools = coreToolDefinitions(backend).filter(tool => tool.name === 'read');
+  expect(Object.getOwnPropertySymbols(tools[0]!.inputSchema).length).toBeGreaterThan(0);
+  const { source, service, requests } = setup();
+  expect(await service.runStep(source.actor!, { ...step(), tools })).toMatchObject({ state: 'completed' });
+  expect(requests[0]!.tools?.[0]!.inputSchema).toEqual(JSON.parse(JSON.stringify(tools[0]!.inputSchema)));
+  expect(Object.getOwnPropertySymbols(requests[0]!.tools![0]!.inputSchema)).toHaveLength(0);
 });
 
 test('explicit owner model/effort pins are honored, and unavailable pinned authors never fall back', async () => {
