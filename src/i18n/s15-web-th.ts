@@ -385,7 +385,7 @@ export const s15WebTh = {
   "s15.code.not_found": "ไม่พบหน้านี้",
   "s15.code.host_rejected": "ที่อยู่เว็บนี้ไม่ใช่ที่อยู่ของจิต",
   "s15.code.origin_rejected": "คำขอนี้ไม่ได้มาจากหน้าของจิต",
-  "s15.code.csrf_invalid": "หน้านี้เก่าแล้ว โหลดหน้าใหม่แล้วลองอีกครั้ง",
+  "s15.code.csrf_rejected": "หน้านี้เก่าแล้ว โหลดหน้าใหม่แล้วลองอีกครั้ง",
   "s15.code.authentication_required": "เข้าสู่ระบบอีกครั้ง",
   "s15.code.conversation_unavailable": "ตอนนี้จิตรับข้อความไม่ได้ ข้อความยังอยู่ในช่องพิมพ์",
   "s15.code.outside_scope": "คำขอนี้อยู่นอกสิ่งที่กฎประจำอนุญาต",

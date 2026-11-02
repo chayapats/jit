@@ -49,7 +49,7 @@ export function webFixture(extra: (ports: S15WebPorts<WebActor>) => Partial<S15W
     if (signal?.aborted) reject(new DOMException("Aborted", "AbortError")); else signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
   }) } });
   const base: S15WebPorts<WebActor> = {
-    authentication: { authenticate(token) { if (token !== "owner-token" || expired) throw new AppError("authentication_required", 401); return { actor, csrf: "csrf-fixture" }; }, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError("csrf_invalid", 403); } },
+    authentication: { authenticate(token) { if (token !== "owner-token" || expired) throw new AppError("authentication_required", 401); return { actor, csrf: "csrf-fixture" }; }, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError("csrf_rejected", 403); } },
     conversation: s15ConversationPort(app),
   };
   const ports = { ...base, ...extra(base) };

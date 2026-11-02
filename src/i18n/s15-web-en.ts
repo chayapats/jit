@@ -387,7 +387,7 @@ export const s15WebEn: Record<keyof typeof s15WebTh, string> = {
   "s15.code.not_found": "This page doesn’t exist.",
   "s15.code.host_rejected": "This web address isn’t Jit’s address.",
   "s15.code.origin_rejected": "This request didn’t come from Jit’s own page.",
-  "s15.code.csrf_invalid": "This page is out of date. Reload it and try again.",
+  "s15.code.csrf_rejected": "This page is out of date. Reload it and try again.",
   "s15.code.authentication_required": "Sign in again.",
   "s15.code.conversation_unavailable": "Jit can’t take messages right now. Your text is still in the box.",
   "s15.code.outside_scope": "This request is outside what the standing rules allow.",

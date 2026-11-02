@@ -178,4 +178,3 @@ export function threadHtml(page: S15ChatPage): string {
   const empty = rows.length ? "" : `<section class="s-empty-thread"><p class="s-who">${tr("s14.jit")}</p><h2>${tr("s15.chat.empty")}</h2><p class="s-note">${tr("s15.chat.empty_note")}</p></section>`;
   return `<div class="s-col"><div class="s-thread s15-thread" id="s15-thread">${empty}${rows.map(row => rowHtml(row, page)).join("")}<div id="latest" tabindex="-1"></div>${duplicate}</div></div>`;
 }
-
