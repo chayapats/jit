@@ -34,7 +34,7 @@ Babysitting binds only the selected PR to WORK15's original CHAT responsibility.
 
 Wait/event keys are opaque `pr_<hash>` IDs; CI, review and scheduled recovery use the corresponding WORK wake kind. Normal advancement of the already-approved target is a scoped rebase/retest attempt under the same responsibility. An externally changed head or issue scope holds. Read-only reconciliation of an unknown action binds its exact original attempt and supplies `basis:'remote_verified'` only from actual POLICY-verified GitHub read-back. A fully settled verified merge may complete the responsibility without reviving the old handle or publication capability; missing/uncertain/owner-statement evidence stays reconcile-only.
 
-The owner JSON handler mounts explicitly under `/s15/github/work/:workId/` with existing authenticated session/CSRF and exact Host/Origin checks. It supports discovery, selection/implementation, exact action preparation/dispatch, personal capture/install/revoke and babysitting projections. Protected composition resolves each work ID through authenticated CHAT. Projection reads do not start work. UI copy comes from the existing Claude-authored F3/F5 handoff; no visual UI is implemented here.
+The owner JSON handler mounts explicitly under `/s15/github/work/:workId/` with existing authenticated session/CSRF and exact Host/Origin checks. It supports discovery, selection/implementation, exact action preparation/dispatch, personal capture/install/revoke and babysitting projections. Protected composition resolves each work ID through authenticated CHAT. Projection reads do not start work. UI copy follows the existing F3/F5 experience handoff; no visual UI is implemented here.
 
 ## Evidence and pending activation
 
