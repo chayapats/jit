@@ -3,6 +3,12 @@ import { s14CodingEn } from "./s14-coding-en";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "s15.policy.proposal_incomplete": "Complete the finite rule proposal before installing it.",
+  "s15.policy.interpretation_policy_required": "Configure the protected inference-only interpretation purpose first.",
+  "s15.policy.interpretation_call_claimed": "The one interpretation call is already claimed or exceeds its scope.",
+  "s15.policy.lineage_withdrawn": "The source was withdrawn. Its exact payload is unavailable.",
+  "s15.policy.payload_withdrawn": "Current privacy rules prevent access to this payload.",
+  "s15.policy.personal_profile_separate": "Configure personal GitHub exceptions separately after first run.",
   "s15.policy.allow": "Allowed within current policy.",
   "s15.policy.hold": "Waiting for an exact owner decision.",
   "s15.policy.deny": "This action cannot execute.",

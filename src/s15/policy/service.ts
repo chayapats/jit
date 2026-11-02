@@ -3,7 +3,7 @@ import { PolicyLedger } from './ledger';
 import * as v from './validation';
 import type * as T from './types';
 
-type Claim = { action: T.ActionRef; reservationId: string; decision: Extract<T.Decision, { state: 'allow' }>; createdAt: number };
+type Claim = { action: T.ActionRef; reservationId: string; decision: Extract<T.Decision, { state: 'allow' }>; createdAt: number; recurring: { rule: T.Rule; deviations: string[] }[] };
 const uid = () => randomUUID().replaceAll('-', '');
 const clone = <T>(x: T): T => JSON.parse(v.canonical(x)) as T;
 const actionRef = (a: T.PreparedAction): T.ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
@@ -24,6 +24,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   const adapters = new Map(options.adapters.map(a => { v.id(a.id); v.nat(a.version, true); return [a.id, a] as const; }));
   if (adapters.size !== options.adapters.length) { ledger.db.close(); v.fail('adapter_unproven'); }
   let closed = false;
+  const activeDispatches = new Set<string>();
   const tx = <R>(fn: () => R): R => { if (closed) v.fail('service_closed'); return ledger.tx(fn); };
   const time = (): number => { const t = now(); v.nat(t); return t; };
   const getPolicy = (): T.StandingPolicy | null => ledger.meta('policy');
@@ -74,14 +75,14 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     const result = operation();
     ledger.run('INSERT INTO receipts VALUES (?,?,?)', requestId, hash, v.canonical(result)); return result;
   }
-  function loadAction(ref: T.ActionRef): T.PreparedAction {
+  function loadAction(ref: T.ActionRef, historical = false): T.PreparedAction {
     v.exact(ref, ['id', 'revision', 'actionHash']); v.id(ref.id); v.nat(ref.revision, true); v.hash(ref.actionHash);
     const a = parse<T.PreparedAction>(ledger.get('SELECT json FROM actions WHERE id=? AND revision=?', ref.id, ref.revision));
     if (!a) v.fail('action_not_found');
     const { actionHash, ...body } = a;
     if (actionHash !== ref.actionHash || v.digest('s15.action.v1', body) !== actionHash || v.digest('s15.content.v1', a.payload) !== a.contentHash || v.digest('s15.recipients.v1', a.recipients) !== a.recipientHash || (a.transaction ? v.digest('s15.transaction.v1', a.transaction) : null) !== a.transactionHash) v.fail('hash_mismatch');
     const slot = ledger.get<{ revision: number }>('SELECT revision FROM slots WHERE effect_key=?', a.effectKey);
-    if (!slot || slot.revision !== a.revision) v.fail('stale_action'); return a;
+    if (!slot || (!historical && slot.revision !== a.revision)) v.fail('stale_action'); return a;
   }
   function claimed(a: T.PreparedAction): boolean {
     const key = paymentKey(a);
@@ -89,7 +90,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   function checkAction(w: T.WorkAuthority, a: T.PreparedAction): void {
     if (w.id !== a.workId || a.policyRevision !== w.policyRevision || a.policyHash !== w.policyHash || a.ownerGeneration !== w.ownerGeneration) v.fail('stale_authority');
-    if (w.request.intent !== 'execute') v.fail('outside_scope');
+    if (w.request.intent !== 'execute' || w.request.access === 'read') v.fail('outside_scope');
+    if (w.request.access === 'reversible_write' && (a.impact !== 'reversible' || a.classes.some(c => !['ordinary_edit', 'guest_local_admin', 'guest_system_admin'].includes(c)))) v.fail('outside_scope');
     if (time() >= a.expiresAt || (a.transaction && time() >= a.transaction.quoteExpiresAt)) v.fail('expired');
     const adapter = adapters.get(a.adapter); if (!adapter || adapter.version !== a.adapterVersion) v.fail('adapter_unproven');
     if (a.resources.some(x => !v.contains(w.request.resources, x)) || (a.recipients.some(x => !v.contains(w.request.recipients, x)) && !a.classes.some(c => c === 'new_egress' || c === 'disclosure'))) v.fail('outside_scope');
@@ -198,17 +200,97 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     const p: T.StandingPolicy = { ...clone(input), contract: 's15-standing-policy/v1', revision: expectedRevision + 1, ownerGeneration: options.ownerGeneration() };
     v.nat(p.revision, true); if (p.expiresAt <= time()) v.fail('expired');
     for (const r of p.rules) { if (!r.purposes.every(x => v.contains(p.purposes, x)) || !r.bots.every(x => v.contains(p.bots, x)) || !r.resources.every(x => v.contains(p.resources, x)) || !r.recipients.every(x => v.contains(p.recipients, x)) || !r.selections.every(x => v.contains(p.selections, x))) v.fail('outside_scope'); }
-    ledger.put('policy', p); ledger.put('policyRevoked', false); return p;
+    ledger.run('INSERT INTO policies VALUES (?,?)', p.revision, v.canonical(p)); ledger.put('policy', p); ledger.put('policyRevoked', false); return p;
+  }
+  function readableAction(a: T.PreparedAction): void {
+    const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId));
+    if (!w || !options.catalogs.allows(clone(w), clone(a))) v.fail('payload_withdrawn');
+    for (const f of a.fences.filter(f => f.kind === 'lineage')) {
+      const current = options.catalogs.current(f.kind, f.ref.id); if (!current?.active || !v.equal(current.ref, f.ref)) v.fail('lineage_withdrawn');
+    }
+  }
+  function recurringProjection(a: T.PreparedAction, w: T.WorkAuthority, rules: T.Rule[]): { rule: T.Rule; deviations: string[] }[] {
+    return rules.filter(r => r.mode === 'recurring_payment' && a.transaction && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && v.contains(r.purposes, w.request.purpose)).map(rule => {
+      const t = a.transaction!, r = rule.recurrence!, deviations: string[] = [];
+      if (!v.equal(t.payee, r.payee)) deviations.push('payee'); if (!v.equal(t.account, r.account)) deviations.push('account'); if (t.currency !== r.currency || t.minorUnit !== r.minorUnit) deviations.push('currency'); if (BigInt(t.amountMinor) > BigInt(r.amountCeilingMinor)) deviations.push('amount_ceiling');
+      const used = ledger.get<{ count: number; amount_minor: string; last_at: number }>('SELECT * FROM recurring_usage WHERE id=?', rule.id);
+      if (time() < r.startsAt || (used && time() - used.last_at < r.minIntervalMs)) deviations.push('frequency'); if (used && used.count >= r.maxPayments) deviations.push('count'); if (BigInt(used?.amount_minor ?? '0') + BigInt(t.amountMinor) > BigInt(r.totalCeilingMinor)) deviations.push('total'); if (time() >= rule.expiresAt) deviations.push('rule_expired');
+      return { rule: clone(rule), deviations };
+    });
+  }
+  function slip(ref: T.ActionRef): T.ActionSlip {
+    const a = loadAction(ref, true); readableAction(a);
+    const currentSlot = ledger.get<{ revision: number }>('SELECT revision FROM slots WHERE effect_key=?', a.effectKey)!;
+    const currentAction = parse<T.PreparedAction>(ledger.get('SELECT json FROM actions WHERE id=? AND revision=?', a.id, currentSlot.revision))!;
+    const changed = currentSlot.revision !== a.revision;
+    const observed = changed ? null : observation(a);
+    let decision: T.Decision;
+    try { decision = evaluate(currentWork(a.workId), a); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; decision = { state: 'deny', code: error.code }; }
+    const reason = decision.state === 'allow' ? null : decision.code;
+    const state: T.ActionSlip['state'] = changed ? 'changed' : activeDispatches.has(a.id) ? 'executing' : observed ? observed.outcome === 'not_dispatched' ? observed.code === 'expired' ? 'expired' : 'failed' : observed.outcome : decision.state === 'unsupported' ? 'unsupported' : reason === 'expired' ? 'expired' : reason === 'stale_authority' ? 'stale_rules' : decision.state === 'deny' ? 'denied' : decision.state === 'hold' ? 'pending' : 'approved';
+    const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId))!;
+    const originalPolicy = parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', a.policyRevision));
+    const originalClaim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id));
+    const recurring = !changed && originalClaim ? originalClaim.recurring : recurringProjection(a, w, originalPolicy?.rules ?? []);
+    const statements = ledger.all<{ json: string }>("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')='owner_statement' ORDER BY seq", a.id).map(r => ({ outcome: (JSON.parse(r.json) as T.Observation).code as 'occurred' | 'did_not_occur' }));
+    return { contract: 's15-action-slip/v1', action: clone(a), payloadBytesBase64: Buffer.from(v.canonical(a.payload)).toString('base64'), state, expiresAt: a.expiresAt, reasonCode: changed ? 'stale_action' : activeDispatches.has(a.id) ? null : observed ? observed.code : reason, canApprove: state === 'pending' && !['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'owner_direction_required'].includes(reason ?? ''), replacement: changed ? actionRef(currentAction) : null, observation: observed, recurring, statements };
+  }
+  function proposal(input: T.PolicyInput | null): T.PolicyProposal {
+    if (input !== null) v.policy(input);
+    const current = getPolicy();
+    if (!current && input?.rules.some(r => r.mode.startsWith('personal_github'))) v.fail('personal_profile_separate');
+    const budget = input?.budget;
+    const body: Omit<T.PolicyProposal, 'proposalHash'> = {
+      contract: 's15-policy-proposal/v1', ownerGeneration: options.ownerGeneration(), expectedRevision: current?.revision ?? 0, policy: clone(input),
+      rows: [
+        { id: 'ordinary', text: 'Requested research, reversible edits and work inside the expendable VM use current purpose, resource and model policy.', mode: 'ordinary' },
+        { id: 'held', text: 'Communications, publication, payments, production, new private-data recipients and major changes require exact approval unless an eligible standing rule applies.', mode: 'approval_required' },
+        { id: 'github_personal', text: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'Personal GitHub exceptions are explicitly configured in the exact rules below.' : 'Personal GitHub publication and merge exceptions are configured separately and start disabled.', mode: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'ordinary' : 'off' },
+      ],
+      fields: [
+        ...(['currency', 'startsAt', 'expiresAt'] as const).map(key => ({ path: 'budget.' + key, value: budget?.[key] ?? null, status: budget ? 'provided' as const : 'owner_required' as const })),
+        ...(['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs', 'spendMinor'] as const).map(key => ({ path: 'budget.ceiling.' + key, value: budget?.ceiling[key] ?? null, status: budget ? 'provided' as const : key === 'spendMinor' ? 'owner_required' as const : 'profile_required' as const })),
+        { path: 'budget.concurrency', value: budget?.concurrency ?? null, status: budget ? 'provided' : 'profile_required' },
+      ],
+      installable: !!input && !!budget && time() < input.expiresAt && time() < budget.expiresAt && !input.rules.some(r => r.mode === 'recurring_payment' && !current?.rules.some(x => v.equal(x, r))),
+    };
+    return { ...body, proposalHash: v.digest('s15.policy.proposal.v1', body) };
   }
   const owner: T.OwnerPort = {
     authenticate(proof) { return tx(() => { const principal = options.verifyOwner(proof); if (!principal || principal.generation !== options.ownerGeneration() || principal.expiresAt <= time()) v.fail('authentication_required'); v.id(principal.id); v.nat(principal.generation, true); const actor = Object.freeze({}) as T.OwnerActor; owners.set(actor, { proof, id: principal.id, generation: principal.generation }); ownerAuth(actor); return actor; }); },
     current(actor) { return tx(() => { ownerAuth(actor); return clone(getPolicy()); }); },
+    prepareInterpretation(actor, input) { return tx(() => {
+      v.exact(input, ['requestId', 'selection', 'expiresAt']); v.id(input.requestId); v.selection(input.selection); v.nat(input.expiresAt, true);
+      return receipt(actor, input.requestId, { kind: 'interpretation.prepare', input }, () => {
+        const p = policyCurrent(); if (!p.interpretationPurpose) v.fail('interpretation_policy_required');
+        const request: T.WorkRequest = { requestId: input.requestId, intent: 'inspect', access: 'read', purpose: clone(p.interpretationPurpose), bot: clone(p.bots[0] ?? v.fail('outside_scope')), resources: [], recipients: [], selection: clone(input.selection), selectionPin: clone(input.selection), expiresAt: input.expiresAt };
+        checkRequest(p, request); if (time() >= input.expiresAt || input.expiresAt > p.expiresAt || (p.budget && input.expiresAt > p.budget.expiresAt)) v.fail('expired');
+        const authority: T.WorkAuthority = { id: uid(), mode: 'interpretation', ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request, createdAt: time(), expiresAt: input.expiresAt };
+        if (!options.catalogs.allows(clone(authority), null)) v.fail('outside_scope');
+        ledger.run('INSERT INTO works(id,json) VALUES (?,?)', authority.id, v.canonical(authority)); return { authority, purposes: p.purposes.filter(r => !v.equal(r, p.interpretationPurpose)) };
+      });
+    }); },
+    proposePolicy(actor, input) { return tx(() => { ownerAuth(actor); const p = proposal(input); if (p.installable) ledger.run('INSERT OR IGNORE INTO proposals VALUES (?,?)', p.proposalHash, v.canonical(p)); return clone(p); }); },
+    installProposal(actor, requestId, proposalHash) { return tx(() => { v.hash(proposalHash); return receipt(actor, requestId, { kind: 'policy.install', proposalHash }, () => {
+      const p = parse<T.PolicyProposal>(ledger.get('SELECT json FROM proposals WHERE hash=?', proposalHash)); if (!p || !p.installable || !p.policy) v.fail('proposal_incomplete');
+      const { proposalHash: stored, ...body } = p; if (stored !== proposalHash || v.digest('s15.policy.proposal.v1', body) !== stored) v.fail('hash_mismatch');
+      if (p.ownerGeneration !== options.ownerGeneration()) v.fail('stale_authority'); return savePolicy(p.policy, p.expectedRevision);
+    }); }); },
+    actionSlip(actor, action) { return tx(() => { ownerAuth(actor); return slip(action); }); },
+    decidePending(actor, input) { tx(() => {
+      ownerAuth(actor); v.exact(input, ['requestId', 'workIds', 'seen', 'decision', 'expiresAt']); v.id(input.requestId); v.nat(input.expiresAt, true);
+      if (ledger.get('SELECT id FROM receipts WHERE id=?', input.requestId)) { owner.decide(actor, { requestId: input.requestId, action: input.seen, decision: input.decision, expiresAt: input.expiresAt }); return; }
+      if (!Array.isArray(input.workIds) || input.workIds.length > 64 || !input.workIds.length) v.fail('approval_reference_required'); input.workIds.forEach(v.id); if (new Set(input.workIds).size !== input.workIds.length) v.fail('invalid_shape');
+      const pending = ledger.all<{ json: string }>('SELECT a.json FROM actions a JOIN slots s ON a.id=s.action_id AND a.revision=s.revision').map(r => JSON.parse(r.json) as T.PreparedAction).filter(a => input.workIds.includes(a.workId)).map(a => slip(actionRef(a))).filter(s => s.state === 'pending' && s.canApprove);
+      if (pending.length !== 1) v.fail('approval_reference_required'); const only = pending[0]!; if (!v.equal(actionRef(only.action), input.seen)) v.fail('stale_action');
+      owner.decide(actor, { requestId: input.requestId, action: input.seen, decision: input.decision, expiresAt: input.expiresAt });
+    }); },
     install(actor, requestId, expectedRevision, input) { return tx(() => { v.policy(input); return receipt(actor, requestId, { kind: 'policy.install', expectedRevision, input }, () => savePolicy(input, expectedRevision)); }); },
     admit(actor, request) { return tx(() => { v.workRequest(request); return receipt(actor, request.requestId, { kind: 'work.request', request }, () => {
-      const p = policyCurrent(); checkRequest(p, request);
+      const p = policyCurrent(); checkRequest(p, request); if (p.interpretationPurpose && v.equal(p.interpretationPurpose, request.purpose)) v.fail('outside_scope');
       if (time() >= request.expiresAt || request.expiresAt > p.expiresAt || (p.budget && request.expiresAt > p.budget.expiresAt)) v.fail('expired');
       if (request.intent === 'accept_obligation') return { work: null, receiptId: request.requestId };
-      const w: T.WorkAuthority = { id: uid(), ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
+      const w: T.WorkAuthority = { id: uid(), mode: 'work', ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
       if (!options.catalogs.allows(clone(w), null)) v.fail('outside_scope');
       ledger.run('INSERT INTO works(id,json) VALUES (?,?)', w.id, v.canonical(w)); return { work: w, receiptId: request.requestId };
     }); }); },
@@ -226,7 +308,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     revoke(actor, requestId, scope) { tx(() => { if (scope.kind === 'policy') v.exact(scope, ['kind']); else { v.exact(scope, ['kind', 'id']); if (scope.kind !== 'work') v.fail('invalid_shape'); v.id(scope.id); } receipt(actor, requestId, { kind: 'authority.revoke', scope }, () => {
       if (scope.kind === 'policy') ledger.put('policyRevoked', true); else { if (!ledger.get('SELECT id FROM works WHERE id=?', scope.id)) v.fail('authority_revoked'); ledger.run('UPDATE works SET revoked=1 WHERE id=?', scope.id); } return { recorded: true };
     }); }); },
-    inspect(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); return { action: clone(a), observation: observation(a) }; }); },
+    inspect(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); readableAction(a); return { action: clone(a), observation: observation(a) }; }); },
     async reconcile(actor, ref, requestId) {
       const start = tx(() => {
         ownerAuth(actor); const a = loadAction(ref); const claim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id)); if (!claim) v.fail('reconciliation_required');
@@ -251,7 +333,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   };
   const work: T.WorkPort = {
     guard(actor) { return tx(() => clone(workAuth(actor))); },
-    reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope'); const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection); ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r); }); },
+    reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (w.mode === 'interpretation' && (input.upperBound.calls !== 1 || input.upperBound.reads !== 0 || ledger.get("SELECT id FROM reservations WHERE json_extract(json,'$.workId')=?", w.id))) v.fail('interpretation_call_claimed'); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope'); const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection); ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r); }); },
     guardReservation(actor, reservationId) { return tx(() => {
       const w = workAuth(actor); v.id(reservationId); const r = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', reservationId));
       if (!r || r.workId !== w.id || r.transportSettled || !r.selection) v.fail('reservation_not_found');
@@ -284,11 +366,19 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       const { a, claim, adapter } = tx(() => {
         const w = workAuth(actor), a = loadAction(ref); const decision = evaluate(w, a); requireAllowed(decision);
         const reservation = reserve(w, 'effect_' + a.effectKey, a.upperBound!, { action: ref });
-        const claim: Claim = { action: actionRef(a), reservationId: reservation.id, decision, createdAt: time() };
+        const claim: Claim = { action: actionRef(a), reservationId: reservation.id, decision, createdAt: time(), recurring: recurringProjection(a, w, policyCurrent().rules) };
         ledger.run('INSERT INTO claims VALUES (?,?,?,?,?)', a.effectKey, a.id, paymentKey(a), reservation.id, v.canonical(claim));
-        for (const ruleId of decision.rules) { const rule = policyCurrent().rules.find(r => r.id === ruleId)!; if (rule.mode === 'recurring_payment') { const used = ledger.get<{ count: number; amount_minor: string }>('SELECT * FROM recurring_usage WHERE id=?', ruleId); ledger.run('INSERT INTO recurring_usage VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=excluded.count,amount_minor=excluded.amount_minor,last_at=excluded.last_at', ruleId, (used?.count ?? 0) + 1, (BigInt(used?.amount_minor ?? '0') + BigInt(a.transaction!.amountMinor)).toString(), time()); } }
+        // Exact one-time overrides still consume the related recurring cadence/total; they never create an extra automatic slot.
+        for (const { rule } of claim.recurring) {
+          const f = rule.recurrence!, t = a.transaction!;
+          if (!v.equal(f.payee, t.payee) || !v.equal(f.account, t.account) || f.currency !== t.currency || f.minorUnit !== t.minorUnit) continue;
+          const used = ledger.get<{ count: number; amount_minor: string }>('SELECT * FROM recurring_usage WHERE id=?', rule.id);
+          const count = (used?.count ?? 0) + 1; v.nat(count, true); const amount = (BigInt(used?.amount_minor ?? '0') + BigInt(t.amountMinor)).toString(); v.minor(amount);
+          ledger.run('INSERT INTO recurring_usage VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=excluded.count,amount_minor=excluded.amount_minor,last_at=excluded.last_at', rule.id, count, amount, time());
+        }
         return { a, claim, adapter: adapters.get(a.adapter)! };
       });
+      activeDispatches.add(a.id);
       let consumed = false, started = false, pending: Promise<T.AdapterResult> | null = null;
       const context: T.DispatchContext = Object.freeze({ commit(finalPayload: T.JsonValue, send: () => Promise<T.AdapterResult>): Promise<T.AdapterResult> {
         if (consumed) v.fail('already_claimed'); consumed = true; if (typeof send !== 'function') v.fail('adapter_unproven');
@@ -315,7 +405,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           return tx(() => observe(a, claim, safe));
         }
         result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false };
-      } finally { consumed = true; }
+      } finally { consumed = true; activeDispatches.delete(a.id); }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
       return tx(() => observe(a, claim, observed));
     },

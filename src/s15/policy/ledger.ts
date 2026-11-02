@@ -1,15 +1,18 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, openSync, readSync, closeSync, chmodSync } from 'node:fs';
+import { existsSync, lstatSync, openSync, readSync, closeSync, chmodSync } from 'node:fs';
 import { canonical, fail } from './validation';
+import { isAbsolute } from 'node:path';
 
 const applicationId = 0x4a503135; // Policy continuity only; not the future S15 application format.
 /** Protected current ledger, not a backup projection. Explicit creation refuses every existing/foreign file. */
 export class PolicyLedger {
   readonly db: Database;
   constructor(path: string, create: boolean, installationId: string) {
+    if (!isAbsolute(path)) fail('protected_ledger_path_required');
     if (create) { const fd = openSync(path, 'wx', 0o600); closeSync(fd); }
     else {
       if (!existsSync(path)) fail('continuity_unavailable');
+      const stat = lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) fail('unprotected_ledger');
       const fd = openSync(path, 'r'); const header = Buffer.alloc(100); let size: number;
       try { size = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
       if (size !== 100 || header.toString('ascii', 0, 16) !== 'SQLite format 3\0' || header.readUInt32BE(68) !== applicationId || header.readUInt32BE(60) !== 1) fail('continuity_unavailable');
@@ -21,6 +24,8 @@ export class PolicyLedger {
         this.db.transaction(() => {
           this.db.exec(`PRAGMA application_id=${applicationId}; PRAGMA user_version=1;
             CREATE TABLE meta (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+            CREATE TABLE policies (revision INTEGER PRIMARY KEY, json TEXT NOT NULL);
+            CREATE TABLE proposals (hash TEXT PRIMARY KEY, json TEXT NOT NULL);
             CREATE TABLE receipts (id TEXT PRIMARY KEY, hash TEXT NOT NULL, json TEXT NOT NULL);
             CREATE TABLE works (id TEXT PRIMARY KEY, json TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE actions (id TEXT NOT NULL, revision INTEGER NOT NULL, effect_key TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(id,revision));

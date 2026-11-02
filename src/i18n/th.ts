@@ -6,6 +6,12 @@
 import { s14CodingTh } from "./s14-coding-th";
 
 export const th = {
+  "s15.policy.proposal_incomplete": "กรอกค่าที่มีขอบเขตใน rule proposal ให้ครบก่อนติดตั้ง",
+  "s15.policy.interpretation_policy_required": "กำหนด purpose สำหรับการตีความแบบ inference-only ใน protected policy ก่อน",
+  "s15.policy.interpretation_call_claimed": "interpretation call ถูก claim แล้วหรือเกินขอบเขตที่อนุญาต",
+  "s15.policy.lineage_withdrawn": "แหล่งข้อมูลถูกถอนแล้ว ไม่สามารถอ่าน exact payload ได้",
+  "s15.policy.payload_withdrawn": "privacy rules ปัจจุบันไม่อนุญาตให้อ่าน payload นี้",
+  "s15.policy.personal_profile_separate": "ตั้งค่า personal GitHub exceptions แยกต่างหากหลัง first run",
   "s15.policy.allow": "อนุญาตภายใต้ policy ปัจจุบัน",
   "s15.policy.hold": "รอการตัดสินใจจากเจ้าของสำหรับ action นี้",
   "s15.policy.deny": "ไม่สามารถ execute action นี้ได้",

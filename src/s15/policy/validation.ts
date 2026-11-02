@@ -68,11 +68,13 @@ export function rule(v: unknown): asserts v is Rule {
   if (v.mode === 'personal_github_publish' || v.mode === 'personal_github_merge') { exact(v.github, ['repository', 'target']); ref(v.github.repository); string(v.github.target); if (!v.github.target || !contains(v.resources as Ref[], v.github.repository)) fail('invalid_rule'); } else if (v.github !== undefined && v.github !== null) fail('invalid_rule');
 }
 export function policy(v: unknown): asserts v is PolicyInput {
-  exact(v, ['purposes', 'bots', 'resources', 'recipients', 'selections', 'budget', 'rules', 'expiresAt']); refs(v.purposes); refs(v.bots); refs(v.resources); refs(v.recipients); array(v.selections, selection, true); array(v.rules, rule); if (new Set((v.rules as Rule[]).map(x => x.id)).size !== (v.rules as Rule[]).length) fail('invalid_rule'); nat(v.expiresAt, true);
+  exact(v, ['purposes', 'bots', 'resources', 'recipients', 'selections', 'budget', 'rules', 'expiresAt'], ['interpretationPurpose']); refs(v.purposes); refs(v.bots); refs(v.resources); refs(v.recipients); array(v.selections, selection, true); array(v.rules, rule); if (new Set((v.rules as Rule[]).map(x => x.id)).size !== (v.rules as Rule[]).length) fail('invalid_rule'); nat(v.expiresAt, true);
+  if (v.interpretationPurpose !== undefined && v.interpretationPurpose !== null) { ref(v.interpretationPurpose); if (!contains(v.purposes as Ref[], v.interpretationPurpose)) fail('outside_scope'); }
   if (v.budget !== null) { exact(v.budget, ['currency', 'startsAt', 'expiresAt', 'ceiling', 'concurrency']); currency(v.budget.currency); nat(v.budget.startsAt); nat(v.budget.expiresAt, true); vector(v.budget.ceiling); nat(v.budget.concurrency, true); if (v.budget.startsAt >= v.budget.expiresAt) fail('invalid_budget'); }
 }
 export function workRequest(v: unknown): asserts v is WorkRequest {
-  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
+  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences', 'access']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
+  if (v.access !== undefined && (!['read', 'reversible_write', 'effect'].includes(v.access as string) || (v.intent !== 'execute' && v.access !== 'read'))) fail('invalid_intent');
   if (v.fences !== undefined) fences(v.fences);
   if (v.subject !== undefined && v.subject !== null) { exact(v.subject, ['resource', 'issue']); ref(v.subject.resource); nat(v.subject.issue, true); }
 }

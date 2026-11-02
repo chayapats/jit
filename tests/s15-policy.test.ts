@@ -115,7 +115,7 @@ describe('finite model/effect reservations and exact final dispatch', () => {
     const f = setup(), w = f.admit().actor!; f.draft.fences = [fence('lineage', 'source'), fence('vm', 'vm'), fence('input', 'input')]; const a = f.prepare(w).action;
     f.before = async () => { if (which === 'work' || which === 'policy') f.service.owner.revoke(f.owner, 'revoke', which === 'work' ? { kind: 'work', id: a.workId } : { kind: 'policy' }); else if (which === 'owner') f.ownerGeneration = 2; else if (which === 'expiry') f.now = 90000; else f.catalog.get((which === 'source' ? 'lineage:source' : which + ':' + which))!.ref.generation++; };
     const result = await f.service.work.dispatch(w, actionRef(a)); expect(result.outcome).toBe('not_dispatched'); expect(f.calls).toBe(0); expect(f.service.control.usage().charged.spendMinor).toBe('3');
-    expect(f.service.owner.inspect(which === 'owner' ? f.service.owner.authenticate('fixture_owner_session') : f.owner, actionRef(a)).observation?.outcome).toBe('not_dispatched');
+    if (which === 'source') expect(() => f.service.owner.inspect(f.owner, actionRef(a))).toThrow('lineage_withdrawn'); else expect(f.service.owner.inspect(which === 'owner' ? f.service.owner.authenticate('fixture_owner_session') : f.owner, actionRef(a)).observation?.outcome).toBe('not_dispatched');
   });
   test('changed wire bytes are refused after durable claim, and live context cannot send twice', async () => {
     const f = setup(), w = f.admit().actor!, a = f.prepare(w).action; f.wire = { content: 'substituted' }; const observed = await f.service.work.dispatch(w, actionRef(a)); expect(observed.code).toBe('hash_mismatch'); expect(f.calls).toBe(0); throws(() => f.captured!(), 'already_claimed');
@@ -178,4 +178,12 @@ test('disabling and re-enabling a budget cannot reinterpret charged currency', (
 });
 test('measured budget overrun fences subsequent admissions without refunding the original charge', () => {
   const f = setup(), w = f.admit().actor!, r = f.service.work.reserveModelCall(w, { requestId: 'call', selection, upperBound: bound() }); f.service.control.settleReservation(r.id, { ...unknownUsage(), spendMinor: '4' }, true); expect(() => f.service.work.reserveModelCall(w, { requestId: 'call_two', selection, upperBound: bound() })).toThrow('budget_exhausted'); expect(f.service.control.usage().charged.spendMinor).toBe('3');
+});
+
+test('a relative or SQLite in-memory alias cannot bypass durable protected ledger creation', () => {
+  expect(() => openPolicyService({ runtime: 's15', path: ':memory:', create: true, installationId: 'test', ownerGeneration: () => 1, verifyOwner: () => null, catalogs: { current: () => null, allows: () => false }, adapters: [] })).toThrow('protected_ledger_path_required');
+});
+
+test('frozen read/reversible-write access cannot be widened by a standing communication exception', () => {
+  const f = setup(), communication = rule('communication'); communication.mode = 'communication'; f.input.rules.push(communication); f.install(); const read = f.admit({ access: 'read' }).actor!; expect(() => f.prepare(read)).toThrow('outside_scope'); const reversible = f.admit({ access: 'reversible_write' }).actor!; expect(f.prepare(reversible).decision.state).toBe('allow'); held(f, 'send', ['communication']); expect(() => f.prepare(reversible, 'send')).toThrow('outside_scope'); expect(f.calls).toBe(0);
 });

@@ -85,3 +85,7 @@ test('unknown obligation cannot be cloned to a different account under a fresh w
 test('overlapping recurring rules remain ambiguous even when only one has remaining frequency', async () => {
   const { f, port, prepare, recurring } = setup(); const first = recurring(); const w = f.admit().actor!; await f.service.work.dispatch(w, actionRef(prepare(w).action)); const second = structuredClone(first); second.id = 'other_rent'; f.service.owner.approveRecurringRule(f.owner, 'other_recurring', f.service.owner.current(f.owner)!.revision, second); port.setQuote(quote('second')); expect(prepare(f.admit().actor!, 'second').decision).toEqual({ state: 'hold', code: 'ambiguous_rule' });
 });
+
+test('an exactly approved recurring deviation consumes the next automatic cadence slot', async () => {
+  const { f, port, prepare, recurring } = setup(); recurring(); const w = f.admit().actor!, first = prepare(w).action; await f.service.work.dispatch(w, actionRef(first)); f.now += 1000; port.setQuote(quote('manual_early')); const early = prepare(w, 'manual_early').action; f.approve(early); await f.service.work.dispatch(w, actionRef(early)); f.now = 11000; port.setQuote(quote('automatic')); expect(prepare(w, 'automatic').decision.state).toBe('hold'); expect(f.service.owner.actionSlip(f.owner, actionRef(early)).recurring[0]?.deviations).toContain('frequency'); expect(f.service.owner.actionSlip(f.owner, actionRef(first)).recurring[0]?.deviations).toEqual([]); expect(port.mutationCalls).toBe(2);
+});
