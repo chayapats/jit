@@ -1,0 +1,3132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/chayapats/jit/contracts/s15-working-vm-documentation-v1",
+  "title": "Proposed S15 working VM documentation schemas; no executable port",
+  "$ref": "#/$defs/DocumentV1",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "Nat": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Pos": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Text": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "Path": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "RefV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "generation": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "BlobV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "mediaType": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "bytes",
+        "mediaType"
+      ],
+      "additionalProperties": false
+    },
+    "AdapterV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "version": {
+          "$ref": "#/$defs/Pos"
+        },
+        "schemaHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "schemaHash"
+      ],
+      "additionalProperties": false
+    },
+    "VectorV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "$ref": "#/$defs/Nat"
+        },
+        "steps": {
+          "$ref": "#/$defs/Nat"
+        },
+        "calls": {
+          "$ref": "#/$defs/Nat"
+        },
+        "reads": {
+          "$ref": "#/$defs/Nat"
+        },
+        "outputBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "activeMs": {
+          "$ref": "#/$defs/Nat"
+        },
+        "spendMinor": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,29})$"
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "UsageV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calls": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reads": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputBytes": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeMs": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendMinor": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,29})$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "LimitsV1": {
+      "type": "object",
+      "properties": {
+        "requestBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "responseBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "diagnosticBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "fileBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "readBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "stdoutBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "stderrBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "entries": {
+          "$ref": "#/$defs/Pos"
+        },
+        "matches": {
+          "$ref": "#/$defs/Pos"
+        },
+        "envBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "frameIdleMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "connectMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "fileMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "spawnMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cancelMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "settlementMs": {
+          "$ref": "#/$defs/Pos"
+        },
+        "queueDepth": {
+          "$ref": "#/$defs/Pos"
+        },
+        "parallelCalls": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cpuMillis": {
+          "$ref": "#/$defs/Pos"
+        },
+        "memoryBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "pids": {
+          "$ref": "#/$defs/Pos"
+        },
+        "diskBytes": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "requestBytes",
+        "responseBytes",
+        "diagnosticBytes",
+        "fileBytes",
+        "readBytes",
+        "stdoutBytes",
+        "stderrBytes",
+        "entries",
+        "matches",
+        "envBytes",
+        "frameIdleMs",
+        "connectMs",
+        "fileMs",
+        "spawnMs",
+        "cancelMs",
+        "settlementMs",
+        "queueDepth",
+        "parallelCalls",
+        "cpuMillis",
+        "memoryBytes",
+        "pids",
+        "diskBytes"
+      ],
+      "additionalProperties": false
+    },
+    "VmRegistrationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-registration/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "guestIdentityHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "protectionProfile": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "workspaceRoot": {
+          "const": "/workspace"
+        },
+        "temporaryDirectory": {
+          "const": "/tmp"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "maxProperties": 64
+        },
+        "limits": {
+          "$ref": "#/$defs/LimitsV1"
+        },
+        "networkPolicy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assetInventory": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "installationId",
+        "manager",
+        "endpoint",
+        "guestIdentityHash",
+        "protectionProfile",
+        "workspaceRoot",
+        "temporaryDirectory",
+        "environment",
+        "limits",
+        "networkPolicy",
+        "assetInventory",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "BindingV1": {
+      "type": "object",
+      "properties": {
+        "vm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "registrationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "lease": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "executorEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        }
+      },
+      "required": [
+        "vm",
+        "registrationHash",
+        "bootGeneration",
+        "work",
+        "attempt",
+        "lease",
+        "controllerEpoch",
+        "executorEpoch",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "PolicyBindingV1": {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "authorityHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "policy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "ownerGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "bot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuityId": {
+          "$ref": "#/$defs/Id"
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "action": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "$ref": "#/$defs/Id"
+                },
+                "revision": {
+                  "$ref": "#/$defs/Pos"
+                },
+                "actionHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "effectKey": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "id",
+                "revision",
+                "actionHash",
+                "effectKey"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "authority",
+        "authorityHash",
+        "policy",
+        "policyHash",
+        "ownerGeneration",
+        "bot",
+        "resources",
+        "lineage",
+        "budget",
+        "continuityId",
+        "upperBound",
+        "costBasis",
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "BytesV1": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string",
+          "maxLength": 1398104
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "base64",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ObservedV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "unchecked"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "absent"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "token"
+            },
+            "token": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "token"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RunnerOperationV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "realpath"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "stat"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "read"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            },
+            "offset": {
+              "$ref": "#/$defs/Nat"
+            },
+            "length": {
+              "$ref": "#/$defs/Pos"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "offset",
+            "length"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "observe"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            },
+            "content": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "content"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "write"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            },
+            "data": {
+              "$ref": "#/$defs/BytesV1"
+            },
+            "createParents": {
+              "type": "boolean"
+            },
+            "observed": {
+              "$ref": "#/$defs/ObservedV1"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "data",
+            "createParents",
+            "observed"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "write_private"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            },
+            "data": {
+              "$ref": "#/$defs/BytesV1"
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "list"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "glob"
+            },
+            "cwd": {
+              "$ref": "#/$defs/Path"
+            },
+            "pattern": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "dot": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "cwd",
+            "pattern",
+            "dot"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "search"
+            },
+            "cwd": {
+              "$ref": "#/$defs/Path"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            },
+            "pattern": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "glob": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "maxLength": 65536
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ignoreCase": {
+              "type": "boolean"
+            },
+            "limit": {
+              "$ref": "#/$defs/Pos"
+            }
+          },
+          "required": [
+            "kind",
+            "cwd",
+            "path",
+            "pattern",
+            "glob",
+            "ignoreCase",
+            "limit"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "spawn"
+            },
+            "executionId": {
+              "$ref": "#/$defs/Id"
+            },
+            "command": {
+              "type": "string",
+              "maxLength": 65536
+            },
+            "cwd": {
+              "$ref": "#/$defs/Path"
+            },
+            "env": {
+              "type": "object",
+              "maxProperties": 64,
+              "additionalProperties": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "timeoutMs": {
+              "$ref": "#/$defs/Pos"
+            },
+            "lifetime": {
+              "enum": [
+                "command",
+                "vm_service"
+              ]
+            },
+            "serviceAllocation": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/RefV1"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "executionId",
+            "command",
+            "cwd",
+            "env",
+            "timeoutMs",
+            "lifetime",
+            "serviceAllocation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cancel"
+            },
+            "targetOperationId": {
+              "$ref": "#/$defs/Id"
+            },
+            "targetOperationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "executionId": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": [
+            "kind",
+            "targetOperationId",
+            "targetOperationHash",
+            "executionId"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "OperationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-operation/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/Id"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "policy": {
+          "$ref": "#/$defs/PolicyBindingV1"
+        },
+        "adapter": {
+          "$ref": "#/$defs/AdapterV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RunnerOperationV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "slotId",
+        "installationId",
+        "binding",
+        "policy",
+        "adapter",
+        "operation",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "RunnerScopeV1": {
+      "type": "object",
+      "properties": {
+        "vmId": {
+          "$ref": "#/$defs/Id"
+        },
+        "vmGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "bootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "workId": {
+          "$ref": "#/$defs/Id"
+        },
+        "workGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "attemptId": {
+          "$ref": "#/$defs/Id"
+        },
+        "attemptGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "leaseId": {
+          "$ref": "#/$defs/Id"
+        },
+        "leaseGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "executorEpoch": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": [
+        "vmId",
+        "vmGeneration",
+        "bootGeneration",
+        "workId",
+        "workGeneration",
+        "attemptId",
+        "attemptGeneration",
+        "leaseId",
+        "leaseGeneration",
+        "controllerEpoch",
+        "executorEpoch"
+      ],
+      "additionalProperties": false
+    },
+    "RunnerRequestV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "jit.vm.runner/v1"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "channelNonce": {
+          "$ref": "#/$defs/Hash"
+        },
+        "scope": {
+          "$ref": "#/$defs/RunnerScopeV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RunnerOperationV1"
+        }
+      },
+      "required": [
+        "contract",
+        "operationId",
+        "operationHash",
+        "invocationId",
+        "channelNonce",
+        "scope",
+        "operation"
+      ],
+      "additionalProperties": false
+    },
+    "RunnerResultV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "realpath"
+            },
+            "path": {
+              "$ref": "#/$defs/Path"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "stat"
+            },
+            "type": {
+              "enum": [
+                "file",
+                "directory",
+                "other"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "read"
+            },
+            "data": {
+              "$ref": "#/$defs/BytesV1"
+            },
+            "eof": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "data",
+            "eof"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "observe"
+            },
+            "entry": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "targetExists": {
+                      "type": "boolean"
+                    },
+                    "token": {
+                      "$ref": "#/$defs/Hash"
+                    },
+                    "data": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/BytesV1"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "targetExists",
+                    "token",
+                    "data"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "entry"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "write"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "write_private"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "list"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "maxLength": 4096
+                  },
+                  "type": {
+                    "enum": [
+                      "file",
+                      "directory",
+                      "symlink",
+                      "other"
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 4096
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "entries",
+            "truncated"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "glob"
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^/"
+              },
+              "maxItems": 4096
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "files",
+            "truncated"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "search"
+            },
+            "matches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "$ref": "#/$defs/Path"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/Pos"
+                  },
+                  "text": {
+                    "type": "string",
+                    "maxLength": 8192
+                  }
+                },
+                "required": [
+                  "path",
+                  "line",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              "maxItems": 1024
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "failure": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "maxLength": 16384
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "matches",
+            "truncated",
+            "failure"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "spawn"
+            },
+            "executionId": {
+              "$ref": "#/$defs/Id"
+            },
+            "stdout": {
+              "$ref": "#/$defs/BytesV1"
+            },
+            "stderr": {
+              "$ref": "#/$defs/BytesV1"
+            },
+            "stdoutTotal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Nat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "stderrTotal": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/Nat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "exitCode": {
+              "oneOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "timedOut": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "executionId",
+            "stdout",
+            "stderr",
+            "stdoutTotal",
+            "stderrTotal",
+            "exitCode",
+            "timedOut"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "cancel"
+            },
+            "executionId": {
+              "$ref": "#/$defs/Id"
+            },
+            "signalRequested": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "executionId",
+            "signalRequested"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RunnerResponseV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "jit.vm.runner/v1"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "channelNonce": {
+          "$ref": "#/$defs/Hash"
+        },
+        "scope": {
+          "$ref": "#/$defs/RunnerScopeV1"
+        },
+        "outcome": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "ok"
+                },
+                "result": {
+                  "$ref": "#/$defs/RunnerResultV1"
+                }
+              },
+              "required": [
+                "kind",
+                "result"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "error"
+                },
+                "code": {
+                  "enum": [
+                    "ENOENT",
+                    "ENOTDIR",
+                    "EISDIR",
+                    "EACCES",
+                    "EPERM",
+                    "ECHANGED",
+                    "EINVAL",
+                    "EFBIG",
+                    "E2BIG",
+                    "ETIMEDOUT",
+                    "EPROTO",
+                    "EIO"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "operationId",
+        "operationHash",
+        "invocationId",
+        "channelNonce",
+        "scope",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "ClaimV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-claim/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "reservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "policyClaimHash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "continuityGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "channelNonce": {
+          "$ref": "#/$defs/Hash"
+        },
+        "claimedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "installationId",
+        "operationId",
+        "operationHash",
+        "reservationId",
+        "policyClaimHash",
+        "continuityGeneration",
+        "binding",
+        "invocationId",
+        "channelNonce",
+        "claimedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "EvidenceV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-evidence/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "vm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "executionId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "scope_empty",
+            "vm_stopped",
+            "service_transferred",
+            "vm_running"
+          ]
+        },
+        "serviceAllocation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "transportClosed": {
+          "type": "boolean"
+        },
+        "proofHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "manager",
+        "vm",
+        "bootGeneration",
+        "controllerEpoch",
+        "operationId",
+        "executionId",
+        "kind",
+        "serviceAllocation",
+        "observedAt",
+        "transportClosed",
+        "proofHash"
+      ],
+      "additionalProperties": false
+    },
+    "ManagementCommandV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-management/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "registration": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "registrationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "expectedVm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "expectedBootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "actionHash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanupClaimId": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "attach"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "status"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "start"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "stop"
+                },
+                "scope": {
+                  "enum": [
+                    "vm",
+                    "execution"
+                  ]
+                },
+                "executionId": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "scope",
+                "executionId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "reboot"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "snapshot"
+                },
+                "snapshotId": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "kind",
+                "snapshotId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "restore"
+                },
+                "snapshot": {
+                  "$ref": "#/$defs/BlobV1"
+                }
+              },
+              "required": [
+                "kind",
+                "snapshot"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "reset"
+                },
+                "assetInventoryHash": {
+                  "$ref": "#/$defs/Hash"
+                }
+              },
+              "required": [
+                "kind",
+                "assetInventoryHash"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delete"
+                },
+                "assetInventoryHash": {
+                  "$ref": "#/$defs/Hash"
+                }
+              },
+              "required": [
+                "kind",
+                "assetInventoryHash"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "installationId",
+        "registration",
+        "registrationHash",
+        "expectedVm",
+        "expectedBootGeneration",
+        "controllerEpoch",
+        "actionHash",
+        "cleanupClaimId",
+        "operation",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-receipt/v1"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "committedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "result": {
+          "enum": [
+            "accepted",
+            "held",
+            "denied",
+            "unsupported"
+          ]
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "installationId",
+        "requestId",
+        "operationId",
+        "operationHash",
+        "committedAt",
+        "result",
+        "code",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "StateV1": {
+      "type": "object",
+      "properties": {
+        "decision": {
+          "enum": [
+            "allow",
+            "hold",
+            "deny",
+            "unsupported",
+            "observed",
+            "historical"
+          ]
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "accepted": {
+          "type": "boolean"
+        },
+        "claimed": {
+          "type": "boolean"
+        },
+        "dispatchCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "cancelCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "outcome": {
+          "enum": [
+            "not_dispatched",
+            "guest_reported",
+            "unknown"
+          ]
+        },
+        "transport": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "settled"
+          ]
+        },
+        "execution": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "stopped",
+            "transferred"
+          ]
+        },
+        "publication": {
+          "enum": [
+            "withheld",
+            "eligible_untrusted"
+          ]
+        },
+        "transportCapacityHeld": {
+          "type": "boolean"
+        },
+        "executionCapacityHeld": {
+          "type": "boolean"
+        },
+        "vmCapacityHeld": {
+          "type": "boolean"
+        },
+        "charged": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        },
+        "automaticReplay": {
+          "const": false
+        },
+        "managementObservation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/VmManagementObservationV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultRead": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/VmResultReadV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cancelObservation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/VmCancelObservationV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "decision",
+        "code",
+        "accepted",
+        "claimed",
+        "dispatchCount",
+        "cancelCount",
+        "outcome",
+        "transport",
+        "execution",
+        "publication",
+        "transportCapacityHeld",
+        "executionCapacityHeld",
+        "vmCapacityHeld",
+        "charged",
+        "actual",
+        "automaticReplay",
+        "managementObservation",
+        "resultRead",
+        "cancelObservation"
+      ],
+      "additionalProperties": false
+    },
+    "WorldV1": {
+      "type": "object",
+      "properties": {
+        "now": {
+          "$ref": "#/$defs/Nat"
+        },
+        "actor": {
+          "enum": [
+            "registered_work",
+            "copied_work",
+            "none"
+          ]
+        },
+        "continuity": {
+          "enum": [
+            "current",
+            "missing",
+            "conflicting"
+          ]
+        },
+        "authority": {
+          "enum": [
+            "live",
+            "revoked",
+            "expired",
+            "withdrawn",
+            "stopped"
+          ]
+        },
+        "support": {
+          "enum": [
+            "synthetic_only",
+            "unproven"
+          ]
+        },
+        "currentBinding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "handle": {
+          "enum": [
+            "registered",
+            "copied",
+            "lost"
+          ]
+        },
+        "reservation": {
+          "enum": [
+            "available",
+            "owned",
+            "exhausted",
+            "missing_bound"
+          ]
+        },
+        "ownedContext": {
+          "enum": [
+            "none",
+            "original_unconsumed",
+            "consumed",
+            "lost"
+          ]
+        },
+        "existingClaim": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observationOwner": {
+          "enum": [
+            "original_backend",
+            "other_backend",
+            "copied"
+          ]
+        },
+        "filesystem": {
+          "enum": [
+            "stable",
+            "changed",
+            "absent",
+            "symlink_outside",
+            "final_symlink",
+            "special_file",
+            "parent_swapped"
+          ]
+        },
+        "evidenceIssuer": {
+          "enum": [
+            "registered_manager",
+            "guest",
+            "copied_manager"
+          ]
+        },
+        "serviceAllocation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "priorState": {
+          "$ref": "#/$defs/StateV1"
+        },
+        "priorRequest": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "requestId": {
+                  "$ref": "#/$defs/Id"
+                },
+                "operationHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "receipt": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "requestId",
+                "operationHash",
+                "receipt"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policyDecision": {
+          "enum": [
+            "allow",
+            "approval_required",
+            "owner_direction_required",
+            "RT15_01_unresolved"
+          ]
+        },
+        "remainingAllowance": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "expectedEnvironment": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Text"
+          },
+          "maxProperties": 64
+        },
+        "credentialsDetected": {
+          "type": "boolean"
+        },
+        "managementActor": {
+          "enum": [
+            "registered_management",
+            "copied_management",
+            "none"
+          ]
+        },
+        "managementEvidence": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "managementOutcome": {
+          "enum": [
+            "not_dispatched",
+            "unknown",
+            "external_observed"
+          ]
+        },
+        "managementReservation": {
+          "enum": [
+            "none",
+            "owned"
+          ]
+        },
+        "managementClaimHash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signalState": {
+          "enum": [
+            "absent",
+            "active",
+            "aborted"
+          ]
+        }
+      },
+      "required": [
+        "now",
+        "actor",
+        "continuity",
+        "authority",
+        "support",
+        "currentBinding",
+        "manager",
+        "endpoint",
+        "handle",
+        "reservation",
+        "ownedContext",
+        "existingClaim",
+        "observationOwner",
+        "filesystem",
+        "evidenceIssuer",
+        "serviceAllocation",
+        "priorState",
+        "priorRequest",
+        "policyDecision",
+        "remainingAllowance",
+        "expectedEnvironment",
+        "credentialsDetected",
+        "managementActor",
+        "managementEvidence",
+        "managementOutcome",
+        "managementReservation",
+        "managementClaimHash",
+        "signalState"
+      ],
+      "additionalProperties": false
+    },
+    "DocumentV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-documentation-fixtures/v1"
+        },
+        "status": {
+          "const": "unexecuted_documentation"
+        },
+        "records": {
+          "type": "object",
+          "properties": {
+            "registrations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmRegistrationV1"
+              }
+            },
+            "operations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/OperationV1"
+              }
+            },
+            "requests": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/RunnerRequestV1"
+              }
+            },
+            "responses": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/RunnerResponseV1"
+              }
+            },
+            "claims": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/ClaimV1"
+              }
+            },
+            "evidence": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/EvidenceV1"
+              }
+            },
+            "management": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/ManagementCommandV1"
+              }
+            },
+            "receipts": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/ReceiptV1"
+              }
+            },
+            "actionPayloads": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmActionPayloadV1"
+              }
+            },
+            "managementPayloads": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmManagementActionPayloadV1"
+              }
+            },
+            "payloadBytes": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/BytesV1"
+              }
+            },
+            "operationObservations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmOperationObservationV1"
+              }
+            },
+            "resultReads": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmResultReadV1"
+              }
+            },
+            "cancelObservations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmCancelObservationV1"
+              }
+            }
+          },
+          "required": [
+            "registrations",
+            "operations",
+            "requests",
+            "responses",
+            "claims",
+            "evidence",
+            "management",
+            "receipts",
+            "actionPayloads",
+            "managementPayloads",
+            "payloadBytes",
+            "operationObservations",
+            "resultReads",
+            "cancelObservations"
+          ],
+          "additionalProperties": false
+        },
+        "frames": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "direction": {
+                "enum": [
+                  "request",
+                  "response"
+                ]
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/Id"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "base64": {
+                "type": "string",
+                "maxLength": 5592412
+              },
+              "sha256": {
+                "$ref": "#/$defs/Hash"
+              },
+              "expectedDecode": {
+                "enum": [
+                  "valid",
+                  "EPROTO",
+                  "E2BIG"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 65536
+              }
+            },
+            "required": [
+              "direction",
+              "source",
+              "base64",
+              "sha256",
+              "expectedDecode",
+              "reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/Id"
+              },
+              "purpose": {
+                "type": "string",
+                "maxLength": 65536
+              },
+              "operation": {
+                "$ref": "#/$defs/Id"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "stage": {
+                      "enum": [
+                        "accept",
+                        "claim",
+                        "dispatch",
+                        "continue_original",
+                        "cancel",
+                        "receive",
+                        "settle",
+                        "publish",
+                        "recover",
+                        "query",
+                        "management",
+                        "decode_request",
+                        "decode_response",
+                        "result_read",
+                        "cancel_port"
+                      ]
+                    },
+                    "record": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/Id"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "world": {
+                      "$ref": "#/$defs/Id"
+                    },
+                    "expected": {
+                      "$ref": "#/$defs/StateV1"
+                    }
+                  },
+                  "required": [
+                    "stage",
+                    "record",
+                    "world",
+                    "expected"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 16
+              }
+            },
+            "required": [
+              "id",
+              "purpose",
+              "operation",
+              "steps"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 128
+        },
+        "worlds": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/WorldV1"
+          }
+        }
+      },
+      "required": [
+        "contract",
+        "status",
+        "records",
+        "frames",
+        "cases",
+        "worlds"
+      ],
+      "additionalProperties": false
+    },
+    "VmOperationObservationV1": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "outcome": {
+          "enum": [
+            "not_dispatched",
+            "guest_reported",
+            "unknown"
+          ]
+        },
+        "responseHash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "transport": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "settled"
+          ]
+        },
+        "execution": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "stopped",
+            "transferred"
+          ]
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 64
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        }
+      },
+      "required": [
+        "operationId",
+        "operationHash",
+        "outcome",
+        "responseHash",
+        "transport",
+        "execution",
+        "evidenceIds",
+        "actual"
+      ],
+      "additionalProperties": false
+    },
+    "VmManagementObservationV1": {
+      "type": "object",
+      "properties": {
+        "commandId": {
+          "$ref": "#/$defs/Id"
+        },
+        "commandHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "not_dispatched",
+            "unknown",
+            "observed"
+          ]
+        },
+        "vm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "evidenceIds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "commandId",
+        "commandHash",
+        "state",
+        "vm",
+        "bootGeneration",
+        "evidenceIds"
+      ],
+      "additionalProperties": false
+    },
+    "VmPolicyDecisionV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "allow"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "hold",
+                "deny",
+                "unsupported"
+              ]
+            },
+            "code": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": [
+            "state",
+            "code"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VmActionPayloadV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-action-payload/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "slotId": {
+          "$ref": "#/$defs/Id"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "binding": {
+          "$ref": "#/$defs/BindingV1"
+        },
+        "policy": {
+          "type": "object",
+          "properties": {
+            "authority": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "authorityHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "policy": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "policyHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "ownerGeneration": {
+              "$ref": "#/$defs/Pos"
+            },
+            "bot": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "resources": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RefV1"
+              },
+              "maxItems": 64
+            },
+            "lineage": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/RefV1"
+              },
+              "maxItems": 64
+            },
+            "budget": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "continuityId": {
+              "$ref": "#/$defs/Id"
+            },
+            "upperBound": {
+              "$ref": "#/$defs/VectorV1"
+            },
+            "costBasis": {
+              "$ref": "#/$defs/BlobV1"
+            },
+            "action": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "authority",
+            "authorityHash",
+            "policy",
+            "policyHash",
+            "ownerGeneration",
+            "bot",
+            "resources",
+            "lineage",
+            "budget",
+            "continuityId",
+            "upperBound",
+            "costBasis",
+            "action"
+          ],
+          "additionalProperties": false
+        },
+        "adapter": {
+          "$ref": "#/$defs/AdapterV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RunnerOperationV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "slotId",
+        "installationId",
+        "binding",
+        "policy",
+        "adapter",
+        "operation",
+        "createdAt",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "VmManagementActionPayloadV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-working-vm-management-action-payload/v1"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/Id"
+        },
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "registration": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "registrationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "expectedVm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "expectedBootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "actionHash": {
+          "type": "null"
+        },
+        "cleanupClaimId": {
+          "type": "null"
+        },
+        "operation": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "attach"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "status"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "start"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "stop"
+                },
+                "scope": {
+                  "enum": [
+                    "vm",
+                    "execution"
+                  ]
+                },
+                "executionId": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/Id"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "scope",
+                "executionId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "reboot"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "snapshot"
+                },
+                "snapshotId": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "kind",
+                "snapshotId"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "restore"
+                },
+                "snapshot": {
+                  "$ref": "#/$defs/BlobV1"
+                }
+              },
+              "required": [
+                "kind",
+                "snapshot"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "reset"
+                },
+                "assetInventoryHash": {
+                  "$ref": "#/$defs/Hash"
+                }
+              },
+              "required": [
+                "kind",
+                "assetInventoryHash"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "delete"
+                },
+                "assetInventoryHash": {
+                  "$ref": "#/$defs/Hash"
+                }
+              },
+              "required": [
+                "kind",
+                "assetInventoryHash"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "requestId",
+        "installationId",
+        "registration",
+        "registrationHash",
+        "expectedVm",
+        "expectedBootGeneration",
+        "controllerEpoch",
+        "actionHash",
+        "cleanupClaimId",
+        "operation",
+        "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "VmResultReadV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operationId": {
+              "$ref": "#/$defs/Id"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "state": {
+              "const": "available"
+            },
+            "code": {
+              "type": "null"
+            },
+            "observation": {
+              "type": "object",
+              "properties": {
+                "operationId": {
+                  "$ref": "#/$defs/Id"
+                },
+                "operationHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "outcome": {
+                  "const": "guest_reported"
+                },
+                "responseHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "transport": {
+                  "const": "settled"
+                },
+                "execution": {
+                  "enum": [
+                    "stopped",
+                    "transferred"
+                  ]
+                },
+                "evidenceIds": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "maxItems": 64
+                },
+                "actual": {
+                  "$ref": "#/$defs/UsageV1"
+                }
+              },
+              "required": [
+                "operationId",
+                "operationHash",
+                "outcome",
+                "responseHash",
+                "transport",
+                "execution",
+                "evidenceIds",
+                "actual"
+              ],
+              "additionalProperties": false
+            },
+            "response": {
+              "$ref": "#/$defs/RunnerResponseV1"
+            }
+          },
+          "required": [
+            "operationId",
+            "operationHash",
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operationId": {
+              "$ref": "#/$defs/Id"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "state": {
+              "enum": [
+                "pending",
+                "withheld"
+              ]
+            },
+            "code": {
+              "$ref": "#/$defs/Id"
+            },
+            "observation": {
+              "$ref": "#/$defs/VmOperationObservationV1"
+            },
+            "response": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "operationId",
+            "operationHash",
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VmCancelObservationV1": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "not_requested",
+            "requested",
+            "unknown"
+          ]
+        },
+        "signalRequested": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/VmOperationObservationV1"
+        }
+      },
+      "required": [
+        "operationId",
+        "operationHash",
+        "state",
+        "signalRequested",
+        "observation"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

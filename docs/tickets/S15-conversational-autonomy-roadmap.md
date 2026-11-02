@@ -10,20 +10,24 @@ Documentation PR: https://github.com/chayapats/jit/pull/343
 
 Parent: https://github.com/chayapats/jit/issues/316
 
-The documentation delivery is already in progress. All other tickets remain needs-triage while their direct blockers and actual reviewed contract revisions are outstanding. ARCH15-01 and STATE15-01 are the first candidates after DOC15-01 merges; they are bounded audits, not permission to run live guests/accounts. A closed upstream issue alone is insufficient. Confirm assignees, comments, branches/PRs, exact integration base and referenced evidence before adding ready-for-agent. Human/live evidence uses ready-for-human only after technical prerequisites and owner inputs are actually available.
+At the 2026-11-02 preparation checkpoint, integration main is `64f3a94726fdbce2283aec0944884ca7406d9934`: DOC15-01 / PR #343 and STATE15-01 / PR #344 are merged. ARCH15-01 / PR #345 remains OPEN and unmerged at `c79aab9d098c902db0cdff7f3d649ca389fff08c`, despite approved review/checks. Their audit contracts are proposals, not runtime enforcement. POLICY15-01 has an owner-authorized [documentation-only contract proposal](../contracts/s15-standing-policy-v1.md), [ADR 0066](../adr/0066-s15-standing-policy-and-prepared-actions.md) and [admission record](../evidence/s15-policy-contract-preparation.md) for step 1; implementation remains blocked / needs-triage. No dependent runtime/UI ticket becomes ready from this preparation.
+
+A closed upstream issue alone is insufficient. Confirm assignees, comments, branches/PRs, top-level threads, exact integration base and referenced evidence before adding ready-for-agent. Human/live evidence uses ready-for-human only after technical prerequisites and owner inputs are actually available. No merge of #345 or the policy preparation PR is authorized.
 
 Required UX authoring is separately tracked in UX15-00. The prescribed Claude Opus 5.5/high provider was unavailable; no concrete experience or primary-authored substitute is claimed. UX15-01/02 describe confirmed user outcomes only and stay blocked until that handoff and their runtime contracts land. Do not retry by changing provider/model or increasing spending without owner instruction.
 
 All current slices are Frontier because they retain authority/isolation, lifecycle, cross-contract, design or evidence judgment. Extract mechanical Standard slices only after exact files, signatures, schemas/migrations, dictionary keys, ordered steps and fixture inputs/outputs are checked on main. This is not a blanket permission to spend on a model.
 
+MODEL15-01 [#326](https://github.com/chayapats/jit/issues/326) has bounded DOCUMENTATION-ONLY step 1 preparation: [approved selection/disclosure/usage contract](../contracts/s15-model-selection-v1.md), [ADR0070](../adr/0070-s15-approved-model-selection-and-disclosure.md) and [preparation record](../evidence/s15-model-contract-preparation.md), with complete UNEXECUTED synthetic definitions. Native #323 remains OPEN, all implementation criteria/readiness/ownership stay unchanged, and MODEL15-FZ01–FZ07 plus demonstrated public-dispatch/effort/cost requirements remain open. Exact unmerged proposal inputs need reconciliation with actual merged reviewed revisions/evidence; this creates no dependency on #324 and admits no runtime slice or activation.
+
 ## Scoped delivery graph
 
 | Ticket | Outcome | Direct blockers | Current readiness |
 | --- | --- | --- | --- |
-| [DOC15-01](https://github.com/chayapats/jit/issues/317) | Publish the confirmed S15 spec and delivery graph | None; current documentation task | In progress |
-| [ARCH15-01](https://github.com/chayapats/jit/issues/318) | Freeze the working-VM and protected-effect feasibility contract | [DOC15-01](https://github.com/chayapats/jit/issues/317) | Blocked / needs triage |
-| [STATE15-01](https://github.com/chayapats/jit/issues/319) | Specify a non-destructive S14-to-S15 state and policy transition | [DOC15-01](https://github.com/chayapats/jit/issues/317) | Blocked / needs triage |
-| [POLICY15-01](https://github.com/chayapats/jit/issues/320) | Enforce standing policy and exact held actions outside working agents | [ARCH15-01](https://github.com/chayapats/jit/issues/318), [STATE15-01](https://github.com/chayapats/jit/issues/319) | Blocked / needs triage |
+| [DOC15-01](https://github.com/chayapats/jit/issues/317) | Publish the confirmed S15 spec and delivery graph | None | Merged #343; closed |
+| [ARCH15-01](https://github.com/chayapats/jit/issues/318) | Freeze the working-VM and protected-effect feasibility contract | [DOC15-01](https://github.com/chayapats/jit/issues/317) | Audit PR #345 OPEN / unmerged; no enforcement proof |
+| [STATE15-01](https://github.com/chayapats/jit/issues/319) | Specify a non-destructive S14-to-S15 state and policy transition | [DOC15-01](https://github.com/chayapats/jit/issues/317) | Merged #344; closed audit; migration gates remain |
+| [POLICY15-01](https://github.com/chayapats/jit/issues/320) | Enforce standing policy and exact held actions outside working agents | [ARCH15-01](https://github.com/chayapats/jit/issues/318), [STATE15-01](https://github.com/chayapats/jit/issues/319) | Proposed step 1 contract-only preparation; runtime blocked / needs triage |
 | [VM15-01](https://github.com/chayapats/jit/issues/321) | Run ordinary administration in the approved working VM | [POLICY15-01](https://github.com/chayapats/jit/issues/320) | Blocked / needs triage |
 | [BROW15-01](https://github.com/chayapats/jit/issues/322) | Complete a website task through a protected general browser | [VM15-01](https://github.com/chayapats/jit/issues/321) | Blocked / needs triage |
 | [CHAT15-01](https://github.com/chayapats/jit/issues/323) | Start requested tool work directly from ordinary conversation | [VM15-01](https://github.com/chayapats/jit/issues/321) | Blocked / needs triage; bounded contract proposal only |
@@ -75,12 +79,21 @@ UX15-00 supplies the required authored handoff across all cases; EVID15-01 recor
 - Existing source paths were checked against main at `17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b`. Planned S15 contract identifiers are deliverables, not supported APIs. Recheck current main before implementation.
 - ARCH15-01 inventories exact supported Schway exports and gaps; STATE15-01 freezes data/privacy/policy transition inputs. Actual administration/browser/effect/disclosure enforcement is proved by later implementation and exact-build evidence before CUT15-01 activation.
 - STATE15-01's [proposed transition inventory](../contracts/s15-state-transition-v1.md) and [ADR 0065](../adr/0065-s15-state-preservation-and-policy-adoption.md) inspect main `bf59e4c42c182b8a9c8611bdc2b76c44918faa2b`, including merged DOC15-01. Their proposed mappings and explicit downstream freeze gates do not supply a migration, live policy or host acceptance; ticket status still requires reviewed delivery.
+- POLICY15-01's proposed `s15-standing-policy/v1` and synthetic fixtures do not finish the reviewed freeze or acceptance. Reconcile exact merged #318 blobs, current-catalog/actor/action/adapter signatures and implementation proof before admission. The bounded preparation PR uses Refs #320; native dependencies and implementation criteria remain intact.
 - Logic may be developed against reviewed fake ports without claiming real VM enforcement. Required human gates must survive guest administration; snapshots, prompts, a sibling process, HTTP method or model label alone do not prove prevention.
 - Provider-specific payment/business adapters and unsupported websites are constrained honestly. No speculative upstream Schway issue is a blocker; create one only for a demonstrated missing public contract.
 - Jod interoperability is intentionally deferred, with a future provenance-preserving seam in MEM15-01. It is not a delivery blocker or mandatory storage replacement.
 - Every implementation PR closes only its own ticket, records tested SHA/contracts/evidence, and is not merged by its implementer. The current documentation PR closes DOC15-01, not the S15 design parent.
 
 Native GitHub parent/blocking relations mirror the direct dependency keys in [the manifest](s15/manifest.json). Verify actual graph edges and labels after publication. No implement-parallel/coordinator/claim workflow applies.
+
+## VM15-01 bounded preparation checkpoint
+
+At inspected main `64f3a94726fdbce2283aec0944884ca7406d9934`, [#321](https://github.com/chayapats/jit/issues/321) remains OPEN / blocked / needs-triage with native blocker #320 OPEN. Its [working-VM contract proposal](../contracts/s15-working-vm-v1.md), [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md), complete unexecuted synthetic fixtures and [admission record](../evidence/s15-vm-contract-preparation.md) prepare bounded architecture/logic review only. #318 PR #345 and #320 PR #346 remain reviewed but unmerged; every new assumption requires reconciliation with their actual merged reviewed revisions and implementation evidence. No implementation acceptance criterion, native edge or ready/complete status advances. RT15-01/RF15-G01–G08 remain unproven. Useful static preparation can proceed without claiming runtime admission; required UX authoring remains separately blocked.
+
+## BROW15-01 bounded preparation
+
+Owner-authorized documentation-only step 1 preparation proposes [s15-protected-browser/v1](../contracts/s15-protected-browser-v1.md), [ADR 0068](../adr/0068-s15-protected-browser-operations-and-evidence.md), complete unexecuted synthetic definitions and a [preparation record](../evidence/s15-browser-contract-preparation.md) against main `64f3a94726fdbce2283aec0944884ca7406d9934`. #322 remains blocked / needs triage with native #321 OPEN and every implementation acceptance criterion outstanding. Exact reviewed #318/#320/#321 inputs remain unmerged proposals pending reconciliation with their actual merged reviewed revisions and implementation evidence. This advances no runtime admission, final freeze, live browser/VM support, UI/UX or activation; RT15-01 and RF15-G01–G08 remain unproven. Open runtime blockers do not prohibit bounded static preparation. The preparation PR uses Refs #322 and leaves the issue open with no merge.
 
 ## CHAT15-01 bounded preparation
 
