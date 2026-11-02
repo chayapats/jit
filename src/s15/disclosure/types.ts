@@ -67,6 +67,9 @@ export interface DisclosureService {
   dispatch(actor: WorkActor, action: ActionRef): ReturnType<S15PolicyService['work']['dispatch']>;
   /** Decorate a real adapter without dropping its other human-required classes or preconditions. */
   protectAdapter(adapter: ActionAdapter, route: string): ActionAdapter;
+  /** Existing-approved-recipient read lane only. Recheck complete outbound arguments before I/O;
+   * a new private recipient is unavailable here and must use the separate exact-action release lane. */
+  guardRead(work: WorkAuthority, route: string, payload: JsonValue): void;
   /** Actual VM acquisition adapter hooks; local VM operations keep their existing policy path. */
   acquisition(route: string): { prepare(work: WorkAuthority, draft: ActionDraft): ActionDraft; guard(work: WorkAuthority, action: import('../policy').PreparedAction): void };
   /** Protected VM lease binding. Callbacks never enter guest JSON or proxy logs. */

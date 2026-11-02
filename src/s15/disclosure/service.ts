@@ -143,6 +143,7 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
           guard(); return original.perform(action, { guard() { context.guard(); guard(); }, commit(payload, send) { guard(); return context.commit(payload, () => { guard(); return send(); }); } });
         } };
     },
+    guardRead(work, route, payload) { if (inspect(work, route, payload).classes.length) fail('recipient_unapproved'); },
     acquisition(route) {
       if (routes.get(route)?.kind !== 'artifact') fail('route_unknown');
       return { prepare: (work, draft) => enrich(work, route, { ...draft, classes: draft.classes.filter(c => c !== 'new_egress').concat('guest_local_admin') }), guard: (work, action) => guardAction(work, route, action) };
@@ -184,7 +185,12 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       try {
         const lineage = sources(work);
         if (!action) return true;
-        if (!action.disclosure) return !lineage.some(s => s.classification !== 'public') || !action.recipients.length;
+        if (!action.disclosure) {
+          const contract = action.payload && typeof action.payload === 'object' && !Array.isArray(action.payload) ? action.payload.contract : null;
+          // Solo Calendar edits still disclose their fields to Google, even with no attendees.
+          const outbound = action.recipients.length > 0 || contract === 's15-google-effect/v1' || contract === 's15-browser-request/v1';
+          return !lineage.some(s => s.classification !== 'public') || !outbound;
+        }
         const d = action.disclosure;
         if (!equal(d.purpose, work.request.purpose) || !equal(d.sources, lineage.map(({ ref, resource, classification }) => ({ ref, resource, classification }))) || !equal(d.recipients, action.recipients)) return false;
         return recipients(action.recipients).every(r => approved(work, r, lineage) || action.classes.includes('disclosure') && lineage.every(s => s.classification === 'public' || s.ownerReleasable));
