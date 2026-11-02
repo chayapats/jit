@@ -391,7 +391,9 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           const current = loadAction(ref), work = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', current.workId));
           if (!work) v.fail('authority_revoked');
           const p = policyCurrent(); checkRequest(p, work.request);
-          current.resources.forEach(r => currentRef('resource', r)); current.recipients.forEach(r => currentRef('recipient', r)); current.fences.forEach(f => currentRef(f.kind, f.ref));
+          current.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
+          current.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
+          current.fences.forEach(f => currentRef(f.kind, f.ref));
           if (!options.catalogs.allows(clone(work), clone(current))) v.fail('outside_scope');
           budgetCheck(start.reservation!.upperBound, true, true);
           if (readCalls >= Math.min(start.reservation!.upperBound.calls, start.reservation!.upperBound.reads)) v.fail('read_bound_exhausted');

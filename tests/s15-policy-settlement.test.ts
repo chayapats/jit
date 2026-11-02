@@ -157,3 +157,25 @@ test('finished read settlement commits even if effect observation publication fa
     expect(f.service.control.usage()).toEqual({ charged: { ...bound(), calls: 3, reads: 2 }, unsettled: 0 });
   } finally { port.read.resolve(verified()); db.close(); }
 });
+
+test.each(['policy_recipient_removed', 'catalog_recipient_revised', 'unrelated_policy_edit'] as const)('recovery rechecks action-only recipient authority after credential wait: %s', async change => {
+  const tokenStarted = deferred<void>(), tokenReady = deferred<void>(); let reads = 0, sends = 0;
+  const adapter: ActionAdapter = { id: 'disclosure_recovery', version: 1,
+    prepare: () => ({ ...draft(), classes: ['disclosure'], recipients: [ref('other')] }),
+    async perform(a, context) { return context.commit(a.payload, async () => { sends++; return unknown(); }); },
+    async reconcile(_a, context) { tokenStarted.resolve(); await tokenReady.promise; context.beforeRead(); reads++; return verified(); },
+  };
+  const f = setup([adapter]), actor = f.admit({ resources: [ref('account')], recipients: [], access: 'effect' }).actor!;
+  const a = f.service.work.prepare(actor, { slot: 'disclosure', adapter: adapter.id, proposal: {} }).action; f.approve(a);
+  await f.service.work.dispatch(actor, actionRef(a));
+  const reading = f.service.owner.reconcile(f.owner, actionRef(a), 'credential_wait'); await tokenStarted.promise;
+  try {
+    if (change === 'policy_recipient_removed') {
+      f.input.recipients = f.input.recipients.filter(r => r.id !== 'other'); f.input.rules.forEach(r => { r.recipients = r.recipients.filter(r => r.id !== 'other'); }); f.install();
+      expect(f.catalog.get('recipient:other')!.active).toBe(true);
+    } else if (change === 'catalog_recipient_revised') f.add('recipient', { ...ref('other'), revision: 2 });
+    else { f.input.rules[0]!.expiresAt--; f.install(); }
+    tokenReady.resolve(); const result = await reading;
+    expect(result.outcome).toBe(change === 'unrelated_policy_edit' ? 'succeeded' : 'unknown'); expect(reads).toBe(change === 'unrelated_policy_edit' ? 1 : 0); expect(sends).toBe(1);
+  } finally { tokenReady.resolve(); await reading; }
+});
