@@ -137,3 +137,13 @@ test("Thai owner preferences and facts retain original source bytes and remain d
   expect(claims.map(c => [c.text, c.kind, c.category])).toEqual([["ผมชอบคำตอบสั้นกระชับ", "fact", "preference"], ["ผมชื่อเจ้าของ", "fact", "fact"], ["คาดว่างานนี้ใช้เวลานาน", "inference", "fact"]]);
   expect(f.memory.prepare(f.context("bot2"), "thai_next", "สรุปผลให้หน่อย").claims.map(c => c.text)).toContain("ผมชอบคำตอบสั้นกระชับ");
 });
+
+test("an independently extracted duplicate cannot override a current owner correction", () => {
+  const f = fixture(), context = f.context();
+  const first = f.memory.retain(context, f.source("I prefer long replies."))[0]!;
+  const duplicate = f.memory.retain(context, f.source("I prefer long replies."))[0]!;
+  const receipt = f.memory.command(f.f.owner, command("memory.correct", first, "I prefer concise replies.")) as { impact: { claims: number } };
+  expect(receipt.impact.claims).toBe(2);
+  expect(f.memory.view(f.f.owner).claims.find(claim => claim.id === duplicate.id)?.lifecycle).toBe("superseded");
+  expect(f.memory.prepare(f.context("bot2"), "corrected_duplicates", "long replies").claims.map(claim => claim.text)).toEqual(["I prefer concise replies."]);
+});

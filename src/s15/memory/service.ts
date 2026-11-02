@@ -179,8 +179,11 @@ export class MemoryService {
   view(actor: OwnerActor): MemoryView { this.owner(actor); return { contract: "s15-memory-view/v1", claims: this.rows<MemoryClaim>("claims").map(claim => { const source = this.source(claim.sourceId); return { ...claim, sourceState: !source.active || source.teamSourceId !== null && this.options.team.isWithdrawn(source.teamSourceId) ? "withdrawn" as const : "current" as const }; }), nativePolicy: "fresh_sessions_retire_on_close" }; }
   private affected(root: MemoryClaim): { claims: MemoryClaim[]; sources: SourceRecord[]; derivatives: MemoryDerivative[]; impact: ForgetImpact } {
     const all = this.rows<MemoryClaim>("claims"), affected = new Set([root.id]);
+    // Independently extracted copies of the exact same scoped assertion must not survive an owner
+    // correction/forget and compete with its replacement in a later relevance-ranked packet.
+    if (root.text) for (const claim of all) if (claim.text && fingerprint(claim.text) === fingerprint(root.text) && canonical(claim.provenance.scope) === canonical(root.provenance.scope) && canonical(claim.provenance.resources) === canonical(root.provenance.resources)) affected.add(claim.id);
     // A source-level withdrawal conservatively suppresses its sibling claims and every descendant.
-    const sourceIds = new Set([root.sourceId]);
+    const sourceIds = new Set(all.filter(claim => affected.has(claim.id)).map(claim => claim.sourceId));
     let changed = true;
     while (changed) { changed = false; for (const claim of all) if (!affected.has(claim.id) && (sourceIds.has(claim.sourceId) || claim.dependencies.some(parent => affected.has(parent)) || claim.supersedes !== null && affected.has(claim.supersedes))) { affected.add(claim.id); sourceIds.add(claim.sourceId); changed = true; } }
     const claims = all.filter(c => affected.has(c.id)), sources = this.rows<SourceRecord>("sources").filter(s => sourceIds.has(s.id));

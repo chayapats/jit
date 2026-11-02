@@ -1,7 +1,7 @@
 ---
 status: proposed
 date: 2026-11-02
-scope: TEAM15-01 (#324); FR-02/03/05/14/16/21/31/35/38/40; NFR-05/07/08/14; S15-AC04
+scope: TEAM15-01 (#324), MEM15-01 (#325); FR-02/03/04/05/14/16/17/21/31/35/38/40; NFR-05/07/08/09/14; S15-AC04/13
 ---
 
 # Mediated team resources and fenced independent handoffs
