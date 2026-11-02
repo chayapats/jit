@@ -6,6 +6,14 @@ scope: POLICY15-01 (#320) step 1 preparation; FR-06/13/14/15/17/18/35/37/38; NFR
 
 # Standing policy, opaque actors and prepared actions
 
+## Implementation decision — 2026-11-03
+
+The opt-in policy/payment service for #320/#333 implements the invariants through [exported TSDoc](../../src/s15/policy/index.ts) and the [revision-2 contract refinement](../contracts/s15-standing-policy-v1.md). The proposal below is retained as historical rationale. The policy-only boundary is accepted for this implementation; real VM/browser/effect enforcement and release adoption remain unproven.
+
+Use a single protected SQLite current ledger instead of the proposed multi-projection journal/catalog schema. One writer transaction commits request identity, authority, exact decisions, charges/frequency and claims; the original process-local dispatch context rechecks immediately before one send. This reduces recovery states without weakening immutable hashes, single-use decisions, current generations or unknown/reconcile-only behavior. Owning-service catalog/consent/privacy resolution is mandatory; no permissive resolver ships. Model-call reservations and final guards support the conversation consumer. Recurring payments have a separate authenticated rule-approval command and a no-network fixture port only.
+
+The owner accepted RT15-01 option B on 2026-11-03: root inside an expendable working VM, protected valuable data/credentials/publication/effects outside, and recovery from protected snapshots. Guest-local administration is ordinary scoped work; system-wide administration requires a current protected snapshot fence. This records the accepted tradeoff, not host-enforcement evidence. No S14 store, default runtime, live installation, provider account or money movement changes.
+
 ## Confirmed inputs and bounded status
 
 [S15](../specs/S15-conversational-autonomy.md) permits requested ordinary work under standing owner policy and requires protected human gates. Task acceptance, work authority and final approval remain distinct. Product-default GitHub publication/replies require approval; the personal exception is separately installed, merge authority is separate and production still waits. The interview chose no numeric allowance, provider/account availability, permanent-Bot policy change or administration tradeoff.

@@ -136,6 +136,8 @@ S15 target terms below refine product intent. Definitions explicitly marked S14 
 
 S14 personal-effect refinement (#278): a committed run can end while an exact pending card keeps its work waiting on the owner; this retains only held-effect authority, never a right to resume model tools. Calendar update/delete binds an actually-read source and service-verified event version into that card. Personal source presentation does not change its privacy, and any bounded ingestion omission remains a visible coverage gap that cannot be a quiet no_update. See ADR 0057 and the personal/effect contracts.
 
+S15 policy/payment refinement (#320/#333): `src/s15/policy/index.ts` is an explicit opt-in protected service with authenticated owner ingress, bounded durable work actors, finite model/effect reservations, exact prepared revisions/approvals, unique pre-I/O claims and unknown/reconcile-only outcomes. Its separate current ledger is never an S14 store or ordinary backup projection. `src/s15/payments/` supplies only a no-network fixture port and separately approved bounded recurring rules; operating budget does not authorize payments. The owner accepted RT15-01 option B on 2026-11-03: root in an expendable working VM, with valuable originals, credentials, publication and external effects protected outside. Host/browser/egress proof, runtime adoption and approval UX remain separate. See ADR 0066 and the standing-policy contract revision 2.
+
 ## Historical terms
 
 Project, Project group, Topic promotion and General system project describe the implemented v1 model and historical specs. They are not required S14 entities, hidden permission scopes or aliases for a work item. Old sources retain their historical meaning in the old store; S14 requires no conversion.
