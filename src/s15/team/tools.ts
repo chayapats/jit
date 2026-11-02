@@ -24,19 +24,24 @@ export function createTeamResourceTools<Work>(team: TeamService, underlying: Con
   return { async open(work, input) {
     const context = team.bind(options.actor(work)); input.guard();
     let stopped = false;
+    let availableBindings: readonly TeamToolBinding[] = [];
     const scopedGuard = () => {
       if (input.signal.aborted || stopped) throw new AppError("aborted");
       input.guard(); team.guard(context);
-      for (const resourceId of new Set(bindings.flatMap(binding => binding.resources))) team.resource(context, resourceId);
+      for (const resourceId of new Set(availableBindings.flatMap(binding => binding.resources))) team.resource(context, resourceId);
     };
     scopedGuard();
     const session = await underlying.open(work, { ...input, guard: scopedGuard });
     try {
-      if (input.signal.aborted || stopped) throw new AppError("aborted");
-      scopedGuard();
-      return { cancel: () => { stopped = true; return session.cancel(); }, close: () => { stopped = true; return session.close(); }, tools: session.tools.map(tool => {
+      const available = session.tools.map(tool => {
         const binding = bindings.find(binding => binding.name === tool.definition.name);
         if (!binding || (tool.access === "read") !== (binding.mode === "read")) throw new AppError("tool_unavailable", 409);
+        return { tool, binding };
+      });
+      availableBindings = available.map(({ binding }) => binding);
+      if (input.signal.aborted || stopped) throw new AppError("aborted");
+      scopedGuard();
+      return { cancel: () => { stopped = true; return session.cancel(); }, close: () => { stopped = true; return session.close(); }, tools: available.map(({ tool, binding }) => {
         return { ...tool, definition: { ...tool.definition, execute: async (value, call) => {
           scopedGuard(); binding.resources.forEach(id => team.resource(context, id, binding.mode === "read" ? "read" : binding.mode));
           const run = async () => {

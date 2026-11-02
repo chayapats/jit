@@ -93,3 +93,22 @@ test("TEAM refuses foreign/S14 stores without changing their bytes and excludes 
   expect(() => f.team.capture(f.context(), f.source("password=example-secret-value"))).toThrow("credential_content_refused");
   expect(() => new TeamService({ ...f.options, create: false })).toThrow("s15_data_runtime_already_open");
 });
+
+test("P1: repository-only work opens only its available tools with unrelated browser bindings configured", async () => {
+  const f = fixture(), context = f.context("bot", { resources: [ref("repo")], intent: "inspect", access: "read" }), actor = f.actors.get(context)!;
+  let opens = 0, reads = 0;
+  const port = createTeamResourceTools(f.team, { async open(_work: typeof actor, input) {
+    opens++; input.guard();
+    return { tools: [{ access: "read", definition: { name: "repo_read", description: "Read scoped repository", inputSchema: { type: "object" }, execution: "exclusive", async execute() { input.guard(); reads++; return { content: "repository evidence" }; } } }], async cancel() {}, async close() {} };
+  } }, { actor: work => work, bindings: [
+    { name: "repo_read", resources: ["repo"], mode: "read", settled: () => true },
+    { name: "browser_input", resources: ["browser"], mode: "input", settled: () => true },
+  ], leaseMs: 1000 });
+  const session = await port.open(actor, { mode: "inspect", signal: new AbortController().signal, guard() {} });
+  expect(opens).toBe(1); expect(session.tools.map(tool => tool.definition.name)).toEqual(["repo_read"]);
+  const call = { workspace: {} as never, signal: new AbortController().signal };
+  expect(await session.tools[0]!.definition.execute({}, call)).toEqual({ content: "repository evidence" });
+  f.team.register(f.f.owner, "narrow_repo_after_open", 1, f.registration("repo", { revision: 2, deniedBots: ["bot"] }));
+  await expect(session.tools[0]!.definition.execute({}, call)).rejects.toThrow("outside_scope");
+  expect(reads).toBe(1); await session.close();
+});
