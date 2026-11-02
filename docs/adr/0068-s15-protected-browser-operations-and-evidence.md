@@ -6,6 +6,10 @@ scope: BROW15-01 (#322); FR-07/17/18/29/36/37/38/40; NFR-04/07/10/14
 
 # Protected browser operations, actual dispatch and observed evidence
 
+## Implemented record-effect refinement (2026-11-03)
+
+[s15-effects/v1](../contracts/s15-effects-v1.md) adds a controlled native-form document/task/business reference service over the existing gateway. Its independent remote CAS and operation journal bind observed versions and actual consequences. An optional protected read-only site verifier supports charged reconciliation; the owner hook clears only matching uncertainty on conclusive evidence. CHAT's additive host dispatcher resumes the original pending browser request after approval. No arbitrary website writes, generic reconciliation, real CRM, new credentials or visual UI are implied.
+
 ## Decision and scope
 
 Implement the bounded [protected-browser contract revision 2](../contracts/s15-protected-browser-v1.md) through the actual host API in `src/s15/browser`. S14 remains the default. This accepts the implementation choices below, not universal website support or S15 host adoption. The owner's RT15-01 option B places valuable data, sessions, credentials and real external effects outside the root-administrable expendable working VM (ADR 0064).
