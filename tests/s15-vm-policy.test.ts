@@ -56,6 +56,7 @@ function setup(privateData = false) {
     }
   }
   const service = new WorkingVmService({ store, policy: port, managers: new Map([["manager", manager]]), transport: () => new Transport(endpoint),
+    ...(disclosure ? { disclosure } : {}),
     artifactFetch: async (_input, _signal, options) => { options?.beforeRequest?.(); fetched++; return new Uint8Array(); } });
   const admit = (intent: "inspect" | "execute" = "execute") => {
     const receipt = policy.owner.admit(owner, { requestId: `work_${serial++}`, intent, access: intent === "inspect" ? "read" : "effect", purpose: ref("purpose"), bot: ref("bot"),
@@ -167,4 +168,13 @@ test('DATA15 previously approved acquisition stays usable within captured data a
   f.approvals.push({ recipient: ref('download'), purpose: ref('purpose'), resources: [ref('computer')], dataClasses: ['business'], sources: [ref('private')], expiresAt: 700000 });
   await f.service.acquire(actor, session, { url: 'https://new-download.test/source.tar', sha256: vmHash(new Uint8Array()), maxBytes: 1024, path: `${session.backend.workspaceRoot}/source.tar` });
   expect(f.fetched()).toBe(1);
+});
+
+test('DATA15 actual VM output carries shared ancestry into a sibling acquisition route', async () => {
+  const f = setup(true), first = await f.open(); f.disclosure!.read(first.actor, ref('private'));
+  await first.session.backend.spawn({ command: 'printf private-copy', cwd: first.session.backend.workspaceRoot });
+  const second = await f.open();
+  await expect(f.service.acquire(second.actor, second.session, { url: 'https://new-download.test/source.tar?query=guest-derived-business', sha256: vmHash(new Uint8Array()), maxBytes: 1024, path: `${second.session.backend.workspaceRoot}/source.tar` })).rejects.toMatchObject({ status: 423 });
+  expect(f.fetched()).toBe(0);
+  await expect(Promise.resolve().then(() => f.policy.work.reserveModelCall(second.actor, { requestId: 'sibling_private_context', selection: { route: ref('route'), model: ref('model'), effort: 'high' }, upperBound: { attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 1, activeMs: 1, spendMinor: '0' } }))).rejects.toMatchObject({ code: 'recipient_unapproved' });
 });

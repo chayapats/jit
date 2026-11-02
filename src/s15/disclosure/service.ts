@@ -164,6 +164,14 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
         if (merged.length > 64) fail('lineage_capacity'); journal.put(key, { kind: 'vm', id: key, sources: merged });
       });
     },
+    vmOutput(actor, vmId) {
+      id(vmId); const work = service().work.guard(actor as import('../policy').WorkActor);
+      journal.tx(() => {
+        const inherited = journal.all<Record>().find(row => row.kind === 'vm' && row.id === 'vm_' + vmId)?.sources ?? [];
+        const merged = [...new Map([...sources(work).map(s => s.ref), ...inherited.map(r => source(work, r).ref)].map(r => [canonical(r), r])).values()];
+        if (merged.length > 64) fail('lineage_capacity'); journal.put(workKey(work), { kind: 'work', id: workKey(work), sources: merged });
+      });
+    },
     catalogs(base) { return { current: (kind, key) => base.current(kind, key), allowsModel(work, selection) {
       if (base.allowsModel && !base.allowsModel(work, selection)) return false;
       try {

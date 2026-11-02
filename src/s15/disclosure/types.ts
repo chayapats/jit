@@ -71,6 +71,9 @@ export interface DisclosureService {
   /** Stamp all work ancestry before guest input. Shared guest root can read sibling work files, so
    * registry checks inherit the VM's accumulated releases across work/session/reboot boundaries. */
   vmInput(actor: object, vmId: string): void;
+  /** Import shared-guest ancestry before any output is returned to a work/model/tool. Without this,
+   * a sibling could move stolen guest bytes through a protected browser/model/acquisition route. */
+  vmOutput(actor: object, vmId: string): void;
   /** Compose with mandatory POLICY owning-service consent/privacy ceilings. */
   catalogs(base: CatalogPort): CatalogPort;
   browser(route: string): BrowserDisclosurePort;

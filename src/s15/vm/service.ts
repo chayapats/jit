@@ -18,7 +18,7 @@ export interface WorkingVmOptions {
   transport?: (registration: VmRegistration) => VmSshTransport;
   proxyLease?: (sessionId: string, expiresAt: number, authorize?: (host: string) => void) => VmProxyLease;
   /** DATA15 registry destination checks run outside the guest, before DNS and during live tunnels. */
-  disclosure?: Pick<import('../disclosure').DisclosureService, 'registryLease' | 'vmInput'>;
+  disclosure?: Pick<import('../disclosure').DisclosureService, 'registryLease' | 'vmInput' | 'vmOutput'>;
   artifactFetch?: typeof fetchVmArtifact;
   snapshotRetention?: number;
   expiryTimer?: (milliseconds: number, expire: () => void) => () => void;
@@ -197,7 +197,7 @@ export class WorkingVmService implements WorkingVmPort {
         evidence.transport = "closed"; evidence.outcome = "guest_reported"; const bytes = vmCanonical(response);
         evidence.responseHash = vmHash(bytes); evidence.outputBytes = Buffer.byteLength(bytes); this.options.store.saveEvidence(evidence); claim.observe({ ...evidence });
         this.current(actor, s);
-        return claim.publish(() => { this.current(actor, s); evidence.published = true; this.options.store.saveEvidence(evidence); return response; });
+        return claim.publish(() => { this.current(actor, s); this.options.disclosure?.vmOutput(actor, s.vmId); evidence.published = true; this.options.store.saveEvidence(evidence); return response; });
       } catch (error) {
         evidence.transport = "closed"; this.options.store.saveEvidence(evidence); claim.observe({ ...evidence });
         if (error instanceof AppError && ["vm_protocol_invalid", "vm_connection_failed", "vm_transport_timeout", "vm_output_limit"].includes(error.code)) this.uncertain(s.vmId, error.code, s.generation);

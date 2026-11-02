@@ -49,9 +49,13 @@ test('shared guest ancestry blocks a clean sibling proxy from disclosing private
   const x = setup(); x.disclosure.vmInput(x.actor, 'working_vm');
   const sibling = x.f.admit({ access: 'effect' }).actor!;
   expect(() => x.disclosure.registryLease(sibling, 'new.test', 'working_vm')).toThrow('opaque_egress_unavailable');
+  x.disclosure.vmOutput(sibling, 'working_vm');
+  const work = x.f.service.work.guard(sibling);
+  expect(x.disclosure.browser('browser').inspect(work, { method: 'GET', url: 'https://new.test/?q=stolen-guest-text', bodyBase64: '', contentType: '', navigation: true }).classes).toContain('disclosure');
+  expect(() => x.f.service.work.reserveModelCall(sibling, { requestId: 'sibling_model', selection: work.request.selection, upperBound: { attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 1, activeMs: 1, spendMinor: '0' } })).toThrow('recipient_unapproved');
   x.grant('new_service'); expect(() => x.disclosure.registryLease(sibling, 'new.test', 'working_vm')).not.toThrow();
   x.sources.get('private')!.active = false;
-  expect(() => x.disclosure.registryLease(sibling, 'new.test', 'working_vm')).toThrow('lineage_withdrawn');
+  expect(() => x.disclosure.registryLease(sibling, 'new.test', 'working_vm')).toThrow('outside_scope');
 });
 
 test('artifact acquisition rechecks protected consent after DNS before HTTPS request creation', async () => {
