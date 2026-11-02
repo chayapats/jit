@@ -8,11 +8,13 @@ S15 — https://github.com/chayapats/jit/issues/316. Canonical spec: docs/specs/
 Frontier: authority, isolation, lifecycle, cross-contract or evidence decisions remain in this slice. Mechanical Standard work can be extracted only after exact signatures/schema/paths/tests/dictionary keys are verified on main; do not label speculative contracts Standard-ready.
 
 ## Status
-Prepared; needs triage. Not ready-for-agent: direct blockers and required contract/evidence revisions must be verified before admission.
+Blocked / needs triage. Owner-authorized documentation-only step 1 preparation is proposed in [s15-standing-policy/v1](../../contracts/s15-standing-policy-v1.md), [ADR 0066](../../adr/0066-s15-standing-policy-and-prepared-actions.md) and [preparation evidence](../../evidence/s15-policy-contract-preparation.md). This is not runtime implementation admission, final contract freeze or complete issue coverage. All acceptance criteria below remain outstanding.
+
+Inspected integration main: `64f3a94726fdbce2283aec0944884ca7406d9934`, 2026-11-02. #319 / PR #344 is merged with proposed state-transition/ADR 0065 audit contracts. #318 remains OPEN; reviewed PR #345 head `c79aab9d098c902db0cdff7f3d649ca389fff08c` is unmerged. Its exact remote blobs are proposed boundary evidence only, pending reconciliation with the actual merged reviewed revision. Native blocker edges remain unchanged. No runtime/DDL, live policy/host, UI/UX or merge is authorized by this bounded preparation.
 
 ## Context to read
 AGENTS.md; CONTEXT.md; docs/agents/workflow.md; docs/specs/S15-conversational-autonomy.md; docs/product/02-prd.md; docs/adr/0064-conversational-authority-and-protected-control-plane.md.
-Current main audited at 17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b. Existing implementation references (not promised S15 APIs):
+Initial planning main was `17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b`; preparation rechecked source at `64f3a94726fdbce2283aec0944884ca7406d9934`. Existing implementation references (not promised S15 APIs):
 - src/s14/application.ts
 - src/s14/authority.ts
 - src/s14/authority-types.ts
@@ -25,7 +27,7 @@ Read the parent, this issue's comments, current assignees and related branches/P
 Authenticated owner policy permits ordinary bounded work and holds human-required actions with exact revision-bound approval; working agents cannot change their authority.
 
 ## Implementation steps
-1. Freeze the reviewed standing-policy/action contract and schema from ARCH15-01/STATE15-01 before implementation.
+1. Freeze the reviewed standing-policy/action contract and schema from ARCH15-01/STATE15-01 before implementation. The bounded proposal/complete synthetic documentation fixtures prepare this step only; PC15-FZ01–FZ05 remain open.
 2. Implement owner-derived actor, purpose/resource/model/destination scopes, rule revisions, finite budget reservations and action receipts.
 3. Distinguish ordinary reversible edits, default approval classes and explicitly captured standing exceptions; unknown policy matches hold.
 4. Bind final approvals to exact pending action details and recheck policy/revocation at admission, execution and publication.
@@ -62,4 +64,4 @@ Do not infer owner authority from model/retrieved text; widen accounts/providers
 
 ## Definition of done
 Run the focused enumerated behavior fixtures, bun run typecheck, bun test and git diff --check on final HEAD. Record commands, tested SHA, contract revisions, actual evidence and not-run limitations. Live/paid/host operations are separate opt-in commands with owner approval.
-PR body includes Closes #320. No merge by the implementer.
+The full implementation PR body includes Closes #320. A bounded contract-only preparation PR uses Refs #320 and does not close the issue, mark it ready, satisfy implementation acceptance or bypass prerequisites. Documentation-only preparation runs document/link/schema/fixture checks and git diff --check; no runtime test/typecheck or live probe is required or claimed. No merge by the implementer.

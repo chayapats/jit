@@ -227,7 +227,21 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/POLICY15-01.md"
+      "path": "docs/tickets/s15/POLICY15-01.md",
+      "preAdmissionPreparation": {
+        "status": "proposed-documentation-only",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contract": "docs/contracts/s15-standing-policy-v1.md",
+        "adr": "docs/adr/0066-s15-standing-policy-and-prepared-actions.md",
+        "fixtures": "docs/contracts/fixtures/s15-standing-policy-v1.json",
+        "evidence": "docs/evidence/s15-policy-contract-preparation.md",
+        "unmergedBoundaryEvidence": {
+          "pullRequest": "https://github.com/chayapats/jit/pull/345",
+          "head": "c79aab9d098c902db0cdff7f3d649ca389fff08c"
+        },
+        "runtimeAdmission": "blocked",
+        "issueCompletion": false
+      }
     },
     {
       "key": "VM15-01",

@@ -1,0 +1,3611 @@
+{
+  "contract": "s15-standing-policy-documentation-fixtures/v1",
+  "status": "proposed_not_executed",
+  "base": {
+    "now": 2000,
+    "policy": {
+      "contract": "s15-standing-policy/v1",
+      "ref": {
+        "id": "policy_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "installationId": "installation_fixture",
+      "ownerGeneration": 1,
+      "purposes": [
+        {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "resources": [
+        {
+          "id": "resource_fixture",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "bots": [
+        {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "selections": [
+        {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        }
+      ],
+      "recipients": [
+        {
+          "id": "recipient_approved",
+          "revision": 1,
+          "generation": 1
+        },
+        {
+          "id": "recipient_owner",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "budgets": [
+        {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "rules": [
+        {
+          "id": "rule_ordinary",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "githubPublicationRule": null,
+      "githubMergeRule": null,
+      "expiresAt": 90000
+    },
+    "rules": {
+      "ordinary": {
+        "ref": {
+          "id": "rule_ordinary",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "ordinary",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "disclose",
+          "major",
+          "merge",
+          "pay",
+          "publish",
+          "replace",
+          "send"
+        ],
+        "classes": [
+          "communication",
+          "disclosure",
+          "financial",
+          "github_merge",
+          "github_publish",
+          "major_change",
+          "ordinary_edit",
+          "production"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": null,
+        "github": null,
+        "expiresAt": 90000
+      },
+      "communication": {
+        "ref": {
+          "id": "rule_communication",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "communication",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "send"
+        ],
+        "classes": [
+          "communication"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": null,
+        "github": null,
+        "expiresAt": 90000
+      },
+      "github_publish": {
+        "ref": {
+          "id": "rule_github_publish",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "personal_github_publish",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "publish"
+        ],
+        "classes": [
+          "communication",
+          "github_publish"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": null,
+        "github": {
+          "repository": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetRef": "refs/heads/main",
+          "requiredEvidence": {
+            "id": "github_requirements",
+            "revision": 1,
+            "generation": 1
+          }
+        },
+        "expiresAt": 90000
+      },
+      "github_merge": {
+        "ref": {
+          "id": "rule_github_merge",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "personal_github_merge",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "merge"
+        ],
+        "classes": [
+          "github_merge"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": null,
+        "github": {
+          "repository": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetRef": "refs/heads/main",
+          "requiredEvidence": {
+            "id": "github_requirements",
+            "revision": 1,
+            "generation": 1
+          }
+        },
+        "expiresAt": 90000
+      },
+      "recurring": {
+        "ref": {
+          "id": "rule_recurring",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "recurring_payment",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "pay"
+        ],
+        "classes": [
+          "financial"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": {
+          "payee": {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          "account": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "currency": "USD",
+          "amountCeilingMinor": "25",
+          "frequency": {
+            "id": "monthly_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        },
+        "github": null,
+        "expiresAt": 90000
+      },
+      "deny": {
+        "ref": {
+          "id": "rule_deny",
+          "revision": 1,
+          "generation": 1
+        },
+        "mode": "deny",
+        "purposes": [
+          {
+            "id": "purpose_selected_issue",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "bots": [
+          {
+            "id": "bot_jit",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "selections": [
+          {
+            "route": {
+              "id": "route_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "model": {
+              "id": "model_scripted",
+              "revision": 1,
+              "generation": 1
+            },
+            "effort": "fixture_effort"
+          }
+        ],
+        "recipients": [
+          {
+            "id": "recipient_approved",
+            "revision": 1,
+            "generation": 1
+          },
+          {
+            "id": "recipient_owner",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "operations": [
+          "replace"
+        ],
+        "classes": [
+          "ordinary_edit"
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "maxPerAction": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "recurrence": null,
+        "github": null,
+        "expiresAt": 90000
+      }
+    },
+    "budget": {
+      "ref": {
+        "id": "budget_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "continuityId": "continuity_budget_fixture",
+      "currency": "USD",
+      "startsAt": 0,
+      "expiresAt": 90000,
+      "ceiling": {
+        "attempts": 4,
+        "steps": 8,
+        "calls": 10,
+        "reads": 10,
+        "outputBytes": 65536,
+        "activeMs": 10000,
+        "spendMinor": "100"
+      },
+      "concurrency": 2
+    },
+    "authority": {
+      "contract": "s15-work-authority/v1",
+      "ref": {
+        "id": "work_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "installationId": "installation_fixture",
+      "ownerGeneration": 1,
+      "ingressReceipt": "c841d8f7f3b7ae5a4c88407230a775c17d54b9a77896f809a04cb5fa429e2874",
+      "request": {
+        "ingressId": "ingress_seed",
+        "conversation": {
+          "id": "conversation_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "intent": "execute",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "subject": {
+          "resource": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "key": "320"
+        }
+      },
+      "policy": {
+        "id": "policy_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+      "bots": [
+        {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "resources": [
+        {
+          "id": "resource_fixture",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "selections": [
+        {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        }
+      ],
+      "selectionPin": {
+        "route": {
+          "id": "route_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "model": {
+          "id": "model_scripted",
+          "revision": 1,
+          "generation": 1
+        },
+        "effort": "fixture_effort"
+      },
+      "recipients": [
+        {
+          "id": "recipient_approved",
+          "revision": 1,
+          "generation": 1
+        },
+        {
+          "id": "recipient_owner",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "budget": {
+        "id": "budget_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "ceiling": {
+        "attempts": 4,
+        "steps": 8,
+        "calls": 10,
+        "reads": 10,
+        "outputBytes": 65536,
+        "activeMs": 10000,
+        "spendMinor": "100"
+      },
+      "expiresAt": 80000,
+      "hash": "fca933009edfcb9b461b825d09e32012c2eb1a48dff771344311bda94070ba1d"
+    },
+    "actions": {
+      "replace": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_replace",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_replace",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "replace",
+          "classes": [
+            "ordinary_edit"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [],
+          "payload": {
+            "id": "payload_replace",
+            "sha256": "be9a84a400e95fb161f6eb1bc17b133cd177672e7ffa08358676961af91c59da",
+            "bytes": 91,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": null,
+          "disclosure": null,
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "9adbe4975c98b0e5482ba80360e431e9e6444f1e934c5ff81f21cc9de1c14da0"
+      },
+      "send": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_send",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_send",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "send",
+          "classes": [
+            "communication"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [
+            {
+              "id": "recipient_approved",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "payload": {
+            "id": "payload_send",
+            "sha256": "821d1448d131109eb832b9acc577de23dc44f7b21712e2f870c245d14604871d",
+            "bytes": 85,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": null,
+          "disclosure": null,
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909"
+      },
+      "publish": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_publish",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_publish",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "publish",
+          "classes": [
+            "communication",
+            "github_publish"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [
+            {
+              "id": "recipient_approved",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "payload": {
+            "id": "payload_publish",
+            "sha256": "e34876e658528799e20d5acb2864f1f9bbbc3ee528171bca57699fcebcd31b83",
+            "bytes": 91,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": {
+            "repository": {
+              "id": "resource_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "selectedIssue": 320,
+            "targetRef": "refs/heads/main",
+            "baseOid": "1111111111111111111111111111111111111111",
+            "headOid": "2222222222222222222222222222222222222222",
+            "evidence": {
+              "id": "github_evidence",
+              "sha256": "2893e329459ffa4955f73dcb929a1005aae805ea5d6aef4f37f872f733761ac7",
+              "bytes": 158,
+              "mediaType": "application/json"
+            },
+            "production": "none",
+            "deploymentGate": null
+          },
+          "disclosure": null,
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "ecb723ce757e50201cd1914530d38acbeaebacdc17339d4b6790d4fffacaef7e"
+      },
+      "merge": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_merge",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_merge",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "merge",
+          "classes": [
+            "github_merge"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [],
+          "payload": {
+            "id": "payload_merge",
+            "sha256": "ba5a97e3d30223f7ab19c3063d55719a2926c22f9f0a2ac97533506ea9de10ee",
+            "bytes": 87,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": {
+            "repository": {
+              "id": "resource_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "selectedIssue": 320,
+            "targetRef": "refs/heads/main",
+            "baseOid": "1111111111111111111111111111111111111111",
+            "headOid": "2222222222222222222222222222222222222222",
+            "evidence": {
+              "id": "github_evidence",
+              "sha256": "2893e329459ffa4955f73dcb929a1005aae805ea5d6aef4f37f872f733761ac7",
+              "bytes": 158,
+              "mediaType": "application/json"
+            },
+            "production": "none",
+            "deploymentGate": null
+          },
+          "disclosure": null,
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "ac79bb9ec94398b6fa9ade3f06c011f95cced87df6ab79648c21d1998769888e"
+      },
+      "pay": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_pay",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_pay",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "pay",
+          "classes": [
+            "financial"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [
+            {
+              "id": "recipient_approved",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "payload": {
+            "id": "payload_pay",
+            "sha256": "b18704213c13aaf93be71684bc1e900c17364cd94b11abed9402c839f5ded7cd",
+            "bytes": 83,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": {
+            "payee": {
+              "id": "recipient_approved",
+              "revision": 1,
+              "generation": 1
+            },
+            "account": {
+              "id": "resource_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "currency": "USD",
+            "amountMinor": "20",
+            "frequency": {
+              "id": "monthly_fixture",
+              "revision": 1,
+              "generation": 1
+            }
+          },
+          "github": null,
+          "disclosure": null,
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "a358980a7e3daa4d6b7917179c0dd679388bebb2bb91b5f0abbb9c4152b13fa0"
+      },
+      "disclose": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_disclose",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_disclose",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "disclose",
+          "classes": [
+            "disclosure"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [
+            {
+              "id": "recipient_approved",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "payload": {
+            "id": "payload_disclose",
+            "sha256": "410a2410a4f300803a08c1b88f8b139f2e86c3be817cc5df8dac2c3a72881c01",
+            "bytes": 93,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": null,
+          "disclosure": {
+            "recipients": [
+              {
+                "id": "recipient_approved",
+                "revision": 1,
+                "generation": 1
+              }
+            ],
+            "payloads": [
+              {
+                "id": "payload_disclose",
+                "sha256": "410a2410a4f300803a08c1b88f8b139f2e86c3be817cc5df8dac2c3a72881c01",
+                "bytes": 93,
+                "mediaType": "application/json"
+              }
+            ]
+          },
+          "impact": "reversible",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "d1f14cfb3d8e17f4f6d2cec452ab6b921f2852e68871ea71ca74d933b4f63462"
+      },
+      "major": {
+        "contract": "s15-prepared-action/v1",
+        "id": "action_major",
+        "revision": 1,
+        "installationId": "installation_fixture",
+        "effectKey": "slot_major",
+        "work": {
+          "id": "work_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "attempt": {
+          "id": "attempt_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "ownerGeneration": 1,
+        "policy": {
+          "id": "policy_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+        "purpose": {
+          "id": "purpose_selected_issue",
+          "revision": 1,
+          "generation": 1
+        },
+        "bot": {
+          "id": "bot_jit",
+          "revision": 1,
+          "generation": 1
+        },
+        "selection": {
+          "route": {
+            "id": "route_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "model": {
+            "id": "model_scripted",
+            "revision": 1,
+            "generation": 1
+          },
+          "effort": "fixture_effort"
+        },
+        "resources": [
+          {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "lineage": [
+          {
+            "id": "source_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        ],
+        "budget": {
+          "id": "budget_fixture",
+          "revision": 1,
+          "generation": 1
+        },
+        "adapter": {
+          "id": "fixture_adapter",
+          "version": 1,
+          "schemaHash": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7"
+        },
+        "details": {
+          "operation": "major",
+          "classes": [
+            "major_change"
+          ],
+          "target": {
+            "id": "resource_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "targetVersion": "fixture_version_1",
+          "recipients": [],
+          "payload": {
+            "id": "payload_major",
+            "sha256": "f42c4b63328ba2558661ae4a149628995b08dd5c8da19c58defe8c85487c53c6",
+            "bytes": 87,
+            "mediaType": "application/json"
+          },
+          "attachments": [],
+          "transaction": null,
+          "github": null,
+          "disclosure": null,
+          "impact": "major",
+          "directionDecision": null
+        },
+        "vm": null,
+        "inputLease": null,
+        "upperBound": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "costBasis": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "createdAt": 1000,
+        "expiresAt": 50000,
+        "actionHash": "f29f85b17bfd6af84715d33d46dec749af53e6d74c7ffb3322e0c5b123373df0"
+      }
+    },
+    "approvalExample": {
+      "contract": "s15-action-approval/v1",
+      "id": "approval_send",
+      "ownerGeneration": 1,
+      "ingressReceipt": "a3507b80eeffee21811a4c406147a4ed3a60a8e00285a5bb60fec5bb6315120e",
+      "effectKey": "slot_send",
+      "actionId": "action_send",
+      "actionRevision": 1,
+      "actionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+      "policy": {
+        "id": "policy_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+      "decision": "approve",
+      "decidedAt": 2000,
+      "expiresAt": 40000,
+      "hash": "77a180409ca1896b0a320309acbe4e06fbc30014a64f800e596906381b4b3231"
+    },
+    "commandExamples": {
+      "execute": {
+        "contract": "s15-policy-command/v1",
+        "requestId": "request_execute",
+        "expectedRevision": 1,
+        "body": {
+          "kind": "work.request",
+          "request": {
+            "ingressId": "ingress_execute",
+            "conversation": {
+              "id": "conversation_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "intent": "execute",
+            "purpose": {
+              "id": "purpose_selected_issue",
+              "revision": 1,
+              "generation": 1
+            },
+            "subject": {
+              "resource": {
+                "id": "resource_fixture",
+                "revision": 1,
+                "generation": 1
+              },
+              "key": "320"
+            }
+          }
+        }
+      },
+      "execute_changed": {
+        "contract": "s15-policy-command/v1",
+        "requestId": "request_execute",
+        "expectedRevision": 1,
+        "body": {
+          "kind": "work.request",
+          "request": {
+            "ingressId": "ingress_execute",
+            "conversation": {
+              "id": "conversation_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "intent": "execute",
+            "purpose": {
+              "id": "purpose_selected_issue",
+              "revision": 1,
+              "generation": 1
+            },
+            "subject": {
+              "resource": {
+                "id": "resource_fixture",
+                "revision": 1,
+                "generation": 1
+              },
+              "key": "321"
+            }
+          }
+        }
+      },
+      "seed": {
+        "contract": "s15-policy-command/v1",
+        "requestId": "request_seed",
+        "expectedRevision": 1,
+        "body": {
+          "kind": "work.request",
+          "request": {
+            "ingressId": "ingress_seed",
+            "conversation": {
+              "id": "conversation_fixture",
+              "revision": 1,
+              "generation": 1
+            },
+            "intent": "execute",
+            "purpose": {
+              "id": "purpose_selected_issue",
+              "revision": 1,
+              "generation": 1
+            },
+            "subject": {
+              "resource": {
+                "id": "resource_fixture",
+                "revision": 1,
+                "generation": 1
+              },
+              "key": "320"
+            }
+          }
+        }
+      }
+    },
+    "receiptExample": {
+      "contract": "s15-policy-receipt/v1",
+      "installationId": "installation_fixture",
+      "requestId": "request_execute",
+      "payloadHash": "4c134500cff499786deab7e0e35d7305ce208deeb3aba5a88fa197e3886ea72a",
+      "ownerGeneration": 1,
+      "kind": "work.request",
+      "committedAt": 1000,
+      "result": {
+        "state": "recorded",
+        "ref": {
+          "kind": "work",
+          "ref": {
+            "id": "work_command_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        },
+        "code": null
+      },
+      "hash": "e678fc3c7b690e1106b0a17d531835f61608ba7cde95dd1c4353684bb71ef508"
+    },
+    "current": {
+      "ownerGeneration": 1,
+      "policy": {
+        "id": "policy_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "revoked": false,
+      "lineageLive": true,
+      "resourceAccessible": true,
+      "budgetPresent": true,
+      "costBoundKnown": true,
+      "routeAvailable": true,
+      "adapterSupported": true,
+      "continuityAvailable": true,
+      "continuityGeneration": 1,
+      "vm": null,
+      "inputLease": null
+    },
+    "initialContinuity": {
+      "charged": {
+        "attempts": 0,
+        "steps": 0,
+        "calls": 0,
+        "reads": 0,
+        "outputBytes": 0,
+        "activeMs": 0,
+        "spendMinor": "0"
+      },
+      "claims": [],
+      "reservations": [],
+      "requestReceipts": [
+        {
+          "contract": "s15-policy-receipt/v1",
+          "installationId": "installation_fixture",
+          "requestId": "request_seed",
+          "payloadHash": "5927da850880af8db58fbd505916760fcf09a092b699660836c0b26d2999fdf1",
+          "ownerGeneration": 1,
+          "kind": "work.request",
+          "committedAt": 1000,
+          "result": {
+            "state": "recorded",
+            "ref": {
+              "kind": "work",
+              "ref": {
+                "id": "work_fixture",
+                "revision": 1,
+                "generation": 1
+              }
+            },
+            "code": null
+          },
+          "hash": "c841d8f7f3b7ae5a4c88407230a775c17d54b9a77896f809a04cb5fa429e2874"
+        }
+      ],
+      "frequencyUsed": 0,
+      "openCapacity": 0
+    },
+    "blobs": {
+      "cost_basis": {
+        "ref": {
+          "id": "cost_basis",
+          "sha256": "30f27662d90d1ba79bfdf8dfe9407621daeac0820fe38439f139b1223378be92",
+          "bytes": 86,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"currency\":\"USD\",\"maxCalls\":1,\"maxSpendMinor\":\"10\",\"source\":\"synthetic_enforced_cap\"}"
+      },
+      "payload_replace": {
+        "ref": {
+          "id": "payload_replace",
+          "sha256": "be9a84a400e95fb161f6eb1bc17b133cd177672e7ffa08358676961af91c59da",
+          "bytes": 91,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic replace only\",\"operation\":\"replace\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_send": {
+        "ref": {
+          "id": "payload_send",
+          "sha256": "821d1448d131109eb832b9acc577de23dc44f7b21712e2f870c245d14604871d",
+          "bytes": 85,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic send only\",\"operation\":\"send\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_publish": {
+        "ref": {
+          "id": "payload_publish",
+          "sha256": "e34876e658528799e20d5acb2864f1f9bbbc3ee528171bca57699fcebcd31b83",
+          "bytes": 91,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic publish only\",\"operation\":\"publish\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_merge": {
+        "ref": {
+          "id": "payload_merge",
+          "sha256": "ba5a97e3d30223f7ab19c3063d55719a2926c22f9f0a2ac97533506ea9de10ee",
+          "bytes": 87,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic merge only\",\"operation\":\"merge\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_pay": {
+        "ref": {
+          "id": "payload_pay",
+          "sha256": "b18704213c13aaf93be71684bc1e900c17364cd94b11abed9402c839f5ded7cd",
+          "bytes": 83,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic pay only\",\"operation\":\"pay\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_disclose": {
+        "ref": {
+          "id": "payload_disclose",
+          "sha256": "410a2410a4f300803a08c1b88f8b139f2e86c3be817cc5df8dac2c3a72881c01",
+          "bytes": 93,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic disclose only\",\"operation\":\"disclose\",\"target\":\"fixture_resource\"}"
+      },
+      "payload_major": {
+        "ref": {
+          "id": "payload_major",
+          "sha256": "f42c4b63328ba2558661ae4a149628995b08dd5c8da19c58defe8c85487c53c6",
+          "bytes": 87,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Synthetic major only\",\"operation\":\"major\",\"target\":\"fixture_resource\"}"
+      },
+      "attachment": {
+        "ref": {
+          "id": "attachment",
+          "sha256": "88c0200f710a8f7cf3d2532683300df2a18ba7830712bb347a90ef605eaf733e",
+          "bytes": 21,
+          "mediaType": "text/plain"
+        },
+        "utf8": "Synthetic attachment\n"
+      },
+      "github_evidence": {
+        "ref": {
+          "id": "github_evidence",
+          "sha256": "2893e329459ffa4955f73dcb929a1005aae805ea5d6aef4f37f872f733761ac7",
+          "bytes": 158,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"acceptance\":\"fixture_verified\",\"headOid\":\"2222222222222222222222222222222222222222\",\"requiredChecks\":\"fixture_success\",\"requiredReviews\":\"fixture_approved\"}"
+      },
+      "payload_send_changed": {
+        "ref": {
+          "id": "payload_send_changed",
+          "sha256": "21ebdd8dd01cafa1028499c02f33fb2368aefc5c92c5d8fd6779af3038462fe4",
+          "bytes": 81,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"finalContent\":\"Changed content\",\"operation\":\"send\",\"target\":\"fixture_resource\"}"
+      },
+      "adapter_schema": {
+        "ref": {
+          "id": "adapter_schema",
+          "sha256": "930869a47ffd8cd57070a1f017d34786db8b00b9c90f3f6ab239d7e985854ea7",
+          "bytes": 188,
+          "mediaType": "application/json"
+        },
+        "utf8": "{\"contract\":\"fixture-effect-payload/v1\",\"finalPayloadFields\":[\"finalContent\",\"operation\",\"target\"],\"noSend\":true,\"operations\":[\"replace\",\"send\",\"publish\",\"merge\",\"pay\",\"disclose\",\"major\"]}"
+      }
+    },
+    "seedReceipt": {
+      "contract": "s15-policy-receipt/v1",
+      "installationId": "installation_fixture",
+      "requestId": "request_seed",
+      "payloadHash": "5927da850880af8db58fbd505916760fcf09a092b699660836c0b26d2999fdf1",
+      "ownerGeneration": 1,
+      "kind": "work.request",
+      "committedAt": 1000,
+      "result": {
+        "state": "recorded",
+        "ref": {
+          "kind": "work",
+          "ref": {
+            "id": "work_fixture",
+            "revision": 1,
+            "generation": 1
+          }
+        },
+        "code": null
+      },
+      "hash": "c841d8f7f3b7ae5a4c88407230a775c17d54b9a77896f809a04cb5fa429e2874"
+    },
+    "claimExample": {
+      "contract": "s15-action-claim/v1",
+      "id": "claim_send",
+      "effectKey": "slot_send",
+      "actionId": "action_send",
+      "actionRevision": 1,
+      "actionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+      "policy": {
+        "id": "policy_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "policyHash": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+      "matchedRules": [
+        {
+          "id": "rule_ordinary",
+          "revision": 1,
+          "generation": 1
+        }
+      ],
+      "approval": "77a180409ca1896b0a320309acbe4e06fbc30014a64f800e596906381b4b3231",
+      "reservationId": "reservation_send",
+      "continuityGeneration": 1,
+      "claimedAt": 2000,
+      "installationId": "installation_fixture",
+      "hash": "7e107ee139456f73cb8cf6f6b833ea2c2644d86d40abc8259cc522cab7497e30"
+    },
+    "reservationExample": {
+      "id": "reservation_send",
+      "budget": {
+        "id": "budget_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "continuityId": "continuity_budget_fixture",
+      "work": {
+        "id": "work_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "actionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+      "charged": {
+        "attempts": 0,
+        "steps": 0,
+        "calls": 1,
+        "reads": 0,
+        "outputBytes": 4096,
+        "activeMs": 1000,
+        "spendMinor": "10"
+      },
+      "actual": {
+        "attempts": null,
+        "steps": null,
+        "calls": null,
+        "reads": null,
+        "outputBytes": null,
+        "activeMs": null,
+        "spendMinor": null
+      },
+      "transport": "unsettled"
+    },
+    "observationExample": {
+      "outcome": "unknown",
+      "basis": "uncertain",
+      "proof": null,
+      "actual": {
+        "attempts": null,
+        "steps": null,
+        "calls": null,
+        "reads": null,
+        "outputBytes": null,
+        "activeMs": null,
+        "spendMinor": null
+      },
+      "transportSettled": false
+    },
+    "catalogHashExamples": {
+      "policy": "2085458d2944c2254a340b89116b38585a3ccb0a4458c9ffc037391d87575c24",
+      "rules": {
+        "ordinary": "26b095bc7ed68ee38cf6ed18dd9f8e8059fb12bc45ab0dd26a8f7164bbf8d7b9",
+        "communication": "456b91e649f9e7fce162980fc51d8c4581696ec236d9b937e9a8f672780ea317",
+        "github_publish": "af09f283238eca84777335354e8cfd6df1784cbc9a326b24f0bd6008c5351a97",
+        "github_merge": "24f1176a8ed6a2aab1b8f1f5e7258a7b89a735b59f469c9076358888226e65b2",
+        "recurring": "fc33d40bb5c2ab9c1b14d56d80b93d3c030ec9b2957bb7e90199d6b38f337fc7",
+        "deny": "bc9eb6f4809a48ebc9fd084907cccf03c4cd4bce89fef6f718ba1d96a5d4bc78"
+      }
+    },
+    "frequencyCatalog": {
+      "ref": {
+        "id": "monthly_fixture",
+        "revision": 1,
+        "generation": 1
+      },
+      "startsAt": 0,
+      "expiresAt": 90000,
+      "maxOccurrences": 1
+    }
+  },
+  "scenarios": [
+    {
+      "id": "PC15-D01",
+      "name": "Structural owner and copied session-history JSON cannot authenticate",
+      "operations": [
+        {
+          "op": "owner_command",
+          "actor": "forged",
+          "command": "execute"
+        }
+      ],
+      "expected": {
+        "error": "authentication_required",
+        "newWorkIntents": 0,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D02",
+      "name": "Authenticated inspection remains inspection; acceptance alone starts nothing",
+      "operations": [
+        {
+          "op": "owner_request",
+          "intent": "inspect"
+        },
+        {
+          "op": "owner_request",
+          "intent": "accept_obligation"
+        }
+      ],
+      "expected": {
+        "newWorkIntents": 0,
+        "obligations": 1,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D03",
+      "name": "Same authenticated execute command deduplicates; changed payload conflicts",
+      "operations": [
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute"
+        },
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute"
+        },
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute_changed"
+        }
+      ],
+      "expected": {
+        "newWorkIntents": 1,
+        "receiptResults": [
+          "recorded",
+          "original_receipt",
+          "request_id_conflict"
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D04",
+      "name": "Known reversible edit can dispatch under ordinary rule",
+      "operations": [
+        {
+          "op": "prepare",
+          "action": "replace"
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "allow"
+          }
+        ],
+        "claims": 1,
+        "mutationCalls": 1,
+        "observation": "succeeded",
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "actual": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 0,
+          "activeMs": 0,
+          "spendMinor": "3"
+        }
+      }
+    },
+    {
+      "id": "PC15-D05",
+      "name": "Default communication holds; one exact approval sends once",
+      "operations": [
+        {
+          "op": "prepare",
+          "action": "send"
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "approval_required"
+          },
+          {
+            "state": "allow"
+          },
+          {
+            "state": "deny",
+            "code": "already_claimed"
+          }
+        ],
+        "claims": 1,
+        "mutationCalls": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        }
+      }
+    },
+    {
+      "id": "PC15-D06",
+      "name": "Changed final content invalidates exact approval",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "replace",
+          "path": "/actions/send/details/payload",
+          "value": {
+            "id": "payload_send_changed",
+            "sha256": "21ebdd8dd01cafa1028499c02f33fb2368aefc5c92c5d8fd6779af3038462fe4",
+            "bytes": 81,
+            "mediaType": "application/json"
+          },
+          "rehash": [
+            "action:send"
+          ]
+        },
+        {
+          "op": "revise",
+          "action": "send"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "approval_required"
+          }
+        ],
+        "oldApprovalUsable": false,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D07",
+      "name": "Added attachment cannot use old approval",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "replace",
+          "path": "/actions/send/details/attachments",
+          "value": [
+            {
+              "name": "note.txt",
+              "payload": {
+                "id": "attachment",
+                "sha256": "88c0200f710a8f7cf3d2532683300df2a18ba7830712bb347a90ef605eaf733e",
+                "bytes": 21,
+                "mediaType": "text/plain"
+              }
+            }
+          ],
+          "rehash": [
+            "action:send"
+          ]
+        },
+        {
+          "op": "revise",
+          "action": "send"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "approval_required"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D08",
+      "name": "Final argument substitution fails hash guard",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "substitute_wire_payload",
+          "action": "send",
+          "utf8": "different bytes"
+        },
+        {
+          "op": "final_dispatch",
+          "action": "send"
+        }
+      ],
+      "expected": {
+        "error": "hash_mismatch",
+        "claims": 1,
+        "mutationCalls": 0,
+        "observation": "not_dispatched",
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        }
+      }
+    },
+    {
+      "id": "PC15-D09",
+      "name": "Changed policy revision fences old preparation",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/policy",
+          "value": {
+            "id": "policy_fixture",
+            "revision": 2,
+            "generation": 2
+          },
+          "rehash": []
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "stale_authority"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D10",
+      "name": "Cross-purpose and resource refs cannot be filled by approval",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/send/purpose",
+          "value": {
+            "id": "other_purpose",
+            "revision": 1,
+            "generation": 1
+          },
+          "rehash": [
+            "action:send"
+          ]
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "outside_scope"
+          }
+        ],
+        "approvalCreated": false,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D11",
+      "name": "Explicit selection pin forbids another model even on a configured route",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/replace/selection/model",
+          "value": {
+            "id": "other_model",
+            "revision": 1,
+            "generation": 1
+          },
+          "rehash": [
+            "action:replace"
+          ]
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "selection_pinned"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D12",
+      "name": "Unsupported adapter cannot be approved into support",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/adapterSupported",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "unsupported",
+            "code": "adapter_unproven"
+          }
+        ],
+        "approvalCreated": false,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D13",
+      "name": "Any matching explicit deny wins",
+      "operations": [
+        {
+          "op": "install_rule",
+          "rule": "deny"
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "rule_denied"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D14",
+      "name": "Missing finite budget is held; no numeric default",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/budgetPresent",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "finite_budget_required"
+          }
+        ],
+        "reservations": 0,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D15",
+      "name": "Unknown cost without an enforceable bound is held",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/costBoundKnown",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "cost_unknown"
+          }
+        ],
+        "reservations": 0,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D16",
+      "name": "Two competing slots cannot overspend the last call",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/budget/ceiling/calls",
+          "value": 1,
+          "rehash": []
+        },
+        {
+          "op": "concurrent_claims",
+          "actions": [
+            "replace",
+            "send"
+          ],
+          "approve": [
+            "send"
+          ],
+          "winner": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "allow"
+          },
+          {
+            "state": "deny",
+            "code": "budget_exhausted"
+          }
+        ],
+        "claims": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D17",
+      "name": "Crash after claim before any wire call is reconcile-only",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "crash_recover"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "observation": "unknown",
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "already_claimed"
+          }
+        ],
+        "claims": 1,
+        "mutationCalls": 0,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "openCapacity": 1
+      }
+    },
+    {
+      "id": "PC15-D18",
+      "name": "Lost response and owner statement never authorize retry",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "unknown"
+        },
+        {
+          "op": "owner_statement",
+          "action": "send",
+          "outcome": "did_not_occur"
+        },
+        {
+          "op": "reconcile",
+          "action": "send",
+          "result": "ambiguous"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "observation": "unknown",
+        "basis": "owner_statement",
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "already_claimed"
+          }
+        ],
+        "claims": 1,
+        "mutationCalls": 1,
+        "reconcileReads": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 2,
+          "reads": 1,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        }
+      }
+    },
+    {
+      "id": "PC15-D19",
+      "name": "Revocation before final I/O prevents mutation but consumes claim",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "replace",
+          "path": "/current/revoked",
+          "value": true,
+          "rehash": []
+        },
+        {
+          "op": "final_dispatch",
+          "action": "send"
+        }
+      ],
+      "expected": {
+        "observation": "not_dispatched",
+        "code": "authority_revoked",
+        "claims": 1,
+        "mutationCalls": 0,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        }
+      }
+    },
+    {
+      "id": "PC15-D20",
+      "name": "Revocation after I/O fences publication without erasing remote fact",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch_pause_after_io",
+          "action": "send"
+        },
+        {
+          "op": "replace",
+          "path": "/current/revoked",
+          "value": true,
+          "rehash": []
+        },
+        {
+          "op": "observe",
+          "action": "send",
+          "outcome": "succeeded"
+        },
+        {
+          "op": "publish_result",
+          "action": "send"
+        }
+      ],
+      "expected": {
+        "observation": "succeeded",
+        "basis": "remote_verified",
+        "mutationCalls": 1,
+        "publishedResults": 0,
+        "claims": 1
+      }
+    },
+    {
+      "id": "PC15-D21",
+      "name": "Expiry at final boundary does not release unsettled capacity",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "replace",
+          "path": "/now",
+          "value": 40000,
+          "rehash": []
+        },
+        {
+          "op": "final_dispatch",
+          "action": "send"
+        }
+      ],
+      "expected": {
+        "observation": "not_dispatched",
+        "code": "expired",
+        "claims": 1,
+        "mutationCalls": 0,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        }
+      }
+    },
+    {
+      "id": "PC15-D22",
+      "name": "Withdrawn transitive source blocks preparation and publication",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/lineageLive",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "prepare",
+          "action": "replace"
+        },
+        {
+          "op": "publish_result",
+          "action": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "lineage_withdrawn"
+          }
+        ],
+        "mutationCalls": 0,
+        "publishedResults": 0
+      }
+    },
+    {
+      "id": "PC15-D23",
+      "name": "Publication exception does not establish merge authority",
+      "operations": [
+        {
+          "op": "prepare",
+          "action": "publish"
+        },
+        {
+          "op": "install_rule",
+          "rule": "github_publish"
+        },
+        {
+          "op": "prepare",
+          "action": "publish"
+        },
+        {
+          "op": "prepare",
+          "action": "merge"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "approval_required"
+          },
+          {
+            "state": "allow"
+          },
+          {
+            "state": "hold",
+            "code": "merge_authority_required"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D24",
+      "name": "Personal merge authority cannot bypass production approval",
+      "operations": [
+        {
+          "op": "install_rule",
+          "rule": "github_merge"
+        },
+        {
+          "op": "replace",
+          "path": "/actions/merge/details/github/production",
+          "value": "would_deploy",
+          "rehash": [
+            "action:merge"
+          ]
+        },
+        {
+          "op": "replace",
+          "path": "/actions/merge/details/classes",
+          "value": [
+            "github_merge",
+            "production"
+          ],
+          "rehash": [
+            "action:merge"
+          ]
+        },
+        {
+          "op": "prepare",
+          "action": "merge"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "production_approval_required"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D25",
+      "name": "Captured recurring rule matches exact payee amount and frequency",
+      "operations": [
+        {
+          "op": "install_rule",
+          "rule": "recurring"
+        },
+        {
+          "op": "prepare",
+          "action": "pay"
+        },
+        {
+          "op": "replace",
+          "path": "/actions/pay/details/transaction/amountMinor",
+          "value": "26",
+          "rehash": [
+            "action:pay"
+          ]
+        },
+        {
+          "op": "revise",
+          "action": "pay"
+        },
+        {
+          "op": "prepare",
+          "action": "pay"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "allow"
+          },
+          {
+            "state": "hold",
+            "code": "approval_required"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D26",
+      "name": "New private recipient requires exact permitted action-bound release",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/disclose/details/recipients",
+          "value": [
+            {
+              "id": "recipient_new",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "rehash": [
+            "action:disclose"
+          ]
+        },
+        {
+          "op": "replace",
+          "path": "/actions/disclose/details/disclosure/recipients",
+          "value": [
+            {
+              "id": "recipient_new",
+              "revision": 1,
+              "generation": 1
+            }
+          ],
+          "rehash": [
+            "action:disclose"
+          ]
+        },
+        {
+          "op": "prepare",
+          "action": "disclose"
+        },
+        {
+          "op": "approve",
+          "action": "disclose",
+          "actor": "owner_live"
+        },
+        {
+          "op": "prepare",
+          "action": "disclose"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "recipient_approval_required"
+          },
+          {
+            "state": "allow"
+          }
+        ],
+        "permanentRecipientAdded": false,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D27",
+      "name": "Unresolved major impact holds; isolated investigation remains scoped",
+      "operations": [
+        {
+          "op": "prepare",
+          "action": "major"
+        },
+        {
+          "op": "inspect_same_purpose"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "owner_direction_required"
+          }
+        ],
+        "inspectionAllowed": true,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D28",
+      "name": "Uncertain impact is never classified as ordinary",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/replace/details/impact",
+          "value": "unknown",
+          "rehash": [
+            "action:replace"
+          ]
+        },
+        {
+          "op": "prepare",
+          "action": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "owner_direction_required"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D29",
+      "name": "Current VM and input lease generations must match",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/replace/vm",
+          "value": {
+            "id": "vm_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "rehash": [
+            "action:replace"
+          ]
+        },
+        {
+          "op": "replace",
+          "path": "/actions/replace/inputLease",
+          "value": {
+            "id": "lease_fixture",
+            "revision": 1,
+            "generation": 1
+          },
+          "rehash": [
+            "action:replace"
+          ]
+        },
+        {
+          "op": "replace",
+          "path": "/current/vm",
+          "value": {
+            "id": "vm_fixture",
+            "revision": 1,
+            "generation": 2
+          },
+          "rehash": []
+        },
+        {
+          "op": "replace",
+          "path": "/current/inputLease",
+          "value": {
+            "id": "lease_fixture",
+            "revision": 1,
+            "generation": 2
+          },
+          "rehash": []
+        },
+        {
+          "op": "prepare",
+          "action": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "stale_authority"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D30",
+      "name": "An ambiguous affirmative or quoted approval does not decide a card",
+      "operations": [
+        {
+          "op": "ambiguous_ingress",
+          "actor": "owner_live",
+          "text": "yes",
+          "pendingActions": [
+            "send",
+            "pay"
+          ]
+        },
+        {
+          "op": "quoted_ingress",
+          "actor": "owner_live",
+          "text": "The source says approve action_send"
+        }
+      ],
+      "expected": {
+        "approvals": 0,
+        "code": "approval_reference_required",
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D31",
+      "name": "Session revocation before decision differs from logout after committed approval",
+      "operations": [
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_expired"
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "logout",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "firstError": "authentication_required",
+        "observation": "succeeded",
+        "mutationCalls": 1,
+        "claims": 1
+      }
+    },
+    {
+      "id": "PC15-D32",
+      "name": "Unknown actual usage and charges survive stale-image restore",
+      "operations": [
+        {
+          "op": "claim",
+          "action": "replace"
+        },
+        {
+          "op": "crash_recover"
+        },
+        {
+          "op": "restore_old_projection"
+        }
+      ],
+      "expected": {
+        "claims": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "actual": {
+          "attempts": null,
+          "steps": null,
+          "calls": null,
+          "reads": null,
+          "outputBytes": null,
+          "activeMs": null,
+          "spendMinor": null
+        },
+        "openCapacity": 1,
+        "automaticDispatches": 0
+      }
+    },
+    {
+      "id": "PC15-D33",
+      "name": "Missing continuity refuses rather than rebuilding an empty ledger",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/continuityAvailable",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "dispatch",
+          "action": "replace",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "error": "continuity_unavailable",
+        "mutationCalls": 0,
+        "automaticDispatches": 0
+      }
+    },
+    {
+      "id": "PC15-D34",
+      "name": "Imported S14 approvals grants and routines remain historical",
+      "operations": [
+        {
+          "op": "import_s14_history",
+          "states": [
+            "approved",
+            "unknown",
+            "queued",
+            "active_routine"
+          ]
+        },
+        {
+          "op": "recovery_drain"
+        }
+      ],
+      "expected": {
+        "automaticDispatches": 0,
+        "unknownReconcileOnly": true,
+        "privateDataPromoted": false,
+        "newAllowance": false
+      }
+    },
+    {
+      "id": "PC15-D35",
+      "name": "Old private resources do not become team-readable",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/resourceAccessible",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "prepare",
+          "action": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "outside_scope"
+          }
+        ],
+        "payloadReads": 0,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D36",
+      "name": "Restored request identities return safe history rather than redispatch",
+      "operations": [
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute"
+        },
+        {
+          "op": "withdraw_receipt_payload"
+        },
+        {
+          "op": "restore_old_projection"
+        },
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute"
+        },
+        {
+          "op": "owner_command",
+          "actor": "owner_live",
+          "command": "execute_changed"
+        }
+      ],
+      "expected": {
+        "newWorkIntents": 1,
+        "receiptResults": [
+          "recorded",
+          "historical_withdrawn",
+          "request_id_conflict"
+        ],
+        "automaticDispatches": 0
+      }
+    },
+    {
+      "id": "PC15-D37",
+      "name": "Unknown operation is unsupported even if owner says approve",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/actions/send/details/operation",
+          "value": "arbitrary_browser_submit",
+          "rehash": [
+            "action:send"
+          ]
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "unsupported",
+            "code": "adapter_unproven"
+          }
+        ],
+        "approvalCreated": false,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D38",
+      "name": "Malformed exact inputs refuse before authority mutation",
+      "operations": [
+        {
+          "op": "validate_raw",
+          "utf8": "{\"requestId\":\"a\",\"requestId\":\"b\"}"
+        },
+        {
+          "op": "validate_raw",
+          "utf8": "{\"ownerId\":\"owner\"}"
+        },
+        {
+          "op": "validate_number",
+          "value": "-0"
+        },
+        {
+          "op": "validate_minor",
+          "value": "01"
+        }
+      ],
+      "expected": {
+        "errors": [
+          "invalid_shape",
+          "invalid_shape",
+          "invalid_data",
+          "invalid_data"
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D39",
+      "name": "Unavailable approved route is not evidence to select another provider",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/current/routeAvailable",
+          "value": false,
+          "rehash": []
+        },
+        {
+          "op": "prepare",
+          "action": "replace"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "hold",
+            "code": "route_unavailable"
+          }
+        ],
+        "fallbackRoutes": 0,
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D40",
+      "name": "Denial of exact action wins over an otherwise matching standing exception",
+      "operations": [
+        {
+          "op": "install_rule",
+          "rule": "communication"
+        },
+        {
+          "op": "deny",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "decisions": [
+          {
+            "state": "deny",
+            "code": "action_denied"
+          }
+        ],
+        "mutationCalls": 0
+      }
+    },
+    {
+      "id": "PC15-D41",
+      "name": "The original claimed invocation can use its last reserved call and publish once",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/budget/ceiling/calls",
+          "value": 1,
+          "rehash": []
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "final_dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        },
+        {
+          "op": "publish_result",
+          "action": "send"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "originalContinuationAllowed": true,
+        "remainingCallsAfterClaim": 0,
+        "observation": "succeeded",
+        "claims": 1,
+        "mutationCalls": 1,
+        "publishedResults": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "decisions": [
+          {
+            "state": "allow"
+          },
+          {
+            "state": "deny",
+            "code": "already_claimed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "PC15-D42",
+      "name": "Recording approval preserves the prepared action revision and exact hash",
+      "operations": [
+        {
+          "op": "inspect_action",
+          "action": "send",
+          "snapshot": "before_decision"
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "inspect_action",
+          "action": "send",
+          "snapshot": "after_decision"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "actionRevisionBefore": 1,
+        "actionRevisionAfter": 1,
+        "actionHashBefore": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "actionHashAfter": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "preparedActionSnapshotsEqual": true,
+        "approvalActionRevision": 1,
+        "approvalActionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "approvalRecords": 1,
+        "claims": 1,
+        "mutationCalls": 1,
+        "observation": "succeeded"
+      }
+    }
+  ]
+}
