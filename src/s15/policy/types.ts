@@ -32,7 +32,7 @@ export interface WorkActor { readonly [workBrand]: true }
 /** Exact current generation resolved outside the working VM; absence or inactive state fails closed. */
 export type CatalogKind = 'purpose' | 'bot' | 'resource' | 'recipient' | 'route' | 'model' | 'lineage' | 'vm' | 'input';
 /** Protected owning-service resolver. allows must enforce current Bot/resource/consent/privacy ceilings, including eligibility for an exact owner release to any new disclosure/egress recipient; no model input is authoritative. */
-export interface CatalogPort { current(kind: CatalogKind, id: string): { ref: Ref; active: boolean } | null; allows(work: WorkAuthority, action: ActionDraft | null): boolean }
+export interface CatalogPort { current(kind: CatalogKind, id: string): { ref: Ref; active: boolean } | null; allows(work: WorkAuthority, action: ActionDraft | null): boolean; /** Owning DATA15 resolver rechecks recipient privacy for each reserved/guarded selection, including consumers without a model-selection hook. */ allowsModel?(work: WorkAuthority, selection: Selection): boolean }
 /** Explicit generation fence for source lineage, VM or browser input, rechecked at final dispatch/publication. */
 export interface Fence { kind: CatalogKind; ref: Ref }
 /** Credential-free exact structured payload. Strings are preserved without trimming or normalization. */
@@ -41,8 +41,11 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export interface Transaction { payee: Ref; account: Ref; currency: string; minorUnit: number; amountMinor: string; quoteId: string; quoteVersion: string; quoteExpiresAt: number }
 /** Trusted GitHub evidence must describe the exact selected issue/head and actual protected production consequences. */
 export interface GithubConditions { repository: Ref; issue: number; target: string; head: string; evidenceHash: string; checksPassed: boolean; reviewsPassed: boolean; acceptancePassed: boolean; production: 'none' | 'protected_gate' | 'would_deploy' | 'unknown'; deploymentFence: Fence | null }
+/** Protected disclosure projection for the existing owner ActionSlip. Complete bytes remain in payload;
+ * this summary never grants authority or exposes session/provider credentials. */
+export interface DisclosureDetails { recipients: Ref[]; purpose: Ref; sources: { ref: Ref; resource: Ref; classification: 'public' | 'private' | 'personal' | 'business' }[]; dataClasses: ('public' | 'private' | 'personal' | 'business')[]; exactBytes: { length: number; sha256: string } }
 /** Adapter-produced immutable final semantics. A null cost is held, never interpreted as free. */
-export interface ActionDraft { operation: string; classes: ActionClass[]; resources: Ref[]; recipients: Ref[]; payload: JsonValue; fences: Fence[]; upperBound: BudgetVector | null; expiresAt: number; transaction: Transaction | null; github: GithubConditions | null; impact: 'reversible' | 'major' | 'unknown'; snapshot?: Fence | null }
+export interface ActionDraft { operation: string; classes: ActionClass[]; resources: Ref[]; recipients: Ref[]; payload: JsonValue; fences: Fence[]; upperBound: BudgetVector | null; expiresAt: number; transaction: Transaction | null; github: GithubConditions | null; impact: 'reversible' | 'major' | 'unknown'; snapshot?: Fence | null; disclosure?: DisclosureDetails }
 /** Immutable prepared revision. Approval and observations do not mutate this record or its hashes. */
 export interface PreparedAction extends ActionDraft { id: string; revision: number; effectKey: string; adapter: string; adapterVersion: number; workId: string; ownerGeneration: number; policyRevision: number; policyHash: string; createdAt: number; contentHash: string; recipientHash: string; transactionHash: string | null; actionHash: string }
 /** Exact immutable revision reference required by decisions, dispatch and publication. */
@@ -64,7 +67,7 @@ export interface Observation { outcome: 'not_dispatched' | 'succeeded' | 'failed
 /** Trusted adapter result: failed requires conclusive remote rejection; exceptions/malformed replies become unknown. */
 export interface AdapterResult { outcome: 'succeeded' | 'failed' | 'unknown'; actual: Usage; transportSettled: boolean; /** Exact observed result/undo metadata, never a model-authored success assertion. */ evidence?: JsonValue }
 /** One live invocation, retained only by the protected adapter. send is called synchronously under the final writer fence after a durable claim. No retries/redirects are allowed. */
-export interface DispatchContext { commit(finalPayload: JsonValue, send: () => Promise<AdapterResult>): Promise<AdapterResult> }
+export interface DispatchContext { commit(finalPayload: JsonValue, send: () => Promise<AdapterResult>): Promise<AdapterResult>; /** Recheck this original live claim after a transport preparation wait. No new send/claim is authorized. */ guard(): void }
 /** Registered protected code only. prepare is synchronous/no I/O; perform owns final bytes, conditional preconditions and single-send behavior. Real adapters require their own boundary proof. */
 export interface ActionAdapter {
   id: string; version: number;
