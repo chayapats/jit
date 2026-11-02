@@ -66,7 +66,12 @@ export function openModelService(options: ModelOptions): ModelService {
       const baseline = options.registry.current(work.request.selection); if (!baseline) fail('route_unavailable'); route(baseline);
       const anchor = journal.all<ModelSelectionRecord>().find(row => row.workId === work.id)?.route;
       if (anchor && (anchor.provider !== baseline.provider || !equal(anchor.account, baseline.account) || !equal(anchor.billing, baseline.billing) || !equal(anchor.recipient, baseline.recipient) || anchor.charge !== baseline.charge)) fail('account_changed');
-      const pin = clone(options.registry.pins(work.id)); pins(pin);
+      let pin = clone(options.registry.pins(work.id)); pins(pin);
+      if (work.request.selectionPin) {
+        if (!matches(work.request.selectionPin, pin)) fail('selection_pinned');
+        pin = { route: clone(work.request.selectionPin.route), model: clone(work.request.selectionPin.model), effort: work.request.selectionPin.effort as ThinkingLevel };
+        pins(pin);
+      }
       const candidates = registry().filter(candidate => candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
       const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
       const chosen = available[0]; if (!chosen) fail((pin.route || pin.model || pin.effort || work.request.selectionPin) ? 'selection_pinned' : 'route_unavailable');
@@ -168,11 +173,16 @@ export function openModelService(options: ModelOptions): ModelService {
       const p = options.policy.owner.current(owner); if (!p) fail('policy_required'); if (workId !== undefined) id(workId);
       // Installation ceilings always show installation charges; filtering selections cannot hide siblings' spend.
       const reservations = options.policy.control.reservations(), totals = summarizeReservations(reservations), records = journal.all<ModelSelectionRecord>().filter(row => workId === undefined || row.workId === workId);
-      const workIds = [...new Set(records.map(row => row.workId))];
+      const workIds = workId ? [workId] : [...new Set(records.map(row => row.workId))];
       return { contract: 's15-model-budget/v1', currency: p.budget?.currency ?? null, subscriptionLimits: options.policy.control.subscriptionLimits(),
         ceilings: (Object.keys(totals.charged) as (keyof typeof totals.charged)[]).map(dimension => ({ dimension, ceiling: p.budget?.ceiling[dimension] ?? null, charged: dimension === 'spendMinor' && !p.budget ? null : totals.charged[dimension], measured: totals.measured[dimension], unknown: totals.unknown.includes(dimension) })),
         routes: registry().map(row => ({ selection: row.selection, provider: row.provider, model: row.modelId, account: row.account, billing: row.billing, charge: row.charge, availability: row.availability, holdCode: !p.budget && row.charge === 'metered' ? 'finite_budget_required' : row.availability === 'quota' ? 'quota_exceeded' : row.availability === 'unavailable' ? 'route_unavailable' : null })),
-        pins: workIds.map(workId => ({ workId, pins: clone(options.registry.pins(workId)) })), selections: records.map(({ output, ...safe }) => safe), unsettled: reservations.filter(r => !r.transportSettled).length };
+        pins: workIds.map(workId => {
+          let pin = clone(options.registry.pins(workId));
+          try { const work = options.policy.work.guard(options.policy.control.bindWork(workId)); if (work.request.selectionPin) pin = { route: clone(work.request.selectionPin.route), model: clone(work.request.selectionPin.model), effort: work.request.selectionPin.effort as ThinkingLevel }; }
+          catch { pin = records.find(row => row.workId === workId)?.pins ?? pin; }
+          return { workId, pins: pin };
+        }), selections: records.map(({ output, ...safe }) => safe), unsettled: reservations.filter(r => !r.transportSettled).length };
     },
     close() { if (active.size) fail('capacity_busy'); journal.close(); },
   };
