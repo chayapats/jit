@@ -22,10 +22,10 @@ export interface ConversationNeedsYou { id: string; requestId: string; code: str
 export interface ConversationOwnerView { contract: "s15.owner-view/v1"; conversationId: string; rows: ConversationOwnerRow[]; needsYou: ConversationNeedsYou[] }
 
 function state(request: ConversationRequest): ConversationOwnerRow["state"] {
+  if (request.state === "stopped") return "stopped";
   if (request.decision?.decision === "deny") return "denied";
   if (request.decision?.observation?.outcome === "succeeded") return "done";
   if (request.state === "completed") return request.result === null ? "blocked" : "done";
-  if (request.state === "stopped") return "stopped";
   if (request.state === "reconcile_only") return "unknown";
   if (request.state === "accepted") return "received";
   if (request.state === "blocked") return "blocked";

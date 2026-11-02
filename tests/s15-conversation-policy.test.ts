@@ -171,3 +171,16 @@ test("real POLICY: ingress rollback and a later retry reuse one stable inference
   expect(f.query("SELECT id FROM works WHERE json_extract(json,'$.mode')='interpretation'")).toHaveLength(1);
   expect(f.counts().reads).toBe(1);
 });
+
+test("real POLICY: known action outcome survives a crash before CHAT outcome commit without replay", async () => {
+  const f = fixture(); await f.send(); conversationOwnerView(f.app, f.owner, "conversation");
+  const approve = message("Approve"); f.app.submit(f.owner, approve); await f.app.drain();
+  const interrupted = f.app.store.request(approve.requestId); interrupted.state = "running"; interrupted.decision!.observation = null;
+  f.app.store.transaction(() => f.app.store.save(interrupted));
+  await f.reopen();
+  expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
+  expect(f.app.view(f.owner, approve.requestId).decision!.observation!.outcome).toBe("succeeded");
+  expect(conversationOwnerView(f.app, f.owner, "conversation").rows.at(-1)!.state).toBe("done");
+  f.app.submit(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
+});

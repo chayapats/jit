@@ -129,6 +129,16 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       slips = this.options.policy.actionSlips?.(actor, request.actions) ?? [];
       rememberActionPresentation(this, request, slips);
     } catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips: [] }; }
+    if (projected.decision && projected.decision.observation === null) {
+      const exact = projected.decision.action;
+      const observed = slips.find(slip => slip.action.id === exact.id && slip.action.revision === exact.revision && slip.action.actionHash === exact.actionHash)?.observation;
+      // POLICY may have committed before CHAT lost its process. Project known facts without clearing
+      // the stored interrupted claim or reconstructing a dispatch/model context.
+      if (observed) {
+        projected.decision.observation = observed;
+        if (projected.state !== "stopped" && observed.outcome !== "unknown") { projected.state = "accepted"; projected.code = observed.code ?? `action_${observed.outcome}`; }
+      }
+    }
     if (request.state === "completed") {
       try { this.publication(request); }
       catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips }; }
