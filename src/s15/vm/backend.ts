@@ -20,6 +20,12 @@ const clean = (s: string) => redactRegisteredSecrets(redactCredentials(s)).repla
 export function createVmBackend(port: VmBackendPort, root: string, temporaryDirectory: string, limits: VmLimits,
   proxyEnvironment: Readonly<Record<string, string>> = {}, access: "inspect" | "execute" = "execute"): ExecutionBackend {
   function bad(): never { port.protocolError?.(); return vmFail("vm_protocol_invalid"); }
+  function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
+    try { return vmRecord(value, keys); } catch { return bad(); }
+  }
+  function returnedPath(value: unknown): string {
+    try { return vmPath(value as string, [root, temporaryDirectory]); } catch { return bad(); }
+  }
   const decode = (v: unknown, max: number): Uint8Array => { try { return vmBytes(v, max); } catch { return bad(); } };
   const roots = [root, temporaryDirectory], path = (p: string) => vmPath(p, roots);
   const observations = new WeakMap<ExecutionFileObservation, { path: string; token: string }>();
@@ -28,18 +34,18 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
     return port.call(r, kind, signal);
   };
   async function entries(p: string, recursive: boolean, signal?: AbortSignal): Promise<ExecutionDirectoryEntry[]> {
-    const r = await call({ op: "list", path: path(p), recursive }, "read", signal); vmRecord(r, ["entries"]);
+    const r = await call({ op: "list", path: path(p), recursive }, "read", signal); record(r, ["entries"]);
     if (!Array.isArray(r.entries) || r.entries.length > 10000) bad();
     return r.entries.map(e => {
-      const entry = vmRecord(e, ["name", "type"]);
+      const entry = record(e, ["name", "type"]);
       if (typeof entry.name !== "string" || !entry.name || Buffer.byteLength(entry.name) > 4096 || (!recursive && entry.name.includes("/"))) bad();
-      path(`${p}/${entry.name}`); if (containsCredential(entry.name)) vmFail("vm_sensitive_output", 403);
+      returnedPath(`${p}/${entry.name}`); if (containsCredential(entry.name)) vmFail("vm_sensitive_output", 403);
       if (!["file", "directory", "symlink", "other"].includes(entry.type as string)) bad();
       return { name: entry.name, type: entry.type as ExecutionDirectoryEntry["type"] };
     });
   }
   function processResult(r: Record<string, unknown>): ExecutionSpawnResult {
-    vmRecord(r, ["stdout", "stderr", "exitCode", "timedOut", "truncated", "totalBytes"]);
+    record(r, ["stdout", "stderr", "exitCode", "timedOut", "truncated", "totalBytes"]);
     const stdoutBytes = decode(r.stdout, limits.outputBytes), stderrBytes = decode(r.stderr, limits.outputBytes);
     if (stdoutBytes.length + stderrBytes.length > limits.outputBytes || typeof r.timedOut !== "boolean" || typeof r.truncated !== "boolean" || (r.timedOut && r.exitCode !== null)) bad();
     if (r.exitCode !== null) vmInteger(r.exitCode, 255, 0);
@@ -52,11 +58,11 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
   }
   const backend: ExecutionBackend = {
     workspaceRoot: root, temporaryDirectory,
-    async realpath(p) { const r = await call({ op: "realpath", path: path(p) }, "read"); vmRecord(r, ["path"]); return path(r.path as string); },
-    async stat(p) { const r = await call({ op: "stat", path: path(p) }, "read"); vmRecord(r, ["type"]); if (!["file", "directory", "other"].includes(r.type as string)) bad(); return { type: r.type as "file" | "directory" | "other" }; },
-    async *readFile(p, options) { const r = await call({ op: "read", path: path(p) }, "read", options?.signal); vmRecord(r, ["data"]); yield safeBytes(decode(r.data, limits.fileBytes)); },
+    async realpath(p) { const r = await call({ op: "realpath", path: path(p) }, "read"); record(r, ["path"]); return returnedPath(r.path); },
+    async stat(p) { const r = await call({ op: "stat", path: path(p) }, "read"); record(r, ["type"]); if (!["file", "directory", "other"].includes(r.type as string)) bad(); return { type: r.type as "file" | "directory" | "other" }; },
+    async *readFile(p, options) { const r = await call({ op: "read", path: path(p) }, "read", options?.signal); record(r, ["data"]); yield safeBytes(decode(r.data, limits.fileBytes)); },
     async observeFile(p, options) {
-      path(p); const r = await call({ op: "observe", path: p, content: options?.content === true }, "read", options?.signal); vmRecord(r, ["token", "data"]);
+      path(p); const r = await call({ op: "observe", path: p, content: options?.content === true }, "read", options?.signal); record(r, ["token", "data"]);
       if (r.token === null) { if (r.data !== null) bad(); return null; }
       if (typeof r.token !== "string" || !/^[a-f0-9]{64}$/.test(r.token)) bad();
       const observation: ExecutionFileObservation = Object.freeze({ targetExists: true, ...(r.data === null ? {} : { bytes: safeBytes(decode(r.data, limits.fileBytes)) }) });
@@ -73,7 +79,7 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
           observed = own.token;
         }
       }
-      const r = await call({ op: "write", path: p, data: Buffer.from(content).toString("base64"), createParents: options?.createParents === true, ...(observed === undefined ? {} : { observed }) }, "write", options?.signal); vmRecord(r, []);
+      const r = await call({ op: "write", path: p, data: Buffer.from(content).toString("base64"), createParents: options?.createParents === true, ...(observed === undefined ? {} : { observed }) }, "write", options?.signal); record(r, []);
     },
     async writePrivateFile(p, content) { vmPath(p, [temporaryDirectory]); await backend.writeFileAtomically(p, content); },
     list: (p, options) => entries(p, false, options?.signal),
@@ -95,7 +101,7 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
       for (const line of result.stdout.split("\n")) if (line) {
         let event; try { event = JSON.parse(line); } catch { bad(); }
         if (event.type !== "match") continue;
-        const p = path(event.data?.path?.text); vmInteger(event.data?.line_number);
+        const p = returnedPath(event.data?.path?.text); vmInteger(event.data?.line_number);
         if (typeof event.data?.lines?.text !== "string") bad();
         if (matches.length >= request.limit) { truncated = true; break; }
         matches.push({ path: p, line: event.data.line_number, text: clean(event.data.lines.text.replace(/\n$/, "")) });

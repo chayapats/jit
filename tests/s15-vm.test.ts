@@ -239,3 +239,9 @@ test("owner-edited session settings replace the initial default of two", async (
   try { c = await open(f, "three"); await expect(open(f, "four")).rejects.toMatchObject({ code: "vm_capacity" }); }
   finally { await Promise.all([a.close(), b.close(), c?.close()]); }
 });
+
+test.each([{ unexpected: true }, { path: "/outside" }, { path: 1 }])("every malformed returned path/record fences the VM: %j", async response => {
+  let fenced = false;
+  const backend = createVmBackend({ protocolError() { fenced = true; }, async call() { return response; } }, "/workspace", "/workspace/.tmp", limits);
+  await expect(backend.realpath("/workspace")).rejects.toMatchObject({ code: "vm_protocol_invalid" }); expect(fenced).toBe(true);
+});
