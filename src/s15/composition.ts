@@ -174,6 +174,7 @@ export async function composeS15(options: S15CompositionOptions) {
           ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal);
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
+        if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
         return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,

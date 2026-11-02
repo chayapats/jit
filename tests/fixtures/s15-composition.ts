@@ -17,7 +17,7 @@ export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 export const bound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 32768, activeMs: 10000 });
 /** Boots the production composition in-process. Every model and VM transport is scripted; no inference or live account is used. */
-export async function composedFixture(profile: 'default' | 'personal' = 'default') {
+export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false) {
   const parent = mkdtempSync(join(tmpdir(), 'jit-composed-')), directory = join(parent, 'protected');
   let now = 1000, generation = 1, sourceLive = true, service!: Awaited<ReturnType<typeof composeS15>>, turn = 0;
   const google = googleFixture(), engine = recordEngine();
@@ -90,7 +90,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   const route: import('../../src/s15/model').ApprovedModelRoute = { selection: choice, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: bound(), rank: { ordinary: 0, difficult: 0 } };
   service = await composeS15(options(true)); let owner = service.policy.owner.authenticate(proof);
   service.policy.owner.install(owner, 'install', 0, policy);
-  for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
+  for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: workspaceReadOnly && resource.id === 'computer' ? ['read'] : ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
   service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
   const headers = { cookie: `jit_s14=${secretSession}`, origin: 'http://localhost:3099', 'x-csrf-token': csrf, 'content-type': 'application/json' };
   return { parent, directory, options, modelPrompts, interpreterPrompts, recipientApprovals, google, engine, recordService, policyInput: policy, route, protocol, payment, files, vmCalls, records, choice,

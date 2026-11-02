@@ -7,7 +7,9 @@ import type { TeamService } from './service';
  * durable and requires protected reconciliation; expiry/restart never silently steals the lease. */
 export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resourceId: string): WorkingVmPort {
   return { async openAttempt(actor, input) {
-    const context = team.bind(actor as WorkActor), lease = team.acquire(context, [resourceId], 'write', 3600000);
+    const context = team.bind(actor as WorkActor);
+    if (input.access === 'inspect') { team.resource(context, resourceId, 'read'); return vm.openAttempt(actor, input); }
+    const lease = team.acquire(context, [resourceId], 'write', 3600000);
     const ready = Promise.withResolvers<VmSession>(), closed = Promise.withResolvers<void>();
     const lifecycle = team.dispatch(lease, async () => {
       let session: VmSession;
