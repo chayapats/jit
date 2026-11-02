@@ -1,0 +1,54 @@
+{
+  "parent": 307,
+  "statusVerifiedAt": "2026-11-02",
+  "status": "bounded-coverage-recorded-pending-review-history-defect-open",
+  "implementationCommit": "388c119773bcb1244912fa70ec3ec67b5cd0544d",
+  "testedCheckout": "1844be4309c3f5670ffa2c217350682c892823a3",
+  "sourceTestFingerprint": "f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4",
+  "evidence": "../evidence/s14-plain-ui.md",
+  "tickets": [
+    {
+      "key": "PLAIN14-01",
+      "number": 308,
+      "state": "OPEN",
+      "status": "implementation-review-pending",
+      "pullRequest": "https://github.com/chayapats/jit/pull/310",
+      "pullRequestState": "OPEN",
+      "base": "main",
+      "head": "t3/plain-handoff-scope-review",
+      "headSha": "1844be4309c3f5670ffa2c217350682c892823a3",
+      "file": "s14/PLAIN14-01.md"
+    },
+    {
+      "key": "PLAIN14-02",
+      "number": 309,
+      "state": "OPEN",
+      "status": "bounded-evidence-recorded-pending-review",
+      "head": "t3/plain14-02-device-coverage",
+      "stackedBase": "t3/plain-handoff-scope-review",
+      "file": "s14/PLAIN14-02.md",
+      "readyForAgent": false,
+      "readyForHuman": false,
+      "coverage": {
+        "chrome": "selected-authenticated-scripted-local-observations-with-history-failure",
+        "safari": "limited-native-AX-navigation-mode-sample-input-layout-inconclusive",
+        "physicalIPhoneTouchOsk": "NOT RUN; owner confirmed no safe route/observer this round",
+        "voiceOver": "NOT RUN; prior owner deferral preserved",
+        "androidOtherAt": "UNRUN",
+        "liveEffectsDeploymentCutover": "UNRUN; not authorized by this ticket"
+      },
+      "defects": [311]
+    },
+    {
+      "key": "PLAIN14-03",
+      "number": 311,
+      "state": "OPEN",
+      "status": "needs-triage-separate-implementation-authorization",
+      "file": "s14/PLAIN14-03.md",
+      "readyForAgent": false,
+      "readyForHuman": false,
+      "discoveredBy": 309,
+      "reproduction": "Chrome 156 EN/light CSS 390x844: Work remains checked after Back, accessible send label remains Send message; 3/3 re-check traversals"
+    }
+  ]
+}
