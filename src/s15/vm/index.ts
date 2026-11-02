@@ -11,3 +11,6 @@ export { LimaVmManagement, ProxmoxVmManagement, limaRestrictedQemu } from "./man
 export { startVmRegistryProxy, defaultVmRegistryHosts } from "./proxy";
 export { defaultVmLimits } from "./types";
 export type { WorkingVmPort, VmSession, VmPolicyPort, VmPolicyClaim, VmPolicyOperation, VmEvidence, VmStatus, VmCapability, VmLimits, VmManagement } from "./types";
+
+export { VmPolicyIntegration } from "./policy";
+export type { VmPolicyIntegrationOptions } from "./policy";

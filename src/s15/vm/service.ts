@@ -91,7 +91,7 @@ export class WorkingVmService implements WorkingVmPort {
         const snapshot = `jit-${uuid()}`, payload = vmCanonical({ kind: "snapshot", snapshot, vmId: row.id, generation: row.generation });
         const claim = await this.options.policy.claim(actor, { vmId: row.id, generation: row.generation, sessionId: id, workId: input.workId,
           attemptId: input.attemptId, operationId: uuid(), kind: "system_admin", payloadHash: vmHash(payload), payload, timeoutMs: 360000, outputBytes: 0 });
-        await claim.dispatch(() => { managementStarted = true; return manager!.snapshot(snapshot); });
+        await claim.dispatch(() => { if (input.signal?.aborted) throw new DOMException("Aborted", "AbortError"); managementStarted = true; return manager!.snapshot(snapshot); });
         const machine = await manager!.inspect();
         this.options.store.transaction(() => {
           const current = this.options.store.registration(row.id); current.generation++; current.boot = machine.boot; this.options.store.save(current);
@@ -106,9 +106,12 @@ export class WorkingVmService implements WorkingVmPort {
         deadline: this.#clock() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), tail: Promise.resolve(),
         pending: 0, closing: null, timer: null, removeSignal: () => {}, proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs) ?? null };
       this.#sessions.set(id, s);
-      const state = s, transport = this.transport(row);
+      const state = s;
+      const abort = () => { void this.closeState(state).catch(() => {}); };
+      input.signal?.addEventListener("abort", abort, { once: true });
+      state.removeSignal = () => input.signal?.removeEventListener("abort", abort);
       const guard = () => { if (input.signal?.aborted) { state.cancelled = true; throw new DOMException("Aborted", "AbortError"); } this.current(actor, state); };
-      await transport.openScope(unit, this.#limits.sessionMs, guard); guard();
+      guard();
       const call = (operation: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal) => this.call(actor, state, operation, kind, signal);
       // Fixed, work-root-only infrastructure setup is separately claimed; it cannot dispatch a domain edit/shell.
       await call({ op: "init" }, "read");
@@ -121,9 +124,6 @@ export class WorkingVmService implements WorkingVmPort {
         cancel: () => this.closeState(state), close: () => this.closeState(state) });
       this.#live.set(session, state);
       state.timer = setTimeout(() => { void this.closeState(state).catch(() => {}); }, this.#limits.sessionMs);
-      const abort = () => { void session.cancel().catch(() => {}); };
-      input.signal?.addEventListener("abort", abort, { once: true });
-      state.removeSignal = () => input.signal?.removeEventListener("abort", abort);
       if (input.signal?.aborted) { await session.cancel(); throw new DOMException("Aborted", "AbortError"); }
       this.options.store.db.query("UPDATE vm_sessions SET state='active' WHERE id=?").run(id);
       return session;
@@ -150,17 +150,23 @@ export class WorkingVmService implements WorkingVmPort {
       if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
       const action: VmPolicyOperation = { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
         operationId, kind: operation.op === "init" ? "setup" : s.mode === "system" && kind === "shell" ? "system_admin" : kind, payload, payloadHash,
-        timeoutMs: Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#clock()), outputBytes: this.#limits.outputBytes };
+        timeoutMs: Math.max(1, Math.floor(Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#clock()))), outputBytes: this.#limits.outputBytes };
       const claim = await this.options.policy.claim(actor, Object.freeze(action)); this.current(actor, s);
       const evidence: VmEvidence = { id, vmId: s.vmId, sessionId: s.id, operationId, payloadHash, outcome: "not_dispatched", responseHash: null,
         outputBytes: null, transport: "pending", execution: "unsettled", published: false };
       this.options.store.saveEvidence(evidence);
       try {
-        const transportRequest = request.op === "spawn" ? { ...request, env: { ...(operation.env as Record<string, string>), ...s.proxy?.environment } } : request;
+        const transportRequest = request.op === "spawn" ? { ...request, env: { ...(request.env as Record<string, string>), ...s.proxy?.environment } } : request;
         const response = await claim.dispatch(() => {
           this.current(actor, s); evidence.outcome = "unknown"; this.options.store.saveEvidence(evidence);
-          return this.transport(this.options.store.registration(s.vmId)).invoke(transportRequest, { unit: s.unit, timeoutMs: action.timeoutMs,
+          const transport = this.transport(this.options.store.registration(s.vmId)), began = this.#clock();
+          const invoke = async () => {
+            if (operation.op === "init") await transport.openScope(s.unit, Math.min(action.timeoutMs, this.#limits.sessionMs), () => this.current(actor, s));
+            this.current(actor, s);
+            return transport.invoke(transportRequest, { unit: s.unit, timeoutMs: Math.max(1, Math.floor(action.timeoutMs - (this.#clock() - began))),
             maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart: () => this.current(actor, s) });
+          };
+          return invoke();
         });
         evidence.transport = "closed"; evidence.outcome = "guest_reported"; const bytes = vmCanonical(response);
         evidence.responseHash = vmHash(bytes); evidence.outputBytes = Buffer.byteLength(bytes); this.options.store.saveEvidence(evidence); claim.observe({ ...evidence });

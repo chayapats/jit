@@ -96,9 +96,12 @@ try:
   finally: os.close(fd)
   result={}
  elif op=='list': result={'entries':listing(r['path'],r.get('recursive',False))}
- elif op=='spawn':
-  path(r['cwd']); environment={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':root,'LANG':'C.UTF-8','TZ':'UTC'}; environment.update(r['env'])
-  proc=subprocess.Popen(['/bin/bash','--noprofile','--norc','-c',r['command']],cwd=r['cwd'],env=environment,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+ elif op in ('spawn','search'):
+  path(r['cwd']); environment={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':root,'LANG':'C.UTF-8','TZ':'UTC'}; environment.update(r.get('env',{}))
+  if op=='search':
+   path(r['path']);command=['/usr/bin/rg','--json','--no-follow','--max-count',str(r['limit'])]+(['--ignore-case'] if r['ignoreCase'] else [])+(['--glob',r['glob']] if r['glob'] is not None else [])+['--',r['pattern'],r['path']]
+  else: command=['/bin/bash','--noprofile','--norc','-c',r['command']]
+  proc=subprocess.Popen(command,cwd=r['cwd'],env=environment,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
   sel=selectors.DefaultSelector(); sel.register(proc.stdout,selectors.EVENT_READ,'stdout'); sel.register(proc.stderr,selectors.EVENT_READ,'stderr'); out={'stdout':bytearray(),'stderr':bytearray()}; end=time.monotonic()+r['timeoutMs']/1000; timed=False; truncated=False; total=0
   while sel.get_map():
    if time.monotonic()>=end:

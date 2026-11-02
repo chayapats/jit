@@ -163,7 +163,7 @@ describe("protected management", () => {
         seen.push(String(url)); expect(options?.redirect).toBe("error");
         const p = String(url); let data: unknown = {};
         if (p.endsWith("status/current")) data = { status: "running", pid: 1, maxdisk: 1024 };
-        else if (p.endsWith("/config")) data = { cores: 4, memory: 8192, net0: "virtio=xx,firewall=1" };
+        else if (p.endsWith("/config")) data = { cores: 4, memory: 8192, scsi0: "local-lvm:vm-321-disk-0,size=60G", net0: "virtio=xx,firewall=1" };
         else if (p.endsWith("/firewall/rules")) data = [{ type: "out", action: "ACCEPT", enable: 1, dest: "192.0.2.4", dport: "3128", proto: "tcp" }];
         else if (p.endsWith("/firewall/options")) data = { enable: p.includes("/cluster/") ? 0 : 1, policy_out: "DROP" };
         return Response.json({ data });

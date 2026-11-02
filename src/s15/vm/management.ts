@@ -127,10 +127,17 @@ export class ProxmoxVmManagement implements VmManagement {
   async inspect(): Promise<VmMachineState> {
     const [status, config, firewall, rules] = await Promise.all([this.api(`${this.path}/status/current`), this.api(`${this.path}/config`), this.api(`${this.path}/firewall/options`), this.api(`${this.path}/firewall/rules`)]);
     if (!["running", "stopped"].includes(status?.status) || config?.hostpci0 || Object.keys(config ?? {}).some(k => /^(?:hostpci|usb|virtiofs|args)/.test(k))) vmFail("vm_boundary_unproven");
+    const disks = Object.entries(config).filter(([key]) => /^(?:scsi|virtio|sata|ide)\d+$/.test(key));
+    if (!disks.length || disks.some(([, value]) => {
+      if (typeof value !== "string") return true;
+      const volume = value.split(",")[0]!;
+      if (value.includes("media=cdrom")) return volume !== "none" && !/^[a-zA-Z0-9_.-]+:/.test(volume);
+      return !new RegExp(`^[a-zA-Z0-9_.-]+:(?:${this.options.vmid}/)?vm-${this.options.vmid}-disk-[a-zA-Z0-9_.-]+$`).test(volume);
+    })) vmFail("vm_boundary_unproven");
     const nics = Object.keys(config).filter(k => /^net\d+$/.test(k));
     const filtered = nics.length === 1 && /(?:^|,)firewall=1(?:,|$)/.test(config[nics[0]!]);
     const outbound = Array.isArray(rules) ? rules.filter(r => r.enable === 1 && r.type === "out" && r.action === "ACCEPT") : [];
-    const proxyOnly = outbound.length === 1 && outbound[0].dest === this.options.proxy.address && String(outbound[0].dport) === String(this.options.proxy.port) && outbound[0].proto === "tcp" && !outbound[0].macro;
+    const proxyOnly = Array.isArray(rules) && !rules.some(r => r.enable !== 0 && (r.type === "group" || r.action === "GROUP" || ![0, 1].includes(r.enable))) && outbound.length === 1 && outbound[0].dest === this.options.proxy.address && String(outbound[0].dport) === String(this.options.proxy.port) && outbound[0].proto === "tcp" && !outbound[0].macro;
     let active = false;
     try { active = this.options.firewallActive ? await this.options.firewallActive() : await this.firewallActive(); } catch { /* Missing read-only audit permission keeps isolation unproven. */ }
     const cpuCount = Number(config.cores ?? 1) * Number(config.sockets ?? 1), memoryBytes = Number(config.memory) * 1048576, diskBytes = Number(status.maxdisk);

@@ -1,4 +1,4 @@
-import type { ExecutionBackend, ExecutionDirectoryEntry, ExecutionFileObservation } from "schway/host";
+import type { ExecutionBackend, ExecutionDirectoryEntry, ExecutionFileObservation, ExecutionSpawnResult } from "schway/host";
 import { containsCredential, redactCredentials } from "../../security/credentials";
 import { redactRegisteredSecrets } from "../../security/secret-fingerprints";
 import type { VmLimits } from "./types";
@@ -38,6 +38,18 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
       return { name: entry.name, type: entry.type as ExecutionDirectoryEntry["type"] };
     });
   }
+  function processResult(r: Record<string, unknown>): ExecutionSpawnResult {
+    vmRecord(r, ["stdout", "stderr", "exitCode", "timedOut", "truncated", "totalBytes"]);
+    const stdoutBytes = decode(r.stdout, limits.outputBytes), stderrBytes = decode(r.stderr, limits.outputBytes);
+    if (stdoutBytes.length + stderrBytes.length > limits.outputBytes || typeof r.timedOut !== "boolean" || typeof r.truncated !== "boolean" || (r.timedOut && r.exitCode !== null)) bad();
+    if (r.exitCode !== null) vmInteger(r.exitCode, 255, 0);
+    vmInteger(r.totalBytes, Number.MAX_SAFE_INTEGER, 0);
+    if (r.totalBytes < stdoutBytes.length + stderrBytes.length || (!r.truncated && r.totalBytes !== stdoutBytes.length + stderrBytes.length)) bad();
+    const fullOut = clean(Buffer.from(stdoutBytes).toString("utf8")), fullError = clean(Buffer.from(stderrBytes).toString("utf8"));
+    const notice = r.truncated || Buffer.byteLength(fullOut) + Buffer.byteLength(fullError) > limits.outputBytes ? prefix("\n[VM output truncated]", limits.outputBytes) : "";
+    const budget = limits.outputBytes - Buffer.byteLength(notice), stdout = prefix(fullOut, budget), stderr = prefix(fullError, budget - Buffer.byteLength(stdout)) + notice;
+    return { stdout, stderr, exitCode: r.exitCode as number | null, timedOut: r.timedOut as boolean };
+  }
   const backend: ExecutionBackend = {
     workspaceRoot: root, temporaryDirectory,
     async realpath(p) { const r = await call({ op: "realpath", path: path(p) }, "read"); vmRecord(r, ["path"]); return path(r.path as string); },
@@ -74,10 +86,10 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
       path(request.path); path(request.cwd); vmInteger(request.limit, 1000);
       if (typeof request.pattern !== "string" || Buffer.byteLength(request.pattern) > 4096) vmFail("vm_limit_invalid");
       // Regex evaluation stays in the bounded guest process, not the protected JS event loop.
-      const args = ["rg", "--json", "--no-follow", "--max-count", String(request.limit), ...(request.ignoreCase ? ["--ignore-case"] : []), ...(request.glob ? ["--glob", request.glob] : []), "--", request.pattern, request.path];
-      const quote = (s: string) => `'${s.replaceAll("'", `'"'"'`)}'`;
-      const readBackend = createVmBackend({ call: (operation, _kind, signal) => port.call(operation, "read", signal) }, root, temporaryDirectory, limits);
-      const result = await readBackend.spawn({ command: args.map(quote).join(" "), cwd: request.cwd, ...(request.signal ? { signal: request.signal } : {}) });
+      if (request.glob !== undefined && (typeof request.glob !== "string" || request.glob.length > 4096 || request.glob.includes("\0"))) vmFail("vm_limit_invalid");
+      const result = processResult(await call({ op: "search", path: request.path, cwd: request.cwd, pattern: request.pattern,
+        limit: request.limit, ignoreCase: request.ignoreCase === true, glob: request.glob ?? null, timeoutMs: Math.min(limits.commandMs, 20000) }, "read", request.signal));
+      if (result.timedOut || result.stderr.includes("[VM output truncated]")) return { matches: [], truncated: true, failure: "VM search exceeded its limit" };
       if (result.exitCode !== 0 && result.exitCode !== 1) return { matches: [], truncated: false, failure: "VM search unavailable" };
       const matches: { path: string; line: number; text: string }[] = []; let truncated = false;
       for (const line of result.stdout.split("\n")) if (line) {
@@ -99,18 +111,10 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
         env[key] = value;
       }
       const r = await call({ op: "spawn", command: request.command, cwd: request.cwd, env, timeoutMs }, "shell", request.signal);
-      vmRecord(r, ["stdout", "stderr", "exitCode", "timedOut", "truncated", "totalBytes"]);
-      const stdoutBytes = decode(r.stdout, limits.outputBytes), stderrBytes = decode(r.stderr, limits.outputBytes);
-      if (stdoutBytes.length + stderrBytes.length > limits.outputBytes || typeof r.timedOut !== "boolean" || typeof r.truncated !== "boolean" || (r.timedOut && r.exitCode !== null)) bad();
-      if (r.exitCode !== null) vmInteger(r.exitCode, 255, 0);
-      vmInteger(r.totalBytes, Number.MAX_SAFE_INTEGER, 0);
-      if (r.totalBytes < stdoutBytes.length + stderrBytes.length || (!r.truncated && r.totalBytes !== stdoutBytes.length + stderrBytes.length)) bad();
-      const fullOut = clean(Buffer.from(stdoutBytes).toString("utf8")), fullError = clean(Buffer.from(stderrBytes).toString("utf8"));
-      const notice = r.truncated || Buffer.byteLength(fullOut) + Buffer.byteLength(fullError) > limits.outputBytes ? prefix("\n[VM output truncated]", limits.outputBytes) : "";
-      const budget = limits.outputBytes - Buffer.byteLength(notice), stdout = prefix(fullOut, budget), stderr = prefix(fullError, budget - Buffer.byteLength(stdout)) + notice;
+      const { stdout, stderr, exitCode, timedOut } = processResult(r);
       if (stdout) request.onOutput?.({ stream: "stdout", text: stdout });
       if (stderr) request.onOutput?.({ stream: "stderr", text: stderr });
-      return { stdout, stderr, exitCode: r.exitCode as number | null, timedOut: r.timedOut };
+      return { stdout, stderr, exitCode, timedOut };
     },
   };
   return backend;
