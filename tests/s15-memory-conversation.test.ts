@@ -9,6 +9,7 @@ import type { ConversationToolPort } from "../src/s15/conversation/types";
 import { createConversationMemory } from "../src/s15/memory";
 import type { ConversationCommand } from "../src/s15/conversation/types";
 import { zero } from "../src/s15/policy/validation";
+import { createS15WebHandler, s15ConversationPort } from "../src/s15/web";
 import { ref, selection } from "./fixtures/s15-policy";
 import { teamMemoryFixture } from "./fixtures/s15-team-memory";
 
@@ -227,4 +228,23 @@ test("P1: an older held message cannot replay a forgotten normalized preference 
   await f.submit("Explain the result.");
   expect(f.interpretationInputs.at(-1)).not.toContain("Reminder[");
   expect(f.interpretationInputs.at(-1)).not.toContain("Implement issue #42 or #43.");
+});
+
+test("rebased Web ports consume real memory and preserve clarification, cursor and retained-count contracts", async () => {
+  const f = fixture(), request = await f.submit("I prefer concise replies.");
+  const claim = f.f.memory.view(f.f.f.owner).claims[0]!;
+  const view = conversationOwnerView(f.app, f.f.f.owner, "conversation");
+  expect(view.cursor).toBeGreaterThan(0);
+  expect(view.rows[0]).toMatchObject({ requestId: request.requestId, revision: expect.any(Number), subject: null, question: null, reply: null, memory: { retained: [{ id: claim.id }] } });
+  const handler = createS15WebHandler({ conversation: s15ConversationPort(f.app), memory: f.f.memory, authentication: {
+    authenticate() { return { actor: f.f.f.owner, csrf: "csrf" }; },
+    verifyCsrf(expected, supplied) { if (expected !== supplied) throw new Error("invalid fixture csrf"); },
+  } }, { origin: "http://localhost:3333", cookieName: "owner_session", loginPath: "/s14/login" });
+  const get = (path: string) => handler(new Request(`http://localhost:3333${path}`, { headers: { cookie: "owner_session=fixture", "accept-language": "en" } }));
+  const thread = await get("/chats/conversation"); expect(thread.status).toBe(200);
+  expect(await thread.text()).toContain("Remembered 1 things");
+  const corrected = await handler(new Request("http://localhost:3333/s15/forms/memory/correct", { method: "POST", headers: { cookie: "owner_session=fixture", origin: "http://localhost:3333", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: "csrf", requestId: "web_real_memory_correction", claimId: claim.id, claimRevision: String(claim.revision), filter: "all", text: "I prefer detailed replies." }) }));
+  expect(corrected.status).toBe(303);
+  expect(await (await get("/memory")).text()).toContain("I prefer detailed replies.");
+  expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ result: null, code: "memory_context_stale" });
 });
