@@ -58,7 +58,7 @@ export interface ApprovalInput { requestId: string; action: ActionRef; decision:
 /** Independently deduplicated model reservation; the selected call must remain inside the current work policy/pin. */
 export interface ModelCallInput { requestId: string; selection: Selection; upperBound: BudgetVector }
 /** Durable charge and transport capacity, not a dispatch token. guardReservation consumes model send permission once for its original live actor; recovery/rebinding cannot adopt it. Unknown usage/capacity remains charged. */
-export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number; selection?: Selection }
+export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number; selection?: Selection; billing?: 'subscription' | 'metered' }
 /** Safe observation, never provider errors or credentials. Unknown is permanently reconcile-only. */
 export interface Observation { outcome: 'not_dispatched' | 'succeeded' | 'failed' | 'unknown'; basis: 'local_guard' | 'remote_verified' | 'uncertain' | 'owner_statement'; code: string | null; actual: Usage; transportSettled: boolean }
 /** Trusted adapter result: failed requires conclusive remote rejection; exceptions/malformed replies become unknown. */
@@ -76,7 +76,16 @@ export interface ActionAdapter {
 /** Protected authenticated principal; verifyOwner must check current live session/CSRF/channel binding itself. */
 export interface AuthenticatedOwner { id: string; generation: number; expiresAt: number }
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
-export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; reads?: readonly ReadHandler[]; now?: () => number }
+export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; reads?: readonly ReadHandler[]; now?: () => number; subscriptionModels?: SubscriptionModels }
+
+/** Protected approved subscription registry, never caller/model metadata. Only inference reservations may
+ * use it when no monetary budget is installed. Required finite technical bounds apply per durable work;
+ * changing a work ID cannot reset installation usage. No paid route, action or read uses this exception. */
+export interface SubscriptionModels {
+  current(selection: Selection): boolean;
+  concurrency: number;
+  perWork: { calls: number; steps: number; activeMs: number };
+}
 
 
 /** Closed operations with no domain write, system administration or outbound-destination authority. workspace_setup is trusted isolated workspace/unit initialization only. */
@@ -104,6 +113,6 @@ export interface WorkPort { reserveRead(actor: WorkActor, input: ReadInput): Rea
 /** Protected owner API, suitable for authenticated HTTP/channel wrappers; no natural-language approval parsing is supplied. */
 export interface OwnerPort { authenticate(proof: unknown): OwnerActor; current(actor: OwnerActor): StandingPolicy | null; prepareInterpretation(actor: OwnerActor, input: InterpretationInput): { authority: WorkAuthority; purposes: Ref[] }; proposePolicy(actor: OwnerActor, input: PolicyInput | null): PolicyProposal; installProposal(actor: OwnerActor, requestId: string, proposalHash: string): StandingPolicy; actionSlip(actor: OwnerActor, action: ActionRef): ActionSlip; decidePending(actor: OwnerActor, input: PendingDecisionInput): void; install(actor: OwnerActor, requestId: string, expectedRevision: number, input: PolicyInput): StandingPolicy; admit(actor: OwnerActor, request: WorkRequest): WorkReceipt; decide(actor: OwnerActor, input: ApprovalInput): void; approveRecurringRule(actor: OwnerActor, requestId: string, expectedRevision: number, rule: Rule): StandingPolicy; revoke(actor: OwnerActor, requestId: string, scope: { kind: 'policy' } | { kind: 'work'; id: string }): void; inspect(actor: OwnerActor, action: ActionRef): { action: PreparedAction; observation: Observation | null }; reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation>; recordStatement(actor: OwnerActor, action: ActionRef, requestId: string, outcome: 'occurred' | 'did_not_occur'): void }
 /** Host-only control integration. Recording usage never grants publication or dispatch authority. */
-export interface ControlPort { settleRead(claimId: string, observation: Observation, resultHash: string | null): void; publishRead(actor: WorkActor, claimId: string): { observation: Observation; resultHash: string | null }; bindWork(workId: string): WorkActor; settleReservation(id: string, usage: Usage, transportSettled: boolean): void; publishable(actor: WorkActor, action: ActionRef): Observation; usage(): { charged: BudgetVector; unsettled: number }; close(): void }
+export interface ControlPort { settleRead(claimId: string, observation: Observation, resultHash: string | null): void; publishRead(actor: WorkActor, claimId: string): { observation: Observation; resultHash: string | null }; bindWork(workId: string): WorkActor; settleReservation(id: string, usage: Usage, transportSettled: boolean): void; publishable(actor: WorkActor, action: ActionRef): Observation; usage(): { charged: BudgetVector; unsettled: number }; /** Read-only host projection; never dispatches or rebinds a claim. */ reservations(workId?: string): Reservation[]; close(): void }
 /** Explicit opt-in protected policy service. It does not select a runtime, migrate S14 or expose an unauthenticated network server. */
 export interface S15PolicyService { owner: OwnerPort; work: WorkPort; control: ControlPort }
