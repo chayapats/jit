@@ -203,3 +203,50 @@ test("device sign-in leaves the waiting page when the session has expired", asyn
   expect(replaced).toEqual(["/settings/provider?flow=flow"]);
   expect(ticks).toHaveLength(0);
 });
+
+/** A shared browser cookie may change the root preference, never the already displayed room. */
+test.each([false, true])("root live reads stay bound to their conversation and reject a mismatched response (%s)", async mismatched => {
+  const element = (innerHTML: string) => ({ innerHTML, className: "", dataset: {} as Record<string, string>, contains: () => false, querySelector: () => null });
+  const content = element("Room A messages"), revision = { value: "1" }, paths: string[] = [], ticks: Array<() => Promise<void>> = [];
+  const documentPage = (room: string, live: boolean, text: string, version: string) => ({
+    documentElement: { dataset: {} }, body: {}, activeElement: null,
+    querySelectorAll: () => [], getElementById: (id: string) => id === "s14-live" ? room === "A" && live ? content : element(text) : null,
+    querySelector(selector: string) {
+      if (selector === ".s-app[data-conversation]") return { dataset: { conversation: room } };
+      if (selector === "[data-live]" && live) return {};
+      if (selector === "[data-composer] input[name=expectedRevision]") return live ? revision : { value: version };
+      return null;
+    },
+  });
+  const context = {
+    document: documentPage("A", true, "Room A messages", "1"), location: { href: "http://localhost:3001/", pathname: "/", search: "", hash: "" },
+    DOMParser: class { parseFromString() { return documentPage(mismatched ? "B" : "A", false, mismatched ? "Room B messages" : "New room A answer", "7"); } },
+    fetch: async (url: string) => { paths.push(url); return { ok: true, text: async () => "page" }; },
+    setTimeout: (tick: () => Promise<void>) => ticks.push(tick),
+  };
+  runInNewContext(source, context); await ticks.shift()!();
+  expect(paths).toEqual(["/chats/A"]);
+  expect(content.innerHTML).toBe(mismatched ? "Room A messages" : "New room A answer");
+  expect(revision.value).toBe(mismatched ? "1" : "7");
+});
+
+test("an open focused Progress disclosure keeps its shell while results, approval/status and progress update", async () => {
+  const element = (innerHTML: string, busy = false) => ({ innerHTML, className: "", dataset: {} as Record<string, string>, contains: () => busy, querySelector: () => busy ? {} : null });
+  const shell = element("Open disclosure with focused summary", true), primary = element("Running"), details = element("Lane running"), status = element("Running");
+  const current = new Map([["s14-pane-live", shell], ["s14-progress-primary", primary], ["s14-progress-details", details], ["s14-pane-status", status]]);
+  const fresh = new Map([["s14-pane-live", element("New shell")], ["s14-progress-primary", element("Result and exact approval")], ["s14-progress-details", element("Lane complete")], ["s14-pane-status", element("Ready")]]);
+  const page = (elements: typeof current, live: boolean) => ({
+    documentElement: { dataset: {} }, body: {}, activeElement: {}, getElementById: (id: string) => elements.get(id) ?? null,
+    querySelectorAll: () => [], querySelector: (selector: string) => selector === "[data-live]" && live ? {} : null,
+  });
+  const ticks: Array<() => Promise<void>> = [];
+  runInNewContext(source, {
+    document: page(current, true), location: { href: "http://localhost:3001/work/W", hash: "" },
+    DOMParser: class { parseFromString() { return page(fresh, false); } },
+    fetch: async () => ({ ok: true, text: async () => "page" }), setTimeout: (tick: () => Promise<void>) => ticks.push(tick),
+  });
+  await ticks.shift()!();
+  expect(shell.innerHTML).toBe("Open disclosure with focused summary");
+  expect(primary.innerHTML).toBe("Result and exact approval"); expect(details.innerHTML).toBe("Lane complete"); expect(status.innerHTML).toBe("Ready");
+  expect(ticks).toHaveLength(0);
+});

@@ -45,3 +45,15 @@ Chrome/156.0.8078.74 on macOS, headless, fresh temporary profile and a real auth
 Physical iPhone/Android, actual Safari, on-screen keyboards, touch, screen-reader speech, production providers/effects and owner-host deployment were not tested in this change. Viewport emulation and fixture success do not establish those cases. Prior evidence remains attributed to its original builds. These are disclosed coverage limits, not invented passes or additional implicit release gates.
 
 Browser data may be cleared by the browser or explicit logout. Public credential-pattern screening is not a detector for every arbitrary unlabelled secret. Connection/password/OAuth/computer-input and approval forms never autosave; server credential validation and all current authority barriers remain unchanged. No application schema, supported Schway pin or execution/network policy changed.
+
+
+## Plain review corrections — 2026-11-02
+
+The owner authorized fixes, CI/Greptile babysitting and merge after successful review. PR #310 also resolves PLAIN14-03 #311. Historical failures and their tested revisions remain unchanged.
+
+- Root live reads are pinned to the displayed conversation's explicit route, and a response for a different conversation is rejected before any message/form/revision update. Shared last-room preference cookies cannot retarget an existing tab.
+- Progress has independent primary and detail refresh regions. Opening or focusing its disclosure does not freeze results, approvals or status, and the disclosure/summary node is retained.
+- Lifecycle page-memory draft restoration recalculates send labels and the selected scope after restoring current fields, without copying hidden revisions/retry IDs.
+- Native ordinary back/forward restoration resets Work after the browser restores form controls; cached pages retain the read-only reload boundary. Approved text remains and no command is replayed.
+
+Validation on the corrected working tree: `bun run typecheck`, `git diff --check` and the affected command above passed: **443 tests, 0 failures**, 18 files and 9642 assertions. Headless Chrome/156.0.8078.74 against an isolated authenticated local handler/store passed five observations: shared-cookie root pinning, three native history Back traversals (retained text, Chat mode and matching accessible send label), and completion/result updates with Progress open and its summary still focused. The runner used scripted ports and no real provider/effect; this is not physical-device, Safari, touch/OSK or AT-speech proof. Runner, safe summaries and served asset identifiers are retained in ignored `.local/plain-review/`; the fixture, browser and profile were cleaned up. The original source fingerprint above identifies the earlier build, not these corrections.
