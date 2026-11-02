@@ -60,6 +60,17 @@ export class TeamService {
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM resources WHERE id=?").get(id);
     return row ? JSON.parse(row.record_json) as TeamResource : null;
   }
+  /** Host-only current catalog projection; this supplies a fence, never an actor or resource grant. */
+  currentResource(id: string): { ref: Ref; active: boolean } | null {
+    const resource = this.findResource(id); return resource ? { ref: { id: resource.id, revision: resource.revision, generation: resource.generation }, active: resource.active } : null;
+  }
+  /** Pure current resource ceiling for POLICY's catalog intersection. It cannot call POLICY recursively or authenticate a serialized work object. */
+  allowsWork(work: WorkAuthority): boolean {
+    return work.request.resources.every(ref => {
+      const item = this.findResource(ref.id), bot = work.request.bot.id;
+      return !!item && item.active && same(ref, item) && item.purposes.includes(work.request.purpose.id) && inScope(item.scope, bot) && (item.allowedBots === null || item.allowedBots.includes(bot)) && !item.deniedBots.includes(bot);
+    });
+  }
   /** Binds a real POLICY actor to independent process-local context, never to another Bot's native session. */
   bind(actor: TeamActor): TeamContext {
     const authority = this.options.policy.work.guard(actor);

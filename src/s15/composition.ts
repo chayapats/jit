@@ -87,14 +87,17 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubStore = options.github ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create) : undefined;
     if (githubStore) cleanup.push(() => githubStore.close());
     let policy!: S15PolicyService;
+    let team!: TeamService;
+    const currentCatalogs: CatalogPort = { current: (kind, id) => (kind === 'resource' ? team?.currentResource(id) : null) ?? options.catalogs.current(kind, id),
+      allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
     const githubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
-      ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(options.catalogs),
+      ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(currentCatalogs),
       adapters: [vmIntegration.adapter, ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? [])],
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
     cleanup.push(() => policy.control.close()); browser?.attach(policy); google?.attach(policy);
-    const team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
+    team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };

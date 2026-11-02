@@ -166,7 +166,8 @@ test('S15-AC04: two approved Bots use a shared resource and coordinate actual VM
   const resource = f.service.team.resources(f.owner).resources.find(r => r.id === 'computer')!;
   const { whoCanUse, restrictions, ...registration } = resource;
   f.service.team.register(f.owner, 'private_resource', 1, { ...registration, revision: 2, scope: { kind: 'bot', botId: 'bot', origin: 's14' } });
-  expect(() => f.service.team.resource(b.context, 'computer')).toThrow('outside_scope');
+  expect(() => f.service.team.resource(b.context, 'computer')).toThrow('stale_authority');
+  expect(() => f.service.policy.work.guard(b.actor)).toThrow('stale_authority');
   expect(() => f.service.team.register(f.owner, 'silent_promotion', 2, { ...registration, revision: 3, scope: { kind: 'team' } })).toThrow('private_promotion_requires_migration');
 });
 
