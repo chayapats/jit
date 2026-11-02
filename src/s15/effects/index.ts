@@ -5,3 +5,4 @@ export { communicationClasses } from './types';
 export type * from './types';
 export { openFixtureRecordService } from './records';
 export type { FixtureRecord, FixtureRecordEdit, FixtureRecordEvidence, FixtureRecordFields } from './records';
+export { createEffectsConversationTools } from './conversation';

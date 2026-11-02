@@ -3,6 +3,14 @@ import { s14CodingEn } from "./s14-coding-en";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "s15.effects.calendar_observed": "The calendar block was saved and its content was observed from the calendar.",
+  "s15.effects.final_message": "Review the final recipients, content and attachments before sending once.",
+  "s15.effects.stale_record": "The record or rule changed. Read its current version before editing.",
+  "s15.effects.reconciliation_required": "The remote outcome is unknown. Reconcile the original action; it will not be sent again.",
+  "s15.effects.business_direction": "New prices or business commitments need your decision.",
+  "s15.effects.unverified_fact": "The evidence does not establish this fact. Investigate before editing the record.",
+  "s15.effects.fixture_only": "Document, task and business record support is limited to the controlled fixture service.",
+  "s15.effects.payment_trigger_unsupported": "This record triggers a payment without a supported exact transaction adapter. It was not saved.",
   "s15.browser.redirect_unsupported": "Redirects are unavailable; the next destination was not contacted.",
   "s15.browser.operation_timeout": "The operation timed out. Reconcile any effect already sent before continuing.",
   "s15.browser.checking": "Checking whether sign-in worked.",

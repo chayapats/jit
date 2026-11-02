@@ -6,6 +6,14 @@
 import { s14CodingTh } from "./s14-coding-th";
 
 export const th = {
+  "s15.effects.calendar_observed": "บันทึกบล็อกเวลาแล้วและตรวจสอบข้อมูลจาก calendar แล้ว",
+  "s15.effects.final_message": "ตรวจสอบผู้รับ เนื้อหา และไฟล์แนบฉบับสุดท้ายก่อนส่งหนึ่งครั้ง",
+  "s15.effects.stale_record": "ข้อมูลหรือกฎเปลี่ยนไปแล้ว ต้องอ่านเวอร์ชันปัจจุบันก่อนแก้ไข",
+  "s15.effects.reconciliation_required": "ยังไม่ทราบผลจากปลายทาง ต้องตรวจสอบรายการเดิมก่อน และจะไม่ส่งซ้ำเอง",
+  "s15.effects.business_direction": "การเปลี่ยนราคาหรือข้อผูกพันต้องรอการตัดสินใจของคุณ",
+  "s15.effects.unverified_fact": "หลักฐานยังไม่ยืนยันข้อเท็จจริง จึงเสนอให้ตรวจสอบเพิ่มเติมก่อนแก้ข้อมูล",
+  "s15.effects.fixture_only": "รองรับ document task และ business record บน controlled fixture service เท่านั้น",
+  "s15.effects.payment_trigger_unsupported": "record นี้มีผลให้จ่ายเงิน แต่ยังไม่มี adapter ที่ผูกธุรกรรมได้ จึงยังไม่บันทึก",
   "s15.browser.redirect_unsupported": "ยังไม่รองรับ redirect จึงไม่ส่งต่อไปปลายทางใหม่",
   "s15.browser.operation_timeout": "operation หมดเวลาแล้ว ต้องตรวจสอบ effect ที่ส่งไปแล้วก่อนทำต่อ",
   "s15.browser.checking": "กำลังตรวจว่าเข้าสู่ระบบสำเร็จหรือยัง",
