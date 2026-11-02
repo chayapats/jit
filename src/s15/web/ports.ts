@@ -20,7 +20,7 @@ export function s15ActionsPort<Actor>(policy: S15PolicyService, owner: S15OwnerO
 }
 /** WORK15 owner list/project/stop. */
 export function s15DutiesPort<Actor>(work: ResponsibilityPort & { list(owner: OwnerActor): ResponsibilityProjection[] }, owner: S15OwnerOf<Actor>): S15WebDuties<Actor> {
-  return { list: actor => work.list(owner(actor)), project: (actor, id) => work.project(owner(actor), id), stop: (actor, id, requestId) => { work.stop(owner(actor), id, requestId); } };
+  return { list: actor => work.list(owner(actor)), project: (actor, id) => work.project(owner(actor), id), stop: (actor, id, requestId) => { work.stop(owner(actor), id, requestId); }, resume: (actor, id, sourceRequestId) => { work.resume(owner(actor), id, sourceRequestId); } };
 }
 /** F13 recurring-payment rules (`createRecurringRules`). */
 export function s15RecurringPort<Actor>(rules: RecurringRules, owner: S15OwnerOf<Actor>): S15WebRecurring<Actor> {

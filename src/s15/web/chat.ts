@@ -14,7 +14,8 @@ export interface S15RowExtras { readiness: S15ReadinessReport | null; selection:
 /** Everything the conversation page needs. `draft` is only ever the owner's own refused or prefilled text. */
 export interface S15ChatPage {
   csrf: string; conversationId: string; view: ConversationOwnerView | null; extras: Record<string, S15RowExtras>;
-  draft: { text: string; requestId: string | null; answer: { requestId: string; revision: number } | null } | null;
+  /** `duty` names the paused responsibility a stall reply continues; WORK resumes it only after this message completes. */
+  draft: { text: string; requestId: string | null; answer: { requestId: string; revision: number } | null; duty?: string } | null;
   refused: string | null; duplicate: ConversationOwnerRow | null; memoryAvailable: boolean;
   /** UX15-02: owner decision rows of this conversation, its responsibilities and its single configured website session. */
   decisions?: S15SlipDecision[]; duties?: ResponsibilityProjection[]; browser?: { browser: S15BrowserInfo; state: S15BrowserProgress | undefined } | null; canDecide?: boolean;
@@ -197,7 +198,7 @@ export const openQuestion = (view: ConversationOwnerView | null) => { const row 
 export function composer(page: S15ChatPage): string {
   const question = openQuestion(page.view), answer = page.draft?.answer ?? (question ? { requestId: question.requestId, revision: question.revision } : null);
   const reply = answer ? `<label class="s-chip s15-answer"><input type="checkbox" name="answer" value="${e(answer.requestId)}" checked>${hidden("answerRevision", answer.revision)}<span>${tr("s15.question.answering")}</span></label>` : "";
-  return `<form class="s-composer s15-composer" id="s15-composer" data-composer data-region data-conversation="${e(page.conversationId)}" method="post" action="/s15/forms/message" novalidate>${hidden("csrf", page.csrf)}${hidden("requestId", page.draft?.requestId ?? crypto.randomUUID().replaceAll("-", ""))}${hidden("conversationId", page.conversationId)}
+  return `<form class="s-composer s15-composer" id="s15-composer" data-composer data-region data-conversation="${e(page.conversationId)}" method="post" action="/s15/forms/message" novalidate>${hidden("csrf", page.csrf)}${hidden("requestId", page.draft?.requestId ?? crypto.randomUUID().replaceAll("-", ""))}${hidden("conversationId", page.conversationId)}${page.draft?.duty ? `${hidden("duty", page.draft.duty)}<p class="s-chip s15-duty-reply">${tr("s15.duty.replying")}</p>` : ""}
     ${page.refused ? `<div role="alert">${banner("warn", tr("s15.composer.refused_kept"), codeText(page.refused), `<p class="s-mono s-meta">${e(page.refused)}</p>`)}</div>` : ""}
     <label class="sr-only" for="s15-text">${tr("s15.composer.label")}</label><textarea id="s15-text" name="text" rows="2" maxlength="16384" placeholder="${tr("s15.composer.placeholder")}">${e(page.draft?.text ?? "")}</textarea>
     <div class="s-bar"><span class="s-chip"><span aria-hidden="true">${tr("s15.composer.to")}</span><span class="sr-only">${tr("s15.composer.to")} </span> ${tr("s14.jit")}</span>${reply}<span class="s-grow"></span><span class="s15-sending" data-sending hidden role="status">${tr("s15.composer.sending")}</span><button class="s-send" aria-label="${tr("s15.composer.send")}">${icon("arrow")}</button></div>

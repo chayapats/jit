@@ -4213,6 +4213,8 @@ export const en: Record<MessageKey, string> = {
   "s15.duty.list_title": "Responsibilities Jit looks after",
   "s15.duty.none": "No responsibilities yet",
   "s15.duty.not_composed": "Responsibilities are not available on this installation yet",
+  "s15.duty.replying": "Replying to this responsibility’s pause report. It resumes only after Jit accepts this message.",
+  "s15.duty.resume_refused": "This responsibility can’t resume yet",
   "s15.duty.your_words": "Your words",
   "s15.duty.done_when": "Done when",
   "s15.duty.triggers": "Jit checks back on",

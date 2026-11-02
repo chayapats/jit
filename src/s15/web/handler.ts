@@ -45,6 +45,22 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
   // Last protected browser observation per site. Owner-typed values are never kept here or anywhere in this handler.
   const browserState = new Map<string, S15BrowserProgress>();
   let githubCapture: S15GithubCapture | null = null;
+  // Owner stall replies awaiting their own CHAT completion before WORK may resume the named responsibility.
+  const resumes = new Map<string, { dutyId: string; conversationId: string }>();
+  const resumeRefusals = new Map<string, string>();
+  /** Resumes a paused responsibility only from the owner's completed reply (WORK checks it arrived after the pause, in scope, authorized). */
+  const settleResumes = (actor: Actor) => {
+    if (!ports.duties) return;
+    for (const [requestId, pending] of [...resumes]) {
+      let row: ConversationOwnerRow | undefined;
+      try { row = ports.conversation.view(actor, pending.conversationId).rows.find(item => item.requestId === requestId); } catch { continue; }
+      if (!row || ["received", "understanding", "inspecting", "working"].includes(row.state)) continue;
+      resumes.delete(requestId);
+      if (row.state !== "done") { resumeRefusals.set(pending.dutyId, "execution_not_authorized"); continue; }
+      try { ports.duties.resume(actor, pending.dutyId, requestId); resumeRefusals.delete(pending.dutyId); }
+      catch (error) { resumeRefusals.set(pending.dutyId, codeOf(error)); }
+    }
+  };
   const now = options.now ?? Date.now;
   const headers = (type: string, extra: Record<string, string> = {}) => ({ "Content-Type": `${type}; charset=utf-8`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": type === "text/html" ? "same-origin" : "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy, ...extra });
@@ -150,8 +166,9 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
             let duty: ResponsibilityProjection | null = null; try { duty = ports.duties.project(actor, dutyId); } catch { duty = null; }
             if (duty && duty.conversationId === conversationId) {
               const reply = url.searchParams.get("reply"), accept = url.searchParams.get("accept");
-              if (reply === "recommended" && duty.report) return { text: `${withLocale(locale, () => tr("s15.prefill.try_recommended"))}${duty.report.recommendation}`, requestId: null, answer: null };
-              if (reply === "other" && duty.report) return plain("s15.prefill.other_way");
+              const subject = duty.subject?.startsWith("issue:") ? `#${duty.subject.slice(6)} · ` : "";
+              if (reply === "recommended" && duty.report && duty.state === "paused") return { text: `${subject}${withLocale(locale, () => tr("s15.prefill.try_recommended"))}${duty.report.recommendation}`, requestId: null, answer: null, duty: duty.id };
+              if (reply === "other" && duty.report && duty.state === "paused") return { text: `${subject}${withLocale(locale, () => tr("s15.prefill.other_way"))}`, requestId: null, answer: null, duty: duty.id };
               const proposal = accept ? duty.proposals.find(item => item.eventId === accept) : null;
               if (proposal) return plain("s15.prefill.accept_outside", { ref: proposal.evidenceRefs[0] ?? proposal.eventId });
             }
@@ -238,6 +255,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       };
 
       if (request.method === "GET") {
+        if (resumes.size) settleResumes(actor);
         if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? "/chats/new" : "/setup");
         if (url.pathname === "/chats/new") return redirect(`/chats/${crypto.randomUUID().replaceAll("-", "")}`);
         const chat = /^\/chats\/([A-Za-z0-9_-]{1,128})(\/events)?$/.exec(url.pathname);
@@ -264,7 +282,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (duty) {
           if (!ports.duties) throw new AppError("not_found", 404);
           const projection = ports.duties.project(actor, duty[1]!);
-          return render(() => shell(nav("/work"), tr("s15.duty.title"), `<div class="s-col">${dutyCard(projection, csrf, true)}<p><a class="s-link-text" href="/chats/${e(projection.conversationId)}#s15-row-${e(projection.sourceRequestId)}">${tr("s15.duty.open_conversation")}</a></p></div>`));
+          const refused = resumeRefusals.get(projection.id);
+          return render(() => shell(nav("/work"), tr("s15.duty.title"), `<div class="s-col">${refused && projection.state === "paused" ? refusal(refused, tr("s15.duty.resume_refused")) : ""}${dutyCard(projection, csrf, true)}<p><a class="s-link-text" href="/chats/${e(projection.conversationId)}#s15-row-${e(projection.sourceRequestId)}">${tr("s15.duty.open_conversation")}</a></p></div>`));
         }
         if (url.pathname === "/rules") return rulesPage();
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
@@ -299,9 +318,16 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
 
       // Authenticated no-script commands. Each one names exactly what the owner pressed.
       if (url.pathname === "/s15/forms/message") {
-        only(fields, ["csrf", "requestId", "conversationId", "text"], ["answer", "answerRevision"]);
+        only(fields, ["csrf", "requestId", "conversationId", "text"], ["answer", "answerRevision", "duty"]);
         const conversationId = fields.conversationId!, text = fields.text!;
         if (!idPattern.test(conversationId)) throw new AppError("invalid_body");
+        // A stall reply names its paused responsibility; only one of this conversation can be named.
+        const dutyId = fields.duty ?? null;
+        if (dutyId !== null) {
+          if (!ports.duties || !idPattern.test(dutyId)) throw new AppError("invalid_body");
+          const named = ports.duties.project(actor, dutyId);
+          if (named.conversationId !== conversationId || named.state !== "paused") throw new AppError("stale_revision", 409);
+        }
         const answer = fields.answer ? { requestId: fields.answer, revision: Number(fields.answerRevision) } : null;
         if (answer && (!idPattern.test(answer.requestId) || !Number.isSafeInteger(answer.revision))) throw new AppError("invalid_body");
         let before: ConversationOwnerRow | undefined;
@@ -314,9 +340,10 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (code === "authentication_required") throw error;
           // Credential-shaped text is never echoed back into a page; everything else stays in the composer.
           const kept = code === "credential_content_refused" ? "" : text;
-          return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer } }, statusOf(error) >= 500 ? 503 : 409);
+          return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer, ...(dutyId ? { duty: dutyId } : {}) } }, statusOf(error) >= 500 ? 503 : 409);
         }
-        void ports.conversation.drain().catch(() => {});
+        if (dutyId) resumes.set(fields.requestId!, { dutyId, conversationId });
+        void ports.conversation.drain().then(() => settleResumes(actor)).catch(() => {});
         return redirect(`/chats/${conversationId}${before ? `?dup=${fields.requestId}` : ""}#latest`);
       }
       if (url.pathname === "/s15/forms/stop") {

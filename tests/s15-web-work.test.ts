@@ -23,7 +23,7 @@ const paused = (): ResponsibilityProjection => duty({ state: "paused", report: {
 test("durable CI and review waits are calm and never in Needs you; a paused responsibility is, with its report and three replies", async () => {
   let list = [duty({ id: "wait", state: "waiting", wait: { kind: "ci", key: "ci", since: 1800000000000, evidenceRefs: [] }, resumedAfterRestart: true }), paused()];
   const stops: string[] = [];
-  const f = setup(() => ({ duties: { list: () => list, project: (_actor, id) => { const found = list.find(item => item.id === id); if (!found) throw new AppError("not_found", 404); return found; }, stop: (_actor, id) => { stops.push(id); list = list.map(item => item.id === id ? { ...item, state: "stopping", stopRequested: true } : item); } } }));
+  const f = setup(() => ({ duties: { list: () => list, project: (_actor, id) => { const found = list.find(item => item.id === id); if (!found) throw new AppError("not_found", 404); return found; }, stop: (_actor, id) => { stops.push(id); list = list.map(item => item.id === id ? { ...item, state: "stopping", stopRequested: true } : item); }, resume: () => { throw new Error("unused"); } } }));
   const work = (await page(f, "/work")).html;
   expect(work).toContain("รอ CI อยู่ จิตจะกลับมาดูเองเมื่อเสร็จ ไม่ต้องทำอะไร"); expect(work).toContain("ยังดูแลอยู่หลังรีสตาร์ต"); expect(work).toContain("รอ CI");
   const needs = (await page(f, "/needs")).html;
@@ -34,7 +34,7 @@ test("durable CI and review waits are calm and never in Needs you; a paused resp
   expect((await page(f, "/chats/new")).status).toBe(303);
   // "Try the recommendation" only prefills the composer; nothing resumes until the owner sends.
   const prefill = (await page(f, "/chats/conv1?duty=duty1&reply=recommended")).html;
-  expect(prefill).toContain(">ลองตามที่แนะนำ: Ask the reviewer about the failing check</textarea>");
+  expect(prefill).toContain(">#352 · ลองตามที่แนะนำ: Ask the reviewer about the failing check</textarea>"); expect(prefill).toContain('name="duty" value="duty1"');
   const stop = await f.post("/s15/forms/duty/stop", { duty: "duty1" });
   expect(stop.status).toBe(303); expect(stops).toEqual(["duty1"]);
   expect((await page(f, "/duties/duty1")).html).toContain("สั่งหยุดแล้ว · กำลังรอให้สิ่งที่ค้างจบจริง");
@@ -42,7 +42,7 @@ test("durable CI and review waits are calm and never in Needs you; a paused resp
 
 test("a resumed responsibility shows the same report with its next state; stopped and completed show no stop control", async () => {
   const resumed = { ...paused(), state: "ready" as const };
-  const f = setup(() => ({ duties: { list: () => [resumed, duty({ id: "done", state: "completed" })], project: (_a, id) => id === "done" ? duty({ id: "done", state: "completed" }) : resumed, stop: () => {} } }));
+  const f = setup(() => ({ duties: { list: () => [resumed, duty({ id: "done", state: "completed" })], project: (_a, id) => id === "done" ? duty({ id: "done", state: "completed" }) : resumed, stop: () => {}, resume: () => {} } }));
   const html = (await page(f, "/duties/duty1")).html;
   expect(html).toContain("ทำต่อแล้ว · หน้าที่เดิม"); expect(html).not.toContain("ลองตามที่แนะนำ</a>");
   expect((await page(f, "/duties/done")).html).not.toContain("/s15/forms/duty/stop");
@@ -182,4 +182,41 @@ test("a slow sign-in check from an older hand-back never overwrites a newer take
   expect((await f.get("/browser/shop/frame?g=13")).status).toBe(200);
   expect((await f.post("/s15/forms/browser/input", { site: "shop", generation: "13", field: "username", value: "owner" })).status).toBe(303);
   expect(log.inputs).toEqual([{ kind: "type", field: "username", value: "owner" }]);
+});
+
+test("a stall reply carries its responsibility and resumes it only after CHAT completes that owner message", async () => {
+  let current = { ...paused(), conversationId: "" };
+  const resumes: [string, string][] = [];
+  const f = setup(() => ({ duties: { list: () => [current], project: () => current, stop: () => {}, resume: (_actor, id, source) => { resumes.push([id, source]); current = { ...current, state: "ready" }; } } }));
+  const conversation = newId(); current = { ...current, conversationId: conversation };
+  const composer = (await page(f, `/chats/${conversation}?duty=duty1&reply=recommended`)).html;
+  expect(composer).toContain('name="duty" value="duty1"'); expect(composer).toContain("ทำต่อเมื่อจิตรับข้อความนี้แล้วเท่านั้น");
+  // A duty from another conversation, or one that is no longer paused, cannot be named.
+  expect((await f.send(newId(), "Try again", { duty: "duty1" })).status).toBe(409);
+  const requestId = newId();
+  const sent = await f.post("/s15/forms/message", { conversationId: conversation, text: "Create hello.txt containing hello.", duty: "duty1", requestId });
+  expect(sent.status).toBe(303);
+  expect(resumes).toEqual([]); // nothing resumes from the press itself
+  await f.app.drain(); await Bun.sleep(1);
+  expect(resumes).toEqual([["duty1", requestId]]);
+  expect((await page(f, "/duties/duty1")).html).toContain("ทำต่อแล้ว · หน้าที่เดิม");
+  // A plain message never resumes anything.
+  await f.send(conversation, "Thanks"); await f.app.drain(); await Bun.sleep(1);
+  expect(resumes).toHaveLength(1);
+});
+
+test("a stall reply whose message does not complete is not resumed and the refusal is shown on the responsibility", async () => {
+  const current = { ...paused(), conversationId: "c-refused" };
+  const resumes: string[] = [];
+  const f = setup(() => ({ duties: { list: () => [current], project: () => current, stop: () => {}, resume: (_a, _id, source) => { resumes.push(source); throw new AppError("fresh_instruction_required", 409); } } }));
+  // A reply that CHAT does not complete (here: it asks a question) never reaches WORK.
+  await f.post("/s15/forms/message", { conversationId: "c-refused", text: "Pin the dependency instead", duty: "duty1" });
+  await f.app.drain(); await Bun.sleep(1);
+  let html = (await page(f, "/duties/duty1")).html;
+  expect(resumes).toHaveLength(0); expect(html).toContain("ยังทำหน้าที่นี้ต่อไม่ได้"); expect(html).toContain("ลองตามที่แนะนำ");
+  // A completed reply that WORK refuses keeps the report paused and shows WORK's own code.
+  await f.post("/s15/forms/message", { conversationId: "c-refused", text: "Create hello.txt containing hello.", duty: "duty1" });
+  await f.app.drain(); await Bun.sleep(1);
+  html = (await page(f, "/duties/duty1")).html;
+  expect(resumes).toHaveLength(1); expect(html).toContain("fresh_instruction_required"); expect(html).toContain("ลองตามที่แนะนำ");
 });
