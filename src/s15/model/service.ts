@@ -78,7 +78,8 @@ export function openModelService(options: ModelOptions): ModelService {
         pin = { route: clone(work.request.selectionPin.route), model: clone(work.request.selectionPin.model), effort: work.request.selectionPin.effort as ThinkingLevel };
         pins(pin);
       }
-      const candidates = registry().filter(candidate => candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
+      const approved = options.policy.work.modelSelections?.(actor) ?? [work.request.selection];
+      const candidates = registry().filter(candidate => approved.some(selection => equal(selection, candidate.selection)) && candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
       const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
       const chosen = available[0]; if (!chosen) fail((pin.route || pin.model || pin.effort || work.request.selectionPin) ? 'selection_pinned' : 'route_unavailable');
       if (!chosen.upperBound) fail('cost_unknown');

@@ -440,6 +440,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     }); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; return { state: ['finite_budget_required', 'cost_unknown', 'capacity_busy'].includes(error.code) ? 'hold' : 'deny', code: error.code }; } },
     guardRead(actor, claimId) { return tx(() => guardReadClaim(actor, claimId, true)); },
     guard(actor) { return tx(() => clone(workAuth(actor))); },
+    modelSelections(actor) { return tx(() => {
+      const w = workAuth(actor), p = policyCurrent();
+      return p.selections.filter(selection => {
+        if (w.request.selectionPin && !v.equal(w.request.selectionPin, selection)) return false;
+        try { currentRef('route', selection.route); currentRef('model', selection.model); }
+        catch (error) { if (error instanceof v.PolicyError) return false; throw error; }
+        return options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(selection) } }, null);
+      }).map(clone);
+    }); },
     reserveModelCall(actor, input) {
       const reservation = tx(() => {
         v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound);

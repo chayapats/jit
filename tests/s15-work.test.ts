@@ -165,10 +165,34 @@ test('only a fresh authenticated same-scope instruction resumes a stall, preserv
   const f = setup(), r = f.responsibility;
   for (let i = 0; i < 3; i++) { if (i) f.next('event_' + i); const handle = f.service.beginAttempt(r.id, { eventId: i ? 'event_' + i : 'source', approach: 'method_' + i }); f.service.settle(handle, observed()); }
   expect(f.service.observeEvent(r.id, event('new_ci')).state).toBe('paused');
-  f.f.source('resume'); const resumed = f.service.resume(f.f.owner, r.id, 'resume');
+  f.f.advance(1); f.f.source('resume'); const resumed = f.service.resume(f.f.owner, r.id, 'resume');
   expect(resumed).toMatchObject({ state: 'ready', workId: r.workId, readyEventId: 'resume', report: { code: 'no_progress' } });
   expect(() => f.service.beginAttempt(r.id, { eventId: 'resume', approach: 'Fresh owner-approved approach' })).not.toThrow();
   expect(() => f.service.resume({} as never, r.id, 'resume')).toThrow('authentication_required');
+});
+
+test('resume rejects pre-pause instructions across restart and stopped or revoked fresh CHAT work', () => {
+  const f = setup(), r = f.responsibility;
+  f.f.source('older_different_instruction'); f.f.advance(10);
+  for (let i = 0; i < 3; i++) { if (i) f.next('pause_' + i); const handle = f.service.beginAttempt(r.id, { eventId: i ? 'pause_' + i : 'source', approach: 'method_' + i }); f.service.settle(handle, observed()); }
+  const paused = f.service.project(f.f.owner, r.id); expect(paused.state).toBe('paused'); f.reopen();
+  expect(() => f.service.resume(f.f.owner, r.id, 'older_different_instruction')).toThrow('fresh_instruction_required');
+  f.f.advance(1); f.f.source('stopped_fresh'); f.f.sources.get('stopped_fresh')!.state = 'stopped';
+  expect(() => f.service.resume(f.f.owner, r.id, 'stopped_fresh')).toThrow('execution_not_authorized');
+  f.f.advance(1); const revoked = f.f.source('revoked_fresh');
+  f.f.policy.owner.revoke(f.f.owner, 'revoke_fresh_chat_work', { kind: 'work', id: revoked.authority!.id });
+  expect(() => f.service.resume(f.f.owner, r.id, 'revoked_fresh')).toThrow('authority_revoked');
+  expect(f.service.project(f.f.owner, r.id)).toMatchObject({ state: 'paused', stallCheckpoint: 0, report: { at: paused.report!.at } });
+  f.f.advance(1); f.f.source('eligible_fresh'); const resumed = f.service.resume(f.f.owner, r.id, 'eligible_fresh');
+  expect(resumed).toMatchObject({ state: 'ready', workId: r.workId, readyEventId: 'eligible_fresh', stallCheckpoint: 3 });
+});
+
+test('a same-timestamp CHAT instruction cannot establish that it was received after the pause', () => {
+  const f = setup(), r = f.responsibility;
+  for (let i = 0; i < 3; i++) { if (i) f.next('same_clock_' + i); const handle = f.service.beginAttempt(r.id, { eventId: i ? 'same_clock_' + i : 'source', approach: 'method_' + i }); f.service.settle(handle, observed()); }
+  f.f.source('same_timestamp');
+  expect(() => f.service.resume(f.f.owner, r.id, 'same_timestamp')).toThrow('fresh_instruction_required');
+  expect(f.service.project(f.f.owner, r.id).state).toBe('paused');
 });
 
 test('unknown merge reconciled as remotely verified merged completes the responsibility without reviving old publication', () => {

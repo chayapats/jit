@@ -38,7 +38,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
   function held(r: Responsibility): boolean { return r.attempts.some(a => a.capacityHeld || a.state === 'unknown'); }
   function pause(r: Responsibility, code: StallReport['code'], recommendation: string): void {
     r.state = 'paused'; r.wait = null;
-    r.report = { code, at: now(), attempts: r.attempts.map(a => ({ id: a.id, approach: a.approach, evidenceRefs: [...a.evidenceRefs], progress: a.progress })), recommendation, otherAuthorizedWorkContinues: true };
+    r.report = { code, at: Math.max(now(), r.updatedAt), attempts: r.attempts.map(a => ({ id: a.id, approach: a.approach, evidenceRefs: [...a.evidenceRefs], progress: a.progress })), recommendation, otherAuthorizedWorkContinues: true };
   }
   function stall(r: Responsibility, recommendation: string): void {
     let count = new Set<string>();
@@ -163,9 +163,11 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       const source = options.conversation.view(owner, sourceRequestId);
       const scope = source.intent.scope;
       if (r.state !== 'paused' || held(r) || source.intent.kind !== 'execute' || source.receipt.conversationId !== r.conversationId || source.intent.subject !== r.subject || !scope || scope.purposeId !== r.purpose?.id || scope.resourceIds.some(id => !r.resources.some(ref => ref.id === id))) fail('outside_scope');
-      if (sourceRequestId === r.sourceRequestId) fail('fresh_instruction_required');
+      if (sourceRequestId === r.sourceRequestId || !r.report || source.receipt.receivedAt <= r.report.at) fail('fresh_instruction_required');
+      if (source.state !== 'completed' || source.code !== null || !source.authority || source.owner.generation !== r.ownerGeneration) fail('execution_not_authorized');
+      options.policy.work.guard(options.policy.control.bindWork(source.authority.id));
       return journal.once('rs_' + digest('s15.work.resume.id.v1', { responsibilityId, sourceRequestId }), digest('s15.work.resume.v1', { responsibilityId, sourceRequestId }), () => {
-        r.state = 'ready'; r.stallCheckpoint = r.attempts.length; r.readyEventId = sourceRequestId; return save(r);
+        r.state = 'ready'; r.stallCheckpoint = r.attempts.length; r.readyEventId = sourceRequestId; r.updatedAt = Math.max(r.updatedAt, source.receipt.receivedAt); return save(r);
       });
     }); },
     guard(handle) { journal.tx(() => {

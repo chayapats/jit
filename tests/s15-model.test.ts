@@ -27,6 +27,15 @@ test('ordinary and difficult steps select approved models and record exact ratio
   const published: string[] = []; service.publish(source.actor!, 'hard', text => published.push(text)); expect(published).toEqual(['Completed the selected step.']);
 });
 
+test('ranking excludes higher-ranked registry models that the current POLICY does not approve', async () => {
+  const { f, source, service, requests } = setup({ selections: [ordinary] });
+  expect(f.routes.map(route => route.selection)).toEqual([ordinary, difficult]);
+  expect(f.routes[1]!.rank.difficult).toBeLessThan(f.routes[0]!.rank.difficult);
+  expect(await service.runStep(source.actor!, { ...step(), difficulty: 'difficult' })).toMatchObject({ state: 'completed', route: { selection: ordinary } });
+  expect(requests).toHaveLength(1); expect(requests[0]!.thinking).toBe('low');
+  expect(f.policy.control.reservations().map(reservation => reservation.selection)).toEqual([ordinary]);
+});
+
 test('actual approved provider model names preserve punctuation independently of catalog ref IDs', async () => {
   const { f, source, service } = setup(); f.routes[0]!.modelId = 'fixture.model.v1';
   expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'completed', route: { modelId: 'fixture.model.v1', selection: ordinary } });

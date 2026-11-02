@@ -56,7 +56,8 @@ export interface ResponsibilityPort {
   reconcile(id: string, attemptId: string, observation: AttemptSettlement): Responsibility;
   /** Authenticated scoped stop fences this responsibility and its POLICY work; capacity remains until settlement. */
   stop(owner: OwnerActor, id: string, requestId: string): Responsibility;
-  /** Resume only from a fresh authenticated CHAT execution message within this exact original scope.
+  /** Resume only from a completed authenticated CHAT execution message received strictly after the
+   * persisted pause, within this exact original scope and with its own current unrevoked authority.
    * The new message cannot install authority or revive stopped/revoked work. Historical reports remain. */
   resume(owner: OwnerActor, id: string, sourceRequestId: string): Responsibility;
   /** Rechecks the original live attempt and current POLICY authority before owning-service I/O. */
