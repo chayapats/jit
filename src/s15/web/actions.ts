@@ -248,13 +248,52 @@ function controls(page: S15SlipPage): string {
   }
 }
 
-/** Line diff between two exact revisions. Bounded, ordered, and never hides a changed line. */
+export interface S15DiffLine { op: "same" | "del" | "add"; text: string }
+/** Ordered line diff: common prefix/suffix, then an LCS over the bounded middle, otherwise every removed line followed by every added line. */
+export function lineDiff(old: readonly string[], next: readonly string[]): S15DiffLine[] {
+  let start = 0; while (start < old.length && start < next.length && old[start] === next[start]) start++;
+  let end = 0; while (end < old.length - start && end < next.length - start && old[old.length - 1 - end] === next[next.length - 1 - end]) end++;
+  const a = old.slice(start, old.length - end), b = next.slice(start, next.length - end), middle: S15DiffLine[] = [];
+  if (a.length * b.length <= 250_000) {
+    const table = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+    for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) table[i]![j] = a[i] === b[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { middle.push({ op: "same", text: a[i]! }); i++; j++; }
+      else if (table[i + 1]![j]! >= table[i]![j + 1]!) middle.push({ op: "del", text: a[i++]! });
+      else middle.push({ op: "add", text: b[j++]! });
+    }
+    while (i < a.length) middle.push({ op: "del", text: a[i++]! });
+    while (j < b.length) middle.push({ op: "add", text: b[j++]! });
+  } else { for (const text of a) middle.push({ op: "del", text }); for (const text of b) middle.push({ op: "add", text }); }
+  return [...old.slice(0, start).map(text => ({ op: "same" as const, text })), ...middle, ...old.slice(old.length - end).map(text => ({ op: "same" as const, text }))];
+}
+const diffFields = ["recipients", "resources", "classes", "transaction", "github", "upperBound", "fences", "impact", "expiresAt"] as const;
+/** Ordered diff between two exact revisions. Unchanged runs collapse with a count and long change lists say how much is not shown; differing hashes are never reported as unchanged. */
 function revisionDiff(before: ActionSlip, after: ActionSlip): string {
-  const lines = (slip: ActionSlip) => JSON.stringify(slipPayload(slip), null, 2).split("\n").slice(0, 400);
-  const old = lines(before), next = lines(after), oldSet = new Set(old), nextSet = new Set(next);
-  const removed = old.filter(line => !nextSet.has(line)), added = next.filter(line => !oldSet.has(line));
-  if (!removed.length && !added.length) return `<p class="s-sub">${tr("s15.slip.diff_metadata")}</p>`;
-  return `<div class="s15-diff" aria-label="${tr("s15.slip.diff_title")}"><p class="s-exact-label">${fill("s15.slip.diff_between", { a: before.action.revision, b: after.action.revision })}</p><pre class="s-exact">${removed.map(line => `<span class="s-diff-old"><span class="sr-only">${tr("s15.slip.removed")} </span>${e(line)}</span>`).join("\n")}${removed.length && added.length ? "\n" : ""}${added.map(line => `<span class="s-diff-new"><span class="sr-only">${tr("s15.slip.added")} </span>${e(line)}</span>`).join("\n")}</pre></div>`;
+  const lines = (slip: ActionSlip) => JSON.stringify(slipPayload(slip), null, 2).split("\n");
+  const diff = lineDiff(lines(before), lines(after)), changed = diff.filter(line => line.op !== "same").length;
+  const fields = diffFields.filter(field => JSON.stringify(before.action[field] ?? null) !== JSON.stringify(after.action[field] ?? null)).map(field => tr(key(`s15.slip.field.${field}`)));
+  const parts: string[] = [];
+  if (fields.length) parts.push(`<p class="s-sub">${fill("s15.slip.diff_fields", { fields: fields.join(" · ") })}</p>`);
+  if (!changed && before.action.contentHash !== after.action.contentHash) parts.push(`<p class="s-sub">${fill("s15.slip.diff_bytes_only", { n: after.action.revision })}</p>`);
+  if (!changed && !fields.length && before.action.actionHash !== after.action.actionHash && before.action.contentHash === after.action.contentHash) parts.push(`<p class="s-sub">${fill("s15.slip.diff_conditions", { n: after.action.revision })}</p>`);
+  if (changed) {
+    const out: string[] = []; let shown = 0, hidden = 0;
+    for (let index = 0; index < diff.length;) {
+      if (diff[index]!.op === "same") {
+        let run = index; while (run < diff.length && diff[run]!.op === "same") run++;
+        const length = run - index, keep = (from: number, to: number) => { for (let k = from; k < to; k++) out.push(e(diff[k]!.text)); };
+        if (length > 6) { keep(index, index + 2); out.push(`<span class="s15-diff-gap">${fill("s15.slip.diff_same", { n: length - 4 })}</span>`); keep(run - 2, run); } else keep(index, run);
+        index = run; continue;
+      }
+      if (shown < 2000) { const line = diff[index]!; out.push(`<span class="${line.op === "del" ? "s-diff-old" : "s-diff-new"}"><span class="sr-only">${tr(line.op === "del" ? "s15.slip.removed" : "s15.slip.added")} </span>${e(line.text)}</span>`); shown++; } else hidden++;
+      index++;
+    }
+    if (hidden) out.push(`<span class="s15-diff-gap">${fill("s15.slip.diff_more", { n: hidden, r: after.action.revision })}</span>`);
+    parts.push(`<pre class="s-exact">${out.join("\n")}</pre>`);
+  }
+  return `<div class="s15-diff" aria-label="${tr("s15.slip.diff_title")}"><p class="s-exact-label">${fill("s15.slip.diff_between", { a: before.action.revision, b: after.action.revision })}</p>${parts.join("")}</div>`;
 }
 
 /** Full ActionSlip at `/actions/:id`: heading, chips, exact content, meta, then the OwnerStrip (§7.3). */

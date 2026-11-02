@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { withLocale } from "../src/i18n";
 import type { ActionSlip, PreparedAction, Rule, StandingPolicy } from "../src/s15/policy";
-import { compactSlip, fullSlip, slipState, type S15SlipPage } from "../src/s15/web/actions";
+import { compactSlip, fullSlip, lineDiff, slipState, type S15SlipPage } from "../src/s15/web/actions";
 import type { S15DecisionCard } from "../src/s15/web";
 
 // UX15-02a/b/DecisionCard: every §F4 slip state and class-specific exact section, rendered from typed slip data only.
@@ -105,4 +105,23 @@ test("English copy covers the same slips with no Thai fallback in headings or bu
   expect(html).toContain("Jit asks to send a message"); expect(strip(html)).toContain("Send once"); expect(html).toContain("One approval, for this exact content only");
   expect(withLocale("en", () => compactSlip(slip({ state: "unknown", observation: observed("unknown", "uncertain") })))).toContain("Outcome unknown. Jit won’t resend on its own.");
   expect(withLocale("en", () => slipState(slip({ state: "expired" })).line)).toBe("Expired, not sent");
+});
+
+test("the revision diff is ordered, keeps duplicates, covers long payloads and never says unchanged when hashes differ", () => {
+  expect(lineDiff(["a", "b", "c"], ["c", "b", "a"]).filter(line => line.op !== "same").length).toBeGreaterThan(0);
+  expect(lineDiff(["x", "x"], ["x"])).toEqual([{ op: "same", text: "x" }, { op: "del", text: "x" }]);
+  expect(lineDiff(["1", "2", "3"], ["1", "X", "3"])).toEqual([{ op: "same", text: "1" }, { op: "del", text: "2" }, { op: "add", text: "X" }, { op: "same", text: "3" }]);
+  const changed = { state: "changed" as const, replacement: { id: "action1", revision: 2, actionHash: hash("b") } };
+  // Reordering lines is a change, not "unchanged".
+  const reorder = th(slip(changed, { payload: { body: "one\ntwo" } }), { replacement: slip({}, { revision: 2, actionHash: hash("b"), contentHash: hash("d"), payload: { body: "two\none" } }) });
+  expect(reorder).toContain('class="s-diff-old"'); expect(reorder).toContain('class="s-diff-new"');
+  // A change after line 400 still shows, with unchanged runs collapsed and counted.
+  const long = (last: string) => ({ lines: [...Array.from({ length: 500 }, (_, i) => `line ${i}`), last] });
+  const tail = th(slip(changed, { payload: long("old ending") }), { replacement: slip({}, { revision: 2, actionHash: hash("b"), contentHash: hash("d"), payload: long("new ending") }) });
+  expect(tail).toContain("new ending"); expect(tail).toContain("old ending"); expect(tail).toMatch(/ไม่เปลี่ยน \d+ บรรทัด/);
+  // Same bytes, different recipients: the changed condition is named.
+  const recipients = th(slip(changed), { replacement: slip({}, { revision: 2, actionHash: hash("b"), recipients: [ref("someone_else")] }) });
+  expect(recipients).toContain("เงื่อนไขที่เปลี่ยน: ผู้รับ"); expect(recipients).not.toContain("เนื้อหาเหมือนเดิม แต่เงื่อนไข");
+  // Identical payload and fields but a different action hash still needs a fresh decision.
+  expect(th(slip(changed), { replacement: slip({}, { revision: 2, actionHash: hash("b") }) })).toContain("r2 เป็นรายการใหม่ที่ต้องตัดสินใจอีกครั้ง");
 });
