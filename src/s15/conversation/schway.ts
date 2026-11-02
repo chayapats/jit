@@ -34,7 +34,8 @@ export async function runConversation(input: {
     input.guard();
     const selected = input.scripted ?? await host.auth!.createModel();
     input.guard();
-    if (selected.id !== authority.route.model || selected.provider !== authority.route.provider) throw new AppError("selection_pinned", 403);
+    const provider = authority.route.provider === "codex" ? "codex-subscription" : "xai";
+    if (selected.id !== authority.route.model || selected.provider !== provider && !(input.scripted && selected.provider === authority.route.provider)) throw new AppError("selection_pinned", 403);
     const guarded: Model = { provider: selected.provider, id: selected.id, async *stream(request, options) {
       input.guard(); const reservation = input.reserveModel();
       try { yield* selected.stream(request, options); }

@@ -8,7 +8,7 @@ import type { ConversationAuthority, ConversationPolicyWork, ConversationToolPor
  * paused request, so owner approval resumes that request rather than calling a new browser input.
  * Compose dispatchAction into the real ConversationPolicy; other actions use its existing dispatcher.
  */
-export function createEffectsConversationTools(policy: S15PolicyService, options: { google?: ConversationToolPort<ConversationPolicyWork>; browser?: BrowserRegistration }) {
+export function createEffectsConversationTools(policy: S15PolicyService, options: { google?: ConversationToolPort<ConversationPolicyWork>; browser?: BrowserRegistration; browserResourceId?: string }) {
   const held = new Map<string, { work: ConversationPolicyWork; browser: BrowserWork; action: ActionRef; settled: Promise<void>; done: boolean; dispatching: boolean; cancel(): Promise<void>; release(): void }>();
   const tools: ConversationToolPort<ConversationPolicyWork> = { async open(work, input) {
     input.guard();
@@ -20,7 +20,7 @@ export function createEffectsConversationTools(policy: S15PolicyService, options
       catch { terminal = true; }
       if (terminal) await entry.cancel();
     }
-    input.guard(); const google = await options.google?.open(work, input), browser = options.browser?.open(work.actor);
+    input.guard(); const google = await options.google?.open(work, input), browser = !options.browserResourceId || work.authority.request.resources.some(r => r.id === options.browserResourceId) ? options.browser?.open(work.actor) : undefined;
     const abort = new AbortController(), signal = AbortSignal.any([input.signal, abort.signal]);
     let retain = false, released = false;
     const release = () => { if (released) return; browser?.release(); released = true; for (const [key, value] of held) if (value.browser === browser) held.delete(key); };

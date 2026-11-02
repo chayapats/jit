@@ -27,6 +27,8 @@ export function createConversationPolicy(host: S15PolicyService, input: {
   bot: Ref; selection: Selection;
   route: ConversationAuthority["route"]; limits: ConversationAuthority["limits"];
   modelCallUpperBound: ModelCallBound;
+  /** Protected repository catalog distinguishes the selected issue resource from an accompanying VM. */
+  subjectResourceIds?: readonly string[];
 }): ConversationPolicy<OwnerActor, ConversationPolicyWork> {
   const config = structuredClone({ ownerId: input.ownerId, bot: input.bot, selection: input.selection, route: input.route, limits: input.limits, modelCallUpperBound: input.modelCallUpperBound });
   const invoke = <T>(call: () => T): T => { try { return call(); } catch (error) { throw mapped(error); } };
@@ -48,8 +50,9 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         const purpose = policy.purposes.find(purpose => purpose.id === scope.purposeId);
         const resources = scope.resourceIds.map(id => { const resource = policy.resources.find(resource => resource.id === id); if (!resource) throw new AppError("outside_scope"); return resource; });
         if (!purpose) return { state: "proposed", code: "outside_scope" };
-        if (intent.subject && resources.length !== 1) return { state: "held", code: "material_ambiguity" };
-        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: scope.access === "effect" ? policy.recipients : [], selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? 0), subject: intent.subject ? { resource: resources[0]!, issue: Number(intent.subject.slice(6)) } : null }));
+        const subjects = input.subjectResourceIds ? resources.filter(r => input.subjectResourceIds!.includes(r.id)) : resources;
+        if (intent.subject && subjects.length !== 1) return { state: "held", code: "material_ambiguity" };
+        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: scope.access === "effect" ? policy.recipients : [], selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
         if (!admitted.work) throw new AppError("outside_scope");
         return { state: "admitted", authority: snapshot(admitted.work) };
       } catch (error) { const code = mapped(error).code; return { state: code === "outside_scope" ? "proposed" : "held", code }; }

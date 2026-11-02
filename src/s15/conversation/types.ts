@@ -132,6 +132,8 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   model?: Model;
   /** Optional separate scripted interpreter; production uses the preapproved public host auth route. */
   interpreterModel?: Model;
+  /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; signal: AbortSignal; guard(): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }

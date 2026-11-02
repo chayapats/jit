@@ -23,6 +23,7 @@ try {
     console.log(JSON.stringify(result.output));
     process.exitCode = result.exitCode;
   } else if (selected.runtime === "adoption") await (await import("./s15/adoption/cli")).runAdoptionReport(selected.args);
+  else if (selected.runtime === "s15") await (await import("./s15/main")).runS15(selected.args);
   else if (selected.runtime === "s14") await (await import("./s14/main")).runS14(selected.args);
   else await (await import("./app-cli")).runLegacy(selected.args);
 } catch (error) {

@@ -345,6 +345,12 @@ export class GithubService {
     }
     finally { this.active.delete(id); }
   }
+  /** Protected scheduler wake. Reopens only recorded assigned responsibilities whose finite wait elapsed. */
+  async drain(): Promise<void> {
+    for (const row of this.options.store.all<GithubBabysitting>("babysit")) {
+      if (!this.active.has(row.id) && row.nextAt <= this.now() && !["stalled", "reconcile_only", "merged", "stopped"].includes(row.state)) await this.tick(row.id);
+    }
+  }
   /** Read-only exact unknown-action recovery. Lost VM execution still requires its owning VM proof; nothing is resent. */
   async reconcile(owner: OwnerActor, actor: WorkActor, id: string, requestId: string): Promise<GithubBabysitting> {
     identity(id); identity(requestId); const row = this.options.store.get<GithubBabysitting>("babysit", id); if (!row) fail("not_found");

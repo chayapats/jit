@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { createHost, type ExecutionBackend, type HostClock, type Model, type ToolDefinition } from "schway/host";
 import type { BudgetVector, Ref, S15PolicyService } from "../policy";
-import { codingEvidenceCheckout, codingSnapshot } from "../../s14/coding-evidence";
+import { githubEvidenceCheckout, githubEvidenceSnapshot } from "./evidence";
 import { codingGit, codingGitOutput } from "../../s14/coding-protocol";
 import type { GithubCodingEvidence, GithubSelection, GithubWorkspace } from "./types";
 import { content, digest, fail, integer, oid } from "./validation";
@@ -45,7 +45,7 @@ export function createGithubVmWorkspace(options: {
     let retained: GithubCodingEvidence | undefined;
     try {
       input.guard(); const backend = session.backend, path = await options.preload(backend, input.selection, input.guard);
-      if (!/^\/workspace\/coding\/[A-Za-z0-9_-]+$/.test(path)) fail("github_workspace_invalid");
+      if (path !== `${backend.workspaceRoot}/coding/${input.selection.id}`) fail("github_workspace_invalid");
       const root = join(options.nativeDirectory, attemptId); for (const part of ["workspace", "home", "sessions"]) mkdirSync(join(root, part), { recursive: true, mode: 0o700 });
       const definitions = session.definitions.map(d => ({ ...d, async execute(value: unknown, context: Parameters<typeof d.execute>[1]) { input.guard(); const result = await d.execute(value, context); input.guard(); return result; } }));
       host = await createHost({ workspaceRoot: join(root, "workspace"), homeDirectory: join(root, "home"), sessionDirectory: join(root, "sessions"),
@@ -53,7 +53,8 @@ export function createGithubVmWorkspace(options: {
         tools: { policy: "exact", definitions, hostedLookup: "off" }, limits: { maxTurns: options.maxTurns, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 65536, deadlineMs: options.activeMs },
         ...(options.scripted ? {} : { auth: { route: options.route.provider, model: options.route.model, credentialWriteGuard: input.guard } }) });
       input.guard(); const model = options.scripted ?? await host.auth!.createModel();
-      if (model.provider !== options.route.provider || model.id !== options.route.model) fail("selection_pinned");
+      const provider = options.route.provider === "codex" ? "codex-subscription" : "xai";
+      if (model.provider !== provider && !(options.scripted && model.provider === options.route.provider) || model.id !== options.route.model) fail("selection_pinned");
       let calls = 0;
       const guarded: Model = { provider: model.provider, id: model.id, async *stream(request, streamOptions) {
         input.guard(); const r = options.policy.work.reserveModelCall(actor, { requestId: `${attemptId}_${++calls}`, selection: input.authority.request.selection, upperBound: options.modelCallUpperBound });
@@ -67,7 +68,7 @@ export function createGithubVmWorkspace(options: {
         if (outcome.outcome !== "completed") fail("github_implementation_incomplete");
       } finally { try { await native.retire(); } finally { await native.close(); } }
       input.guard(); const head = codingGitOutput(await codingGit(backend, path, ["rev-parse", "HEAD"], abort.signal)).trim(); oid(head);
-      await codingEvidenceCheckout(backend, path, head, input.selection.branch, abort.signal);
+      await githubEvidenceCheckout(backend, path, head, input.selection.branch, abort.signal);
       const results: GithubCodingEvidence["tests"] = [];
       for (const test of tests) {
         input.guard(); const observed = await backend.spawn({ cwd: path, command: test.command, timeoutMs: test.timeoutMs, signal: abort.signal });
@@ -75,7 +76,7 @@ export function createGithubVmWorkspace(options: {
         results.push({ command: test.command, exitCode: observed.exitCode, outputHash: digest(`${observed.stdout}\n${observed.stderr}`) });
       }
       input.guard();
-      return await codingSnapshot(backend, path, head, async (git, unchanged) => {
+      return await githubEvidenceSnapshot(backend, path, head, async (git, unchanged) => {
         if (!unchanged) fail("github_changed_during_tests");
         const diff = await git(["diff", "--binary", "--no-ext-diff", "--no-textconv", input.selection.base, head, "--"]), diffHash = digest(diff);
         const changedPaths = (await git(["diff", "--name-only", "--no-ext-diff", input.selection.base, head, "--"])).trim().split("\n").filter(Boolean);
