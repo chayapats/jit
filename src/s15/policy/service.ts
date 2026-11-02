@@ -92,7 +92,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (w.request.intent !== 'execute') v.fail('outside_scope');
     if (time() >= a.expiresAt || (a.transaction && time() >= a.transaction.quoteExpiresAt)) v.fail('expired');
     const adapter = adapters.get(a.adapter); if (!adapter || adapter.version !== a.adapterVersion) v.fail('adapter_unproven');
-    if (a.resources.some(x => !v.contains(w.request.resources, x)) || a.recipients.some(x => !v.contains(w.request.recipients, x))) v.fail('outside_scope');
+    if (a.resources.some(x => !v.contains(w.request.resources, x)) || (a.recipients.some(x => !v.contains(w.request.recipients, x)) && !a.classes.some(c => c === 'new_egress' || c === 'disclosure'))) v.fail('outside_scope');
     a.resources.forEach(x => currentRef('resource', x)); a.recipients.forEach(x => currentRef('recipient', x)); a.fences.forEach(x => currentRef(x.kind, x.ref));
     if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
   }
@@ -106,7 +106,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!continuation && unsettled() >= budget.concurrency) v.fail('capacity_busy');
   }
   function matching(r: T.Rule, w: T.WorkAuthority, a: T.PreparedAction): boolean {
-    return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && a.recipients.every(x => v.contains(r.recipients, x));
+    return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && (a.recipients.every(x => v.contains(r.recipients, x)) || a.classes.some(c => c === 'new_egress' || c === 'disclosure')) && (!r.mode.startsWith('personal_github') || (!!r.github && !!a.github && v.equal(r.github.repository, a.github.repository) && r.github.target === a.github.target));
   }
   function recurringMatch(r: T.Rule, a: T.PreparedAction, continuation: boolean): boolean {
     const t = a.transaction, f = r.recurrence;
@@ -193,7 +193,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     v.policy(input); v.nat(expectedRevision);
     const old = getPolicy(); if ((old?.revision ?? 0) !== expectedRevision) v.fail('stale_policy');
     if (!allowRecurring && input.rules.some(r => r.mode === 'recurring_payment' && !old?.rules.some(x => v.equal(x, r)))) v.fail('recurring_approval_required');
-    if (old?.budget && input.budget && old.budget.currency !== input.budget.currency) v.fail('budget_currency_changed');
+    if (input.budget) { const currency = ledger.meta<string>('budgetCurrency'); if (currency !== null && currency !== input.budget.currency) v.fail('budget_currency_changed'); ledger.put('budgetCurrency', input.budget.currency); }
     const p: T.StandingPolicy = { ...clone(input), contract: 's15-standing-policy/v1', revision: expectedRevision + 1, ownerGeneration: options.ownerGeneration() };
     v.nat(p.revision, true); if (p.expiresAt <= time()) v.fail('expired');
     for (const r of p.rules) { if (!r.purposes.every(x => v.contains(p.purposes, x)) || !r.bots.every(x => v.contains(p.bots, x)) || !r.resources.every(x => v.contains(p.resources, x)) || !r.recipients.every(x => v.contains(p.recipients, x)) || !r.selections.every(x => v.contains(p.selections, x))) v.fail('outside_scope'); }
@@ -231,7 +231,11 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         ownerAuth(actor); const a = loadAction(ref); const claim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id)); if (!claim) v.fail('reconciliation_required');
         const adapter = adapters.get(a.adapter); if (!adapter?.reconcile) v.fail('adapter_unproven');
         const existing = observation(a); if (existing && existing.outcome !== 'unknown') return { a, claim, adapter, result: existing, reservation: null };
-        const w = currentWork(a.workId); checkAction(w, a);
+        const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId)); if (!w) v.fail('authority_revoked');
+        const p = policyCurrent(); checkRequest(p, w.request);
+        a.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
+        a.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
+        if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
         const bound = { ...v.zero(), calls: 1, reads: 1 };
         const reservation = reserve(w, requestId, bound, { kind: 'reconcile', action: ref });
         return { a, claim, adapter, result: null, reservation };
@@ -246,7 +250,14 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   };
   const work: T.WorkPort = {
     guard(actor) { return tx(() => clone(workAuth(actor))); },
-    reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); return clone(reserve(w, input.requestId, input.upperBound, input)); }); },
+    reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope'); const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection); ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r); }); },
+    guardReservation(actor, reservationId) { return tx(() => {
+      const w = workAuth(actor); v.id(reservationId); const r = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', reservationId));
+      if (!r || r.workId !== w.id || r.transportSettled || !r.selection) v.fail('reservation_not_found');
+      const p = policyCurrent(); if (!v.contains(p.selections, r.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, r.selection))) v.fail('selection_pinned');
+      currentRef('route', r.selection.route); currentRef('model', r.selection.model); budgetCheck(r.upperBound, true);
+      if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(r.selection) } }, null)) v.fail('outside_scope'); return clone(r);
+    }); },
     prepare(actor, input) { return tx(() => {
       v.exact(input, ['slot', 'adapter', 'proposal']); v.id(input.slot); v.id(input.adapter); v.canonical(input.proposal);
       const w = workAuth(actor); if (w.request.intent !== 'execute') v.fail('outside_scope');
@@ -279,7 +290,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       });
       let consumed = false, started = false, pending: Promise<T.AdapterResult> | null = null;
       const context: T.DispatchContext = Object.freeze({ commit(finalPayload: T.JsonValue, send: () => Promise<T.AdapterResult>): Promise<T.AdapterResult> {
-        if (consumed) v.fail('already_claimed'); consumed = true;
+        if (consumed) v.fail('already_claimed'); consumed = true; if (typeof send !== 'function') v.fail('adapter_unproven');
         tx(() => {
           const w = workAuth(actor), current = loadAction(ref); const decision = evaluate(w, current, true); requireAllowed(decision);
           if (!v.equal(decision, claim.decision)) v.fail('stale_authority');
@@ -287,7 +298,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           const reservation = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', claim.reservationId)); if (!reservation || reservation.transportSettled || !v.equal(reservation.upperBound, a.upperBound)) v.fail('reservation_not_found');
           if (v.digest('s15.content.v1', finalPayload) !== a.contentHash) v.fail('hash_mismatch');
           // The durable claim committed earlier. Invocation under this writer fence orders revocation before/after the irreversible send.
-          started = true; pending = send();
+          started = true; pending = send(); if (!(pending instanceof Promise)) v.fail('invalid_adapter_result'); void pending.catch(() => {});
         });
         return pending!;
       } });

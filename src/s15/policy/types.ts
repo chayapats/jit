@@ -13,7 +13,7 @@ export type ActionClass = 'ordinary_edit' | 'guest_local_admin' | 'guest_system_
 /** A separately owner-approved finite recurring obligation. Frequency is minimum elapsed milliseconds between claims. */
 export interface RecurringPaymentRule { payee: Ref; account: Ref; currency: string; minorUnit: number; amountCeilingMinor: string; minIntervalMs: number; maxPayments: number; totalCeilingMinor: string; startsAt: number }
 /** Entire-action scope; rules never union partial permissions. Ordinary rules cannot satisfy human gates. */
-export interface Rule { id: string; mode: 'ordinary' | 'communication' | 'personal_github_publish' | 'personal_github_merge' | 'recurring_payment' | 'deny'; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; adapters: string[]; operations: string[]; classes: ActionClass[]; expiresAt: number; recurrence: RecurringPaymentRule | null }
+export interface Rule { id: string; mode: 'ordinary' | 'communication' | 'personal_github_publish' | 'personal_github_merge' | 'recurring_payment' | 'deny'; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; adapters: string[]; operations: string[]; classes: ActionClass[]; expiresAt: number; recurrence: RecurringPaymentRule | null; github?: { repository: Ref; target: string } | null }
 /** Owner-installed ceilings. Personal GitHub rules and recurring payments are absent unless explicitly approved. */
 export interface StandingPolicy { contract: 's15-standing-policy/v1'; revision: number; ownerGeneration: number; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; budget: OperatingBudget | null; rules: Rule[]; expiresAt: number }
 /** Protected owner configuration, never a model-provided current-policy object. Recurring rules use their separate approval command. */
@@ -31,7 +31,7 @@ export interface OwnerActor { readonly [ownerBrand]: true }
 export interface WorkActor { readonly [workBrand]: true }
 /** Exact current generation resolved outside the working VM; absence or inactive state fails closed. */
 export type CatalogKind = 'purpose' | 'bot' | 'resource' | 'recipient' | 'route' | 'model' | 'lineage' | 'vm' | 'input';
-/** Protected owning-service resolver. allows must enforce current Bot/resource/consent/privacy ceilings; no model input is authoritative. */
+/** Protected owning-service resolver. allows must enforce current Bot/resource/consent/privacy ceilings, including eligibility for an exact owner release to any new disclosure/egress recipient; no model input is authoritative. */
 export interface CatalogPort { current(kind: CatalogKind, id: string): { ref: Ref; active: boolean } | null; allows(work: WorkAuthority, action: ActionDraft | null): boolean }
 /** Explicit generation fence for source lineage, VM or browser input, rechecked at final dispatch/publication. */
 export interface Fence { kind: CatalogKind; ref: Ref }
@@ -58,7 +58,7 @@ export interface ApprovalInput { requestId: string; action: ActionRef; decision:
 /** Independently deduplicated model reservation; the selected call must remain inside the current work policy/pin. */
 export interface ModelCallInput { requestId: string; selection: Selection; upperBound: BudgetVector }
 /** Durable charge and transport capacity. A recovered unsettled reservation stays unknown and occupies capacity. */
-export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number }
+export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number; selection?: Selection }
 /** Safe observation, never provider errors or credentials. Unknown is permanently reconcile-only. */
 export interface Observation { outcome: 'not_dispatched' | 'succeeded' | 'failed' | 'unknown'; basis: 'local_guard' | 'remote_verified' | 'uncertain' | 'owner_statement'; code: string | null; actual: Usage; transportSettled: boolean }
 /** Trusted adapter result: failed requires conclusive remote rejection; exceptions/malformed replies become unknown. */
@@ -72,7 +72,7 @@ export interface AuthenticatedOwner { id: string; generation: number; expiresAt:
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
 export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; now?: () => number }
 /** Worker consumer port. Models receive scoped tool closures, never this service's owner/control ports. */
-export interface WorkPort { guard(actor: WorkActor): WorkAuthority; reserveModelCall(actor: WorkActor, input: ModelCallInput): Reservation; prepare(actor: WorkActor, input: PrepareInput): PreparedResult; evaluate(actor: WorkActor, action: ActionRef): Decision; guardBeforeDispatch(actor: WorkActor, action: ActionRef): PreparedAction; dispatch(actor: WorkActor, action: ActionRef): Promise<Observation> }
+export interface WorkPort { guard(actor: WorkActor): WorkAuthority; reserveModelCall(actor: WorkActor, input: ModelCallInput): Reservation; guardReservation(actor: WorkActor, reservationId: string): Reservation; prepare(actor: WorkActor, input: PrepareInput): PreparedResult; evaluate(actor: WorkActor, action: ActionRef): Decision; guardBeforeDispatch(actor: WorkActor, action: ActionRef): PreparedAction; dispatch(actor: WorkActor, action: ActionRef): Promise<Observation> }
 /** Protected owner API, suitable for authenticated HTTP/channel wrappers; no natural-language approval parsing is supplied. */
 export interface OwnerPort { authenticate(proof: unknown): OwnerActor; current(actor: OwnerActor): StandingPolicy | null; install(actor: OwnerActor, requestId: string, expectedRevision: number, input: PolicyInput): StandingPolicy; admit(actor: OwnerActor, request: WorkRequest): WorkReceipt; decide(actor: OwnerActor, input: ApprovalInput): void; approveRecurringRule(actor: OwnerActor, requestId: string, expectedRevision: number, rule: Rule): StandingPolicy; revoke(actor: OwnerActor, requestId: string, scope: { kind: 'policy' } | { kind: 'work'; id: string }): void; inspect(actor: OwnerActor, action: ActionRef): { action: PreparedAction; observation: Observation | null }; reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation>; recordStatement(actor: OwnerActor, action: ActionRef, requestId: string, outcome: 'occurred' | 'did_not_occur'): void }
 /** Host-only control integration. Recording usage never grants publication or dispatch authority. */

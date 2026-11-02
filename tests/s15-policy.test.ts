@@ -71,7 +71,7 @@ describe('exact preparation, approval and action classes', () => {
   });
   test('unknown adapter/action classification refuses before any claim', () => {
     const f = setup(), { actor } = f.admit(); throws(() => f.service.work.prepare(actor!, { slot: 'unknown', adapter: 'shell_network', proposal: {} }), 'adapter_unproven');
-    f.draft = { ...draft(), classes: ['alien'] as ActionClass[] }; throws(() => f.prepare(actor!), 'adapter_unproven'); expect(f.service.control.usage().charged.calls).toBe(0);
+    f.draft = { ...draft(), classes: ['alien'] as unknown as ActionClass[] }; throws(() => f.prepare(actor!), 'adapter_unproven'); expect(f.service.control.usage().charged.calls).toBe(0);
   });
   test.each(['payload', 'recipients', 'attachments', 'fences', 'expiry'] as const)('changed %s supersedes revision and old approval', field => {
     const f = setup(), { actor } = f.admit(); held(f, 'send', ['communication']); const a = f.prepare(actor!).action, original = structuredClone(a); f.approve(a); expect(f.service.owner.inspect(f.owner, actionRef(a)).action).toEqual(original);
@@ -132,4 +132,50 @@ describe('finite model/effect reservations and exact final dispatch', () => {
     const f = setup(); const request = f.request(); throws(() => f.service.owner.admit(f.owner, { ...request, ownerId: 'owner' } as typeof request), 'invalid_shape');
     const obj = Object.defineProperty({}, 'hidden', { get() { throw new Error('getter_called'); }, enumerable: true }); throws(() => canonical(obj), 'invalid_shape'); throws(() => canonical(new Array(2)), 'invalid_shape'); throws(() => canonical(-0), 'invalid_number'); throws(() => canonical(Number.POSITIVE_INFINITY), 'invalid_number'); expect(f.service.control.usage().charged).toEqual(zero());
   });
+});
+
+describe('GitHub default, opt-in personal publication and production gates', () => {
+  function github(f: Fixture, operation: 'publish' | 'merge' = 'publish') {
+    f.draft = { ...draft(), operation, classes: operation === 'publish' ? ['github_publish', 'communication'] : ['github_merge'], resources: [ref('repo')], recipients: [], github: { repository: ref('repo'), issue: 320, target: 'main', head: 'a'.repeat(40), evidenceHash: 'b'.repeat(64), checksPassed: true, reviewsPassed: true, acceptancePassed: true, production: 'none', deploymentFence: null } };
+  }
+  test('personal publication must be explicitly installed, target-bound and selected-and-started', () => {
+    const f = setup(); github(f); let w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; expect(f.prepare(w).decision.state).toBe('hold');
+    const personal = rule('personal_publish'); personal.mode = 'personal_github_publish'; personal.github = { repository: ref('repo'), target: 'main' }; f.input.rules.push(personal); f.install(); w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; expect(f.prepare(w).decision.state).toBe('allow');
+    const noSelection = f.admit().actor!; expect(f.prepare(noSelection).decision.state).toBe('hold');
+    f.draft.github!.target = 'production'; expect(f.prepare(w).decision.state).toBe('hold');
+    f.draft.github!.target = 'main'; f.draft.github!.checksPassed = false; expect(f.prepare(w).decision.state).toBe('hold');
+  });
+  test('publication authority cannot merge; separate merge rule still holds a production-triggering merge', () => {
+    const f = setup(), personal = rule('publish'); personal.mode = 'personal_github_publish'; personal.github = { repository: ref('repo'), target: 'main' }; f.input.rules.push(personal); f.install(); github(f, 'merge'); let w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; expect(f.prepare(w).decision).toEqual({ state: 'hold', code: 'merge_authority_required' });
+    const merge = rule('merge'); merge.mode = 'personal_github_merge'; merge.github = { repository: ref('repo'), target: 'main' }; f.input.rules.push(merge); f.install(); w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; expect(f.prepare(w).decision.state).toBe('allow');
+    f.draft.github!.production = 'would_deploy'; const held = f.prepare(w); expect(held.decision).toEqual({ state: 'hold', code: 'production_approval_required' }); f.approve(held.action); expect(f.service.work.evaluate(w, actionRef(held.action)).state).toBe('allow');
+  });
+  test('a protected deployment gate must be current and bound to final action fences', () => {
+    const f = setup(), merge = rule('merge'); merge.mode = 'personal_github_merge'; merge.github = { repository: ref('repo'), target: 'main' }; f.input.rules.push(merge); f.install(); github(f, 'merge'); f.draft.github!.production = 'protected_gate'; const w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; expect(f.prepare(w).decision.state).toBe('hold');
+    const gate = fence('resource', 'snapshot'); f.draft.github!.deploymentFence = gate; f.draft.fences = [gate]; const a = f.prepare(w); expect(a.decision.state).toBe('allow'); f.catalog.get('resource:snapshot')!.active = false; expect(f.service.work.evaluate(w, actionRef(a.action)).state).toBe('deny');
+  });
+});
+
+test('a new eligible egress recipient is held until one exact owner release', async () => {
+  const f = setup(); f.add('recipient', ref('new_destination')); const w = f.admit().actor!; held(f, 'egress', ['new_egress']); f.draft.recipients = [ref('new_destination')]; const a = f.prepare(w); expect(a.decision).toEqual({ state: 'hold', code: 'egress_approval_required' }); f.approve(a.action); expect((await f.service.work.dispatch(w, actionRef(a.action))).outcome).toBe('succeeded');
+});
+test('approval expiry is rechecked after claim, and an expired approval cannot dispatch', async () => {
+  const f = setup(), w = f.admit().actor!; held(f, 'send', ['communication']); const a = f.prepare(w).action; f.approve(a); f.before = async () => { f.now = 80000; }; expect((await f.service.work.dispatch(w, actionRef(a))).outcome).toBe('not_dispatched'); expect(f.calls).toBe(0);
+});
+test('registered or credential-shaped payloads refuse before persistence/hash binding', async () => {
+  const { registerSecretFingerprint } = await import('../src/security/secret-fingerprints'); const synthetic = 'synthetic-policy-secret-do-not-use'; registerSecretFingerprint(synthetic);
+  const f = setup(), w = f.admit().actor!; f.draft.payload = { content: synthetic }; expect(() => f.prepare(w)).toThrow('credential_content_refused'); expect(f.calls).toBe(0);
+});
+test('array accessors and extra sparse properties never execute during validation', () => {
+  let called = false; const a = Object.defineProperty([], '0', { enumerable: true, get() { called = true; return 'value'; } }); expect(() => canonical(a)).toThrow('invalid_shape'); expect(called).toBe(false); const b = new Array(2); b[0] = 'one'; Object.assign(b, { other: 'extra' }); expect(() => canonical(b)).toThrow('invalid_shape');
+});
+
+test('reserved alternative model is fenced at the final model-call boundary', () => {
+  const f = setup(), alternate = { route: ref('alternate_route'), model: ref('alternate_model'), effort: 'high' }; f.add('route', alternate.route); f.add('model', alternate.model); f.input.selections.push(alternate); f.install(); const w = f.admit().actor!, r = f.service.work.reserveModelCall(w, { requestId: 'alternate_call', selection: alternate, upperBound: bound() }); expect(f.service.work.guardReservation(w, r.id).id).toBe(r.id); f.catalog.get('model:alternate_model')!.ref.generation++; expect(() => f.service.work.guardReservation(w, r.id)).toThrow('stale_authority');
+});
+test('disabling and re-enabling a budget cannot reinterpret charged currency', () => {
+  const f = setup(), w = f.admit().actor!; f.service.work.reserveModelCall(w, { requestId: 'call', selection, upperBound: bound() }); const budget = f.input.budget!; f.input.budget = null; f.install(); f.input.budget = { ...budget, currency: 'EUR' }; expect(() => f.install()).toThrow('budget_currency_changed');
+});
+test('measured budget overrun fences subsequent admissions without refunding the original charge', () => {
+  const f = setup(), w = f.admit().actor!, r = f.service.work.reserveModelCall(w, { requestId: 'call', selection, upperBound: bound() }); f.service.control.settleReservation(r.id, { ...unknownUsage(), spendMinor: '4' }, true); expect(() => f.service.work.reserveModelCall(w, { requestId: 'call_two', selection, upperBound: bound() })).toThrow('budget_exhausted'); expect(f.service.control.usage().charged.spendMinor).toBe('3');
 });

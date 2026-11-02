@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { containsRegisteredSecret } from '../../security/secret-fingerprints';
 import type { ActionClass, ActionDraft, BudgetVector, PolicyInput, Ref, Rule, Selection, Usage, WorkRequest } from './types';
 
 /** Safe public refusal code. No raw provider error, payload or credential is included. */
@@ -19,7 +20,7 @@ export function ref(value: unknown): asserts value is Ref { exact(value, ['id', 
 export function selection(value: unknown): asserts value is Selection { exact(value, ['route', 'model', 'effort']); ref(value.route); ref(value.model); id(value.effort); }
 export const equal = (a: unknown, b: unknown): boolean => canonical(a) === canonical(b);
 export const contains = (set: readonly unknown[], item: unknown): boolean => set.some(x => equal(x, item));
-function array(value: unknown, visit: (v: unknown) => void, nonempty = false): asserts value is unknown[] { if (!Array.isArray(value) || value.length > 64 || (nonempty && !value.length)) fail('invalid_shape'); value.forEach(visit); if (new Set(value.map(canonical)).size !== value.length) fail('invalid_shape'); }
+function array(value: unknown, visit: (v: unknown) => void, nonempty = false): asserts value is unknown[] { if (!Array.isArray(value) || value.length > 64 || (nonempty && !value.length)) fail('invalid_shape'); canonical(value); value.forEach(visit); if (new Set(value.map(canonical)).size !== value.length) fail('invalid_shape'); }
 export function refs(value: unknown): asserts value is Ref[] { array(value, ref); if (new Set(value.map(v => (v as Ref).id)).size !== value.length) fail('invalid_shape'); }
 const dims = ['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs', 'spendMinor'] as const;
 export function vector(value: unknown): asserts value is BudgetVector { exact(value, dims); for (const k of dims) k === 'spendMinor' ? minor(value[k]) : nat(value[k]); }
@@ -34,14 +35,14 @@ export function canonical(value: unknown): string {
   function walk(v: unknown, depth: number): string {
     if (depth > 16) fail('invalid_shape');
     if (v === null || typeof v === 'boolean') return JSON.stringify(v);
-    if (typeof v === 'string') { string(v, 131072); return JSON.stringify(v); }
+    if (typeof v === 'string') { string(v, 131072); if (containsRegisteredSecret(v) || /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:Bearer\s+[A-Za-z0-9._~+\/-]{16,})|(?:gh[pousr]_[A-Za-z0-9]{20,})/.test(v)) fail('credential_content_refused'); return JSON.stringify(v); }
     if (typeof v === 'number') { nat(v); return JSON.stringify(v); }
     if (!v || typeof v !== 'object' || seen.has(v)) fail('invalid_shape');
     seen.add(v);
     let result: string;
     if (Array.isArray(v)) {
-      if (v.length > 256 || Reflect.ownKeys(v).length !== v.length + 1 || v.some((_, i) => !Object.hasOwn(v, i))) fail('invalid_shape');
-      for (let i = 0; i < v.length; i++) if (!('value' in Object.getOwnPropertyDescriptor(v, i)!)) fail('invalid_shape');
+      if (v.length > 256 || Reflect.ownKeys(v).length !== v.length + 1) fail('invalid_shape');
+      for (let i = 0; i < v.length; i++) { const d = Object.getOwnPropertyDescriptor(v, i); if (!d || !d.enumerable || !('value' in d)) fail('invalid_shape'); }
       result = '[' + Array.from(v, x => walk(x, depth + 1)).join(',') + ']';
     } else {
       if (Object.getPrototypeOf(v) !== Object.prototype) fail('invalid_shape');
@@ -56,7 +57,7 @@ export function canonical(value: unknown): string {
 export const digest = (domain: string, value: unknown): string => createHash('sha256').update(domain + '\n' + canonical(value)).digest('hex');
 const classes: ActionClass[] = ['ordinary_edit', 'guest_local_admin', 'guest_system_admin', 'new_egress', 'communication', 'financial', 'github_publish', 'github_merge', 'production', 'disclosure', 'major_change'];
 export function rule(v: unknown): asserts v is Rule {
-  exact(v, ['id', 'mode', 'purposes', 'bots', 'resources', 'recipients', 'selections', 'adapters', 'operations', 'classes', 'expiresAt', 'recurrence']); id(v.id);
+  exact(v, ['id', 'mode', 'purposes', 'bots', 'resources', 'recipients', 'selections', 'adapters', 'operations', 'classes', 'expiresAt', 'recurrence'], ['github']); id(v.id);
   if (!['ordinary', 'communication', 'personal_github_publish', 'personal_github_merge', 'recurring_payment', 'deny'].includes(v.mode as string)) fail('invalid_rule');
   refs(v.purposes); refs(v.bots); refs(v.resources); refs(v.recipients); array(v.selections, selection, true); array(v.adapters, id, true); array(v.operations, id, true); array(v.classes, x => { if (!classes.includes(x as ActionClass)) fail('invalid_rule'); }, true); nat(v.expiresAt, true);
   if (!(v.purposes as Ref[]).length || !(v.bots as Ref[]).length) fail('invalid_rule');
@@ -64,6 +65,7 @@ export function rule(v: unknown): asserts v is Rule {
     exact(v.recurrence, ['payee', 'account', 'currency', 'minorUnit', 'amountCeilingMinor', 'minIntervalMs', 'maxPayments', 'totalCeilingMinor', 'startsAt']);
     const r = v.recurrence; ref(r.payee); ref(r.account); currency(r.currency); nat(r.minorUnit); if (r.minorUnit > 6) fail('invalid_rule'); minor(r.amountCeilingMinor); minor(r.totalCeilingMinor); nat(r.minIntervalMs, true); nat(r.maxPayments, true); nat(r.startsAt); if (BigInt(r.amountCeilingMinor) === 0n || BigInt(r.totalCeilingMinor) === 0n || !contains(v.resources as Ref[], r.account) || !contains(v.recipients as Ref[], r.payee)) fail('invalid_rule');
   } else if (v.recurrence !== null) fail('invalid_rule');
+  if (v.mode === 'personal_github_publish' || v.mode === 'personal_github_merge') { exact(v.github, ['repository', 'target']); ref(v.github.repository); string(v.github.target); if (!v.github.target || !contains(v.resources as Ref[], v.github.repository)) fail('invalid_rule'); } else if (v.github !== undefined && v.github !== null) fail('invalid_rule');
 }
 export function policy(v: unknown): asserts v is PolicyInput {
   exact(v, ['purposes', 'bots', 'resources', 'recipients', 'selections', 'budget', 'rules', 'expiresAt']); refs(v.purposes); refs(v.bots); refs(v.resources); refs(v.recipients); array(v.selections, selection, true); array(v.rules, rule); if (new Set((v.rules as Rule[]).map(x => x.id)).size !== (v.rules as Rule[]).length) fail('invalid_rule'); nat(v.expiresAt, true);
