@@ -1,4 +1,5 @@
 import { GoogleFailure, GooglePersonal, googleObject } from '../../s14/personal-protocol';
+import { containsCredential } from '../../security/credentials';
 import { personalEventBody, validatePersonalDraft } from '../../s14/personal-effect-validation';
 import type { PersonalEventDraft, PersonalEventFields } from '../../s14/personal-effect-types';
 import type { ActionAdapter, ActionRef, AdapterResult, JsonValue, PreparedAction, ReadHandler, S15PolicyService, WorkActor, WorkAuthority } from '../policy';
@@ -25,10 +26,10 @@ const endpoint = (a: GoogleEffectAccount) => `https://www.googleapis.com/calenda
 function eventSnapshot(data: unknown): EventSnapshot {
   const d = googleObject(data), start = googleObject(d.start), end = googleObject(d.end);
   if (d.attendees !== undefined && !Array.isArray(d.attendees) || d.eventType !== undefined && d.eventType !== 'default' || d.status === 'cancelled') fail('calendar_observation_unsupported');
-  if (typeof d.id !== 'string' || !/^[a-zA-Z0-9_-]{1,256}$/.test(d.id) || typeof d.etag !== 'string' || !/^"[^"\u0000-\u0020]{1,200}"$/.test(d.etag) || typeof start.timeZone !== 'string' || start.timeZone !== end.timeZone) fail('calendar_observation_unsupported');
+  if (typeof d.id !== 'string' || !/^[a-zA-Z0-9_-]{1,256}$/.test(d.id) || containsCredential(d.id) || typeof d.etag !== 'string' || !/^"[^"\u0000-\u0020]{1,200}"$/.test(d.etag) || containsCredential(d.etag) || typeof start.timeZone !== 'string' || start.timeZone !== end.timeZone) fail('calendar_observation_unsupported');
   const event: PersonalEventFields = { summary: d.summary as string, description: (d.description ?? '') as string, location: (d.location ?? '') as string, start: start.dateTime as string, end: end.dateTime as string, recurrence: (d.recurrence ?? []) as string[], attendees: Array.isArray(d.attendees) ? d.attendees.map(a => googleObject(a).email as string) : [] };
   validatePersonalDraft({ kind: 'event', operation: 'update', eventId: d.id, etag: d.etag, timezone: start.timeZone, sendUpdates: 'none', event });
-  const organizer = d.organizer ? googleObject(d.organizer).email : null; if (organizer !== null && typeof organizer !== 'string') fail('calendar_observation_unsupported');
+  const organizer = d.organizer ? googleObject(d.organizer).email : null; if (organizer !== null && (typeof organizer !== 'string' || organizer.length > 254 || !/^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/.test(organizer) || containsCredential(organizer))) fail('calendar_observation_unsupported');
   return { id: d.id, version: d.etag, timezone: start.timeZone, event, organizer, series: event.recurrence.length > 0 || d.recurringEventId !== undefined };
 }
 function calendarProposal(p: unknown): asserts p is CalendarProposal {
@@ -100,7 +101,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
         const query = new URLSearchParams({ q: `rfc822msgid:${p.providerId}@jit.invalid`, labelIds: 'SENT', maxResults: '2' });
         const list = googleObject(await options.google.request('https://gmail.googleapis.com/gmail/v1/users/me/messages?' + query, { headers: { Authorization: `Bearer ${token}` } }, guard));
         if (!Array.isArray(list.messages) || list.messages.length !== 1 || list.nextPageToken) return result('unknown');
-        const found = googleObject(list.messages[0]).id; if (typeof found !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(found)) return result('unknown'); providerId = found;
+        const found = googleObject(list.messages[0]).id; if (typeof found !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(found) || containsCredential(found)) return result('unknown'); providerId = found;
         const sent = googleObject(await options.google.request(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(found)}?format=raw`, { headers: { Authorization: `Bearer ${token}` } }, guard));
         if (sent.id !== found || !Array.isArray(sent.labelIds) || !sent.labelIds.includes('SENT') || !matchingMail(sent.raw, JSON.parse(p.wire.body).raw)) return result('unknown');
         observed = { from: p.account.account, ...p.message, attachments: p.attachments.map(file => ({ id: file.id, revision: file.revision, name: file.name, mediaType: file.mediaType, bytes: Buffer.from(file.dataBase64, 'base64').length, sha256: attachmentDigest(file) })) };
