@@ -81,3 +81,7 @@ UX15-00 supplies the required authored handoff across all cases; EVID15-01 recor
 - Every implementation PR closes only its own ticket, records tested SHA/contracts/evidence, and is not merged by its implementer. The current documentation PR closes DOC15-01, not the S15 design parent.
 
 Native GitHub parent/blocking relations mirror the direct dependency keys in [the manifest](s15/manifest.json). Verify actual graph edges and labels after publication. No implement-parallel/coordinator/claim workflow applies.
+
+## VM15-01 bounded preparation checkpoint
+
+At inspected main `64f3a94726fdbce2283aec0944884ca7406d9934`, [#321](https://github.com/chayapats/jit/issues/321) remains OPEN / blocked / needs-triage with native blocker #320 OPEN. Its [working-VM contract proposal](../contracts/s15-working-vm-v1.md), [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md), complete unexecuted synthetic fixtures and [admission record](../evidence/s15-vm-contract-preparation.md) prepare bounded architecture/logic review only. #318 PR #345 and #320 PR #346 remain reviewed but unmerged; every new assumption requires reconciliation with their actual merged reviewed revisions and implementation evidence. No implementation acceptance criterion, native edge or ready/complete status advances. RT15-01/RF15-G01–G08 remain unproven. Useful static preparation can proceed without claiming runtime admission; required UX authoring remains separately blocked.
