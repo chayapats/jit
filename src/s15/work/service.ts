@@ -94,6 +94,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       return journal.once(input.requestId, digest('s15.work.assign.v1', input), () => {
         if (journal.all<Responsibility>().some(r => r.sourceRequestId === source.receipt.rootRequestId)) fail('responsibility_exists');
         const work = source.authority ? options.policy.work.guard(options.policy.control.bindWork(source.authority.id)) : null;
+        if (work && journal.all<Responsibility>().some(r => r.workId === work.id)) fail('responsibility_exists');
         const r: Responsibility = { contract: 's15-responsibility/v1', id: digest('s15.work.source.v1', source.receipt.rootRequestId), sourceRequestId: source.receipt.rootRequestId, conversationId: source.receipt.conversationId, originalText: source.command.text,
           ownerGeneration: source.owner.generation, workId: work?.id ?? null, purpose: work?.request.purpose ?? null, resources: clone(work?.request.resources ?? []), subject: source.intent.subject, completion: input.completion,
           triggers: [...input.triggers], stallPolicy: clone(input.stallPolicy), state: work ? 'ready' : 'accepted', wait: null, attempts: [], report: null, proposals: [], readyEventId: source.receipt.rootRequestId,

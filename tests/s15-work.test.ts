@@ -31,6 +31,11 @@ test('an interrupted or still-running CHAT source cannot be rebound as a fresh r
   expect(() => service.assign(f.owner, assignment('active'))).toThrow('source_reconciliation_required');
 });
 
+test('two responsibilities cannot share one POLICY authority and defeat the scoped stop boundary', () => {
+  const { f, source, service } = setup(); f.source('alias'); f.sources.get('alias')!.authority = source.record.authority;
+  expect(() => service.assign(f.owner, assignment('alias'))).toThrow('responsibility_exists');
+});
+
 test('CI wait survives disconnect/restart without VM/model capacity; exact event starts one next attempt', () => {
   const f = setup(), { responsibility: r } = f;
   const handle = f.service.beginAttempt(r.id, { eventId: 'source', approach: 'Implement selected scope' });
