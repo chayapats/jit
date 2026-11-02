@@ -164,7 +164,7 @@ Cancelling work immediately fences future admission and late publication. Send a
 
 Escalating a single-work cancel to a whole shared-VM stop can affect unrelated work/services. It requires current protected authority for that full impact; do not silently stop siblings. If only whole-VM stop can be externally proved and that authority is unavailable, report stopping/unknown, retain capacity and name the limitation. Timeout/unknown operation outcome never means blind retry. `spawn` on cancellation rejects `AbortError` to satisfy the public API while the private ledger remains unsettled. A normal `ExecutionSpawnResult` is returned only after required command-scope settlement/approved service-transfer proof, current publication guard and valid response; until then an unavailable/timeout result cannot claim complete execution. This may limit usable adapters until real scoped proof exists, but does not replace the required administration outcome with read-only support.
 
-`EvidenceV1` is **data**, not a management attestation. `proofHash` resolves an immutable record owned by the protected manager verifier; the receipt must be delivered with its privately registered handle/callback, authenticated manager ref/epoch, exact VM/boot/execution identity, capture time and verified scope/transport state. Guest/copy/owner-statement JSON has no issuer authority. A `vm_stopped` proof may settle all old scopes of that exact boot even after policy revocation; it does not determine whether a shell/remote action already happened. `scope_empty` requires all descendants including guest-root escape paths, not just a PID 1 or killpg response. `service_transferred` requires the exact running service allocation/current lease, effective external resource ownership and no unowned descendants. The physical implementation/proof is deliberately unselected and remains unproven.
+`EvidenceV1` is **data**, not a management attestation. `proofHash` resolves an immutable record owned by the protected manager verifier; the receipt must be delivered with its privately registered handle/callback, authenticated manager ref/epoch, exact VM/boot/execution identity, capture time and verified scope/transport state. Guest/copy/owner-statement JSON has no issuer authority. A `vm_stopped` proof may settle all old scopes of that exact boot even after policy revocation; it does not determine whether a shell/remote action already happened. Evidence handling is monotonic: rejecting an untrusted/mismatched proof changes only its decision/code, preserving any already captured response, known channel closure, usage and settled resource facts. Valid stop evidence changes only the exact scopes it proves; it cannot erase captured-response status or re-open a settled channel. A prior unknown historical outcome stays unknown, while a prior guest-reported response remains guest-reported and untrusted. `scope_empty` requires all descendants including guest-root escape paths, not just a PID 1 or killpg response. `service_transferred` requires the exact running service allocation/current lease, effective external resource ownership and no unowned descendants. The physical implementation/proof is deliberately unselected and remains unproven.
 
 Recording sanitized facts under an old trusted claim is allowed after stop/revoke so recovery retains knowledge. Publication separately verifies current owner/policy/work/Bot/VM/boot/attempt/lease/source/access/withdrawal generations, committed producing evidence and delivery dedupe. Do not reserve the same charged action again, require a new unclaimed key or publish late output through another report/export route. Outcome can remain unknown after all processes stop: stop proves cessation, not historical non-occurrence or rollback of external effects.
 
@@ -183,13 +183,32 @@ interface VmDispatchContextV1 { readonly [dispatchBrand]: true }
 interface VmCleanupContextV1 { readonly [cleanupBrand]: true }
 interface VmManagementActorV1 { readonly [managementBrand]: true }
 interface VmMutationPortV1 {
+  /** Allocate the trusted invocation slot and resolve current catalogs,
+   * bounds and exact action payload. Body input is a narrowing proposal,
+   * never an actor/permission; cancel bodies use the cleanup port instead. */
+  prepare(actor: WorkActorV1, binding: BindingV1,
+    body: RunnerOperationV1): Promise<OperationV1>;
   /** Resolve trusted current policy/catalogs and immutable invocation slot;
    * commit one intent/receipt. No runner or management mutation. */
   accept(actor: WorkActorV1, operation: OperationV1): Promise<ReceiptV1>;
   /** Atomically bind the exact policy claim/reservation and VM claim before
    * I/O. New calls reject existing claims; no reusable permit is returned. */
   dispatch(actor: WorkActorV1, operationId: string,
-    operationHash: string): Promise<VmOperationObservationV1>;
+    operationHash: string, signal?: AbortSignal): Promise<VmOperationObservationV1>;
+  /** Read only the exact retained response owned by this registered work/slot.
+   * Current scope/hash/lineage and required settlement guard payload access.
+   * No transport resend, new effect claim or duplicate reservation. */
+  readResult(actor: WorkActorV1, operationId: string,
+    operationHash: string): Promise<VmResultReadV1>;
+  /** Recheck current publication and retained response hash synchronously,
+   * then invoke only the trusted backend callback without an intervening wait. */
+  publishResult(actor: WorkActorV1, operationId: string,
+    operationHash: string, responseHash: string,
+    consume: (response: RunnerResponseV1) => void): void;
+  /** Resolve only the original privately retained cleanup context. Registered
+   * original ownership can clean up after revoke; it gains no new work power. */
+  cancel(actor: WorkActorV1, operationId: string,
+    operationHash: string): Promise<VmCancelObservationV1>;
   /** Read-only reconciliation with its own current finite authorization.
    * No new mutation context, shell resend or synthetic stop proof. */
   reconcile(actor: VmManagementActorV1,
@@ -202,6 +221,17 @@ interface VmOperationObservationV1 {
   transport: 'not_started' | 'unsettled' | 'settled';
   execution: 'not_started' | 'unsettled' | 'stopped' | 'transferred';
   evidenceIds: readonly string[]; actual: UsageV1;
+}
+type VmResultReadV1 =
+  | { operationId: string; operationHash: string; state: 'available';
+      code: null; observation: VmOperationObservationV1;
+      response: RunnerResponseV1 }
+  | { operationId: string; operationHash: string; state: 'pending' | 'withheld';
+      code: string; observation: VmOperationObservationV1; response: null };
+interface VmCancelObservationV1 {
+  operationId: string; operationHash: string;
+  state: 'not_requested' | 'requested' | 'unknown';
+  signalRequested: boolean | null; observation: VmOperationObservationV1;
 }
 interface VmTransportPortV1 {
   /** Registered handle/dispatch context must agree with request/hash,
@@ -242,8 +272,15 @@ type VmPolicyDecisionV1 = { state: 'allow' }
   | { state: 'hold' | 'deny' | 'unsupported'; code: string };
 /** Only registered protected composition can construct this backend. */
 declare function createWorkingVmBackend(handle: VmHandleV1,
-  binding: BindingV1, operations: VmMutationPortV1): ExecutionBackend;
+  binding: BindingV1, actor: WorkActorV1,
+  operations: VmMutationPortV1): ExecutionBackend;
 ```
+
+The backend has an explicit response/cancellation path: `prepare` → `accept` → `dispatch(actor,id,hash,request.signal)` → `readResult` → synchronous `publishResult` → map the matching `RunnerResponseV1` result to the public method. Protected construction pins the registered handle, immutable default environment/profile and exact actor/binding; no raw registration/endpoint access is needed by a model. File bytes, observation tokens, list/glob/search entries and stdout/stderr come only from that guarded retained response, never an undocumented side channel or a second `invoke`. `readResult` returns `pending` with no payload until required transport/scope settlement, and `withheld` with no payload on current scope/hash/lineage denial. A latched operation cancellation/abort withholds payload with `aborted` even when work policy remains live and a late response/scope proof has arrived. An available result requires nonnull `observation.responseHash = SHA256(C(response))`, settled transport and stopped/transferred execution; the schema encodes those refinements. This is the hash of validated captured JSON payload bytes, excluding the four-byte frame header. A retained response is immutable; redacted/display output has a separate hash as specified above.
+
+`readResult` checks registered actor/slot ownership and current read/publication authority after waits; the expected producing claim is not a duplicate admission. Reading already captured bounded bytes does not claim/reserve/dispatch again. Any additional I/O uses its own current finite read reservation. Before returning core-tool data or calling `onOutput`, the trusted backend calls `publishResult` with the retained response hash. The port repeats current access/lineage/generation/hash/settlement checks, then supplies that exact response to the synchronous trusted callback with no wait between guard and use. The callback validates the matching result arm, registers observation identity or maps file bytes/entries/output, applies the specified secret/output controls and returns/raises the appropriate public result/error. No raw response or callback capability is exposed to the guest/model. Publication cannot reenter mutation dispatch.
+
+An already-aborted dispatch signal refuses before a new claim/send. Register cancellation before the first wait and recheck after claim acquisition. An abort after claim durably fences delivery, runs the same memoized `cancel` path and rejects `AbortError` to the public backend; private response/settlement capture continues under its original bounded context without publishing late bytes. `cancel` looks up the original cleanup context by registered actor/slot and exact operation hash, invokes `VmTransportPortV1.cancel` at most once and records `VmCancelObservationV1`. Repeated signal/explicit cancel requests reuse that result, do not send or charge twice and cannot stop a foreign/sibling scope. Its authority is narrowly retained cleanup, independent of expired/revoked work execution authority; copied actors refuse, and process loss uses separately authorized management reconciliation rather than reconstructing the original context. `signalRequested:true` is still guest-reported cooperative cleanup, not process-stop evidence. The existing transport-close-after-bounded-cleanup rule and all held capacities remain unchanged.
 
 `VmPolicyPortV1` is an internal trusted dependency, not a public allow oracle or guest-supplied verdict. The #320 action adapter pins canonical `OperationV1` payload semantics and final runner/management serialization. Final guard must compare validated payload/target/hash before consuming the **same** original dispatch context. This proposal does not implement/claim a full PreparedAction/Approval/catalog/adapter schema; it names exact integration and freeze obligations. Synthetic policy-port verdicts in the fixtures supply only those declared fake facts. No opaque handle/context/actor is serialized into fixture JSON; labels there are fixture-harness setup, never production authentication.
 

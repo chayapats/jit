@@ -1966,6 +1966,26 @@
               "type": "null"
             }
           ]
+        },
+        "resultRead": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/VmResultReadV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cancelObservation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/VmCancelObservationV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -1985,7 +2005,9 @@
         "charged",
         "actual",
         "automaticReplay",
-        "managementObservation"
+        "managementObservation",
+        "resultRead",
+        "cancelObservation"
       ],
       "additionalProperties": false
     },
@@ -2191,6 +2213,13 @@
               "type": "null"
             }
           ]
+        },
+        "signalState": {
+          "enum": [
+            "absent",
+            "active",
+            "aborted"
+          ]
         }
       },
       "required": [
@@ -2220,7 +2249,8 @@
         "managementEvidence",
         "managementOutcome",
         "managementReservation",
-        "managementClaimHash"
+        "managementClaimHash",
+        "signalState"
       ],
       "additionalProperties": false
     },
@@ -2301,6 +2331,24 @@
               "additionalProperties": {
                 "$ref": "#/$defs/BytesV1"
               }
+            },
+            "operationObservations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmOperationObservationV1"
+              }
+            },
+            "resultReads": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmResultReadV1"
+              }
+            },
+            "cancelObservations": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/VmCancelObservationV1"
+              }
             }
           },
           "required": [
@@ -2314,7 +2362,10 @@
             "receipts",
             "actionPayloads",
             "managementPayloads",
-            "payloadBytes"
+            "payloadBytes",
+            "operationObservations",
+            "resultReads",
+            "cancelObservations"
           ],
           "additionalProperties": false
         },
@@ -2403,7 +2454,9 @@
                         "query",
                         "management",
                         "decode_request",
-                        "decode_response"
+                        "decode_response",
+                        "result_read",
+                        "cancel_port"
                       ]
                     },
                     "record": {
@@ -2918,6 +2971,160 @@
         "cleanupClaimId",
         "operation",
         "expiresAt"
+      ],
+      "additionalProperties": false
+    },
+    "VmResultReadV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operationId": {
+              "$ref": "#/$defs/Id"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "state": {
+              "const": "available"
+            },
+            "code": {
+              "type": "null"
+            },
+            "observation": {
+              "type": "object",
+              "properties": {
+                "operationId": {
+                  "$ref": "#/$defs/Id"
+                },
+                "operationHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "outcome": {
+                  "const": "guest_reported"
+                },
+                "responseHash": {
+                  "$ref": "#/$defs/Hash"
+                },
+                "transport": {
+                  "const": "settled"
+                },
+                "execution": {
+                  "enum": [
+                    "stopped",
+                    "transferred"
+                  ]
+                },
+                "evidenceIds": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Id"
+                  },
+                  "maxItems": 64
+                },
+                "actual": {
+                  "$ref": "#/$defs/UsageV1"
+                }
+              },
+              "required": [
+                "operationId",
+                "operationHash",
+                "outcome",
+                "responseHash",
+                "transport",
+                "execution",
+                "evidenceIds",
+                "actual"
+              ],
+              "additionalProperties": false
+            },
+            "response": {
+              "$ref": "#/$defs/RunnerResponseV1"
+            }
+          },
+          "required": [
+            "operationId",
+            "operationHash",
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operationId": {
+              "$ref": "#/$defs/Id"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            },
+            "state": {
+              "enum": [
+                "pending",
+                "withheld"
+              ]
+            },
+            "code": {
+              "$ref": "#/$defs/Id"
+            },
+            "observation": {
+              "$ref": "#/$defs/VmOperationObservationV1"
+            },
+            "response": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "operationId",
+            "operationHash",
+            "state",
+            "code",
+            "observation",
+            "response"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VmCancelObservationV1": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "state": {
+          "enum": [
+            "not_requested",
+            "requested",
+            "unknown"
+          ]
+        },
+        "signalRequested": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observation": {
+          "$ref": "#/$defs/VmOperationObservationV1"
+        }
+      },
+      "required": [
+        "operationId",
+        "operationHash",
+        "state",
+        "signalRequested",
+        "observation"
       ],
       "additionalProperties": false
     }
