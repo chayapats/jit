@@ -102,3 +102,8 @@ The preceding checkpoints retain their historical issue states. The original S14
 The issues were published after the implementation push; they do not imply that tracked-issue prerequisites were checked before that commit. No competing Plain issue or PR existed at publication. Keep the existing task-owned branch rather than starting a duplicate implementation. No new ready-for-agent/human or native blocking relation is asserted. The owner approved a task-specific UI/UX author exception and replacement without an old renderer or UI compatibility layer; repository-wide policy otherwise remains unchanged.
 
 Current scope: [Plain design](../design/S14-plain-experience.md). Tested revision and limits: [Plain evidence](../evidence/s14-plain-ui.md). Local issue mirrors: [PLAIN14-01](s14/PLAIN14-01.md) and [PLAIN14-02](s14/PLAIN14-02.md). The earlier `s14.json` snapshot and original ticket mirrors remain historical records rather than being rewritten as new-scope acceptance.
+
+
+### Reconciled Plain output scope — 2026-11-02
+
+[#313 PLAIN14-04](https://github.com/chayapats/jit/issues/313) tracks the cross-work Reports/Artifacts Library. [#314 PLAIN14-05](https://github.com/chayapats/jit/issues/314) tracks inline Work results/provenance/decisions. Both restore explicit tracking of outcomes recorded in the earlier 2026-11-01 handoff, under #307 and the latest owner-approved navigation/authority decisions. The owner authorized completion and merge after successful current-head CI/Greptile review. They do not imply deployment or broaden device/AT gates. [#311](https://github.com/chayapats/jit/issues/311) is corrected in PR #310 pending review/merge; historical #309 failures remain attributed to their original build.

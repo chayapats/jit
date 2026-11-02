@@ -30,3 +30,12 @@ S14-D04/06/11/16, AC03/05/09/11/12 and their FR/NFR mappings remain unchanged. T
 No React demo, scripted cursor, fake reply, forced replay, synthetic completion timer or demo input lock is shipped. Same-origin hashed assets, CSP, session/Host/Origin/CSRF checks, escaping and no-script command forms remain. Browser-local navigation/drafts confer no authority. See ADR 0062 for the browser-state boundary.
 
 Validation must identify the tested revision and distinguish deterministic handler/DOM tests, browser layout observations and actual device/provider evidence. Earlier evidence does not certify this replacement.
+
+
+## Reconciled output flows — 2026-11-02
+
+The earlier 2026-11-01 handoff also confirmed a cross-work output Library and seamless inline Work. The owner authorized completing the omitted flows and babysitting them through review/merge. [PLAIN14-04 #313](https://github.com/chayapats/jit/issues/313) and [PLAIN14-05 #314](https://github.com/chayapats/jit/issues/314) track them without reopening the completed S14 baseline or exploring a new style.
+
+The latest primary-navigation decision remains Bots/conversations and Work. Library is a discoverable grouped knowledge destination alongside the existing Memory and Shares entries. Reports/Files list actual committed revisions across work/Bots with current coverage/review facts, original Work links and authenticated downloads. Missing/withdrawn content stays unavailable; readiness, coverage and owner acceptance are distinct.
+
+Conversation Work cards show current results, report/source/file facts and the existing exact effect components without requiring a detail-page transition. Git approval still requires its immutable diff/check review page. A selected Progress pane owns its own exact controls, so they are not repeated in the same conversation. Details and every existing deep link remain available. Each inline work has a refresh region separate from its receipt disclosure; focused owner input defers its own replacement. See ADR 0063 for query bounds and lineage.

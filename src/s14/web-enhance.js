@@ -130,7 +130,8 @@ async function refresh() {
   // A response that predates the latest state event cannot re-enable stale computer controls.
   if (expectedComputerKey !== undefined && computerKey !== expectedComputerKey) return { complete: false, live: true, computerKey };
   let deferred = false;
-  for (const group of regions) {
+  const inline = [...document.querySelectorAll("[data-inline-work]")].map(region => [region.id]);
+  for (const group of [...inline, ...regions]) {
     // Progress owns two independent regions; its disclosure and focused summary stay outside both.
     if (group[0] === "s14-pane-live" && document.getElementById("s14-progress-primary") && next.getElementById("s14-progress-primary")) continue;
     const pairs = group.map(id => [document.getElementById(id), next.getElementById(id)]).filter(([current, fresh]) => current && fresh);

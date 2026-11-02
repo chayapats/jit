@@ -61,3 +61,5 @@ export interface ArtifactRequest { path: string; name: string; mediaType: Artifa
 export interface StagedArtifact extends Omit<Artifact, "reportId"> {}
 /** Owner projection withholds withdrawn payload and keeps stable revision identities. */
 export type ReportView = { state: "available"; report: Report; completion: ReportReview["completion"]; acceptance: ReportAcceptance | null; artifacts: Artifact[] } | { state: "unavailable"; id: string; workId: string; revision: number; reason: "lineage_withdrawn" };
+/** Owner-only committed revision page; the exclusive row cursor is navigation data, never authority. */
+export interface ReportCatalog { items: ReportView[]; nextBefore: number | null }
