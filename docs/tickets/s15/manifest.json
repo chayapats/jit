@@ -429,7 +429,24 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/TEAM15-01.md"
+      "path": "docs/tickets/s15/TEAM15-01.md",
+      "boundedPreparation": {
+        "status": "proposed_pre_admission_documentation_only",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contract": "docs/contracts/s15-team-resources-v1.md",
+        "schema": "docs/contracts/fixtures/s15-team-resources-v1.schema.json",
+        "fixtures": "docs/contracts/fixtures/s15-team-resources-v1.json",
+        "guide": "docs/contracts/fixtures/s15-team-resources-v1.md",
+        "adr": "docs/adr/0071-s15-mediated-team-resources-and-fenced-handoffs.md",
+        "evidence": "docs/evidence/s15-team-contract-preparation.md",
+        "runtimeAdmission": false,
+        "implementationStepOneComplete": false,
+        "scenarioStatus": "UNEXECUTED",
+        "nativePrerequisite": 323,
+        "prReference": "Refs #324",
+        "freezeGates": "TEAM15-FZ01\u2013FZ07",
+        "limitations": "Actual step 1 remains Implement; five original criteria, native blockers, labels, ownership and blocked readiness remain unchanged. All exact reviewed inputs are unmerged proposals pending actual merged prerequisite reconciliation and implementation evidence. No runtime/UI/Claude retry/delegation/provider/model/settings/account/spending/activation/provisioning/rollout/merge."
+      }
     },
     {
       "key": "MEM15-01",

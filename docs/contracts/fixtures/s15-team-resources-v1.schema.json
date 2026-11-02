@@ -1,0 +1,4895 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:jit:documentation:s15-team-resources-v1",
+  "$ref": "#/$defs/DocumentV1",
+  "$defs": {
+    "Id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "Hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "GitOid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "Nat": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "Pos": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "Time": {
+      "$ref": "#/$defs/Nat"
+    },
+    "Minor": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,29})$"
+    },
+    "Text": {
+      "type": "string",
+      "maxLength": 32768
+    },
+    "RefV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "revision": {
+          "$ref": "#/$defs/Pos"
+        },
+        "generation": {
+          "$ref": "#/$defs/Pos"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "generation"
+      ],
+      "additionalProperties": false
+    },
+    "BlobV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "mediaType": {
+          "enum": [
+            "text/plain",
+            "text/markdown",
+            "application/json",
+            "image/png"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "sha256",
+        "bytes",
+        "mediaType"
+      ],
+      "additionalProperties": false
+    },
+    "BytesV1": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string",
+          "maxLength": 1398104,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "base64",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "VectorV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "$ref": "#/$defs/Nat"
+        },
+        "steps": {
+          "$ref": "#/$defs/Nat"
+        },
+        "calls": {
+          "$ref": "#/$defs/Nat"
+        },
+        "reads": {
+          "$ref": "#/$defs/Nat"
+        },
+        "outputBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "activeMs": {
+          "$ref": "#/$defs/Nat"
+        },
+        "spendMinor": {
+          "$ref": "#/$defs/Minor"
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "UsageV1": {
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reads": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputBytes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "activeMs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Nat"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "spendMinor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Minor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "attempts",
+        "steps",
+        "calls",
+        "reads",
+        "outputBytes",
+        "activeMs",
+        "spendMinor"
+      ],
+      "additionalProperties": false
+    },
+    "CostBasisV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "account": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "billing": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "perOperationMax": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "maxPhysicalSends": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cleanupIncluded": {
+          "const": true
+        },
+        "enforcement": {
+          "enum": [
+            "external_quota",
+            "contractual_maximum",
+            "synthetic_only"
+          ]
+        },
+        "evidence": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "accountRoute",
+        "account",
+        "billing",
+        "budget",
+        "currency",
+        "perOperationMax",
+        "maxPhysicalSends",
+        "cleanupIncluded",
+        "enforcement",
+        "evidence",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "SelectionV1": {
+      "type": "object",
+      "properties": {
+        "route": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "model": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "effort": {
+          "$ref": "#/$defs/Id"
+        }
+      },
+      "required": [
+        "route",
+        "model",
+        "effort"
+      ],
+      "additionalProperties": false
+    },
+    "AccountRouteV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "provider": {
+          "$ref": "#/$defs/Id"
+        },
+        "account": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "billing": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "credentialEpoch": {
+          "$ref": "#/$defs/Pos"
+        },
+        "recipient": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "provider",
+        "account",
+        "billing",
+        "credentialEpoch",
+        "recipient",
+        "selection",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "PinsV1": {
+      "type": "object",
+      "properties": {
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelectionV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "author": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "$ref": "#/$defs/Id"
+                },
+                "model": {
+                  "$ref": "#/$defs/Id"
+                },
+                "effort": {
+                  "$ref": "#/$defs/Id"
+                }
+              },
+              "required": [
+                "provider",
+                "model",
+                "effort"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "selection",
+        "author"
+      ],
+      "additionalProperties": false
+    },
+    "ModeV1": {
+      "enum": [
+        "snapshot_read",
+        "file_read",
+        "file_write",
+        "browser_read",
+        "browser_input",
+        "handoff_read",
+        "model_call",
+        "reconcile_read",
+        "owner_delivery"
+      ]
+    },
+    "CodeV1": {
+      "enum": [
+        "actor_unregistered",
+        "invalid_shape",
+        "invalid_bytes",
+        "hash_mismatch",
+        "credential_boundary",
+        "continuity_unavailable",
+        "request_conflict",
+        "owner_changed",
+        "policy_revoked",
+        "outside_purpose",
+        "bot_disabled",
+        "source_restricted",
+        "source_withdrawn",
+        "resource_stale",
+        "receiver_restricted",
+        "account_changed",
+        "route_changed",
+        "recipient_unapproved",
+        "pin_conflict",
+        "required_author_unavailable",
+        "expired",
+        "stopped",
+        "context_stale",
+        "context_lost",
+        "context_consumed",
+        "claim_exists",
+        "budget_exhausted",
+        "cost_bound_unknown",
+        "capacity_busy",
+        "lease_busy",
+        "lease_stale",
+        "takeover_active",
+        "target_changed",
+        "cas_unproven",
+        "support_unproven",
+        "public_dispatch_guard_missing",
+        "effort_unproven",
+        "result_unavailable",
+        "publication_withheld",
+        "reconcile_only",
+        "settlement_unproven",
+        "impact_authority_required",
+        "approval_required",
+        "merge_authority_required",
+        "production_approval_required",
+        "protocol_error",
+        "cancelled",
+        "context_too_large",
+        "lineage_incomplete",
+        "sibling_failed",
+        "native_relocation_refused",
+        "adoption_required",
+        "identity_capacity_exhausted"
+      ]
+    },
+    "RestrictionV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "purposes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "receivers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "selections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SelectionV1"
+          },
+          "maxItems": 64
+        },
+        "modes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModeV1"
+          },
+          "maxItems": 64
+        },
+        "release": {
+          "enum": [
+            "team_approved",
+            "explicit_receiver",
+            "s14_private"
+          ]
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "bots",
+        "purposes",
+        "accounts",
+        "receivers",
+        "recipients",
+        "selections",
+        "modes",
+        "release",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "BoundsV1": {
+      "type": "object",
+      "properties": {
+        "ceiling": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "queue": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "contextBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 262144
+        },
+        "sourceBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "handoffBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 49152
+        },
+        "resultBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        },
+        "cpuMillis": {
+          "$ref": "#/$defs/Pos"
+        },
+        "memoryBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "pids": {
+          "$ref": "#/$defs/Pos"
+        },
+        "diskBytes": {
+          "$ref": "#/$defs/Pos"
+        },
+        "cleanupMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000
+        },
+        "deadlineAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        }
+      },
+      "required": [
+        "ceiling",
+        "concurrency",
+        "queue",
+        "contextBytes",
+        "sourceBytes",
+        "handoffBytes",
+        "resultBytes",
+        "cpuMillis",
+        "memoryBytes",
+        "pids",
+        "diskBytes",
+        "cleanupMs",
+        "deadlineAt",
+        "costBasis"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "kind": {
+          "enum": [
+            "immutable_snapshot",
+            "working_file",
+            "browser_session",
+            "repository"
+          ]
+        },
+        "owner": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "restriction": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "identity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "processGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "kind",
+        "owner",
+        "restriction",
+        "identity",
+        "manager",
+        "managerEpoch",
+        "processGeneration",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ProducerV1": {
+      "type": "object",
+      "properties": {
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "contextHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "work",
+        "attempt",
+        "bot",
+        "resources",
+        "contextHash",
+        "capturedAt"
+      ],
+      "additionalProperties": false
+    },
+    "SourceV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "original": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "restriction": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "access": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "producer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProducerV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "current",
+            "corrected",
+            "forgotten",
+            "deleted"
+          ]
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "original",
+        "restriction",
+        "access",
+        "parents",
+        "producer",
+        "status",
+        "recordedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "DecisionV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "source": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "original": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "status": {
+          "enum": [
+            "current",
+            "superseded"
+          ]
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "ref",
+        "source",
+        "original",
+        "status",
+        "recordedAt"
+      ],
+      "additionalProperties": false
+    },
+    "BotV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "restriction": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "pins": {
+          "$ref": "#/$defs/PinsV1"
+        }
+      },
+      "required": [
+        "ref",
+        "enabled",
+        "restriction",
+        "accountRoute",
+        "pins"
+      ],
+      "additionalProperties": false
+    },
+    "ScopeV1": {
+      "type": "object",
+      "properties": {
+        "installationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "continuity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "owner": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "request": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "ingressReceipt": {
+          "$ref": "#/$defs/Hash"
+        },
+        "admission": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "admissionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "authority": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "authorityHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "purpose": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "bots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "ownerRecipient": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "installationId",
+        "continuity",
+        "owner",
+        "request",
+        "ingressReceipt",
+        "admission",
+        "admissionHash",
+        "work",
+        "authority",
+        "authorityHash",
+        "purpose",
+        "policy",
+        "policyHash",
+        "bots",
+        "resources",
+        "recipients",
+        "budget",
+        "ownerRecipient",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "AssignmentV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "receiver": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "pins": {
+          "$ref": "#/$defs/PinsV1"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "bounds": {
+          "$ref": "#/$defs/BoundsV1"
+        }
+      },
+      "required": [
+        "ref",
+        "bot",
+        "attempt",
+        "sources",
+        "resources",
+        "receiver",
+        "accountRoute",
+        "selection",
+        "recipients",
+        "pins",
+        "dependsOn",
+        "bounds"
+      ],
+      "additionalProperties": false
+    },
+    "PlanProposalV1": {
+      "type": "object",
+      "properties": {
+        "assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssignmentV1"
+          },
+          "maxItems": 8
+        },
+        "completionSources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "assignments",
+        "completionSources"
+      ],
+      "additionalProperties": false
+    },
+    "PlanV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-team-plan/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "scope": {
+          "$ref": "#/$defs/ScopeV1"
+        },
+        "assignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssignmentV1"
+          },
+          "maxItems": 8
+        },
+        "completionSources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "scope",
+        "assignments",
+        "completionSources",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ReceiptV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-team-receipt/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "request": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payloadHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "plan": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "planHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "committedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "request",
+        "payloadHash",
+        "plan",
+        "planHash",
+        "committedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ContextPreparationV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "sourceRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "decisionRefs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "bounds": {
+          "$ref": "#/$defs/BoundsV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "receipt",
+        "assignment",
+        "sourceRefs",
+        "decisionRefs",
+        "accountRoute",
+        "selection",
+        "recipients",
+        "bounds",
+        "createdAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ContextPacketV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "preparation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receiver": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceV1"
+          },
+          "maxItems": 64
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionV1"
+          },
+          "maxItems": 64
+        },
+        "labelled": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "preparation",
+        "assignment",
+        "receiver",
+        "selection",
+        "accountRoute",
+        "recipients",
+        "sources",
+        "decisions",
+        "labelled",
+        "omissions",
+        "createdAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "SnapshotV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "source": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "lineage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "producer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProducerV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "source",
+        "payload",
+        "lineage",
+        "access",
+        "producer",
+        "capturedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "FileIdentityV1": {
+      "type": "object",
+      "properties": {
+        "resource": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "vm": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bootGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "rootObject": {
+          "$ref": "#/$defs/Id"
+        },
+        "entryObject": {
+          "$ref": "#/$defs/Id"
+        },
+        "aliasGroup": {
+          "$ref": "#/$defs/Id"
+        },
+        "version": {
+          "$ref": "#/$defs/Pos"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "resource",
+        "vm",
+        "bootGeneration",
+        "rootObject",
+        "entryObject",
+        "aliasGroup",
+        "version",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "FileObservationV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "identity": {
+          "$ref": "#/$defs/FileIdentityV1"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "identity",
+        "snapshot",
+        "capturedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "LeaseRequestV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "resource": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "conflictKey": {
+          "$ref": "#/$defs/Hash"
+        },
+        "mode": {
+          "enum": [
+            "file_read",
+            "file_write",
+            "browser_input"
+          ]
+        },
+        "expectedGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "assignment",
+        "resource",
+        "conflictKey",
+        "mode",
+        "expectedGeneration",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "LeaseV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "request": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "bot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "resource": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "conflictKey": {
+          "$ref": "#/$defs/Hash"
+        },
+        "mode": {
+          "enum": [
+            "file_read",
+            "file_write",
+            "browser_input"
+          ]
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "processGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "takeoverGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "issuedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "request",
+        "assignment",
+        "bot",
+        "attempt",
+        "resource",
+        "conflictKey",
+        "mode",
+        "managerEpoch",
+        "processGeneration",
+        "takeoverGeneration",
+        "issuedAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "OperationBodyV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "snapshot_read"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "file_read"
+            },
+            "observation": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "observation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "file_write"
+            },
+            "observation": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "replacement": {
+              "$ref": "#/$defs/BlobV1"
+            }
+          },
+          "required": [
+            "kind",
+            "observation",
+            "replacement"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "browser_read"
+            },
+            "operation": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "operation",
+            "operationHash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "browser_input"
+            },
+            "operation": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "operationHash": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "operation",
+            "operationHash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "handoff_read"
+            },
+            "offer": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "offerHash": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "offer",
+            "offerHash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "model_call"
+            },
+            "plan": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "planHash": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "plan",
+            "planHash"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "reconcile_read"
+            },
+            "claim": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "claim"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "owner_delivery"
+            },
+            "result": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "resultHash": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "kind",
+            "result",
+            "resultHash"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "OperationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-team-operation/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "slot": {
+          "$ref": "#/$defs/Id"
+        },
+        "body": {
+          "$ref": "#/$defs/OperationBodyV1"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lease": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sender": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receiver": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "accountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "receipt",
+        "assignment",
+        "slot",
+        "body",
+        "resource",
+        "sources",
+        "context",
+        "lease",
+        "sender",
+        "receiver",
+        "accountRoute",
+        "selection",
+        "recipients",
+        "upperBound",
+        "costBasis",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ReservationV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "operation",
+        "operationHash",
+        "budget",
+        "continuity",
+        "upperBound",
+        "costBasis",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ChargeV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "reservation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "reservationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "charged": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "chargedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "reservation",
+        "reservationHash",
+        "operation",
+        "operationHash",
+        "budget",
+        "continuity",
+        "charged",
+        "chargedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ClaimV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "charge": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "chargeHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "claimedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "operation",
+        "operationHash",
+        "charge",
+        "chargeHash",
+        "controllerEpoch",
+        "claimedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "DispatchV1": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "claim": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "charge": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "at": {
+          "$ref": "#/$defs/Time"
+        },
+        "kind": {
+          "$ref": "#/$defs/ModeV1"
+        },
+        "finalBytesHash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "operation",
+        "claim",
+        "charge",
+        "at",
+        "kind",
+        "finalBytesHash"
+      ],
+      "additionalProperties": false
+    },
+    "CaptureV1": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "claim": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "at": {
+          "$ref": "#/$defs/Time"
+        },
+        "basis": {
+          "enum": [
+            "protected_observation",
+            "guest_reported",
+            "unverified"
+          ]
+        }
+      },
+      "required": [
+        "operation",
+        "claim",
+        "snapshot",
+        "payload",
+        "at",
+        "basis"
+      ],
+      "additionalProperties": false
+    },
+    "PublicationV1": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "claim": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "recipient": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "at": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "operation",
+        "claim",
+        "payload",
+        "recipient",
+        "at"
+      ],
+      "additionalProperties": false
+    },
+    "SettlementV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "manager": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "resource": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "generation": {
+          "$ref": "#/$defs/Pos"
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "channel",
+              "operation",
+              "process",
+              "input"
+            ]
+          },
+          "maxItems": 64
+        },
+        "observedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "basis": {
+          "enum": [
+            "registered_external_verifier",
+            "guest_statement",
+            "owner_statement"
+          ]
+        },
+        "proof": {
+          "$ref": "#/$defs/BlobV1"
+        }
+      },
+      "required": [
+        "ref",
+        "operation",
+        "manager",
+        "managerEpoch",
+        "resource",
+        "generation",
+        "scopes",
+        "observedAt",
+        "basis",
+        "proof"
+      ],
+      "additionalProperties": false
+    },
+    "FactsV1": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "dispatches": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DispatchV1"
+          },
+          "maxItems": 64
+        },
+        "captures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CaptureV1"
+          },
+          "maxItems": 64
+        },
+        "publications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PublicationV1"
+          },
+          "maxItems": 64
+        },
+        "settlements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SettlementV1"
+          },
+          "maxItems": 64
+        },
+        "channel": {
+          "enum": [
+            "not_started",
+            "open",
+            "closed"
+          ]
+        },
+        "operationScope": {
+          "enum": [
+            "not_started",
+            "unsettled",
+            "quiescent"
+          ]
+        },
+        "process": {
+          "enum": [
+            "not_started",
+            "running",
+            "stopped"
+          ]
+        },
+        "input": {
+          "enum": [
+            "none",
+            "held",
+            "settled"
+          ]
+        },
+        "network": {
+          "enum": [
+            "not_sent",
+            "sent",
+            "unknown"
+          ]
+        },
+        "cancel": {
+          "enum": [
+            "none",
+            "requested",
+            "unknown",
+            "observed"
+          ]
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "operation",
+        "recordedAt",
+        "dispatches",
+        "captures",
+        "publications",
+        "settlements",
+        "channel",
+        "operationScope",
+        "process",
+        "input",
+        "network",
+        "cancel",
+        "actual",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "HandoffOfferV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-team-handoff/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "purpose": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "sender": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receiver": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "senderAttempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receiverAssignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "access": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "producer": {
+          "$ref": "#/$defs/ProducerV1"
+        },
+        "receiverAccountRoute": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receiverSelection": {
+          "$ref": "#/$defs/SelectionV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "receipt",
+        "purpose",
+        "sender",
+        "receiver",
+        "senderAttempt",
+        "receiverAssignment",
+        "snapshot",
+        "payload",
+        "sources",
+        "access",
+        "producer",
+        "receiverAccountRoute",
+        "receiverSelection",
+        "recipients",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "HandoffReceiptV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "offer": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "offerHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "receiverAssignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "committedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "offer",
+        "offerHash",
+        "receiverAssignment",
+        "committedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "HandoffReadV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "offer": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/SnapshotV1"
+            },
+            "payload": {
+              "$ref": "#/$defs/BytesV1"
+            }
+          },
+          "required": [
+            "state",
+            "offer",
+            "snapshot",
+            "payload"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "pending",
+                "withheld"
+              ]
+            },
+            "offer": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "code": {
+              "$ref": "#/$defs/CodeV1"
+            }
+          },
+          "required": [
+            "state",
+            "offer",
+            "code"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "GapV1": {
+      "type": "object",
+      "properties": {
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "code": {
+          "$ref": "#/$defs/CodeV1"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "assignment",
+        "code",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "ResultV1": {
+      "type": "object",
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "receipt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "purpose": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "state": {
+          "enum": [
+            "complete",
+            "partial",
+            "blocked",
+            "stopped"
+          ]
+        },
+        "output": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GapV1"
+          },
+          "maxItems": 64
+        },
+        "ownerRecipient": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "committedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "ref",
+        "receipt",
+        "purpose",
+        "state",
+        "output",
+        "evidence",
+        "sources",
+        "gaps",
+        "ownerRecipient",
+        "committedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "ResultReadV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "available"
+            },
+            "result": {
+              "$ref": "#/$defs/ResultV1"
+            },
+            "output": {
+              "$ref": "#/$defs/BytesV1"
+            }
+          },
+          "required": [
+            "state",
+            "result",
+            "output"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "enum": [
+                "pending",
+                "withheld"
+              ]
+            },
+            "result": {
+              "$ref": "#/$defs/RefV1"
+            },
+            "code": {
+              "$ref": "#/$defs/CodeV1"
+            }
+          },
+          "required": [
+            "state",
+            "result",
+            "code"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "CancelObservationV1": {
+      "type": "object",
+      "properties": {
+        "assignment": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "scope": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "requestedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "signalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "state": {
+          "enum": [
+            "requested",
+            "unknown",
+            "observed"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "assignment",
+        "scope",
+        "requestedAt",
+        "signalCount",
+        "state",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "CurrentV1": {
+      "type": "object",
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policy": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "policyHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "enabledBots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "withdrawals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "revocations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "stopped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "accountRoutes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "remaining": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "controllerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "managerEpoch": {
+          "$ref": "#/$defs/Id"
+        },
+        "takeoverGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "owner",
+        "continuity",
+        "policy",
+        "policyHash",
+        "enabledBots",
+        "resources",
+        "withdrawals",
+        "revocations",
+        "stopped",
+        "accountRoutes",
+        "recipients",
+        "decisions",
+        "remaining",
+        "controllerEpoch",
+        "managerEpoch",
+        "takeoverGeneration",
+        "recordedAt"
+      ],
+      "additionalProperties": false
+    },
+    "ContextSetupV1": {
+      "type": "object",
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "recipe": {
+          "enum": [
+            "issue_original_unconsumed",
+            "issue_consumed",
+            "omit",
+            "discard_on_restart"
+          ]
+        },
+        "boundOperation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "registeredAt": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "slot",
+        "recipe",
+        "boundOperation",
+        "registeredAt"
+      ],
+      "additionalProperties": false
+    },
+    "FakePortSetupV1": {
+      "type": "object",
+      "properties": {
+        "notice": {
+          "const": "FUTURE_FAKE_TRUSTED_PORT_SETUP_NOT_AUTHENTICATION"
+        },
+        "signal": {
+          "enum": [
+            "live",
+            "already_aborted"
+          ]
+        },
+        "actorRecipe": {
+          "enum": [
+            "issue_registered_workers",
+            "pass_copied_worker",
+            "pass_model_role_text"
+          ]
+        },
+        "contexts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextSetupV1"
+          },
+          "maxItems": 64
+        },
+        "supportRecipe": {
+          "enum": [
+            "install_synthetic_only",
+            "withhold_cas",
+            "withhold_dispatch",
+            "withhold_effort",
+            "withhold_cost",
+            "withhold_support"
+          ]
+        },
+        "verifierRecipe": {
+          "enum": [
+            "issue_external_test_verifier",
+            "pass_copied_verifier"
+          ]
+        },
+        "groundingRecipe": {
+          "const": "reuse_already_admitted_chat_scope"
+        }
+      },
+      "required": [
+        "notice",
+        "signal",
+        "actorRecipe",
+        "contexts",
+        "supportRecipe",
+        "verifierRecipe",
+        "groundingRecipe"
+      ],
+      "additionalProperties": false
+    },
+    "BlobBytesV1": {
+      "type": "object",
+      "properties": {
+        "blob": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "content": {
+          "$ref": "#/$defs/BytesV1"
+        }
+      },
+      "required": [
+        "blob",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "WorldV1": {
+      "type": "object",
+      "properties": {
+        "costBases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CostBasisV1"
+          },
+          "maxItems": 64
+        },
+        "now": {
+          "$ref": "#/$defs/Time"
+        },
+        "current": {
+          "$ref": "#/$defs/CurrentV1"
+        },
+        "setup": {
+          "$ref": "#/$defs/FakePortSetupV1"
+        },
+        "scope": {
+          "$ref": "#/$defs/ScopeV1"
+        },
+        "bots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BotV1"
+          },
+          "maxItems": 64
+        },
+        "restrictions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RestrictionV1"
+          },
+          "maxItems": 64
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceV1"
+          },
+          "maxItems": 64
+        },
+        "accountRoutes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AccountRouteV1"
+          },
+          "maxItems": 64
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceV1"
+          },
+          "maxItems": 64
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionV1"
+          },
+          "maxItems": 64
+        },
+        "snapshots": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SnapshotV1"
+          },
+          "maxItems": 64
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileObservationV1"
+          },
+          "maxItems": 64
+        },
+        "plan": {
+          "$ref": "#/$defs/PlanV1"
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReceiptV1"
+          },
+          "maxItems": 64
+        },
+        "preparations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextPreparationV1"
+          },
+          "maxItems": 64
+        },
+        "contexts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextPacketV1"
+          },
+          "maxItems": 64
+        },
+        "leaseRequests": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeaseRequestV1"
+          },
+          "maxItems": 64
+        },
+        "leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeaseV1"
+          },
+          "maxItems": 64
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationV1"
+          },
+          "maxItems": 64
+        },
+        "reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReservationV1"
+          },
+          "maxItems": 64
+        },
+        "charges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChargeV1"
+          },
+          "maxItems": 64
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClaimV1"
+          },
+          "maxItems": 64
+        },
+        "handoffs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HandoffOfferV1"
+          },
+          "maxItems": 64
+        },
+        "handoffReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HandoffReceiptV1"
+          },
+          "maxItems": 64
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FactsV1"
+          },
+          "maxItems": 64
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResultV1"
+          },
+          "maxItems": 64
+        },
+        "blobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BlobBytesV1"
+          },
+          "maxItems": 64
+        },
+        "admissionBasis": {
+          "$ref": "#/$defs/AdmissionBasisV1"
+        },
+        "proposals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RejectedProposalV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "costBases",
+        "now",
+        "current",
+        "setup",
+        "scope",
+        "bots",
+        "restrictions",
+        "resources",
+        "accountRoutes",
+        "sources",
+        "decisions",
+        "snapshots",
+        "files",
+        "plan",
+        "receipts",
+        "preparations",
+        "contexts",
+        "leaseRequests",
+        "leases",
+        "operations",
+        "reservations",
+        "charges",
+        "claims",
+        "handoffs",
+        "handoffReceipts",
+        "facts",
+        "results",
+        "blobs",
+        "admissionBasis",
+        "proposals"
+      ],
+      "additionalProperties": false
+    },
+    "CallV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "prepare",
+                "accept",
+                "prepare_context",
+                "assemble_context",
+                "dispatch",
+                "continue_original",
+                "read_result",
+                "publish_result",
+                "offer_handoff",
+                "accept_handoff",
+                "read_handoff",
+                "publish_handoff",
+                "claim_lease",
+                "release_lease",
+                "cancel",
+                "recover",
+                "inspect_history"
+              ]
+            },
+            "target": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "withdraw",
+                "correct",
+                "revoke",
+                "stop",
+                "takeover",
+                "restart",
+                "expire",
+                "change_account",
+                "change_route",
+                "change_recipient",
+                "change_model",
+                "change_target",
+                "settle",
+                "capture",
+                "owner_statement",
+                "rejected_evidence"
+              ]
+            },
+            "target": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "StepV1": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Time"
+        },
+        "call": {
+          "$ref": "#/$defs/CallV1"
+        }
+      },
+      "required": [
+        "at",
+        "call"
+      ],
+      "additionalProperties": false
+    },
+    "ScriptedResponseV1": {
+      "type": "object",
+      "properties": {
+        "at": {
+          "$ref": "#/$defs/Time"
+        },
+        "operation": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "capture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CaptureV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "settlement": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SettlementV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "at",
+        "operation",
+        "capture",
+        "settlement",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "OutcomeV1": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "allowed",
+            "held",
+            "denied",
+            "pending",
+            "partial",
+            "withheld",
+            "reconcile_only"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preparations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextPreparationV1"
+          },
+          "maxItems": 64
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OperationV1"
+          },
+          "maxItems": 64
+        },
+        "reservations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReservationV1"
+          },
+          "maxItems": 64
+        },
+        "receipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReceiptV1"
+          },
+          "maxItems": 64
+        },
+        "charges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChargeV1"
+          },
+          "maxItems": 64
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClaimV1"
+          },
+          "maxItems": 64
+        },
+        "leases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeaseV1"
+          },
+          "maxItems": 64
+        },
+        "contexts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextPacketV1"
+          },
+          "maxItems": 64
+        },
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FactsV1"
+          },
+          "maxItems": 64
+        },
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResultV1"
+          },
+          "maxItems": 64
+        },
+        "handoffReceipts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HandoffReceiptV1"
+          },
+          "maxItems": 64
+        },
+        "remaining": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "current": {
+          "$ref": "#/$defs/CurrentV1"
+        },
+        "signalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "newIoCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "newChargeCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "newClaimCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "newReceiptCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "finalPayloads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BlobV1"
+          },
+          "maxItems": 64
+        },
+        "preservedEvidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GapV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "state",
+        "code",
+        "preparations",
+        "operations",
+        "reservations",
+        "receipts",
+        "charges",
+        "claims",
+        "leases",
+        "contexts",
+        "facts",
+        "results",
+        "handoffReceipts",
+        "remaining",
+        "current",
+        "signalCount",
+        "newIoCount",
+        "newChargeCount",
+        "newClaimCount",
+        "newReceiptCount",
+        "finalPayloads",
+        "preservedEvidence",
+        "gaps"
+      ],
+      "additionalProperties": false
+    },
+    "ScenarioV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "purpose": {
+          "$ref": "#/$defs/Text"
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "maxItems": 64
+        },
+        "status": {
+          "const": "UNEXECUTED"
+        },
+        "input": {
+          "$ref": "#/$defs/WorldV1"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StepV1"
+          },
+          "maxItems": 64
+        },
+        "scriptedResponses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScriptedResponseV1"
+          },
+          "maxItems": 64
+        },
+        "expected": {
+          "$ref": "#/$defs/OutcomeV1"
+        }
+      },
+      "required": [
+        "id",
+        "purpose",
+        "requirements",
+        "status",
+        "input",
+        "steps",
+        "scriptedResponses",
+        "expected"
+      ],
+      "additionalProperties": false
+    },
+    "ExternalRecordV1": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "enum": [
+            "browser",
+            "conversation",
+            "model"
+          ]
+        },
+        "sourceHead": {
+          "$ref": "#/$defs/GitOid"
+        },
+        "sourceFixtureBlob": {
+          "$ref": "#/$defs/GitOid"
+        },
+        "recordType": {
+          "enum": [
+            "ScenarioV1",
+            "FrameV1"
+          ]
+        },
+        "recordId": {
+          "$ref": "#/$defs/Id"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/BlobV1"
+        }
+      },
+      "required": [
+        "service",
+        "sourceHead",
+        "sourceFixtureBlob",
+        "recordType",
+        "recordId",
+        "snapshot"
+      ],
+      "additionalProperties": false
+    },
+    "CounterexampleV1": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "case": {
+          "enum": [
+            "unknown_type",
+            "wrong_scalar",
+            "extra_root_key",
+            "missing_field",
+            "wrong_union_arm",
+            "extra_record_field"
+          ]
+        },
+        "bytes": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "expected": {
+          "const": "schema_reject"
+        }
+      },
+      "required": [
+        "id",
+        "case",
+        "bytes",
+        "expected"
+      ],
+      "additionalProperties": false
+    },
+    "NamedRecordV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Id"
+            },
+            "value": {
+              "$ref": "#/$defs/Id"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Hash"
+            },
+            "value": {
+              "$ref": "#/$defs/Hash"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "GitOid"
+            },
+            "value": {
+              "$ref": "#/$defs/GitOid"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Nat"
+            },
+            "value": {
+              "$ref": "#/$defs/Nat"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Pos"
+            },
+            "value": {
+              "$ref": "#/$defs/Pos"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Time"
+            },
+            "value": {
+              "$ref": "#/$defs/Time"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Minor"
+            },
+            "value": {
+              "$ref": "#/$defs/Minor"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "Text"
+            },
+            "value": {
+              "$ref": "#/$defs/Text"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "RefV1"
+            },
+            "value": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "BlobV1"
+            },
+            "value": {
+              "$ref": "#/$defs/BlobV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "BytesV1"
+            },
+            "value": {
+              "$ref": "#/$defs/BytesV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "VectorV1"
+            },
+            "value": {
+              "$ref": "#/$defs/VectorV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "UsageV1"
+            },
+            "value": {
+              "$ref": "#/$defs/UsageV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CostBasisV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CostBasisV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "SelectionV1"
+            },
+            "value": {
+              "$ref": "#/$defs/SelectionV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "AccountRouteV1"
+            },
+            "value": {
+              "$ref": "#/$defs/AccountRouteV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "PinsV1"
+            },
+            "value": {
+              "$ref": "#/$defs/PinsV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ModeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ModeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CodeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CodeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "RestrictionV1"
+            },
+            "value": {
+              "$ref": "#/$defs/RestrictionV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "BoundsV1"
+            },
+            "value": {
+              "$ref": "#/$defs/BoundsV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ResourceV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ResourceV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ProducerV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ProducerV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "SourceV1"
+            },
+            "value": {
+              "$ref": "#/$defs/SourceV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "DecisionV1"
+            },
+            "value": {
+              "$ref": "#/$defs/DecisionV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "BotV1"
+            },
+            "value": {
+              "$ref": "#/$defs/BotV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ScopeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ScopeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "AssignmentV1"
+            },
+            "value": {
+              "$ref": "#/$defs/AssignmentV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "PlanProposalV1"
+            },
+            "value": {
+              "$ref": "#/$defs/PlanProposalV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "PlanV1"
+            },
+            "value": {
+              "$ref": "#/$defs/PlanV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ReceiptV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ReceiptV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ContextPreparationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ContextPreparationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ContextPacketV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ContextPacketV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "SnapshotV1"
+            },
+            "value": {
+              "$ref": "#/$defs/SnapshotV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "FileIdentityV1"
+            },
+            "value": {
+              "$ref": "#/$defs/FileIdentityV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "FileObservationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/FileObservationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "LeaseRequestV1"
+            },
+            "value": {
+              "$ref": "#/$defs/LeaseRequestV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "LeaseV1"
+            },
+            "value": {
+              "$ref": "#/$defs/LeaseV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "OperationBodyV1"
+            },
+            "value": {
+              "$ref": "#/$defs/OperationBodyV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "OperationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/OperationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ReservationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ReservationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ChargeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ChargeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ClaimV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ClaimV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "DispatchV1"
+            },
+            "value": {
+              "$ref": "#/$defs/DispatchV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CaptureV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CaptureV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "PublicationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/PublicationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "SettlementV1"
+            },
+            "value": {
+              "$ref": "#/$defs/SettlementV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "FactsV1"
+            },
+            "value": {
+              "$ref": "#/$defs/FactsV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "HandoffOfferV1"
+            },
+            "value": {
+              "$ref": "#/$defs/HandoffOfferV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "HandoffReceiptV1"
+            },
+            "value": {
+              "$ref": "#/$defs/HandoffReceiptV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "HandoffReadV1"
+            },
+            "value": {
+              "$ref": "#/$defs/HandoffReadV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "GapV1"
+            },
+            "value": {
+              "$ref": "#/$defs/GapV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ResultV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ResultV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ResultReadV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ResultReadV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CancelObservationV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CancelObservationV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CurrentV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CurrentV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ContextSetupV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ContextSetupV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "FakePortSetupV1"
+            },
+            "value": {
+              "$ref": "#/$defs/FakePortSetupV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "BlobBytesV1"
+            },
+            "value": {
+              "$ref": "#/$defs/BlobBytesV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "WorldV1"
+            },
+            "value": {
+              "$ref": "#/$defs/WorldV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CallV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CallV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "StepV1"
+            },
+            "value": {
+              "$ref": "#/$defs/StepV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ScriptedResponseV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ScriptedResponseV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "OutcomeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/OutcomeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ScenarioV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ScenarioV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "ExternalRecordV1"
+            },
+            "value": {
+              "$ref": "#/$defs/ExternalRecordV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "CounterexampleV1"
+            },
+            "value": {
+              "$ref": "#/$defs/CounterexampleV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "PriorChargeV1"
+            },
+            "value": {
+              "$ref": "#/$defs/PriorChargeV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "AdmissionBasisV1"
+            },
+            "value": {
+              "$ref": "#/$defs/AdmissionBasisV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "EffectBindingV1"
+            },
+            "value": {
+              "$ref": "#/$defs/EffectBindingV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "RejectedProposalV1"
+            },
+            "value": {
+              "$ref": "#/$defs/RejectedProposalV1"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DocumentV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "s15-team-resources-fixtures/v1"
+        },
+        "status": {
+          "const": "UNEXECUTED_DOCUMENTATION"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedRecordV1"
+          },
+          "maxItems": 128
+        },
+        "externalRecords": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExternalRecordV1"
+          },
+          "maxItems": 64
+        },
+        "externalBytes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BlobBytesV1"
+          },
+          "maxItems": 64
+        },
+        "counterexamples": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CounterexampleV1"
+          },
+          "maxItems": 64
+        },
+        "worlds": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScenarioV1"
+          },
+          "maxItems": 128
+        }
+      },
+      "required": [
+        "contract",
+        "status",
+        "records",
+        "externalRecords",
+        "externalBytes",
+        "counterexamples",
+        "worlds"
+      ],
+      "additionalProperties": false
+    },
+    "PriorChargeV1": {
+      "type": "object",
+      "properties": {
+        "service": {
+          "enum": [
+            "chat_interpretation"
+          ]
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuity": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "reservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "chargeId": {
+          "$ref": "#/$defs/Id"
+        },
+        "claimId": {
+          "$ref": "#/$defs/Id"
+        },
+        "charged": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "chargedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "claimedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "dispatchedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "capturedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "settledAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        }
+      },
+      "required": [
+        "service",
+        "budget",
+        "continuity",
+        "reservationId",
+        "chargeId",
+        "claimId",
+        "charged",
+        "chargedAt",
+        "claimedAt",
+        "dispatchedAt",
+        "capturedAt",
+        "settledAt",
+        "actual"
+      ],
+      "additionalProperties": false
+    },
+    "AdmissionBasisV1": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "owner": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "purpose": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "original": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "receivedAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "receiptHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "receiptAt": {
+          "$ref": "#/$defs/Time"
+        },
+        "priorCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PriorChargeV1"
+          },
+          "maxItems": 64
+        },
+        "admission": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "admissionHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "admittedAt": {
+          "$ref": "#/$defs/Time"
+        }
+      },
+      "required": [
+        "request",
+        "owner",
+        "purpose",
+        "original",
+        "receivedAt",
+        "receiptHash",
+        "receiptAt",
+        "priorCharges",
+        "admission",
+        "admissionHash",
+        "admittedAt"
+      ],
+      "additionalProperties": false
+    },
+    "EffectBindingV1": {
+      "type": "object",
+      "properties": {
+        "repository": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "selectedIssue": {
+          "$ref": "#/$defs/Pos"
+        },
+        "targetRef": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "baseOid": {
+          "$ref": "#/$defs/GitOid"
+        },
+        "headOid": {
+          "$ref": "#/$defs/GitOid"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "content": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "production": {
+          "enum": [
+            "none",
+            "would_deploy",
+            "unknown"
+          ]
+        },
+        "publicationApproval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mergeApproval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "productionApproval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "repository",
+        "selectedIssue",
+        "targetRef",
+        "baseOid",
+        "headOid",
+        "recipients",
+        "content",
+        "production",
+        "publicationApproval",
+        "mergeApproval",
+        "productionApproval"
+      ],
+      "additionalProperties": false
+    },
+    "RejectedProposalV1": {
+      "type": "object",
+      "properties": {
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffectBindingV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ref": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "kind": {
+          "enum": [
+            "raw_copy",
+            "native_move",
+            "historical_authority",
+            "whole_stop",
+            "github_publish",
+            "github_merge",
+            "production_merge"
+          ]
+        },
+        "resource": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "payload": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "recipients": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        },
+        "profile": {
+          "enum": [
+            "default",
+            "installed_personal"
+          ]
+        },
+        "approval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RefV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "affectedAssignments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RefV1"
+          },
+          "maxItems": 64
+        }
+      },
+      "required": [
+        "effect",
+        "ref",
+        "kind",
+        "resource",
+        "payload",
+        "recipients",
+        "profile",
+        "approval",
+        "affectedAssignments"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
