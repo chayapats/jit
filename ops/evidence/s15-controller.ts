@@ -19,6 +19,7 @@ const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha
 const cases = report.cases as Record<string, unknown>, site = browserSite(), manager = new RemoteVmManagement({ origin: input.relay, credential: () => input.credential, allowLoopback: true });
 const catalog = new Map<string, { ref: Ref; active: boolean }>();
 for (const [kind, names] of Object.entries({ purpose: ['evidence', 'interpret'], bot: ['bot'], resource: ['computer', 'account'], recipient: ['provider', 'payee', 'other'], route: ['route'], model: ['model'] })) for (const id of names) catalog.set(`${kind}:${id}`, { ref: ref(id), active: true });
+catalog.set('lineage:fixture_site', { ref: ref('fixture_site'), active: true });
 const policy: PolicyInput = { purposes: [ref('evidence'), ref('interpret')], interpretationPurpose: ref('interpret'), bots: [ref('bot')], resources: [ref('computer'), ref('account')], recipients: [ref('provider'), ref('payee')], selections: [selection], expiresAt: until,
   budget: { currency: 'USD', startsAt: now - 1000, expiresAt: until, concurrency: 8, ceiling: { attempts: 1000, steps: 1000, calls: 10000, reads: 10000, outputBytes: 1000000000, activeMs: 100000000, spendMinor: '0' } },
   rules: [{ id: 'controlled_fixture', mode: 'ordinary', purposes: [ref('evidence')], bots: [ref('bot')], resources: [ref('computer'), ref('account')], recipients: [ref('payee')], selections: [selection], adapters: ['working_vm', 'protected_browser', 'fixture_payment'], operations: ['vm_write', 'vm_shell', 'vm_system_admin', 'vm_snapshot', 'browser_request', 'pay'], classes: ['guest_local_admin', 'guest_system_admin', 'ordinary_edit', 'communication', 'financial', 'disclosure', 'new_egress'], expiresAt: until, recurrence: null }] };
@@ -67,7 +68,9 @@ try {
   const nav = await run({ kind: 'navigate', url: site.origin + '/clean-task' }); check(nav.state === 'ok', 'browser_navigation_failed');
   const read = await run({ kind: 'read' }); check(read.state === 'observed', 'browser_observation_failed');
   if (read.state !== 'observed') throw Error('browser_observation_failed');
-  const buttons = read.observation.elements.filter(e => e.name === 'confirm'), held = await run({ kind: 'click', target: buttons[0]!.id }); check(held.state === 'held', 'communication_bypassed'); check(!site.received.some(r => r.path === '/message'), 'message_dispatched');
+  const buttons = read.observation.elements.filter(e => e.name === 'confirm'), held = await run({ kind: 'click', target: buttons[0]!.id });
+  report.browserCommunicationObservation = { state: held.state, ...('code' in held ? { code: held.code } : {}), dispatched: site.received.some(r => r.path === '/message') };
+  check(held.state === 'held', 'communication_not_held'); check(!site.received.some(r => r.path === '/message'), 'message_dispatched');
   cases.browserCommunicationHold = { passed: true, state: held.state };
   const takeover = await service.browser!.owner.takeover(owner); service.browser!.owner.handBack(owner, takeover.generation, true); await browser.settled(); browser.release();
   const fresh = service.browser!.open(actor), attackNavigation = await fresh.execute({ kind: 'navigate', url: site.origin + '/attacks', generation: fresh.state().generation });
