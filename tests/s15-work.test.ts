@@ -231,3 +231,13 @@ test('verified terminal reconciliation records completion after execution expiry
   const result = service.reconcile(r.id, unknown.attempts[0]!.id, observed({ complete: true, progress: 'made', evidenceRefs: ['verified_merge_after_expiry'] }));
   expect(result.state).toBe('completed'); expect(() => service.publish(handle, () => {})).toThrow('expired');
 });
+
+test('owner list projects current responsibilities newest first and refuses a spoofed owner without starting anything', () => {
+  const { f, service, responsibility } = setup();
+  f.source('second'); const second = service.assign(f.owner, assignment('second'));
+  const listed = service.list(f.owner);
+  expect(listed.map(item => item.id)).toEqual([second.id, responsibility.id]);
+  expect(listed[0]).toMatchObject({ contract: 's15-responsibility/v1', stopImpact: { otherResponsibilities: 1 } });
+  expect(() => service.list({} as never)).toThrow('authentication_required');
+  expect(f.policy.control.reservations()).toHaveLength(0);
+});

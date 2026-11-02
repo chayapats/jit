@@ -4,12 +4,14 @@ import { join } from "node:path";
 import { dictionaries } from "../src/i18n";
 import { s15WebEn } from "../src/i18n/s15-web-en";
 import { s15WebTh } from "../src/i18n/s15-web-th";
+import { s15ActionsEn } from "../src/i18n/s15-actions-en";
+import { s15ActionsTh } from "../src/i18n/s15-actions-th";
 
 // UX15-01 dictionary freeze: every key the S15 Web UI can render exists in Thai and English.
 const directory = join(import.meta.dir, "../src/s15/web");
 const literal = new Set(readdirSync(directory).filter(name => name.endsWith(".ts")).flatMap(name => [...readFileSync(join(directory, name), "utf8").matchAll(/"(s15\.[a-z0-9_.]+[a-z0-9_])"/g)].map(match => match[1]!)).filter(key => !["s15.css", "s15.js"].includes(key)));
 const families: Record<string, readonly string[]> = {
-  "s15.state": ["received", "understanding", "inspecting", "working", "waiting_ci", "waiting_review", "waiting_login", "needs_you", "question", "stalled", "budget_hold", "partial", "blocked", "unsupported", "unknown", "failed", "stopping", "stopped", "done", "changed", "expired", "denied"],
+  "s15.state": ["received", "understanding", "inspecting", "working", "waiting_ci", "waiting_review", "waiting_schedule", "waiting_login", "needs_you", "question", "stalled", "budget_hold", "partial", "blocked", "unsupported", "unknown", "failed", "stopping", "stopped", "done", "changed", "expired", "denied"],
   "s15.scope.access": ["read", "reversible_write", "effect"],
   "s15.readiness.state": ["ready", "blocked", "owned", "open_pr"], "s15.readiness.fact": ["scope", "acceptance", "blockers", "assignee", "branch_pr"],
   "s15.model.effort": ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "s15.model.reason": ["owner_pin", "ordinary", "difficult", "approved_alternative"],
@@ -21,6 +23,15 @@ const families: Record<string, readonly string[]> = {
   "s15.accounts.state": ["not_connected", "configured", "checked", "unavailable"], "s15.accounts.use": ["email_read", "email_draft", "calendar", "documents", "github", "websites", "model"],
   "s15.setup.alone": ["research", "computer", "edits", "accounts", "models"], "s15.setup.asks": ["messages", "github", "merge", "production", "payments", "recipients", "major", "new_accounts"],
   "s15.computer.row": ["proven", "reported", "missing", "unproven", "unavailable"], "s15.computer.state": ["ready", "unproven", "uncertain", "stopped"],
+  // UX15-02/03/06 computed families.
+  "s15.rules.deviation": ["payee", "account", "currency", "amount_ceiling", "frequency", "count", "total", "rule_expired"],
+  "s15.github.production": ["none", "protected_gate", "would_deploy", "unknown"], "s15.github.mode": ["personal_github_publish", "personal_github_merge"],
+  "s15.decision.option": ["apply_exact", "investigate", "keep"], "s15.decision.evidence": ["fact", "inference", "missing"], "s15.slip.statement": ["occurred", "did_not_occur"],
+  "s15.slip.data_class": ["public", "private", "personal", "business"], "s15.duty.trigger": ["ci", "review", "owner", "schedule", "assigned"], "s15.duty.attempt": ["active", "settled", "unknown"],
+  "s15.stall.progress": ["unknown", "none", "made"], "s15.resources.kind": ["account", "browser", "workspace", "data"], "s15.resources.op": ["read", "write", "input"],
+  "s15.adoption.runtime": ["s14", "legacy", "s15"], "s15.adoption.state": ["preparing", "validated", "activating", "active_fenced", "complete", "rolling_back", "rolled_back", "discarded", "blocked"],
+  "s15.rules.saved": ["recurring_installed", "recurring_revoked", "github_installed", "github_revoked"], "s15.rules.frequency": ["hours", "daily", "weekly", "monthly"],
+  "s15.code": ["stall_no_progress", "stall_attempt_limit", "stall_budget_headroom", "login_required", "stale_input", "input_busy"],
 };
 
 test("every S15 Web key, literal or computed, exists in both Thai and English with plain text", () => {
@@ -31,6 +42,7 @@ test("every S15 Web key, literal or computed, exists in both Thai and English wi
     expect({ locale, key, present: typeof value === "string" && value.trim().length > 0 }).toEqual({ locale, key, present: true });
   }
   expect(Object.keys(s15WebEn).sort()).toEqual(Object.keys(s15WebTh).sort());
+  expect(Object.keys(s15ActionsEn).sort()).toEqual(Object.keys(s15ActionsTh).sort());
 });
 
 test("the handoff §10.2 core keys used by UX15-01 keep their authored Thai and English copy", () => {
@@ -41,6 +53,21 @@ test("the handoff §10.2 core keys used by UX15-01 keep their authored Thai and 
     ["s15.vm.option_b", "จิตมีสิทธิ์เต็มในเครื่องนี้ ข้อมูลสำคัญ รหัสผ่าน และการส่งออกไปข้างนอกอยู่นอกเครื่องนี้เสมอ ถ้าเครื่องพัง ย้อนกลับจาก snapshot ได้", "Jit has full control of this machine. Your important data, passwords and anything that leaves for the outside world stay outside it. If it breaks, it can be restored from a snapshot."],
     ["s15.setup.budget_required", "ใส่งบใช้งานก่อน จิตจะไม่เดาตัวเลขให้", "Enter a usage budget first. Jit won’t guess a number for you."], ["s15.setup.personal_off", "โปรไฟล์ GitHub ส่วนตัว: ปิดอยู่ ตั้งได้ที่ กฎประจำ", "Personal GitHub profile: off. Set it up under Standing rules."],
     ["s15.budget.unknown", "ไม่ทราบ", "Unknown"], ["s15.model.no_switch", "จิตไม่เปลี่ยนไปใช้บัญชีอื่นเอง", "Jit won’t switch to another account on its own"],
+  ];
+  for (const [key, thai, english] of authored) { expect((dictionaries.th as Record<string, string>)[key]).toBe(thai); expect((dictionaries.en as Record<string, string>)[key]).toBe(english); }
+});
+
+test("the handoff §10.2 keys used by UX15-02/03/06 keep their authored Thai and English copy", () => {
+  const authored: [string, string, string][] = [
+    ["s15.hold.asks.email", "จิตขอส่งอีเมล", "Jit asks to send an email"], ["s15.hold.send_once", "ส่ง 1 ครั้ง", "Send once"], ["s15.hold.pay_once", "จ่าย 1 ครั้ง", "Pay once"],
+    ["s15.hold.merge_deploy_once", "Merge และปล่อย deploy 1 ครั้ง", "Merge and let it deploy once"], ["s15.hold.allow_once", "อนุญาตเฉพาะครั้งนี้", "Allow this time only"],
+    ["s15.hold.single_use", "การอนุมัติใช้ได้ครั้งเดียว กับเนื้อหานี้เท่านั้น", "One approval, for this exact content only"], ["s15.hold.which", "หมายถึงอันไหน", "Which one do you mean?"],
+    ["s15.hold.changed", "ถูกแทนด้วย r{n} การอนุมัติเดิมใช้ไม่ได้", "Replaced by r{n}. The earlier approval no longer applies."], ["s15.hold.unknown", "ไม่ทราบผล จิตจะไม่ส่งซ้ำเอง", "Outcome unknown. Jit won’t resend on its own."],
+    ["s15.github.prod_before_merge", "Merge นี้จะ deploy production ต้องให้คุณอนุมัติก่อน merge", "This merge would deploy to production. It needs your approval before merging."],
+    ["s15.browser.driving", "คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน", "You’re driving · Jit can’t send input until you hand back"], ["s15.browser.hand_back", "เสร็จแล้ว คืนให้จิต", "Done, hand back to Jit"],
+    ["s15.rules.recurring_set", "ตั้งกฎนี้", "Set up this rule"], ["s15.rules.revoke", "หยุดใช้กฎนี้", "Stop using this rule"], ["s15.duty.waiting_ci", "รอ CI อยู่ จิตจะกลับมาดูเองเมื่อเสร็จ ไม่ต้องทำอะไร", "Waiting for CI. Jit will check back when it finishes. Nothing to do."],
+    ["s15.stall.title", "หยุดพักไว้: ลอง {n} วิธีแล้วยังไม่คืบ", "Paused: tried {n} approaches with no progress"], ["s15.recovery.check_again", "ตรวจอีกครั้ง (อ่านอย่างเดียว)", "Check again (read only)"],
+    ["s15.vm.restore_keeps", "ข้อมูลของคุณนอกเครื่อง อีเมลที่ส่งแล้ว PR และการจ่ายเงิน ไม่ถูกย้อน", "Your data outside the machine, sent emails, PRs and payments are not rolled back"],
   ];
   for (const [key, thai, english] of authored) { expect((dictionaries.th as Record<string, string>)[key]).toBe(thai); expect((dictionaries.en as Record<string, string>)[key]).toBe(english); }
 });

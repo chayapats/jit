@@ -198,6 +198,7 @@ export const s15ActionsEn: Record<keyof typeof s15ActionsTh, string> = {
   "s15.resources.none": "No team resources yet",
   "s15.resources.no_accounts": "No connected accounts yet",
   "s15.resources.no_sites": "No websites are set up for sign-in yet",
+  "s15.resources.sign_in_note": "Signing in to a website doesn’t allow any sending or paying",
   "s15.resources.active": "Active",
   "s15.resources.inactive": "Off",
   "s15.resources.no_broad_share": "Share one item at a time, with a card naming the item, revision and receivers. There is no share-all button.",
