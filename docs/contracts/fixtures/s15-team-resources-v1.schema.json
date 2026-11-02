@@ -409,6 +409,7 @@
     "ModeV1": {
       "enum": [
         "snapshot_read",
+        "file_observe",
         "file_read",
         "file_write",
         "browser_read",
@@ -1516,6 +1517,22 @@
           "required": [
             "kind",
             "snapshot"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "file_observe"
+            },
+            "resource": {
+              "$ref": "#/$defs/RefV1"
+            }
+          },
+          "required": [
+            "kind",
+            "resource"
           ],
           "additionalProperties": false
         },
@@ -2878,6 +2895,13 @@
           },
           "maxItems": 64
         },
+        "leaseHistory": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeaseV1"
+          },
+          "maxItems": 64
+        },
         "operations": {
           "type": "array",
           "items": {
@@ -2972,6 +2996,7 @@
         "contexts",
         "leaseRequests",
         "leases",
+        "leaseHistory",
         "operations",
         "reservations",
         "charges",
