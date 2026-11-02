@@ -383,6 +383,14 @@ test("the exact card binds commits, destination, branch and PR text to a hash, s
   expect(progress.html).not.toContain("&quot;decision&quot;:&quot;approve&quot;");
   expect(plain(progress.html)).toContain(f.words["s14.git.open_card"]);
   expect(plain((await f.get(`/work/${workId}?tab=coding`)).html)).toContain(f.words["s14.git.block.open_card"]);
+  const conversationId = f.app.authority.view(f.actor, workId).work.conversationId;
+  const chat = (await f.get(`/chats/${conversationId}`)).html;
+  const inline = chat.slice(chat.indexOf('id="s14-live"'), chat.indexOf('<span id="latest"'));
+  expect(inline).toContain(`/effects/${effect.id}#slip`);
+  expect(inline).toContain(f.words["s14.git.open_card"]);
+  expect(inline).not.toContain("&quot;decision&quot;:&quot;approve&quot;");
+  expect(accessibilityProblems(chat, "en")).toEqual([]);
+  expect(f.remote.pushes).toBe(0);
 });
 
 test("approving once pushes once, and only a read-back reads as confirmed", async () => {

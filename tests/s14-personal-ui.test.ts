@@ -499,6 +499,12 @@ test.each(["th", "en"] as const)("unknown delivery is reconcile-only: read-back 
   expect(unknown).toContain(words["s14.effect_state.unknown"]); expect(unknown).toContain(words["s14.google.readback.go"]); expect(unknown).toContain(words["s14.google.readback.note"]);
   expect(buttons(unknown).join()).not.toMatch(/retry|resend|ลองใหม่|ส่งซ้ำ/i);
   expect(buttons(unknown)).not.toContain(`${words["s14.google.approve.mail"]} · ${view.draft.hash.slice(0, 8)}`);
+  const conversationId = f.app.authority.view(f.auth.actor, view.effect.workId).work.conversationId;
+  const chat = await page(`/chats/${conversationId}`), inline = chat.slice(chat.indexOf('id="s14-live"'), chat.indexOf('<span id="latest"'));
+  expect(inline).toContain(view.effect.actionHash);
+  expect(inline).toContain(`/effects/${view.effect.id}#slip`);
+  expect(inline).not.toContain("&quot;decision&quot;:&quot;approve&quot;");
+  expect(sends).toBe(1); safe(chat, language);
   readable = true;
   const checked = await land(await post(`/s14/personal/drafts/${view.draft.id}/readback`, form));
   expect(checked.path).toBe(`${route}#slip`); expect(sends).toBe(1);

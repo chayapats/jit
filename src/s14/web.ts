@@ -128,7 +128,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id='owner'");
           return first && owner ? createHash("sha256").update(`${first.id}:${owner.generation}`).digest("hex").slice(0, 32) : "";
         });
-        return html(render({ state, work, csrf: auth.csrf, locale, view: selected, overview: product!.overview(auth.actor, state, work), policy: app.policy, now: app.now(), browserKey }), status, locale);
+        return html(render({ state, work, csrf: auth.csrf, locale, view: selected, overview: product!.overview(auth.actor, state, work, selected), policy: app.policy, now: app.now(), browserKey }), status, locale);
       };
       if (product && request.method === "POST" && url.pathname === "/s14/logout") {
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);

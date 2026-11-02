@@ -1,3 +1,4 @@
+import { libraryPage, outputFacts, outputFile } from "./web-library";
 import { currentLocale, tr, trMaybe, withLocale, type Locale, type MessageKey } from "../i18n";
 import { s14Colors as colorTokens } from "./web-design";
 import { logoLockup, logoMark } from "../web-logo";
@@ -272,8 +273,25 @@ const stoppable = (work: Work) => ["queued", "running", "waiting", "blocked"].in
 function workCard(page: S14Page, work: Work, conversation: Conversation, bot: Bot): string {
   if (isTask(work)) return taskSlip(page, work, conversation, bot);
   const open = `/chats/${e(conversation.id)}?work=${e(work.id)}`;
-  return `<article class="s-workcard" aria-label="${e(work.title)}"><div class="s-workcard-hd"><div><h3>${e(work.title)}</h3></div>${partialPill(work)}${workPill(work.state)}</div>${receiptLine(work)}${miniLanes(page, work) || `<div class="s-lane-mini">${tile(bot, workDot[work.state] ?? "", "small")}<span class="s-grow">${e(botName(bot))}</span><span>${tr(k(`s14.work_state.${work.state}`))}</span></div>`}
-    <div class="s-workcard-ft"><a class="s-btn" href="${open}">${tr("s14.work.open_progress")}</a>${page.overview.reports[work.id] ? `<a class="s-btn" href="${open}&amp;tab=report">${tr("s14.work.open_report")} r${page.overview.reports[work.id]!.revision}</a>` : ""}<a class="s-btn" href="${open}&amp;tab=grant">${tr("s14.work.open_grant")}</a></div>${stoppable(work) ? ownerStrip(stopForm(page, work), tr("s14.work.stop_note")) : ""}</article>`;
+  return `<article class="s-workcard" data-work-id="${e(work.id)}" aria-label="${e(work.title)}"><div id="s14-inline-${e(work.id)}" data-inline-work class="s-stack"><div class="s-workcard-hd"><div><h3>${e(work.title)}</h3></div>${partialPill(work)}${workPill(work.state)}</div>${inlineWork(page, work, open)}${miniLanes(page, work) || `<div class="s-lane-mini">${tile(bot, workDot[work.state] ?? "", "small")}<span class="s-grow">${e(botName(bot))}</span><span>${tr(k(`s14.work_state.${work.state}`))}</span></div>`}
+    <div class="s-workcard-ft"><a class="s-btn" href="${open}">${tr("s14.work.open_progress")}</a>${page.overview.reports[work.id] ? `<a class="s-btn" href="${open}&amp;tab=report">${tr("s14.work.open_report")} r${page.overview.reports[work.id]!.revision}</a>` : ""}<a class="s-btn" href="${open}&amp;tab=grant">${tr("s14.work.open_grant")}</a></div>${stoppable(work) ? ownerStrip(stopForm(page, work), tr("s14.work.stop_note")) : ""}</div>${receiptLine(work)}</article>`;
+}
+
+/** Reads only current owner projections; nested exact controls are omitted when the same work is open in its pane. */
+function inlineWork(page: S14Page, work: Work, base: string): string {
+  const view = page.overview.views.find(item => item.work.id === work.id);
+  if (!view) return "";
+  const result = view.results.map(item => item.text).filter(Boolean).join("\n\n"), report = page.overview.reportDetails?.[work.id];
+  let output = result ? untrusted(`<p class="s-bot-text">${e(result)}</p>`, tr("s14.untrusted.result")) : "";
+  if (report?.state === "unavailable") output += `<p class="s-note">${tr("s14.report.withdrawn")} r${report.revision} · ${tr("s14.report.withdrawn_detail")}</p>`;
+  if (report?.state === "available") {
+    const sources = [...new Map(report.report.claims.flatMap(claim => claim.evidence).map(source => [source.id, source])).values()];
+    const rows = sources.slice(0, 8).map(source => `<li><a class="s-link-text" href="${base}&amp;tab=${source.tool === "personal_read" ? "brief" : "evidence"}#source-${e(source.id)}">${source.tool === "personal_read" ? tr(k(`s14.brief.kind.${source.kind}`)) : e(source.url)}</a><p class="s-meta">${tr(k(`s14.coverage.${source.coverage}`))} · ${when(source.retrievedAt)}</p></li>`).join("");
+    output += `${outputFacts(report, `${base}&amp;tab=report&amp;report=${e(report.report.id)}`)}<p class="s-note">${tr("s14.report.missing")}: ${report.report.missing.length} ${tr("s14.report.missing_count")} · ${report.report.modelMissing.length} ${tr("s14.report.missing_from_bot")}</p>${report.report.limitations.length ? untrusted(`<ul>${report.report.limitations.map(item => `<li>${e(item)}</li>`).join("")}</ul>`, tr("s14.report.untrusted")) : ""}${rows ? `<ul class="s-history">${rows}</ul><p><a class="s-link-text" href="${base}&amp;tab=evidence">${tr("s14.tab.evidence")} (${sources.length})</a></p>` : ""}<ul class="s-files">${report.artifacts.map(outputFile).join("")}</ul>`;
+  }
+  const inPane = page.view.kind === "chat" && page.view.pane?.view.work.id === work.id && page.view.pane.tab === "progress";
+  const decisions = inPane ? "" : view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("");
+  return output || decisions ? `<div class="s-stack">${output}${decisions}</div>` : "";
 }
 
 function proposalFacts(page: S14Page, proposal: BotProposal): string {
@@ -365,7 +383,7 @@ function progressTab(page: S14Page, view: WorkView, conversation: Conversation, 
   const resultText = view.results.map(result => result.text).join("\n\n");
   const result = resultText ? `<section class="s-stack" aria-labelledby="s14-result"><h3 class="s-section-t" id="s14-result">${tr("s14.work.result")}</h3>${untrusted(`<p>${e(resultText)}</p>`, tr("s14.untrusted.result"))}<p class="s-note">${tr("s14.work.completion_rule")}: ${e(work.completionRule)}</p></section>` : "";
   const sep = base.includes("?") ? "&amp;" : "?", evidenceHref = `${base}${sep}tab=evidence`, direct = view.attempts.filter(attempt => !attempt.step);
-  return `${workStateBanner(view)}${recoveryNotice(view)}${reportLine(view, team, `${base}${sep}tab=report`)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${result}${recoveryPanel(page, view, research)}<details class="s-more"><summary>${tr("s14.plain.progress")}</summary><div>${teamProgress(page, view, team, research)}${direct.length ? `<section class="s-stack" aria-labelledby="s14-attempts"><h3 class="s-section-t" id="s14-attempts">${tr("s14.work.attempts")}</h3>${direct.map(a => attemptLane(page, a)).join("")}</section>` : ""}${usageBlock(page, view, team)}</div></details>${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
+  return `<div id="s14-progress-primary" class="s-stack">${workStateBanner(view)}${recoveryNotice(view)}${reportLine(view, team, `${base}${sep}tab=report`)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${result}${recoveryPanel(page, view, research)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}</div><details class="s-more"><summary>${tr("s14.plain.progress")}</summary><div id="s14-progress-details">${teamProgress(page, view, team, research)}${direct.length ? `<section class="s-stack" aria-labelledby="s14-attempts"><h3 class="s-section-t" id="s14-attempts">${tr("s14.work.attempts")}</h3>${direct.map(a => attemptLane(page, a)).join("")}</section>` : ""}${usageBlock(page, view, team)}</div></details>`;
 }
 function grantTab(page: S14Page, view: WorkView): string {
   const { grant, authority, work } = view;
@@ -627,7 +645,7 @@ function attentionLevel(page: S14Page, setting: AttentionSetting): string {
 function morePage(page: S14Page, view: Extract<S14View, { kind: "more" }>): string {
   const { saved, attention: setting, attentionSaved } = view;
   return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? announced(banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail"))) : ""}${attentionSaved ? announced(banner("ok", tr("s14.attention.level.saved"), tr("s14.attention.level.saved_detail"))) : ""}    <nav class="s-management" aria-label="${tr("s14.more.places")}">
-      <section><h2>${tr("s14.plain.knowledge")}</h2><ul class="s-history">${[["/memory", "s14.more.memory"], ["/shares", "s14.more.shares"]].map(([path, label]) => `<li><a class="s-link" href="${path}">${tr(k(label!))}</a></li>`).join("")}</ul></section>
+      <section><h2>${tr("s14.plain.knowledge")}</h2><ul class="s-history">${[["/library", "s14.library.title"], ["/memory", "s14.more.memory"], ["/shares", "s14.more.shares"]].map(([path, label]) => `<li><a class="s-link" href="${path}">${tr(k(label!))}</a></li>`).join("")}</ul></section>
       <section><h2>${tr("s14.plain.team_work")}</h2><ul class="s-history">${[["/team", "s14.nav.team"], ["/routines", "s14.more.routine"], ["/coding", "s14.more.coding"], ["/recovery", "s14.more.recovery"]].map(([path, label]) => `<li><a class="s-link" href="${path}">${tr(k(label!))}</a></li>`).join("")}${page.state.bots.filter(bot => !botGone(bot)).map(bot => `<li><a class="s-link" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}</ul></section>
       <section><h2>${tr("s14.plain.installation")}</h2><ul class="s-history">${[["/settings/provider", "s14.more.provider"], ["/settings/google", "s14.more.google"], ["/settings/work", "s14.more.work"], ["/settings/web", "s14.more.web"], ["/settings/backup", "s14.more.backup"]].map(([path, label]) => `<li><a class="s-link" href="${path}">${tr(k(label!))}</a></li>`).join("")}</ul></section>
     </nav><details class="s-more"><summary>${tr("s14.more.account")}</summary><div><section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section></div></details><details class="s-more"><summary>${tr("s14.more.preferences")}</summary><div>${preferences(page)}</div></details><section class="s-card s-stack"><h2>${tr("s14.plain.drafts_title")}</h2><p class="s-sub">${tr("s14.plain.drafts_policy")}</p></section>${setting ? attentionLevel(page, setting) : ""}
@@ -647,6 +665,7 @@ export function renderS14(page: S14Page): string {
       case "team": return teamPage(page);
       case "bot": return botPage(page, view);
       case "proposal": return shell(page, `${tr("s14.proposal.title")} r${view.proposal.revision}`, `<div class="s-col">${proposalCard(page, view.proposal, view.history, "h2")}${proposalHistory(view.history, view.proposal)}<p><a class="s-link-text" href="/chats/${e(page.state.conversations.find(c => c.id === view.proposal.conversationId)?.id ?? "")}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "team" });
+      case "library": return libraryPage(page, view);
       case "effect": return view.git ? gitEffectPage(page, view, view.git) : shell(page, tr("s14.effect.card"), `<div class="s-col">${view.saved ? announced(banner("", tr("s14.statement.saved"), tr("s14.statement.saved_detail"))) : ""}${notice(view.notice ?? null)}${effectSlip(page, view.effect, view.history, "h2", view.draft ?? null)}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
       case "more": return morePage(page, view);
       case "settings-web": return webSettingsPage(page, view);

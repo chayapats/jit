@@ -7,6 +7,8 @@
 document.documentElement.dataset.enhanced = "true";
 
 let wireBrowserDrafts = () => {};
+const composerStates = new WeakMap();
+const syncComposer = form => composerStates.get(form)?.();
 const wireComposers = () => {
   for (const form of document.querySelectorAll("[data-composer]")) {
     if (form.dataset.wired) continue;
@@ -27,8 +29,10 @@ const wireComposers = () => {
         scope.hidden = false;
       };
       describe(); form.addEventListener("change", describe);
+      composerStates.set(form, () => { sendLabel(); describe(); });
       if (choices && form.dataset.refused !== "true") choices.open = false;
     }
+    else composerStates.set(form, sendLabel);
     text?.addEventListener("keydown", event => {
       // Thai and other IMEs use Enter to confirm a composition; that must not send.
       if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
@@ -61,6 +65,7 @@ const restoreDraft = (form, held) => {
     else field.value = held.values.get(field.name);
   }
   [...form.querySelectorAll("details")].forEach((item, index) => { if (held.open[index]) item.open = true; });
+  syncComposer(form);
 };
 
 // A new routine starts from the host's timezone; this device's is the better guess. Both stay visible, editable and reviewed.
@@ -108,20 +113,27 @@ for (const button of document.querySelectorAll("[data-copy]")) {
 }
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = [["s14-attention-badge", "s14-nav-work", "s14-mobile-work"], ["s14-work-list"], ["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const regions = [["s14-attention-badge", "s14-nav-work", "s14-mobile-work"], ["s14-work-list"], ["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-progress-primary", "s14-work-status", "s14-pane-status"], ["s14-progress-details"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const displayedConversation = document.querySelector(".s-app[data-conversation]")?.dataset.conversation;
+const liveAddress = displayedConversation && location.pathname === "/" ? `/chats/${encodeURIComponent(displayedConversation)}${location.search}` : location.href;
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 let expectedComputerKey = document.querySelector("[data-computer]")?.dataset.key;
 const busy = region => region.contains(document.activeElement) && document.activeElement !== document.body || region.querySelector("details[open]");
 async function refresh() {
-  const response = await fetch(location.href, { headers: { Accept: "text/html" }, credentials: "same-origin", cache: "no-store" });
+  const response = await fetch(liveAddress, { headers: { Accept: "text/html" }, credentials: "same-origin", cache: "no-store" });
   if (!response.ok) throw new Error("page_refresh_failed");
   const next = new DOMParser().parseFromString(await response.text(), "text/html");
+  // A shared last-room cookie or redirected read must never mix another room's messages with this form.
+  if (displayedConversation && next.querySelector(".s-app[data-conversation]")?.dataset.conversation !== displayedConversation) return { complete: false, live: true };
   const computerKey = next.querySelector("[data-computer]")?.dataset.key;
   // A response that predates the latest state event cannot re-enable stale computer controls.
   if (expectedComputerKey !== undefined && computerKey !== expectedComputerKey) return { complete: false, live: true, computerKey };
   let deferred = false;
-  for (const group of regions) {
+  const inline = [...document.querySelectorAll("[data-inline-work]")].map(region => [region.id]);
+  for (const group of [...inline, ...regions]) {
+    // Progress owns two independent regions; its disclosure and focused summary stay outside both.
+    if (group[0] === "s14-pane-live" && document.getElementById("s14-progress-primary") && next.getElementById("s14-progress-primary")) continue;
     const pairs = group.map(id => [document.getElementById(id), next.getElementById(id)]).filter(([current, fresh]) => current && fresh);
     if (pairs.some(([current]) => busy(current))) { deferred = true; continue; }
     for (const [current, fresh] of pairs) {
@@ -301,6 +313,7 @@ if (browserState?.dataset.browserKey) {
           if (form.dataset.refused === "true" || field("text")?.value) return;
           for (const name of textNames) if (field(name)) field(name).value = draft[name];
           if (field("work")) field("work").checked = false;
+          syncComposer(form);
           announce("restored");
         } catch { announce("unavailable"); }
       };
@@ -326,12 +339,15 @@ if (browserState?.dataset.browserKey) {
         field("text")?.focus();
       });
       window.addEventListener("pageshow", event => {
-        if (!event.persisted) return;
+        const history = event.persisted || performance.getEntriesByType("navigation")[0]?.type === "back_forward";
+        if (!history) return;
         if (submitted) try {
           if (!readDraft(key)) for (const name of textNames) if (field(name)) field(name).value = "";
         } catch { /* An uncertain save retains the visible text. */ }
         if (field("work")) { field("work").checked = false; field("work").dispatchEvent(new Event("change")); }
         restore();
+        // Native non-cached history may restore form values after pageshow, so reset after that restoration too.
+        if (!event.persisted) setTimeout(() => { if (field("work")) field("work").checked = false; syncComposer(form); }, 0);
       });
     }
   };

@@ -1,7 +1,7 @@
 {
   "parent": 307,
   "statusVerifiedAt": "2026-11-02",
-  "status": "bounded-coverage-recorded-pending-review-history-defect-open",
+  "status": "source-310-merged-output-315-reviewing-final-evidence-integration",
   "implementationCommit": "388c119773bcb1244912fa70ec3ec67b5cd0544d",
   "testedCheckout": "1844be4309c3f5670ffa2c217350682c892823a3",
   "sourceTestFingerprint": "f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4",
@@ -10,14 +10,15 @@
     {
       "key": "PLAIN14-01",
       "number": 308,
-      "state": "OPEN",
-      "status": "implementation-review-pending",
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
       "pullRequest": "https://github.com/chayapats/jit/pull/310",
-      "pullRequestState": "OPEN",
+      "pullRequestState": "MERGED",
       "base": "main",
       "head": "t3/plain-handoff-scope-review",
-      "headSha": "1844be4309c3f5670ffa2c217350682c892823a3",
-      "file": "s14/PLAIN14-01.md"
+      "headSha": "9171a7be13522fcc25c2af73423a583ecb8c9c53",
+      "file": "s14/PLAIN14-01.md",
+      "mergeCommit": "b6982767d15fc7bdec68a526b88156405bd3a57a"
     },
     {
       "key": "PLAIN14-02",
@@ -27,7 +28,7 @@
       "pullRequest": "https://github.com/chayapats/jit/pull/312",
       "pullRequestState": "OPEN",
       "head": "t3/plain14-02-device-coverage",
-      "stackedBase": "t3/plain-handoff-scope-review",
+      "stackedBase": "jit/313-314-plain-flows",
       "file": "s14/PLAIN14-02.md",
       "readyForAgent": false,
       "readyForHuman": false,
@@ -39,18 +40,51 @@
         "androidOtherAt": "UNRUN",
         "liveEffectsDeploymentCutover": "UNRUN; not authorized by this ticket"
       },
-      "defects": [311]
+      "defects": [
+        311
+      ]
     },
     {
       "key": "PLAIN14-03",
       "number": 311,
-      "state": "OPEN",
-      "status": "needs-triage-separate-implementation-authorization",
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
       "file": "s14/PLAIN14-03.md",
       "readyForAgent": false,
       "readyForHuman": false,
       "discoveredBy": 309,
-      "reproduction": "Chrome 156 EN/light CSS 390x844: Work remains checked after Back, accessible send label remains Send message; 3/3 re-check traversals"
+      "reproduction": "Chrome 156 EN/light CSS 390x844: Work remains checked after Back, accessible send label remains Send message; 3/3 re-check traversals",
+      "pullRequest": "https://github.com/chayapats/jit/pull/310",
+      "pullRequestState": "MERGED",
+      "mergeCommit": "b6982767d15fc7bdec68a526b88156405bd3a57a",
+      "headSha": "9171a7be13522fcc25c2af73423a583ecb8c9c53"
+    },
+    {
+      "key": "PLAIN14-04",
+      "number": 313,
+      "state": "OPEN",
+      "status": "implemented-reviewing-corrected-head",
+      "pullRequest": "https://github.com/chayapats/jit/pull/315",
+      "pullRequestState": "OPEN",
+      "base": "main",
+      "head": "jit/313-314-plain-flows",
+      "headSha": "0db140af444e0a8dd960da1746d3d6206089eee0",
+      "file": "s14/PLAIN14-04.md"
+    },
+    {
+      "key": "PLAIN14-05",
+      "number": 314,
+      "state": "OPEN",
+      "status": "implemented-reviewing-corrected-head",
+      "pullRequest": "https://github.com/chayapats/jit/pull/315",
+      "pullRequestState": "OPEN",
+      "base": "main",
+      "head": "jit/313-314-plain-flows",
+      "headSha": "0db140af444e0a8dd960da1746d3d6206089eee0",
+      "file": "s14/PLAIN14-05.md"
     }
-  ]
+  ],
+  "parentState": "OPEN",
+  "sourceMerge": "b6982767d15fc7bdec68a526b88156405bd3a57a",
+  "coverageAttribution": "testedCheckout/sourceTestFingerprint describe the original #309 coverage only; current source delivery heads and merge states are recorded per ticket."
 }

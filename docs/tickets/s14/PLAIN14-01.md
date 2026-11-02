@@ -10,6 +10,10 @@ Frontier: replacing presentation across authority-sensitive forms and introducin
 
 ## Status and ownership
 
+MERGED in [PR #310](https://github.com/chayapats/jit/pull/310) at `b6982767d15fc7bdec68a526b88156405bd3a57a` on 2026-11-02. Reviewed head `9171a7be13522fcc25c2af73423a583ecb8c9c53` passed all CI checks and Greptile 5/5 APPROVED; all findings were resolved. The owner explicitly authorized this merge after successful checks/review. Remaining parent scope is tracked separately in #309/#313/#314; this is not deployment/device acceptance.
+
+### Publication provenance (historical)
+
 Implemented on the existing task-owned branch [`t3/plain-handoff-scope-review`](https://github.com/chayapats/jit/tree/t3/plain-handoff-scope-review), commit [`388c119773bcb1244912fa70ec3ec67b5cd0544d`](https://github.com/chayapats/jit/commit/388c119773bcb1244912fa70ec3ec67b5cd0544d). Published retrospectively on 2026-11-02 after that commit was pushed. No PR existed at publication; `main` was still `88b7f0775c8537b9dee55b71884790a818a3cbe0`. No competing Plain issue, open issue assignment or PR was found. Do not start a duplicate implementation or rename/recreate the existing branch merely for this tracker. Review/merge and owner acceptance remain pending; this is not ready-for-agent work.
 
 ## Context to read
@@ -30,7 +34,7 @@ A conversation-first Plain S14 experience using the approved references, preserv
 6. Keep deterministic tests and the revision-labelled evidence record synchronized; review the existing implementation before proposing any additional changes.
 7. Prepare a PR only when requested, run its applicable checks, obtain review and merge through the normal owner process. This issue does not itself authorize merge/deployment.
 
-Steps 1–5 are delivered in the linked commit. Step 6's recorded checks are complete within their stated scope; step 7 is pending.
+Steps 1–5 are delivered in the linked commit. Step 6's recorded checks are complete within their stated scope; step 7 completed through the owner-authorized PR #310 merge.
 
 ## Acceptance criteria
 
@@ -41,8 +45,8 @@ Steps 1–5 are delivered in the linked commit. Step 6's recorded checks are com
 - [x] Untrusted cookie/storage/URL state cannot restore authority, assert a committed outcome or automatically resubmit. Only a matching durable committed receipt clears a pending draft.
 - [x] Chat versus Work, task acceptance versus execution, exact external approval, scoped Stop/settlement and reconcile-only unknown outcomes remain covered by deterministic checks.
 - [x] Native no-script forms, CSP/session/Host/Origin/CSRF barriers, escaping, Thai/English, light/dark and responsive states remain covered by the recorded checks.
-- [ ] Proposed PR receives applicable CI and code/contract review; any findings are resolved within the approved scope.
-- [ ] Reviewed change is merged, with owner acceptance recorded separately from tests and merge.
+- [x] Proposed PR receives applicable CI and code/contract review; any findings are resolved within the approved scope.
+- [x] Reviewed change is merged, with owner acceptance recorded separately from tests and merge.
 
 ## Tests and evidence
 
@@ -76,4 +80,4 @@ Do not remove capabilities missing from a demo; import synthetic state/timers/cu
 
 ## Definition of done
 
-The applicable final-source typecheck, affected test command above and `git diff --check` pass; CI/review findings are resolved and evidence names the actual tested revision. The eventual PR body must contain `Closes #308`. No merge by the implementer. Record merge and owner acceptance accurately; do not close based solely on a passing test response or a pushed branch.
+The applicable final-source typecheck, affected test command above and `git diff --check` pass; CI/review findings are resolved and evidence names the actual tested revision. The eventual PR body must contain `Closes #308`. The owner authorized merge after successful current-head CI/Greptile review for this Plain work. Record merge and owner acceptance accurately; do not close based solely on a passing test response or a pushed branch.

@@ -12,7 +12,7 @@ Frontier: browser history restoration crosses the Chat/Work presentation and exp
 
 ## Status
 
-OPEN, needs-triage; implementation authorization and ownership are not assigned by this report. No new device/AT release gate is created.
+CLOSED by [PR #310](https://github.com/chayapats/jit/pull/310), merged at `b6982767d15fc7bdec68a526b88156405bd3a57a` on 2026-11-02. Corrective source `ca65eec` includes the native history/lifecycle fixes, and reviewed head `9171a7b` adds the spacing correction. All CI checks and Greptile 5/5 APPROVED passed with no unresolved findings. The owner authorized remediation/babysitting and merge; no deployment/device gate was added.
 
 ## Context to read
 
@@ -51,12 +51,12 @@ Expected: Chat mode, matching send label, retained approved text, fresh non-rest
 
 ## Acceptance criteria
 
-- [ ] Native back/forward return resets the composer to Chat for ordinary form-history and cached-page restoration.
-- [ ] Visible mode, send text/title/aria-label and actual submitted command selection agree.
-- [ ] Approved draft text remains; mode, tools/resources, limits, retry keys, revisions and approvals are never restored from local drafts.
-- [ ] Browsing/history sends no command and creates no work or grant; a fresh explicit Work selection still starts only through the existing typed boundary.
-- [ ] Successful receipts, stale/refused submissions, conversation isolation, lifecycle page-memory behavior and native no-script forms retain their contracts.
-- [ ] Tests and revision-labelled browser evidence reproduce and verify the reported path; no unrun Safari/device/AT result is claimed.
+- [x] Native back/forward return resets the composer to Chat for ordinary form-history and cached-page restoration.
+- [x] Visible mode, send text/title/aria-label and actual submitted command selection agree.
+- [x] Approved draft text remains; mode, tools/resources, limits, retry keys, revisions and approvals are never restored from local drafts.
+- [x] Browsing/history sends no command and creates no work or grant; a fresh explicit Work selection still starts only through the existing typed boundary.
+- [x] Successful receipts, stale/refused submissions, conversation isolation, lifecycle page-memory behavior and native no-script forms retain their contracts.
+- [x] Tests and revision-labelled browser evidence reproduce and verify the reported path; no unrun Safari/device/AT result is claimed.
 
 ## Tests and evidence
 
@@ -71,7 +71,7 @@ Existing S14-AC03/13; FR-06/24/25; NFR-07/11/13; ADR 0062 and the approved Plain
 
 ## Blocked by
 
-No code dependency prevents triage. Fix implementation requires separate owner authorization, an issue-specific branch/base selected against the then-current Plain work, and ownership checks. Do not change PR #310 or its branch from the #309 evidence branch.
+No code dependency prevents triage. Owner authorization is now confirmed. The existing #308 implementation owner applied the fix in PR #310 after ownership/base checks; the #309 evidence branch did not change product code. Current-head CI/Greptile review and merge completed in PR #310.
 
 ## Contracts used/delivered
 
@@ -83,8 +83,8 @@ Redesign, schema/runtime/provider changes, deployment/cutover, live effects, phy
 
 ## Do not
 
-Do not interpret restored browser state as execution authority, replay a command, widen policy, add demo timers/input locks, alter the repository-wide UI/UX author policy, use implement-parallel, or merge as the implementer. The #309 author exception does not automatically authorize this fix or its UI design.
+Do not interpret restored browser state as execution authority, replay a command, widen policy, add demo timers/input locks, alter the repository-wide UI/UX author policy, use implement-parallel, or merge as the implementer. The owner separately authorized this remediation and retained the task-specific UI/UX author exception.
 
 ## Definition of done
 
-The targeted checks and actual history reproduction pass on a named new source/asset revision, evidence states remaining limits, and review is complete. An eventual fix PR body must contain `Closes #311`; it must not close #309/#308/#307. No merge by the implementer.
+The targeted checks and actual history reproduction pass on a named new source/asset revision, evidence states remaining limits, and review is complete. PR #310 contains `Closes #311` alongside #308. Evidence #309 and parent #307 remain separately tracked. The owner authorized merge only after checks and review pass.

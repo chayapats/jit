@@ -5,7 +5,7 @@ import { record, type S14Application } from "./application";
 import type { Attempt, Work, WorkOutput } from "./authority-types";
 import type { MemoryRef } from "./memory-types";
 import type { WebRead } from "./parallel-types";
-import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportCommand, ReportEvidence, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
+import type { Artifact, EvidenceRequirement, Report, ReportCatalog, ReportCitation, ReportClaim, ReportCommand, ReportEvidence, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
 import type { OwnerActor } from "./types";
 import { artifactHash, validateArtifact } from "./artifacts";
 import { canonical, exact, identity, integer, text } from "./validation";
@@ -256,6 +256,35 @@ export class S14Reports {
     return this.app.store.transaction(tx => {
       this.app.requireOwner(tx, actor); record(tx, "work_items", workId); this.reconcile(tx);
       return tx.all<{ id: string }>("SELECT id FROM reports WHERE work_id=? ORDER BY revision", workId).map(row => this.read(tx, row.id));
+    });
+  }
+
+  /** Returns at most 50 committed revisions across work, newest first, through the current lineage gateway. */
+  catalog(actor: OwnerActor, options: { before?: number | null; limit?: number } = {}): ReportCatalog {
+    const before = options.before ?? null, limit = options.limit ?? 20;
+    integer(limit, 1, 50); if (before !== null) integer(before, 1, Number.MAX_SAFE_INTEGER);
+    return this.app.store.transaction(tx => {
+      this.app.requireOwner(tx, actor); this.reconcile(tx);
+      const rows = before === null
+        ? tx.all<{ id: string; cursor: number }>("SELECT id,rowid AS cursor FROM reports ORDER BY rowid DESC LIMIT ?", limit + 1)
+        : tx.all<{ id: string; cursor: number }>("SELECT id,rowid AS cursor FROM reports WHERE rowid<? ORDER BY rowid DESC LIMIT ?", before, limit + 1);
+      const page = rows.slice(0, limit);
+      return { items: page.map(row => this.read(tx, row.id)), nextBefore: rows.length > limit ? page.at(-1)!.cursor : null };
+    });
+  }
+
+  /** Reads the latest revision of at most 24 named work items under one owner/lineage check. */
+  latest(actor: OwnerActor, workIds: string[]): Record<string, ReportView> {
+    if (!Array.isArray(workIds) || workIds.length > 24 || new Set(workIds).size !== workIds.length) throw new AppError("invalid_report_list");
+    workIds.forEach(identity);
+    return this.app.store.transaction(tx => {
+      this.app.requireOwner(tx, actor); this.reconcile(tx);
+      const found: Record<string, ReportView> = Object.create(null);
+      for (const workId of workIds) {
+        const row = tx.get<{ id: string }>("SELECT id FROM reports WHERE work_id=? ORDER BY revision DESC LIMIT 1", workId);
+        if (row) found[workId] = this.read(tx, row.id);
+      }
+      return found;
     });
   }
 
