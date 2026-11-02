@@ -14,6 +14,8 @@ The owner authorized approved subscription inference without selecting a monetar
 
 Durable responsibility belongs to a separate protected journal with an exclusive process lease, original CHAT source/current POLICY authority, deduplicated trigger identities and finite configured stall criteria. Attempts and waits are distinct. Lost attempts reconcile; no native/effect call replays. Transport, execution cessation and historical effect outcome are independent monotonic facts. Scoped stop commits a POLICY/publication fence before cooperative cancellation and retains unsettled capacity. A stall pauses only that responsibility with attempts/evidence/recommendation and reporting headroom; an authenticated same-scope instruction may resume it. The [responsibility contract](../contracts/s15-responsibility-v1.md) and read-only JSON projections implement the F9/F10 data requirements without visual UI. S14 remains default and adoption remains separate.
 
+Remote-verified reconciliation may close a responsibility whose assigned outcome actually completed, even after execution expiry. This factual terminal update is distinct from publishing the old attempt: its publication fence remains latched and no old handle/result is revived. Unknown/uncertain and owner-statement-only reconciliation retains Needs-you/reconcile-only state and cannot certify settlement or grant execution.
+
 ## Historical proposal
 
 ## Confirmed inputs and bounded status

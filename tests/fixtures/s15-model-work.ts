@@ -11,7 +11,7 @@ export const ref = (id: string) => ({ id, revision: 1, generation: 1 });
 export const ordinary: Selection = { route: ref('route'), model: ref('ordinary'), effort: 'low' };
 export const difficult: Selection = { route: ref('route'), model: ref('difficult'), effort: 'high' };
 export const modelBound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, outputBytes: 32768, activeMs: 10000, spendMinor: '0' });
-export const observed = (extra: Partial<AttemptSettlement> = {}): AttemptSettlement => ({ transportSettled: true, executionSettled: true, effects: 'known', progress: 'none', evidenceRefs: ['evidence'], recommendation: 'Inspect the failing check before choosing another approach.', usage: { ...unknownUsage(), attempts: 1, calls: 1 }, ...extra });
+export const observed = (extra: Partial<AttemptSettlement> = {}): AttemptSettlement => ({ transportSettled: true, executionSettled: true, effects: 'known', basis: 'remote_verified', progress: 'none', evidenceRefs: ['evidence'], recommendation: 'Inspect the failing check before choosing another approach.', usage: { ...unknownUsage(), attempts: 1, calls: 1 }, ...extra });
 
 export function modelWorkFixture(input: { budget?: boolean; subscription?: boolean; root?: string; create?: boolean; adapters?: ActionAdapter[] } = {}) {
   const root = input.root ?? mkdtempSync(join(tmpdir(), 'jit-s15-model-work-')), create = input.create ?? true;

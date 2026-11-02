@@ -170,3 +170,40 @@ test('only a fresh authenticated same-scope instruction resumes a stall, preserv
   expect(() => f.service.beginAttempt(r.id, { eventId: 'resume', approach: 'Fresh owner-approved approach' })).not.toThrow();
   expect(() => f.service.resume({} as never, r.id, 'resume')).toThrow('authentication_required');
 });
+
+test('unknown merge reconciled as remotely verified merged completes the responsibility without reviving old publication', () => {
+  const { f, service, responsibility: r } = setup(); const handle = service.beginAttempt(r.id, { eventId: 'source', approach: 'Merge exact approved head' });
+  const unknown = service.settle(handle, observed({ transportSettled: false, executionSettled: false, effects: 'unknown' }));
+  expect(unknown.state).toBe('reconcile_only'); const attemptId = unknown.attempts[0]!.id;
+  const verified = service.reconcile(r.id, attemptId, observed({ complete: true, progress: 'made', basis: 'remote_verified', evidenceRefs: ['remote_verified_merge'] }));
+  expect(verified.state).toBe('completed'); expect(verified.attempts[0]).toMatchObject({ state: 'settled', capacityHeld: false, effects: 'known', publicationFenced: true, reconciliation: { basis: 'remote_verified', complete: true } });
+  expect(() => service.publish(handle, () => { throw Error('must_not_publish_old_merge_output'); })).toThrow('publication_withheld');
+  expect(() => service.guard(handle)).toThrow('attempt_not_active');
+  expect(service.project(f.owner, r.id).state).toBe('completed');
+});
+
+test('a remotely checked but still unknown merge remains reconcile-only with no replacement attempt', () => {
+  const { service, responsibility: r } = setup(), handle = service.beginAttempt(r.id, { eventId: 'source', approach: 'Merge exact head' });
+  const unknown = service.settle(handle, observed({ effects: 'unknown' }));
+  const checked = service.reconcile(r.id, unknown.attempts[0]!.id, observed({ effects: 'unknown', basis: 'remote_verified', evidenceRefs: ['inconclusive_readback'] }));
+  expect(checked.state).toBe('reconcile_only'); expect(checked.attempts[0]).toMatchObject({ effects: 'unknown', publicationFenced: true, capacityHeld: false });
+  expect(() => service.beginAttempt(r.id, { eventId: 'replacement', approach: 'Retry merge' })).toThrow('attempt_not_ready');
+  expect(() => service.publish(handle, () => {})).toThrow('publication_withheld');
+});
+
+test.each(['owner_statement', 'uncertain', 'omitted'] as const)('unverified reconciliation (%s) cannot close an unknown merge or certify settled capacity', basis => {
+  const { service, responsibility: r } = setup(), handle = service.beginAttempt(r.id, { eventId: 'source', approach: 'Merge selected head' });
+  const before = service.settle(handle, observed({ transportSettled: false, executionSettled: false, effects: 'unknown' }));
+  const claimed = observed({ complete: true, progress: 'made', evidenceRefs: ['statement'] });
+  if (basis === 'omitted') delete claimed.basis; else claimed.basis = basis;
+  const after = service.reconcile(r.id, before.attempts[0]!.id, claimed);
+  expect(after.state).toBe('reconcile_only'); expect(after.attempts[0]).toMatchObject({ state: 'unknown', effects: 'unknown', capacityHeld: true, transportSettled: false, executionSettled: false, publicationFenced: true, reconciliation: { basis: basis === 'omitted' ? 'uncertain' : basis } });
+  expect(() => service.publish(handle, () => {})).toThrow('publication_withheld');
+});
+
+test('verified terminal reconciliation records completion after execution expiry without renewing authority', () => {
+  const { f, service, responsibility: r } = setup(), handle = service.beginAttempt(r.id, { eventId: 'source', approach: 'Merge selected head' });
+  const unknown = service.settle(handle, observed({ effects: 'unknown' })); f.advance(800000);
+  const result = service.reconcile(r.id, unknown.attempts[0]!.id, observed({ complete: true, progress: 'made', evidenceRefs: ['verified_merge_after_expiry'] }));
+  expect(result.state).toBe('completed'); expect(() => service.publish(handle, () => {})).toThrow('expired');
+});

@@ -8,7 +8,8 @@ const clone = <T>(v: T): T => JSON.parse(canonical(v)) as T;
 const kinds = ['ci', 'review', 'owner', 'schedule', 'assigned'];
 function evidence(refs: string[]): void { if (!Array.isArray(refs) || refs.length > 64 || new Set(refs).size !== refs.length) fail('invalid_shape'); refs.forEach(id); }
 function observation(o: AttemptSettlement): void {
-  exact(o, ['transportSettled', 'executionSettled', 'effects', 'progress', 'evidenceRefs', 'recommendation', 'usage'], ['complete']);
+  exact(o, ['transportSettled', 'executionSettled', 'effects', 'progress', 'evidenceRefs', 'recommendation', 'usage'], ['complete', 'basis']);
+  if (o.basis !== undefined && !['remote_verified', 'owner_statement', 'uncertain'].includes(o.basis)) fail('invalid_shape');
   if (typeof o.transportSettled !== 'boolean' || typeof o.executionSettled !== 'boolean' || !['known', 'unknown'].includes(o.effects) || !['none', 'made'].includes(o.progress) || (o.complete !== undefined && typeof o.complete !== 'boolean')) fail('invalid_shape');
   evidence(o.evidenceRefs); string(o.recommendation, 4096); if (!o.recommendation) fail('recommendation_required'); usage(o.usage);
   if (o.progress === 'made' && !o.evidenceRefs.length) fail('progress_evidence_required');
@@ -57,6 +58,16 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
   });
   function settle(r: Responsibility, a: WorkAttempt, o: AttemptSettlement, recovered: boolean): Responsibility {
     observation(o);
+    if (recovered) {
+      const basis = o.basis ?? 'uncertain';
+      if (basis === 'remote_verified' && !o.evidenceRefs.length) fail('reconciliation_evidence_required');
+      a.reconciliation = { basis, at: now(), effects: o.effects, complete: o.complete === true, evidenceRefs: [...o.evidenceRefs] };
+      a.publicationFenced = true;
+      if (basis !== 'remote_verified') {
+        // Retain the labelled statement without upgrading remote/settlement/progress facts.
+        r.state = r.stopRequested ? 'stopping' : 'reconcile_only'; return save(r);
+      }
+    }
     if (a.state === 'settled') {
       if (canonical({ progress: a.progress, evidenceRefs: a.evidenceRefs, recommendation: a.recommendation, usage: a.usage }) !== canonical({ progress: o.progress, evidenceRefs: o.evidenceRefs, recommendation: o.recommendation, usage: o.usage })) fail('settlement_conflict');
       return clone(r);
@@ -71,6 +82,8 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
     a.publicationFenced ||= recovered || r.stopRequested || a.state === 'unknown';
     if (r.stopRequested) r.state = held(r) ? 'stopping' : 'stopped';
     else if (held(r)) r.state = 'reconcile_only';
+    // Closing a verified historical obligation is independent of execution/publication authority.
+    else if (recovered && o.basis === 'remote_verified' && o.complete) r.state = 'completed';
     else {
       try { current(r); }
       catch { a.publicationFenced = true; r.state = 'paused'; return save(r); }
@@ -108,7 +121,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       if (r.state !== 'ready' || held(r) || r.readyEventId !== input.eventId || r.attempts.some(a => a.eventId === input.eventId)) fail('attempt_not_ready');
       stall(r, 'Review the recorded approaches and choose a materially different next step.');
       if (r.state !== 'ready') { save(r); return null; }
-      const a: WorkAttempt = { id: digest('s15.work.attempt.v1', { responsibilityId, eventId: input.eventId }), eventId: input.eventId, approach: input.approach, startedAt: now(), endedAt: null, state: 'active', capacityHeld: true, transportSettled: false, executionSettled: false, effects: 'unknown', publicationFenced: false, progress: 'unknown', evidenceRefs: [], recommendation: null, usage: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null } };
+      const a: WorkAttempt = { id: digest('s15.work.attempt.v1', { responsibilityId, eventId: input.eventId }), eventId: input.eventId, approach: input.approach, startedAt: now(), endedAt: null, state: 'active', capacityHeld: true, transportSettled: false, executionSettled: false, effects: 'unknown', publicationFenced: false, progress: 'unknown', evidenceRefs: [], recommendation: null, usage: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null }, reconciliation: null };
       r.attempts.push(a); r.state = 'working'; r.wait = null; r.readyEventId = null; save(r);
       const handle = Object.freeze({}) as AttemptHandle, controller = new AbortController(); handles.set(handle, { responsibilityId, attemptId: a.id, controller }); running.set(a.id, controller); return handle;
     }); if (!handle) fail('work_paused'); return handle; },

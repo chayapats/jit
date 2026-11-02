@@ -9,7 +9,7 @@ export interface ResponsibilityWait { kind: 'ci' | 'review' | 'owner' | 'schedul
 /** Immutable protected-handler scope; an event cannot broaden the assigned purpose or selected subject. */
 export interface ResponsibilityEvent { eventId: string; kind: 'ci' | 'review' | 'owner' | 'schedule' | 'assigned'; key: string; purposeId: string; resourceIds: string[]; subject: string | null; evidenceRefs: string[] }
 /** Attempt facts retain independent transport settlement, progress evidence and unknown usage. */
-export interface WorkAttempt { id: string; eventId: string; approach: string; startedAt: number; endedAt: number | null; state: 'active' | 'settled' | 'unknown'; capacityHeld: boolean; transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; publicationFenced: boolean; progress: 'unknown' | 'none' | 'made'; evidenceRefs: string[]; recommendation: string | null; usage: Usage }
+export interface WorkAttempt { id: string; eventId: string; approach: string; startedAt: number; endedAt: number | null; state: 'active' | 'settled' | 'unknown'; capacityHeld: boolean; transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; publicationFenced: boolean; progress: 'unknown' | 'none' | 'made'; evidenceRefs: string[]; recommendation: string | null; usage: Usage; reconciliation: { basis: 'remote_verified' | 'owner_statement' | 'uncertain'; at: number; effects: 'known' | 'unknown'; complete: boolean; evidenceRefs: string[] } | null }
 /** Read-only report. Recommendations are untrusted suggestions and cannot resume work by themselves. */
 export interface StallReport { code: 'no_progress' | 'budget_headroom' | 'attempt_limit'; at: number; attempts: { id: string; approach: string; evidenceRefs: string[]; progress: WorkAttempt['progress'] }[]; recommendation: string; otherAuthorizedWorkContinues: true }
 /** Durable responsibility projection, separate from any Schway loop or working VM allocation. */
@@ -36,7 +36,7 @@ export interface WorkOptions {
 }
 /** A trusted scoped settlement observation. Only owning transports/VM/effect services may attest settled;
  * a model result, timeout or guest exit is insufficient. Unknown effects always require reconciliation. */
-export interface AttemptSettlement { transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; progress: 'none' | 'made'; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean }
+export interface AttemptSettlement { transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; progress: 'none' | 'made'; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean; /** Required to advance recovered facts or complete a responsibility through reconciliation. Missing basis is uncertain. Owner statements never attest remote outcome or settlement. */ basis?: 'remote_verified' | 'owner_statement' | 'uncertain' }
 /** Stable host-only API consumed by GitHub babysitting. All event/settlement inputs are trusted service
  * observations, not model claims. Each new attempt still needs POLICY and owning-tool final I/O guards. */
 export interface ResponsibilityPort {
@@ -50,7 +50,9 @@ export interface ResponsibilityPort {
   observeEvent(id: string, input: ResponsibilityEvent): Responsibility;
   /** Record original attempt observations even after stop; unknown capacity stays held and publication fenced. */
   settle(handle: AttemptHandle, observation: AttemptSettlement): Responsibility;
-  /** Read-only owning-service reconciliation settles an exact old attempt; it never resends its effects. */
+  /** Read-only owning-service reconciliation settles an exact old attempt; it never resends its effects.
+   * Only basis:remote_verified may advance recovered facts. A complete, settled, known outcome can close
+   * the responsibility while the old attempt's publication fence and lost/old handle stay unchanged. */
   reconcile(id: string, attemptId: string, observation: AttemptSettlement): Responsibility;
   /** Authenticated scoped stop fences this responsibility and its POLICY work; capacity remains until settlement. */
   stop(owner: OwnerActor, id: string, requestId: string): Responsibility;
