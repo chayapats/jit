@@ -55,6 +55,7 @@ The linked JSON Schema `$defs` specify all exact required data fields, closed un
 | `RegistrationV1`, `SupportV1`, `OperationV1`, `ClaimV1`, `ReceiptV1`, `ObservationV1`, `DownloadV1`, `EvidenceV1` | Respectively `s15.browser.registration.v1`, `s15.browser.support.v1`, `s15.browser.operation.v1`, `s15.browser.claim.v1`, `s15.browser.receipt.v1`, `s15.browser.observation.v1`, `s15.browser.download.v1`, `s15.browser.evidence.v1`; omit only that record's own `hash`, retain every nested hash |
 | `BindingV1` | `H('s15.browser.binding.v1', complete binding)`; it has no own hash field |
 | `TargetV1` | `H('s15.browser.target.v1', target excluding only its own hash)` binds the exact prior observation/binding/frame/document; private registry identity still controls use |
+| `ReadRequestReservationV1` | `H('s15.browser.read-reservation.v1', reservation excluding only its own hash)` pins the exact operation/request, work/attempt/profile/session, budget/continuity, finite bound/cost basis and expiry; the record cannot recreate a callable context |
 | `ActionPayloadV1` | Copy every operation field except `hash`, change `contract` to `s15-browser-action-payload/v1`, set `policy.action:null`. Canonical raw payload bytes are hashed **before** #320 prepares the action; then attach its action ref/hash and compute OperationV1.hash. No self-reference. |
 | `WebActionPayloadV1` | Exact `{contract:'s15-browser-web-action/v1',operationProjectionHash,request}`. `operationProjectionHash=SHA256(C(ActionPayloadV1))`, never the final operation/action hash. The complete credential-free request precedes its own #320 action preparation. Each request/action is a separate protected invocation slot. |
 | `WebRequestV1`, `ResponseV1`, wire records | `SHA256(C(complete record))`, no domain/field exclusion. Response hash excludes the 4-byte frame header. Request sequence order and raw body/header/url bytes are significant. |
@@ -103,6 +104,9 @@ interface BrowserDispatchContextV1 { readonly [dispatchBrand]: true }
 interface BrowserCleanupContextV1 { readonly [cleanupBrand]: true }
 interface BrowserManagerActorV1 { readonly [managerBrand]: true }
 interface TransientOwnerInputV1 { readonly [ownerInputBrand]: true }
+type BrowserRequestAuthorityV1 =
+  | { kind: 'action'; action: PreparedActionV1 }
+  | { kind: 'read'; reservation: ReadRequestReservationV1 };
 interface BrowserOperationPortV1 {
   prepare(actor: WorkActorV1, binding: BindingV1,
     body: OperationBodyV1): Promise<OperationV1>;
@@ -141,7 +145,7 @@ interface BrowserPolicyPortV1 {
   continueOriginal(context: BrowserDispatchContextV1,
     operation: OperationV1, finalBytes: Uint8Array): void;
   authorizeRequest(context: BrowserDispatchContextV1,
-    action: PreparedActionV1, request: WebRequestV1,
+    authority: BrowserRequestAuthorityV1, request: WebRequestV1,
     finalBytes: Uint8Array): DispatchPermitV1;
   publish(operation: OperationV1, response: ResponseV1,
     observation: OperationObservationV1): void;
@@ -168,6 +172,12 @@ declare function protectedBrowserTools(actor: WorkActorV1,
 
 `BrowserPolicyPortV1.check` returns `BrowserDecisionV1 {state:'allow'|'hold'|'deny'|'unsupported',code:CodeV1|null}` for that exact stage, not a caller-provided assertion or a committed intent receipt. Only allow has code:null. It causes no dispatch; claim/reservation commit remains the operation port's atomic obligation. `authorizeRequest` resolves a **separately registered original child context** from the parent context and exact action/request; it cannot reuse a consumed parent permit for another request. Its permit is consumed only by the protected final request emitter. Physical binding/linearization remains BROW15-FZ04, not a power conveyed by the signature.
 
+Every request uses this same `authorizeRequest` → `dispatchRequest` path. The closed `action` arm rechecks its exact current #320 prepared action, claim/reservation and applicable human gates. The closed `read` arm requires a protected `ReadRequestReservationV1` with exact operationId/operationHash/requestHash, current work/attempt/profile/session, budget/continuity generation, finite upperBound/costBasis and createdAt/expiresAt. The schema lists every required field. Resolve the **original privately registered unconsumed child read context and already charged reservation**, then recheck current authority/source/recipient/support and final bytes under the same final dispatch fence. Do not charge that reservation again or require a prepared mutation action merely to emit the supported public read. Zero remaining allowance is compatible with continuation of that same charged reservation. Lost/recovered/consumed contexts cannot dispatch; JSON reservation/hash equality alone is insufficient.
+
+The protected operation handler creates/registers that child read reservation in its existing current-continuity request-admission transaction before final authorization, atomically checking all applicable finite ceilings and capacity. Its expiry is after creation and no later than the operation/work/policy/support/budget expiry or remaining monotonic deadline. The data and original child context are private dependencies of the trusted invoke adapter, not a guest API, separate emitter or independently usable allowance. BROW15-FZ02/05 must freeze their exact durable mapping/crash ordering; this proposal does not silently claim a new public Schway reservation API.
+
+The read arm is eligible only when the trusted adapter independently establishes the exact request's supported read/disclosure semantics under current policy. GET, caller-supplied empty classes or a read label cannot select it. An actual mutation or unsupported disclosure cannot reuse it: changed final bytes/refuse semantics block dispatch, while known preparable effects use their separate action arm and human gates. This adds no read-only bypass or undocumented emitter. RequestBindingV1 fixtures supply the complete closed authority arm as a scripted trusted request-admission input, never as model-issued authority or evidence of a charge before its declared event.
+
 The trusted `invoke` adapter resolves its pinned policy/emitter dependencies from the private context registry. It calls `continueOriginal` immediately before `dispatchInput`; for every child it calls `authorizeRequest` immediately before `dispatchRequest`. No untrusted mutation or wait may intervene. The emitter owns the final bytes through the externally effective dispatch boundary, and records actual sent/unknown facts even if it throws after possible handoff. Incoming observations return through `invoke` and protected retention only. No model-supplied callback, alternate input emitter or undocumented network route is admitted. The synchronous signatures specify an obligation; they do not prove that a physical browser/network adapter satisfies it.
 
 The complete tool path is `prepare(actor,binding,body)` → `accept` → `dispatch(...,ctx.signal)` → `readResult` → **synchronous `publishResult`** → construct bounded `ToolExecutionResult` / approved image/artifact reference from that supplied response. No second invoke, hidden raw-response map, guest fetch, unguarded progress stream or direct CDP channel supplies output. `readResult` returns `pending` without payload while required operation/channel settlement is missing; `withheld` without payload on cancelled/stale/withdrawn/unauthorized output. Producing claims are expected at publication, not treated as duplicate dispatch.
@@ -181,6 +191,8 @@ Register cancellation before the first wait; already-aborted signal refuses befo
 `jit.protected-browser/v1` is a proposed transport-neutral host-initiated **one request / one response** channel. A registered protected adapter authenticates peer/endpoint/profile independently. `WireRequestV1` contains exact operation, service invocation ID and nonce; none is a credential. No page/guest opens this channel, provides an endpoint, injects unsolicited events, multiplexes or negotiates downgrade. Login/2FA notifications are safe results of bounded authorized observation, not arbitrary browser push granting authority.
 
 Frames are exactly 4-byte unsigned big-endian length followed by canonical UTF-8 JSON, no trailing bytes/second frame. Check nonzero directional length before allocation, exact EOF, strict UTF-8, no BOM/duplicate keys, depth <=16, <=128 properties/object, <=256 entries/array, exact schema/hash/correlation. No compression or stderr-as-JSON. Proposed hard ceilings, which registered configuration may lower:
+
+`FrameV1` is a closed directional union: request uses WireRequestV1 plus RequestFrameBytesV1; response uses ResponseV1 plus ResponseFrameBytesV1. Complete framed bytes have distinct bounds from a decoded observation's BytesV1. Request frame bytes are 5..131076 with at most 174768 base64 characters; response frame bytes are 5..4194308 with at most 5592412 base64 characters. These include the four-byte header; the payload caps below do not. The base64 cap is exactly `4*ceil(maxFrameBytes/3)`. Byte/hash/length/header and directional record-type validation still apply; this does not raise image/output or wire payload caps.
 
 | Resource | Hard ceiling; not an operating allowance or measured sizing |
 | --- | --- |

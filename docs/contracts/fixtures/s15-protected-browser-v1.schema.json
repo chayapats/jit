@@ -1977,6 +1977,14 @@
             "none"
           ]
         },
+        "requestContext": {
+          "enum": [
+            "original",
+            "recovered",
+            "consumed",
+            "none"
+          ]
+        },
         "verifier": {
           "enum": [
             "registered",
@@ -2059,6 +2067,7 @@
         "targetRegistered",
         "actor",
         "context",
+        "requestContext",
         "verifier",
         "policy",
         "policyCode",
@@ -2455,6 +2464,124 @@
       ],
       "additionalProperties": false
     },
+    "ReadRequestReservationV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-read-reservation/v1"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "requestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "work": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "attempt": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "profile": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "session": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuityId": {
+          "$ref": "#/$defs/Id"
+        },
+        "continuityGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "upperBound": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "costBasis": {
+          "$ref": "#/$defs/BlobV1"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "id",
+        "operationId",
+        "operationHash",
+        "requestHash",
+        "work",
+        "attempt",
+        "profile",
+        "session",
+        "budget",
+        "continuityId",
+        "continuityGeneration",
+        "upperBound",
+        "costBasis",
+        "createdAt",
+        "expiresAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
+    "BrowserRequestAuthorityV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "action"
+              ]
+            },
+            "action": {
+              "$ref": "#/$defs/PreparedActionV1"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": [
+                "read"
+              ]
+            },
+            "reservation": {
+              "$ref": "#/$defs/ReadRequestReservationV1"
+            }
+          },
+          "required": [
+            "kind",
+            "reservation"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "RequestBindingV1": {
       "type": "object",
       "properties": {
@@ -2464,32 +2591,14 @@
         "payload": {
           "$ref": "#/$defs/WebActionPayloadV1"
         },
-        "preparedAction": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PreparedActionV1"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "readReservationId": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Id"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "authority": {
+          "$ref": "#/$defs/BrowserRequestAuthorityV1"
         }
       },
       "required": [
         "requestHash",
         "payload",
-        "preparedAction",
-        "readReservationId"
+        "authority"
       ],
       "additionalProperties": false
     },
@@ -2820,44 +2929,223 @@
       ],
       "additionalProperties": false
     },
+    "RequestFrameBytesV1": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string",
+          "maxLength": 174768
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 131076
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "base64",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ResponseFrameBytesV1": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string",
+          "maxLength": 5592412
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 4194308
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "base64",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
     "FrameV1": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/Id"
+            },
+            "direction": {
+              "enum": [
+                "request"
+              ]
+            },
+            "recordType": {
+              "enum": [
+                "WireRequestV1"
+              ]
+            },
+            "record": {
+              "$ref": "#/$defs/WireRequestV1"
+            },
+            "bytes": {
+              "$ref": "#/$defs/RequestFrameBytesV1"
+            }
+          },
+          "required": [
+            "id",
+            "direction",
+            "recordType",
+            "record",
+            "bytes"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/Id"
+            },
+            "direction": {
+              "enum": [
+                "response"
+              ]
+            },
+            "recordType": {
+              "enum": [
+                "ResponseV1"
+              ]
+            },
+            "record": {
+              "$ref": "#/$defs/ResponseV1"
+            },
+            "bytes": {
+              "$ref": "#/$defs/ResponseFrameBytesV1"
+            }
+          },
+          "required": [
+            "id",
+            "direction",
+            "recordType",
+            "record",
+            "bytes"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RepeatedBytesV1": {
+      "type": "object",
+      "properties": {
+        "prefix": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "octet": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "repeatCount": {
+          "$ref": "#/$defs/Nat"
+        },
+        "suffix": {
+          "$ref": "#/$defs/BytesV1"
+        },
+        "bytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "prefix",
+        "octet",
+        "repeatCount",
+        "suffix",
+        "bytes",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ImageBoundaryExpectedV1": {
+      "type": "object",
+      "properties": {
+        "imageBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "imageBase64Chars": {
+          "$ref": "#/$defs/Nat"
+        },
+        "responsePayloadBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "frameBytes": {
+          "$ref": "#/$defs/Nat"
+        },
+        "frameBase64Chars": {
+          "$ref": "#/$defs/Nat"
+        },
+        "responseSha256": {
+          "$ref": "#/$defs/Hash"
+        },
+        "frameSha256": {
+          "$ref": "#/$defs/Hash"
+        },
+        "imageFitsBytesSchema": {
+          "const": true
+        },
+        "frameFitsResponseSchema": {
+          "const": true
+        },
+        "frameFitsImageBytesSchema": {
+          "const": false
+        }
+      },
+      "required": [
+        "imageBytes",
+        "imageBase64Chars",
+        "responsePayloadBytes",
+        "frameBytes",
+        "frameBase64Chars",
+        "responseSha256",
+        "frameSha256",
+        "imageFitsBytesSchema",
+        "frameFitsResponseSchema",
+        "frameFitsImageBytesSchema"
+      ],
+      "additionalProperties": false
+    },
+    "ImageBoundaryV1": {
       "type": "object",
       "properties": {
         "id": {
           "$ref": "#/$defs/Id"
         },
-        "direction": {
-          "enum": [
-            "request",
-            "response"
-          ]
+        "input": {
+          "$ref": "#/$defs/WorldV1"
         },
-        "recordType": {
-          "enum": [
-            "WireRequestV1",
-            "ResponseV1"
-          ]
+        "imageRecipe": {
+          "$ref": "#/$defs/RepeatedBytesV1"
         },
-        "record": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/WireRequestV1"
-            },
-            {
-              "$ref": "#/$defs/ResponseV1"
-            }
-          ]
-        },
-        "bytes": {
-          "$ref": "#/$defs/BytesV1"
+        "expected": {
+          "$ref": "#/$defs/ImageBoundaryExpectedV1"
         }
       },
       "required": [
         "id",
-        "direction",
-        "recordType",
-        "record",
-        "bytes"
+        "input",
+        "imageRecipe",
+        "expected"
       ],
       "additionalProperties": false
     },
@@ -3729,6 +4017,42 @@
                 "properties": {
                   "type": {
                     "enum": [
+                      "ReadRequestReservationV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ReadRequestReservationV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "BrowserRequestAuthorityV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/BrowserRequestAuthorityV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
                       "RequestBindingV1"
                     ]
                   },
@@ -3777,6 +4101,96 @@
                   "value"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "RequestFrameBytesV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/RequestFrameBytesV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ResponseFrameBytesV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ResponseFrameBytesV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "RepeatedBytesV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/RepeatedBytesV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ImageBoundaryExpectedV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ImageBoundaryExpectedV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ImageBoundaryV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ImageBoundaryV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
               }
             ]
           },
@@ -3788,6 +4202,13 @@
             "$ref": "#/$defs/FrameV1"
           },
           "maxItems": 16
+        },
+        "imageBoundaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImageBoundaryV1"
+          },
+          "maxItems": 4
         },
         "scenarios": {
           "type": "array",
@@ -3802,6 +4223,7 @@
         "status",
         "records",
         "frames",
+        "imageBoundaries",
         "scenarios"
       ],
       "additionalProperties": false
