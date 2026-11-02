@@ -122,7 +122,7 @@ test("large exact guest writes bind all bytes without enlarging the POLICY comma
   await session.backend.writeFileAtomically(`${session.backend.workspaceRoot}/large.txt`, content);
   expect(Buffer.from(f.sends.at(-1)?.data as string, "base64").toString()).toBe(content); expect(f.policy.control.usage().unsettled).toBe(0);
 });
-test("real read claims are single-use and cannot be adopted by a replacement worker actor", async () => {
+test("real read claims are single-use and retain unknown charged outcomes", async () => {
   const f = setup(), { actor, workId } = f.admit("inspect"), op = operation(workId, "read", { op: "read", path: `/var/lib/jit-work/${workId}/attempt/a` });
   const claim = await f.port.claim(actor, op); let sends = 0;
   await claim.dispatch(async () => { sends++; return {}; });
