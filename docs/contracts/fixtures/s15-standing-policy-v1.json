@@ -3506,6 +3506,106 @@
         ],
         "mutationCalls": 0
       }
+    },
+    {
+      "id": "PC15-D41",
+      "name": "The original claimed invocation can use its last reserved call and publish once",
+      "operations": [
+        {
+          "op": "replace",
+          "path": "/budget/ceiling/calls",
+          "value": 1,
+          "rehash": []
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "claim",
+          "action": "send"
+        },
+        {
+          "op": "final_dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        },
+        {
+          "op": "publish_result",
+          "action": "send"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "originalContinuationAllowed": true,
+        "remainingCallsAfterClaim": 0,
+        "observation": "succeeded",
+        "claims": 1,
+        "mutationCalls": 1,
+        "publishedResults": 1,
+        "charged": {
+          "attempts": 0,
+          "steps": 0,
+          "calls": 1,
+          "reads": 0,
+          "outputBytes": 4096,
+          "activeMs": 1000,
+          "spendMinor": "10"
+        },
+        "decisions": [
+          {
+            "state": "allow"
+          },
+          {
+            "state": "deny",
+            "code": "already_claimed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "PC15-D42",
+      "name": "Recording approval preserves the prepared action revision and exact hash",
+      "operations": [
+        {
+          "op": "inspect_action",
+          "action": "send",
+          "snapshot": "before_decision"
+        },
+        {
+          "op": "approve",
+          "action": "send",
+          "actor": "owner_live"
+        },
+        {
+          "op": "inspect_action",
+          "action": "send",
+          "snapshot": "after_decision"
+        },
+        {
+          "op": "dispatch",
+          "action": "send",
+          "outcome": "succeeded"
+        }
+      ],
+      "expected": {
+        "actionRevisionBefore": 1,
+        "actionRevisionAfter": 1,
+        "actionHashBefore": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "actionHashAfter": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "preparedActionSnapshotsEqual": true,
+        "approvalActionRevision": 1,
+        "approvalActionHash": "a993f878203f21076447bdc31f2ce75be359e05fa174a625418b5f9020033909",
+        "approvalRecords": 1,
+        "claims": 1,
+        "mutationCalls": 1,
+        "observation": "succeeded"
+      }
     }
   ]
 }
