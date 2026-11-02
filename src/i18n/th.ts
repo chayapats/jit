@@ -142,6 +142,12 @@ export const th = {
   "s15.vm.registry_residual": "registry ที่อนุญาตอาจเห็น metadata ของคำขอ destination control ไม่ได้ป้องกันการเปิดเผยเนื้อหา",
 
   "s15.conversation.queued": "รับคำขอแล้ว กำลังรอเริ่มงาน",
+  "s15.conversation.approval_reference_required": "โปรดเลือก action ที่ต้องการอนุมัติให้ชัดเจนหนึ่งรายการ",
+  "s15.conversation.stale_action": "รายละเอียด action เปลี่ยนแล้ว โปรดตรวจสอบ revision ใหม่ก่อนอนุมัติ",
+  "s15.conversation.approval_recorded": "บันทึกการตัดสินใจสำหรับ action นี้แล้ว",
+  "s15.conversation.action_succeeded": "action ที่อนุมัติดำเนินการสำเร็จแล้ว",
+  "s15.conversation.action_failed": "action ที่อนุมัติดำเนินการไม่สำเร็จ",
+  "s15.conversation.action_not_dispatched": "ยังไม่ได้ส่ง action ที่อนุมัติไปดำเนินการ",
   "s15.conversation.running": "กำลังทำงานตามคำขอ",
   "s15.conversation.completed": "มีผลลัพธ์พร้อมหลักฐานจาก tool",
   "s15.conversation.accepted": "รับงานไว้แล้ว ยังไม่ได้เริ่มทำ",

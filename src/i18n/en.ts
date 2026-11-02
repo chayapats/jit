@@ -139,6 +139,12 @@ export const en: Record<MessageKey, string> = {
   "s15.vm.registry_residual": "Approved registries can see request metadata. Destination control does not prevent content disclosure.",
 
   "s15.conversation.queued": "Request received and queued.",
+  "s15.conversation.approval_reference_required": "Select one exact action to approve.",
+  "s15.conversation.stale_action": "The action details changed. Review the new revision before approval.",
+  "s15.conversation.approval_recorded": "The decision for this exact action was recorded.",
+  "s15.conversation.action_succeeded": "The approved action succeeded.",
+  "s15.conversation.action_failed": "The approved action failed.",
+  "s15.conversation.action_not_dispatched": "The approved action was not dispatched.",
   "s15.conversation.running": "Working on the requested task.",
   "s15.conversation.completed": "Result available with observed tool evidence.",
   "s15.conversation.accepted": "Obligation retained; execution has not started.",
