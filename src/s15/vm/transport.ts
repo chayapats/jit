@@ -23,7 +23,8 @@ export class VmSshTransport {
       if (typeof response.code !== "string" || !["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "ETIMEDOUT", "EIO", "ELOOP"].includes(response.code)) vmFail("vm_protocol_invalid");
       throw Object.assign(new Error(response.code), { code: response.code });
     }
-    return vmRecord(response.result, Object.keys(response.result as object));
+    if (!response.result || typeof response.result !== "object" || Array.isArray(response.result)) vmFail("vm_protocol_invalid");
+    return vmRecord(response.result, Object.keys(response.result));
   }
   /** Fixed lifecycle/health commands are trusted infrastructure, not a model-accessible management shell. */
   async control(argv: readonly string[], options: { timeoutMs?: number; maxBytes?: number; beforeStart?: () => void } = {}): Promise<string> {

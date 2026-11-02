@@ -46,9 +46,9 @@ export function vmPath(path: string, roots: readonly string[]): string {
 /** Refuses SSH option injection. Host configuration is always bypassed, including ambient agent/proxy options. */
 export function vmEndpoint(endpoint: VmEndpoint): VmEndpoint {
   vmRecord(endpoint, ["host", "port", "user", "identityFile", "knownHostsFile"]);
-  if (!/^(?:[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}|[a-fA-F0-9:]+)$/.test(endpoint.host) || !/^[a-z_][a-z0-9_-]{0,31}$/.test(endpoint.user)) vmFail("vm_invalid_setup", 400);
+  if (typeof endpoint.host !== "string" || typeof endpoint.user !== "string" || !/^(?:[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}|[a-fA-F0-9:]+)$/.test(endpoint.host) || !/^[a-z_][a-z0-9_-]{0,31}$/.test(endpoint.user)) vmFail("vm_invalid_setup", 400);
   vmInteger(endpoint.port, 65535);
-  for (const path of [endpoint.identityFile, endpoint.knownHostsFile]) if (!path.startsWith("/") || /[\x00-\x1f\x7f]/.test(path)) vmFail("vm_invalid_setup", 400);
+  for (const path of [endpoint.identityFile, endpoint.knownHostsFile]) if (typeof path !== "string" || !path.startsWith("/") || /[\x00-\x1f\x7f]/.test(path)) vmFail("vm_invalid_setup", 400);
   return Object.freeze({ ...endpoint });
 }
 /** Binary payload decoder with canonical base64 and an exact finite byte bound. */

@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import type { VmHostCommand, VmEndpoint } from "./types";
 import { vmEndpoint, vmFail } from "./validation";
 
@@ -5,7 +6,7 @@ import { vmEndpoint, vmFail } from "./validation";
 export const vmHostCommand: VmHostCommand = async (argv, options) => {
   if (options.signal?.aborted) throw new DOMException("Aborted", "AbortError");
   options.beforeStart?.();
-  const proc = Bun.spawn([...argv], { env: { PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", ...options.env },
+  const proc = Bun.spawn([...argv], { env: { PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", LANG: "C", HOME: homedir(), ...options.env },
     stdin: options.input ?? "ignore", stdout: "pipe", stderr: "ignore" });
   let cut = false, timeout = false;
   const stop = () => { proc.kill("SIGKILL"); };

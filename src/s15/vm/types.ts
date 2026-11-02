@@ -40,7 +40,7 @@ export interface VmManagement {
 /** Immutable operation supplied to the policy consumer; the payload is credential-free exact runner input. */
 export interface VmPolicyOperation {
   vmId: string; generation: number; sessionId: string; workId: string; attemptId: string;
-  operationId: string; kind: "read" | "write" | "shell" | "system_admin" | "acquire";
+  operationId: string; kind: "setup" | "read" | "write" | "shell" | "system_admin" | "acquire";
   payloadHash: string; payload: string; timeoutMs: number; outputBytes: number;
 }
 /** Claim belongs to one operation. The implementation rechecks current authority at actual I/O and publication. */
@@ -77,11 +77,14 @@ export interface VmSession {
 /** Conversation-facing port. A system session takes an exclusive VM lease and requires a protected snapshot. */
 export interface WorkingVmPort {
   openAttempt(actor: object, input: { vmId: string; workId: string; attemptId: string; signal?: AbortSignal;
-    mode?: "work" | "system" }): Promise<VmSession>;
+    mode?: "work" | "system"; access?: "inspect" | "execute" }): Promise<VmSession>;
 }
+/** Owner-visible capability evidence. Configured adapters alone are unproven, never a live certification. */
+export interface VmCapability { id: "network-isolated" | "snapshot-recovery" | "hypervisor-stop"; state: "proven" | "unproven" | "unavailable"; reason: string | null }
 /** Enrollment/health projection, safe for the authenticated owner API and i18n. */
 export interface VmStatus {
   id: string; generation: number; state: "ready" | "unproven" | "uncertain" | "stopped";
   networkIsolated: boolean; recoveryAvailable: boolean; activeSessions: number; maxSessions: number;
   reason: string | null;
+  capabilities: readonly VmCapability[];
 }

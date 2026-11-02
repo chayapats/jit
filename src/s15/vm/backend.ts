@@ -11,10 +11,13 @@ export interface VmBackendPort {
 const clean = (s: string) => redactRegisteredSecrets(redactCredentials(s)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 /** Public Schway backend over the VM port; observations are backend-instance/path-bound and cannot be serialized. */
 export function createVmBackend(port: VmBackendPort, root: string, temporaryDirectory: string, limits: VmLimits,
-  proxyEnvironment: Readonly<Record<string, string>> = {}): ExecutionBackend {
+  proxyEnvironment: Readonly<Record<string, string>> = {}, access: "inspect" | "execute" = "execute"): ExecutionBackend {
   const roots = [root, temporaryDirectory], path = (p: string) => vmPath(p, roots);
   const observations = new WeakMap<ExecutionFileObservation, { path: string; token: string }>();
-  const call = (r: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal) => port.call(r, kind, signal);
+  const call = (r: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal) => {
+    if (access === "inspect" && kind !== "read") vmFail("vm_inspect_only", 403);
+    return port.call(r, kind, signal);
+  };
   async function entries(p: string, recursive: boolean, signal?: AbortSignal): Promise<ExecutionDirectoryEntry[]> {
     const r = await call({ op: "list", path: path(p), recursive }, "read", signal); vmRecord(r, ["entries"]);
     if (!Array.isArray(r.entries) || r.entries.length > 10000) vmFail("vm_protocol_invalid");
@@ -64,7 +67,8 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
       // Regex evaluation stays in the bounded guest process, not the protected JS event loop.
       const args = ["rg", "--json", "--no-follow", "--max-count", String(request.limit), ...(request.ignoreCase ? ["--ignore-case"] : []), ...(request.glob ? ["--glob", request.glob] : []), "--", request.pattern, request.path];
       const quote = (s: string) => `'${s.replaceAll("'", `'"'"'`)}'`;
-      const result = await backend.spawn({ command: args.map(quote).join(" "), cwd: request.cwd, ...(request.signal ? { signal: request.signal } : {}) });
+      const readBackend = createVmBackend({ call: (operation, _kind, signal) => port.call(operation, "read", signal) }, root, temporaryDirectory, limits);
+      const result = await readBackend.spawn({ command: args.map(quote).join(" "), cwd: request.cwd, ...(request.signal ? { signal: request.signal } : {}) });
       if (result.exitCode !== 0 && result.exitCode !== 1) return { matches: [], truncated: false, failure: "VM search unavailable" };
       const matches: { path: string; line: number; text: string }[] = []; let truncated = false;
       for (const line of result.stdout.split("\n")) if (line) {
