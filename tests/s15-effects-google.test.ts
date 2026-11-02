@@ -140,3 +140,25 @@ test('verified event identity, actual content and fresh-version undo survive pol
   g.f.reopen(); const owner = g.f.service.owner.authenticate('fixture_owner_session');
   expect(g.f.service.owner.inspect(owner, ar(a)).observation!.evidence).toEqual(JSON.parse(canonical(before))); expect(g.mutationCalls).toBe(1);
 });
+
+test('complete encoded mail payload has a tested aggregate boundary including attachment and MIME copies', async () => {
+  const { MAIL_ENCODED_PAYLOAD_LIMIT } = await import('../src/s15/effects');
+  const g = setup(), actor = g.f.admit().actor!, work = g.f.service.work.guard(actor), p = mail();
+  const file = (id: string, size: number, revision = 1) => ({ id, revision, name: id + '.bin', mediaType: 'application/octet-stream', dataBase64: Buffer.alloc(size, 97).toString('base64') });
+  g.attachments.set('first', file('first', 16384)); p.attachments = [{ id: 'first', revision: 1 }, { id: 'second', revision: 1 }];
+  const adapter = g.registration.adapters.find(a => a.id === 'gmail_send')!;
+  const fits = (size: number) => { g.attachments.set('second', file('second', size)); try { adapter.prepare(p, { work, now: g.f.now }); return true; } catch (error) { if (error instanceof Error && 'code' in error && error.code === 'mail_encoded_size_limit') return false; throw error; } };
+  let low = 0, high = 16384; while (low < high) { const middle = Math.ceil((low + high) / 2); if (fits(middle)) low = middle; else high = middle - 1; }
+  expect(low).toBeGreaterThan(0); expect(low).toBeLessThan(16384); expect(fits(low)).toBe(true);
+  const valid = g.prepare(actor, 'mail', p); expect(Buffer.byteLength(canonical(valid.action.payload))).toBeLessThanOrEqual(MAIL_ENCODED_PAYLOAD_LIMIT);
+  expect(g.f.service.owner.actionSlip(g.f.owner, ar(valid.action)).canApprove).toBe(true); g.f.approve(ar(valid.action));
+  expect((await g.f.service.work.dispatch(actor, ar(valid.action))).outcome).toBe('succeeded'); const calls = g.calls;
+  g.attachments.set('second', file('second', low + 1, 2)); p.attachments[1]!.revision = 2;
+  expect(() => g.prepare(actor, 'mail', p, 'overlimit')).toThrow('mail_encoded_size_limit'); expect(g.calls).toBe(calls); expect(g.mutationCalls).toBe(1);
+});
+
+test('three maximum individual attachments are rejected by the declared encoded aggregate limit before I/O', () => {
+  const g = setup(), actor = g.f.admit().actor!, p = mail();
+  for (const id of ['one', 'two', 'three']) { g.attachments.set(id, { id, revision: 1, name: id + '.txt', mediaType: 'text/plain', dataBase64: Buffer.alloc(16384, 97).toString('base64') }); p.attachments.push({ id, revision: 1 }); }
+  expect(() => g.prepare(actor, 'mail', p)).toThrow('mail_encoded_size_limit'); expect(g.calls).toBe(0); expect(g.mutationCalls).toBe(0);
+});

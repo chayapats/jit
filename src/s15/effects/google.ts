@@ -5,7 +5,7 @@ import type { PersonalEventDraft, PersonalEventFields } from '../../s14/personal
 import type { ActionAdapter, ActionRef, AdapterResult, JsonValue, PreparedAction, ReadHandler, S15PolicyService, WorkActor, WorkAuthority } from '../policy';
 import { canonical, contains, digest, equal, exact, fail, id, nat, ref, string, unknownUsage, vector } from '../policy/validation';
 import type { ConversationPolicyWork, ConversationToolPort } from '../conversation';
-import { attachmentDigest, finalMailRaw, validateMailAttachment, validateMailProposal } from './mail';
+import { attachmentDigest, finalMailRaw, MAIL_ENCODED_PAYLOAD_LIMIT, validateMailAttachment, validateMailProposal } from './mail';
 import { communicationClasses, type CalendarProposal, type EffectBounds, type EffectEvidence, type GoogleEffectAccount, type MailAttachment, type MailProposal, type CommunicationRecipient } from './types';
 import { calendarProposalSchema, mailProposalSchema } from './schemas';
 
@@ -77,7 +77,11 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     if (kind === 'mail') {
       validateMailProposal(proposal); const p = structuredClone(proposal), files = attachments(p), key = digest('s15.mail.identity.v1', { work: work.id });
       const raw = finalMailRaw(a.account, key, p, files);
-      return { contract: 's15-google-effect/v1', kind, account: a, wire: { url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: canonical({ raw }) }, message: p, attachments: files, calendar: null, before: null, providerId: key };
+      const prepared: Payload = { contract: 's15-google-effect/v1', kind, account: a, wire: { url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw }) }, message: p, attachments: files, calendar: null, before: null, providerId: key };
+      // All fields were validated above. Key sorting changes no JSON byte length; check both encoded
+      // copies before canonical() and leave headroom for the protected action/ledger envelope.
+      if (Buffer.byteLength(JSON.stringify(prepared)) > MAIL_ENCODED_PAYLOAD_LIMIT) fail('mail_encoded_size_limit');
+      return prepared;
     }
     calendarProposal(proposal); const p = structuredClone(proposal);
     const before = p.operation === 'update' ? observations.get(`${work.id}:${p.eventId}`) ?? fail('calendar_read_required') : null;

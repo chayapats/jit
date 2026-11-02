@@ -4,6 +4,9 @@ import { validatePersonalDraft } from '../../s14/personal-effect-validation';
 import { canonical, exact, fail, id, nat, string } from '../policy/validation';
 import type { MailAttachment, MailProposal } from './types';
 
+/** Complete credential-free Gmail payload UTF-8 limit, including attachment base64, encoded MIME and metadata. */
+export const MAIL_ENCODED_PAYLOAD_LIMIT = 65_536;
+
 /** Validates final message fields without trimming, normalization, implicit recipients or header injection. */
 export function validateMailProposal(value: unknown): asserts value is MailProposal {
   canonical(value); exact(value, ['to', 'cc', 'bcc', 'subject', 'body', 'attachments']);
