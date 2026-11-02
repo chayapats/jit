@@ -167,7 +167,8 @@ function exactSections(page: S15SlipPage): string {
   }
   for (const item of slip.recurring) if (item.deviations.length) parts.push(`<div class="s15-deviation">${banner("warn", fill("s15.rules.deviates", { rule: item.rule.id }), item.deviations.map(code => tr(key(`s15.rules.deviation.${code}`))).join(" · "))}</div>`);
   if (a.github) parts.push(githubChecklist(slip));
-  const disclosure = (a as { disclosure?: { recipients: { id: string }[]; purpose: { id: string }; sources: { ref: { id: string }; classification: string }[]; dataClasses: string[]; exactBytes: { length: number; sha256: string } } }).disclosure;
+  // DATA15 protected disclosure projection (`DisclosureDetails`); the complete bytes remain in the exact payload below.
+  const disclosure = a.disclosure;
   if (kind === "recipient" || disclosure) {
     const rows: [string, string][] = [[tr("s15.slip.recipients"), (disclosure?.recipients ?? a.recipients).map(r => mono(r.id)).join("<br>") || "—"]];
     if (disclosure) rows.push([tr("s15.slip.data"), disclosure.sources.map(s => `${mono(s.ref.id)} · ${e(trMaybe(`s15.slip.data_class.${s.classification}`) ?? s.classification)}`).join("<br>") || "—"], [tr("s15.slip.purpose"), mono(disclosure.purpose.id)], [tr("s15.slip.exact_bytes"), `${fill("s15.slip.bytes", { n: disclosure.exactBytes.length })} · ${mono(short(disclosure.exactBytes.sha256))}`]);
