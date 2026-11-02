@@ -560,6 +560,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     },
   };
   const control: T.ControlPort = {
+    policyForWork(workId) { return tx(() => { v.id(workId); currentWork(workId); return clone(policyCurrent()); }); },
     settleRead(claimId, observation, resultHash) { tx(() => {
       const row = readClaim(claimId); v.exact(observation, ['outcome', 'basis', 'code', 'actual', 'transportSettled']); v.usage(observation.actual);
       if (!['not_dispatched', 'succeeded', 'failed', 'unknown'].includes(observation.outcome) || !['local_guard', 'remote_verified', 'uncertain'].includes(observation.basis) || typeof observation.transportSettled !== 'boolean') v.fail('invalid_read_result');
