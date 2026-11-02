@@ -1,3 +1,5 @@
+import { libraryView, type S14Library } from "./web-library";
+import type { ReportView } from "./report-types";
 import { AppError } from "../errors";
 import { dictionaries, type Locale, type MessageKey } from "../i18n";
 import type { StaticAsset } from "../web-assets";
@@ -50,6 +52,7 @@ export type S14View =
   | { kind: "proposal"; proposal: BotProposal; history: BotProposal[] }
   | { kind: "effect"; effect: Effect; history: Effect[]; saved?: boolean; notice?: string | null; draft?: S14StatementDraft; git?: S14GitCard | null }
   | { kind: "more"; saved: boolean; attention?: AttentionSetting; attentionSaved?: boolean }
+  | S14Library
   | S14FirstRunSurface
   | S14MemorySurface
   | S14SharingSurface
@@ -61,13 +64,13 @@ export type S14View =
   | S14BackupSurface
   | S14WorkSettings;
 /** Query projections every signed-in page needs for attention counts and Bot state; never a proof of authority. */
-export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView>; defaults: WorkDefaults; lanes: Record<string, WorkStep[]>; reports: Record<string, S14ReportHint>; scopes?: S14ScopeChoice[]; recovery?: S14RecoverySummary; routines?: S14RoutineAttention; lifecycles?: Record<string, BotLifecycle>; personal?: S14PersonalOverview }
+export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView>; defaults: WorkDefaults; lanes: Record<string, WorkStep[]>; reports: Record<string, S14ReportHint>; reportDetails?: Record<string, ReportView>; scopes?: S14ScopeChoice[]; recovery?: S14RecoverySummary; routines?: S14RoutineAttention; lifecycles?: Record<string, BotLifecycle>; personal?: S14PersonalOverview }
 /** Product routes behind the authenticated handler; every state change still goes through S14Application.execute. */
 export interface S14Product {
   asset(pathname: string): StaticAsset | null;
   login(locale: Locale, code: string | null): string;
   failure(locale: Locale, code: string, next: string): string;
-  overview(actor: OwnerActor, state: Home, work: Work[]): S14Overview;
+  overview(actor: OwnerActor, state: Home, work: Work[], selected?: S14View): S14Overview;
   /** Awaited because provider readiness reads the protected store; it stays local and makes no inference. */
   view(url: URL, actor: OwnerActor, state: Home, locale: Locale, navigation?: { lastJitConversationId: string | null }): S14View | Promise<S14View>;
   command(form: string, fields: Record<string, unknown>, actor: OwnerActor, state: Home, locale: Locale): S14Command;
@@ -168,10 +171,11 @@ export function createS14Product(app: S14Application): S14Product {
     googleReturn: (locale, refused) => renderGoogleReturn(ownerLanguage(app) ?? locale, refused, ownerTheme(app)),
     login: (locale, code) => renderLogin(locale, code, !!app.store.read(tx => tx.get("SELECT id FROM owner")), ownerTheme(app)),
     failure: (locale, code, next) => renderFailure(locale, code, next, ownerTheme(app)),
-    overview(actor, state, work) {
+    overview(actor, state, work, selected) {
       const views = work.filter(w => w.grantId).map(w => app.authority.view(actor, w.id)), team = teamOverview(app, actor, views, state.bots);
       for (const reply of state.replies) if (reply.state === "running") team.botStates[reply.snapshot.bot.id] = "working";
-      return { views, effects: views.flatMap(view => view.effects), ...team, scopes: scopeChoices(app, actor, state.bots), recovery: recoverySummary(app, actor, views), routines: routineAttention(app, actor, work), lifecycles: lifecycleOverview(app, actor, state.bots), personal: personalOverview(app, actor, views, state), computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
+      const inline = selected?.kind === "chat" ? work.filter(item => item.conversationId === selected.chat.conversation.id && item.grantId).sort((a, b) => b.createdAt - a.createdAt).slice(0, 24).map(item => item.id) : [];
+      return { views, effects: views.flatMap(view => view.effects), ...team, reportDetails: inline.length ? app.reports.latest(actor, inline) : {}, scopes: scopeChoices(app, actor, state.bots), recovery: recoverySummary(app, actor, views), routines: routineAttention(app, actor, work), lifecycles: lifecycleOverview(app, actor, state.bots), personal: personalOverview(app, actor, views, state), computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
     },
     async view(url, actor, state, locale, navigation) {
       if (!state.owner) return { kind: "setup", draft: null, notice: null, providers: await setupProviders(app, actor, url) };
@@ -184,6 +188,7 @@ export function createS14Product(app: S14Application): S14Product {
         } catch (error) { if (!(error instanceof AppError) || !["not_found", "invalid_identity"].includes(error.code)) throw error; }
         return { kind: "chat", chat: chat(actor, target), bot: botOf(state, "jit"), draft: example(locale, url, limits), notice: null, pane: null };
       }
+      if (path === "/library") return libraryView(app, actor, url);
       if (path === "/work") return { kind: "work-list" };
       if (path === "/team") return { kind: "team" };
       if (path === "/more") return { kind: "more", saved: !!committed(app, actor, url, "owner.preferences."), attention: app.attention.view(actor).setting, attentionSaved: !!committed(app, actor, url, "attention.set") };

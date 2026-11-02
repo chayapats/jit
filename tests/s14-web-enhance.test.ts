@@ -250,3 +250,16 @@ test("an open focused Progress disclosure keeps its shell while results, approva
   expect(primary.innerHTML).toBe("Result and exact approval"); expect(details.innerHTML).toBe("Lane complete"); expect(status.innerHTML).toBe("Ready");
   expect(ticks).toHaveLength(0);
 });
+
+test("an inline work result updates while its receipt disclosure defers the surrounding conversation", async () => {
+  const make = (id: string, innerHTML: string, busy = false) => ({ id, innerHTML, className: "", dataset: {}, contains: () => busy, querySelector: () => busy ? {} : null });
+  const root = make("s14-live", "Open receipt in original thread", true), card = make("s14-inline-work", "Running");
+  const current = new Map([[root.id, root], [card.id, card]]), fresh = new Map([[root.id, make(root.id, "Fresh thread")], [card.id, make(card.id, "Result and pending decision")]]);
+  const page = (items: typeof current, live: boolean) => ({
+    documentElement: { dataset: {} }, body: {}, activeElement: {}, getElementById: (id: string) => items.get(id) ?? null,
+    querySelectorAll: (selector: string) => selector === "[data-inline-work]" ? [items.get(card.id)] : [], querySelector: (selector: string) => selector === "[data-live]" && live ? {} : null,
+  });
+  const ticks: Array<() => Promise<void>> = [];
+  runInNewContext(source, { document: page(current, true), location: { href: "http://localhost:3001/chats/C", hash: "" }, DOMParser: class { parseFromString() { return page(fresh, false); } }, fetch: async () => ({ ok: true, text: async () => "page" }), setTimeout: (callback: () => Promise<void>) => ticks.push(callback) });
+  await ticks.shift()!(); expect(card.innerHTML).toBe("Result and pending decision"); expect(root.innerHTML).toBe("Open receipt in original thread"); expect(ticks).toHaveLength(1);
+});

@@ -4655,4 +4655,13 @@ export const en: Record<MessageKey, string> = {
   "s14.plain.tool.effect_send": "Email · exact approval",
   "s14.plain.tool.effect_calendar": "Calendar · exact approval",
   "s14.plain.tool.effect_push": "Git · exact approval",
+  "s14.library.title": "Library",
+  "s14.library.reports": "Reports",
+  "s14.library.artifacts": "Files",
+  "s14.library.intro": "Reports and files from your Bots, with their original work and current evidence status.",
+  "s14.library.empty": "No retained reports or files yet.",
+  "s14.library.next": "Older outputs",
+  "s14.library.first": "Latest outputs",
+  "s14.library.pages": "Library pages",
+  "s14.library.claims": "claims",
 };

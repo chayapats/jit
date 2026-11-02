@@ -4659,4 +4659,13 @@ export const th = {
   "s14.plain.tool.effect_send": "อีเมล · อนุมัติแต่ละครั้ง",
   "s14.plain.tool.effect_calendar": "ปฏิทิน · อนุมัติแต่ละครั้ง",
   "s14.plain.tool.effect_push": "Git · อนุมัติแต่ละครั้ง",
+  "s14.library.title": "คลังผลงาน",
+  "s14.library.reports": "รายงาน",
+  "s14.library.artifacts": "ไฟล์",
+  "s14.library.intro": "รายงานและไฟล์จาก Bots พร้อมงานต้นทางและสถานะหลักฐานปัจจุบัน",
+  "s14.library.empty": "ยังไม่มีรายงานหรือไฟล์ที่เก็บไว้",
+  "s14.library.next": "ผลงานก่อนหน้า",
+  "s14.library.first": "ผลงานล่าสุด",
+  "s14.library.pages": "หน้าคลังผลงาน",
+  "s14.library.claims": "ข้อสรุป",
 } as const;
