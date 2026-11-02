@@ -22,9 +22,9 @@ export function codeText(code: string | null): string {
 }
 
 /** §6 vocabulary: one word per state, with tone and glyph supplementary to the word. */
-export type S15State = "received" | "understanding" | "inspecting" | "working" | "waiting_ci" | "waiting_review" | "waiting_login" | "needs_you" | "question" | "stalled" | "budget_hold" | "partial" | "blocked" | "unsupported" | "unknown" | "failed" | "stopping" | "stopped" | "done" | "changed" | "expired" | "denied";
+export type S15State = "received" | "understanding" | "inspecting" | "working" | "waiting_ci" | "waiting_review" | "waiting_schedule" | "waiting_login" | "needs_you" | "question" | "stalled" | "budget_hold" | "partial" | "blocked" | "unsupported" | "unknown" | "failed" | "stopping" | "stopped" | "done" | "changed" | "expired" | "denied";
 const tones: Record<S15State, [string, string]> = {
-  received: ["", ""], understanding: ["", ""], inspecting: ["strong", ""], working: ["strong", ""], waiting_ci: ["", "◷"], waiting_review: ["", "◷"],
+  received: ["", ""], understanding: ["", ""], inspecting: ["strong", ""], working: ["strong", ""], waiting_ci: ["", "◷"], waiting_review: ["", "◷"], waiting_schedule: ["", "◷"],
   waiting_login: ["warn", "!"], needs_you: ["warn", "!"], question: ["warn", "!"], stalled: ["warn", "!"], budget_hold: ["warn", "!"], partial: ["warn", "!"], blocked: ["warn", "!"],
   unsupported: ["", "×"], unknown: ["danger", "?"], failed: ["danger", "×"], stopping: ["", ""], stopped: ["", ""], done: ["ok", "✓"], changed: ["warn", "!"], expired: ["", ""], denied: ["", ""],
 };

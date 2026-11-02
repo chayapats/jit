@@ -1,6 +1,7 @@
 import type { MessageKey } from "./index";
 import { s14CodingEn } from "./s14-coding-en";
 import { s15WebEn } from "./s15-web-en";
+import { s15ActionsEn } from "./s15-actions-en";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
@@ -4140,6 +4141,7 @@ export const en: Record<MessageKey, string> = {
   "s14.life.done.capabilities_discard_detail": "The ceiling stays as it was",
   ...s14CodingEn,
   ...s15WebEn,
+  ...s15ActionsEn,
   "s14.more.backup": "Backup and restore",
   "s14.backup.title": "Backup and restore",
   "s14.backup.subtitle": "Kept on this computer",

@@ -5,6 +5,7 @@
  */
 import { s14CodingTh } from "./s14-coding-th";
 import { s15WebTh } from "./s15-web-th";
+import { s15ActionsTh } from "./s15-actions-th";
 
 export const th = {
   "s15.effects.calendar_observed": "บันทึกบล็อกเวลาแล้วและตรวจสอบข้อมูลจาก calendar แล้ว",
@@ -4144,6 +4145,7 @@ export const th = {
   "s14.life.done.capabilities_discard_detail": "เพดานยังเหมือนเดิม",
   ...s14CodingTh,
   ...s15WebTh,
+  ...s15ActionsTh,
   "s14.more.backup": "สำรองและกู้คืนข้อมูล",
   "s14.backup.title": "สำรองและกู้คืนข้อมูล",
   "s14.backup.subtitle": "เก็บไว้ในเครื่องนี้",
