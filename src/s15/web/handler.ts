@@ -357,7 +357,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         only(fields, ["csrf", "requestId", "site"], ["generation", "field", "value"]);
         const browser = ports.browsers?.find(item => item.id === fields.site); if (!browser) throw new AppError("not_found", 404);
         const state = browserState.get(browser.id), generation = fields.generation === undefined ? null : Number(fields.generation);
-        const set = (login: S15BrowserProgress["login"], g: number | null) => browserState.set(browser.id, { login, generation: g, at: now() });
+        const set = (login: S15BrowserProgress["login"], g: number | null, handBack?: number) => browserState.set(browser.id, { login, generation: g, at: now(), ...(handBack === undefined ? {} : { handBack }) });
         const current = () => { if (!state || state.login !== "owner_control" || generation === null || state.generation !== generation) throw new AppError("stale_input", 409); return generation; };
         try {
           if (url.pathname === "/s15/forms/browser/takeover") { const taken = await browser.owner.takeover(actor); set("owner_control", taken.generation); return redirect(`/browser/${browser.id}#s15-takeover-bar`); }
@@ -370,11 +370,12 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           }
           if (url.pathname === "/s15/forms/browser/handback" || url.pathname === "/s15/forms/browser/cancel") {
             const cancel = url.pathname.endsWith("/cancel"), handed = browser.owner.handBack(actor, current(), cancel);
-            set(handed.login, null);
+            set(handed.login, null, handed.generation);
             if (handed.login === "checking") {
               // One bounded protected session observation; the hand-back press itself says nothing about the session.
               const observed = await Promise.race([browser.owner.checkSession(actor), new Promise<"unknown">(resolve => setTimeout(() => resolve("unknown"), 15000))]).catch(() => "unknown" as const);
-              set(observed === "checking" ? "unknown" : observed, null);
+              // A newer takeover or hand-back (for example from another tab) owns the state now; this late result is dropped.
+              if (browserState.get(browser.id)?.handBack === handed.generation) set(observed === "checking" ? "unknown" : observed, null, handed.generation);
             }
             return redirect("/needs#s15-needs-login");
           }

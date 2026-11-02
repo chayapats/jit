@@ -11,7 +11,8 @@ export type S15BrowserInfo = Pick<S15WebBrowser<never>, "id" | "site" | "twoFact
  * own observations (hand-back result, session check), never from a button press or page text. The owner's input
  * goes to the protected browser and is never rendered, stored or echoed by these pages.
  */
-export interface S15BrowserProgress { generation: number | null; login: LoginState | null; at: number }
+/** `handBack` is the browser generation returned by the hand-back that produced this state; a later check may only update that same hand-back. */
+export interface S15BrowserProgress { generation: number | null; login: LoginState | null; at: number; handBack?: number }
 /** Sites that wait on the owner: in owner control, checking, or observed as not (or not provably) signed in after a handoff. */
 export const browserNeedsYou = (state: S15BrowserProgress | undefined) => !!state?.login && ["owner_control", "checking", "not_signed_in", "unknown"].includes(state.login);
 

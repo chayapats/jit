@@ -166,3 +166,20 @@ test("an unsupported step renders a LimitNotice with take over and skip, never a
   expect(html).not.toContain("s-slip"); expect(html).not.toContain("primary"); expect(html).not.toContain("1 ครั้ง");
   void newId;
 });
+
+test("a slow sign-in check from an older hand-back never overwrites a newer takeover from another tab", async () => {
+  let release!: (state: LoginState) => void;
+  const log = { inputs: [] as unknown[], frames: [] as number[] };
+  const f = setup(() => ({ browsers: [browserPort(log, new Promise<LoginState>(resolve => { release = resolve; }))] }));
+  await f.post("/s15/forms/browser/takeover", { site: "shop" });
+  const late = f.post("/s15/forms/browser/handback", { site: "shop", generation: "11" });
+  await Bun.sleep(5);
+  // Another tab takes over again (generation 13) while the first check is still pending.
+  expect((await f.post("/s15/forms/browser/takeover", { site: "shop" })).status).toBe(303);
+  release("signed_in"); expect((await late).status).toBe(303);
+  const view = await f.get("/browser/shop");
+  expect(view.status).toBe(200); expect(await view.text()).toContain("คุณคุมอยู่ · จิตส่งคำสั่งไม่ได้จนกว่าคุณจะคืน");
+  expect((await f.get("/browser/shop/frame?g=13")).status).toBe(200);
+  expect((await f.post("/s15/forms/browser/input", { site: "shop", generation: "13", field: "username", value: "owner" })).status).toBe(303);
+  expect(log.inputs).toEqual([{ kind: "type", field: "username", value: "owner" }]);
+});
