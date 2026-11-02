@@ -266,6 +266,10 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           } catch (e) { return { state: 'denied', code: e instanceof BrowserError ? e.code : 'authority_unavailable' }; }
           finally { if (ownsBusy && !deferredUnlock && busy === lock) busy = null; }
         },
+        async settled() {
+          if (actor !== workActor || currentLease !== lease) throw new BrowserError('stale_input');
+          await Promise.allSettled([...scopes].filter(s => s.actor === workActor).map(s => s.completion));
+        },
         release() { if (actor !== workActor || currentLease !== lease) return; if (busy || pending.size || login === 'owner_control') throw new BrowserError('input_busy'); generation = continuity.advance(); stop(); actor = null; currentLease = null; },
         async resume(action, signal) {
           bound(); if (signal?.aborted) return { state: 'denied', code: 'cancelled' };

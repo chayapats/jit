@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BrowserRequest, BrokerResponse } from '../../src/s15/browser';
 import type { BrowserEngine, EngineOptions } from '../../src/s15/browser/engine';
+import type { BrowserClock } from '../../src/s15/browser/gateway';
 import { openFixtureRecordService, type FixtureRecord, type FixtureRecordEdit } from '../../src/s15/effects';
 import { browserFixture } from './s15-browser';
 import { ref } from './s15-policy';
@@ -24,10 +25,10 @@ export function recordEngine() {
 export const documentRecord = (): FixtureRecord => ({ id: 'document', kind: 'document', version: 1, fields: { title: 'Plan', body: 'Before' }, deleted: false, triggers: { notify: [], fulfillment: false, payment: false } });
 export const taskRecord = (): FixtureRecord => ({ ...documentRecord(), id: 'task', kind: 'task', fields: { title: 'Task', completed: false } });
 export const businessRecord = (): FixtureRecord => ({ ...documentRecord(), id: 'business', kind: 'business', fields: { note: 'Existing fact', classification: 'lead', priceMinor: '5000', discountBps: 0, terms: 'Existing terms', policy: 'Existing policy', commitment: '' } });
-export async function recordFixture(mode: 'static' | 'general' = 'static', record = documentRecord()) {
+export async function recordFixture(mode: 'static' | 'general' = 'static', record = documentRecord(), clock?: BrowserClock) {
   const dir = mkdtempSync(join(tmpdir(), 'jit-record-service-')); let rule = ref('business_rule');
   const server = openFixtureRecordService({ runtime: 's15', path: join(dir, 'records.sqlite'), create: true, resource: ref('account'), rule: () => rule, recipients: () => [{ id: 'team', ref: ref('payee') }, { id: 'new_recipient', ref: ref('other') }] });
-  server.seed(record); const engine = recordEngine(), f = await browserFixture(mode, server.site, engine.factory);
+  server.seed(record); const engine = recordEngine(), f = await browserFixture(mode, server.site, engine.factory, clock);
   const edit = (changes: FixtureRecordEdit['changes'], extra: Partial<FixtureRecordEdit> = {}): FixtureRecordEdit => ({ version: record.version, rule: structuredClone(rule), changes, evidence: [], notify: [], share: [], delete: false, ...extra });
   const execute = (request: BrowserRequest) => { engine.next = request; return f.work.execute({ kind: 'submit', target: 'e1_1', generation: f.work.state().generation }); };
   const navigate = () => f.work.execute({ kind: 'navigate', url: `${server.origin}/records/${record.id}`, generation: f.work.state().generation });

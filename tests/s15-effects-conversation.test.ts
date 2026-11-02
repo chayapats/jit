@@ -58,3 +58,23 @@ test.each([false, true])('conversational controlled document save with notificat
   else expect(view.needsYou).toHaveLength(0);
   expect(f.server.record('document').fields).toMatchObject({ body: 'Saved from normal conversation' });
 });
+
+test.each(['deny', 'cancel', 'stop', 'timeout'] as const)('a retained browser lease ends after %s and the next CHAT request can use it without sending the held request', async reason => {
+  const timers = new Set<() => void>();
+  const f = await recordFixture('static', undefined, { start(ms, callback) { expect(ms).toBe(30000); timers.add(callback); return () => { timers.delete(callback); }; } }); cleanup.push(() => f.cleanup()); f.work.release();
+  let browser!: BrowserWork, session!: Awaited<ReturnType<ConversationToolPort<ConversationPolicyWork>['open']>>, notify = true;
+  const registration = { ...f.gateway, open(actor: Parameters<typeof f.gateway.open>[0]) { browser = f.gateway.open(actor); return browser; } };
+  const bridge = createEffectsConversationTools(f.service, { browser: registration }); cleanup.push(async () => { try { await bridge.close(); } catch {} });
+  const tools: ConversationToolPort<ConversationPolicyWork> = { async open(work, input) { session = await bridge.tools.open(work, input); return session; } };
+  const c = chat(f, tools, { access: 'effect', dispatchAction: bridge.dispatchAction, steps: [
+    () => ({ name: 'protected_browser', arguments: { kind: 'navigate', url: `${f.server.origin}/records/document`, generation: browser.state().generation } }),
+    () => { f.engine.next = f.server.request('document', f.edit({ body: notify ? 'Held notification' : 'Next authorized edit' }, notify ? { notify: ['team'] } : {})); return { name: 'protected_browser', arguments: { kind: 'submit', target: 'e1_1', generation: browser.state().generation } }; },
+  ] });
+  const first = command('Update my document.'); c.app.submit(f.owner, first); await c.app.drain(); const view = conversationOwnerView(c.app, f.owner, 'conversation'); expect(view.needsYou).toHaveLength(1); expect(f.server.mutationCount).toBe(0);
+  if (reason === 'deny') { c.app.submit(f.owner, command('Deny')); await c.app.drain(); }
+  else if (reason === 'cancel') await session.cancel();
+  else if (reason === 'stop') c.app.stop(f.owner, first.requestId);
+  else { expect(timers.size).toBe(1); for (const callback of [...timers]) callback(); }
+  notify = false; const next = command('Update my document with the next note.'); c.app.submit(f.owner, next); await c.app.drain();
+  expect(c.app.view(f.owner, next.requestId).state).toBe('completed'); expect(f.server.mutationCount).toBe(1); expect(f.server.record('document').fields).toMatchObject({ body: 'Next authorized edit' });
+});

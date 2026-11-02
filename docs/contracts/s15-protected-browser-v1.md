@@ -53,6 +53,8 @@ Takeover advances the current durable generation, fences agent input/publication
 
 ## Continuity and evidence
 
+The host-only `BrowserWork.settled()` waits for the current lease's already-started native/network scopes. It neither dispatches nor renews authority, and old leases cannot wait on or release a newer lease. The effects/CHAT bridge uses this completion for cancellation/deadline cleanup and releases only after actual settlement; it reaps denied/stopped actions before a new browser admission. Cleanup aborts paused input, never an already-released broker transport.
+
 The additive [effect contract](s15-effects-v1.md) supplies one controlled record-service verifier. `BrowserSitePolicy.reconcileEffect(request, context)` is optional trusted read-only code and calls the original recovery context before actual I/O. `BrowserOwner.reconcile` invokes POLICY's authenticated charged recovery lane and clears only the matching continuity record after conclusive service evidence. Missing verifiers remain unsupported; owner statements never clear uncertainty.
 
 A small protected SQLite record outside the browser profile retains monotonic input generation and an armed/uncertain exact action reference. It is armed before action dispatch; crash/restart cannot clear it or reconstruct a callable request context. Unknown business outcomes remain reconcile-only and block fresh effect retries. Owner statements are not verification. The real policy ledger remains the authority for exact payloads, claims, approvals, nonrefundable budget charges and remote observations. Generic business reconciliation is unsupported until its protected verifier exists; opening a new browser/profile is not a retry mechanism.
