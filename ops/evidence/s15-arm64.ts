@@ -36,7 +36,7 @@ export async function runS15Arm64Evidence() {
   try {
     const before = await run(['limactl', 'snapshot', 'list', 'jit-work-arm', '--quiet']); writeFileSync(join(directory, 'snapshots-before.txt'), before, { mode: 0o600 });
     if ((await manager.inspect()).state === 'stopped') await manager.start();
-    tunnel = Bun.spawn(['ssh', '-F', sshConfig, '-N', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=5', '-R', `${relayPort}:127.0.0.1:${new URL(relay.origin).port}`, '-R', `${bootstrapPort}:127.0.0.1:${bootstrap.port}`, '-R', `${working.sshLocalPort}:127.0.0.1:${working.sshLocalPort}`, 'lima-jit-s15-arm'], { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
+    tunnel = Bun.spawn(['ssh', '-F', sshConfig, '-N', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'ControlPersist=no', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=5', '-R', `${relayPort}:127.0.0.1:${new URL(relay.origin).port}`, '-R', `${bootstrapPort}:127.0.0.1:${bootstrap.port}`, '-R', `${working.sshLocalPort}:127.0.0.1:${working.sshLocalPort}`, 'lima-jit-s15-arm'], { stdin: 'ignore', stdout: 'ignore', stderr: Bun.file(join(directory, 'tunnel.log')) });
     const browser = (await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'sh', '-c', 'find /home/jit-s15/.cache/ms-playwright -path "*/chrome-linux*/chrome" -type f | head -1'])).trim();
     if (!browser) throw Error('controller_chromium_not_installed');
     const archive = await run(['git', 'archive', '--format=tar', `--output=${join(directory, 'build.tar')}`, 'HEAD']); void archive;
@@ -47,7 +47,7 @@ export async function runS15Arm64Evidence() {
     const executed = await vmHostCommand(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', '-u', 'jit-s15', 'env', 'HOME=/home/jit-s15', 'JIT_S15_ARM64_EVIDENCE=1', 'sh', '-c', 'cd /home/jit-s15/build && bun ops/evidence/s15-controller.ts'], { timeoutMs: 600000, maxBytes: 1048576, input: payload });
     const result = Buffer.from(executed.stdout).toString();
     writeFileSync(join(directory, 'controller-summary.json'), result, { mode: 0o600 });
-    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', 'cp', output + '/results.json', '/tmp/jit-s15-results.json']);
+    await run(['limactl', 'shell', '--workdir', '/', 'jit-s15-arm', 'sudo', '-n', 'sh', '-c', `cp ${output}/results.json /tmp/jit-s15-results.json && chmod 644 /tmp/jit-s15-results.json`]);
     await run(['limactl', 'copy', 'jit-s15-arm:/tmp/jit-s15-results.json', join(directory, 'results.json')]);
     if (executed.exitCode !== 0) throw Error('controller_boundary_case_failed');
   } finally {

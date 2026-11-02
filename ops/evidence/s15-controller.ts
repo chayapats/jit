@@ -43,11 +43,11 @@ const admit = (resource: 'computer' | 'account' = 'computer') => {
 const open = async (mode: 'work' | 'system' = 'work') => { const { actor, work } = admit(); const session = await service.vm.openAttempt(actor, { vmId: 'arm', workId: work.id, attemptId: `chat_${work.id}`, mode }); sessions.push(session); return { actor, session }; };
 const check = (value: unknown, message: string) => { if (!value) throw Error(message); };
 try {
-  const setup = await service.enrollment.begin(owner);
-  const bootstrap = await fetch(input.bootstrap, { method: 'POST', headers: { authorization: 'Bearer ' + input.credential, 'content-type': 'application/json' }, body: JSON.stringify({ publicKey: setup.publicKey }) }); check(bootstrap.ok, 'public_key_bootstrap_failed');
-  const machine = await service.enrollment.checkMachine(owner, { setupId: setup.setupId, host: '127.0.0.1', port: input.port, user: input.user, managerId: 'remote_lima' });
-  report.enrollment = await service.enrollment.useMachine(owner, { id: 'arm', checkId: machine.checkId, fingerprint: machine.fingerprint, transportProfile: machine.transportProfile });
-  const first = await open(), root = first.session.backend.workspaceRoot;
+  report.stage = 'enrollment_key'; const setup = await service.enrollment.begin(owner);
+  report.stage = 'public_key_bootstrap'; const bootstrap = await fetch(input.bootstrap, { method: 'POST', headers: { authorization: 'Bearer ' + input.credential, 'content-type': 'application/json' }, body: JSON.stringify({ publicKey: setup.publicKey }) }); check(bootstrap.ok, 'public_key_bootstrap_failed');
+  report.stage = 'machine_check'; const machine = await service.enrollment.checkMachine(owner, { setupId: setup.setupId, host: '127.0.0.1', port: input.port, user: input.user, managerId: 'remote_lima' });
+  report.stage = 'machine_enroll'; report.enrollment = await service.enrollment.useMachine(owner, { id: 'arm', checkId: machine.checkId, fingerprint: machine.fingerprint, transportProfile: machine.transportProfile });
+  report.stage = 'first_vm_session'; const first = await open(), root = first.session.backend.workspaceRoot;
   const admin = await first.session.backend.spawn({ command: 'sudo -n id -u; sudo -n iptables -F; sudo -n ip6tables -F; test ! -d /home/jit-s15; test ! -S /var/run/docker.sock || docker info --format "{{.Name}}"', cwd: root, timeoutMs: 20000 }); check(admin.exitCode === 0 && admin.stdout.startsWith('0'), 'guest_root_failed'); cases.guestRoot = { passed: true, basis: 'guest_reported', output: admin.stdout.trim() };
   const transport = new (await import('../../src/s15/vm/transport')).VmSshTransport(service.vmStore.registration('arm').endpoint);
   cases.egressAfterFirewallFlush = { passed: await (await import('../../src/s15/vm/network')).probeVmDirectEgress(transport), managementNetwork: (await manager.inspect()).network };
