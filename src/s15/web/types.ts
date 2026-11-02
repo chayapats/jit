@@ -141,7 +141,7 @@ export interface S15WebActions<Actor> {
 export interface S15WebDuties<Actor> {
   list(actor: Actor): ResponsibilityProjection[];
   project(actor: Actor, id: string): ResponsibilityProjection;
-  stop(actor: Actor, id: string, requestId: string): ResponsibilityProjection;
+  stop(actor: Actor, id: string, requestId: string): void;
 }
 /** One trusted owner-input field of a website's sign-in documents, from protected registration. */
 export interface S15BrowserField { name: string; kind: "type" | "click"; secret: boolean; label: string }
