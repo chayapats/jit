@@ -4,6 +4,8 @@ Status: **proposed feasibility contract**, revision **1**, 2026-11-02, for [ARCH
 
 ## Conclusion and evidence boundary
 
+Implementation refinement, 2026-11-03: ADR 0064 records the owner's accepted RT15-01 option B. [s15-private-data/v1](s15-private-data-v1.md) implements bounded DATA15 lineage and actual BROW/MODEL/VM/adapter hooks. Registry proxy enforcement is destination-only; allowed-destination content/covert channels remain possible. Historical audit/proof obligations below are not a claim of universal enforcement or owner-host adoption.
+
 The pinned public `schway/host` surface can compose a Jit-owned VM execution adapter and protected service/browser tools without replacing Schway's loop, providers, retries, compaction or native persistence. It does **not** supply a VM manager, protected browser, semantic website-effect firewall or guest-root isolation. Those are host integration and enforcement obligations, not missing engine APIs merely because they are absent from the export list. No demonstrated missing Schway contract warrants a new upstream blocker in this audit.
 
 Unrestricted guest root cannot be assumed to obey a destructive-action gate inside that guest. Arbitrary authenticated website input and unrestricted outbound networking cannot be assumed to obey communication, payment, production or disclosure gates. These limits remain explicit activation gates below. Local fixtures verify integration behavior only; they do not certify S15 enforcement or make dependent implementation ready.

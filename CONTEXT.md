@@ -94,6 +94,8 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Human-required action:** An action held for owner authority under current policy: outbound communication without a standing exception, a general financial transaction, production deployment, a new private-data recipient or an unapproved major change. Final approval binds the actual action; captured recurring/standing rules remain purpose/resource/amount/frequency bounded.
 
+**Disclosure lineage (S15 opt-in):** The protected source/resource revisions and public/private/personal/business restrictions accumulated by work. Derived text, screenshots, artifacts and shared-VM inputs inherit ancestry even without citations. An exact new-recipient approval releases one prepared disclosure and never declassifies the source or approves that recipient generally. Registry destination control does not prevent content/covert-channel disclosure through allowed destinations; see [s15-private-data/v1](docs/contracts/s15-private-data-v1.md).
+
 **Major change:** A change with destructive/bulk or difficult-to-reverse data impact, authority/authentication/credential/approval impact, breaking dependent API/behavior, important service restructuring or a new business obligation. Impact, not changed-line count, determines the need for an unresolved owner decision. Investigation can proceed inside existing authority.
 
 **Approval card:** A revision-bound, single-use, expiring owner decision for one exact external action/content/destination. It is not a task acceptance or model confirmation.
