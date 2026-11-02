@@ -156,6 +156,7 @@ export const th = {
   "s15.conversation.stopped": "หยุดรับงานต่อแล้ว ผลของการทำงานที่ส่งไปยังอาจต้องตรวจสอบ",
   "s15.conversation.reconcile_only": "งานขาดช่วง ต้องตรวจสอบผลเดิมก่อน และจะไม่ส่งคำสั่งซ้ำ",
   "s15.conversation.material_ambiguity": "โปรดระบุงานหรือ issue ที่ต้องการให้ทำให้ชัดเจน",
+  "s15.conversation.owner_start_required": "ตรวจสอบเสร็จแล้ว โปรดเลือกงานและสั่งเริ่มก่อนดำเนินการแก้ไข",
   "s15.conversation.outside_scope": "คำขอนี้อยู่นอกความรับผิดชอบหรือสิทธิ์ที่กำหนดไว้",
   "s15.conversation.approval_required": "การกระทำนี้รอการอนุมัติรายละเอียดสุดท้ายจากเจ้าของ",
   "s15.conversation.authority_revoked": "สิทธิ์ของงานนี้ถูกเพิกถอนแล้ว",

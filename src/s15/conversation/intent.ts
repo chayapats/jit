@@ -2,8 +2,8 @@ import type { ConversationIntent } from "./types";
 
 /**
  * Conservative English/Thai direct-request grammar. Only original authenticated owner text is input.
- * Quotes, fenced code and forwarded lines are inert. Unknown/conditional/mixed scope is held once;
- * a model never upgrades this result. This deliberately is not a universal language classifier.
+ * Quotes, fenced code and forwarded lines are inert. Known conditional/mixed scope remains read-only;
+ * unknown wording may use isolated interpretation. This is not a universal language classifier.
  */
 export function groundConversationIntent(original: string): ConversationIntent {
   const instruction = original.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, " ")
@@ -15,10 +15,11 @@ export function groundConversationIntent(original: string): ConversationIntent {
   // Preserve quoted payload bytes for the task/model as data; only the stripped view determines authority.
   const result = (kind: ConversationIntent["kind"]): ConversationIntent => ({ kind, subject, instruction: original });
   if (!instruction) return result("answer");
-  if (/(?:\bif\b|\bunless\b|\bwhen\b|only after|ถ้า|หาก|เมื่อ)/u.test(text) || issues.length > 1 && /^(?:implement|fix|start|work|ทำ|เริ่ม|แก้)/u.test(text)) return result("ambiguous");
+  if (/(?:\bif\b|\bunless\b|\bwhen\b|only after|ถ้า|หาก|เมื่อ)/u.test(text)) return { ...result("ambiguous"), hold: "conditional" };
+  if (issues.length > 1 && /^(?:implement|fix|start|work|ทำ|เริ่ม|แก้)/u.test(text)) return result("ambiguous");
   if (/^(?:inspect|check|review|recommend|report|read|list|look\s+(?:at|up)|find|search|analy[sz]e|explain|summari[sz]e|ตรวจ|ดู|แนะนำ|อ่าน|ค้นหา|สรุป|วิเคราะห์|อธิบาย)/u.test(text)) {
     // An explicit subsequent mutation is material scope, not an inspection method.
-    if (/(?:\band\b|\band then\b|\bthen\b|และจากนั้น|แล้ว|และ)\s*(?:implement|fix|write|create|delete|publish|ทำ|แก้|สร้าง|ลบ)/u.test(text)) return result("ambiguous");
+    if (/(?:\band\b|\band then\b|\bthen\b|และจากนั้น|แล้ว|และ)\s*(?:implement|fix|write|create|delete|publish|ทำ|แก้|สร้าง|ลบ)/u.test(text)) return { ...result("ambiguous"), hold: "mixed_scope" };
     return result("inspect");
   }
   if (/^(?:do not|don't|never|ห้าม|อย่า|ยังไม่)/u.test(text)) return result("answer");

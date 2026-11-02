@@ -184,3 +184,29 @@ test("real POLICY: known action outcome survives a crash before CHAT outcome com
   f.app.submit(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
   expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
 });
+
+test("P1-6: more than 64 historical authorities do not block current bare or explicit decisions", async () => {
+  const f = fixture(); f.f.input.budget!.ceiling.calls = 1000; f.f.input.budget!.ceiling.spendMinor = "1000"; f.f.install();
+  for (let i = 0; i < 65; i++) { f.app.submit(f.owner, message("Create a hello file")); await f.app.drain(); }
+  await f.send(); conversationOwnerView(f.app, f.owner, "conversation");
+  const approve = message("Approve"); f.app.submit(f.owner, approve); await f.app.drain();
+  expect(f.app.store.request(approve.requestId).decision!.observation!.outcome).toBe("succeeded"); expect(f.counts().sends).toBe(1);
+  await f.send(); const slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou.find(entry => entry.slip?.state === "pending")!.slip!;
+  const deny = message(`deny ${slip.action.id}`); f.app.submit(f.owner, deny); await f.app.drain();
+  expect(f.app.store.request(deny.requestId).decision!.decision).toBe("deny"); expect(f.counts().sends).toBe(1);
+}, 30000);
+
+test("P1-7: an unreadable historical presentation cannot block unrelated explicit or bare decisions", async () => {
+  const f = fixture(); f.f.draft = { ...f.f.draft, fences: [{ kind: "lineage", ref: ref("source") }] };
+  const old = await f.send(); const oldSlip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
+  f.f.catalog.get("lineage:source")!.active = false; f.f.draft = { ...f.f.draft, fences: [] };
+  const fresh = await f.send(); const current = f.app.view(f.owner, fresh.requestId).slips[0]!;
+  const explicit = message(`approve ${current.action.id}`); f.app.submit(f.owner, explicit); await f.app.drain();
+  expect(f.counts().sends).toBe(1);
+  const another = await f.send(); f.app.view(f.owner, another.requestId);
+  const bare = message("Approve"); f.app.submit(f.owner, bare); await f.app.drain(); expect(f.counts().sends).toBe(2);
+  const withdrawn = message(`approve ${oldSlip.action.id}`); f.app.submit(f.owner, withdrawn); await f.app.drain();
+  expect(f.app.store.request(withdrawn.requestId)).toMatchObject({ state: "held", code: "lineage_withdrawn" });
+  expect(f.query<{ action_id: string }>("SELECT action_id FROM approvals").some(row => row.action_id === oldSlip.action.id)).toBe(false);
+  expect(f.app.view(f.owner, old.requestId).slips).toEqual([]);
+});

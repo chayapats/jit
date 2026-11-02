@@ -8,7 +8,7 @@ export type ModelCallBound = BudgetVector;
 /** Registered POLICY actor plus immutable data, held only by trusted CHAT/VM composition. */
 export interface ConversationPolicyWork<Worker extends object = WorkActor> { actor: Worker; authority: WorkAuthority }
 
-const known = new Set(["authentication_required", "authority_revoked", "stale_authority", "expired", "outside_scope", "finite_budget_required", "cost_unknown", "budget_exhausted", "capacity_busy", "selection_pinned", "recipient_approval_required", "lineage_withdrawn", "approval_reference_required", "stale_action", "already_claimed", "approval_required", "action_denied", "reconciliation_required", "read_bound_exhausted", "read_operation_unavailable"]);
+const known = new Set(["authentication_required", "authority_revoked", "stale_authority", "expired", "outside_scope", "finite_budget_required", "cost_unknown", "budget_exhausted", "capacity_busy", "selection_pinned", "recipient_approval_required", "lineage_withdrawn", "payload_withdrawn", "approval_reference_required", "stale_action", "already_claimed", "approval_required", "action_denied", "reconciliation_required", "read_bound_exhausted", "read_operation_unavailable"]);
 function mapped(error: unknown): AppError {
   const code = (error instanceof PolicyError || error instanceof AppError) && known.has(error.code) ? error.code : "policy_match_required";
   return new AppError(code, code === "authentication_required" ? 401 : 409);

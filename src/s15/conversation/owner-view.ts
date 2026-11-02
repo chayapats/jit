@@ -25,6 +25,7 @@ function state(request: ConversationRequest): ConversationOwnerRow["state"] {
   if (request.state === "stopped") return "stopped";
   if (request.decision?.decision === "deny") return "denied";
   if (request.decision?.observation?.outcome === "succeeded") return "done";
+  if (request.state === "completed" && request.code === "owner_start_required") return "question";
   if (request.state === "completed") return request.result === null ? "blocked" : "done";
   if (request.state === "reconcile_only") return "unknown";
   if (request.state === "accepted") return "received";

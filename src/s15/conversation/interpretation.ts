@@ -1,6 +1,7 @@
 import { AppError } from "../../errors";
 import type { ConversationIntent, ConversationScope } from "./types";
 import { exact, identity, parseCommandJson } from "./validation";
+import { groundConversationIntent } from "./intent";
 
 /**
  * Validates a tool-free interpreter proposal against the preapproved catalog, then takes the narrower
@@ -21,8 +22,11 @@ export function freezeInterpretation(raw: string, grounded: ConversationIntent, 
   if (grounded.kind === "inspect" && kind === "execute") kind = "inspect";
   const explicitIssues = [...new Set([...grounded.instruction.replace(/"[^"\n]*"|`[^`]*`|^\s*>.*$/gm, " ").matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `issue:${match[1]}`))];
   if (explicitIssues.length > 1 && grounded.kind === "ambiguous") kind = "ambiguous";
+  // Re-ground retained original bytes too: requests persisted before hold metadata existed are safe.
+  const hold = grounded.hold ?? groundConversationIntent(grounded.instruction).hold;
+  if (hold) kind = "inspect";
   if (grounded.subject && proposal.subject && grounded.subject !== proposal.subject) throw new AppError("outside_scope");
   if (explicitIssues.length === 0 && proposal.subject && !catalog.selectedSubjects?.includes(proposal.subject)) throw new AppError("material_ambiguity");
   const scope: ConversationScope = { purposeId: proposal.purposeId, resourceIds: [...proposal.resourceIds] as string[], access: kind === "execute" ? proposal.access as ConversationScope["access"] : "read" };
-  return { kind, instruction: grounded.instruction, subject: grounded.subject ?? proposal.subject as string | null, scope };
+  return { kind, instruction: grounded.instruction, subject: grounded.subject ?? proposal.subject as string | null, scope, ...(hold ? { hold } : {}) };
 }

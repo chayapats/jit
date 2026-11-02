@@ -26,7 +26,7 @@ export function rememberActionPresentation<Owner, Work>(app: ConversationApplica
 
 /**
  * Records an authenticated exact decision inside the ingress writer boundary. A bare affirmative uses
- * POLICY.decidePending with the complete conversation work set; several pending items ask which one.
+ * POLICY.decidePending with the currently pending conversation work set; several pending items ask which one.
  * Explicit IDs can select only a previously presented exact revision. Approval queues only that action,
  * never another model loop or a widened work grant. Duplicate commands use the original receipt.
  */
@@ -34,18 +34,52 @@ export function applyOwnerDecision<Owner, Work>(app: ConversationApplication<Own
   const policy = app.options.policy;
   request.phase = "decision";
   if (!policy.decidePending || !policy.decideAction) throw new AppError("approval_reference_required", 409);
-  const presentations = app.store.db.query<{ record_json: string }, [string, number]>("SELECT record_json FROM presentations WHERE conversation_id=? AND owner_generation=? ORDER BY rowid DESC LIMIT 65").all(request.receipt.conversationId, request.owner.generation).map(row => JSON.parse(row.record_json) as Presentation);
-  const live = policy.actionSlips?.(actor, presentations.map(row => row.action)) ?? [];
-  const pending = presentations.filter(row => live.some(slip => slip.action.id === row.action.id && slip.state === "pending" && slip.canApprove));
-  if (!decision.actionId && pending.length !== 1) throw new AppError("approval_reference_required", 409);
-  const seen = decision.actionId ? presentations.find(row => row.action.id === decision.actionId) : pending[0];
-  if (!seen) throw new AppError("approval_reference_required", 409);
-  const origins = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? AND json_extract(record_json,'$.phase')='work' AND json_type(record_json,'$.authority')='object'").all(request.receipt.conversationId).map(row => app.store.request(row.id));
   const principal = policy.requireOwner(actor);
-  if (origins.some(origin => origin.owner.id !== principal.id || origin.owner.generation !== principal.generation)) throw new AppError("authentication_required", 401);
-  const workIds = [...new Set(origins.map(origin => origin.authority!.id))];
-  const original = origins.find(origin => origin.receipt.rootRequestId === seen.sourceRequestId);
-  if (!original || workIds.length > 64) throw new AppError("approval_reference_required", 409);
+  const sameAction = (a: ActionRef, b: ActionRef) => a.id === b.id && a.revision === b.revision && a.actionHash === b.actionHash;
+  const presentation = (actionId: string): Presentation | null => {
+    const row = app.store.db.query<{ record_json: string }, [string, string, number]>("SELECT record_json FROM presentations WHERE conversation_id=? AND action_id=? AND owner_generation=?").get(request.receipt.conversationId, actionId, principal.generation);
+    return row ? JSON.parse(row.record_json) as Presentation : null;
+  };
+  const origin = (seen: Presentation): ConversationRequest => {
+    const source = app.store.request(seen.sourceRequestId);
+    if (source.receipt.conversationId !== request.receipt.conversationId || source.owner.id !== principal.id || source.owner.generation !== principal.generation) throw new AppError("authentication_required", 401);
+    if (source.phase !== "work" || !source.authority || !source.actions.some(action => sameAction(action, seen.action))) throw new AppError("approval_reference_required", 409);
+    return source;
+  };
+  let seen: Presentation | null, original: ConversationRequest;
+  const workIds: string[] = [];
+  if (decision.actionId) {
+    // Resolve the exact source before reading any payload. Unrelated history cannot block this item.
+    seen = presentation(decision.actionId);
+    if (!seen) throw new AppError("approval_reference_required", 409);
+    original = origin(seen);
+    if (!policy.actionSlips?.(actor, [seen.action]).some(slip => sameAction(slip.action, seen!.action))) throw new AppError("approval_reference_required", 409);
+  } else {
+    const pending = new Map<string, { action: ActionRef; source: ConversationRequest }>();
+    const origins = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? AND json_extract(record_json,'$.phase')='work' AND json_type(record_json,'$.authority')='object' AND json_array_length(record_json,'$.actions')>0").all(request.receipt.conversationId);
+    for (const row of origins) {
+      const source = app.store.request(row.id);
+      if (source.owner.id !== principal.id || source.owner.generation !== principal.generation) continue;
+      for (const action of source.actions) {
+        let slips: ActionSlip[];
+        try { slips = policy.actionSlips?.(actor, [action]) ?? []; }
+        catch (error) {
+          // Only expected withdrawal isolates a historical payload; continuity/operational errors fail closed.
+          if (error instanceof AppError && ["lineage_withdrawn", "payload_withdrawn"].includes(error.code)) continue;
+          throw error;
+        }
+        for (const slip of slips) if (slip.state === "pending" && slip.canApprove) pending.set(slip.action.id, { action: { id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash }, source });
+        if (pending.size > 1) throw new AppError("approval_reference_required", 409);
+      }
+    }
+    const only = [...pending.values()][0];
+    if (!only) throw new AppError("approval_reference_required", 409);
+    seen = presentation(only.action.id);
+    if (!seen) throw new AppError("approval_reference_required", 409);
+    original = origin(seen);
+    if (!sameAction(only.action, seen.action)) throw new AppError("stale_action", 409);
+    workIds.push(original.authority!.id);
+  }
   const input = { requestId: `cd_${digest(request.receipt.requestId)}`, action: seen.action, decision: decision.decision, expiresAt: seen.expiresAt };
   if (decision.actionId) policy.decideAction(actor, input);
   else policy.decidePending(actor, { requestId: input.requestId, workIds, seen: seen.action, decision: input.decision, expiresAt: input.expiresAt });

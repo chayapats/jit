@@ -315,7 +315,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       ownerAuth(actor); v.exact(input, ['requestId', 'workIds', 'seen', 'decision', 'expiresAt']); v.id(input.requestId); v.nat(input.expiresAt, true);
       if (ledger.get('SELECT id FROM receipts WHERE id=?', input.requestId)) { owner.decide(actor, { requestId: input.requestId, action: input.seen, decision: input.decision, expiresAt: input.expiresAt }); return; }
       if (!Array.isArray(input.workIds) || input.workIds.length > 64 || !input.workIds.length) v.fail('approval_reference_required'); input.workIds.forEach(v.id); if (new Set(input.workIds).size !== input.workIds.length) v.fail('invalid_shape');
-      const pending = ledger.all<{ json: string }>('SELECT a.json FROM actions a JOIN slots s ON a.id=s.action_id AND a.revision=s.revision').map(r => JSON.parse(r.json) as T.PreparedAction).filter(a => input.workIds.includes(a.workId)).map(a => slip(actionRef(a))).filter(s => s.state === 'pending' && s.canApprove);
+      const pending = ledger.all<{ json: string }>('SELECT a.json FROM actions a JOIN slots s ON a.id=s.action_id AND a.revision=s.revision').map(r => JSON.parse(r.json) as T.PreparedAction).filter(a => input.workIds.includes(a.workId)).flatMap(a => {
+        try { return [slip(actionRef(a))]; }
+        catch (error) {
+          // Withdrawn historical payloads are not selectable pending items. The selected action is
+          // still checked by decide below; corrupt state and other failures are never suppressed.
+          if (error instanceof v.PolicyError && ['lineage_withdrawn', 'payload_withdrawn'].includes(error.code)) return [];
+          throw error;
+        }
+      }).filter(s => s.state === 'pending' && s.canApprove);
       if (pending.length !== 1) v.fail('approval_reference_required'); const only = pending[0]!; if (!v.equal(actionRef(only.action), input.seen)) v.fail('stale_action');
       owner.decide(actor, { requestId: input.requestId, action: input.seen, decision: input.decision, expiresAt: input.expiresAt });
     }); },

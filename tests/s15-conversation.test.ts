@@ -229,7 +229,7 @@ test("fresh S15 format never rewrites S14/legacy bytes; concurrent process owner
   const before = readFileSync(legacy); expect(() => new ConversationStore(legacy, "fixture", true)).toThrow("conversation_store_incompatible"); expect(readFileSync(legacy)).toEqual(before);
 });
 
-test.each(["ช่วยดู issue ที่ค้างแล้วแก้ตัวที่พร้อมให้หน่อย", "The flaky test in repo X needs fixing; could you take care of it?"])("isolated interpretation admits natural work: %s", async text => {
+test.each(["ไฟล์ hello.txt ยังไม่มี ช่วยจัดการให้หน่อย", "The flaky test in repo X needs fixing; could you take care of it?"])("isolated interpretation admits natural work: %s", async text => {
   const f = fixture({ interpret: async () => ({ intent: "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: null }) }), command = message(text);
   f.app.submit(f.actor, command); await f.app.drain();
   expect(f.app.view(f.actor, command.requestId)).toMatchObject({ state: "completed", interpretationCalls: 1, intent: { kind: "execute", scope: { purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write" } } });
@@ -296,4 +296,90 @@ test("missing interpretation budget holds before any inference, context disclosu
   f.app.submit(f.actor, command); await f.app.drain();
   expect(f.app.view(f.actor, command.requestId)).toMatchObject({ state: "held", code: "finite_budget_required", authority: null, interpretation: null });
   expect(f.interpretationRequests).toEqual([]); expect(f.counts()).toMatchObject({ opens: 0, calls: 0, charges: 0 });
+});
+
+test("P1-1: every stored result crosses the publication guard after stop or another lifecycle transition", async () => {
+  const f = fixture(), command = message(); f.app.submit(f.actor, command); await f.app.drain();
+  expect(f.app.view(f.actor, command.requestId).result).not.toBeNull();
+  f.app.stop(f.actor, command.requestId);
+  expect(f.store.request(command.requestId).result).not.toBeNull();
+  expect(f.app.view(f.actor, command.requestId).result).toBeNull();
+  expect(conversationOwnerView(f.app, f.actor, "conversation").rows[0]!.result).toBeNull();
+  expect(() => f.app.publish(f.actor, command.requestId, () => { throw Error("must not publish"); })).toThrow("result_unavailable");
+  for (const state of ["held", "accepted", "reconcile_only"] as const) {
+    const changed = f.store.request(command.requestId); changed.state = state; f.store.transaction(() => f.store.save(changed));
+    expect(f.app.view(f.actor, command.requestId).result).toBeNull();
+  }
+});
+
+test.each(["If issue #42 is ready, implement it", "Inspect issue #42 then implement it", "ถ้า issue #42 พร้อม ให้เริ่มทำ", "ช่วยดู issue ที่ค้างแล้วแก้ตัวที่พร้อมให้หน่อย"])("P1-2: known conditional/mixed scope stays report-only despite an execute proposal: %s", async text => {
+  const f = fixture({ interpret: async () => ({ intent: "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: /#42/.test(text) ? "issue:42" : null }) }), command = message(text);
+  f.app.submit(f.actor, command); await f.app.drain();
+  const view = f.app.view(f.actor, command.requestId);
+  expect(view).toMatchObject({ state: "completed", code: "owner_start_required", intent: { kind: "inspect", scope: { access: "read" } } });
+  expect(view.result).not.toBeNull(); expect(view.evidence[0]!.tool).toBe("read_issues");
+  expect(f.requests.every(request => request.tools?.every(tool => tool.name === "read_issues"))).toBe(true);
+  expect(conversationOwnerView(f.app, f.actor, "conversation").needsYou[0]!.code).toBe("owner_start_required");
+});
+
+test("P1-3: model-produced ambiguity gets a fresh bounded clarification attempt under the original work identity", async () => {
+  let attempts = 0;
+  const f = fixture({ interpret: async () => ({ intent: ++attempts === 1 ? "ambiguous" : "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: "issue:42" }) }), command = message("Implement issue #42");
+  const receipt = f.app.submit(f.actor, command); await f.app.drain(); const held = f.app.view(f.actor, command.requestId);
+  expect(held).toMatchObject({ state: "held", code: "material_ambiguity", interpretationCalls: 1 });
+  const clarification = { ...message("Select issue #42"), continuation: { requestId: command.requestId, revision: held.revision } };
+  expect(f.app.submit(f.actor, clarification).rootRequestId).toBe(receipt.rootRequestId); await f.app.drain();
+  expect(f.app.view(f.actor, command.requestId)).toMatchObject({ state: "completed", interpretationCalls: 2, toolCalls: 1 });
+  expect(f.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM native_sessions WHERE phase LIKE 'interpretation%'").get()!.n).toBe(2);
+  f.app.submit(f.actor, clarification); await f.app.drain(); expect(f.counts().calls).toBe(1);
+});
+
+test("P1-4: a later owner selection cannot resolve an earlier unresolved start", async () => {
+  const f = fixture({ interpret: async () => ({ intent: "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: "issue:42" }) }), earlier = message("Start it"), later = message("Select issue #42");
+  f.app.submit(f.actor, earlier); f.app.submit(f.actor, later); await f.app.drain();
+  expect(f.app.view(f.actor, earlier.requestId)).toMatchObject({ state: "held", code: "material_ambiguity" });
+  expect(f.app.view(f.actor, later.requestId).state).toBe("accepted");
+  expect(JSON.stringify(f.interpretationRequests[0]!.context)).not.toContain(later.text);
+  expect(f.counts()).toMatchObject({ opens: 0, calls: 0 });
+});
+
+test("P1-5: 256 orphaned queued rows cannot starve a newly authenticated request", async () => {
+  const f = fixture(); for (let i = 0; i < 256; i++) f.app.submit(f.actor, message());
+  f.store.close(); const store = new ConversationStore(f.path, "fixture"); stores.push(store);
+  const app = new ConversationApplication(store, f.appOptions), command = message(); app.submit(f.actor, command); await app.drain();
+  expect(app.view(f.actor, command.requestId).state).toBe("completed"); expect(f.counts().calls).toBe(1);
+  expect(store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM requests WHERE state='queued'").get()!.n).toBe(256);
+}, 15000);
+
+test("clarification attempts are capped, metered separately and survive restart without replay", async () => {
+  const f = fixture({ interpret: async () => ({ intent: "ambiguous", purposeId: "assigned", resourceIds: ["workspace"], access: "read", subject: "issue:42" }) }), command = message("Implement issue #42");
+  f.app.submit(f.actor, command); await f.app.drain();
+  for (let i = 0; i < 4; i++) {
+    const held = f.store.request(command.requestId), next = { ...message("Select issue #42"), continuation: { requestId: command.requestId, revision: held.revision } };
+    f.app.submit(f.actor, next); await f.app.drain();
+  }
+  const held = f.store.request(command.requestId); expect(held.interpretationCalls).toBe(5); expect(f.counts().charges).toBe(5);
+  f.store.close(); const store = new ConversationStore(f.path, "fixture"); stores.push(store); const app = new ConversationApplication(store, f.appOptions);
+  expect(() => app.submit(f.actor, { ...message("Select issue #42"), continuation: { requestId: command.requestId, revision: held.revision } })).toThrow("budget_exhausted");
+  await app.drain(); expect(f.interpretationRequests).toHaveLength(5); expect(f.counts().calls).toBe(0);
+});
+
+test("context excludes answers completed after ingress and answers withdrawn before interpretation", async () => {
+  const f = fixture({ turns: async () => [{ type: "text", text: "RETAINED_ASSISTANT_SECRET" }] }), answer = message("What is this?");
+  f.app.submit(f.actor, answer);
+  const queued = message("What next?"); f.app.submit(f.actor, queued); await f.app.drain();
+  expect(f.store.request(answer.requestId).result).toBe("RETAINED_ASSISTANT_SECRET");
+  expect(JSON.stringify(f.interpretationRequests[1]!.context)).not.toContain("RETAINED_ASSISTANT_SECRET");
+  f.app.stop(f.actor, answer.requestId); f.app.stop(f.actor, queued.requestId);
+  const later = message("What now?"); f.app.submit(f.actor, later); await f.app.drain();
+  expect(JSON.stringify(f.interpretationRequests[2]!.context)).not.toContain("RETAINED_ASSISTANT_SECRET");
+});
+
+test("conditional read evaluation cannot be continued as a write, but a fresh explicit owner start can", async () => {
+  const f = fixture({ interpret: async () => ({ intent: "execute", purposeId: "assigned", resourceIds: ["workspace"], access: "reversible_write", subject: "issue:42" }) }), conditional = message("If issue #42 is ready, implement it");
+  f.app.submit(f.actor, conditional); await f.app.drain(); const report = f.app.view(f.actor, conditional.requestId);
+  expect(f.seenModes).toEqual(["inspect"]);
+  expect(() => f.app.submit(f.actor, { ...message("Select issue #42"), continuation: { requestId: conditional.requestId, revision: report.revision } })).toThrow("stale_revision");
+  const start = message("Implement issue #42"); f.app.submit(f.actor, start); await f.app.drain();
+  expect(f.app.view(f.actor, start.requestId).state).toBe("completed"); expect(f.seenModes).toEqual(["inspect", "execute"]);
 });

@@ -153,6 +153,7 @@ export const en: Record<MessageKey, string> = {
   "s15.conversation.stopped": "Further work is fenced; dispatched operations may still need reconciliation.",
   "s15.conversation.reconcile_only": "Interrupted work needs reconciliation and will not be resubmitted.",
   "s15.conversation.material_ambiguity": "Specify the task or selected issue to execute.",
+  "s15.conversation.owner_start_required": "Inspection finished. Select the task and ask to start before any changes.",
   "s15.conversation.outside_scope": "This request is outside the assigned responsibility or current authority.",
   "s15.conversation.approval_required": "This action is waiting for owner approval of its final details.",
   "s15.conversation.authority_revoked": "Authority for this work has been revoked.",

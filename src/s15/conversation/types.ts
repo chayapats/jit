@@ -16,6 +16,8 @@ export interface ConversationIntent {
   instruction: string;
   /** Frozen before tools; later model/tool/source output can only narrow this ceiling. */
   scope?: ConversationScope;
+  /** Known owner condition/mixed scope permits evaluation reads only, pending an explicit owner start. */
+  hold?: "conditional" | "mixed_scope";
 }
 /** Structured isolated interpretation is an untrusted proposal within the current approved catalog. */
 export interface ConversationScope { purposeId: string; resourceIds: string[]; access: "read" | "reversible_write" | "effect" }
@@ -90,6 +92,13 @@ export interface ConversationRequest {
   phase: "interpretation" | "work" | "decision";
   interpretation: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[] } | null;
   interpretationCalls: number;
+  /** At most four owner clarification continuations; absent fields denote an older retained request. */
+  clarifications?: number;
+  /** Each admitted interpretation has one fresh native session and one physical model-call claim. */
+  interpretationAttempt?: number;
+  interpretationCallAttempt?: number;
+  /** Durable ingress event sequence: interpretation cannot use subsequently authored context. */
+  contextSequence?: number;
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   actions: ActionRef[];
   /** Owner-only exact decision/dispatch. It cannot resume a model loop or grant another purpose. */
