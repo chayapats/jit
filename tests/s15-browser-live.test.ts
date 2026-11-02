@@ -10,7 +10,7 @@ const observed = (result: BrowserResult): BrowserObservation => { expect(result.
 live('opt-in real protected browser engine', () => {
   for (const mode of ['static', 'general'] as const) {
     test(`${mode}: actual navigation, JS boundary, login/TOTP, exact send/payment/disclosure holds, edit, redirect/popup/download denial`, async () => {
-      const server = browserSite(); const f = await browserFixture(mode, server.site);
+      const server = browserSite({ delayMs: 250 }); const f = await browserFixture(mode, server.site);
       const run = (input: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'screenshot' | 'click'; target?: string } | { kind: 'type' | 'select'; target: string; value: string }): Promise<BrowserResult> => f.work.execute({ ...input, generation: f.work.state().generation } as BrowserOperation);
       const nav = async (path: string) => { expect(await run({ kind: 'navigate', url: server.origin + path })).toMatchObject({ state: 'ok' }); };
       const click = async (name: string) => { const page = observed(await run({ kind: 'read' })); const target = page.elements.find(e => e.name === name); expect(target).toBeDefined(); return run({ kind: 'click', target: target!.id }); };

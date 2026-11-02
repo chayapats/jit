@@ -4,6 +4,7 @@ import { s14CodingEn } from "./s14-coding-en";
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
   "s15.browser.redirect_unsupported": "Redirects are unavailable; the next destination was not contacted.",
+  "s15.browser.operation_timeout": "The operation timed out. Reconcile any effect already sent before continuing.",
   "s15.browser.checking": "Checking whether sign-in worked.",
   "s15.browser.signed_in": "Signed in. Signing in does not authorize sending or paying.",
   "s15.browser.not_signed_in": "Not signed in yet. The site still asks for sign-in.",

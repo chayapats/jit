@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { BrowserOperation, BrowserRequest, BrowserSitePolicy, BrowserResult } from '../src/s15/browser';
-import type { BrowserEngine, EngineOptions } from '../src/s15/browser/engine';
+import type { BrowserClock } from '../src/s15/browser/gateway';
+import type { BrokerResponse } from '../src/s15/browser';
+import type { BrowserEngine, EngineOptions, EngineInputContext } from '../src/s15/browser/engine';
 import { denyProxy } from '../src/s15/browser/engine';
 import { operation, validateRequest } from '../src/s15/browser/validation';
 import { protectedBrowserTools } from '../src/s15/browser/tools';
@@ -11,21 +13,23 @@ const cleanup: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 function fake() {
   let options!: EngineOptions, url = '', next: BrowserRequest | null = null, cookie: string | null = null;
-  let sent = 0, denied = 0, frames = 0; let afterNavigate: BrowserRequest | null = null; let blockRead: (() => Promise<void>) | null = null;
+  let sent = 0, denied = 0, frames = 0, physicalInputs = 0, noWait = false;
+  let beforeInput: ((input: EngineInputContext) => Promise<void>) | null = null, nextOwner: BrowserRequest | null = null;
+  const responses: BrokerResponse[] = []; let afterNavigate: BrowserRequest | null = null; let blockRead: (() => Promise<void>) | null = null;
   const make = (target: string): BrowserRequest => ({ url: target, method: 'GET', contentType: '', bodyBase64: '', navigation: true });
-  async function request(r: BrowserRequest, attributable = true) { await options.request({ request: r, cookies: cookie ?? '', main: true, document: true, attributable, async send() { sent++; url = r.url; }, async deny() { denied++; } }); }
+  async function request(r: BrowserRequest, attributable = true) { await options.request({ request: r, cookies: cookie ?? '', main: true, document: true, attributable, async send(response) { sent++; url = r.url; responses.push(response); if (response.setCookies.length) cookie = response.setCookies.map(v => v.split(';')[0]).join('; '); }, async deny() { denied++; } }); }
   const engine: BrowserEngine = {
     async navigate(target) { await request(make(target)); if (afterNavigate) await request(afterNavigate, false); },
     async read(generation) { await blockRead?.(); return { id: 'observation', generation, url, text: 'Observed content', truncated: false, elements: [{ id: 'e1_1', tag: 'button', name: 'Read more', type: 'submit' }] }; },
     async image() { frames++; return new Uint8Array([1, 2, 3]); },
-    async interact() { if (next) { const r = next; next = null; await request(r); } },
-    async ownerInput() {}, async cookie() { return cookie; }, async close() {},
+    async interact(_kind, _target, _value, _generation, input) { await beforeInput?.(input); input.guard(); physicalInputs++; if (next) { const r = next; next = null; const job = request(r); if (noWait) void job.catch(() => {}); else await job; } },
+    async ownerInput(_value, input) { await beforeInput?.(input); input.guard(); physicalInputs++; if (nextOwner) { const r = nextOwner; nextOwner = null; const job = request(r); if (noWait) void job.catch(() => {}); else await job; } }, async cookie() { return cookie; }, async close() {},
   };
-  return { factory: async (o: EngineOptions) => { options = o; return engine; }, make, request, set afterNavigate(r: BrowserRequest) { afterNavigate = r; }, set next(r: BrowserRequest) { next = r; }, set cookie(v: string | null) { cookie = v; }, set blockRead(v: (() => Promise<void>) | null) { blockRead = v; }, get sent() { return sent; }, get denied() { return denied; }, get frames() { return frames; } };
+  return { responses, set noWait(value: boolean) { noWait = value; }, set beforeInput(fn: ((input: EngineInputContext) => Promise<void>) | null) { beforeInput = fn; }, set nextOwner(r: BrowserRequest) { nextOwner = r; }, get physicalInputs() { return physicalInputs; }, factory: async (o: EngineOptions) => { options = o; return engine; }, make, request, set afterNavigate(r: BrowserRequest) { afterNavigate = r; }, set next(r: BrowserRequest) { next = r; }, set cookie(v: string | null) { cookie = v; }, set blockRead(v: (() => Promise<void>) | null) { blockRead = v; }, get sent() { return sent; }, get denied() { return denied; }, get frames() { return frames; } };
 }
-async function setup(mode: 'static' | 'general' = 'static') {
+async function setup(mode: 'static' | 'general' = 'static', clock?: BrowserClock) {
   const server = browserSite(), engine = fake(); cleanup.push(() => server.close());
-  const f = await browserFixture(mode, server.site, engine.factory); cleanup.push(() => f.cleanup());
+  const f = await browserFixture(mode, server.site, engine.factory, clock); cleanup.push(() => f.cleanup());
   const execute = (input: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'screenshot' | 'click'; target?: string }): Promise<BrowserResult> => f.work.execute({ ...input, generation: f.work.state().generation } as BrowserOperation);
   await execute({ kind: 'navigate', url: server.origin + '/clean-task' });
   return { ...f, server, engine, execute };
@@ -166,4 +170,87 @@ test('reopening with the same durable actor does not resurrect a released closur
   expect((await f.work.execute({ kind: 'read', generation: next.state().generation })).state).toBe('denied');
   expect(await next.execute({ kind: 'read', generation: next.state().generation })).toMatchObject({ state: 'denied', code: 'input_busy' });
   release(); expect((await pending).state).toBe('observed'); next.release();
+});
+
+const gate = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
+function manualClock() {
+  let now = 0; const timers = new Map<() => void, number>();
+  return {
+    start(ms: number, callback: () => void) { timers.set(callback, now + ms); return () => { timers.delete(callback); }; },
+    advance(ms: number) { now += ms; for (const [callback, due] of timers) if (due <= now) { timers.delete(callback); callback(); } },
+  };
+}
+
+test('P1 slow links and owner login wait for the actual intercepted response after input acknowledgment', async () => {
+  const clock = manualClock(), f = await setup('static', clock); f.engine.noWait = true;
+  const entered = gate(), response = gate();
+  f.server.beforeResponse = async path => { if (path === '/') { entered.resolve(); await response.promise; } };
+  f.engine.next = f.engine.make(f.server.origin + '/'); let completed = false;
+  const click = f.execute({ kind: 'click', target: 'e1_1' }).then(r => { completed = true; return r; });
+  await entered.promise; clock.advance(150); await Promise.resolve();
+  expect(completed).toBe(false); expect(f.engine.sent).toBe(1);
+  response.resolve(); expect((await click).state).toBe('ok'); expect(f.engine.sent).toBe(2);
+  f.server.beforeResponse = null; await f.execute({ kind: 'navigate', url: f.server.origin + '/login' });
+  const owner = await f.gateway.owner.takeover(f.owner), loginEntered = gate(), loginResponse = gate();
+  f.server.beforeResponse = async path => { if (path === '/login') { loginEntered.resolve(); await loginResponse.promise; } };
+  f.engine.nextOwner = post(f.server.origin + '/login', new URLSearchParams({ password: f.server.password() }).toString());
+  let loginCompleted = false;
+  const login = f.gateway.owner.input(f.owner, owner.generation, { kind: 'click', field: 'confirm' }).then(() => { loginCompleted = true; });
+  await loginEntered.promise; clock.advance(150); await Promise.resolve(); expect(loginCompleted).toBe(false);
+  loginResponse.resolve(); await login; expect(loginCompleted).toBe(true);
+  f.gateway.owner.handBack(f.owner, owner.generation, true);
+});
+
+test.each(['timeout', 'cancel'] as const)('P1 %s after an approved effect is released retains the real transport and becomes reconcile-only', async reason => {
+  const clock = manualClock(), f = await setup('static', clock), entered = gate(), response = gate(), controller = new AbortController();
+  let transport: AbortSignal | null = null;
+  f.server.beforeResponse = async (path, request) => { if (path === '/edit') { transport = request.signal; entered.resolve(); await response.promise; } };
+  f.engine.noWait = true; f.engine.next = post(f.server.origin + '/edit', 'note=Slow+approved+edit');
+  const operation = f.work.execute({ kind: 'click', target: 'e1_1', generation: f.work.state().generation }, controller.signal);
+  await entered.promise;
+  if (reason === 'timeout') clock.advance(30000); else controller.abort();
+  expect(await operation).toMatchObject({ state: 'unknown', code: 'reconciliation_required' });
+  expect((transport as AbortSignal | null)?.aborted).toBe(false);
+  const action = f.work.state().reconciliation; expect(action).not.toBeNull();
+  response.resolve(); await f.gateway.owner.takeover(f.owner);
+  // Await the retained transport's policy observation; it is not a new dispatch or a timer-based retry.
+  await f.gateway.close();
+  expect(f.service.owner.inspect(f.owner, action!).observation?.outcome).toBe('unknown');
+  expect((transport as AbortSignal | null)?.aborted).toBe(false);
+  expect(f.server.received.filter(r => r.path === '/edit')).toHaveLength(1); expect(f.engine.sent).toBe(1);
+});
+
+test('P1 login keeps two Set-Cookie fields and their independent attributes out of ordinary headers and payloads', async () => {
+  const f = await setup(); await f.execute({ kind: 'navigate', url: f.server.origin + '/login' });
+  const owner = await f.gateway.owner.takeover(f.owner);
+  f.engine.nextOwner = post(f.server.origin + '/login', new URLSearchParams({ password: f.server.password() }).toString());
+  await f.gateway.owner.input(f.owner, owner.generation, { kind: 'click', field: 'confirm' });
+  f.engine.nextOwner = post(f.server.origin + '/two-factor', new URLSearchParams({ otp: f.server.code() }).toString());
+  await f.gateway.owner.input(f.owner, owner.generation, { kind: 'click', field: 'confirm' });
+  const response = f.engine.responses.at(-1)!;
+  expect(response.setCookies.length).toBe(2); expect(Object.hasOwn(response.headers, 'set-cookie')).toBe(false);
+  expect(response.setCookies[0]!.includes('; Expires=Wed, 01 Jan 2031 00:00:00 GMT')).toBe(true);
+  expect(response.setCookies[0]!.includes('; SameSite=Strict;')).toBe(true);
+  expect(response.setCookies[1]!.includes('; SameSite=Lax;')).toBe(true); expect(response.setCookies[1]!.endsWith('; Max-Age=3600')).toBe(true);
+  f.gateway.owner.handBack(f.owner, owner.generation); expect(await f.gateway.owner.checkSession(f.owner)).toBe('signed_in');
+});
+
+test('P1 tool cancellation while input awaits readiness prevents the later physical input and request release', async () => {
+  const f = await setup(), entered = gate(), ready = gate(), controller = new AbortController();
+  f.engine.beforeInput = async input => { expect(input.signal instanceof AbortSignal).toBe(true); entered.resolve(); await ready.promise; };
+  f.engine.next = post(f.server.origin + '/edit', 'note=Must+not+leave');
+  const tool = protectedBrowserTools(f.work)[0]!;
+  const call = tool.execute({ kind: 'click', target: 'e1_1', generation: f.work.state().generation }, { workspace: '/untrusted', signal: controller.signal } as never);
+  await entered.promise; controller.abort(); ready.resolve(); const result = await call;
+  expect(JSON.parse(result.content)).toMatchObject({ state: 'denied', code: 'cancelled' }); expect(result.isError).toBe(true);
+  expect(f.engine.physicalInputs).toBe(0); expect(f.server.received.some(r => r.path === '/edit')).toBe(false);
+});
+
+test('P1 cancellation withholds an observation captured after the tool signal was aborted', async () => {
+  const f = await setup(), entered = gate(), captured = gate(), controller = new AbortController();
+  f.engine.blockRead = async () => { entered.resolve(); await captured.promise; };
+  const call = protectedBrowserTools(f.work)[0]!.execute({ kind: 'read', generation: f.work.state().generation }, { workspace: '/untrusted', signal: controller.signal } as never);
+  await entered.promise; controller.abort(); captured.resolve(); const result = await call;
+  expect(result.isError).toBe(true); expect(JSON.parse(result.content)).toMatchObject({ state: 'denied', code: 'cancelled' });
+  expect(result.content).not.toContain('Observed content');
 });

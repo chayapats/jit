@@ -3,12 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerProtectedBrowser, type BrowserMode, type BrowserSitePolicy } from '../../src/s15/browser';
+import type { BrowserClock } from '../../src/s15/browser/gateway';
 import type { BrowserEngine, EngineOptions } from '../../src/s15/browser/engine';
 import { fixture, ref } from './s15-policy';
 
 /** Controlled real HTTP fixture, with ephemeral credentials never printed, tracked or stored in receipts. */
-export function browserSite() {
-  const password = randomBytes(24).toString('hex'), secret = randomBytes(20), session = randomBytes(24).toString('hex');
+export function browserSite(options: { delayMs?: number } = {}) {
+  const password = randomBytes(24).toString('hex'), secret = randomBytes(20), session = randomBytes(24).toString('hex'), proof = randomBytes(24).toString('hex');
+  let beforeResponse: ((path: string, request: Request) => Promise<void>) | null = null;
   let secondFactor = false; const received: { path: string; method: string; body: string }[] = [];
   const totp = (time = Date.now()) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64BE(BigInt(Math.floor(time / 30000))); const hash = createHmac('sha1', secret).update(bytes).digest(), offset = hash[19]! & 15; return String((hash.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0'); };
   const html = (body: string, status = 200, headers: Record<string, string> = {}) => new Response(`<!doctype html><html><body>${body}</body></html>`, { status, headers: { 'content-type': 'text/html; charset=utf-8', ...headers } });
@@ -17,6 +19,8 @@ export function browserSite() {
     const url = new URL(request.url), path = url.pathname, body = await request.text();
     // Never retain credential-bearing login requests in the observable request log.
     if (!['/login', '/two-factor'].includes(path)) received.push({ path: path + url.search, method: request.method, body });
+    await beforeResponse?.(path, request);
+    if (options.delayMs && (request.method === 'POST' || path === '/')) await Bun.sleep(options.delayMs);
     if (path === '/') return html(`<h1>Controlled website</h1><a href="/task">Task</a><a href="/login">Sign in</a><a href="/attacks">Limits</a><div id="js">Static fallback</div><script src="/app.js"></script>`);
     if (path === '/app.js') return new Response(`document.querySelector('#js').textContent='JavaScript executed';fetch('/background',{method:'POST',body:'must not leave'});`, { headers: { 'content-type': 'application/javascript' } });
     if (path === '/login' && request.method === 'GET') return html(form('/login', '<input name="password" type="password" autocomplete="current-password">', 'Sign in'));
@@ -27,9 +31,13 @@ export function browserSite() {
     }
     if (path === '/two-factor' && request.method === 'POST') {
       const code = new URLSearchParams(body).get('otp');
-      return secondFactor && code === totp() ? html('<h1>Signed in</h1><a href="/task">Task</a>', 200, { 'set-cookie': `jit_session=${session}; HttpOnly; SameSite=Strict; Path=/` }) : html('Rejected', 401);
+      if (!secondFactor || code !== totp()) return html('Rejected', 401);
+      const headers = new Headers({ 'content-type': 'text/html' });
+      headers.append('set-cookie', `jit_session=${session}; HttpOnly; SameSite=Strict; Path=/; Expires=Wed, 01 Jan 2031 00:00:00 GMT`);
+      headers.append('set-cookie', `jit_proof=${proof}; HttpOnly; SameSite=Lax; Path=/; Max-Age=3600`);
+      return new Response('<h1>Signed in</h1><a href="/task">Task</a>', { headers });
     }
-    if (path === '/session') return html('Session observation', request.headers.get('cookie')?.includes(`jit_session=${session}`) ? 200 : 401);
+    if (path === '/session') return html('Session observation', request.headers.get('cookie')?.includes(`jit_session=${session}`) && request.headers.get('cookie')?.includes(`jit_proof=${proof}`) ? 200 : 401);
     if (path === '/task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a><input name="upload" type="file">`);
     if (path === '/clean-task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a>`);
     if (['/message', '/checkout', '/edit'].includes(path)) return html(`<h1>Request accepted</h1><a href="/clean-task">Back</a>`);
@@ -57,12 +65,12 @@ export function browserSite() {
       return null;
     },
   };
-  return { origin, site, received, password: () => password, code: () => totp(), close: () => server.stop(true) };
+  return { origin, site, received, set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
 }
 /** Real policy service and disposable protected profile shared by deterministic and opt-in engine tests. */
-export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>) {
+export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>, clock?: BrowserClock) {
   const dir = mkdtempSync(join(tmpdir(), 'jit-protected-browser-'));
-  const gateway = await registerProtectedBrowser({ runtime: 's15', continuity: { path: join(dir, 'continuity.sqlite'), create: true }, mode, resource: ref('account'), fences: [{ kind: 'input', ref: ref('input') }], profilePath: join(dir, 'profile'), executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, upperBound: { attempts: 0, steps: 1, calls: 0, reads: 1, outputBytes: 2097152, activeMs: 30000, spendMinor: '0' }, now: () => 1000 }, factory);
+  const gateway = await registerProtectedBrowser({ runtime: 's15', continuity: { path: join(dir, 'continuity.sqlite'), create: true }, mode, resource: ref('account'), fences: [{ kind: 'input', ref: ref('input') }], profilePath: join(dir, 'profile'), executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, upperBound: { attempts: 0, steps: 1, calls: 0, reads: 1, outputBytes: 2097152, activeMs: 30000, spendMinor: '0' }, now: () => 1000 }, factory, clock);
   const f = fixture({ adapters: [gateway.adapter], reads: [gateway.readHandler] });
   f.input.budget!.ceiling = { attempts: 1000, steps: 1000, calls: 1000, reads: 1000, outputBytes: 2_000_000_000, activeMs: 30_000_000, spendMinor: '100' };
   f.input.rules[0]!.adapters.push('protected_browser'); f.input.rules[0]!.operations.push('browser_request');

@@ -7,6 +7,7 @@ import { s14CodingTh } from "./s14-coding-th";
 
 export const th = {
   "s15.browser.redirect_unsupported": "ยังไม่รองรับ redirect จึงไม่ส่งต่อไปปลายทางใหม่",
+  "s15.browser.operation_timeout": "operation หมดเวลาแล้ว ต้องตรวจสอบ effect ที่ส่งไปแล้วก่อนทำต่อ",
   "s15.browser.checking": "กำลังตรวจว่าเข้าสู่ระบบสำเร็จหรือยัง",
   "s15.browser.signed_in": "เข้าสู่ระบบแล้ว การเข้าสู่ระบบไม่ได้อนุญาตให้ส่งหรือจ่ายอะไร",
   "s15.browser.not_signed_in": "ยังไม่ได้เข้าสู่ระบบ หน้าเว็บยังขอให้เข้าสู่ระบบอยู่",

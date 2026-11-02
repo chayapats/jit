@@ -9,7 +9,8 @@ export function protectedBrowserTools(work: BrowserWork): readonly ToolDefinitio
     async execute(input: unknown, ctx) {
       if (ctx.signal?.aborted) return { content: JSON.stringify({ state: 'denied', code: 'cancelled' }), isError: true };
       if (input && typeof input === 'object' && Object.keys(input).join() === 'kind' && (input as { kind: string }).kind === 'state') return { content: JSON.stringify(work.state()) };
-      const result = await work.execute(input as BrowserOperation);
+      const result = await work.execute(input as BrowserOperation, ctx.signal);
+      if (ctx.signal?.aborted) return { content: JSON.stringify(result.state === 'unknown' ? result : { state: 'denied', code: 'cancelled' }), isError: true };
       return { content: JSON.stringify(result), isError: ['denied', 'unsupported', 'unknown'].includes(result.state) };
     },
   }];

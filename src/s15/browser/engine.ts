@@ -7,11 +7,13 @@ import { BrowserError } from './validation';
 
 /** Private host request interception. This port is dependency injection for deterministic tests, never a tool. */
 export interface EngineRequest { request: BrowserRequest; main: boolean; document: boolean; attributable: boolean; cookies: string; send(response: BrokerResponse): Promise<void>; deny(): Promise<void> }
+/** Final input fence: engines recheck after every readiness wait and immediately before each protocol send. */
+export interface EngineInputContext { signal: AbortSignal; guard(): void }
 /** Trusted finite engine operations; raw page, protocol and cookie handles never leave this module. */
 export interface BrowserEngine {
-  navigate(url: string): Promise<void>; read(generation: number): Promise<BrowserObservation>; image(): Promise<Uint8Array>;
-  interact(kind: 'click' | 'submit' | 'type' | 'select', target: string, value?: string, generation?: number): Promise<void>;
-  ownerInput(input: OwnerBrowserInput): Promise<void>; cookie(name: string, url: string): Promise<string | null>;
+  navigate(url: string, input: EngineInputContext): Promise<void>; read(generation: number): Promise<BrowserObservation>; image(): Promise<Uint8Array>;
+  interact(kind: 'click' | 'submit' | 'type' | 'select', target: string, value: string | undefined, generation: number | undefined, input: EngineInputContext): Promise<void>;
+  ownerInput(input: OwnerBrowserInput, context: EngineInputContext): Promise<void>; cookie(name: string, url: string): Promise<string | null>;
   close(): Promise<void>;
 }
 /** Protected constructor parameters, including an always-on callback for all intercepted HTTP requests. */
@@ -49,7 +51,7 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
   let expected: { method: string; url: string; bodyBase64: string } | null = null;
   const targets = new Map<string, { handle: ElementHandle<HTMLElement | SVGElement>; generation: number }>(); let serial = 0;
   const safeHeaders = (response: BrokerResponse): Record<string, string> => ({
-    ...response.headers, 'referrer-policy': 'no-referrer', 'x-dns-prefetch-control': 'off', 'x-content-type-options': 'nosniff', 'permissions-policy': 'camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=()',
+    ...response.headers, ...(response.setCookies.length ? { 'set-cookie': response.setCookies.join('\n') } : {}), 'referrer-policy': 'no-referrer', 'x-dns-prefetch-control': 'off', 'x-content-type-options': 'nosniff', 'permissions-policy': 'camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=()',
     'content-security-policy': options.mode === 'static'
       ? "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; sandbox allow-forms allow-same-origin"
       : "object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action http: https:; sandbox allow-scripts allow-forms allow-same-origin",
@@ -71,7 +73,8 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
         request: { method: req.method(), url: req.url(), contentType: headers['content-type'] ?? '', bodyBase64: body?.toString('base64') ?? '', navigation: req.isNavigationRequest() },
         main: true, document: req.resourceType() === 'document', attributable, cookies: headers.cookie ?? '',
         send: async response => {
-          const loaded = req.isNavigationRequest() ? page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {}) : null;
+          const loaded = req.isNavigationRequest() ? page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }) : null;
+          if (loaded) void loaded.catch(() => {});
           await route.fulfill({ status: response.status, headers: safeHeaders(response), body: Buffer.from(response.body) });
           if (loaded) await loaded;
         },
@@ -81,7 +84,7 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
   });
   page.on('download', download => { void download.cancel(); });
   const get = (id: string, expected: number): ElementHandle<HTMLElement | SVGElement> => { const target = targets.get(id); if (!target || target.generation !== expected) throw new BrowserError('stale_target'); return target.handle; };
-  const expectNative = async (el: ElementHandle<HTMLElement | SVGElement>): Promise<void> => {
+  const expectNative = async (el: ElementHandle<HTMLElement | SVGElement>): Promise<boolean> => {
     expected = null;
     const next = await el.evaluate(element => {
       const link = element.closest('a[href]');
@@ -97,9 +100,62 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       return { method, url: url.href, body: fields.toString() };
     });
     if (next) expected = { method: next.method, url: next.url, bodyBase64: Buffer.from(next.body).toString('base64') };
+    return next !== null;
+  };
+  const session = await context.newCDPSession(page);
+  await session.send('Page.enable');
+  const mainFrame = (await session.send('Page.getFrameTree')).frameTree.frame.id;
+  const navigationStopped = () => {
+    let started = false, resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; });
+    const start = (event: { frameId: string }) => { if (event.frameId === mainFrame) started = true; };
+    const stop = (event: { frameId: string }) => { if (event.frameId === mainFrame && started) resolve(); };
+    session.on('Page.frameStartedLoading', start); session.on('Page.frameStoppedLoading', stop);
+    return { promise, close() { session.off('Page.frameStartedLoading', start); session.off('Page.frameStoppedLoading', stop); } };
+  };
+  const checked = async <T>(promise: Promise<T>, input: EngineInputContext): Promise<T> => {
+    input.guard();
+    let cancel!: () => void;
+    const aborted = new Promise<never>((_, reject) => { cancel = () => reject(new BrowserError('cancelled')); input.signal.addEventListener('abort', cancel, { once: true }); if (input.signal.aborted) cancel(); });
+    try { const result = await Promise.race([promise, aborted]); input.guard(); return result; }
+    finally { input.signal.removeEventListener('abort', cancel); }
+  };
+  const click = async (el: ElementHandle<HTMLElement | SVGElement>, input: EngineInputContext): Promise<void> => {
+    await checked(el.waitForElementState('visible', { timeout: 5000 }), input);
+    await checked(el.waitForElementState('stable', { timeout: 5000 }), input);
+    await checked(el.waitForElementState('enabled', { timeout: 5000 }), input);
+    await checked(el.scrollIntoViewIfNeeded({ timeout: 5000 }), input);
+    const box = await checked(el.boundingBox(), input); if (!box) throw new BrowserError('stale_target');
+    const x = box.x + box.width / 2, y = box.y + box.height / 2;
+    const hits = await checked(el.evaluate((e, p) => { const hit = document.elementFromPoint(p.x, p.y); return hit === e || !!hit && e.contains(hit); }, { x, y }), input);
+    if (!hits) throw new BrowserError('stale_target');
+    const navigates = await checked(expectNative(el), input);
+    const stopped = navigates ? navigationStopped() : null;
+    const navigation = navigates ? page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).then(() => null, (error: unknown) => error) : null;
+    try {
+      input.guard(); const down = session.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, x, y, clickCount: 1 });
+      // Both halves are enqueued in the same synchronous turn; cancellation cannot leave a queued half-click.
+      input.guard(); const up = session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, x, y, clickCount: 1 });
+      await Promise.all([down, up]); input.guard();
+      if (navigation && stopped) {
+        // A denied navigation can still commit Chromium's error document after waitForNavigation rejects.
+        // Wait for the frame's real stop event before another input can replace it.
+        const [error] = await checked(Promise.all([navigation, stopped.promise]), input);
+        if (error) throw new BrowserError('navigation_failed');
+      }
+    } finally { stopped?.close(); }
+  };
+  const fill = async (el: ElementHandle<HTMLElement | SVGElement>, value: string, input: EngineInputContext): Promise<void> => {
+    await checked(el.waitForElementState('editable', { timeout: 5000 }), input);
+    input.guard();
+    await el.evaluate((e, text) => {
+      if (!(e instanceof HTMLInputElement || e instanceof HTMLTextAreaElement)) throw new Error('invalid_field');
+      const prototype = e instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(e, text);
+      e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value); input.guard();
   };
   return {
-    async navigate(url) { targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; await page.goto(url, { waitUntil: 'networkidle' }); },
+    async navigate(url, input) { targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard(); await checked(page.goto(url, { waitUntil: 'networkidle' }), input); },
     async read(generation) {
       targets.clear(); const n = ++serial;
       // Fixed protected capture code, never agent-provided JS. Input values, hidden DOM and scripts are absent.
@@ -117,7 +173,7 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       return { id: `observation_${n}`, generation, url: page.url(), text: bytes.subarray(0, 32768).toString('utf8'), truncated: bytes.length > 32768, elements };
     },
     async image() { return page.screenshot({ type: 'png', timeout: 5000 }); },
-    async interact(kind, id, value, targetGeneration) {
+    async interact(kind, id, value, targetGeneration, input) {
       expected = null;
       const el = get(id, targetGeneration ?? -1); if (!await el.evaluate(e => e.isConnected)) throw new BrowserError('stale_target');
       const type = (await el.getAttribute('type') ?? '').toLowerCase();
@@ -126,18 +182,21 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
         const href = await el.getAttribute('href');
         if ((href && !/^https?:/.test(new URL(href, page.url()).href)) || (await el.getAttribute('target') ?? '_self') !== '_self' || await el.getAttribute('download') !== null) throw new BrowserError('effect_unsupported');
         if (kind === 'submit' && !['button', 'input'].includes(await el.evaluate(e => e.tagName.toLowerCase()))) throw new BrowserError('effect_unsupported');
-        await expectNative(el); await el.click({ noWaitAfter: true });
-      } else if (kind === 'type') { if (/[\r\n]/.test(value ?? '')) throw new BrowserError('effect_unsupported'); await el.fill(value ?? ''); }
-      else await el.selectOption(value ?? '');
+        await click(el, input);
+      } else if (kind === 'type') { if (/[\r\n]/.test(value ?? '')) throw new BrowserError('effect_unsupported'); await fill(el, value ?? '', input); }
+      else {
+        await checked(el.waitForElementState('enabled', { timeout: 5000 }), input); input.guard();
+        await el.evaluate((e, v) => { if (!(e instanceof HTMLSelectElement)) throw new Error('invalid_field'); e.value = v; e.dispatchEvent(new Event('input', { bubbles: true })); e.dispatchEvent(new Event('change', { bubbles: true })); }, value ?? ''); input.guard();
+      }
     },
-    async ownerInput(input) {
+    async ownerInput(input, control) {
       expected = null;
       if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(input.field)) throw new BrowserError('invalid_operation');
-      const el = page.locator(`[name="${input.field}"]`);
-      if (input.kind === 'type') { if (!input.value || input.value.length > 2000 || input.value.includes('\0')) throw new BrowserError('invalid_operation'); await el.fill(input.value); }
-      else { const handle = await el.elementHandle(); if (!handle) throw new BrowserError('stale_target'); await expectNative(handle); await el.click({ noWaitAfter: true }); }
+      const el = await checked(page.locator(`[name="${input.field}"]`).elementHandle(), control); if (!el) throw new BrowserError('stale_target');
+      if (input.kind === 'type') { if (!input.value || input.value.length > 2000 || input.value.includes('\0')) throw new BrowserError('invalid_operation'); await fill(el, input.value, control); }
+      else await click(el, control);
     },
-    async cookie(name, url) { const cookie = (await context.cookies(url)).find(c => c.name === name && c.httpOnly); return cookie ? `${cookie.name}=${cookie.value}` : null; },
+    async cookie(name, url) { const cookie = (await context.cookies(url)).find(c => c.name === name && c.httpOnly); return cookie ? (await context.cookies(url)).filter(c => c.httpOnly).map(c => `${c.name}=${c.value}`).join('; ') : null; },
     async close() { try { await context.close(); } finally { await proxy.close(); } },
   };
 }
