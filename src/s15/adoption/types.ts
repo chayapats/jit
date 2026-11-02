@@ -11,7 +11,10 @@ export interface AdoptionSource {
 }
 /** Re-observed by trusted host code outside the working guest. A JSON hash supplied by an agent is insufficient. */
 export interface AdoptionBoundary {
-  protected: boolean; settled: boolean; priorBuildFenceVerified: boolean;
+  protected: boolean;
+  /** The prior runtime/transports/computers/native state remain settled; new S15 activity need not be idle. */
+  settled: boolean;
+  priorBuildFenceVerified: boolean;
   hostId: string; evidenceHash: string;
   sourceArtifact: string; targetArtifact: string;
 }

@@ -170,6 +170,7 @@ test('owner-installed POLICY alone enables release; first S15 admission durably 
   expect(a.status.policyRevision).toBe(1);
   const released = service.command(a.actor, { kind: 'release', requestId: retryId(), expectedRevision: a.status.revision, hash: a.status.releaseHash! });
   expect(released).toMatchObject({ state: 'complete', workers: 'released', activityRecorded: false });
+  f.settled = false; expect(() => service.guardActivity()).toThrow('transition_protected_settlement_required'); f.settled = true;
   const p = service.policy(), owner = p.owner.authenticate('owner_session');
   expect(p.owner.admit(owner, workRequest()).work).toBeTruthy();
   const current = service.status(a.actor)!; expect(current.activityRecorded).toBe(true);

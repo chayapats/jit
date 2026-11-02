@@ -129,8 +129,7 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     const stage = get<Stage>('stage');
     if (!stage || stage.state !== 'complete') adoptionFail('transition_workers_fenced');
     assertFence(stage);
-    const b = o.boundary.observe();
-    if (!b.protected || b.hostId !== stage.report.hostId || b.evidenceHash !== stage.report.hostEvidenceHash || b.targetArtifact !== o.target.sha256) adoptionFail('transition_host_evidence_changed');
+    boundary(stage);
     if (!activity()) {
       store.transaction(() => db.query('INSERT OR IGNORE INTO activity VALUES (1,?)').run(now()));
       checkpoint('activity_recorded');
