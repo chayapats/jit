@@ -21,6 +21,9 @@ test.each(["en", "th"] as const)("%s retained results, report facts, sources and
   expect(inline).toContain(dictionaries[language]["s14.report.coverage.partial"]); expect(inline).toContain(dictionaries[language]["s14.report.completion.owner_review_required"]);
   expect(inline).toContain("https://example.com/article"); expect(inline).toContain("tab=evidence"); expect(inline).toContain(reportView.artifacts[0]!.sha256);
   expect(html).not.toContain('class="s-pane"'); expect(accessibilityProblems(html, language)).toEqual([]);
+  const review = f.app.reports.review(f.auth.actor, work.id);
+  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: rid(), expectedRevision: review.revision, payload: { reportId: reportView.report.id, reportRevision: reportView.report.revision } });
+  expect(thread(await f.page(`/chats/${f.conversationId}`))).toContain(dictionaries[language]["s14.report.review.accepted"]);
   const pane = await f.page(`/chats/${f.conversationId}?work=${work.id}&tab=report`);
   const ids = [...pane.matchAll(/\sid="([^"]+)"/g)].map(match => match[1]); expect(new Set(ids).size).toBe(ids.length);
   expect(accessibilityProblems(pane, language)).toEqual([]);

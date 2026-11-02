@@ -14,7 +14,7 @@ The 2026-11-01 handoff recorded a cross-work Reports/Artifacts Library and inlin
 
 `S14Reports.latest(actor, workIds)` reads at most 24 distinct named work heads in one owner/reconciliation transaction. Chat prefetches this for its newest 24 granted work items. It returns the latest revision even when unavailable, rather than silently substituting an older readable revision. All work cards retain existing exact detail/report links outside that preview window. Current WorkView result/effect projections remain the source of inline outcomes and controls. No model output can manufacture a report, grant or acceptance.
 
-`GET /library?tab=reports|artifacts&before=<cursor>&limit=<count>` is an authenticated HTML view over the bounded catalog. It has no new JSON command/API. Original Work/Bot identity, revision, coverage, owner-review facts and download metadata stay separate. Unavailable rows show only stable report/work identity and withdrawal status. Downloads remain exclusively in the existing artifact gateway.
+`GET /library?tab=reports|artifacts&before=<cursor>&limit=<count>` is an authenticated HTML view over the bounded catalog. It has no new JSON command/API. Original Work/Bot identity, revision, coverage, owner-review facts and download metadata stay separate. Library provenance uses one bounded owner-checked projection of work ID/title/conversation; it does not load attempts, effects or full result histories. Unavailable rows show only stable report/work identity and withdrawal status. Downloads remain exclusively in the existing artifact gateway.
 
 ## Presentation and updates
 

@@ -8,7 +8,7 @@ import type { S14Page } from "./web";
 import { botName, e, k, pill, shell, when } from "./web-pages";
 
 /** Read-only catalog and provenance; unavailable entries never carry report or file payloads. */
-export interface S14Library { kind: "library"; catalog: ReportCatalog; works: Record<string, Work>; tab: "reports" | "artifacts"; before: number | null; limit: number }
+export interface S14Library { kind: "library"; catalog: ReportCatalog; works: Record<string, Pick<Work, "id" | "title" | "conversationId">>; tab: "reports" | "artifacts"; before: number | null; limit: number }
 
 /** Parses a bounded catalog request behind normal owner authentication; no command is issued. */
 export function libraryView(app: S14Application, actor: OwnerActor, url: URL): S14Library {
@@ -22,8 +22,16 @@ export function libraryView(app: S14Application, actor: OwnerActor, url: URL): S
   if (tab !== "reports" && tab !== "artifacts") throw new AppError("not_found", 404);
   const before = number("before", null), limit = number("limit", 20)!;
   const catalog = app.reports.catalog(actor, { before, limit });
-  const ids = [...new Set(catalog.items.map(item => item.state === "available" ? item.report.workId : item.workId))];
-  return { kind: "library", catalog, works: Object.fromEntries(ids.map(id => [id, app.authority.view(actor, id).work])), tab, before, limit };
+  const ids = [...new Set(catalog.items.flatMap(item => item.state === "available" ? [item.report.workId] : []))];
+  const works = app.store.read(tx => {
+    app.requireOwner(tx, actor);
+    if (!ids.length) return {};
+    // Provenance needs three work fields, never attempts, effects or potentially large result histories.
+    const rows = tx.all<Pick<Work, "id" | "title" | "conversationId">>(`SELECT id,json_extract(record_json,'$.title') AS title,json_extract(record_json,'$.conversationId') AS conversationId FROM work_items WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids);
+    if (rows.length !== ids.length) throw new AppError("not_found", 404);
+    return Object.fromEntries(rows.map(row => [row.id, row]));
+  });
+  return { kind: "library", catalog, works, tab, before, limit };
 }
 
 /** An immutable file link always goes through the existing authenticated download gateway. */
@@ -34,7 +42,8 @@ export function outputFile(file: Artifact): string {
 /** Coverage, review and exact report revision remain separate facts in list and inline presentations. */
 export function outputFacts(view: Extract<ReportView, { state: "available" }>, href: string): string {
   const { report } = view;
-  return `<p class="s-row"><a class="s-link-text" href="${href}">${e(report.title)} · r${report.revision}</a>${pill(tr("s14.report.state.ready_for_review"))}${pill(tr(k(`s14.report.coverage.${report.coverage}`)), report.coverage === "partial" ? "warn" : "")}${pill(tr(k(`s14.report.completion.${view.completion}`)))}</p>`;
+  const completion = view.completion === "owner_accepted" ? `${tr("s14.report.review.accepted")} r${report.revision}` : tr("s14.report.completion.owner_review_required");
+  return `<p class="s-row"><a class="s-link-text" href="${href}">${e(report.title)} · r${report.revision}</a>${pill(tr("s14.report.state.ready_for_review"))}${pill(tr(k(`s14.report.coverage.${report.coverage}`)), report.coverage === "partial" ? "warn" : "")}${pill(completion, view.completion === "owner_accepted" ? "ok" : "")}</p>`;
 }
 
 /** Cross-work output rows retain existing exact-revision detail links and safe withdrawn identities. */

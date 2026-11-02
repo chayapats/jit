@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { libraryView } from "../src/s14/web-library";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { dictionaries } from "../src/i18n";
 import type { OwnerActor } from "../src/s14/types";
 import { accessibilityProblems } from "./fixtures/a11y";
@@ -17,7 +18,11 @@ async function produce(f: TeamFixture, title: string) {
 
 test.each(["en", "th"] as const)("%s Library lists cross-work revisions and files through existing no-script gateways", async language => {
   const f = await fixture(language), first = await produce(f, "First retained report"), second = await produce(f, "Second retained report");
+  const review = f.app.reports.review(f.auth.actor, first.work.id);
+  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: rid(), expectedRevision: review.revision, payload: { reportId: first.view.report.id, reportRevision: first.view.report.revision } });
   const html = await f.page("/library"), files = await f.page("/library?tab=artifacts"), words = dictionaries[language];
+  expect(html).toContain(words["s14.report.review.accepted"]); expect(files).toContain(words["s14.report.review.accepted"]);
+  expect(html).not.toContain("s14.report.completion.owner_accepted");
   for (const { work, view } of [first, second]) {
     expect(html).toContain(view.report.title); expect(html).toContain(`work=${work.id}&amp;tab=report&amp;report=${view.report.id}`);
     expect(files).toContain(work.title);
@@ -73,4 +78,16 @@ test("Library preserves producing Bot and exact revisions across separate Bot co
   await f.app.authority.drain();
   const html = await f.page("/library"); expect(html).toContain("Jit report"); expect(html).toContain("Scout report"); expect(html).toContain("Scout"); expect(html).toContain(`work=${work.id}`);
   expect(f.app.reports.latest(f.auth.actor, [first.work.id, work.id])[work.id]).toMatchObject({ state: "available", report: { botIds: ["scout"] } });
+});
+
+
+test("Library provenance reads only owner-checked work metadata, without loading work histories", async () => {
+  const f = await fixture(), { work } = await produce(f, "Metadata only");
+  const history = spyOn(f.app.authority, "view").mockImplementation(() => { throw Error("full work history must not be loaded"); });
+  try {
+    const view = libraryView(f.app, f.auth.actor, new URL("http://localhost:3001/library"));
+    expect(view.works[work.id]).toEqual({ id: work.id, title: work.title, conversationId: work.conversationId });
+    expect(history).not.toHaveBeenCalled();
+    expect(() => libraryView(f.app, {} as OwnerActor, new URL("http://localhost:3001/library"))).toThrow();
+  } finally { history.mockRestore(); }
 });
