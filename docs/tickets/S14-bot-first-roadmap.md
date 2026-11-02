@@ -103,7 +103,22 @@ The issues were published after the implementation push; they do not imply that 
 
 Current scope: [Plain design](../design/S14-plain-experience.md). Tested revision and limits: [Plain evidence](../evidence/s14-plain-ui.md). Local issue mirrors: [PLAIN14-01](s14/PLAIN14-01.md) and [PLAIN14-02](s14/PLAIN14-02.md). The earlier `s14.json` snapshot and original ticket mirrors remain historical records rather than being rewritten as new-scope acceptance.
 
+### Bounded Plain coverage checkpoint — 2026-11-02 (historical)
+
+Current machine-readable tracking is [plain14.json](plain14.json); the preceding publication table is historical. PR [#310](https://github.com/chayapats/jit/pull/310) is OPEN against main at `1844be4309c3f5670ffa2c217350682c892823a3`, above runtime implementation `388c119773bcb1244912fa70ec3ec67b5cd0544d`. #309's issue branch is stacked on that implementation branch; it does not alter #310.
+
+Evidence [PR #312](https://github.com/chayapats/jit/pull/312) is OPEN against `t3/plain-handoff-scope-review`, with `Closes #309` only. No issue was closed and no merge/deployment was performed by this work.
+
+[PLAIN14-02 #309](https://github.com/chayapats/jit/issues/309) now records selected authenticated local Chrome observations and limited actual Safari native AX navigation/mode observations on the exact source/assets. The Safari driver/input/layout and preview-snapshot observer failures remain labelled. The owner confirmed no physical-iPhone route/observer this round: iPhone/touch/OSK remain NOT RUN, as does owner-deferred VoiceOver speech. Other unrun permutations remain limits, not new release gates. No product suite rerun, live effect, deployment or cutover is claimed by this evidence update.
+
+The Chrome history case failed: after Work → detail → Back, Work remained selected while the send accessible label remained Send message; three of three re-check traversals confirmed it with no automatic command. The separate scoped [PLAIN14-03 #311](https://github.com/chayapats/jit/issues/311) and [mirror](s14/PLAIN14-03.md) record reproduction/criteria. Fix implementation needs separate authorization; no product change is included in #309. Evidence review, #310 review/merge and owner acceptance remain open. #307/#308/#309/#311 remain OPEN; no ready-for-agent/human label or invented device gate is added.
 
 ### Reconciled Plain output scope — 2026-11-02
 
-[#313 PLAIN14-04](https://github.com/chayapats/jit/issues/313) tracks the cross-work Reports/Artifacts Library. [#314 PLAIN14-05](https://github.com/chayapats/jit/issues/314) tracks inline Work results/provenance/decisions. Both restore explicit tracking of outcomes recorded in the earlier 2026-11-01 handoff, under #307 and the latest owner-approved navigation/authority decisions. The owner authorized completion and merge after successful current-head CI/Greptile review. They do not imply deployment or broaden device/AT gates. [#311](https://github.com/chayapats/jit/issues/311) is corrected in PR #310 pending review/merge; historical #309 failures remain attributed to their original build.
+[#313 PLAIN14-04](https://github.com/chayapats/jit/issues/313) tracks the cross-work Reports/Artifacts Library. [#314 PLAIN14-05](https://github.com/chayapats/jit/issues/314) tracks inline Work results/provenance/decisions. Both restore explicit tracking of outcomes recorded in the earlier 2026-11-01 handoff, under #307 and the latest owner-approved navigation/authority decisions. The owner authorized completion and merge after successful current-head CI/Greptile review. They do not imply deployment or broaden device/AT gates. [#311](https://github.com/chayapats/jit/issues/311) is corrected and closed by merged PR #310; historical #309 failures remain attributed to their original build.
+
+### Current Plain integration checkpoint — 2026-11-02
+
+PR #310 merged at `b6982767d15fc7bdec68a526b88156405bd3a57a`, closing #308/#311. PR #315 merged at `c1a96edebba4025e1ebcd09a8e133dacda0c9887`, closing #313/#314. Both source heads passed all CI jobs and Greptile 5/5 APPROVED, with all findings resolved. Cross-work Library and inline results/decisions are therefore delivered to main alongside the Plain replacement and browser-history correction.
+
+The final documentation-only PR #312 targets main and closes #309 plus parent #307 when merged after its own review. [plain14.json](plain14.json) is an explicitly dated pre-merge snapshot with those automatic closeout references. It does not claim that an open PR has already merged. Historical evidence remains attached to its named source checkpoints; physical iPhone/touch/OSK and VoiceOver limits, partial Safari observations and unrun live effects/deployment remain unchanged. No new release gate is inferred.

@@ -12,7 +12,22 @@ Implementation review is tracked separately in https://github.com/chayapats/jit/
 
 ## Status
 
-Needs triage, not ready-for-agent or ready-for-human. The Plain replacement has deterministic and Chrome-fixture evidence; no replacement-build physical-device, actual Safari, touch/on-screen-keyboard or screen-reader-speech evidence is claimed. This ticket records remaining coverage and supports a later bounded observation plan. It creates no new release gate, deployment permission or live-provider/account/effect authorization. The prior owner-deferred VoiceOver decision remains in force.
+Bounded local evidence recorded on 2026-11-02; OPEN, needs-triage, pending evidence review. Owner-authorized work is on `t3/plain14-02-device-coverage`, stacked from `1844be4309c3f5670ffa2c217350682c892823a3` above runtime implementation `388c119773bcb1244912fa70ec3ec67b5cd0544d`. PR #310 has merged into main at `b6982767d15fc7bdec68a526b88156405bd3a57a`, closing #308/#311. Output-flow PR #315 also merged at `c1a96edebba4025e1ebcd09a8e133dacda0c9887`, closing #313/#314 after current-head CI and Greptile 5/5 APPROVED. This evidence record keeps its original tested source and failures; it does not recertify the later implementation. This ticket creates no new release gate, deployment permission or live-provider/account/effect authorization. The prior owner-deferred VoiceOver decision remains in force. The owner confirmed no safe physical-iPhone route/observer is available this round; physical iPhone/touch/on-screen keyboard remain NOT RUN.
+
+Evidence review: [PR #312](https://github.com/chayapats/jit/pull/312), OPEN against main for final evidence/tracker integration after merged #310/#315. This ticket and parent #307 remain OPEN until #312 merges; no deployment or device/AT acceptance is implied.
+
+## Recorded evidence result (tested checkout 1844be4)
+
+Canonical record: [docs/evidence/s14-plain-ui.md](https://github.com/chayapats/jit/blob/t3/plain14-02-device-coverage/docs/evidence/s14-plain-ui.md), section PLAIN14-02 bounded local coverage. Tested source/assets are labelled there; all 22 historical per-file source/test hashes matched, with fingerprint `f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4` unchanged. The original 438 deterministic passes/460 Chrome loads and earlier full-suite checkpoint were not rerun or promoted to device proof.
+
+- **Confirmed:** macOS 27.2 (26B123), arm64, headless Chrome/156.0.8078.74, isolated profiles, scripted authenticated local handler/store. Selected navigation, text-only reload/detail/restart drafts, conversation isolation, committed/refused Chat submission, keyboard focus sample, acceptance without execution, exact-card envelope, reconcile-only unknown and scoped Stop through actual scripted-transport settlement were observed. CSS viewport checks are not physical touch/OSK or real IME evidence.
+- **Failed:** browser history Back restored Work while the send accessible label stayed Send message. The second fresh EN/light Chrome profile reproduced it on three of three traversals; text remained and no automatic POST/grant/execution occurred. Concrete additional implementation scope is tracked separately as [PLAIN14-03 #311](https://github.com/chayapats/jit/issues/311), under #307. No product fix or redesign is included here.
+- **Partial actual Safari:** Safari 27.2 native AX observed authenticated root/Work/More, Work selection/wording and one Back to Chat in an empty conversation. This was not the drafted Chrome reproduction. Native draft/focus input and geometry/layout could not be verified; no Safari draft or visual pass is claimed, and AX is not speech.
+- **Blocked observers:** Safari WebDriver refused disabled Allow remote automation; native CUA initially returned ScreenCaptureKit -3812 and later recovered only the stated AX sample. Two T3 preview snapshots timed out. Exact target/action/reason/status and missing inputs are in the evidence record. No security setting changed.
+- **Deferrals/limits:** physical iPhone/touch/OSK NOT RUN by this round's explicit owner decision; VoiceOver NOT RUN/owner-deferred. Android, other Safari/device/AT permutations, live effects/providers and deployment/cutover remain unrun. No exhaustive gate is inferred.
+- **Recommendation/Open:** review this bounded record and triage #311 before claiming history reset is verified. #311 was subsequently authorized, corrected and closed by reviewed PR #310; the observations below remain the original failure record. Later source acceptance remains separately reviewed. This evidence record can be reviewed without requiring every device/AT permutation.
+
+Local fixture/server/profiles/state and the task-owned Safari/preview windows were cleaned up. Private origins, IDs, credentials and raw evidence remain in ignored `.local` records; only safe summaries/digests are tracked. Repository evidence, this issue mirror, [the Plain tracker](https://github.com/chayapats/jit/blob/t3/plain14-02-device-coverage/docs/tickets/plain14.json) and the #311 mirror agree on the tested revision, outcomes and deferrals.
 
 ## Context to read
 
@@ -33,11 +48,11 @@ A revision-labelled coverage record separating observed replacement-build behavi
 
 ## Acceptance criteria
 
-- [ ] A bounded coverage/deferral decision is recorded, naming any selected build/device/browser/route/observer. VoiceOver remains deferred unless the owner explicitly changes that decision.
-- [ ] Each selected case has an attributable observation or an explicit failed/blocked/unrun result; no emulation is described as a physical-device or speech result.
-- [ ] Navigation/detail return, composer/draft/history and focus/input cases are recorded for the selected coverage; omitted cases remain explicit.
-- [ ] Any observed authority/approval/Stop/unknown problem is reported with reproduction and current contract references; no live external effect is performed to fill an evidence gap.
-- [ ] Repository evidence and tracker agree on revision, outcomes, deferrals and limits. Concrete defects have separate scoped follow-ups.
+- [x] A bounded coverage/deferral decision is recorded, naming any selected build/device/browser/route/observer. VoiceOver remains deferred unless the owner explicitly changes that decision.
+- [x] Each selected case has an attributable observation or an explicit failed/blocked/unrun result; no emulation is described as a physical-device or speech result.
+- [x] Navigation/detail return, composer/draft/history and focus/input cases are recorded for the selected coverage; omitted cases remain explicit.
+- [x] Any observed authority/approval/Stop/unknown problem is reported with reproduction and current contract references; no live external effect is performed to fill an evidence gap.
+- [x] Repository evidence and tracker agree on revision, outcomes, deferrals and limits. Concrete defects have separate scoped follow-ups.
 
 ## Tests and evidence
 

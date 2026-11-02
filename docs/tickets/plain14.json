@@ -1,0 +1,106 @@
+{
+  "parent": 307,
+  "statusVerifiedAt": "2026-11-02",
+  "status": "source-310-and-315-merged-final-evidence-review",
+  "implementationCommit": "388c119773bcb1244912fa70ec3ec67b5cd0544d",
+  "testedCheckout": "1844be4309c3f5670ffa2c217350682c892823a3",
+  "sourceTestFingerprint": "f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4",
+  "evidence": "../evidence/s14-plain-ui.md",
+  "tickets": [
+    {
+      "key": "PLAIN14-01",
+      "number": 308,
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
+      "pullRequest": "https://github.com/chayapats/jit/pull/310",
+      "pullRequestState": "MERGED",
+      "base": "main",
+      "head": "t3/plain-handoff-scope-review",
+      "headSha": "9171a7be13522fcc25c2af73423a583ecb8c9c53",
+      "file": "s14/PLAIN14-01.md",
+      "mergeCommit": "b6982767d15fc7bdec68a526b88156405bd3a57a"
+    },
+    {
+      "key": "PLAIN14-02",
+      "number": 309,
+      "state": "OPEN",
+      "status": "bounded-evidence-recorded-pending-review",
+      "pullRequest": "https://github.com/chayapats/jit/pull/312",
+      "pullRequestState": "OPEN",
+      "head": "t3/plain14-02-device-coverage",
+      "file": "s14/PLAIN14-02.md",
+      "readyForAgent": false,
+      "readyForHuman": false,
+      "coverage": {
+        "chrome": "selected-authenticated-scripted-local-observations-with-history-failure",
+        "safari": "limited-native-AX-navigation-mode-sample-input-layout-inconclusive",
+        "physicalIPhoneTouchOsk": "NOT RUN; owner confirmed no safe route/observer this round",
+        "voiceOver": "NOT RUN; prior owner deferral preserved",
+        "androidOtherAt": "UNRUN",
+        "liveEffectsDeploymentCutover": "UNRUN; not authorized by this ticket"
+      },
+      "defects": [
+        311
+      ],
+      "base": "main",
+      "closesOnMerge": 312
+    },
+    {
+      "key": "PLAIN14-03",
+      "number": 311,
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
+      "file": "s14/PLAIN14-03.md",
+      "readyForAgent": false,
+      "readyForHuman": false,
+      "discoveredBy": 309,
+      "reproduction": "Chrome 156 EN/light CSS 390x844: Work remains checked after Back, accessible send label remains Send message; 3/3 re-check traversals",
+      "pullRequest": "https://github.com/chayapats/jit/pull/310",
+      "pullRequestState": "MERGED",
+      "mergeCommit": "b6982767d15fc7bdec68a526b88156405bd3a57a",
+      "headSha": "9171a7be13522fcc25c2af73423a583ecb8c9c53"
+    },
+    {
+      "key": "PLAIN14-04",
+      "number": 313,
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
+      "pullRequest": "https://github.com/chayapats/jit/pull/315",
+      "pullRequestState": "MERGED",
+      "base": "main",
+      "head": "jit/313-314-plain-flows",
+      "headSha": "0db140af444e0a8dd960da1746d3d6206089eee0",
+      "file": "s14/PLAIN14-04.md",
+      "mergeCommit": "c1a96edebba4025e1ebcd09a8e133dacda0c9887"
+    },
+    {
+      "key": "PLAIN14-05",
+      "number": 314,
+      "state": "CLOSED",
+      "status": "reviewed-and-merged",
+      "pullRequest": "https://github.com/chayapats/jit/pull/315",
+      "pullRequestState": "MERGED",
+      "base": "main",
+      "head": "jit/313-314-plain-flows",
+      "headSha": "0db140af444e0a8dd960da1746d3d6206089eee0",
+      "file": "s14/PLAIN14-05.md",
+      "mergeCommit": "c1a96edebba4025e1ebcd09a8e133dacda0c9887"
+    }
+  ],
+  "parentState": "OPEN",
+  "sourceMerge": "b6982767d15fc7bdec68a526b88156405bd3a57a",
+  "coverageAttribution": "testedCheckout/sourceTestFingerprint describe the original #309 coverage only; current source delivery heads and merge states are recorded per ticket.",
+  "snapshot": "2026-11-02, before final evidence PR #312 merge; mergeCloseout describes the remaining automatic closures.",
+  "sourceMerges": {
+    "310": "b6982767d15fc7bdec68a526b88156405bd3a57a",
+    "315": "c1a96edebba4025e1ebcd09a8e133dacda0c9887"
+  },
+  "mergeCloseout": {
+    "pullRequest": "https://github.com/chayapats/jit/pull/312",
+    "closes": [
+      309,
+      307
+    ],
+    "effect": "Completes approved Plain technical scope only; preserves device/AT deferrals and grants no deployment/cutover authority."
+  }
+}
