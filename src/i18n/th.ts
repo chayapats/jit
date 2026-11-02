@@ -4,6 +4,7 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 import { s14CodingTh } from "./s14-coding-th";
+import { s15WebTh } from "./s15-web-th";
 
 export const th = {
   "s15.browser.redirect_unsupported": "ยังไม่รองรับ redirect จึงไม่ส่งต่อไปปลายทางใหม่",
@@ -4105,6 +4106,7 @@ export const th = {
   "s14.life.done.capabilities_discard": "ทิ้งข้อเสนอแล้ว",
   "s14.life.done.capabilities_discard_detail": "เพดานยังเหมือนเดิม",
   ...s14CodingTh,
+  ...s15WebTh,
   "s14.more.backup": "สำรองและกู้คืนข้อมูล",
   "s14.backup.title": "สำรองและกู้คืนข้อมูล",
   "s14.backup.subtitle": "เก็บไว้ในเครื่องนี้",
