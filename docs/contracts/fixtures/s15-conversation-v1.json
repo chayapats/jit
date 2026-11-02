@@ -473,7 +473,9 @@
         "bytes": 47,
         "payload": {"base64":"SW1wbGVtZW50IGlzc3VlIDMyMyBpbiB0aGUgc2VsZWN0ZWQgcmVwb3NpdG9yeS4=","bytes":47,"sha256":"cf469168a04e6de9d3ed8d1195771e536b50e0455bd72e5da76d62614bfae921"}
       }
-    }
+    },
+    {"name":"safe_code","type":"CodeV1","value":"material_ambiguity"},
+    {"name":"intent_meaning","type":"MeaningV1","value":"inspect"}
   ],
   "worlds": [
     {
@@ -18562,9 +18564,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -18723,9 +18725,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -19046,9 +19048,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -19181,9 +19183,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -19504,9 +19506,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -19639,9 +19641,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -20399,9 +20401,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -20534,9 +20536,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -20544,9 +20546,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
+            "createdAt": 1800000000021,
             "payload": {"kind":"result","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "4949eb3329491b3e95a8d650616b8a4fd796f8cf521f21484cec55f35e22612a"
+            "hash": "84d376289707d83310cbbe2ab5c0166990ffb3833f0db60c96a0422764059ba5"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -21752,9 +21754,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -21912,9 +21914,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -22235,9 +22237,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -22395,9 +22397,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -22718,9 +22720,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -22878,9 +22880,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -23201,9 +23203,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -23336,9 +23338,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -23659,9 +23661,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -23794,9 +23796,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -24117,9 +24119,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -24127,9 +24129,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
+            "createdAt": 1800000000021,
             "payload": {"kind":"result","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "4949eb3329491b3e95a8d650616b8a4fd796f8cf521f21484cec55f35e22612a"
+            "hash": "84d376289707d83310cbbe2ab5c0166990ffb3833f0db60c96a0422764059ba5"
           }
         ],
         "facts": {
@@ -24262,9 +24264,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -24272,9 +24274,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
+            "createdAt": 1800000000021,
             "payload": {"kind":"result","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "4949eb3329491b3e95a8d650616b8a4fd796f8cf521f21484cec55f35e22612a"
+            "hash": "84d376289707d83310cbbe2ab5c0166990ffb3833f0db60c96a0422764059ba5"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -24608,9 +24610,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -24754,14 +24756,14 @@
               "inputHash": "b7da2bc0becc138becae1a7e72b31cd3405aaffaff44cb7d57987dbd7265f53e",
               "charged": {"attempts":0,"steps":0,"calls":1,"reads":0,"outputBytes":1024,"activeMs":1000,"spendMinor":"1"},
               "actual": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
-              "chargedAt": 1800000000001,
-              "hash": "d41840f67cd9d9df64fe9d1bc3661bf27111c0130e1ef7741c6cfa0a0441bca9"
+              "chargedAt": 1800000000026,
+              "hash": "d3b5c3083be8eb8f2af9ae4df4a693b60956fc2e732a1876d3b0364b97a2ad91"
             }
           ],
           "actualUsage": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
           "publication": "unpublished",
           "cancel": "none",
-          "hash": "09c515ce5b5c0f91b268d209115f6fc873d9e37b755d73e38f077e4e8108d3d8"
+          "hash": "2ba4b18dab0fae143ab8c0c2bce5ef32f76bccca10535c4b95273ef28b9c4ded"
         },
         "preparedAction": {
           "id": "prepared_action",
@@ -24803,9 +24805,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -24813,9 +24815,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
+            "createdAt": 1800000000025,
             "payload": {"kind":"received","receiptHash":"75c902ec3d7301bc7c027d86a9cb29e88a598aba26df15ab55248ccadfb082ff"},
-            "hash": "7741b66e2492715cc85552bd4adc5f9fb23fdb744ed3f9f606e657654bfc32e1"
+            "hash": "a1878e308126848d2aca916f38d5ad194e2feab7d2faa55c80f9d6d65e82b854"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -24823,9 +24825,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 5,
-            "createdAt": 1800000000005,
-            "payload": {"kind":"admitted","admissionHash":"22709eef671e5cd0b9a2e573008b9999c06cfb9b4cca9aea613b553330b6e6fc"},
-            "hash": "caafd3f9e6cd7db077f85dafe9a612e6a561cd72d6927589d4ea600123cade13"
+            "createdAt": 1800000000027,
+            "payload": {"kind":"admitted","admissionHash":"911434f141a48d12cf440909721d21b4872783d830831cc0f804925d553398ce"},
+            "hash": "ec33fc60df7ac6a8dc9438491676dea99a4af8965f8ab776c073c5487469ae9d"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -24876,8 +24878,8 @@
           "workAuthorityHash": null,
           "queueId": null,
           "hold": null,
-          "createdAt": 1800000000002,
-          "hash": "22709eef671e5cd0b9a2e573008b9999c06cfb9b4cca9aea613b553330b6e6fc"
+          "createdAt": 1800000000027,
+          "hash": "911434f141a48d12cf440909721d21b4872783d830831cc0f804925d553398ce"
         },
         "holdRecord": null,
         "reply": null,
@@ -25784,9 +25786,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -25930,14 +25932,14 @@
               "inputHash": "b1bce86a7bb4c19c8744a86924fc934d7257b08934baa1b894b254576fa19627",
               "charged": {"attempts":0,"steps":0,"calls":1,"reads":0,"outputBytes":1024,"activeMs":1000,"spendMinor":"1"},
               "actual": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
-              "chargedAt": 1800000000001,
-              "hash": "b4d1ea2536c97502a868dfa7991233124bc61b822c2f232302584da01bfe6494"
+              "chargedAt": 1800000000026,
+              "hash": "e6d1537e41d37968bfd722ce04d3cefcc0a7532221bc15d3fb341c48293c1a52"
             }
           ],
           "actualUsage": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
           "publication": "unpublished",
           "cancel": "none",
-          "hash": "9ee5597370978759e44c338dde82a7a9694b9c897ea81af680144922e85785a6"
+          "hash": "ddffb7b3a9d5af967877f57b0ac00e6e0b7d6c7546e7234ede9128fb610c3a6c"
         },
         "preparedAction": {
           "id": "prepared_action",
@@ -25979,9 +25981,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -25989,9 +25991,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
+            "createdAt": 1800000000025,
             "payload": {"kind":"received","receiptHash":"0d7ddd5e15f602b528cbf9c872bd381ab3ddce84d71a1b70174c1569c3d6ece9"},
-            "hash": "15fe7595ce27c7aca2f8a1738d8e3534a5f0148680f5a0e1834e84f64dfd687d"
+            "hash": "5406b7ec5451f1f8bc2b0bf1fcf2574d0c14915a9cfca3ced6aedb16e4bc00a8"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -29305,9 +29307,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "facts": {
@@ -29440,9 +29442,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000020,
             "payload": {"kind":"evidence_committed","reply":{"id":"reply","revision":1,"generation":1},"replyHash":"c390f23dc7935a4b20ea41b7f29efe75b79ea865c3f7557c4949c570bf7f5caa"},
-            "hash": "600edda25afb35b014157d77ce8879031ef3bb193265b7de97611c7d8ef948be"
+            "hash": "38604f497da9c14928dc194b7e0238a0994120f946b64208af41a8ba46ccf5b2"
           }
         ],
         "retainedEvidence": [{"id":"tool_evidence","revision":1,"generation":1}],
@@ -30282,14 +30284,14 @@
               "inputHash": "f260544a4a86d880901af97aafaf7bb18e25158e1aa773984aaeeeb24999bfd8",
               "charged": {"attempts":0,"steps":0,"calls":1,"reads":0,"outputBytes":1024,"activeMs":1000,"spendMinor":"1"},
               "actual": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
-              "chargedAt": 1800000000001,
-              "hash": "a0ec340333dcea317e5558a007081c656d6031626b7ba91d179c1f6adeb7c3ac"
+              "chargedAt": 1800000000011,
+              "hash": "b06a4b22b74ee594fdb99ed6d51d7b178b6e7fcd2c7c36d02da8f365316072b8"
             }
           ],
           "actualUsage": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
           "publication": "unpublished",
           "cancel": "none",
-          "hash": "dd8fcf386b507a42cf2cdaeaf63913dcda646233166437987df36553521ab731"
+          "hash": "dbbf51bc25b6bfc8863d68b9d2ae08bac80ebf5e12c70699df07fd99ba25411c"
         },
         "preparedAction": null,
         "approval": null,
@@ -30320,9 +30322,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000010,
             "payload": {"kind":"received","receiptHash":"78920d8189bad2b970d09dff3a601efef3f3c190ae358487eca491af57b8b3c0"},
-            "hash": "231c8dec5f49ee71706cfbb4bed96368c3c1d53a2665c6adc7f71b3e3bd03d7d"
+            "hash": "9d8b1c5da6ac10c2d2ff7126dc1144701584669b327e8a9577bb67bfd69b04ec"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -30330,9 +30332,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
-            "payload": {"kind":"admitted","admissionHash":"d5185641161d84ed1a881b3b79aff3b648d5a97957b38baaca0e6c0bd2fa7c49"},
-            "hash": "3ed0d7538460fa2760ac15d1818c6b00d2b9b1b2d720b50bfc1bfef7e6e3868d"
+            "createdAt": 1800000000012,
+            "payload": {"kind":"admitted","admissionHash":"5def50338a6c9bcce5bc29b3af8d1ee15985c1505f5488d7abf54cb4c5fc7b22"},
+            "hash": "f030dfb97d4ba99cfbf2cef0575cb591a39a9ac6592c67c8c0d26cefc8e72767"
           }
         ],
         "retainedEvidence": [],
@@ -30383,8 +30385,8 @@
           "workAuthorityHash": "b5e634dbfadd3c26064db96b574a6f264d080d49af653feb4e30152010d0ec6b",
           "queueId": "work_queue",
           "hold": null,
-          "createdAt": 1800000000002,
-          "hash": "d5185641161d84ed1a881b3b79aff3b648d5a97957b38baaca0e6c0bd2fa7c49"
+          "createdAt": 1800000000012,
+          "hash": "5def50338a6c9bcce5bc29b3af8d1ee15985c1505f5488d7abf54cb4c5fc7b22"
         },
         "holdRecord": null,
         "reply": null,
@@ -30760,14 +30762,14 @@
               "inputHash": "f260544a4a86d880901af97aafaf7bb18e25158e1aa773984aaeeeb24999bfd8",
               "charged": {"attempts":0,"steps":0,"calls":1,"reads":0,"outputBytes":1024,"activeMs":1000,"spendMinor":"1"},
               "actual": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
-              "chargedAt": 1800000000001,
-              "hash": "a0ec340333dcea317e5558a007081c656d6031626b7ba91d179c1f6adeb7c3ac"
+              "chargedAt": 1800000000011,
+              "hash": "b06a4b22b74ee594fdb99ed6d51d7b178b6e7fcd2c7c36d02da8f365316072b8"
             }
           ],
           "actualUsage": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
           "publication": "unpublished",
           "cancel": "none",
-          "hash": "dd8fcf386b507a42cf2cdaeaf63913dcda646233166437987df36553521ab731"
+          "hash": "dbbf51bc25b6bfc8863d68b9d2ae08bac80ebf5e12c70699df07fd99ba25411c"
         },
         "preparedAction": null,
         "approval": null,
@@ -30798,9 +30800,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000010,
             "payload": {"kind":"received","receiptHash":"78920d8189bad2b970d09dff3a601efef3f3c190ae358487eca491af57b8b3c0"},
-            "hash": "231c8dec5f49ee71706cfbb4bed96368c3c1d53a2665c6adc7f71b3e3bd03d7d"
+            "hash": "9d8b1c5da6ac10c2d2ff7126dc1144701584669b327e8a9577bb67bfd69b04ec"
           },
           {
             "contract": "s15-conversation-event/v1",
@@ -30808,9 +30810,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 4,
-            "createdAt": 1800000000004,
-            "payload": {"kind":"admitted","admissionHash":"38667608b12c94bfaac7acfe8146ded0b2d58fda48391db711acaea8c3c477d3"},
-            "hash": "6712bb8ffb2b8d6f39ad3529b1e9c498d92971b4585be60a96c55a3973facbd1"
+            "createdAt": 1800000000012,
+            "payload": {"kind":"admitted","admissionHash":"b07408a1213cee322466f440f6de24ce58c087d489161245a198afa0bb659712"},
+            "hash": "f2aea004d5118081dfd7077dc00a71adeefafb93f8fe1c7c9678f1bc8b4b97e0"
           }
         ],
         "retainedEvidence": [],
@@ -30861,8 +30863,8 @@
           "workAuthorityHash": "b5e634dbfadd3c26064db96b574a6f264d080d49af653feb4e30152010d0ec6b",
           "queueId": "work_queue",
           "hold": null,
-          "createdAt": 1800000000002,
-          "hash": "38667608b12c94bfaac7acfe8146ded0b2d58fda48391db711acaea8c3c477d3"
+          "createdAt": 1800000000012,
+          "hash": "b07408a1213cee322466f440f6de24ce58c087d489161245a198afa0bb659712"
         },
         "holdRecord": null,
         "reply": null,
@@ -31252,14 +31254,14 @@
               "inputHash": "f260544a4a86d880901af97aafaf7bb18e25158e1aa773984aaeeeb24999bfd8",
               "charged": {"attempts":0,"steps":0,"calls":1,"reads":0,"outputBytes":1024,"activeMs":1000,"spendMinor":"1"},
               "actual": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
-              "chargedAt": 1800000000001,
-              "hash": "a0ec340333dcea317e5558a007081c656d6031626b7ba91d179c1f6adeb7c3ac"
+              "chargedAt": 1800000000011,
+              "hash": "b06a4b22b74ee594fdb99ed6d51d7b178b6e7fcd2c7c36d02da8f365316072b8"
             }
           ],
           "actualUsage": {"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},
           "publication": "unpublished",
           "cancel": "none",
-          "hash": "dd8fcf386b507a42cf2cdaeaf63913dcda646233166437987df36553521ab731"
+          "hash": "dbbf51bc25b6bfc8863d68b9d2ae08bac80ebf5e12c70699df07fd99ba25411c"
         },
         "preparedAction": null,
         "approval": null,
@@ -31290,9 +31292,9 @@
             "conversation": {"id":"conversation","revision":1,"generation":1},
             "request": {"id":"ingress","revision":1,"generation":1},
             "sequence": 3,
-            "createdAt": 1800000000003,
+            "createdAt": 1800000000010,
             "payload": {"kind":"received","receiptHash":"78920d8189bad2b970d09dff3a601efef3f3c190ae358487eca491af57b8b3c0"},
-            "hash": "231c8dec5f49ee71706cfbb4bed96368c3c1d53a2665c6adc7f71b3e3bd03d7d"
+            "hash": "9d8b1c5da6ac10c2d2ff7126dc1144701584669b327e8a9577bb67bfd69b04ec"
           }
         ],
         "retainedEvidence": [],
