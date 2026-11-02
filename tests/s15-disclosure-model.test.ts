@@ -2,12 +2,12 @@ import { afterEach, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { openDisclosureService, type RecipientApproval, type DisclosureSource } from '../src/s15/disclosure';
 import { openModelService, type ModelStepInput } from '../src/s15/model';
-import { modelWorkFixture, ref } from './fixtures/s15-model-work';
+import { modelWorkFixture, ordinary, ref } from './fixtures/s15-model-work';
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const close of cleanups.splice(0).reverse()) close(); });
-function setup() {
-  const f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+function setup(options: Parameters<typeof modelWorkFixture>[0] = {}) {
+  const f = modelWorkFixture(options); cleanups.push(() => f.cleanup());
   const source: DisclosureSource = { ref: ref('private'), resource: ref('repo'), classification: 'business', active: true, ownerReleasable: true };
   const approvals: RecipientApproval[] = [];
   const d = openDisclosureService({ runtime: 's15', path: join(f.root, 'disclosure.sqlite'), create: true, installationId: 'fixture', now: f.clock.now,
@@ -29,6 +29,13 @@ test('MODEL excludes a provider unapproved for private lineage before selection/
   await expect(x.model.runStep(x.work.actor!, x.step())).rejects.toThrow('recipient_unapproved');
   expect(x.calls()).toBe(0); expect(x.f.policy.control.reservations()).toHaveLength(0);
   x.grant(); expect(await x.model.runStep(x.work.actor!, x.step())).toMatchObject({ state: 'completed' }); expect(x.calls()).toBe(1);
+});
+
+test('private recipient eligibility intersects POLICY selections before difficult-model ranking', async () => {
+  const x = setup({ selections: [ordinary] }); x.d.read(x.work.actor!, ref('private')); x.grant();
+  const result = await x.model.runStep(x.work.actor!, { ...x.step(), difficulty: 'difficult' });
+  expect(result).toMatchObject({ state: 'completed', route: { selection: ordinary } });
+  expect(x.f.policy.work.modelSelections!(x.work.actor!)).toEqual([ordinary]); expect(x.calls()).toBe(1);
 });
 
 test('MODEL does not disclose credential-shaped actual context to an already approved provider', async () => {

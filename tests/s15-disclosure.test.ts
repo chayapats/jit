@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { readFileSync } from 'node:fs';
 import { openDisclosureService } from '../src/s15/disclosure';
 import type { JsonValue } from '../src/s15/policy';
@@ -108,6 +109,29 @@ test('protected lineage and descendants survive restart; missing continuity cann
   const p = reopened.browser('browser').inspect(work, { method: 'GET', url: 'https://new.test/?q=Derived', contentType: '', bodyBase64: '', navigation: true });
   expect(p.classes).toContain('disclosure'); expect(p.disclosure?.dataClasses).toEqual(['private']);
   expect(() => openDisclosureService({ ...x.options, path: x.path + '.missing', create: false })).toThrow('continuity_unavailable');
+});
+
+test('full journal admission preserves updates to existing work, VM and browser privacy ancestry', () => {
+  const x = setup(); x.disclosure.read(x.actor, ref('private'));
+  const work = x.f.service.work.guard(x.actor), browser = x.disclosure.browser('browser');
+  browser.input(work); x.disclosure.vmInput(x.actor, 'working_vm');
+  const journal = new Database(x.path, { create: false, strict: true });
+  try {
+    // Existing protected rows retain reserved update slots after new admission reaches its ceiling.
+    const used = journal.query<{ n: number }, []>('SELECT count(*) AS n FROM records').get()!.n;
+    journal.transaction(() => {
+      const insert = journal.query('INSERT INTO records VALUES (?,?)');
+      for (let i = used; i < 512; i++) insert.run('retained_' + i, JSON.stringify({ kind: 'work', id: 'retained_' + i, sources: [] }));
+    }).immediate();
+    x.disclosure.read(x.actor, ref('business')); x.disclosure.vmInput(x.actor, 'working_vm');
+    const result = browser.inspect(work, { method: 'GET', url: 'https://new.test/?q=derived', contentType: '', bodyBase64: '', navigation: true });
+    expect(result.classes).toContain('disclosure'); expect(result.disclosure?.dataClasses).toEqual(['business', 'private']);
+    expect(() => x.disclosure.registryLease(x.actor, 'new.test', 'working_vm')).toThrow('opaque_egress_unavailable');
+    expect(() => x.disclosure.derive(x.actor, ref('new_artifact'), 'artifact')).toThrow('continuity_capacity');
+    const sibling = x.f.admit({ access: 'effect' }).actor!;
+    expect(() => x.disclosure.read(sibling, ref('private'))).toThrow('continuity_capacity');
+    expect(x.sent).toHaveLength(0);
+  } finally { journal.close(); }
 });
 
 test('POLICY refuses a private model reservation if the consumer omitted recipient selection registration', () => {

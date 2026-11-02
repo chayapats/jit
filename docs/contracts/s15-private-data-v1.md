@@ -10,6 +10,8 @@ The protected owning source catalog supplies exact source/resource revisions, `p
 
 Protected ingress/read/attachment/memory adapters must call these host ports before giving private bytes to a work closure. Private execution must compose the disclosure catalog and owning hooks. The module does not infer classification for unregistered guest files, intercept arbitrary host networking or retroactively reinterpret S14-private data.
 
+The shared journal's reserved record slots preserve updates to admitted work/VM/browser ancestry when new admissions reach capacity. New work lineage or descendant rows refuse before release when no slot remains; capacity never clears an ancestor or turns a denied route into public data.
+
 ## Recipient and exact-action gates
 
 A fixed protected route resolver derives every recipient from complete actual outbound arguments. Browser URLs include host/path/query, method and body bytes; protected adapters include their actual target fields and attachments. Unknown routes/recipients refuse before resolution or send. A recipient ref is an owning-service identity including revision and generation; a model label, hostname suffix or source assertion cannot register one.
