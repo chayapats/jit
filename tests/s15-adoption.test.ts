@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, symlinkSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 import { S14Store } from '../src/s14/store';
 import { acquireS14RuntimeLock } from '../src/s14/runtime-lock';
@@ -56,6 +56,16 @@ test('the prepare command cannot reuse an original owner request ID', async () =
   const service = f.open(), actor = service.authenticate('owner_session');
   expect(() => service.command(actor, { kind: 'prepare', requestId: original.request_id, expectedRevision: 0, hash: reportAdoption(f.options).planHash })).toThrow('transition_historical_request_no_replay');
   expect(existsSync(fence(f))).toBe(false);
+});
+
+test('large original Bot volumes are checksummed in place without being copied into the S15 store', async () => {
+  const f = await fixture(), computers = join(f.root, 'computers'); mkdirSync(computers, { mode: 0o700 });
+  const volume = join(computers, 'workspace.ext4'); writeFileSync(volume, '', { mode: 0o600 }); truncateSync(volume, 65 * 1024 * 1024);
+  const report = reportAdoption(f.options); expect(report.bytes).toBeGreaterThan(65 * 1024 * 1024);
+  const service = f.open(), p = prepare(service, f.options);
+  expect(p.status.state).toBe('validated'); expect(existsSync(join(f.options.directory, 'workspace.ext4'))).toBe(false);
+  const status = service.command(p.actor, { kind: 'discard', requestId: retryId(), expectedRevision: p.status.revision, hash: p.status.rollbackHash });
+  expect(status.state).toBe('discarded'); expect(readFileSync(volume).length).toBe(65 * 1024 * 1024);
 });
 
 test.each(['preparing', 'source_fenced', 'candidate_committed', 'activation_intent', 'active_fenced', 'workers_released', 'rollback_intent', 'prior_selected', 'source_released'] as AdoptionCheckpoint[])('SIGKILL at %s retains single-writer fencing and exact-request recovery', async point => {

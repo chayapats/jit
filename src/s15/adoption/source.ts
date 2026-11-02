@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, lstatSync, readdirSync } from 'node:fs';
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { readServiceConfigFile, serviceDatabasePath } from '../../../ops/package/service-config';
 import { opsRead, opsPath } from '../../s14/ops-files';
@@ -16,7 +17,27 @@ import { adoptionFail, containsPath, encode, hash, hashBytes, hashValue, id, val
 const sourceSchema = 'c466faccf93d27c5f4cbc8b09d98f0801d08b27697e07e944abe214c97de90b1';
 const ledgerSchema = '7ab58eadf4138d44af04011156ada695130b9d28ad7d43eeee1035be5470ecfb';
 const maximumBytes = 64 * 1024 * 1024, maximumRows = 200000;
+const maximumOriginalBytes = 64 * 1024 ** 4;
 type FileEntry = { path: string; bytes: number; hash: string };
+/** Large private volumes are hashed in bounded buffers, never copied into the candidate or allocated in memory. */
+function fileEntry(path: string): FileEntry {
+  opsPath(path);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || !Number.isSafeInteger(before.size) || before.size < 0 || before.size > maximumOriginalBytes) adoptionFail('transition_bounds');
+    const digest = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024);
+    let offset = 0;
+    while (offset < before.size) {
+      const count = readSync(fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
+      if (!count) adoptionFail('transition_source_changed');
+      digest.update(buffer.subarray(0, count)); offset += count;
+    }
+    const after = fstatSync(fd);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) adoptionFail('transition_source_changed');
+    return { path, bytes: before.size, hash: digest.digest('hex') };
+  } finally { closeSync(fd); }
+}
 /** Internal bounded snapshot; original files are read with ordinary no-follow reads, never opened by writable SQLite. */
 export interface SourceSnapshot {
   report: AdoptionReport; files: FileEntry[]; rows: AdoptionRow[]; facts: AdoptionRow[];
@@ -55,9 +76,9 @@ function inventory(o: AdoptionOptions): FileEntry[] {
     if (stat.isSymbolicLink()) adoptionFail('transition_path_untrusted');
     if (stat.isDirectory()) { for (const child of readdirSync(path).sort()) visit(join(path, child)); return; }
     if (entries.has(path)) return;
-    if (entries.size >= 4096 || !stat.isFile() || stat.nlink !== 1 || stat.size > maximumBytes || total + stat.size > 256 * 1024 * 1024) adoptionFail('transition_bounds');
-    const bytes = opsRead(path, maximumBytes); total += bytes.length;
-    entries.set(path, { path, bytes: bytes.length, hash: hashBytes(bytes) });
+    if (entries.size >= 4096 || !stat.isFile() || total + stat.size > maximumOriginalBytes) adoptionFail('transition_bounds');
+    const entry = fileEntry(path); total += entry.bytes;
+    entries.set(path, entry);
   };
   [o.source.database, `${o.source.database}.lifecycle.sqlite`, `${o.source.database}.ops`, `${o.source.database}.owner-setup.json`,
     `${join(dirname(o.source.database), 'native')}.session-store.json`, join(dirname(o.source.database), 'native'),
@@ -69,7 +90,7 @@ function inventory(o: AdoptionOptions): FileEntry[] {
 export function verifySourceFiles(o: AdoptionOptions, files: FileEntry[]): void {
   assertNoSidecars(o.source.database); assertNoSidecars(`${o.source.database}.lifecycle.sqlite`);
   if (hashValue(inventory(o)) !== hashValue(files)) adoptionFail('transition_stale_validation');
-  if (hashBytes(opsRead(o.target.path, maximumBytes)) !== o.target.sha256) adoptionFail('transition_stale_validation');
+  if (fileEntry(o.target.path).hash !== o.target.sha256) adoptionFail('transition_stale_validation');
 }
 function assertNoSidecars(path: string): void {
   if (['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false }))) adoptionFail('transition_sqlite_settlement_required');
@@ -87,7 +108,7 @@ function readSnapshot(o: AdoptionOptions): SourceSnapshot {
   const before = inventory(o);
   if (!before.some(x => x.path === `${o.source.database}.lifecycle.sqlite`) ||
       !before.some(x => x.path === o.source.build.path && x.hash === o.source.build.sha256) ||
-      hashBytes(opsRead(o.target.path, maximumBytes)) !== o.target.sha256) adoptionFail('transition_build_or_continuity_unavailable');
+      fileEntry(o.target.path).hash !== o.target.sha256) adoptionFail('transition_build_or_continuity_unavailable');
   const db = Database.deserialize(opsRead(o.source.database, maximumBytes));
   const ledger = Database.deserialize(opsRead(`${o.source.database}.lifecycle.sqlite`, maximumBytes), { safeIntegers: true });
   let clean: Database | undefined;
