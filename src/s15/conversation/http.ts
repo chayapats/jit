@@ -1,6 +1,7 @@
 import { AppError } from "../../errors";
 import type { ConversationApplication } from "./application";
 import { exact, parseCommandJson } from "./validation";
+import { conversationOwnerView } from "./owner-view";
 
 /** Protected existing owner-session adapter; credential verification/CSRF stay outside models and tools. */
 export interface ConversationHttpAuthentication<OwnerActor> {
@@ -37,6 +38,8 @@ export function createConversationHandler<OwnerActor, WorkContext>(app: Conversa
       if (cookies.length !== 1) throw new AppError("authentication_required", 401);
       const authenticated = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1));
       if (request.method === "POST") options.authentication.verifyCsrf(authenticated.csrf, request.headers.get("x-csrf-token"));
+      const ownerView = /^\/api\/s15\/conversations\/([A-Za-z0-9_-]+)$/.exec(url.pathname);
+      if (ownerView && request.method === "GET") return json(conversationOwnerView(app, authenticated.actor, ownerView[1]!));
       const conversation = /^\/api\/s15\/conversations\/([A-Za-z0-9_-]+)\/(messages|events)$/.exec(url.pathname);
       if (conversation?.[2] === "messages" && request.method === "POST") {
         const input = await body(request);

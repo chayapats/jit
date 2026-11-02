@@ -18,7 +18,7 @@ export function groundConversationIntent(original: string): ConversationIntent {
   if (/(?:\bif\b|\bunless\b|\bwhen\b|only after|ถ้า|หาก|เมื่อ)/u.test(text) || issues.length > 1 && /^(?:implement|fix|start|work|ทำ|เริ่ม|แก้)/u.test(text)) return result("ambiguous");
   if (/^(?:inspect|check|review|recommend|report|read|list|look\s+(?:at|up)|find|search|analy[sz]e|explain|summari[sz]e|ตรวจ|ดู|แนะนำ|อ่าน|ค้นหา|สรุป|วิเคราะห์|อธิบาย)/u.test(text)) {
     // An explicit subsequent mutation is material scope, not an inspection method.
-    if (/(?:\band then\b|\bthen\b|และจากนั้น|แล้ว)\s*(?:implement|fix|write|create|delete|publish|ทำ|แก้|สร้าง|ลบ)/u.test(text)) return result("ambiguous");
+    if (/(?:\band\b|\band then\b|\bthen\b|และจากนั้น|แล้ว|และ)\s*(?:implement|fix|write|create|delete|publish|ทำ|แก้|สร้าง|ลบ)/u.test(text)) return result("ambiguous");
     return result("inspect");
   }
   if (/^(?:do not|don't|never|ห้าม|อย่า|ยังไม่)/u.test(text)) return result("answer");

@@ -45,7 +45,7 @@ export class ConversationStore {
           CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES requests(id), conversation_id TEXT NOT NULL, at INTEGER NOT NULL, kind TEXT NOT NULL, code TEXT);
           CREATE INDEX conversation_events ON events(conversation_id,sequence);
           CREATE TABLE tool_calls (id TEXT PRIMARY KEY, request_id TEXT NOT NULL REFERENCES requests(id), tool TEXT NOT NULL, input_hash TEXT NOT NULL, state TEXT NOT NULL, evidence_json TEXT);
-          CREATE TABLE native_sessions (request_id TEXT PRIMARY KEY REFERENCES requests(id), session_id TEXT NOT NULL, branch_id TEXT NOT NULL);
+          CREATE TABLE native_sessions (request_id TEXT NOT NULL REFERENCES requests(id), phase TEXT NOT NULL, session_id TEXT NOT NULL, branch_id TEXT NOT NULL, PRIMARY KEY(request_id,phase));
           CREATE TRIGGER immutable_command_update BEFORE UPDATE ON commands BEGIN SELECT RAISE(ABORT,'immutable_command'); END;
           CREATE TRIGGER immutable_command_delete BEFORE DELETE ON commands BEGIN SELECT RAISE(ABORT,'immutable_command'); END;
           CREATE TRIGGER immutable_event_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'immutable_event'); END;

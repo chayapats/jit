@@ -13,7 +13,11 @@ export interface ConversationIntent {
   kind: "answer" | "accept" | "inspect" | "execute" | "ambiguous";
   subject: string | null;
   instruction: string;
+  /** Frozen before tools; later model/tool/source output can only narrow this ceiling. */
+  scope?: ConversationScope;
 }
+/** Structured isolated interpretation is an untrusted proposal within the current approved catalog. */
+export interface ConversationScope { purposeId: string; resourceIds: string[]; access: "read" | "reversible_write" | "effect" }
 /** Exact current owner identity returned by the protected authentication service, never by a client body. */
 export interface ConversationOwner { id: string; generation: number }
 /** Persisted authority reference is data. Only the owning policy service can open a live work context. */
@@ -28,6 +32,10 @@ export interface ConversationAuthority {
 /** Policy-only consumer seam. Implementations authenticate/revalidate and reserve finite costs outside the guest. */
 export interface ConversationPolicy<OwnerActor, WorkContext> {
   requireOwner(actor: OwnerActor): ConversationOwner;
+  /** Preapproved inference-only scope, before any retrieval or tools. Missing finite authority holds. */
+  prepareInterpretation(actor: OwnerActor, request: ConversationCommand):
+    | { state: "admitted"; authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[] }
+    | { state: "held"; code: string };
   /** Synchronous idempotent admission under current policy; input is grounded owner intent, not model output. */
   admit(actor: OwnerActor, request: ConversationCommand, intent: ConversationIntent):
     | { state: "admitted"; authority: ConversationAuthority }
@@ -36,11 +44,11 @@ export interface ConversationPolicy<OwnerActor, WorkContext> {
   open(authority: ConversationAuthority): WorkContext;
   guard(work: WorkContext, stage: "model" | "tool" | "publication"): void;
   /** Charge each actual physical stream, including Schway retries/compaction; never refund unknown usage. */
-  reserveModel(work: WorkContext, slot: string): void;
+  reserveModel(work: WorkContext, slot: string): { settle(): void };
 }
 /** A registry entry authored by trusted host code. Model tool hints cannot set its access class. */
 export interface ConversationTool {
-  access: "read" | "write";
+  access: "read" | "reversible_write" | "effect";
   definition: ToolDefinition;
 }
 /** Work-scoped VM/broker session. Its tools must guard actual I/O after waits and retain their own effect claims. */
@@ -67,9 +75,14 @@ export interface ConversationEvidence { id: string; tool: string; inputHash: str
 /** Durable request lifecycle. Claimed interrupted work is reconcile-only and is never automatically replayed. */
 export interface ConversationRequest {
   receipt: ConversationReceipt; command: ConversationCommand; owner: ConversationOwner;
+  /** Latest immutable owner command, distinct from the root command when filling a material hold. */
+  interpretationRequest: ConversationCommand;
   revision: number; intent: ConversationIntent;
   state: "accepted" | "proposed" | "held" | "queued" | "running" | "completed" | "blocked" | "reconcile_only" | "stopped";
   code: string | null; authority: ConversationAuthority | null;
+  phase: "interpretation" | "work";
+  interpretation: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[] } | null;
+  interpretationCalls: number;
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
 }
 /** Protected composition explicitly opts in. Scripted model injection is a deterministic test seam only. */
@@ -79,6 +92,8 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   nativeDirectory: string;
   clock?: HostClock;
   model?: Model;
+  /** Optional separate scripted interpreter; production uses the preapproved public host auth route. */
+  interpreterModel?: Model;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }
