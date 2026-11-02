@@ -1,4 +1,8 @@
-# MVP implementation backlog
+# Implementation backlog
+
+Current target: [S15](../specs/S15-conversational-autonomy.md), [parent #316](https://github.com/chayapats/jit/issues/316), [delivery graph](S15-conversational-autonomy-roadmap.md) and [manifest](s15/manifest.json). Current readiness comes from verified S15 blockers/contracts and the [workflow](../agents/workflow.md), not the historical labels/counts below. No implement-parallel/coordinator/claim workflow applies.
+
+## Historical MVP backlog
 
 สถานะ ณ 18 ตุลาคม 2026: สร้าง implementation/verification tickets ครบ 43 ใบจาก specs ที่ยืนยันแล้ว แบ่งเป็น Jit 34 และ Schway 9 ใบ ยังไม่มี implementation claims และยังไม่ได้เริ่ม application/runtime
 

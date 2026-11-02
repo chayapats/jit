@@ -1,3 +1,5 @@
+> **Product target:** [S15 — Conversational autonomy with protected approvals](docs/specs/S15-conversational-autonomy.md) was confirmed on 2026-11-02. It is not implemented by the documentation update. The capabilities and instructions below describe the existing S14 runtime.
+>
 > **S14 is the default for new source runs and installations.** It uses fresh Bot-first state beside retained legacy data. `--s14` remains an alias; `--legacy` selects the project-centric pilot explicitly. Existing service configs without `runtime` remain legacy. The owner-Pi first reply, complete legacy-byte preservation through post-reply R4, and actual prior-release rollback are recorded in the [cutover evidence](docs/evidence/s14-owner-pi-cutover.md). See the [cutover runbook](docs/runbooks/s14-default-cutover.md).
 
 <div align="center">

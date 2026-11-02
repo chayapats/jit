@@ -1,0 +1,1494 @@
+{
+  "version": 1,
+  "spec": "S15",
+  "sourceBaseSha": "17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b",
+  "repository": "chayapats/jit",
+  "parent": {
+    "number": 316,
+    "id": 6156882331,
+    "title": "[Frontier] [S15] Conversational autonomy with protected approvals",
+    "url": "https://github.com/chayapats/jit/issues/316"
+  },
+  "documentationPullRequest": null,
+  "tickets": [
+    {
+      "key": "DOC15-01",
+      "title": "[Frontier] [DOC15-01] Publish the confirmed S15 spec and delivery graph",
+      "tier": "Frontier",
+      "deps": [],
+      "files": [
+        "CONTEXT.md",
+        "AGENTS.md",
+        "docs/product/02-prd.md",
+        "docs/agents/workflow.md"
+      ],
+      "deliver": "The confirmed S15 decisions, requirements, proposed architecture and complete synchronized issue graph are reviewable in one documentation PR; pending required UX authoring is an explicit separate prerequisite.",
+      "steps": [
+        "Keep the 23 confirmed decisions separate from proposed engineering, runtime support and actual owner grants.",
+        "Preserve FR/NFR identifiers; connect each S15 acceptance case to scoped work and explicit prerequisites.",
+        "Track required Opus/high UX authoring as UX15-00 and block UI implementation until the handoff exists; do not substitute primary-authored design or claim it completed.",
+        "Publish the parent/sub-issues and direct dependency graph; verify remote issue bodies, labels, artifact links and local mirrors."
+      ],
+      "accept": [
+        "S15-D01\u2013D23 and S15-AC01\u2013AC16 remain complete and consistent with the owner confirmation.",
+        "Default versus opt-in personal GitHub policy, report-only issue discovery, production holds and deferred Jod interoperability are explicit.",
+        "Every child has the workflow-required sections, a tier justification, concrete tests and real blockers; the spec parent is never ready-for-agent.",
+        "Pending required UI/UX authoring is explicitly tracked and blocks dependent tickets; no primary-authored design or completed-handoff claim is substituted.",
+        "All local links, dependency edges, coverage and remote mirrors validate; S14 remains the implemented default."
+      ],
+      "tests": [
+        "Validate complete unique decision/acceptance/FR/NFR IDs and English-only additions.",
+        "Validate an acyclic graph, actual issue IDs, native parent/blocker relations and readiness labels against prerequisites.",
+        "Run git diff --check; runtime tests are unnecessary for documentation-only changes."
+      ],
+      "requirements": "FR-01\u2013FR-42; NFR-01\u2013NFR-14",
+      "contract": "Records S15 spec, ADR 0064, experience and delivery index; delivers no new runtime contract.",
+      "out": "Runtime implementation, live tools, deployment, Jod integration and merging this PR.",
+      "kind": "documentation",
+      "number": 317,
+      "url": "https://github.com/chayapats/jit/issues/317",
+      "id": 6156882871,
+      "acceptanceCases": [
+        "S15-AC01",
+        "S15-AC02",
+        "S15-AC03",
+        "S15-AC04",
+        "S15-AC05",
+        "S15-AC06",
+        "S15-AC07",
+        "S15-AC08",
+        "S15-AC09",
+        "S15-AC10",
+        "S15-AC11",
+        "S15-AC12",
+        "S15-AC13",
+        "S15-AC14",
+        "S15-AC15",
+        "S15-AC16"
+      ],
+      "labels": [
+        "documentation",
+        "needs-triage"
+      ],
+      "readiness": "in-progress",
+      "path": "docs/tickets/s15/DOC15-01.md"
+    },
+    {
+      "key": "ARCH15-01",
+      "title": "[Frontier] [ARCH15-01] Freeze the working-VM and protected-effect feasibility contract",
+      "tier": "Frontier",
+      "deps": [
+        "DOC15-01"
+      ],
+      "files": [
+        "src/s14/chat.ts",
+        "src/s14/computer-work.ts",
+        "src/s14/computer-podman.ts",
+        "src/s14/lifecycle.ts",
+        "tests/s14-host-conformance.test.ts",
+        "package.json"
+      ],
+      "deliver": "A reviewed feasibility matrix and versioned design contract identify the exact supported Schway surface, protected trust domains and honest limits before dependent implementation is declared ready.",
+      "steps": [
+        "Audit the pinned Schway artifact through supported exports and existing packed-consumer fixtures; record exact capabilities and gaps.",
+        "Trace root/sudo, filesystem destruction, network, browser sessions, cookies, scripts and MCP paths against each human-required effect.",
+        "Specify candidate placement/transport/administration/data boundaries; distinguish prevention from recovery snapshots and local fixtures from real VM proof.",
+        "Deliver docs/contracts/s15-runtime-feasibility-v1.md and refine ADR 0064 with accepted/rejected choices and named remaining proof gates.",
+        "Create a Schway proposal/issue only for a demonstrated missing public contract; do not invent an upstream blocker."
+      ],
+      "accept": [
+        "Every required VM/browser operation maps to a verified public export or an explicit gap; no Jit-owned provider/agent-loop replacement.",
+        "A guest administrator cannot be assumed isolated from a sibling process or guest-local firewall.",
+        "Root destruction versus major-change approval is explicitly resolved in the design or retained as a named owner tradeoff; no weaker guarantee is silently substituted.",
+        "The contract separates implementable logic from live activation gates and specifies how unknown websites/actions fail closed.",
+        "Closing this audit does not certify enforcement: downstream readiness requires the reviewed contract revision and its declared proof status."
+      ],
+      "tests": [
+        "Reproduce the existing packed-host capability checks and record the pinned tarball hash/export evidence.",
+        "Produce an attack/operation matrix with allowed, held, denied and unproven outcomes for guest-root, browser and egress routes.",
+        "Validate referenced paths/signatures against current main and use no live credentials or paid calls."
+      ],
+      "requirements": "FR-13/17/35/36/37/38/39/40; NFR-01/02/03/07/10/14",
+      "contract": "Delivers proposed s15-runtime-feasibility/v1; records exact supported Schway exports rather than assuming a new API.",
+      "out": "Runtime rollout, provider refresh, real-account writes and concrete UI/UX.",
+      "kind": "architecture",
+      "number": 318,
+      "url": "https://github.com/chayapats/jit/issues/318",
+      "id": 6156883619,
+      "acceptanceCases": [
+        "S15-AC03"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/ARCH15-01.md"
+    },
+    {
+      "key": "STATE15-01",
+      "title": "[Frontier] [STATE15-01] Specify a non-destructive S14-to-S15 state and policy transition",
+      "tier": "Frontier",
+      "deps": [
+        "DOC15-01"
+      ],
+      "files": [
+        "src/s14/store.ts",
+        "src/s14/ops.ts",
+        "src/s14/ops-state.ts",
+        "src/s14/ops-ledger.ts",
+        "src/s14/memory-types.ts",
+        "src/s14/authority-types.ts",
+        "tests/s14-ops.test.ts"
+      ],
+      "deliver": "A versioned transition inventory and recovery plan preserve S14/legacy data, private scopes and approvals while defining explicit S15 policy adoption.",
+      "steps": [
+        "Inventory current schema/application identifiers, stores, policy generations, effect states, memory/privacy lineage and opaque native references.",
+        "Define compatible transitions and refusals for each record class, including stopped/cancelled/unknown work and lifecycle tombstones.",
+        "Specify explicit owner adoption of team scope and the personal GitHub exception; upgrades must not infer either from this spec.",
+        "Deliver docs/contracts/s15-state-transition-v1.md with schema/version plan, fixture input/output examples and rollback/backup checkpoints."
+      ],
+      "accept": [
+        "The exact main/schema is recorded; no old fresh-state permission is treated as S15 erase/import authority.",
+        "Existing private claims/files/accounts remain restricted until an authorized conversion; personal GitHub permissions are never an upgrade default.",
+        "Unknown effects, consumed budget and lifecycle withdrawals cannot reset through backup/restore or transition.",
+        "The plan identifies exact migration signatures/record shapes and refusal cases before the implementing ticket is ready."
+      ],
+      "tests": [
+        "Map fixtures for current S14 state, legacy service-config omission, withdrawn private sources and unknown effects to preserved/refused outcomes.",
+        "Document byte-preservation and prior-build rollback evidence required from the eventual implementation.",
+        "Read-only inventory only: do not open a live store writable, inspect secrets or run an installation migration."
+      ],
+      "requirements": "FR-04/05/15/16/18/23/35; NFR-05/07/08/12",
+      "contract": "Delivers proposed s15-state-transition/v1, including schema and policy-version adoption; no schema is changed in this audit.",
+      "out": "Applying migrations, choosing a live host or changing legacy/S14 activation.",
+      "kind": "architecture",
+      "number": 319,
+      "url": "https://github.com/chayapats/jit/issues/319",
+      "id": 6156884111,
+      "acceptanceCases": [
+        "S15-AC16"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/STATE15-01.md"
+    },
+    {
+      "key": "POLICY15-01",
+      "title": "[Frontier] [POLICY15-01] Enforce standing policy and exact held actions outside working agents",
+      "tier": "Frontier",
+      "deps": [
+        "ARCH15-01",
+        "STATE15-01"
+      ],
+      "files": [
+        "src/s14/application.ts",
+        "src/s14/authority.ts",
+        "src/s14/authority-types.ts",
+        "src/s14/validation.ts",
+        "tests/s14-authority.test.ts"
+      ],
+      "deliver": "Authenticated owner policy permits ordinary bounded work and holds human-required actions with exact revision-bound approval; working agents cannot change their authority.",
+      "steps": [
+        "Freeze the reviewed standing-policy/action contract and schema from ARCH15-01/STATE15-01 before implementation.",
+        "Implement owner-derived actor, purpose/resource/model/destination scopes, rule revisions, finite budget reservations and action receipts.",
+        "Distinguish ordinary reversible edits, default approval classes and explicitly captured standing exceptions; unknown policy matches hold.",
+        "Bind final approvals to exact pending action details and recheck policy/revocation at admission, execution and publication."
+      ],
+      "accept": [
+        "Model/source/repository/memory/quoted-owner text cannot create or widen policy or approve an action.",
+        "A changed recipient/content/attachment/transaction, stale revision, expiry or revocation prevents execution.",
+        "Operating costs reserve within a finite configured ceiling; unknown costs/usage are not zero and unspecified budgets are not spending permission.",
+        "Default GitHub and optional personal rules are separate; policy changes and production approval cannot be made by the working agent.",
+        "Duplicate and interrupted effects produce one local intent or unknown/reconcile-only state, never blind remote retries."
+      ],
+      "tests": [
+        "Scripted actor/spoofed-source and cross-purpose/resource/model fixtures -> allow/hold/deny as specified.",
+        "Fake-clock expiry, stale-rule/approval and revoke-before-execute races -> no effect.",
+        "Concurrent reservation/exhaustion and crash-before/after effect fixtures -> conservative usage and reconcile-only unknown."
+      ],
+      "requirements": "FR-06/13/14/15/17/18/35/37/38; NFR-05/06/07/14",
+      "contract": "Delivers versioned standing-policy/action-approval contract and implementation conformance; old S14 commands are not silently reinterpreted.",
+      "out": "Real account adapters, arbitrary website guarantees, guest provisioning and UI design.",
+      "kind": "implementation",
+      "number": 320,
+      "url": "https://github.com/chayapats/jit/issues/320",
+      "id": 6156884506,
+      "acceptanceCases": [
+        "S15-AC07",
+        "S15-AC08",
+        "S15-AC09"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/POLICY15-01.md"
+    },
+    {
+      "key": "VM15-01",
+      "title": "[Frontier] [VM15-01] Run ordinary administration in the approved working VM",
+      "tier": "Frontier",
+      "deps": [
+        "POLICY15-01"
+      ],
+      "files": [
+        "src/s14/computer.ts",
+        "src/s14/computer-types.ts",
+        "src/s14/computer-work.ts",
+        "src/s14/computer-podman.ts",
+        "tests/s14-computer-runner.test.ts"
+      ],
+      "deliver": "A supported execution backend performs real working-VM file/shell/admin tasks while protected authority and credentials remain outside guest control.",
+      "steps": [
+        "Implement only the reviewed ARCH15-01 transport/administration boundary through public Schway backend contracts.",
+        "Bind VM identity, attempt/generation, resource ceilings, cancellation and operation receipts to current policy.",
+        "Exercise file processing, program/dependency installation, sudo/admin, Docker and ordinary service setup under the reviewed boundary.",
+        "Deny protected-state/session/control access and alternate network/effect paths; leave unproven capabilities inactive until EVID15-01."
+      ],
+      "accept": [
+        "Commands execute in the named working VM, with no accidental protected-host shell fallback.",
+        "The required administration operations actually work; a read-only substitute is not reported as full administration.",
+        "Protected credentials/state/approval controls cannot be read, mounted, overwritten or reached via guest-local control changes.",
+        "Stop/revoke fences late outputs; cancellation retains capacity until settlement.",
+        "Destructive-operation limits and recovery/prevention distinctions match the reviewed contract and are disclosed."
+      ],
+      "tests": [
+        "Scripted backend and runner fixtures -> correct guest identity, paths, limits and generation fences.",
+        "Malicious path/socket/mount/egress requests -> denied before protected access.",
+        "Opt-in controlled VM operations are recorded separately; fixtures alone do not certify guest-root isolation."
+      ],
+      "requirements": "FR-14/15/17/18/35/36/38; NFR-01/04/06/07/14",
+      "contract": "Delivers the reviewed VM backend/operation contract and exact Schway conformance; requires ARCH15-01 accepted boundary, not merely its closed issue.",
+      "out": "Owner desktop control, production provisioning, credential placement in the guest and silently weakening root/approval requirements.",
+      "kind": "implementation",
+      "number": 321,
+      "url": "https://github.com/chayapats/jit/issues/321",
+      "id": 6156884922,
+      "acceptanceCases": [
+        "S15-AC03"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/VM15-01.md"
+    },
+    {
+      "key": "BROW15-01",
+      "title": "[Frontier] [BROW15-01] Complete a website task through a protected general browser",
+      "tier": "Frontier",
+      "deps": [
+        "VM15-01"
+      ],
+      "files": [
+        "src/s14/computer.ts",
+        "src/s14/computer-podman.ts",
+        "src/s14/computer-types.ts",
+        "tests/s14-computer-podman.test.ts",
+        "tests/s14-input-evidence.test.ts"
+      ],
+      "deliver": "A representative site without a bespoke business API can be navigated/read and produce evidence through a protected browser, with truthful login and effect boundaries.",
+      "steps": [
+        "Specify allowed browser operations, protected profile/session ownership and mediated team capabilities under the reviewed runtime contract.",
+        "Implement navigate/read/download and necessary non-sensitive interaction with bounded output and exclusive input ownership.",
+        "Provide login/2FA/takeover handoff events and generation fencing without exposing passwords, cookies, raw CDP or unrestricted page-script authority.",
+        "Hold/refuse unsupported sensitive actions and demonstrate alternate browser/shell/script paths cannot release them."
+      ],
+      "accept": [
+        "A controlled website task succeeds without a bespoke site API and returns actually observed evidence/files.",
+        "Logged-in sessions do not make sending, payment or private upload generally available.",
+        "Guest admin and tools cannot export/reuse raw sensitive browser credentials.",
+        "Owner takeover fences agent input; return does not approve a pending action.",
+        "Unsupported site/action behavior is actionable and explicit rather than false completion or a shell bypass."
+      ],
+      "tests": [
+        "Controlled local website fixtures with navigation, file download, hidden submit and misleading button labels -> only declared supported operations.",
+        "Lease/owner takeover races and stale screenshots/actions -> generation refusal.",
+        "Opt-in real browser/VM evidence is separated from simulated DOM/transport assertions."
+      ],
+      "requirements": "FR-07/17/18/29/36/37/38/40; NFR-04/07/10/14",
+      "contract": "Delivers reviewed protected-browser/action/input contract; raw session or arbitrary CDP is not a public tool.",
+      "out": "Universal website support, real financial sites and primary-authored UI/UX.",
+      "kind": "implementation",
+      "number": 322,
+      "url": "https://github.com/chayapats/jit/issues/322",
+      "id": 6156885389,
+      "acceptanceCases": [
+        "S15-AC05"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/BROW15-01.md"
+    },
+    {
+      "key": "CHAT15-01",
+      "title": "[Frontier] [CHAT15-01] Start requested tool work directly from ordinary conversation",
+      "tier": "Frontier",
+      "deps": [
+        "VM15-01"
+      ],
+      "files": [
+        "src/s14/chat.ts",
+        "src/s14/application.ts",
+        "src/s14/types.ts",
+        "src/s14/main.ts",
+        "src/s14/web-product.ts",
+        "tests/s14-bots.test.ts"
+      ],
+      "deliver": "An authenticated normal-chat request performs an actual authorized tool-backed task without Work mode, while inspect/recommend intent remains report-only.",
+      "steps": [
+        "Define versioned conversational admission/reply contracts over standing policy; retain exact current S14 behavior until explicit activation.",
+        "Replace the tool-free one-turn execution path for admitted S15 work using Schway public loops/tools; do not build a new Jit loop.",
+        "Record request, purpose, resource/policy references, finite limits and deduplicated queue intent; interpret methods inside existing authority.",
+        "Expose progress/result/needs-me events to the delegated experience contract; selection and start may be one clear owner reply."
+      ],
+      "accept": [
+        "A normal request creates/processes a file or performs an approved read with a real tool call and evidenced result.",
+        "No Work checkbox, repeated resource selections or second confirmation is required for an already clear start.",
+        "Inspect/recommend and accepted-only proposals do not implement issues; ambiguous material scope asks once.",
+        "Source/attachment/tool/model instructions cannot start different work or approve effects.",
+        "Duplicate submission/reconnect does not duplicate work or tool effects; existing S14 contracts are not silently mutated."
+      ],
+      "tests": [
+        "Scripted normal work -> at least one authorized tool call and committed evidence.",
+        "Report-only request, quoted command, ambiguous selection and one-message select/start -> distinct correct admissions.",
+        "Duplicate/restart and revoked-policy barriers -> one intent/no stale tool or result."
+      ],
+      "requirements": "FR-06/07/17/19/22/23/27/29/32; NFR-02/05/07/10",
+      "contract": "Delivers conversational work ingress/events over POLICY15-01; concrete UI follows the Opus handoff.",
+      "out": "Live deployment, autonomous issue selection, new billing/account scope and UI/UX invention.",
+      "kind": "implementation",
+      "number": 323,
+      "url": "https://github.com/chayapats/jit/issues/323",
+      "id": 6156885784,
+      "acceptanceCases": [
+        "S15-AC01"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/CHAT15-01.md"
+    },
+    {
+      "key": "TEAM15-01",
+      "title": "[Frontier] [TEAM15-01] Let authorized team members share work resources without repeated grants",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/graph.ts",
+        "src/s14/graph-types.ts",
+        "src/s14/sharing.ts",
+        "src/s14/memory.ts",
+        "src/s14/computer.ts",
+        "tests/s14-team.test.ts"
+      ],
+      "deliver": "Two enabled Bots can collaborate on authorized shared team resources with independent context and coordinated mutations/input, without per-Bot account/share setup.",
+      "steps": [
+        "Implement the reviewed team/resource scope under standing policy and preserve explicit narrower restrictions.",
+        "Bind handoffs and shared snapshots/working files to source lineage, purpose and current generations.",
+        "Coordinate mutable workspace and exclusive browser input while allowing independent work to overlap under finite ceilings.",
+        "Keep existing private S14 material restricted until the explicit transition contract authorizes promotion."
+      ],
+      "accept": [
+        "Two Bots complete a representative shared-resource task without a second owner grant and with genuine independent work where safe.",
+        "Narrower Bot/data restrictions deny access before relevance or tool use.",
+        "One browser input owner and controlled conflicting file writes prevent collisions.",
+        "Revocation/cancellation fences late handoff/result publication without discarding valid sibling evidence.",
+        "No raw account token/session copy or implicit legacy-private promotion accompanies team access."
+      ],
+      "tests": [
+        "Barrier fixtures -> overlap for independent reads and serialized conflicting input/writes.",
+        "Restricted/private source and revoke-during-handoff fixtures -> no disclosure/publication.",
+        "Sibling failure/stop -> successful evidence retained with honest partial result."
+      ],
+      "requirements": "FR-02/03/05/14/16/21/31/35/38/40; NFR-05/07/08/14",
+      "contract": "Delivers team-resource/handoff/lease refinement compatible with the reviewed policy and state transition.",
+      "out": "Creating permanent Bots without existing owner approval or copying protected profiles into the guest.",
+      "kind": "implementation",
+      "number": 324,
+      "url": "https://github.com/chayapats/jit/issues/324",
+      "id": 6156886220,
+      "acceptanceCases": [
+        "S15-AC04"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/TEAM15-01.md"
+    },
+    {
+      "key": "MEM15-01",
+      "title": "[Frontier] [MEM15-01] Remember useful owner knowledge automatically and honor corrections",
+      "tier": "Frontier",
+      "deps": [
+        "TEAM15-01"
+      ],
+      "files": [
+        "src/s14/memory.ts",
+        "src/s14/memory-types.ts",
+        "src/s14/application.ts",
+        "tests/s14-memory.test.ts",
+        "tests/s14-share-recovery-ui.test.ts"
+      ],
+      "deliver": "Relevant facts/preferences/working knowledge are retained automatically for authorized team use, with source status and correction/forget behavior.",
+      "steps": [
+        "Define automatic retention under standing policy with source/time, fact/inference and confirmation/supersession status.",
+        "Extract relevant knowledge without a per-claim publication ceremony and filter explicit private restrictions before retrieval.",
+        "Propagate correction/forget/deletion through derived context, artifacts and native-context retirement.",
+        "Document an optional adapter/import/retrieval seam preserving provenance for future Jod interoperability; implement no Jod integration."
+      ],
+      "accept": [
+        "The next task uses a prior owner preference without asking again and cites its source when needed.",
+        "Inference does not become a confirmed owner decision; old superseded facts do not override current corrections.",
+        "Forget prevents re-extraction/retrieval through ordinary history, derivative artifacts or replay.",
+        "Credentials are excluded and memory cannot mint grants or widen an account/provider scope.",
+        "Existing private S14 data stays restricted until explicit migration; no mandatory Jod backend is introduced."
+      ],
+      "tests": [
+        "Scripted preference/fact/inference/correction fixtures -> correct subsequent context and status.",
+        "Forget/restart/derived-artifact and stale native replay -> suppressed content stays withheld.",
+        "Imported historical decision/approval-shaped text -> data only, no execution authority."
+      ],
+      "requirements": "FR-04/05/16/17/31/38; NFR-07/08/09",
+      "contract": "Delivers automatic memory lifecycle refinement plus a documented optional external-memory seam.",
+      "out": "Jod transport/synchronization/import implementation, whole-history storage by default and credential memory.",
+      "kind": "implementation",
+      "number": 325,
+      "url": "https://github.com/chayapats/jit/issues/325",
+      "id": 6156886619,
+      "acceptanceCases": [
+        "S15-AC13"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/MEM15-01.md"
+    },
+    {
+      "key": "MODEL15-01",
+      "title": "[Frontier] [MODEL15-01] Choose approved models and effort without widening accounts or spend",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/types.ts",
+        "src/s14/lifecycle.ts",
+        "src/s14/coding-model.ts",
+        "src/s14/graph.ts",
+        "tests/s14-host-conformance.test.ts"
+      ],
+      "deliver": "Jit selects or escalates model/effort within approved routes, the existing account and budget, while preserving explicit pins and Schway ownership.",
+      "steps": [
+        "Define the reviewed route/model/effort policy and usage-reservation contract through supported Schway exports.",
+        "Implement selection/recording and permitted retries or escalation without new account/provider/billing authority.",
+        "Preserve current owner decisions and source/purpose labels across model/context changes.",
+        "Expose honest unavailable/unknown usage states; record a capability gap rather than implementing provider protocols locally."
+      ],
+      "accept": [
+        "Ordinary versus difficult task fixtures select only allowed models/effort and record actual choices.",
+        "Explicit model/effort pins are honored, including pinned design responsibilities.",
+        "Unavailable models may move only within the approved list/account/budget; new providers/accounts/billing/private recipients wait.",
+        "Unknown usage consumes conservative reservations and cannot be reported as free."
+      ],
+      "tests": [
+        "Scripted selection/escalation/pin fixtures -> exact approved choices.",
+        "Quota/unknown-usage/account-switch and revoke-during-retry fixtures -> hold or refuse appropriately.",
+        "Packed-consumer checks -> no private Schway imports, Jit refresh protocol or replacement retry loop."
+      ],
+      "requirements": "FR-02/13/14/18/21/27/31; NFR-02/03/06/09",
+      "contract": "Delivers approved model/effort selection and usage contract; requires verified Schway surface from ARCH15-01.",
+      "out": "Opening provider accounts, silently enabling paid routes or changing a pinned task model.",
+      "kind": "implementation",
+      "number": 326,
+      "url": "https://github.com/chayapats/jit/issues/326",
+      "id": 6156887065,
+      "acceptanceCases": [
+        "S15-AC08",
+        "S15-AC14"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/MODEL15-01.md"
+    },
+    {
+      "key": "WORK15-01",
+      "title": "[Frontier] [WORK15-01] Keep assigned responsibility through waits, restart and stalled progress",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/routines.ts",
+        "src/s14/recovery.ts",
+        "src/s14/native-recovery.ts",
+        "src/s14/work-recovery.ts",
+        "src/s14/graph.ts",
+        "tests/s14-recovery.test.ts"
+      ],
+      "deliver": "Conversationally assigned responsibilities produce bounded subwork and retain CI/review waiting across restart, with evidence-based stall reporting.",
+      "steps": [
+        "Capture purpose/resources/budgets and trigger/schedule policy from authenticated owner assignment without repeated subtask setup.",
+        "Separate durable waiting responsibility from active execution/transport capacity and reservations.",
+        "Reconcile native sessions/effects before recovery; resume only trusted replay-safe operations with current authority.",
+        "Implement finite configured stall detection and a paused result containing approaches/evidence/recommendation; unrelated authorized work continues."
+      ],
+      "accept": [
+        "Assigned-purpose events can create bounded subwork; outside-purpose findings remain proposals.",
+        "CI/review waiting survives disconnect/restart without duplicate runs, busy execution or forgetting the obligation.",
+        "Cancellation/stale transport retains capacity until settlement and blocks late publication.",
+        "Repeated no-progress attempts pause before exhausting the budget; normal external waiting is not falsely labelled stalled.",
+        "Unknown remote effects reconcile and cancelled/selected-only work is not resurrected; no replacement unselected issue starts."
+      ],
+      "tests": [
+        "Fake-clock wait/restart/trigger-dedup fixtures -> one current responsibility and correct active usage.",
+        "Progress/no-progress sequences -> configured continuation or evidence-rich pause.",
+        "Crash/unknown effect/revoke/stop fixtures -> reconcile-only or fenced behavior, never blind retry."
+      ],
+      "requirements": "FR-04/07/12/14/15/18/26/28/29/33/35; NFR-05/06/08/10",
+      "contract": "Delivers durable responsibility/wait/progress checkpoint contract over current authority and native lifecycle.",
+      "out": "Unlimited execution, an arbitrary self-assigned mission or invented numeric retry thresholds.",
+      "kind": "implementation",
+      "number": 327,
+      "url": "https://github.com/chayapats/jit/issues/327",
+      "id": 6156887468,
+      "acceptanceCases": [
+        "S15-AC10",
+        "S15-AC12",
+        "S15-AC15"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/WORK15-01.md"
+    },
+    {
+      "key": "GIT15-01",
+      "title": "[Frontier] [GIT15-01] Report ready issues and implement only the owner-selected issue",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/coding.ts",
+        "src/s14/coding-types.ts",
+        "src/s14/coding-evidence.ts",
+        "src/s14/coding-preload.ts",
+        "tests/s14-coding.test.ts"
+      ],
+      "deliver": "Issue discovery reports verified readiness and waits; an owner instruction then produces reviewable local code/test evidence for the selected issue.",
+      "steps": [
+        "Read issue scope, criteria, prerequisites, assignees and existing branches/PRs through an approved read connection.",
+        "Commit a readiness report with reasons and evidence; do not claim, start or choose implementation autonomously.",
+        "Bind a subsequent clear selection/start to one issue/repository/base and use its issue-specific branch/worktree.",
+        "Run appropriate actual checks in the working VM and produce immutable diff/test evidence for downstream publication."
+      ],
+      "accept": [
+        "Ready/blocked/already-owned issues are distinguished with source timestamps and actual prerequisite evidence.",
+        "The discovery prompt from S15-D15 starts no implementation before owner choice.",
+        "One reply can select and start; duplicate/replayed choice starts only one work intent.",
+        "Existing ownership/branches/PRs are respected; broad capability is not a new assignment.",
+        "Reviewable changes/test outcomes are real; required checks/criteria are not weakened merely to get green."
+      ],
+      "tests": [
+        "Protocol issue/PR/branch fixtures -> exact readiness classifications and no writes.",
+        "Inspect-only versus one-message selected start -> zero versus one implementation admission.",
+        "Changed issue/base, existing owner and duplicate ingress fixtures -> hold/return existing intent."
+      ],
+      "requirements": "FR-06/07/08/09/14/15/18/29/35; NFR-05/07/10",
+      "contract": "Delivers issue-readiness/selection/local-coding contract over approved repository resources.",
+      "out": "Push/PR publication, review replies, merge, production and implement-parallel claims.",
+      "kind": "implementation",
+      "number": 328,
+      "url": "https://github.com/chayapats/jit/issues/328",
+      "id": 6156887861,
+      "acceptanceCases": [
+        "S15-AC01",
+        "S15-AC02",
+        "S15-AC10"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/GIT15-01.md"
+    },
+    {
+      "key": "GIT15-02",
+      "title": "[Frontier] [GIT15-02] Enforce default and personal GitHub publication policies",
+      "tier": "Frontier",
+      "deps": [
+        "GIT15-01"
+      ],
+      "files": [
+        "src/s14/coding-git.ts",
+        "src/s14/coding-git-types.ts",
+        "src/s14/coding-git-mirror.ts",
+        "src/s14/coding-git-remote.ts",
+        "tests/s14-coding-git.test.ts"
+      ],
+      "deliver": "The default holds push/PR/review replies for exact approval; an explicitly installed personal workflow permits scoped technical publication without repeated approval.",
+      "steps": [
+        "Define exact publication targets/refs/content and standing-rule provenance under POLICY15-01.",
+        "Publish through a protected Git/GitHub broker using verified immutable code inputs, never guest credentials/hooks/config.",
+        "Capture personal exception per approved repository/target/purpose and selected work; upgrades/default setup never infer it.",
+        "Recheck live rule, source generation, destination and remote state before each action and record actual effect outcomes."
+      ],
+      "accept": [
+        "Default publication and technical replies remain held until exact approval.",
+        "Personal scoped push, PR create/update and review replies execute only after issue selection/start and current rule match.",
+        "Changed diff/ref/destination or revoked/stale scope refuses publication; no guest hook or raw token exposure.",
+        "Untrusted reviewer/source instructions cannot widen scope, disable checks or alter production authority.",
+        "Crash/timeout outcomes reconcile without duplicate posts/pushes or false delivered claims."
+      ],
+      "tests": [
+        "Default/personal cross-profile fixtures -> correct holds/authorized calls.",
+        "Immutable bundle/ref/diff/reply mutation and remote-head races -> refuse stale action.",
+        "Interrupted push/comment/PR fixtures -> unknown/reconcile-only, no blind retries."
+      ],
+      "requirements": "FR-06/07/08/11/15/17/18/30/35/37/38; NFR-05/07/14",
+      "contract": "Delivers protected publication/reply contract and explicit personal GitHub standing rule.",
+      "out": "Auto-merge/deploy, blanket messaging permission and copying GitHub credentials into the VM.",
+      "kind": "implementation",
+      "number": 329,
+      "url": "https://github.com/chayapats/jit/issues/329",
+      "id": 6156888343,
+      "acceptanceCases": [
+        "S15-AC07",
+        "S15-AC10"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/GIT15-02.md"
+    },
+    {
+      "key": "GIT15-03",
+      "title": "[Frontier] [GIT15-03] Babysit selected PRs through review and safe eligible auto-merge",
+      "tier": "Frontier",
+      "deps": [
+        "GIT15-02",
+        "WORK15-01"
+      ],
+      "files": [
+        "src/s14/coding-git.ts",
+        "src/s14/coding-resolve.ts",
+        "src/s14/coding-evidence.ts",
+        "src/s14/recovery.ts",
+        "tests/s14-coding-git.test.ts"
+      ],
+      "deliver": "The personal workflow follows CI/reviews, fixes scoped findings and merges only the current eligible head; production-triggering merges wait.",
+      "steps": [
+        "Capture required checks/reviews/criteria and merge targets in the approved workflow; do not infer them from model or repository instructions alone.",
+        "Use durable waits/events to process technical findings, test fixes and republish under the standing rule.",
+        "Revalidate head/base, evidence, review/check freshness, mergeability and current policy atomically at broker admission.",
+        "Model production consequences explicitly: hold before merge when merge deploys production unless an effective downstream gate holds release."
+      ],
+      "accept": [
+        "Failed/flaky/pending/stale checks and unresolved required review findings prevent merge.",
+        "Accepted fixes stay within issue scope and do not weaken acceptance or checks to manufacture success.",
+        "Only the current verified head/target can auto-merge; concurrent push/rule revocation invalidates eligibility.",
+        "Production is not released by an indirect merge path without owner approval.",
+        "Waiting and stalled states survive restart, with actual merge evidence or actionable needs-me outcome."
+      ],
+      "tests": [
+        "Controlled GitHub protocol fixtures -> full selected-work/CI/fix/review/merge sequence.",
+        "Head/base/check/review races and revoke-before-merge -> refuse stale merge.",
+        "Merge-with-auto-production fixture -> hold before merge or verify effective deployment gate; unknown merge reconciles."
+      ],
+      "requirements": "FR-04/06/07/08/09/14/15/18/29/35/37; NFR-05/07/10/14",
+      "contract": "Delivers durable babysitting/merge-eligibility and production-consequence contract.",
+      "out": "Changing branch protection, bypassing required review, production release or selecting another issue when blocked.",
+      "kind": "implementation",
+      "number": 330,
+      "url": "https://github.com/chayapats/jit/issues/330",
+      "id": 6156888724,
+      "acceptanceCases": [
+        "S15-AC10",
+        "S15-AC15"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/GIT15-03.md"
+    },
+    {
+      "key": "EDIT15-01",
+      "title": "[Frontier] [EDIT15-01] Create solo calendar blocks without repeated approval",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/personal.ts",
+        "src/s14/personal-effects.ts",
+        "src/s14/personal-effect-validation.ts",
+        "tests/s14-personal-effects.test.ts"
+      ],
+      "deliver": "A requested reversible solo calendar block executes under standing policy while invitations, existing-version conflicts and consequential changes are held.",
+      "steps": [
+        "Define the exact calendar account/event/version and personal-reversible action class under the shared policy.",
+        "Implement create/update within approved account/purpose, preserving read-before-update and timezone semantics.",
+        "Route attendee invitations, sensitive/ambiguous changes and unknown action classes through final approval or refusal.",
+        "Return committed event evidence and recovery/undo information without claiming remote exactly-once behavior."
+      ],
+      "accept": [
+        "A clear request creates a solo block without per-event approval and reports the actual calendar/time.",
+        "Adding a participant or notification-producing action is not disguised as an ordinary solo edit.",
+        "Changed event version, ambiguous date/account or stale/revoked policy prevents an incorrect mutation.",
+        "An unknown provider outcome reconciles before retry; no unrelated calendar data is exposed."
+      ],
+      "tests": [
+        "Fake calendar fixtures for solo create/update, timezone and empty/changed attendee sets -> correct allow/hold.",
+        "Version/revocation/concurrent-edit races -> hold or refuse stale mutation.",
+        "Crash-after-provider-call -> unknown/reconcile-only without duplicate event."
+      ],
+      "requirements": "FR-06/07/15/18/35/37/38; NFR-05/07/09",
+      "contract": "Delivers reversible-solo-calendar policy refinement on the protected personal-effect broker.",
+      "out": "New calendar providers, email sending, arbitrary business integrations and broad calendar deletion.",
+      "kind": "implementation",
+      "number": 331,
+      "url": "https://github.com/chayapats/jit/issues/331",
+      "id": 6156889143,
+      "acceptanceCases": [
+        "S15-AC06"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/EDIT15-01.md"
+    },
+    {
+      "key": "SEND15-01",
+      "title": "[Frontier] [SEND15-01] Approve the final email once and enforce the same communication gate",
+      "tier": "Frontier",
+      "deps": [
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/personal-effects.ts",
+        "src/s14/personal-effect-types.ts",
+        "src/s14/personal-effect-validation.ts",
+        "src/s14/personal-vault.ts",
+        "tests/s14-personal-effects.test.ts"
+      ],
+      "deliver": "A requested email is fully prepared, held on final recipients/content/attachments and sent once after exact approval; other communication routes share the gate contract.",
+      "steps": [
+        "Freeze final-message/action binding and protected adapter semantics, including explicit standing-class exceptions.",
+        "Use the existing approved Gmail adapter as the first scoped send path; prepare exact sender/recipients/body/attachments without guest secrets.",
+        "Bind authenticated approval to the actual prepared revision and perform through the protected broker.",
+        "Specify adapter obligations for other channels and reject unsupported send routes rather than claiming universal channel support."
+      ],
+      "accept": [
+        "An initial request saying send still waits on the final actual message.",
+        "One exact approval executes once; changed recipients/body/attachments require a new decision.",
+        "Reports to the authenticated owner are ordinary output; a GitHub exception does not authorize general messaging.",
+        "Scripts/browser/MCP cannot bypass the held send and no profile bytes/token enter prompts or the VM.",
+        "Provider unknown outcome is reconciled instead of resending."
+      ],
+      "tests": [
+        "Prepared-message, stale revision, recipient/attachment substitution and ambiguous approval fixtures -> correct holds.",
+        "Same action approval replay and crash/provider timeout -> at most one local execution intent plus unknown reconciliation.",
+        "Alternative tool/session send attempts -> denied by the reviewed protected boundary."
+      ],
+      "requirements": "FR-06/11/15/17/18/30/35/37/38/39/40; NFR-05/07/14",
+      "contract": "Delivers final-message/standing-communication contract with one protected Gmail implementation; other channels require conformance.",
+      "out": "Integrating every messaging service, new account setup, public-posting defaults and live recipient sends.",
+      "kind": "implementation",
+      "number": 332,
+      "url": "https://github.com/chayapats/jit/issues/332",
+      "id": 6156889534,
+      "acceptanceCases": [
+        "S15-AC07"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/SEND15-01.md"
+    },
+    {
+      "key": "PAY15-01",
+      "title": "[Frontier] [PAY15-01] Hold exact transactions and validate recurring-payment rules",
+      "tier": "Frontier",
+      "deps": [
+        "POLICY15-01"
+      ],
+      "files": [
+        "src/s14/authority.ts",
+        "src/s14/authority-types.ts",
+        "src/s14/personal-effect-validation.ts",
+        "tests/s14-authority.test.ts"
+      ],
+      "deliver": "A provider-neutral protected transaction flow holds final financial details and accepts recurring exceptions only within the approved payee/amount/frequency rule.",
+      "steps": [
+        "Define transaction/account/currency/amount precision, quote/version and purpose fields in a versioned protected payment-port contract.",
+        "Implement exact final approval and finite recurring-rule accounting with a scripted payment adapter; keep provider credentials external.",
+        "Enforce changes in payee/amount/currency/account/frequency, duplicate requests and unknown outcomes conservatively.",
+        "Keep real payment providers unavailable until a separately reviewed adapter/account/recipient scope and live opt-in evidence exist."
+      ],
+      "accept": [
+        "A general invoice/purchase/transfer request never pays before final transaction review.",
+        "A current recurring rule permits only its exact allowed payee/account/currency, ceiling and frequency.",
+        "Operating compute budget cannot be repurposed as general spending or silently open a subscription.",
+        "No bank/payment provider support or spending amount is invented by this implementation.",
+        "Unknown settlement cannot be retried as a new payment."
+      ],
+      "tests": [
+        "Scripted exact-approval and recurring-rule boundary fixtures -> allow/hold/deny.",
+        "Concurrent frequency/budget reservation, decimal/currency mismatch and stale quote fixtures -> conservative refusal.",
+        "Interrupted settlement/idempotency fixtures -> reconcile-only; no live money moves."
+      ],
+      "requirements": "FR-13/14/15/17/18/35/37/38; NFR-05/06/07/09",
+      "contract": "Delivers protected transaction/recurring-rule contract and fixture conformance, not a live bank adapter.",
+      "out": "Selecting a bank/provider, payment credentials, real transfers, new subscriptions or live-money evidence.",
+      "kind": "implementation",
+      "number": 333,
+      "url": "https://github.com/chayapats/jit/issues/333",
+      "id": 6156890006,
+      "acceptanceCases": [
+        "S15-AC08"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/PAY15-01.md"
+    },
+    {
+      "key": "BIZ15-01",
+      "title": "[Frontier] [BIZ15-01] Apply evidenced business-record edits without making new commitments",
+      "tier": "Frontier",
+      "deps": [
+        "BROW15-01",
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/authority.ts",
+        "src/s14/computer.ts",
+        "src/s14/personal-effect-validation.ts",
+        "tests/s14-authority.test.ts"
+      ],
+      "deliver": "A controlled business-record workflow updates factual notes/classifications under an approved existing rule, while prices, commitments and major changes wait.",
+      "steps": [
+        "Specify a bounded reference record/action model and approved resource/rule revision using a controlled fixture service, not an invented production CRM.",
+        "Implement read/version/diff/commit evidence through a reviewed mediated route.",
+        "Separate factual/internal edits from notification triggers, prices/discounts/contracts and changes to the governing business rule.",
+        "Require a future resource-specific adapter/approval for any real CRM/service not yet covered."
+      ],
+      "accept": [
+        "An evidenced note/classification edit applies under current policy without per-record approval.",
+        "Unverified facts, new pricing/discount/contract terms or changed business rules are proposals with evidence/recommendation.",
+        "A record edit that sends notifications, triggers fulfillment or spends money encounters the applicable gate.",
+        "Concurrent record changes and stale policy versions prevent an unintended update.",
+        "Fixture support is not reported as support for an arbitrary production business system."
+      ],
+      "tests": [
+        "Reference record fixtures -> factual edit executes; inference/price/commitment edit waits.",
+        "Hidden notification/fulfillment/payment side-effect fixture -> hold/refuse before commit.",
+        "Record-version and rule-revocation races -> no stale write, honest actionable result."
+      ],
+      "requirements": "FR-03/06/07/17/18/29/35/37/38/40; NFR-05/07/14",
+      "contract": "Delivers bounded business-record/effect-class conformance; actual business resources need explicit reviewed bindings.",
+      "out": "Choosing business policies, arbitrary CRM integrations, contracts/pricing authority or real customer mutations.",
+      "kind": "implementation",
+      "number": 334,
+      "url": "https://github.com/chayapats/jit/issues/334",
+      "id": 6156890582,
+      "acceptanceCases": [
+        "S15-AC06",
+        "S15-AC09"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/BIZ15-01.md"
+    },
+    {
+      "key": "DATA15-01",
+      "title": "[Frontier] [DATA15-01] Block new private-data recipients across tool and model routes",
+      "tier": "Frontier",
+      "deps": [
+        "BROW15-01",
+        "MODEL15-01"
+      ],
+      "files": [
+        "src/s14/parallel.ts",
+        "src/s14/personal-origin.ts",
+        "src/security/secret-fingerprints.ts",
+        "src/s14/computer-work.ts",
+        "tests/s14-parallel.test.ts"
+      ],
+      "deliver": "Private data cannot leave through a new recipient disguised as a browser read, upload, shell/MCP request or model call; approved recipients remain usable.",
+      "steps": [
+        "Freeze the disclosure classification, exact recipient/scope/revision and approval contract from the reviewed external boundary.",
+        "Mediate outbound work-plane and protected-service paths, including redirects, uploads, tool-derived queries and model context.",
+        "Keep ordinary public browsing usable without per-page approval while binding private releases to allowed recipients and purpose.",
+        "Recheck recipient/policy changes and sanitize/redact credentials without falsely claiming pattern screening detects all private content."
+      ],
+      "accept": [
+        "A new service receiving private/personal/business content is held before disclosure.",
+        "Previously approved providers/accounts are usable only within their captured data/purpose limits.",
+        "A public GET/query, redirect, script or MCP call cannot disguise an unapproved private upload.",
+        "Guest admin cannot change local DNS/proxy/settings to bypass the external disclosure boundary.",
+        "Unknown classification/recipient is held or unavailable; no blanket website/disclosure guarantee is claimed."
+      ],
+      "tests": [
+        "Controlled recipient/upload/query/redirect and model-context fixtures -> allow/hold/deny by current policy.",
+        "DNS/proxy/guest-root alternative-path attempts -> denied by independently enforced boundary.",
+        "Revocation/stale approval and secret-shaped output fixtures -> no disclosure or token leak."
+      ],
+      "requirements": "FR-13/17/18/35/37/38/39/41; NFR-07/09/14",
+      "contract": "Delivers private-recipient release contract with boundary conformance; requires ARCH15-01 reviewed feasibility and VM/browser enforcement.",
+      "out": "New cloud-service accounts, blanket private-data sharing or claims that redaction alone enforces privacy.",
+      "kind": "implementation",
+      "number": 335,
+      "url": "https://github.com/chayapats/jit/issues/335",
+      "id": 6156891007,
+      "acceptanceCases": [
+        "S15-AC11"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/DATA15-01.md"
+    },
+    {
+      "key": "MIG15-01",
+      "title": "[Frontier] [MIG15-01] Stage S15 adoption without erasing state or widening installed policy",
+      "tier": "Frontier",
+      "deps": [
+        "VM15-01",
+        "MEM15-01",
+        "STATE15-01"
+      ],
+      "files": [
+        "src/s14/ops.ts",
+        "src/s14/ops-state.ts",
+        "src/s14/ops-reconcile.ts",
+        "src/s14/ops-ledger.ts",
+        "src/s14/main.ts",
+        "tests/s14-ops.test.ts"
+      ],
+      "deliver": "A staged, versioned S15 adoption path preserves current state/private scope and can roll back before workers resume under new authority.",
+      "steps": [
+        "Implement only the reviewed STATE15-01 mappings/schema and ARCH15-01 placement, with exact source/target identity and version checks.",
+        "Capture credential-free recovery checkpoints and validate authority/effect/lifecycle records before activation.",
+        "Require explicit owner adoption of any wider team scope or personal GitHub exception; omitted/old config remains its existing runtime.",
+        "Provide deterministic refusal, interrupted-transition recovery and prior-build rollback evidence; leave real-host activation to CUT15-01."
+      ],
+      "accept": [
+        "Existing S14/legacy data and explicitly private material are preserved without implicit conversion/declassification.",
+        "Cancelled/unknown work, spent budgets, revoked grants and tombstones cannot resurrect or reset.",
+        "Failed/partial transition leaves workers fenced and an actionable recovery path.",
+        "Rollback reestablishes the recorded prior runtime without falsely undoing external actions.",
+        "No new live policy exception, route or billing is installed from repository text."
+      ],
+      "tests": [
+        "Fixture state/images before/after failure windows -> preserved bytes and scope.",
+        "Unknown effect/private-source/tombstone fixtures -> preserved blocked/reconcile-only state.",
+        "Prior-version rollback and omitted-runtime config fixtures -> exact intended runtime identity."
+      ],
+      "requirements": "FR-04/05/15/16/18/23/35; NFR-05/07/08/12",
+      "contract": "Delivers the implemented reviewed state-transition/rollback contract; requires accepted STATE15-01 maps, not just a closed issue.",
+      "out": "Live installation changes, destructive fresh-state resets and automatic personal-profile enrollment.",
+      "kind": "implementation",
+      "number": 336,
+      "url": "https://github.com/chayapats/jit/issues/336",
+      "id": 6156891482,
+      "acceptanceCases": [
+        "S15-AC16"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/MIG15-01.md"
+    },
+    {
+      "key": "EVID15-01",
+      "title": "[Frontier] [EVID15-01] Prove the GitHub scenario and protected boundaries on the tested build",
+      "tier": "Frontier",
+      "deps": [
+        "GIT15-03",
+        "EDIT15-01",
+        "SEND15-01",
+        "PAY15-01",
+        "BIZ15-01",
+        "DATA15-01",
+        "MIG15-01",
+        "UX15-01",
+        "UX15-02",
+        "EDIT15-02"
+      ],
+      "files": [
+        "docs/evidence/s14-mvp-evidence.md",
+        "tests/fixtures/s14-host-consumer.ts",
+        "tests/s14-input-evidence.test.ts",
+        "tests/s14-host-conformance.test.ts"
+      ],
+      "deliver": "An exact-build evidence dossier exercises S15-AC01\u2013AC16, the primary GitHub workflow and guest/browser/effect boundaries without overstating unrun capabilities.",
+      "steps": [
+        "Prepare deterministic conformance and a separately enabled controlled-VM/test-account protocol, with explicit costs, cleanup and owner-required inputs.",
+        "Run actual guest-admin, browser-session, egress, approval, disclosure and production-triggering-merge adversarial cases on approved fixtures/hosts.",
+        "Exercise report-only readiness, owner-selected start, default/personal publication, durable CI/review remediation and eligible merge on a controlled test repository.",
+        "Record exact SHA/contracts/policies/host/route, actual results and explicit unsupported/not-run coverage; keep real financial settlement out."
+      ],
+      "accept": [
+        "Every S15 acceptance case has evidence or an explicit blocking/unrun result; fixture success is not real VM proof.",
+        "Guest-root/session/egress bypass attempts demonstrate the selected protected boundary on the actual tested build.",
+        "GitHub default and personal profiles differ as specified, and production never releases indirectly without approval.",
+        "Any failure or missing permission leaves release readiness blocked; no paid/provider/device claim is inferred from configuration.",
+        "Real recipient messages, business records and money remain absent unless separately explicitly authorized for a controlled test."
+      ],
+      "tests": [
+        "Deterministic protocol/barrier/fake-clock suite -> all declared contract cases.",
+        "Explicit opt-in VM/browser/test-repository runs -> actual boundary and end-to-end outcomes.",
+        "Default/personal/unknown-effect/production-consequence matrix -> honest release gate with provenance."
+      ],
+      "requirements": "FR-01\u2013FR-42; NFR-01\u2013NFR-14",
+      "contract": "Consumes all reviewed S15 contracts and delivers exact-build evidence/coverage manifest; no new API.",
+      "out": "Inventing host access, live-bank certification, deployments or silently waiving failed/not-run evidence.",
+      "kind": "evidence",
+      "number": 340,
+      "url": "https://github.com/chayapats/jit/issues/340",
+      "id": 6156893233,
+      "acceptanceCases": [
+        "S15-AC01",
+        "S15-AC02",
+        "S15-AC03",
+        "S15-AC04",
+        "S15-AC05",
+        "S15-AC06",
+        "S15-AC07",
+        "S15-AC08",
+        "S15-AC09",
+        "S15-AC10",
+        "S15-AC11",
+        "S15-AC12",
+        "S15-AC13",
+        "S15-AC14",
+        "S15-AC15",
+        "S15-AC16"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/EVID15-01.md"
+    },
+    {
+      "key": "CUT15-01",
+      "title": "[Frontier] [CUT15-01] Adopt the reviewed S15 release with owner acceptance and rollback",
+      "tier": "Frontier",
+      "deps": [
+        "EVID15-01"
+      ],
+      "files": [
+        "install.sh",
+        "src/main.ts",
+        "src/s14/main.ts",
+        "docs/runbooks/s14-default-cutover.md",
+        "tests/runtime-selection.test.ts"
+      ],
+      "deliver": "An owner-approved installation adopts the reviewed S15 build/policy without changing another installation or losing a verified rollback path.",
+      "steps": [
+        "Prepare reviewed installer/service/runtime-selection and exact-installation runbook changes against the accepted transition contract.",
+        "Require the actual target VM/control-plane topology, named build and explicit owner cutover/deployment approval before live action.",
+        "Verify first ordinary tool-backed conversation, required protected gates, policy defaults and any explicitly installed personal exception.",
+        "Record state preservation, prior-build rollback and separately attributed host acceptance; do not activate incomplete capabilities."
+      ],
+      "accept": [
+        "A source/default switch cannot reinterpret old omitted-runtime service configs or select another installation.",
+        "Owner approval binds the exact reviewed build, target and policy before production/cutover action.",
+        "First conversation performs actual approved work and human-required gates behave as proved.",
+        "Backup/rollback/state-privacy checks pass on the named host; failures keep the prior installation recoverable.",
+        "The issue/spec alone is not deployment authorization and missing real host evidence remains blocked."
+      ],
+      "tests": [
+        "Installer/runtime-selection fixtures -> exact config identity and no legacy reinterpretation.",
+        "Opt-in staged host cutover/first-tool-reply/rollback -> actual named-build evidence.",
+        "Personal exception absent/present fixtures -> no default enrollment or upgrade widening."
+      ],
+      "requirements": "FR-18/23/35/36/37/38; NFR-04/07/08/10/12/14",
+      "contract": "Consumes reviewed S15 runtime/state/evidence contracts and delivers exact-installation cutover acceptance.",
+      "out": "Acting on an unapproved host, merging implementation PRs, treating this planning request as deployment consent.",
+      "kind": "human",
+      "number": 341,
+      "url": "https://github.com/chayapats/jit/issues/341",
+      "id": 6156893620,
+      "acceptanceCases": [
+        "S15-AC16"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/CUT15-01.md"
+    },
+    {
+      "key": "UX15-00",
+      "title": "[Frontier] [UX15-00] Author the required S15 experience and freeze the UI handoff",
+      "tier": "Frontier",
+      "deps": [
+        "DOC15-01"
+      ],
+      "files": [
+        "src/s14/web-pages.ts",
+        "src/s14/web-product.ts",
+        "src/s14/web-enhance.js",
+        "src/s14/web-style.ts",
+        "src/i18n/th.ts",
+        "src/i18n/en.ts"
+      ],
+      "deliver": "Claude Opus 5.5 at effort high authors the concrete S15 experience, state/interaction/copy/accessibility handoff and refines UX implementation ticket scope. This design is not yet authored.",
+      "steps": [
+        "Use the exact required model/effort through the approved delegation tool once that provider is available; do not change providers/models or raise billing without owner instruction.",
+        "Read the confirmed S15 decisions, proof limitations and actual runtime contracts; author docs/design/S15-conversational-experience.md without inventing owner decisions.",
+        "Cover setup, ordinary tool-backed chat, shared team resources, browser/login limitations, exact approvals, GitHub policy profiles, memory, responsibilities, models/budgets, evidence and recovery.",
+        "Specify flows/states, responsive keyboard/focus/accessibility and English/Thai dictionary-key intent; map all 16 acceptance cases and refine UX15-01/02 or propose narrower slices after contracts."
+      ],
+      "accept": [
+        "The required model/effort authoring is completed before any concrete S15 UI/UX is claimed or implemented.",
+        "No Work switch/per-task grant ceremony or automatic issue selection is reintroduced; default/personal and production holds remain distinct.",
+        "States for waiting/unknown/stalled/partial/unsupported paths are explicit and cannot imply unproved support or new authority.",
+        "No budget amount, model/provider availability, Jod integration or new permanent-Bot policy is invented.",
+        "The handoff names concrete existing integration surfaces and proposed contracts separately, with coverage and a reviewable implementation split."
+      ],
+      "tests": [
+        "Review design coverage against S15-D01\u2013D23 and AC01\u2013AC16.",
+        "Review keyboard/focus/async/exact-approval transition requirements and translation intent; do not claim actual browser/device testing from Markdown.",
+        "Run git diff --check and validate artifact links; runtime tests are unnecessary for this design-only output."
+      ],
+      "requirements": "FR-10/18/19/23/24/25/28/29/30/35/37/40; NFR-07/11/13",
+      "contract": "Delivers the required S15 experience/state/interaction handoff; proposed UI bindings are not runtime APIs.",
+      "out": "Runtime implementation, primary-authored design, fallback models, raising provider budgets, invented default amounts and live deployments.",
+      "kind": "design",
+      "number": 337,
+      "url": "https://github.com/chayapats/jit/issues/337",
+      "id": 6156891961,
+      "acceptanceCases": [
+        "S15-AC01",
+        "S15-AC02",
+        "S15-AC03",
+        "S15-AC04",
+        "S15-AC05",
+        "S15-AC06",
+        "S15-AC07",
+        "S15-AC08",
+        "S15-AC09",
+        "S15-AC10",
+        "S15-AC11",
+        "S15-AC12",
+        "S15-AC13",
+        "S15-AC14",
+        "S15-AC15",
+        "S15-AC16"
+      ],
+      "labels": [
+        "documentation",
+        "needs-info",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/UX15-00.md",
+      "externalBlocker": "Required Claude Opus 5.5/high authoring provider unavailable; do not substitute another model/provider or claim a completed handoff."
+    },
+    {
+      "key": "UX15-01",
+      "title": "[Frontier] [UX15-01] Complete one-time setup and the first ordinary conversational task",
+      "tier": "Frontier",
+      "deps": [
+        "UX15-00",
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/web-pages.ts",
+        "src/s14/web-product.ts",
+        "src/s14/web.ts",
+        "src/s14/web-enhance.js",
+        "src/i18n/en.ts",
+        "src/i18n/th.ts",
+        "tests/s14-first-run-ui.test.ts",
+        "tests/s14-web-ui.test.ts"
+      ],
+      "deliver": "The owner can complete reviewed one-time setup and obtain a real tool-backed result from normal chat without Work mode or repeated grants. Concrete UI/UX awaits UX15-00.",
+      "steps": [
+        "Use the required authored handoff and reviewed standing-policy/conversational contracts; freeze exact UI bindings before readiness.",
+        "Implement the authored setup/readiness and normal-chat transitions, preserving authenticated actor, retry and current revision semantics.",
+        "Represent real tool progress/result and actual capability limitations; leave unimplemented capabilities visibly unavailable.",
+        "Implement the authored Thai/English, keyboard/focus, responsive and no-script/async behavior without restoring authority from browser storage."
+      ],
+      "accept": [
+        "A fresh approved configuration reaches an actual tool-backed task from the ordinary composer; no repeated tool/resource/Bot grant setup.",
+        "Inspect/recommend remains report-only and a clear select/start can be one reply.",
+        "Reload/reconnect/refused submission preserves appropriate input without replaying execution/approval or stale hidden authority.",
+        "Configured readiness is distinct from tested model/VM/browser capability.",
+        "The exact Opus-authored states/copy and reviewed tokens are used; no concrete design is inferred from this requirements-only ticket."
+      ],
+      "tests": [
+        "Authored first-run/chat fixtures with scripted tool work -> one admission and actual evidence/result.",
+        "Keyboard/focus/refresh/draft/duplicate and stale-revision fixtures -> correct input preservation and no replayed authority.",
+        "Thai/English and responsive authored states -> matching labels and honest unavailable/failed states."
+      ],
+      "requirements": "FR-06/10/17/18/19/22/23/24/25/27/29/32; NFR-05/07/11/13",
+      "contract": "Consumes UX15-00 handoff and CHAT15-01/POLICY15-01 exact contracts; bindings and dictionary keys must be frozen before ready-for-agent.",
+      "out": "Authoring new UI/UX, blanket readiness claims, live host activation and unsupported API invention.",
+      "kind": "implementation",
+      "number": 338,
+      "url": "https://github.com/chayapats/jit/issues/338",
+      "id": 6156892470,
+      "acceptanceCases": [
+        "S15-AC01"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/UX15-01.md"
+    },
+    {
+      "key": "UX15-02",
+      "title": "[Frontier] [UX15-02] Review a held action once and follow authorized work to evidence",
+      "tier": "Frontier",
+      "deps": [
+        "UX15-00",
+        "WORK15-01",
+        "GIT15-02",
+        "SEND15-01",
+        "PAY15-01"
+      ],
+      "files": [
+        "src/s14/web-personal-effect.ts",
+        "src/s14/web-coding-effect.ts",
+        "src/s14/web-recovery.ts",
+        "src/s14/web-product-recovery.ts",
+        "src/i18n/en.ts",
+        "src/i18n/th.ts",
+        "tests/s14-personal-ui.test.ts",
+        "tests/s14-acceptance-ui.test.ts"
+      ],
+      "deliver": "The owner understands the exact held action, approves its current revision once, and follows resumed work or honest waiting/unknown/stalled evidence. Concrete UI/UX awaits UX15-00.",
+      "steps": [
+        "Bind the authored experience to the reviewed action/policy/work outcome contracts; freeze exact bindings before implementation readiness.",
+        "Display exact final recipients/content/attachments or transaction details and current standing-rule scope without presenting model text as authority.",
+        "Implement authored approve/deny/revise/resume/stop and durable needs-me transitions, including production-triggering merge holds and GitHub profile distinctions.",
+        "Integrate evidence/coverage/current policy and actionable unsupported/unknown/stalled states using authored focus/accessibility/i18n requirements."
+      ],
+      "accept": [
+        "The owner reviews the actual current action and one approval is sufficient; stale/changed data cannot execute or appear preapproved.",
+        "Default and personal GitHub scope are explicit and a personal exception is never a blanket messaging/production exception.",
+        "Reconnection or browser history cannot replay approval, reset a rule or imply an unknown effect succeeded.",
+        "Normal CI/review waits, partial evidence and stalled work remain distinguishable; stop affects the named work.",
+        "Concrete layout, flows, tokens and translation keys come from UX15-00, with real device/assistive evidence labelled separately."
+      ],
+      "tests": [
+        "Authored pending/changed/expired/denied/unknown action fixtures -> correct current controls and no duplicate execution.",
+        "Default/personal and production consequence states -> correct held/resumed behavior.",
+        "Focus/refresh/reconnect/stop/wait/stall and English/Thai fixtures -> honest status/evidence and accessible control behavior."
+      ],
+      "requirements": "FR-07/10/11/15/18/24/25/26/28/29/30/35/37/38/40; NFR-05/07/11/13",
+      "contract": "Consumes UX15-00 and exact policy/action/work/publication contracts; no concrete runtime signature is assumed before readiness.",
+      "out": "Primary-authored UX, treating a screenshot/card as enforcement, live payments/sends and changing approved policy from model output.",
+      "kind": "implementation",
+      "number": 339,
+      "url": "https://github.com/chayapats/jit/issues/339",
+      "id": 6156892861,
+      "acceptanceCases": [
+        "S15-AC07"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/UX15-02.md"
+    },
+    {
+      "key": "EDIT15-02",
+      "title": "[Frontier] [EDIT15-02] Apply reversible personal document and task edits",
+      "tier": "Frontier",
+      "deps": [
+        "BROW15-01",
+        "CHAT15-01"
+      ],
+      "files": [
+        "src/s14/computer.ts",
+        "src/s14/computer-work.ts",
+        "src/s14/personal-effects.ts",
+        "src/s14/authority.ts",
+        "tests/s14-personal-effects.test.ts"
+      ],
+      "deliver": "A requested reversible document/task edit applies to an approved personal resource with observed version/diff/result evidence, while sharing, invitations and new private recipients remain held.",
+      "steps": [
+        "Freeze a versioned reversible-personal-record contract over current policy/browser/effect boundaries.",
+        "Use one controlled document/task service as the reference integrationless browser workflow; record exact approved account/resource, read version and intended change.",
+        "Apply and verify ordinary edits without per-record approval; preserve undo/recovery information where available and stop on stale versions.",
+        "Hold sharing, notifications to other people, destructive/bulk edits and uploads to a new private recipient. Real provider-specific support needs its own reviewed binding and opt-in evidence."
+      ],
+      "accept": [
+        "An ordinary owner-requested document/task change completes without a Work switch or repeated approval, with actually observed resulting content.",
+        "Only the approved resource/account/purpose is used; ambiguous or stale versions cannot cause a silent overwrite.",
+        "Sharing/invitations/external notifications and a new private-data recipient encounter their applicable human gate.",
+        "A crash or uncertain save reconciles before retry and partial/unsupported changes are reported honestly.",
+        "Controlled fixture support does not claim universal Google Docs, task provider or arbitrary website write support."
+      ],
+      "tests": [
+        "Controlled editable-document and task fixtures -> ordinary reversible changes and actual read-back evidence.",
+        "Version race, sharing/notification and new-recipient fixtures -> hold/refuse before the sensitive effect.",
+        "Interrupted save, duplicate ingress and revoked scope -> reconcile/fence without duplicate or incorrect edits."
+      ],
+      "requirements": "FR-06/07/15/17/18/29/35/37/38/40; NFR-05/07/09/14",
+      "contract": "Delivers the bounded reversible-personal-record contract and controlled browser conformance; actual external resources require explicit approved bindings.",
+      "out": "Choosing a production document/task vendor, universal website writes, raw session credentials, live private uploads and new UI/UX design.",
+      "kind": "implementation",
+      "number": 342,
+      "url": "https://github.com/chayapats/jit/issues/342",
+      "id": 6156939324,
+      "acceptanceCases": [
+        "S15-AC06"
+      ],
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "readiness": "blocked",
+      "path": "docs/tickets/s15/EDIT15-02.md"
+    }
+  ],
+  "acceptanceCoverage": {
+    "S15-AC01": [
+      "CHAT15-01",
+      "GIT15-01",
+      "UX15-01"
+    ],
+    "S15-AC02": [
+      "GIT15-01"
+    ],
+    "S15-AC03": [
+      "ARCH15-01",
+      "VM15-01"
+    ],
+    "S15-AC04": [
+      "TEAM15-01"
+    ],
+    "S15-AC05": [
+      "BROW15-01"
+    ],
+    "S15-AC06": [
+      "EDIT15-01",
+      "BIZ15-01",
+      "EDIT15-02"
+    ],
+    "S15-AC07": [
+      "POLICY15-01",
+      "SEND15-01",
+      "GIT15-02",
+      "UX15-02"
+    ],
+    "S15-AC08": [
+      "POLICY15-01",
+      "PAY15-01",
+      "MODEL15-01"
+    ],
+    "S15-AC09": [
+      "POLICY15-01",
+      "BIZ15-01"
+    ],
+    "S15-AC10": [
+      "GIT15-01",
+      "GIT15-02",
+      "GIT15-03",
+      "WORK15-01"
+    ],
+    "S15-AC11": [
+      "DATA15-01"
+    ],
+    "S15-AC12": [
+      "WORK15-01"
+    ],
+    "S15-AC13": [
+      "MEM15-01"
+    ],
+    "S15-AC14": [
+      "MODEL15-01"
+    ],
+    "S15-AC15": [
+      "WORK15-01",
+      "GIT15-03"
+    ],
+    "S15-AC16": [
+      "STATE15-01",
+      "MIG15-01",
+      "EVID15-01",
+      "CUT15-01"
+    ]
+  },
+  "publicationOrder": [
+    "DOC15-01",
+    "ARCH15-01",
+    "STATE15-01",
+    "POLICY15-01",
+    "VM15-01",
+    "BROW15-01",
+    "CHAT15-01",
+    "TEAM15-01",
+    "MEM15-01",
+    "MODEL15-01",
+    "WORK15-01",
+    "GIT15-01",
+    "GIT15-02",
+    "GIT15-03",
+    "EDIT15-01",
+    "SEND15-01",
+    "PAY15-01",
+    "BIZ15-01",
+    "DATA15-01",
+    "MIG15-01",
+    "UX15-00",
+    "UX15-01",
+    "UX15-02",
+    "EDIT15-02",
+    "EVID15-01",
+    "CUT15-01"
+  ]
+}

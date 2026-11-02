@@ -1,5 +1,7 @@
 # Spec S14 — Bot-first local assistant
 
+Product-target refinement, 2026-11-02: [S15](S15-conversational-autonomy.md) now supersedes conflicting product choices after the owner's confirmed interview. This document retains S14 decisions, contracts and release history. S14 remains the implemented default runtime; the new target does not change its behavior or authorize a live transition.
+
 Tracker: https://github.com/chayapats/jit/issues/244
 Documentation delivery: https://github.com/chayapats/jit/issues/245
 

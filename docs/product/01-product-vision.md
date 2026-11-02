@@ -1,6 +1,6 @@
 # Jit Product Vision
 
-Status: owner-confirmed target in [S14](../specs/S14-bot-first-local-assistant.md), 2026-10-30. The current runtime remains S09–S13; the target is not shipped.
+Status: retained S14 vision, confirmed 2026-10-30. [S15](../specs/S15-conversational-autonomy.md), confirmed 2026-11-02, is the current target and supersedes conflicting scope below. S14 remains the implemented default runtime; S09–S13 is retained through explicit legacy selection/configuration. See the [current PRD](02-prd.md) and [CONTEXT.md](../../CONTEXT.md).
 
 ## Purpose
 

@@ -2,9 +2,13 @@
 
 Jit is a single-owner, self-hosted assistant with a team of persistent Bots, durable work and sourced memory. Schway is its execution engine.
 
-**Baseline:** [S14](docs/specs/S14-bot-first-local-assistant.md) is the owner-confirmed target as of 2026-10-30. Original architecture ADRs 0045–0048 remain proposed and are refined by accepted scoped implementation ADRs 0049–0061; their status does not certify the live S14 release gate. New unconfigured source runs and installations default to S14; the project-centric S09–S13 runtime is retained through explicit `--legacy` and existing legacy service configs. The separate [owner-Pi cutover evidence](docs/evidence/s14-owner-pi-cutover.md) records the actual first reply, full legacy-byte preservation and prior-release rollback at `5eec7aa`, including complete post-reply R4 equality. Do not infer another host’s acceptance from the code default or retain a hidden Project as an authorization root.
+**Product target:** [S15](docs/specs/S15-conversational-autonomy.md) is the owner-confirmed direction as of 2026-11-02 after a 23-question interview and final combined confirmation. Normal chat starts requested work within standing policy; the owner supplies Jit's administrable VM; team resources are shared; browser work and automatic sourced memory are core. Human-required actions retain system-enforced gates. Product-default GitHub publication requires approval; an explicitly configured personal workflow may publish, remediate and auto-merge eligible selected work, while production still waits. [ADR 0064](docs/adr/0064-conversational-authority-and-protected-control-plane.md) is proposed engineering with unresolved enforcement proofs, not a shipped replacement or permission to execute repository text.
+
+**Implemented runtime:** New unconfigured source runs/installations still default to [S14](docs/specs/S14-bot-first-local-assistant.md). Original architecture ADRs 0045–0048 remain proposed and are refined by accepted scoped implementation ADRs 0049–0063; their status does not certify an untested build. The project-centric S09–S13 runtime is retained through explicit `--legacy` and existing legacy service configs. The separate [owner-Pi cutover evidence](docs/evidence/s14-owner-pi-cutover.md) records the actual first reply, full legacy-byte preservation and prior-release rollback at `5eec7aa`, including complete post-reply R4 equality. Do not infer S15 implementation, another host's acceptance or permission to reinterpret existing private data from the new target. No hidden Project is an authorization root.
 
 ## Product language
+
+S15 target terms below refine product intent. Definitions explicitly marked S14 retain their versioned implementation meaning until replacement contracts land; existing commands/stores are not reinterpreted by editing this glossary.
 
 **Owner:** The authenticated person who configures the installation, accepts obligations and grants execution or external actions. Model output, source content and inferred identity are not an owner.
 
@@ -12,7 +16,15 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Bot:** A persistent participant with a stable identity, responsibility, enabled generation, selected model/auth route and capability policy. It is not a model, provider session or container. Creating a permanent Bot requires owner acceptance of its exact proposal.
 
-**Jit (main Bot):** The default conversational coordinator. It answers owner messages, chooses useful enabled Bots within the work grant and synthesizes their evidence. Jit has the same authority rules as other Bots, not a privileged bypass. A coordinator-only configuration needs no warm computer; authorized work may lazily provision one when required.
+**Jit (main Bot):** The default conversational assistant and coordinator. It understands requested outcomes, chooses tools and approved team/model resources, and remains responsible for authorized work and evidence. It cannot widen policy or approve its own held actions. In implemented S14, coordinator-only chat has no tools or warm computer; work uses its separate grant path.
+
+**Team:** Bots using installation-approved work resources/accounts for the assigned purpose. S15 defaults to shared team access without repeated per-Bot setup; explicit narrower restrictions still apply. This does not retroactively declassify S14-private sources or expose raw session/credential material.
+
+**Working VM:** The dedicated computer supplied by the owner for S15 execution and ordinary administration. It is not the owner's everyday desktop or the protected control plane. Its exact administration/backend/egress design must satisfy ADR 0064 before activation.
+
+**Protected control plane:** The authority/state/credential/effect boundary that working agents, including a guest administrator, cannot alter or impersonate. Physical placement and enforcement are proposed engineering, not established by a sibling process or a prompt.
+
+**Standing policy:** Authenticated owner configuration of purposes, team resources, action classes, allowed routes/models, finite budgets and human-required gates. It avoids repeated per-task setup without authorizing a different task. A personal exception is explicit configuration, not the product default or a grant embedded in this repository.
 
 **Persona:** Owner-authored configuration of address, language and tone. It is trusted configuration, not model-authored memory.
 
@@ -24,13 +36,13 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Task acceptance:** The owner's decision to retain an obligation. Acceptance alone does not start execution.
 
-**Work command:** An authenticated owner action explicitly requesting execution. A typed service command such as work.start can create work plus its scoped grant atomically. A model's classification cannot turn message.post or quoted text into new authority.
+**Work command:** An authenticated owner action requesting execution. In S15, ordinary conversation can request work within standing policy without Work mode; inspect/recommend requests still authorize only inspection/recommendation. In S14, typed work.start creates work plus its grant; message.post does not. Models and quoted/retrieved content cannot mint or widen authority in either version.
 
 **Work grant:** A revisioned owner authorization for a purpose, allowed Bots/resources/tools, finite budgets and expiry. Effective access intersects it with current Bot and resource policy. A grant is not a model plan, task acceptance or conversation membership.
 
 **Capability policy:** The owner-controlled ceiling on a Bot's tools/resources. A model may restrict it but cannot widen it. A work grant does not bypass the ceiling.
 
-**Delegation:** A bounded assignment to an existing enabled Bot under the originating grant and the receiver's capabilities. It does not create a Bot or share an entire workspace.
+**Delegation:** A bounded assignment to an enabled Bot under the originating authority and current restrictions. S15 may use team-shared approved resources without another sharing ceremony. It grants no new purpose, account, provider or permanent Bot. S14 retains its per-Bot capability/share intersection.
 
 **Context handoff:** A labelled subset of accessible command, evidence and memory references supplied to a delegated run. It is not unrestricted transcript/session sharing.
 
@@ -48,13 +60,13 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Memory claim:** A retained statement with source/revision, originating Bot/conversation, fact-or-inference status and lifecycle state. It is not the entire transcript or unqualified truth.
 
-**Shared memory:** Owner-approved facts/preferences available to the authorized team. Extraction cannot promote Bot-private material into it.
+**Shared memory:** Relevant sourced facts, preferences and working knowledge available to the authorized team. S15 standing policy authorizes automatic retention with fact/inference and correction/forget lifecycle; it never grants execution power. S14 requires its existing explicit publication/share path, and existing private data is not silently promoted during transition.
 
 **Bot-private memory:** Claims scoped to one Bot. Retrieval and context assembly enforce that scope before relevance selection.
 
 **Source:** A revisioned owner/external evidence snapshot with provenance and lifecycle status. Attempt-derived sources retain their producing attempt's Bot/resource/computer fences through every descendant, including uncited handoff text. Source text is data and never expands authority.
 
-**Share grant:** An explicit, revisioned permission for a named receiver/work scope to use a specified immutable source/artifact snapshot. It is not a whole-volume mount, shared account or transitive permission.
+**Share grant:** An explicit, revisioned permission for a named receiver/work scope to use a specified immutable source/artifact snapshot. S14 requires this for its cross-Bot private content. S15 team-approved resources do not require repeated sharing; explicit restricted-content releases still need their proper authority. A snapshot share is not a whole-volume or raw-account-session grant.
 
 **Context packet:** A self-contained labelled input with current owner decisions pinned, accessible evidence, source revisions and purpose. Native history alone is insufficient.
 
@@ -62,11 +74,11 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Artifact:** A bounded immutable output with an opaque ID, hash, type, size, producing work/attempt and source lineage. A file in a box is not automatically a delivered artifact.
 
-**Bot computer:** A persistent logical computer on the owner's host, with isolated workspace/browser components and finite resources. Identity survives idle process stop. Each process/input generation fences prior handles and associated late results. It is not the owner's everyday desktop.
+**Bot computer (S14):** A persistent logical computer on the owner's host, with isolated workspace/browser components and finite resources. Identity survives idle process stop. Each process/input generation fences prior handles and associated late results. S15's working VM/team default replaces the product requirement for a private computer per Bot, not this implemented record's meaning.
 
 **Execution box:** The isolated workspace/process boundary of a Bot computer. No Jit/provider/channel/vault credentials, application state, backups, host home or control socket enter it.
 
-**Browser profile:** Bot-private website session state in the separately protected browser component. Cookies/tokens remain inaccessible to workspace shell, MCP, prompts and exports. Website login is not a service credential grant.
+**Browser profile:** Website session state in a protected browser component. S15 permits mediated team use of approved accounts; raw cookies/tokens remain outside working shell/MCP/prompts/exports. S14 profiles remain Bot-private. Website login is not permission to bypass action approval.
 
 **Runner:** The agent-free execution process behind Jit's computer backend. Schway core tools use the supported ExecutionBackend; no host-shell fallback is implied.
 
@@ -74,7 +86,11 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Takeover:** Owner control of a Bot browser/desktop while agent input is fenced. Returning control is not approval of a held effect.
 
-**External effect:** A consequential action leaving the execution boundary, including sending, push/PR mutation, publish/deploy, payment/signature or remote deletion. Unknown tools/actions cannot bypass mediation.
+**External effect:** An action leaving the execution boundary, including remote edits, communications, publication, payments and deletion. S15 distinguishes ordinary reversible authorized edits, narrowly captured standing exceptions and human-required actions. S14 retains exact-effect approval contracts. Unknown tools/actions cannot bypass the applicable mediation.
+
+**Human-required action:** An action held for owner authority under current policy: outbound communication without a standing exception, a general financial transaction, production deployment, a new private-data recipient or an unapproved major change. Final approval binds the actual action; captured recurring/standing rules remain purpose/resource/amount/frequency bounded.
+
+**Major change:** A change with destructive/bulk or difficult-to-reverse data impact, authority/authentication/credential/approval impact, breaking dependent API/behavior, important service restructuring or a new business obligation. Impact, not changed-line count, determines the need for an unresolved owner decision. Investigation can proceed inside existing authority.
 
 **Approval card:** A revision-bound, single-use, expiring owner decision for one exact external action/content/destination. It is not a task acceptance or model confirmation.
 
@@ -90,7 +106,7 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Unknown effect:** An external action whose outcome cannot yet be determined. It is reconcile-only and never a reason to blindly retry.
 
-**Auth route:** The selected provider identity/billing path, with exact model selection kept separate. Failure never silently changes route/model/account/billing.
+**Auth route:** The selected provider identity/billing path, with model selection kept separate. S15 may choose model/effort within approved route/model policy and budget while honoring pins and recording choices. New providers, account changes and new billing require owner approval. S14 retains its exact selected-route/model behavior without silent fallback.
 
 **Configured access:** A local credential/endpoint setting without proof of live readiness. It is not verified support.
 

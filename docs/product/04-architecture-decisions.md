@@ -1,6 +1,10 @@
 # Jit Architecture Decision Records
 
-Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S14](../specs/S14-bot-first-local-assistant.md); engineering choices remain proposed until implementation evidence exists.
+Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S15](../specs/S15-conversational-autonomy.md); S14 remains the implemented default. Engineering choices and support claims require their own contract/evidence status.
+
+## S15 proposal
+
+[ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) records conversational admission under standing policy, shared working resources and a control plane protected from the administrable VM. It identifies unresolved administration/destruction, browser/effect, disclosure, budget and transition proofs. Its engineering status is proposed; S15-D01–D23 are confirmed product inputs. Existing ADRs retain their historical/runtime meaning until explicit replacement contracts land.
 
 ## S14 proposals
 

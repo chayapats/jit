@@ -1,6 +1,6 @@
 # Jit Security and Trust
 
-Target: [S14](../specs/S14-bot-first-local-assistant.md). Current runtime retains its legacy behavior until replacement tickets land. Security invariants below are requirements, not claims of tested implementation.
+Status: retained S14 trust model; current product requirements are [S15](../specs/S15-conversational-autonomy.md), the [PRD](02-prd.md) and [ADR 0064's proof gates](../adr/0064-conversational-authority-and-protected-control-plane.md). S15 refines per-Bot separation, conversational admission and remote-write approval policy while retaining protected credentials, owner authority, fencing and honest evidence. S14 remains the implemented default; neither document certifies untested VM/browser enforcement.
 
 ## Principals and authority
 

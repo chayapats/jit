@@ -1,5 +1,7 @@
 # Jit — Discovery decision record
 
+Current-target precedence: [S15-D01–D23](../specs/S15-conversational-autonomy.md#confirmed-decisions), confirmed 2026-11-02, supersedes conflicting historical decisions below. S14 remains the implemented runtime.
+
 สถานะ: ปิด discovery ตามคำยืนยันของผู้ก่อตั้ง และได้รับคำสั่งให้สร้างชุดเอกสาร spec แล้ว บันทึกนี้รักษาเจตนาจาก Q1–Q41; ข้อเสนอวิศวกรรมใหม่ไม่ใช่คำตอบเพิ่มเติมของผู้ก่อตั้ง
 
 ## Confirmed decisions
@@ -84,3 +86,15 @@ This replaces required Project/group/General/promotion ownership with persistent
 Research/report is MVP; coding-to-PR and email/calendar are required later capabilities. Fresh state is allowed with no legacy conversion; deleting an installation is not authorized. Linux x64/arm64 is the initial runtime target. UI/UX must be authored by Claude Opus 5.5 at effort high. The owner subsequently disabled implement-parallel for Jit while retaining that design delegation.
 
 C01/C02/C05/C12/C21 and old deferred/excluded scope above are historical where they conflict. FR-01–FR-40 and NFR-01–NFR-14 retain their IDs with S14 refinements; FR-41/42 add web research/report artifacts. Engineering ADRs 0045–0048 and Opus visual/interaction choices are proposed, not additional owner answers or shipped behavior. No date, performance number or superiority benchmark was confirmed.
+
+## S15 change record — 2026-11-02
+
+The owner completed 23 interview questions and accepted a consolidated read-back as shared understanding. [S15-D01–D23](../specs/S15-conversational-autonomy.md#confirmed-decisions) is the canonical decision table; [S15-AC01–AC16](../specs/S15-conversational-autonomy.md#required-acceptance-cases) defines required behavior. Existing FR/NFR identifiers remain in the PRD.
+
+The new direction is general conversational execution inside standing policy, an owner-supplied administrable VM, shared team resources, browser work without a custom integration for every site, automatic sourced memory and model/effort selection within approved routes and budgets. Human-required communication/financial/production/disclosure/major-change gates must be enforced outside the working agent's authority. The owner accepted protected-boundary overhead and constrained unsupported websites rather than prompt-only safeguards.
+
+The concrete GitHub scenario preserves a deliberate stop: inspect readiness and report, then wait for owner issue selection/start. Product-default push/PR/review replies require approval. An explicitly configured personal exception may publish/remediate and auto-merge eligible selected work; production still waits, including production triggered by merge. This is not permission for background issue discovery to start implementation.
+
+Ongoing responsibilities stay within assigned purpose. Stalled work pauses with evidence and recommendations instead of exhausting the budget without progress. Memory can retain facts/preferences/working knowledge automatically; future Jod import/retrieval remains optional and deferred, preserving provenance and confirmation/supersession status.
+
+No numeric budget, new provider/account/billing, deployment, S15 host acceptance, migration/deletion permission, new permanent-Bot policy or concrete UI/UX was accepted beyond these recorded decisions. [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) remains proposed engineering, particularly for guest administration versus hard gates and browser/disclosure enforcement. Historical S14/legacy evidence and private data retain their original scope until an explicit transition.
