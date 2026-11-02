@@ -167,7 +167,7 @@ export function composer(page: S15ChatPage): string {
     ${page.refused ? `<div role="alert">${banner("warn", tr("s15.composer.refused_kept"), codeText(page.refused), `<p class="s-mono s-meta">${e(page.refused)}</p>`)}</div>` : ""}
     <label class="sr-only" for="s15-text">${tr("s15.composer.label")}</label><textarea id="s15-text" name="text" rows="2" maxlength="16384" placeholder="${tr("s15.composer.placeholder")}">${e(page.draft?.text ?? "")}</textarea>
     <div class="s-bar"><span class="s-chip"><span aria-hidden="true">${tr("s15.composer.to")}</span><span class="sr-only">${tr("s15.composer.to")} </span> ${tr("s14.jit")}</span>${reply}<span class="s-grow"></span><span class="s15-sending" data-sending hidden role="status">${tr("s15.composer.sending")}</span><button class="s-send" aria-label="${tr("s15.composer.send")}">${icon("arrow")}</button></div>
-    <p class="s15-unknown" data-unknown hidden role="alert">${tr("s15.composer.unknown_receipt")}</p>
+    <p class="s15-unknown" data-unknown hidden role="alert">${tr("s15.composer.unknown_receipt")}</p><p class="s15-unknown" data-refused hidden role="alert" data-fallback="${tr("s15.composer.refused_kept")}"></p>
     <div class="s-draft-bar" data-draft-bar hidden><span data-draft-status role="status" data-saved="${tr("s14.plain.draft_saved")}" data-restored="${tr("s14.plain.draft_restored")}" data-sensitive="${tr("s15.composer.draft_sensitive")}"></span><button class="s-link-text" type="button" data-draft-clear>${tr("s14.plain.draft_clear")}</button></div></form>`;
 }
 

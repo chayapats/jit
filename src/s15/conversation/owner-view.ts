@@ -27,7 +27,9 @@ export interface ConversationOwnerRow {
 /** Safe hold entry with the real POLICY owner-only exact prepared payload projection. */
 export interface ConversationNeedsYou { id: string; requestId: string; code: string; kind: "question" | "action" | "reconciliation"; slip: ActionSlip | null }
 /** Bounded read-only owner projection; no polling/reconnect action can admit work or approve a slip. */
-export interface ConversationOwnerView { contract: "s15.owner-view/v1"; conversationId: string; rows: ConversationOwnerRow[]; needsYou: ConversationNeedsYou[] }
+export interface ConversationOwnerView { contract: "s15.owner-view/v1"; conversationId: string;
+  /** Latest event sequence of this conversation; a client resumes event reads after it. */
+  cursor: number; rows: ConversationOwnerRow[]; needsYou: ConversationNeedsYou[] }
 /** Read-only navigation entry; the label is the owner's own first message, never model text. */
 export interface ConversationListEntry { conversationId: string; firstMessage: string; latestAt: number }
 
@@ -53,7 +55,13 @@ function state(request: ConversationRequest): ConversationOwnerRow["state"] {
 /** Projects only currently authenticated owner rows; app.view reacquires publication guards for result/evidence. */
 export function conversationOwnerView<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, conversationId: string): ConversationOwnerView {
   app.options.policy.requireOwner(actor); identity(conversationId);
-  const rows = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid DESC LIMIT 32").all(conversationId).reverse().map(({ id }): ConversationOwnerRow => {
+  const rows = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid DESC LIMIT 32").all(conversationId).reverse().map(({ id }) => ownerRow(app, actor, id));
+  const cursor = app.store.db.query<{ cursor: number | null }, [string]>("SELECT max(sequence) AS cursor FROM events WHERE conversation_id=?").get(conversationId)?.cursor ?? 0;
+  return { contract: "s15.owner-view/v1", conversationId, cursor, rows, needsYou: [...new Map(rows.flatMap(row => row.needsYou ? [[row.needsYou.id, row.needsYou] as const] : [])).values()] };
+}
+
+/** One owner row; app.view rechecks the owner and reacquires publication guards for result and evidence. */
+function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, id: string): ConversationOwnerRow {
     const request = app.view(actor, id);
     // Settled actions do not certify the interrupted model's entire completion rule.
     const disposition = request.state === "held" && request.slips.length > 0 && request.slips.every(slip => slip.state === "succeeded") ? "partial" : state(request);
@@ -67,8 +75,18 @@ export function conversationOwnerView<Actor, Work>(app: ConversationApplication<
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
       result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, question,
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text };
-  });
-  return { contract: "s15.owner-view/v1", conversationId, rows, needsYou: [...new Map(rows.flatMap(row => row.needsYou ? [[row.needsYou.id, row.needsYou] as const] : [])).values()] };
+}
+
+/**
+ * Every outstanding owner item across all conversations, independent of the bounded thread and
+ * navigation windows, newest first. Only requests that can still wait on the owner are read.
+ */
+export function conversationPendingNeeds<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor): { conversationId: string; entry: ConversationNeedsYou }[] {
+  app.options.policy.requireOwner(actor);
+  const candidates = app.store.db.query<{ id: string; conversation_id: string }, []>(`SELECT id, conversation_id FROM requests WHERE state IN ('held','proposed','reconcile_only')
+    OR (state='completed' AND json_extract(record_json,'$.code')='owner_start_required')
+    OR (state<>'stopped' AND json_array_length(json_extract(record_json,'$.actions'))>0) ORDER BY rowid DESC LIMIT 1024`).all();
+  return candidates.flatMap(({ id, conversation_id }) => { const entry = ownerRow(app, actor, id).needsYou; return entry ? [{ conversationId: conversation_id, entry }] : []; });
 }
 
 /** Recent conversations for the authenticated owner, newest first. Reading starts no model, tool or queue. */

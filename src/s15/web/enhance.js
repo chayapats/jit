@@ -60,6 +60,15 @@ function swapRegions(fresh, keepComposer) {
       if (area && freshArea) freshArea.value = area.value;
       const id = composer.querySelector("input[name=requestId]"), freshId = copy.querySelector("input[name=requestId]");
       if (id && freshId) freshId.value = id.value;
+      // The owner's answer choice belongs to the draft: keep the exact question reference and its checked state.
+      const label = composer.querySelector(".s15-answer"), freshLabel = copy.querySelector(".s15-answer");
+      if (label) {
+        if (freshLabel) freshLabel.replaceWith(label);
+        else { const grow = copy.querySelector(".s-bar .s-grow"); if (grow && grow.parentNode) grow.parentNode.insertBefore(label, grow); }
+      } else if (freshLabel && area && area.value) {
+        // A question that appeared while the owner was typing is offered, never pre-selected for that text.
+        const box = freshLabel.querySelector("input[name=answer]"); if (box) box.checked = false;
+      }
     }
     composer.replaceWith(copy); wireComposer(copy);
   }
@@ -104,16 +113,29 @@ function wireComposer(form) {
     event.preventDefault();
     if (form.dataset.busy) return;
     form.dataset.busy = "true";
-    const sending = form.querySelector("[data-sending]"), unknown = form.querySelector("[data-unknown]");
-    if (sending) sending.hidden = false; if (unknown) unknown.hidden = true;
-    let response;
-    try { response = await fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)), credentials: "same-origin", headers: { Accept: "text/html" } }); }
-    catch {
+    const sending = form.querySelector("[data-sending]"), unknown = form.querySelector("[data-unknown]"), refused = form.querySelector("[data-refused]");
+    if (sending) sending.hidden = false; if (unknown) unknown.hidden = true; if (refused) refused.hidden = true;
+    // The submitted text is the snapshot being sent; nothing typed meanwhile can be lost when the reply arrives.
+    if (area) area.readOnly = true;
+    const settle = () => { delete form.dataset.busy; if (sending) sending.hidden = true; if (area) area.readOnly = false; };
+    let response, fresh;
+    try {
+      response = await fetch(form.action, { method: "POST", body: new URLSearchParams(new FormData(form)), credentials: "same-origin", headers: { Accept: "text/html" } });
+      fresh = new DOMParser().parseFromString(await response.text(), "text/html");
+    } catch {
       // The receipt is unknown. The same request id stays in the form, so pressing send again cannot duplicate work.
-      delete form.dataset.busy; if (sending) sending.hidden = true; if (unknown) unknown.hidden = false; return;
+      settle(); if (unknown) unknown.hidden = false; return;
     }
-    delete form.dataset.busy; if (sending) sending.hidden = true;
-    const fresh = new DOMParser().parseFromString(await response.text(), "text/html");
+    settle();
+    if (!fresh.getElementById("s15-composer")) {
+      // A refusal page without a composer (for example an expired session): keep the draft and say why.
+      saveDraft(form);
+      const signIn = fresh.querySelector("[data-sign-in]");
+      if (signIn && signIn.getAttribute("href")) { location.assign(signIn.getAttribute("href")); return; }
+      const reason = fresh.querySelector("h1") || fresh.querySelector("[role=alert]");
+      if (refused) { refused.textContent = reason && reason.textContent ? reason.textContent : refused.dataset.fallback || ""; refused.hidden = false; }
+      return;
+    }
     if (response.ok) clearDraft(form);
     const composer = doc.getElementById("s15-composer");
     if (composer && doc.activeElement && composer.contains(doc.activeElement)) doc.activeElement.blur();
@@ -144,19 +166,21 @@ let timer = null, offline = false;
 function schedule(ms) { if (timer === null && conversation) timer = setTimeout(poll, ms); }
 async function poll() {
   timer = null;
-  const live = !!doc.querySelector("[data-live]");
   try {
     const cursor = app && app.dataset.cursor || "0";
     const response = await fetch(`/chats/${conversation}/events?after=${cursor}`, { credentials: "same-origin", headers: { Accept: "application/json" } });
-    if (response.status === 409) { swapRegions(await fetchPage(), true); banner(phase && phase.dataset.reset); schedule(2000); return; }
+    if (response.status === 409) { swapRegions(await fetchPage(), true); banner(phase && phase.dataset.reset); if (doc.querySelector("[data-live]")) schedule(2000); return; }
     if (!response.ok) throw new Error("unavailable");
     const data = await response.json();
     if (offline) { offline = false; banner(phase && phase.dataset.reconnected); }
     const count = doc.querySelector("[data-needs-count]");
     if (count && typeof data.needs === "number") count.textContent = data.needs ? String(data.needs) : "";
     if (data.events && data.events.length) swapRegions(await fetchPage(), true);
+    // Resume after what was just applied, so a long conversation is never re-read from its first page.
+    if (app && typeof data.cursor === "number" && data.cursor > Number(app.dataset.cursor || 0)) app.dataset.cursor = String(data.cursor);
   } catch { offline = true; }
-  if (live || offline || doc.querySelector("[data-live]")) schedule(offline ? 5000 : 2000);
+  // Polling stops once no row is live; an offline page keeps retrying until it reconnects.
+  if (offline || doc.querySelector("[data-live]")) schedule(offline ? 5000 : 2000);
 }
 
 const initial = doc.getElementById("s15-composer");

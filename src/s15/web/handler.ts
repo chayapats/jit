@@ -1,7 +1,7 @@
 import { AppError } from "../../errors";
 import { negotiateLocale, tr, withLocale, type Locale } from "../../i18n";
 import { s14ContentSecurityPolicy } from "../../s14/web";
-import { conversationList, conversationOwnerView, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
+import { conversationList, conversationOwnerView, conversationPendingNeeds, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
 import { PolicyError } from "../policy";
 import type { VmStatus } from "../vm";
 import { lookupS15Asset } from "./assets";
@@ -14,7 +14,7 @@ import type { S15BudgetEntry, S15ForgetImpact, S15MemoryClaim, S15ModelBudgetVie
 /** Adapts the real CHAT15-01 application to the Web consumer seam; reading starts no model, tool or queue. */
 export function s15ConversationPort<Actor, Work>(app: ConversationApplication<Actor, Work>): S15WebConversation<Actor> {
   return { view: (actor, id) => conversationOwnerView(app, actor, id), list: actor => conversationList(app, actor), submit: (actor, command) => app.submit(actor, command),
-    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), drain: () => app.drain() };
+    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), needs: actor => conversationPendingNeeds(app, actor), drain: () => app.drain() };
 }
 
 /** Explicit opt-in mount options. S14 never mounts this handler; only S15 composition does. */
@@ -76,7 +76,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       const render = (body: () => string, status = 200) => html(withLocale(locale, body), status, locale);
 
       // Navigation reads: recent conversations and every item that truly waits on the owner.
-      const needs = (): S15NeedItem[] => ports.conversation.list(actor).flatMap(item => { try { return ports.conversation.view(actor, item.conversationId).needsYou.map(entry => ({ conversationId: item.conversationId, entry })); } catch { return []; } });
+      const needs = (): S15NeedItem[] => ports.conversation.needs(actor);
       const nav = (current: string): S15Nav => ({ conversations: ports.conversation.list(actor), needs: needs().length, current });
       const computerStatus = (): VmStatus | null => { if (!ports.computer) return null; try { return ports.computer.status(actor, ports.computer.vmId); } catch (error) { if (codeOf(error) === "vm_not_enrolled") return null; throw error; } };
       const accounts = () => ports.accounts?.list(actor) ?? null;
@@ -113,7 +113,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         })();
         const dupId = url.searchParams.get("dup"), duplicate = dupId ? view?.rows.find(row => row.requestId === dupId) ?? null : null;
         const page: S15ChatPage = { csrf, conversationId, view, extras, draft: prefill, refused: null, duplicate, memoryAvailable: !!ports.memory, ...extra };
-        const live = !!view?.rows.some(liveRow), cursor = view ? (() => { try { return ports.conversation.events(actor, conversationId, 0).cursor; } catch { return 0; } })() : 0;
+        const live = !!view?.rows.some(liveRow), cursor = view?.cursor ?? 0;
         return render(() => shell(nav(`/chats/${conversationId}`), tr("s15.chat.title"), threadHtml(page), { dock: `<div class="s-dock">${composer(page)}</div>`, live, conversationId, cursor }), status);
       };
 
@@ -252,7 +252,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
     } catch (error) {
       const code = codeOf(error), status = statusOf(error);
       if (url.pathname.endsWith("/events") || request.headers.get("accept")?.startsWith("application/json")) return json({ error: code }, status);
-      if (code === "authentication_required") return request.method === "GET" ? redirect(options.loginPath) : html(withLocale(locale, () => standalonePage(tr("s15.error.title"), `<div class="s-notice-card" role="alert"><h1>${codeText(code)}</h1><p><a class="s-btn primary" href="${e(options.loginPath)}">${tr("s14.login.submit")}</a></p></div>`)), 401, locale);
+      if (code === "authentication_required") return request.method === "GET" ? redirect(options.loginPath) : html(withLocale(locale, () => standalonePage(tr("s15.error.title"), `<div class="s-notice-card" role="alert"><h1>${codeText(code)}</h1><p><a class="s-btn primary" data-sign-in href="${e(options.loginPath)}">${tr("s14.login.submit")}</a></p></div>`)), 401, locale);
       return html(withLocale(locale, () => standalonePage(tr("s15.error.title"), `<div class="s-notice-card">${refusal(code, tr("s15.error.title"))}<p><a class="s-btn primary" href="/">${tr("s15.error.home")}</a></p></div>`)), status, locale);
     }
   };

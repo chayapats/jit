@@ -7,7 +7,7 @@ const source = new TextDecoder().decode(lookupS15Asset(s15AssetUrl("s15.js"))!.b
 
 type Listener = (event: Record<string, unknown>) => unknown;
 class FakeElement {
-  dataset: Record<string, string> = {}; hidden = false; value = ""; textContent = ""; id = ""; innerHTML = ""; focused = false;
+  dataset: Record<string, string> = {}; hidden = false; value = ""; textContent = ""; id = ""; innerHTML = ""; focused = false; checked = false; readOnly = false;
   listeners = new Map<string, Listener[]>(); parts = new Map<string, FakeElement>(); children: FakeElement[] = []; parentNode: FakeElement | null = null; attributes = new Map<string, string>();
   constructor(init: Partial<FakeElement> = {}) { Object.assign(this, init); }
   addEventListener(type: string, fn: Listener) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]); }
@@ -16,8 +16,14 @@ class FakeElement {
   querySelectorAll(selector: string) { return selector === ".s15-row" ? this.children.filter(child => child.id.startsWith("s15-row-")) : []; }
   contains(element: unknown) { return element === this || [...this.parts.values()].includes(element as FakeElement) || this.children.includes(element as FakeElement); }
   closest(selector: string) { return selector === "[data-prefill]" && this.dataset.prefill !== undefined ? this : null; }
-  replaceWith(other: FakeElement) { const parent = this.parentNode!; parent.children[parent.children.indexOf(this)] = other; other.parentNode = parent; }
-  insertBefore(child: FakeElement, before: FakeElement) { child.parentNode = this; this.children.splice(this.children.indexOf(before), 0, child); }
+  replaceWith(other: FakeElement) {
+    const parent = this.parentNode!;
+    if (parent.children.includes(this)) parent.children[parent.children.indexOf(this)] = other;
+    for (const [selector, part] of parent.parts) if (part === this) parent.parts.set(selector, other);
+    other.parentNode = parent;
+  }
+  insertBefore(child: FakeElement, before: FakeElement) { child.parentNode = this; this.children.splice(Math.max(0, this.children.indexOf(before)), 0, child); }
+  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
   appendChild(child: FakeElement) { child.parentNode = this; this.children.push(child); }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
@@ -26,13 +32,25 @@ class FakeElement {
   blur() { this.focused = false; }
 }
 
-function composerDom(conversation = "conv1") {
-  const area = new FakeElement({ id: "s15-text" }), requestId = new FakeElement({ value: "req-original" });
+type FakeForm = FakeElement & { action: string; requestSubmit: () => void; submits: number };
+/** One composer region; `answer` mirrors the server-rendered "Answering the question above" control. */
+function makeComposer(requestIdValue: string, answer: { value: string; revision: string; checked: boolean } | null = null) {
+  const area = new FakeElement({ id: "s15-text" }), requestId = new FakeElement({ value: requestIdValue });
   const bar = new FakeElement({ hidden: true }), line = new FakeElement({ dataset: { saved: "saved", restored: "restored", sensitive: "sensitive" } });
-  const sending = new FakeElement({ hidden: true }), unknown = new FakeElement({ hidden: true }), clear = new FakeElement();
-  const form = new FakeElement({ id: "s15-composer" }) as FakeElement & { action: string; requestSubmit: () => void; submits: number };
+  const sending = new FakeElement({ hidden: true }), unknown = new FakeElement({ hidden: true }), refused = new FakeElement({ hidden: true, dataset: { fallback: "Not sent" } }), clear = new FakeElement(), grow = new FakeElement();
+  const form = new FakeElement({ id: "s15-composer" }) as FakeForm;
   form.action = "http://jit.test/s15/forms/message"; form.submits = 0; form.requestSubmit = () => { form.submits++; void form.fire("submit"); };
-  for (const [selector, element] of [["textarea", area], ["[data-draft-bar]", bar], ["[data-draft-status]", line], ["[data-sending]", sending], ["[data-unknown]", unknown], ["[data-draft-clear]", clear], ["input[name=requestId]", requestId]] as const) form.parts.set(selector, element);
+  for (const [selector, element] of [["textarea", area], ["[data-draft-bar]", bar], ["[data-draft-status]", line], ["[data-sending]", sending], ["[data-unknown]", unknown], ["[data-refused]", refused], ["[data-draft-clear]", clear], ["input[name=requestId]", requestId], [".s-bar .s-grow", grow]] as const) { form.parts.set(selector, element); element.parentNode = form; }
+  grow.parentNode = form;
+  let label: FakeElement | null = null;
+  if (answer) {
+    label = new FakeElement(); const box = new FakeElement({ value: answer.value, checked: answer.checked }), revision = new FakeElement({ value: answer.revision });
+    label.parts.set("input[name=answer]", box); label.parts.set("input[name=answerRevision]", revision); label.parentNode = form; form.parts.set(".s15-answer", label);
+  }
+  return { form, area, requestId, unknown, refused, sending, line, label };
+}
+function composerDom(conversation = "conv1", answer: Parameters<typeof makeComposer>[1] = null) {
+  const { form, area, requestId, unknown, refused, sending, line, label } = makeComposer("req-original", answer);
   const app = new FakeElement({ dataset: { conversation, cursor: "0" } }), phase = new FakeElement({ id: "s15-phase", dataset: { working: "Jit has started", needs: "1 thing needs you", done: "done", reconnected: "Reconnected", reset: "reset" } });
   const documentListeners = new Map<string, Listener[]>();
   const elements = new Map<string, FakeElement>([["s15-composer", form], ["s15-text", area], ["s15-phase", phase]]);
@@ -42,12 +60,16 @@ function composerDom(conversation = "conv1") {
     addEventListener: (type: string, fn: Listener) => documentListeners.set(type, [...(documentListeners.get(type) ?? []), fn]),
     importNode: (node: FakeElement) => node,
   };
-  const store = new Map<string, string>();
+  // A swapped composer replaces the element registered under its id.
+  form.parentNode = new FakeElement(); form.parentNode.children.push(form);
+  const original = form.replaceWith.bind(form);
+  form.replaceWith = (other: FakeElement) => { original(other); elements.set("s15-composer", other); const text = other.parts.get("textarea"); if (text) elements.set("s15-text", text); };
+const store = new Map<string, string>();
   const localStorage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); } };
-  return { form, area, requestId, unknown, sending, line, document, documentListeners, store, localStorage, elements };
+  return { form, area, requestId, unknown, refused, sending, line, label, app, document, documentListeners, store, localStorage, elements };
 }
 const context = (dom: ReturnType<typeof composerDom>, fetch: (...args: unknown[]) => Promise<unknown>, timers: (() => Promise<void>)[] = []) => ({
-  document: dom.document, localStorage: dom.localStorage, fetch, setTimeout: (fn: () => Promise<void>) => { timers.push(fn); return 1; }, location: { href: "http://jit.test/chats/conv1" },
+  document: dom.document, localStorage: dom.localStorage, fetch, setTimeout: (fn: () => Promise<void>) => { timers.push(fn); return 1; }, location: { href: "http://jit.test/chats/conv1", assigned: [] as string[], assign(href: string) { this.assigned.push(href); } },
   FormData: class { constructor(readonly form: unknown) {} *[Symbol.iterator]() { yield ["requestId", dom.requestId.value]; yield ["text", dom.area.value]; } },
   URLSearchParams, DOMParser: class { parseFromString() { return { getElementById: () => null, querySelector: () => null }; } }, Event: class { constructor(readonly type: string) {} }, Date, JSON, navigator: {},
 });
@@ -125,4 +147,86 @@ test("live refresh replaces changed rows except the focused one, and reconnect r
   expect(calls.every(call => call.method === "GET")).toBe(true);
   expect(calls.some(call => call.url.includes("/s15/forms/"))).toBe(false);
   expect(bold.textContent).toBe("Reconnected"); expect(slot.innerHTML).toContain('role="status"');
+});
+
+/** Live poll fixture: one events page, then the fresh render produced by `fresh`. */
+async function livePoll(dom: ReturnType<typeof composerDom>, fresh: { getElementById(id: string): unknown; querySelector(selector: string): unknown }, events: { events: unknown[]; cursor: number; needs: number }) {
+  const scroll = new FakeElement(), timers: (() => Promise<void>)[] = [], urls: string[] = [];
+  let live = true;
+  dom.document.querySelector = (selector: string) => selector === ".s15-app" ? dom.app : selector === "[data-live]" ? live ? scroll : null : selector === ".s-scroll" ? scroll : null;
+  const ctx = context(dom, async url => { urls.push(String(url)); return String(url).includes("/events") ? { ok: true, status: 200, json: async () => events } : { ok: true, status: 200, text: async () => "fresh" }; }, timers);
+  ctx.DOMParser = class { parseFromString() { return fresh; } } as never;
+  runInNewContext(source, ctx);
+  return { timers, urls, scroll, setLive: (value: boolean) => { live = value; } };
+}
+
+test("a live refresh keeps an unchecked answer choice and its exact question reference with the draft", async () => {
+  const dom = composerDom("conv1", { value: "question-r3", revision: "3", checked: false });
+  dom.area.value = "A separate new request";
+  const next = makeComposer("req-fresh", { value: "question-r4", revision: "4", checked: true });
+  const run = await livePoll(dom, { getElementById: (id: string) => id === "s15-composer" ? next.form : null, querySelector: () => null }, { events: [{ sequence: 9 }], cursor: 9, needs: 1 });
+  await run.timers.shift()!();
+  const current = dom.elements.get("s15-composer")!;
+  expect(current).toBe(next.form);
+  // The draft text, request id and the owner's own answer state (unchecked, r3) all survive the refresh.
+  expect(next.area.value).toBe("A separate new request"); expect(next.requestId.value).toBe("req-original");
+  const label = current.parts.get(".s15-answer")!;
+  expect(label).toBe(dom.label!); expect(label.parts.get("input[name=answer]")!.checked).toBe(false);
+  expect(label.parts.get("input[name=answer]")!.value).toBe("question-r3"); expect(label.parts.get("input[name=answerRevision]")!.value).toBe("3");
+});
+
+test("a question that appears while the owner types is offered unchecked, never pre-selected for that text", async () => {
+  const dom = composerDom("conv1"); dom.area.value = "Plan the trip";
+  const next = makeComposer("req-fresh", { value: "question-r1", revision: "1", checked: true });
+  const run = await livePoll(dom, { getElementById: (id: string) => id === "s15-composer" ? next.form : null, querySelector: () => null }, { events: [{ sequence: 4 }], cursor: 4, needs: 1 });
+  await run.timers.shift()!();
+  expect(next.label!.parts.get("input[name=answer]")!.checked).toBe(false); expect(next.area.value).toBe("Plan the trip");
+});
+
+test("the browser cursor advances past applied events and polling stops once nothing is live", async () => {
+  const dom = composerDom("conv1"); dom.app.dataset.cursor = "64";
+  const run = await livePoll(dom, { getElementById: () => null, querySelector: () => null }, { events: [{ sequence: 70 }], cursor: 70, needs: 0 });
+  await run.timers.shift()!();
+  expect(run.urls[0]).toBe("/chats/conv1/events?after=64"); expect(dom.app.dataset.cursor).toBe("70");
+  expect(run.timers).toHaveLength(1);
+  run.setLive(false); await run.timers.shift()!();
+  expect(run.urls.at(-2)).toBe("/chats/conv1/events?after=70");
+  expect(run.timers).toHaveLength(0);
+});
+
+test("an expired session during an enhanced send keeps the draft and goes to sign-in", async () => {
+  const dom = composerDom("conv1");
+  const ctx = context(dom, async () => ({ ok: false, status: 401, text: async () => "refused" }));
+  const signIn = new FakeElement(); signIn.setAttribute("href", "/s14/login");
+  ctx.DOMParser = class { parseFromString() { return { getElementById: () => null, querySelector: (selector: string) => selector === "[data-sign-in]" ? signIn : null }; } } as never;
+  runInNewContext(source, ctx);
+  dom.area.value = "Keep this request";
+  await dom.form.fire("submit");
+  expect(ctx.location.assigned).toEqual(["/s14/login"]);
+  expect(JSON.parse(dom.store.get("s15-draft:conv1")!)).toMatchObject({ text: "Keep this request" });
+  expect(dom.area.value).toBe("Keep this request"); expect(dom.sending.hidden).toBe(true); expect(dom.area.readOnly).toBe(false);
+});
+
+test("any other refusal page without a composer shows its reason and keeps text and request id", async () => {
+  const dom = composerDom("conv1");
+  const ctx = context(dom, async () => ({ ok: false, status: 403, text: async () => "refused" }));
+  const heading = new FakeElement({ textContent: "This page is out of date. Reload it and try again." });
+  ctx.DOMParser = class { parseFromString() { return { getElementById: () => null, querySelector: (selector: string) => selector === "h1" ? heading : null }; } } as never;
+  runInNewContext(source, ctx);
+  dom.area.value = "Keep this request";
+  await dom.form.fire("submit");
+  expect(dom.refused.hidden).toBe(false); expect(dom.refused.textContent).toBe("This page is out of date. Reload it and try again.");
+  expect(dom.area.value).toBe("Keep this request"); expect(dom.requestId.value).toBe("req-original"); expect(ctx.location.assigned).toEqual([]);
+});
+
+test("the text box is read-only while a send is pending, so nothing typed meanwhile is lost", async () => {
+  const dom = composerDom("conv1"); let release: (value: unknown) => void = () => {};
+  const ctx = context(dom, () => new Promise(resolve => { release = resolve; }));
+  runInNewContext(source, ctx);
+  dom.area.value = "First message";
+  const sending = dom.form.fire("submit");
+  await Promise.resolve();
+  expect(dom.area.readOnly).toBe(true); expect(dom.sending.hidden).toBe(false);
+  release({ ok: false, status: 503, text: async () => "down" }); await sending;
+  expect(dom.area.readOnly).toBe(false);
 });

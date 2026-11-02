@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { AppError } from "../src/errors";
+import { openModelService, type ApprovedModelRoute } from "../src/s15/model";
+import { modelWorkFixture } from "./fixtures/s15-model-work";
 import type { S15MemoryClaim, S15ModelBudgetView, S15WebMemory, S15WebModels } from "../src/s15/web";
 import { newId, webFixture, type WebActor, type WebFixture } from "./fixtures/s15-web";
 
@@ -31,11 +33,18 @@ function memoryPort() {
   };
   return { port, commands, claims };
 }
-const budgetView = (over: Partial<S15ModelBudgetView> = {}): S15ModelBudgetView => ({ contract: "s15-model-budget/v1", currency: "USD",
+const r = (id: string) => ({ id, revision: 1, generation: 1 });
+const route = (provider: "codex" | "grok", modelId: string, effort: "high" | "low", charge: "subscription" | "metered", availability: "available" | "quota"): ApprovedModelRoute => ({
+  selection: { route: r(`${provider}_route`), model: r(modelId), effort }, provider, modelId, account: r(`${provider}_account`), billing: r(`${provider}_billing`), recipient: r(provider), charge, availability,
+  efforts: [effort], effortEvidence: "requested_only", upperBound: null, rank: { ordinary: 1, difficult: 1 } });
+const codex = route("codex", "gpt-scripted", "high", "subscription", "available"), grok = route("grok", "grok-scripted", "low", "metered", "quota");
+const nullUsage = { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null };
+/** Complete `s15-model-budget/v1` projection fixture, typed against the real MODEL15 contract. */
+const budgetView = (over: Partial<S15ModelBudgetView> = {}): S15ModelBudgetView => ({ contract: "s15-model-budget/v1", currency: "USD", subscriptionLimits: null,
   ceilings: [{ dimension: "spendMinor", ceiling: "2000", charged: "500", measured: null, unknown: true }, { dimension: "calls", ceiling: 100, charged: 12, measured: 10, unknown: false }],
-  routes: [{ provider: "codex", model: "gpt-scripted", charge: "subscription", availability: "available", holdCode: null, selection: { route: { id: "route", revision: 1 }, model: { id: "model", revision: 1 }, effort: "high" } },
-    { provider: "grok", model: "grok-scripted", charge: "metered", availability: "quota", holdCode: "route_unavailable", selection: { route: { id: "route2", revision: 1 }, model: { id: "model2", revision: 1 }, effort: "low" } }],
-  pins: [], selections: [{ id: "s1", workId: "authority1", reason: "difficult", state: "completed", route: { provider: "codex", modelId: "gpt-scripted" }, effort: { requested: "high", evidence: "requested_only", providerConfirmed: false } }], unsettled: 1, ...over });
+  routes: [codex, grok].map(item => ({ selection: item.selection, provider: item.provider, model: item.modelId, account: item.account, billing: item.billing, charge: item.charge, availability: item.availability, holdCode: item.availability === "available" ? null : "route_unavailable" })),
+  pins: [], selections: [{ contract: "s15-model-selection/v1", id: "s1", workId: "authority1", stepId: "step", inputHash: "0".repeat(64), route: codex, pins: { route: null, model: null, effort: null }, reason: "difficult", state: "completed", code: null,
+    createdAt: 1, reservations: [], usage: nullUsage, tokens: null, tokenSamples: [], effort: { requested: "high", evidence: "requested_only", providerConfirmed: false }, physicalDispatches: null, session: null }], unsettled: 1, ...over });
 
 test("memory and models show an honest not-available state when their slices are not composed", async () => {
   const f = setup();
@@ -115,8 +124,24 @@ test("each work reply discloses the recorded model, effort and reason, never the
   await f.send(conversation, "Create hello.txt containing hello."); await f.app.drain();
   const page = await html(f, `/chats/${conversation}`);
   expect(page).toContain("ตอบด้วย gpt-scripted · คิด: สูง"); expect(page).toContain("เลือกเพราะ: งานซับซ้อน (ในรายการที่คุณอนุมัติ)"); expect(page).toContain("ผู้ให้บริการไม่ยืนยันว่าใช้ระดับความคิดนี้");
-  const pinned: S15WebModels<WebActor> = { project: () => budgetView({ pins: [{ workId: "authority1", pins: { route: null, model: { id: "model" }, effort: "high" } }] }) };
+  const pinned: S15WebModels<WebActor> = { project: () => budgetView({ pins: [{ workId: "authority1", pins: { route: null, model: r("gpt-scripted"), effort: "high" } }] }) };
   const g = setup(() => ({ models: pinned })), other = newId();
   await g.send(other, "Create hello.txt containing hello."); await g.app.drain();
   expect(await html(g, `/chats/${other}`)).toContain("ตามที่คุณปักไว้");
+});
+
+test("the models page renders the real MODEL15 projection after an approved step", async () => {
+  const m = modelWorkFixture(); const source = m.source("source");
+  const service = openModelService({ ...m.modelOptions(), scripted: item => ({ provider: "codex-subscription", id: item.modelId, async *stream() {
+    m.advance(10); yield { type: "message_complete", message: { type: "assistant", id: crypto.randomUUID(), content: [{ type: "text", text: "Completed the selected step." }] } };
+  } }) });
+  try {
+    expect(await service.runStep(source.actor!, { stepId: "hard", difficulty: "difficult", text: "Complete the selected issue.", ownerDecisions: [], sources: [] })).toMatchObject({ state: "completed", reason: "difficult" });
+    // Composition adapts the authenticated Web owner to POLICY's owner actor; the UI only reads the projection.
+    const models: S15WebModels<WebActor> = { project: (_actor, workId) => service.project(m.owner, workId) };
+    const f = setup(() => ({ models })), page = await html(f, "/models");
+    const view = service.project(m.owner);
+    for (const item of view.routes) expect(page).toContain(`${item.provider} · ${item.model}`);
+    expect(page).toContain("เพดาน 1.00 USD"); expect(page).toContain("ใช้ไป 1"); expect(page).not.toMatch(/<form[^>]*action="\/s15\/forms\/models/);
+  } finally { service.close(); m.cleanup(); }
 });

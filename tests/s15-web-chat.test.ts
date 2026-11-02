@@ -176,3 +176,39 @@ test("S14 stays the default: no S14 module imports the S15 Web UI", () => {
   for (const name of files) expect(readFileSync(join(import.meta.dir, "../src/s14", name), "utf8")).not.toContain("s15/web");
   for (const name of ["main.ts", "composition.ts", "runtime-selection.ts"]) expect(readFileSync(join(import.meta.dir, "../src", name), "utf8")).not.toContain("s15/web");
 });
+
+test("Needs you lists every outstanding hold, beyond the navigation and thread windows", async () => {
+  const f = setup(), old = newId();
+  await f.send(old, "Implement issue #42 or #43");
+  // 33 later requests in the same conversation push the question out of its 32-row thread window,
+  for (let index = 0; index < 33; index++) await f.send(old, `Accept issue #${100 + index}`);
+  // and 40 newer conversations push it out of the 32-conversation navigation window.
+  for (let index = 0; index < 40; index++) await f.send(newId(), `Accept issue #${200 + index}`);
+  expect(f.ports.conversation.list(f.actor).some(item => item.conversationId === old)).toBe(false);
+  expect(f.ports.conversation.view(f.actor, old).needsYou).toEqual([]);
+  const needs = (await page(f, "/needs")).html;
+  expect(needs).not.toContain("ตอนนี้ไม่มีอะไรรอคุณ"); expect(needs).toContain(`/chats/${old}#s15-row-`); expect(needs).toContain('<span class="s-nav-number">1</span>');
+  expect(f.ports.conversation.needs(f.actor)).toHaveLength(1);
+  const events = await (await f.get(`/chats/${old}/events?after=0`)).json() as { needs: number };
+  expect(events.needs).toBe(1);
+});
+
+test("the page cursor is the conversation's latest event, past the first 64-event page", async () => {
+  const f = setup(), conversation = newId();
+  for (let index = 0; index < 40; index++) await f.send(conversation, `Accept issue #${index + 1}`);
+  const first = f.ports.conversation.events(f.actor, conversation, 0);
+  expect(first.events).toHaveLength(64);
+  const latest = f.ports.conversation.view(f.actor, conversation).cursor;
+  expect(latest).toBeGreaterThan(first.cursor);
+  expect(f.ports.conversation.events(f.actor, conversation, latest).events).toEqual([]);
+  expect((await page(f, `/chats/${conversation}`)).html).toContain(`data-cursor="${latest}"`);
+});
+
+test("an expired session refuses an enhanced send with a sign-in link the script can follow", async () => {
+  const f = setup(), conversation = newId();
+  f.expire();
+  const refused = await f.send(conversation, "Create hello.txt containing hello.");
+  expect(refused.status).toBe(401);
+  const body = await refused.text();
+  expect(body).toContain('data-sign-in href="/s14/login"'); expect(body).not.toContain('id="s15-composer"'); expect(body).not.toContain("Create hello.txt");
+});

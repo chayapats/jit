@@ -1,5 +1,6 @@
 import type { Locale } from "../../i18n";
-import type { ConversationCommand, ConversationEvent, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
+import type { ConversationCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
+import type { ModelBudgetView } from "../model";
 import type { PolicyProposal, StandingPolicy } from "../policy";
 import type { VmStatus } from "../vm";
 import type { VmMachineFacts } from "../vm/types";
@@ -20,7 +21,7 @@ export interface S15WebPorts<Actor extends object> {
   readiness?: (actor: Actor, requestId: string) => S15ReadinessReport | null;
   /** MEM15-01 owner API (`s15-memory-view/v1`). Absent until that slice is composed. */
   memory?: S15WebMemory<Actor>;
-  /** MODEL15-01 read-only projection (`s15-model-budget/v1`). Absent until that slice is composed. */
+  /** MODEL15-01 `ModelService.project` (`s15-model-budget/v1`); composition adapts the owner actor. Absent until composed. */
   models?: S15WebModels<Actor>;
   /** Owner language preference; Accept-Language decides when absent. */
   locale?: (actor: Actor) => Locale | null;
@@ -33,6 +34,8 @@ export interface S15WebConversation<Actor> {
   submit(actor: Actor, command: ConversationCommand): ConversationReceipt;
   stop(actor: Actor, requestId: string): void;
   events(actor: Actor, conversationId: string, after: number): { events: ConversationEvent[]; cursor: number };
+  /** Every outstanding owner item across all conversations, not limited to the navigation or thread windows. */
+  needs(actor: Actor): { conversationId: string; entry: ConversationNeedsYou }[];
   /** Wakes the durable queue after a committed receipt. It never resubmits anything. */
   drain(): Promise<void>;
 }
@@ -98,13 +101,6 @@ export interface S15ForgetImpact { claims: number; sources: number; summaries: n
 /** MEM15-01 owner API: `view` and the revision-bound `s15-memory-command/v1` commands. */
 export interface S15WebMemory<Actor> { view(actor: Actor): { contract: "s15-memory-view/v1"; claims: S15MemoryClaim[] }; command(actor: Actor, input: unknown): unknown }
 
-/** Structural subset of MODEL15-01 `ModelBudgetView`. */
-export interface S15ModelBudgetView {
-  contract: "s15-model-budget/v1"; currency: string | null;
-  ceilings: { dimension: string; ceiling: number | string | null; charged: number | string | null; measured: number | string | null; unknown: boolean }[];
-  routes: { provider: string; model: string; charge: "subscription" | "metered"; availability: "available" | "unavailable" | "quota"; holdCode: string | null; selection: { route: { id: string; revision: number }; model: { id: string; revision: number }; effort: string } }[];
-  pins: { workId: string; pins: { route: { id: string } | null; model: { id: string } | null; effort: string | null } }[];
-  selections: { id: string; workId: string; reason: "owner_pin" | "ordinary" | "difficult" | "approved_alternative"; state: string; route: { provider: string; modelId: string }; effort: { requested: string; evidence: "requested_only" | "adapter_mapped"; providerConfirmed: false } }[];
-  unsettled: number;
-}
+/** MODEL15-01 read-only projection (`s15-model-budget/v1`), the real `ModelService.project` result. */
+export type S15ModelBudgetView = ModelBudgetView;
 export interface S15WebModels<Actor> { project(actor: Actor, workId?: string): S15ModelBudgetView }
