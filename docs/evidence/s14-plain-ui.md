@@ -2,6 +2,8 @@
 
 Status: local implementation ready for owner review, 2026-11-02. No deployment or owner-host cutover is certified by this record.
 
+Published implementation: [`388c119773bcb1244912fa70ec3ec67b5cd0544d`](https://github.com/chayapats/jit/commit/388c119773bcb1244912fa70ec3ec67b5cd0544d), on `t3/plain-handoff-scope-review`, pending PR/review/merge. Tracking was published after that push: [parent #307](https://github.com/chayapats/jit/issues/307), [implementation #308](https://github.com/chayapats/jit/issues/308) and [coverage triage #309](https://github.com/chayapats/jit/issues/309). These links do not change the tested source, evidence scope or prior owner deferrals.
+
 Base commit: `88b7f0775c8537b9dee55b71884790a818a3cbe0`. Validation was performed on the working tree based on this commit; the source/test fingerprint identifies the tested implementation independently of its eventual commit. Final source/test fingerprint: `f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4`. Per-file hashes, browser asset hashes and captures are retained in the ignored `.local/plain-qa/` record on the validation machine; this is not a hosted or portable device-evidence package.
 
 ## Delivered scope

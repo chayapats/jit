@@ -2,6 +2,8 @@
 
 Status: owner-approved scope, 2026-11-02. Refines S14-AC13, FR-10/23/24/25 and NFR-11/13. The owner explicitly authorized direct replacement and a task-specific exception to the usual UI/UX author requirement.
 
+Tracking: [Plain parent #307](https://github.com/chayapats/jit/issues/307), [implementation/review #308](https://github.com/chayapats/jit/issues/308) and [remaining coverage triage #309](https://github.com/chayapats/jit/issues/309). Published on 2026-11-02 after implementation commit `388c119773bcb1244912fa70ec3ec67b5cd0544d` was pushed. Implementation is on `t3/plain-handoff-scope-review`, pending PR/review/merge; remaining device/AT coverage is not a new implicit release gate. The closed original S14 parent #244 remains a historical baseline.
+
 ## Confirmed decisions
 
 - Replace the S14 presentation and information architecture across every existing feature surface. No old renderer, feature flag or UI compatibility layer is required. Legacy remains its separately selected runtime.

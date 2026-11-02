@@ -89,3 +89,16 @@ The required #256 release evidence is met within the declared scope and may clos
 ## Owner-host cutover checkpoint — 2026-11-01
 
 The [separate owner-Pi record](../evidence/s14-owner-pi-cutover.md) supersedes earlier default/cutover-pending conclusions for its exact `5eec7aa` arm64 installation. It records fresh separate S14 state, one native-approved tool-free Codex reply, full R0/R1 and R2/R3 preservation with independent recoveries, actual retained prior legacy-release health, and same-owned S14 reactivation. Failed helper invocations remain failed and are distinguished from independent successful observations. Post-reply R4 equality also passed. Reviewed #267/#244 closeout remains pending; neither issue is claimed closed here. Owner-unread reports, owner-deferred VoiceOver, unrun real iPhone and all earlier named-build limits remain unchanged.
+
+## Plain follow-up tracker — 2026-11-02
+
+The preceding checkpoints retain their historical issue states. The original S14 parent [#244](https://github.com/chayapats/jit/issues/244) is now CLOSED; the owner-approved Plain replacement is separate scope under [parent #307](https://github.com/chayapats/jit/issues/307), with native sub-issues:
+
+| Ticket | Verified state at publication | Scope/status distinction |
+| --- | --- | --- |
+| [PLAIN14-01 #308](https://github.com/chayapats/jit/issues/308) | OPEN, needs-triage | Whole S14 presentation/IA and safe browser-local navigation/drafts delivered at `388c119773bcb1244912fa70ec3ec67b5cd0544d` on `t3/plain-handoff-scope-review`; PR/CI/review/merge and owner acceptance remain pending. |
+| [PLAIN14-02 #309](https://github.com/chayapats/jit/issues/309) | OPEN, needs-triage | Remaining device/AT coverage triage. Prior VoiceOver deferral and unrun cases remain explicit; no new release gate or live/deployment authority is implied. |
+
+The issues were published after the implementation push; they do not imply that tracked-issue prerequisites were checked before that commit. No competing Plain issue or PR existed at publication. Keep the existing task-owned branch rather than starting a duplicate implementation. No new ready-for-agent/human or native blocking relation is asserted. The owner approved a task-specific UI/UX author exception and replacement without an old renderer or UI compatibility layer; repository-wide policy otherwise remains unchanged.
+
+Current scope: [Plain design](../design/S14-plain-experience.md). Tested revision and limits: [Plain evidence](../evidence/s14-plain-ui.md). Local issue mirrors: [PLAIN14-01](s14/PLAIN14-01.md) and [PLAIN14-02](s14/PLAIN14-02.md). The earlier `s14.json` snapshot and original ticket mirrors remain historical records rather than being rewritten as new-scope acceptance.
