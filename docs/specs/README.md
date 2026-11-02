@@ -25,6 +25,10 @@
 
 ดู [workflow](../agents/workflow.md) Specs นี้ไม่ได้สร้าง implementation claims หรืออนุมัติให้ติดตั้งบน Pi/ใช้ live subscription จากงานเขียนเอกสาร
 
-## S14 — current owner-confirmed target
+## S15 — current owner-confirmed target
 
-[S14](S14-bot-first-local-assistant.md) / [#244](https://github.com/chayapats/jit/issues/244) replaces required Projects with persistent Bots/local computers and a Parallel research MVP. Coding and email/calendar are required later phases. Documentation/design is [#245](https://github.com/chayapats/jit/issues/245). Product choices are confirmed; ADRs/design remain proposed and runtime work is not yet implemented. See [ticket preparation](../tickets/S14-bot-first-roadmap.md).
+[S15](S15-conversational-autonomy.md), confirmed 2026-11-02, records conversational execution under standing policy, an administrable working VM, shared team resources, browser-first work and automatic memory with protected human approvals. Default GitHub publication waits; an opt-in personal workflow may publish and auto-merge selected work, while production still waits. [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) separates proposed engineering and unresolved enforcement gates. The 23 decisions and S15-AC01–AC16 are the current target, tracked by [#316](https://github.com/chayapats/jit/issues/316) and the [delivery graph](../tickets/S15-conversational-autonomy-roadmap.md); no S15 implementation or live cutover is claimed.
+
+## S14 — implemented runtime and previous product direction
+
+[S14](S14-bot-first-local-assistant.md) / [#244](https://github.com/chayapats/jit/issues/244) introduced persistent Bots/local computers and Parallel research without required Projects. Its implementation, required coding/personal slices and scoped evidence are recorded in [CONTEXT.md](../../CONTEXT.md) and the [S14 tracker](../tickets/S14-bot-first-roadmap.md). It remains the implemented default, with explicit legacy compatibility. Earlier broad ADR/design proposals do not certify another build or host. S15 supersedes conflicting product choices without changing S14 runtime behavior through documentation.

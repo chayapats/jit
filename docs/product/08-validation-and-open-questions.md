@@ -1,6 +1,6 @@
 # S14 Validation and Open Questions
 
-Target: [S14](../specs/S14-bot-first-local-assistant.md). Owner product decisions S14-D01–D16 are confirmed; the items below are feasibility/engineering evidence, not unanswered product permission requests.
+Status: retained S14 validation questions and historical gates. Current owner decisions are [S15-D01–D23](../specs/S15-conversational-autonomy.md#confirmed-decisions); current acceptance is S15-AC01–AC16 with [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md). Items below are not evidence of S15 support. S15 guest-administration, protected-browser/effect, private-disclosure and transition feasibility remain engineering proof obligations, not a reason to ask the owner the accepted product questions again.
 
 ## Evidence layers
 

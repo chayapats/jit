@@ -1,6 +1,6 @@
 # Jit Architecture Proposal
 
-Current direction: [S14](../specs/S14-bot-first-local-assistant.md), owner-confirmed 2026-10-30. This is an engineering proposal; the current runtime remains S09–S13. [CONTEXT.md](../../CONTEXT.md) defines domain terms.
+Status: retained S14 architecture proposal. [S15](../specs/S15-conversational-autonomy.md) is the current product target; [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) records its proposed boundaries and unresolved proof gates. Conflicting per-Bot/intake assumptions below are historical. S14 remains the implemented default runtime, with explicit legacy compatibility. [CONTEXT.md](../../CONTEXT.md) defines current domain terms and implementation status.
 
 ## Boundaries
 

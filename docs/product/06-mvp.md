@@ -1,6 +1,6 @@
 # Jit MVP Definition
 
-Current target: [S14](../specs/S14-bot-first-local-assistant.md), confirmed 2026-10-30. The existing S09–S13 runtime is a historical implemented baseline; this scope is not yet shipped.
+Status: retained S14 scope and gates, with implementation/evidence tracked in [CONTEXT.md](../../CONTEXT.md). [S15](../specs/S15-conversational-autonomy.md), confirmed 2026-11-02, is the current target and supersedes a research-only capability ceiling. Its AC01–AC16 and ADR 0064 proof gates require new implementation/evidence; no S15 release scope or date is inferred from this earlier MVP.
 
 ## First useful outcome
 
