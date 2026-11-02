@@ -24,6 +24,8 @@ The broker uses manual redirects and denies 3xx before a next request or browser
 
 ## Input, login and uncertainty
 
+Input completion is tied to real native acknowledgement, navigation/frame-stop and intercepted-request settlement, with a finite 30-second deadline that reports uncertainty. Propagate tool cancellation through every final input/release/publication guard. A released broker effect survives operation cancellation/deadline under its original claim and retained capacity; it is never aborted or retried by input cleanup. Preserve each Set-Cookie field with getSetCookie through private fulfillment, including independent attributes and Expires commas.
+
 Finite native operations use fixed observed element handles and generation checks. Mutations, takeover, hand-back and restart advance protected generations. Takeover fences pending work and waits for prior native input settlement. Authenticated owner frames/transient named-field input are restricted to configured login/2FA documents. No visual UI is designed in this slice; #339 owns the presentation.
 
 Hand-back reports `checking`. Only a configured protected session observation with an origin-scoped HttpOnly cookie and the expected nonredirecting response establishes signed-in state. Otherwise report not_signed_in, cancelled or unknown. Signing in grants no send/payment authority. Secret surfaces are withheld; generic field masking cannot prove arbitrary pages safe.
