@@ -6,8 +6,8 @@ import type { ConversationPolicyWork } from "../src/s15/conversation/policy-port
 
 const ref = (id: string) => ({ id, revision: 1, generation: 1 });
 const work: ConversationPolicyWork<object> = { actor: Object.freeze({}), authority: {
-  id: "work", policyRevision: 1, expiresAt: 10000,
-  request: { purpose: ref("purpose"), resources: [ref("workspace")], selection: { route: ref("route"), model: ref("model"), effort: "high" } },
+  id: "work", mode: "work", readLimit: 4, ownerGeneration: 1, policyRevision: 1, policyHash: "a".repeat(64), createdAt: 0, expiresAt: 10000,
+  request: { requestId: "request", intent: "execute", purpose: ref("purpose"), bot: ref("bot"), recipients: [], selectionPin: null, expiresAt: 10000, resources: [ref("workspace")], selection: { route: ref("route"), model: ref("model"), effort: "high" } },
 } };
 const definition = (name: string, effect: "read-only" | "mutating" = "read-only"): ToolDefinition => ({ name, effect, description: name, execution: "exclusive", inputSchema: { type: "object" }, async execute() { return { content: "observed" }; } });
 

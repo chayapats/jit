@@ -1,5 +1,7 @@
 import type { HostClock, ToolDefinition } from "schway/host";
 import { AppError } from "../../errors";
+import { PolicyError, type ActionRef, type ActionSlip } from "../policy";
+import { applyOwnerDecision, ownerDecision, rememberActionPresentation } from "./decisions";
 import { ConversationStore } from "./store";
 import { groundConversationIntent } from "./intent";
 import { runConversation } from "./schway";
@@ -7,8 +9,8 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
 
-const safeCodes = new Set(["material_ambiguity", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending"]);
-const safeCode = (error: unknown): string => error instanceof AppError && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
+const safeCodes = new Set(["material_ambiguity", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable"]);
+const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
   const abort = () => { clearTimeout(timer); reject(new AppError("aborted")); };
@@ -72,11 +74,16 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (request.receipt.conversationId !== input.conversationId || request.revision !== input.continuation.revision || request.state !== "held" || request.code !== "material_ambiguity") throw new AppError("stale_revision", 409);
         intent = this.clarification(request.command, input, intent);
       } else {
-        request = { receipt, command: input, interpretationRequest: input, owner, revision: 0, intent, state: "held", code: null, authority: null, phase: "interpretation", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null };
+        request = { receipt, command: input, interpretationRequest: input, owner, revision: 0, intent, state: "held", code: null, authority: null, phase: "interpretation", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null };
         this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(input.requestId, input.conversationId, request.state, canonical(request));
       }
       request.intent = intent; request.interpretationRequest = input; request.revision++;
-      if (intent.kind === "ambiguous" && new Set([...input.text.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => match[1])).size > 1) { request.state = "held"; request.code = "material_ambiguity"; }
+      const exactDecision = ownerDecision(input.text);
+      if (exactDecision && input.continuation === null) {
+        try { applyOwnerDecision(this, actor, request, exactDecision); }
+        catch (error) { request.state = "held"; request.code = safeCode(error); }
+      }
+      else if (intent.kind === "ambiguous" && new Set([...input.text.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => match[1])).size > 1) { request.state = "held"; request.code = "material_ambiguity"; }
       else if (intent.kind === "accept") { request.state = "accepted"; request.code = null; }
       else {
         // Inference-only authority exists before interpretation; no tool/retrieval path is open yet.
@@ -93,7 +100,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       this.store.save(request);
       this.store.db.query("INSERT INTO commands VALUES (?,?,?,?,?)").run(input.requestId, hash, receipt.rootRequestId, canonical(receipt), canonical(input));
       this.store.event(request, "received", this.clock.now());
-      this.store.event(request, request.state === "queued" ? "admitted" : "needs_me", this.clock.now(), request.code);
+      this.store.event(request, request.decision ? "decision" : request.state === "queued" ? "admitted" : "needs_me", this.clock.now(), request.code);
       this.options.beforeCommit?.();
       return receipt;
     });
@@ -114,14 +121,19 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     return { kind: "execute", subject: selected[0]!, instruction: `${original.text}\nOwner selected only ${selected[0]}.` };
   }
   /** Read-only current request projection; a stale/revoked authority withholds result and evidence bodies. */
-  view(actor: OwnerActor, requestId: string): ConversationRequest & { evidence: ReturnType<ConversationStore["evidence"]> } {
+  view(actor: OwnerActor, requestId: string): ConversationRequest & { evidence: ReturnType<ConversationStore["evidence"]>; slips: ActionSlip[] } {
     const request = this.store.request(requestId); this.owner(actor, request);
     const projected = structuredClone(request);
+    let slips: ActionSlip[] = [];
+    try {
+      slips = this.options.policy.actionSlips?.(actor, request.actions) ?? [];
+      rememberActionPresentation(this, request, slips);
+    } catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips: [] }; }
     if (request.state === "completed") {
       try { this.publication(request); }
-      catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [] }; }
+      catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips }; }
     }
-    return { ...projected, evidence: request.state === "completed" ? this.store.evidence(requestId) : [] };
+    return { ...projected, evidence: request.state === "completed" ? this.store.evidence(requestId) : [], slips };
   }
   /** Bounded conversation-bound cursor; reconnect never starts a model, tool, queue or remote delivery. */
   events(actor: OwnerActor, conversationId: string, after = 0): { events: ConversationEvent[]; cursor: number } {
@@ -148,6 +160,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     this.store.transaction(() => {
       const request = this.store.request(requestId); this.owner(actor, request);
       if (request.state === "stopped") return;
+      if (request.authority) this.options.policy.stopWork?.(actor, request.authority, requestId);
       request.state = "stopped"; request.code = "aborted"; request.revision++;
       this.store.save(request); this.store.event(request, "stopped", this.clock.now(), "aborted");
     });
@@ -162,13 +175,31 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         while (!this.#closing) {
           const id = this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='queued' ORDER BY rowid LIMIT 256").all().find(row => this.#owners.has(row.id))?.id;
           if (!id) break;
-          await this.run(id);
+          if (this.store.request(id).phase === "decision") await this.runDecision(id);
+          else await this.run(id);
         }
         done.resolve();
       } catch (error) { done.reject(error); }
       finally { this.#draining = null; }
     })();
     return done.promise;
+  }
+  private async runDecision(id: string): Promise<void> {
+    try {
+      const request = this.store.transaction(() => {
+        const current = this.store.request(id);
+        if (current.state !== "queued" || !current.decision || !current.authority || !this.options.policy.dispatchAction) throw new AppError("approval_reference_required");
+        current.state = "running"; current.revision++; this.store.save(current); this.options.beforeCommit?.(); return current;
+      });
+      const observation = await this.options.policy.dispatchAction!(request.authority!, request.decision!.action);
+      this.store.transaction(() => {
+        const current = this.store.request(id); current.decision!.observation = observation;
+        if (current.state !== "stopped") { current.state = observation.outcome === "unknown" ? "reconcile_only" : "accepted"; current.code = observation.code ?? `action_${observation.outcome}`; }
+        current.revision++; this.store.save(current); this.store.event(current, "decision", this.clock.now(), current.code);
+      });
+    } catch (error) {
+      this.store.transaction(() => { const current = this.store.request(id); if (current.state !== "stopped") { current.state = "held"; current.code = safeCode(error); current.revision++; this.store.save(current); this.store.event(current, "needs_me", this.clock.now(), current.code); } });
+    } finally { this.#owners.delete(id); }
   }
   private async run(id: string): Promise<void> {
     const abort = new AbortController(); this.#running.set(id, abort);
@@ -233,7 +264,14 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       clearTimeout(timer); startedAt = this.clock.now(); timer = setTimeout(() => abort.abort(), request.authority!.limits.activeMs);
       const mode = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
-        tools = await this.options.tools.open(work!, { mode, signal: abort.signal, guard });
+        tools = await this.options.tools.open(work!, { mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
+          guard(); exact(action, ["id", "revision", "actionHash"]); identity(action.id); integer(action.revision, 1);
+          if (!/^[a-f0-9]{64}$/.test(action.actionHash)) throw new AppError("invalid_data");
+          const current = this.store.request(id);
+          if (current.actions.some(ref => ref.id === action.id && ref.revision === action.revision && ref.actionHash === action.actionHash)) return;
+          if (current.actions.length >= 64) throw new AppError("output_limit");
+          current.actions.push(structuredClone(action)); this.store.save(current);
+        }) });
         if (abort.signal.aborted) cancelTools();
         guard();
       }

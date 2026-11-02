@@ -1,4 +1,5 @@
 import type { HostClock, HostRunUsage, Model, ToolDefinition } from "schway/host";
+import type { ActionRef, ActionSlip, ApprovalInput, Observation, PendingDecisionInput } from "../policy";
 
 /** Authenticated ordinary text only. Attachments/history are data supplied separately by trusted adapters. */
 export interface ConversationCommand {
@@ -45,6 +46,12 @@ export interface ConversationPolicy<OwnerActor, WorkContext> {
   guard(work: WorkContext, stage: "model" | "tool" | "publication"): void;
   /** Charge each actual physical stream, including Schway retries/compaction; never refund unknown usage. */
   reserveModel(work: WorkContext, slot: string): { settle(): void };
+  /** Protected owner projections/decisions only. Models and tool closures never receive these methods. */
+  actionSlips?(actor: OwnerActor, actions: readonly ActionRef[]): ActionSlip[];
+  decidePending?(actor: OwnerActor, input: PendingDecisionInput): void;
+  decideAction?(actor: OwnerActor, input: ApprovalInput): void;
+  dispatchAction?(authority: ConversationAuthority, action: ActionRef): Promise<Observation>;
+  stopWork?(actor: OwnerActor, authority: ConversationAuthority, requestId: string): void;
 }
 /** A registry entry authored by trusted host code. Model tool hints cannot set its access class. */
 export interface ConversationTool {
@@ -60,14 +67,14 @@ export interface ConversationTools {
 }
 /** Trusted VM/broker factory; there is no host-local backend fallback or dynamically installed model tool. */
 export interface ConversationToolPort<WorkContext> {
-  open(work: WorkContext, input: { mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void }): Promise<ConversationTools>;
+  open(work: WorkContext, input: { mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void; onAction?: (action: ActionRef) => void }): Promise<ConversationTools>;
 }
 /** Stable receipt acknowledges one durable ingress identity, independently of execution or completion. */
 export interface ConversationReceipt { contract: "s15-conversation-receipt/v1"; requestId: string; rootRequestId: string; conversationId: string; receivedAt: number }
 /** Control events contain no model/tool payload; result content is read through a fresh publication guard. */
 export interface ConversationEvent {
   sequence: number; requestId: string; conversationId: string; at: number;
-  kind: "received" | "admitted" | "progress" | "needs_me" | "evidence" | "result" | "stopped";
+  kind: "received" | "admitted" | "progress" | "needs_me" | "evidence" | "result" | "stopped" | "decision";
   code: string | null;
 }
 /** A service-observed tool invocation, never a model-authored citation or claim of success. */
@@ -80,10 +87,13 @@ export interface ConversationRequest {
   revision: number; intent: ConversationIntent;
   state: "accepted" | "proposed" | "held" | "queued" | "running" | "completed" | "blocked" | "reconcile_only" | "stopped";
   code: string | null; authority: ConversationAuthority | null;
-  phase: "interpretation" | "work";
+  phase: "interpretation" | "work" | "decision";
   interpretation: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[] } | null;
   interpretationCalls: number;
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
+  actions: ActionRef[];
+  /** Owner-only exact decision/dispatch. It cannot resume a model loop or grant another purpose. */
+  decision: { action: ActionRef; decision: "approve" | "deny"; expiresAt: number; observation: Observation | null } | null;
 }
 /** Protected composition explicitly opts in. Scripted model injection is a deterministic test seam only. */
 export interface ConversationOptions<OwnerActor, WorkContext> {
