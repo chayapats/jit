@@ -16,14 +16,16 @@ export interface WorkingVmOptions {
   store: VmStore; policy: VmPolicyPort; managers: ReadonlyMap<string, VmManagement>;
   limits?: VmLimits; now?: () => number; monotonic?: () => number; requireOwner?: (actor: object) => void;
   transport?: (registration: VmRegistration) => VmSshTransport;
-  proxyLease?: (sessionId: string, expiresAt: number) => VmProxyLease;
+  proxyLease?: (sessionId: string, expiresAt: number, authorize?: (host: string) => void) => VmProxyLease;
+  /** DATA15 registry destination checks run outside the guest, before DNS and during live tunnels. */
+  disclosure?: Pick<import('../disclosure').DisclosureService, 'registryLease' | 'vmInput'>;
   artifactFetch?: typeof fetchVmArtifact;
   snapshotRetention?: number;
   expiryTimer?: (milliseconds: number, expire: () => void) => () => void;
 }
 interface LiveSession { id: string; vmId: string; workId: string; attemptId: string; generation: number; mode: "work" | "system";
   unit: string; root: string; temporary: string; deadline: number; calls: number; cancelled: boolean; closed: boolean;
-  controller: AbortController; cleanupController: AbortController; tail: Promise<void>; pending: number; closing: Promise<void> | null; cancelExpiry: () => void; proxy: VmProxyLease | null; removeSignal: () => void }
+  controller: AbortController; cleanupController: AbortController; tail: Promise<void>; pending: number; closing: Promise<void> | null; cancelExpiry: () => void; proxy: VmProxyLease | null; removeSignal: () => void; acquisitions: Map<string, VmPolicyOperation> }
 const uuid = () => crypto.randomUUID().replaceAll("-", "");
 /** Shared working VM with exact-unit cooperative cleanup and protected hypervisor recovery. No automatic command replay. */
 export class WorkingVmService implements WorkingVmPort {
@@ -118,7 +120,7 @@ export class WorkingVmService implements WorkingVmPort {
       const root = `/var/lib/jit-work/${input.workId}/${input.attemptId}`, temporary = `${root}/.tmp-${id}`;
       s = { id, vmId: row.id, workId: input.workId, attemptId: input.attemptId, generation: row.generation, mode, unit, root, temporary,
         deadline: this.#clock() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), cleanupController: new AbortController(), tail: Promise.resolve(),
-        pending: 0, closing: null, cancelExpiry: () => {}, removeSignal: () => {}, proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs) ?? null };
+        pending: 0, closing: null, cancelExpiry: () => {}, removeSignal: () => {}, acquisitions: new Map(), proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs, this.options.disclosure ? host => this.options.disclosure!.registryLease(actor, host, row.id) : undefined) ?? null };
       this.#sessions.set(id, s);
       const state = s;
       const abort = () => { void this.closeState(state).catch(() => {}); };
@@ -179,6 +181,7 @@ export class WorkingVmService implements WorkingVmPort {
       this.options.store.saveEvidence(evidence);
       try {
         this.current(actor, s);
+        this.options.disclosure?.vmInput(actor, s.vmId);
         const transportRequest = request.op === "spawn" ? { ...request, env: { ...(request.env as Record<string, string>), ...s.proxy?.environment } } : request;
         const response = await claim.dispatch(() => {
           this.current(actor, s); evidence.outcome = "unknown"; this.options.store.saveEvidence(evidence);
@@ -274,12 +277,17 @@ export class WorkingVmService implements WorkingVmPort {
     const payload = vmCanonical(input), operationId = uuid();
     if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
     const bytes = await this.enqueue(actor, s, undefined, async () => {
-      const claim = await this.options.policy.claim(actor, { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
-        operationId, kind: "acquire", payloadHash: vmHash(payload), payload, timeoutMs: Math.max(1, Math.min(30000, Math.floor(s.deadline - this.#clock()))), outputBytes: input.maxBytes });
+      const key = vmHash(payload), operation = s.acquisitions.get(key) ?? { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
+        operationId, kind: 'acquire' as const, payloadHash: key, payload, timeoutMs: Math.max(1, Math.min(30000, Math.floor(s.deadline - this.#clock()))), outputBytes: input.maxBytes };
+      if (s.acquisitions.size >= 64 && !s.acquisitions.has(key)) vmFail('vm_capacity', 423);
+      s.acquisitions.set(key, operation);
+      let claim;
+      try { claim = await this.options.policy.claim(actor, operation); }
+      catch (error) { if (!(error instanceof AppError) || error.status !== 423) s.acquisitions.delete(key); throw error; }
       try {
-        const bytes = await claim.dispatch(() => { this.current(actor, s); return (this.options.artifactFetch ?? fetchVmArtifact)(input, s.controller.signal); });
+        const bytes = await claim.dispatch(() => { this.current(actor, s); return (this.options.artifactFetch ?? fetchVmArtifact)(input, s.controller.signal, { beforeRequest: () => { this.current(actor, s); claim.guard?.(); } }); });
         return claim.publish(() => { this.current(actor, s); return bytes; });
-      } finally { claim.release?.(); }
+      } finally { s.acquisitions.delete(key); claim.release?.(); }
     });
     if (bytes.length > input.maxBytes || vmHash(bytes) !== input.sha256) vmFail("vm_acquisition_invalid");
     await this.call(actor, s, { op: "write", path: input.path, data: Buffer.from(bytes).toString("base64"), createParents: false }, "write");

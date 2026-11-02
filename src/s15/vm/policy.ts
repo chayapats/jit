@@ -9,7 +9,7 @@ const unknownUsage = (): Usage => ({ attempts: null, steps: null, calls: null, r
 const same = (a: unknown, b: unknown) => vmCanonical(a) === vmCanonical(b);
 const reference = (a: ActionRef): ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
 interface Invocation { operation: Readonly<VmPolicyOperation>; request: Record<string, unknown>; payload: JsonValue; read: ReadOperation | null; bound: BudgetVector | null }
-interface Pending { invocation: Invocation; send: () => Promise<AdapterResult> }
+interface Pending { invocation: Invocation; send: (guard: () => void) => Promise<AdapterResult> }
 
 /** Protected VM/policy composition. Every resolver is owning-service code, never guest/model/current-state JSON. */
 export interface VmPolicyIntegrationOptions {
@@ -20,6 +20,8 @@ export interface VmPolicyIntegrationOptions {
   upperBound(operation: Readonly<VmPolicyOperation>): BudgetVector | null;
   /** Resolve a proposed external artifact recipient in the protected consent catalog; absence refuses acquisition. */
   destination(hostname: string): Ref | null;
+  /** DATA15 binds actual acquisition bytes/recipients and rechecks after DNS/transport waits. */
+  disclosure?: ReturnType<import('../disclosure').DisclosureService['acquisition']>;
 }
 /**
  * Registers supported POLICY15 read handlers and one exact VM action adapter, then binds the real service.
@@ -53,17 +55,21 @@ export class VmPolicyIntegration {
         }
         const fences: Fence[] = [{ kind: "vm", ref: this.vmRef(op.vmId) }];
         if (classes.includes("guest_system_admin") && snapshot) fences.push(snapshot);
-        return { operation: snapshotPreparation ? "vm_snapshot" : `vm_${op.kind}`, classes,
+        const draft: ActionDraft = { operation: snapshotPreparation ? "vm_snapshot" : `vm_${op.kind}`, classes,
           resources: [this.options.resource(op.vmId)], recipients, payload: invocation.payload, fences,
           upperBound: invocation.bound, expiresAt: context.work.expiresAt, transaction: null, github: null,
           impact: "reversible", snapshot: classes.includes("guest_system_admin") ? snapshot : null };
+        return op.kind === 'acquire' && this.options.disclosure ? this.options.disclosure.prepare(context.work, draft) : draft;
       },
       perform: async (action: PreparedAction, context: DispatchContext) => {
         const pending = this.#pending.get(action.id);
         if (!pending || !same(action.payload, pending.invocation.payload)) vmFail("vm_reconciliation_required", 403);
         const policy = this.policy();
         this.checkScope(policy.work.guard(pendingActor(pending)), pending.invocation.operation);
-        return context.commit(action.payload, pending.send);
+        return context.commit(action.payload, () => pending.send(() => {
+          context.guard(); const work = policy.work.guard(pendingActor(pending)); this.checkScope(work, pending.invocation.operation);
+          if (pending.invocation.operation.kind === 'acquire') this.options.disclosure?.guard(work, action);
+        }));
       },
     });
   }
@@ -76,7 +82,7 @@ export class VmPolicyIntegration {
   }
   /** Adds protected current VM/snapshot fences to the owning catalog without widening its consent/actor checks. */
   catalogs(base: CatalogPort): CatalogPort {
-    return { allows: (work, action) => base.allows(work, action), current: (kind, id) => {
+    return { ...(base.allowsModel ? { allowsModel: (work: WorkAuthority, selection: import('../policy').Selection) => base.allowsModel!(work, selection) } : {}), allows: (work, action) => base.allows(work, action), current: (kind, id) => {
       if (kind === "vm" && this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(id)) {
         const row = this.options.store.registration(id); return { ref: this.vmRef(id), active: row.state === "ready" && row.networkIsolated };
       }
@@ -102,7 +108,10 @@ export class VmPolicyIntegration {
   private register(input: Readonly<VmPolicyOperation>): Invocation {
     for (const value of [input.vmId, input.workId, input.attemptId, input.sessionId, input.operationId]) vmId(value);
     vmInteger(input.generation); vmInteger(input.timeoutMs, 360000); vmInteger(input.outputBytes, 8_388_608, 0);
-    if (vmHash(input.payload) !== input.payloadHash || this.#invocations.has(input.operationId) || this.#invocations.size >= 2048) vmFail("vm_policy_denied", 403);
+    if (vmHash(input.payload) !== input.payloadHash) vmFail("vm_policy_denied", 403);
+    const existing = this.#invocations.get(input.operationId);
+    if (existing) { if (!same(existing.operation, input)) vmFail('vm_policy_denied', 403); return existing; }
+    if (this.#invocations.size >= 2048) vmFail("vm_policy_denied", 403);
     let parsed: unknown; try { parsed = JSON.parse(input.payload); } catch { vmFail("vm_protocol_invalid"); }
     if (vmCanonical(parsed) !== input.payload) vmFail("vm_protocol_invalid");
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) vmFail("vm_protocol_invalid");
@@ -189,12 +198,14 @@ export class VmPolicyIntegration {
         try { prepared = policy.work.prepare(worker, { slot: operation.operationId, adapter: this.adapter.id, proposal: invocation.payload }); }
         catch (error) { this.#invocations.delete(operation.operationId); throw error; }
         const action = reference(prepared.action);
-        if (prepared.decision.state !== "allow") { this.#invocations.delete(operation.operationId); throw new AppError(prepared.decision.code, prepared.decision.state === "hold" ? 423 : 403, { actionId: action.id, revision: action.revision, actionHash: action.actionHash }); }
-        return { release: () => { this.#invocations.delete(operation.operationId); }, dispatch: async <T>(start: () => Promise<T>): Promise<T> => {
+        if (prepared.decision.state !== "allow") { if (prepared.decision.state !== 'hold' || operation.kind !== 'acquire') this.#invocations.delete(operation.operationId); throw new AppError(prepared.decision.code, prepared.decision.state === "hold" ? 423 : 403, { actionId: action.id, revision: action.revision, actionHash: action.actionHash }); }
+        let originalGuard: (() => void) | null = null;
+        return { guard: () => { if (!originalGuard) vmFail('vm_reconciliation_required', 403); originalGuard(); }, release: () => { this.#invocations.delete(operation.operationId); }, dispatch: async <T>(start: () => Promise<T>): Promise<T> => {
           try {
           this.checkScope(policy.work.guard(worker), operation); policy.work.guardBeforeDispatch(worker, action);
           let result: T | undefined, captured = false, failure: unknown;
-          const pending: Pending = { invocation, send: async () => {
+          const pending: Pending = { invocation, send: async guard => {
+            originalGuard = guard;
             try { this.checkScope(policy.work.guard(worker), operation); result = await start(); captured = true; return { outcome: "succeeded", actual: unknownUsage(), transportSettled: true }; }
             catch (error) { failure = error; return { outcome: "unknown", actual: unknownUsage(), transportSettled: true }; }
           } };

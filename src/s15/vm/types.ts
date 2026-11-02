@@ -54,6 +54,8 @@ export interface VmPolicyOperation {
 }
 /** Claim belongs to one operation. The implementation rechecks current authority at actual I/O and publication. */
 export interface VmPolicyClaim {
+  /** Original live action fence after transport preparation waits; never a replay/new claim. */
+  guard?(): void;
   dispatch<T>(start: () => Promise<T>): Promise<T>;
   publish<T>(consume: () => T): T;
   observe(evidence: VmEvidence): void;

@@ -21,7 +21,7 @@ interface Scope {
   input: EngineInputContext; nativeDone: Promise<unknown>; completion: Promise<BrowserResult>;
   cleanup(): void; unlock(): void;
 }
-interface Pending { scope: Scope; wire: EngineRequest; request: BrowserRequest; meaning: Extract<RequestMeaning, { kind: 'effect' }>; draft: ActionDraft; finish: () => void; response: BrokerResponse | null; used: boolean; released: boolean }
+interface Pending { scope: Scope; wire: EngineRequest; request: BrowserRequest; cookies: string; meaning: Extract<RequestMeaning, { kind: 'effect' }>; draft: ActionDraft; finish: () => void; response: BrokerResponse | null; used: boolean; released: boolean }
 /** Construct only on the protected Jit host. The real policy adapter owns final exact-byte sends.
  * No S14 store/runtime is selected or modified. The injected engine is a trusted test/host dependency.
  */
@@ -109,7 +109,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       const request = wire.request; validateRequest(request);
       if (!wire.main || !s || ++s.count > 64) throw new BrowserError('unattributable_request');
       guard(s);
-      const meaning = options.site.classify(Object.freeze(structuredClone(request)), options.mode);
+      let meaning = options.site.classify(Object.freeze(structuredClone(request)), options.mode);
       if (!meaning) throw new BrowserError('effect_semantics_unknown');
       if (meaning.kind === 'unsupported') throw new BrowserError(meaning.code);
       if (meaning.kind === 'login') {
@@ -118,6 +118,10 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         if (wire.document) currentUrl = request.url;
         await wire.send(response); return;
       }
+      const work = service().work.guard(s.actor);
+      const disclosure = options.disclosure?.inspect(work, request);
+      const cookies = meaning.kind === 'read' && !meaning.private ? '' : wire.cookies;
+      if (meaning.kind === 'read' && disclosure?.classes.length) meaning = { kind: 'effect', classes: disclosure.classes, recipients: disclosure.recipients, transaction: null, impact: 'reversible', verifyResponse: () => 'succeeded' };
       if (meaning.kind === 'read') {
         if (!['GET', 'HEAD'].includes(request.method) || request.bodyBase64) throw new BrowserError('effect_semantics_unknown');
         const p = service();
@@ -126,6 +130,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         let response: BrokerResponse;
         try {
           guard(s); p.work.guardRead(s.actor, admission.claim.id);
+          options.disclosure?.guard(p.work.guard(s.actor), request);
           // Final guard and socket creation share this synchronous turn.
           const promise = exchange(request, meaning.private ? wire.cookies : '', s.abort.signal);
           response = await promise;
@@ -134,7 +139,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           const closedResponse = e instanceof BrowserError && ['redirect_unsupported', 'download_unsupported', 'output_limit'].includes(e.code);
           p.control.settleRead(admission.claim.id, { outcome: closedResponse ? 'failed' : 'unknown', basis: closedResponse ? 'remote_verified' : 'uncertain', code: null, actual: unknownUsage(), transportSettled: closedResponse }, null); throw e;
         }
-        guard(s); p.control.publishRead(s.actor, admission.claim.id);
+        guard(s); options.disclosure?.record(p.work.guard(s.actor), request.url, 'response'); p.control.publishRead(s.actor, admission.claim.id);
         if (wire.document) currentUrl = request.url;
         await wire.send(response); return;
       }
@@ -142,8 +147,9 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       // Only a main-document submission is supported for effects; background effects fail closed.
       if (!wire.attributable || !request.navigation || !wire.document || s.owner) throw new BrowserError('unattributable_request');
       const token = id(), completion = deferred<void>();
-      const draft: ActionDraft = { operation: 'browser_request', classes: meaning.classes, resources: [options.resource], recipients: meaning.recipients, payload: requestPayload(request), fences: options.fences, upperBound: options.upperBound, expiresAt: now() + 30000, transaction: meaning.transaction, github: meaning.github ?? null, impact: meaning.impact };
-      const item: Pending = { scope: s, wire, request, meaning, draft, finish: () => completion.resolve(), response: null, used: false, released: false };
+      if (disclosure && meaning.recipients.some(r => !disclosure.recipients.some(actual => canonical(r) === canonical(actual)))) throw new BrowserError('recipient_changed');
+      const draft: ActionDraft = { operation: 'browser_request', classes: [...new Set([...meaning.classes, ...(disclosure?.classes ?? [])])], resources: [...new Map([options.resource, ...(disclosure?.disclosure?.sources.map(source => source.resource) ?? [])].map(r => [canonical(r), r])).values()], recipients: disclosure?.recipients ?? meaning.recipients, payload: requestPayload(request), fences: [...new Map([...options.fences, ...(disclosure?.fences ?? [])].map(f => [canonical(f), f])).values()], upperBound: options.upperBound, expiresAt: now() + 30000, transaction: meaning.transaction, github: meaning.github ?? null, impact: meaning.impact, ...(disclosure?.disclosure ? { disclosure: disclosure.disclosure } : {}) };
+      const item: Pending = { scope: s, wire, request, cookies, meaning, draft, finish: () => completion.resolve(), response: null, used: false, released: false };
       pending.set(token, item);
       let prepared: ReturnType<S15PolicyService['work']['prepare']>;
       try { prepared = service().work.prepare(s.actor, { slot: token, adapter: 'protected_browser', proposal: { token } }); } catch (e) { pending.delete(token); throw e; }
@@ -174,6 +180,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       if (outcome.outcome !== 'succeeded' || !item.response) { item.finish(); await item.wire.deny(); pending.delete(action.id); return { state: 'unknown', code: outcome.code ?? 'reconciliation_required' }; }
       guard(item.scope); service().control.publishable(item.scope.actor, action);
       if (item.wire.document) currentUrl = item.request.url;
+      options.disclosure?.record(service().work.guard(item.scope.actor), item.request.url, 'response');
       await item.wire.send(item.response); guard(item.scope); item.scope.verified.push(ref(action)); item.finish(); pending.delete(action.id);
       return { state: 'ok', generation };
     } catch (e) { item.finish(); await item.wire.deny(); pending.delete(action.id); return item.released ? { state: 'unknown', code: 'reconciliation_required' } : { state: 'denied', code: e instanceof BrowserError ? e.code : 'request_unavailable' }; }
@@ -189,8 +196,9 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         guard(item.scope); item.used = true;
         return context.commit(requestPayload(item.request), async (): Promise<AdapterResult> => {
           guard(item.scope);
+          options.disclosure?.guard(service().work.guard(item.scope.actor), item.request, action.disclosure);
           item.released = true; item.scope.released = true;
-          item.response = await exchange(item.request, item.wire.cookies);
+          item.response = await exchange(item.request, item.cookies);
           return { outcome: item.scope.failure ? 'unknown' : item.meaning.verifyResponse?.({ status: item.response.status, body: item.response.body }) ?? 'unknown', actual: unknownUsage(), transportSettled: true };
         });
       },
@@ -247,6 +255,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
                 p.control.settleRead(admission.claim.id, { outcome: 'succeeded', basis: 'remote_verified', code: null, actual: unknownUsage(), transportSettled: true }, result.state === 'image' ? bytesHash(Buffer.from(result.pngBase64, 'base64')) : bytesHash(canonical(result)));
               } catch (e) { p.control.settleRead(admission.claim.id, { outcome: 'failed', basis: 'remote_verified', code: 'capture_unavailable', actual: unknownUsage(), transportSettled: true }, null); throw e; }
               check(); p.work.guard(workActor); safe(); if (input.generation !== generation || generation !== continuity.generation()) throw new BrowserError('stale_input');
+              options.disclosure?.record(p.work.guard(workActor), currentUrl, input.kind === 'screenshot' ? 'image' : 'text');
               p.control.publishRead(workActor, admission.claim.id); return result;
             }
             if (continuity.uncertain()) return { state: 'unknown', code: 'reconciliation_required' };
