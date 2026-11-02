@@ -147,3 +147,21 @@ test("an independently extracted duplicate cannot override a current owner corre
   expect(f.memory.view(f.f.owner).claims.find(claim => claim.id === duplicate.id)?.lifecycle).toBe("superseded");
   expect(f.memory.prepare(f.context("bot2"), "corrected_duplicates", "long replies").claims.map(claim => claim.text)).toEqual(["I prefer concise replies."]);
 });
+
+test("shared working-knowledge ancestry stays bounded and a fresh retrieval rechecks producer withdrawal", () => {
+  const f = fixture(), context = f.context(), ancestry: string[] = [], graphSize = 18;
+  for (let index = 0; index < graphSize; index++) {
+    const claim = f.memory.retain(context, f.source(`It seems that working knowledge item ${index} is relevant.`, { parents: [...ancestry] }))[0]!;
+    ancestry.push(claim.id);
+  }
+  let producerChecks = 0;
+  const producerCurrent = f.options.producerCurrent;
+  f.options.producerCurrent = producer => { producerChecks++; return producerCurrent(producer); };
+  expect(f.memory.prepare(context, "shared_ancestry", "working knowledge").claims).toHaveLength(16);
+  // Deterministic operation count, not a wall-clock benchmark: shared DAG paths must not expand
+  // exponentially. Each source retains its own complete current producer/resource ancestry.
+  expect(producerChecks).toBeLessThan(graphSize ** 4);
+  f.producerLive = false;
+  expect(f.memory.prepare(context, "withdrawn_ancestry", "working knowledge").claims).toHaveLength(0);
+  expect(() => f.memory.guard(context, "shared_ancestry")).toThrow("memory_context_stale");
+});

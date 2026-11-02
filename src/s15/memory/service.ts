@@ -42,17 +42,24 @@ export class MemoryService {
   private saveSource(source: SourceRecord): void { this.store.db.query("INSERT INTO sources VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(source.id, source.sourceHash, canonical(source)); }
   private saveDerivative(value: MemoryDerivative): void { this.store.db.query("INSERT INTO derivatives VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record_json=excluded.record_json").run(value.id, value.state, canonical(value)); }
   /** Access is checked before payload relevance, including transitive claims, sources and resources. */
-  private accessible(context: TeamContext, claim: MemoryClaim, seen = new Set<string>()): boolean {
+  private accessible(context: TeamContext, claim: MemoryClaim, seen = new Set<string>(), memo = new Map<string, boolean>()): boolean {
+    const known = memo.get(claim.id); if (known !== undefined) return known;
     if (seen.has(claim.id)) return false; seen.add(claim.id);
-    try {
+    // Cache only inside this synchronous traversal. Every new retrieval/guard must recheck current
+    // authority, privacy, source withdrawal and corrections; no cached permit survives a wait.
+    const check = (): boolean => {
       const work = this.options.team.guard(context), source = this.source(claim.sourceId);
       if (claim.lifecycle !== "active" || !source.active || !inScope(source.scope, work.request.bot.id)) return false;
       for (const pin of source.resources) { const current = this.options.team.resource(context, pin.id); if (current.revision !== pin.revision || current.generation !== pin.generation) return false; }
       if (source.teamSourceId) this.options.team.source(context, source.teamSourceId);
-      for (const parent of claim.dependencies) if (!this.accessible(context, this.claim(parent), new Set(seen))) return false;
+      for (const parent of claim.dependencies) if (!this.accessible(context, this.claim(parent), seen, memo)) return false;
       return true;
-    } catch { return false; }
+    };
+    try { const allowed = check(); memo.set(claim.id, allowed); return allowed; }
+    catch { memo.set(claim.id, false); return false; }
+    finally { seen.delete(claim.id); }
   }
+
   /**
    * Retains bounded relevant candidates without a per-claim ceremony. Trusted callers supply original
    * provenance/scope and all parent claims; every fact is grounded in exact source bytes. Historical
