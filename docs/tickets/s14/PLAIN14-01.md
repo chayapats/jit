@@ -10,7 +10,7 @@ Frontier: replacing presentation across authority-sensitive forms and introducin
 
 ## Status and ownership
 
-MERGED in [PR #310](https://github.com/chayapats/jit/pull/310) at `b6982767d15fc7bdec68a526b88156405bd3a57a` on 2026-11-02. Reviewed head `9171a7be13522fcc25c2af73423a583ecb8c9c53` passed all CI checks and Greptile 5/5 APPROVED; all findings were resolved. The owner explicitly authorized this merge after successful checks/review. Remaining parent scope is tracked separately in #309/#313/#314; this is not deployment/device acceptance.
+MERGED in [PR #310](https://github.com/chayapats/jit/pull/310) at `b6982767d15fc7bdec68a526b88156405bd3a57a` on 2026-11-02. Reviewed head `9171a7be13522fcc25c2af73423a583ecb8c9c53` passed all CI checks and Greptile 5/5 APPROVED; all findings were resolved. The owner explicitly authorized this merge after successful checks/review. Library/inline #313/#314 subsequently closed via merged PR #315; bounded evidence #309 and parent #307 await final PR #312 integration. This is not deployment/device acceptance.
 
 ### Publication provenance (historical)
 
