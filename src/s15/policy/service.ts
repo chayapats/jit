@@ -230,7 +230,9 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   function observationFor(a: T.PreparedAction): T.Observation | null {
     return parse<T.Observation>(ledger.get("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')!='owner_statement' ORDER BY seq DESC LIMIT 1", a.id)) ?? (claimed(a) ? { outcome: 'unknown', basis: 'uncertain', code: 'reconciliation_required', actual: v.unknownUsage(), transportSettled: false } : null);
   }
-  function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); }
+  // Dispatch/recovery are control paths. Private bodies remain only in guarded evidence projections.
+  function controlObservation(observation: T.Observation): T.Observation { const { evidence: _, ...facts } = observation; return clone(facts); }
+  function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled'], ['evidence']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); if (result.evidence !== undefined) v.canonical(result.evidence); }
   function savePolicy(input: T.PolicyInput, expectedRevision: number, allowRecurring = false): T.StandingPolicy {
     v.policy(input); v.nat(expectedRevision);
     const old = getPolicy(); if ((old?.revision ?? 0) !== expectedRevision) v.fail('stale_policy');
@@ -373,27 +375,42 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         a.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
         a.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
         if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
-        const bound = { ...v.zero(), calls: 1, reads: 1 };
+        const bound = clone(adapter.reconcileUpperBound ?? { ...v.zero(), calls: 1, reads: 1 });
+        v.vector(bound); if (bound.calls < 1 || bound.reads < 1) v.fail('cost_unknown');
         // One durable recovery lane is independent of ordinary capacity, but shares its finite cost ceiling.
         const reservation = reserve(w, 'reconcile_' + requestId, bound, { kind: 'reconcile', action: ref }, true);
         ledger.run('INSERT INTO recovery_reads(reservation_id,action_id,active) VALUES (?,?,1)', reservation.id, a.id);
         return { a, claim, adapter, result: null, reservation };
       });
-      if (start.result) return start.result;
-      let result: T.AdapterResult, readSettled = false;
+      if (start.result) return controlObservation(start.result);
+      let result: T.AdapterResult, readSettled = false, readCalls = 0, recoveryLive = true;
       try {
-        result = await start.adapter.reconcile!(clone(start.a));
+        result = await start.adapter.reconcile!(clone(start.a), { beforeRead() { tx(() => {
+          if (!recoveryLive) v.fail('already_claimed');
+          ownerAuth(actor);
+          const current = loadAction(ref), work = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', current.workId));
+          if (!work) v.fail('authority_revoked');
+          const p = policyCurrent(); checkRequest(p, work.request);
+          current.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
+          current.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
+          current.fences.forEach(f => currentRef(f.kind, f.ref));
+          if (!options.catalogs.allows(clone(work), clone(current))) v.fail('outside_scope');
+          budgetCheck(start.reservation!.upperBound, true, true);
+          if (readCalls >= Math.min(start.reservation!.upperBound.calls, start.reservation!.upperBound.reads)) v.fail('read_bound_exhausted');
+          readCalls++;
+        }); } });
         // A fulfilled read-back has finished its own transport even when the effect is still unknown.
         readSettled = true; checkResult(result);
       } catch { result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false }; }
+      finally { recoveryLive = false; }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
       // Commit read settlement independently: an obsolete/conflicting effect observation cannot retain a finished read's capacity.
       tx(() => {
-        const readUsage = readSettled ? { ...v.unknownUsage(), calls: 1, reads: 1 } : v.unknownUsage();
+        const readUsage = readSettled ? { ...v.unknownUsage(), calls: readCalls || 1, reads: readCalls || 1 } : v.unknownUsage();
         settleReservation(start.reservation!.id, readUsage, readSettled, true);
         ledger.run('UPDATE recovery_reads SET observation=? WHERE reservation_id=?', v.canonical(observed), start.reservation!.id);
       });
-      return tx(() => observe(start.a, start.claim, observed));
+      return tx(() => controlObservation(observe(start.a, start.claim, observed)));
     },
     recordStatement(actor, ref, requestId, outcome) { tx(() => { if (!['occurred', 'did_not_occur'].includes(outcome)) v.fail('invalid_shape'); receipt(actor, requestId, { kind: 'effect.statement', ref, outcome }, () => { const a = loadAction(ref); if (!claimed(a)) v.fail('reconciliation_required'); ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical({ outcome: 'unknown', basis: 'owner_statement', code: outcome, actual: v.unknownUsage(), transportSettled: false })); return { recorded: true }; }); }); },
   };
@@ -534,12 +551,12 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       } catch (error) {
         if (!started) {
           const safe: T.Observation = { outcome: 'not_dispatched', basis: 'local_guard', code: error instanceof v.PolicyError ? error.code : 'adapter_unproven', actual: v.unknownUsage(), transportSettled: true };
-          return tx(() => observe(a, claim, safe));
+          return tx(() => controlObservation(observe(a, claim, safe)));
         }
         result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false };
       } finally { consumed = true; activeDispatches.delete(a.id); }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
-      return tx(() => observe(a, claim, observed));
+      return tx(() => controlObservation(observe(a, claim, observed)));
     },
   };
   const control: T.ControlPort = {

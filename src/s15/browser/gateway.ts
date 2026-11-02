@@ -194,6 +194,14 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           return { outcome: item.scope.failure ? 'unknown' : item.meaning.verifyResponse?.({ status: item.response.status, body: item.response.body }) ?? 'unknown', actual: unknownUsage(), transportSettled: true };
         });
       },
+      async reconcile(action, context) {
+        if (!options.site.reconcileEffect) throw new BrowserError('reconciliation_unsupported');
+        const payload = action.payload as Record<string, JsonValue>;
+        if (payload.contract !== 's15-browser-request/v1') throw new BrowserError('effect_semantics_unknown');
+        const { contract: _, ...request } = payload;
+        validateRequest(request as unknown as BrowserRequest);
+        return options.site.reconcileEffect(Object.freeze(request as unknown as BrowserRequest), context);
+      },
     },
     readHandler: { operation: 'read', validate(payload, context) {
       if (canonical(context.resource) !== canonical(options.resource)) throw new BrowserError('outside_scope');
@@ -258,6 +266,10 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           } catch (e) { return { state: 'denied', code: e instanceof BrowserError ? e.code : 'authority_unavailable' }; }
           finally { if (ownsBusy && !deferredUnlock && busy === lock) busy = null; }
         },
+        async settled() {
+          if (actor !== workActor || currentLease !== lease) throw new BrowserError('stale_input');
+          await Promise.allSettled([...scopes].filter(s => s.actor === workActor).map(s => s.completion));
+        },
         release() { if (actor !== workActor || currentLease !== lease) return; if (busy || pending.size || login === 'owner_control') throw new BrowserError('input_busy'); generation = continuity.advance(); stop(); actor = null; currentLease = null; },
         async resume(action, signal) {
           bound(); if (signal?.aborted) return { state: 'denied', code: 'cancelled' };
@@ -275,6 +287,13 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       }; return work;
     },
     owner: {
+      async reconcile(owner, action, requestId) {
+        ownerCheck(owner);
+        const observed = await service().owner.reconcile(owner, action, requestId);
+        ownerCheck(owner);
+        if ((observed.outcome === 'succeeded' || observed.outcome === 'failed') && canonical(continuity.uncertain()) === canonical(action)) continuity.settle(action);
+        return observed;
+      },
       async takeover(owner) { ownerCheck(owner); const expected = generation = continuity.advance(); stop(); login = 'owner_control'; await ownerSettling; ownerCheck(owner, expected); return { generation: expected }; },
       async frame(owner, expected) { ownerCheck(owner, expected); const bytes = await engine.image(); ownerCheck(owner, expected); return bytes; },
       async input(owner, expected, input) {

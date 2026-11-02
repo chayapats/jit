@@ -6,6 +6,10 @@ scope: POLICY15-01 (#320) step 1 preparation; FR-06/13/14/15/17/18/35/37/38; NFR
 
 # Standing policy, opaque actors and prepared actions
 
+## Implemented effect refinement (2026-11-03)
+
+The bounded EDIT15/SEND15/BIZ15 adapters now use the real POLICY registry/claim/approval ledger; see [s15-effects/v1](../contracts/s15-effects-v1.md). Final Google MIME/attachments/conditional Calendar writes and controlled browser record CAS are adapter-owned. Reconciliation optionally declares a finite multi-read profile and receives an invocation-bound final read guard; Gmail requires two reads, so a fixed one-read charge would undercount. Existing adapters retain their one-read default. This is additive protected host composition, with no new OAuth scopes, production record vendor, Schway internals, S14 change or live-host acceptance.
+
 ## Implementation decision — 2026-11-03
 
 The opt-in policy/payment service for #320/#333 implements the invariants through [exported TSDoc](../../src/s15/policy/index.ts) and the [revision-2 contract refinement](../contracts/s15-standing-policy-v1.md). The proposal below is retained as historical rationale. The policy-only boundary is accepted for this implementation; real VM/browser/effect enforcement and release adoption remain unproven.

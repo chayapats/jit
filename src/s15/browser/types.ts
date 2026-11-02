@@ -1,4 +1,4 @@
-import type { ActionAdapter, ActionClass, ActionRef, BudgetVector, Fence, GithubConditions, JsonValue, OwnerActor, ReadHandler, Ref, S15PolicyService, Transaction, WorkActor } from '../policy';
+import type { ActionAdapter, ActionClass, ActionRef, AdapterResult, BudgetVector, Fence, GithubConditions, JsonValue, Observation, OwnerActor, ReadHandler, ReconcileContext, Ref, S15PolicyService, Transaction, WorkActor } from '../policy';
 
 /** Host-owned browser modes. General mode executes page JavaScript behind the same request broker. */
 export type BrowserMode = 'static' | 'general';
@@ -16,6 +16,8 @@ export interface BrowserSitePolicy {
   loginDocuments: readonly string[];
   /** A nonredirecting protected HTTP observation, not page text or owner hand-back. */
   session: { url: string; cookie: string; signedInStatus: number; signedOutStatus: number } | null;
+  /** Optional protected read-only verifier for an exact retained request. It must never resubmit the effect. */
+  reconcileEffect?(request: Readonly<BrowserRequest>, context: ReconcileContext): Promise<AdapterResult>;
 }
 /** Fixed host registration. It is never constructed from agent JSON or a working-VM path. */
 export interface BrowserOptions {
@@ -34,9 +36,9 @@ export type BrowserResult = { state: 'observed'; observation: BrowserObservation
 /** Transient owner input: only authenticated host ingress may call this port; never retain its value. */
 export type OwnerBrowserInput = { kind: 'type'; field: string; value: string } | { kind: 'click'; field: string };
 /** Protected work closure; cancellation fences all later input/releases/publication. An already released effect remains unknown/reconcile-only. Never expose the service or actor as a tool argument. */
-export interface BrowserWork { state(): { generation: number; login: LoginState; reconciliation: ActionRef | null }; execute(operation: BrowserOperation, signal?: AbortSignal): Promise<BrowserResult>; resume(action: ActionRef, signal?: AbortSignal): Promise<BrowserResult>; release(): void }
+export interface BrowserWork { state(): { generation: number; login: LoginState; reconciliation: ActionRef | null }; execute(operation: BrowserOperation, signal?: AbortSignal): Promise<BrowserResult>; resume(action: ActionRef, signal?: AbortSignal): Promise<BrowserResult>; /** Host-only wait for this lease's already-started scopes; no input, dispatch or renewed authority. */ settled(): Promise<void>; release(): void }
 /** Owner-only live view/input. A takeover generation is checked on each frame/input; no secret bytes enter work results. */
-export interface BrowserOwner { takeover(actor: OwnerActor): Promise<{ generation: number }>; frame(actor: OwnerActor, generation: number): Promise<Uint8Array>; input(actor: OwnerActor, generation: number, input: OwnerBrowserInput): Promise<void>; handBack(actor: OwnerActor, generation: number, cancel?: boolean): { generation: number; login: LoginState }; checkSession(actor: OwnerActor): Promise<LoginState> }
+export interface BrowserOwner { takeover(actor: OwnerActor): Promise<{ generation: number }>; frame(actor: OwnerActor, generation: number): Promise<Uint8Array>; input(actor: OwnerActor, generation: number, input: OwnerBrowserInput): Promise<void>; handBack(actor: OwnerActor, generation: number, cancel?: boolean): { generation: number; login: LoginState }; checkSession(actor: OwnerActor): Promise<LoginState>; /** Charged read-only reconciliation; clear uncertainty only on conclusive service evidence. */ reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation> }
 /** Explicit host composition hooks for the existing real policy service. Create before opening that service. */
 export interface BrowserRegistration { adapter: ActionAdapter; readHandler: ReadHandler; attach(policy: S15PolicyService): void; open(actor: WorkActor): BrowserWork; owner: BrowserOwner; close(): Promise<void> }
 /** Internal protected transport. No engine object or raw request resolver is an agent API. */
