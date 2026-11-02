@@ -19,7 +19,7 @@ function route(value: ApprovedModelRoute): void {
 }
 function pins(value: ModelPins): void { exact(value, ['route', 'model', 'effort']); if (value.route !== null) ref(value.route); if (value.model !== null) ref(value.model); if (value.effort !== null && !levels.includes(value.effort)) fail('selection_pinned'); }
 function matches(s: Selection, p: ModelPins): boolean { return (!p.route || equal(s.route, p.route)) && (!p.model || equal(s.model, p.model)) && (!p.effort || s.effort === p.effort); }
-const defaultClock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
+const defaultClock: HostClock = { now: Date.now, monotonicNow: () => performance.now(), sleep: (ms, signal) => new Promise((resolve, reject) => {
   const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
   const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
   if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
@@ -68,7 +68,7 @@ export function openModelService(options: ModelOptions): ModelService {
       if (anchor && (anchor.provider !== baseline.provider || !equal(anchor.account, baseline.account) || !equal(anchor.billing, baseline.billing) || !equal(anchor.recipient, baseline.recipient) || anchor.charge !== baseline.charge)) fail('account_changed');
       const pin = clone(options.registry.pins(work.id)); pins(pin);
       const candidates = registry().filter(candidate => candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
-      const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || canonical(a.selection).localeCompare(canonical(b.selection)));
+      const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
       const chosen = available[0]; if (!chosen) fail((pin.route || pin.model || pin.effort || work.request.selectionPin) ? 'selection_pinned' : 'route_unavailable');
       if (!chosen.upperBound) fail('cost_unknown');
       // Pin and account decisions are not model-provided; POLICY performs the final approved-list intersection.
@@ -113,7 +113,7 @@ export function openModelService(options: ModelOptions): ModelService {
             } catch (error) { if (error instanceof PolicyError) streamCode = error.code; throw error; }
           })();
           record.reservations.push(reservation.id); const sample = { reservationId: reservation.id, usage: null as ModelUsage | null }; record.tokenSamples.push(sample); save();
-          let dispatched = false, complete = false, outputBytes = 0; const started = time();
+          let dispatched = false, complete = false, outputBytes = 0; const started = (clock.monotonicNow ?? clock.now)();
           try {
             guard(actor, record); options.policy.work.guardReservation(actor, reservation.id); dispatched = true;
             for await (const event of selected.stream({ ...request, thinking: record.route.selection.effort as ThinkingLevel }, callOptions)) {
@@ -123,7 +123,7 @@ export function openModelService(options: ModelOptions): ModelService {
             }
           } catch (error) { if (error instanceof PolicyError) streamCode = error.code; throw error; }
           finally {
-            const measured: Usage = { ...unknownUsage(), calls: dispatched ? 1 : 0, attempts: dispatched ? 1 : 0, activeMs: Math.max(0, time() - started), outputBytes: complete ? outputBytes : null };
+            const measured: Usage = { ...unknownUsage(), calls: dispatched ? 1 : 0, attempts: dispatched ? 1 : 0, activeMs: Math.max(0, Math.ceil((clock.monotonicNow ?? clock.now)() - started)), outputBytes: complete ? outputBytes : null };
             options.policy.control.settleReservation(reservation.id, measured, true);
             record.usage = summarizeReservations(options.policy.control.reservations(record.workId).filter(r => record.reservations.includes(r.id))).measured;
             record.tokens = totalTokens(record.tokenSamples.map(s => s.usage)); save();
