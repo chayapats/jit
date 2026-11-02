@@ -38,6 +38,7 @@ export const th = {
   "s15.policy.already_claimed": "action นี้ถูก claim แล้วและไม่สามารถส่งซ้ำได้",
   "s15.policy.reservation_already_claimed": "model call นี้ถูก reserve แล้ว ไม่สามารถเรียกซ้ำได้",
   "s15.policy.reconciliation_required": "ตรวจสอบผลลัพธ์เดิมผ่าน read-back โดยไม่ส่งซ้ำ",
+  "s15.policy.recovery_busy": "รอ protected read-back ที่กำลังดำเนินอยู่ settle ก่อน",
   "s15.policy.adapter_unproven": "เส้นทางสำหรับ action นี้ยังไม่พร้อมใช้งาน",
   "s15.policy.policy_match_required": "ไม่มี standing rule ปัจจุบันที่ครอบคลุม action นี้",
   "s15.policy.ambiguous_rule": "มี standing rule ตรงกันหลายรายการ ต้องตัดสินใจสำหรับ action นี้โดยตรง",

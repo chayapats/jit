@@ -171,7 +171,7 @@ test('array accessors and extra sparse properties never execute during validatio
 });
 
 test('reserved alternative model is fenced at the final model-call boundary', () => {
-  const f = setup(), alternate = { route: ref('alternate_route'), model: ref('alternate_model'), effort: 'high' }; f.add('route', alternate.route); f.add('model', alternate.model); f.input.selections.push(alternate); f.install(); const w = f.admit().actor!, r = f.service.work.reserveModelCall(w, { requestId: 'alternate_call', selection: alternate, upperBound: bound() }); expect(f.service.work.guardReservation(w, r.id).id).toBe(r.id); f.catalog.get('model:alternate_model')!.ref.generation++; expect(() => f.service.work.guardReservation(w, r.id)).toThrow('stale_authority');
+  const f = setup(), alternate = { route: ref('alternate_route'), model: ref('alternate_model'), effort: 'high' }; f.add('route', alternate.route); f.add('model', alternate.model); f.input.selections.push(alternate); f.install(); const w = f.admit().actor!, r = f.service.work.reserveModelCall(w, { requestId: 'alternate_call', selection: alternate, upperBound: bound() }); expect(r.selection).toEqual(alternate); f.catalog.get('model:alternate_model')!.ref.generation++; expect(() => f.service.work.guardReservation(w, r.id)).toThrow('stale_authority');
 });
 test('disabling and re-enabling a budget cannot reinterpret charged currency', () => {
   const f = setup(), w = f.admit().actor!; f.service.work.reserveModelCall(w, { requestId: 'call', selection, upperBound: bound() }); const budget = f.input.budget!; f.input.budget = null; f.install(); f.input.budget = { ...budget, currency: 'EUR' }; expect(() => f.install()).toThrow('budget_currency_changed');

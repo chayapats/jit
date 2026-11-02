@@ -27,6 +27,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   if (adapters.size !== options.adapters.length) { ledger.db.close(); v.fail('adapter_unproven'); }
   let closed = false;
   const activeDispatches = new Set<string>();
+  const modelInvocations = new Map<string, T.WorkActor>();
   const tx = <R>(fn: () => R): R => { if (closed) v.fail('service_closed'); return ledger.tx(fn); };
   const time = (): number => { const t = now(); v.nat(t); return t; };
   const getPolicy = (): T.StandingPolicy | null => ledger.meta('policy');
@@ -102,13 +103,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
   }
   const unsettled = (): number => ledger.all<{ json: string }>('SELECT json FROM reservations').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
-  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean): void {
+  const ordinaryUnsettled = (): number => ledger.all<{ json: string }>('SELECT r.json FROM reservations r WHERE NOT EXISTS (SELECT 1 FROM recovery_reads recovery WHERE recovery.reservation_id=r.id)').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
+  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean, recovery = false): void {
     const budget = policyCurrent().budget;
     if (!budget) v.fail('finite_budget_required'); if (!bound) v.fail('cost_unknown');
     if (time() < budget.startsAt || time() >= budget.expiresAt) v.fail('expired');
     const charged = ledger.meta<T.BudgetVector>('charged'); if (!charged) v.fail('continuity_unavailable');
     if (ledger.meta('budgetOverrun') || !v.within(charged, budget.ceiling) || (!continuation && !v.within(v.add(charged, bound), budget.ceiling))) v.fail('budget_exhausted');
-    if (!continuation && unsettled() >= budget.concurrency) v.fail('capacity_busy');
+    if (!continuation && !recovery && ordinaryUnsettled() >= budget.concurrency) v.fail('capacity_busy');
+    if (!continuation && recovery && ledger.get('SELECT reservation_id FROM recovery_reads WHERE active=1')) v.fail('recovery_busy');
   }
   function matching(r: T.Rule, w: T.WorkAuthority, a: T.PreparedAction): boolean {
     return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && (a.recipients.every(x => v.contains(r.recipients, x)) || a.classes.some(c => c === 'new_egress' || c === 'disclosure')) && (!r.mode.startsWith('personal_github') || (!!r.github && !!a.github && v.equal(r.github.repository, a.github.repository) && r.github.target === a.github.target));
@@ -167,33 +170,52 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     }
   }
   function requireAllowed(decision: T.Decision): asserts decision is Extract<T.Decision, { state: 'allow' }> { if (decision.state !== 'allow') v.fail(decision.code); }
-  function reserve(w: T.WorkAuthority, requestId: string, bound: T.BudgetVector, payload: unknown): T.Reservation {
+  function reserve(w: T.WorkAuthority, requestId: string, bound: T.BudgetVector, payload: unknown, recovery = false): T.Reservation {
     const key = w.id + ':' + requestId, hash = v.digest('s15.reservation.v1', payload);
     const old = ledger.get<{ hash: string; json: string }>('SELECT hash,json FROM reservations WHERE dedupe=?', key);
     if (old) { if (old.hash !== hash) v.fail('request_id_conflict'); v.fail('reservation_already_claimed'); }
-    budgetCheck(bound, false);
+    budgetCheck(bound, false, recovery);
     const result: T.Reservation = { id: uid(), workId: w.id, requestId, upperBound: clone(bound), actual: v.unknownUsage(), transportSettled: false, createdAt: time() };
     ledger.put('charged', v.add(ledger.meta<T.BudgetVector>('charged')!, bound));
     ledger.run('INSERT INTO reservations VALUES (?,?,?,?)', result.id, key, hash, v.canonical(result)); return result;
   }
-  function settleReservation(id: string, actual: T.Usage, settled: boolean): void {
+  function mergeUsage(previous: T.Usage, next: T.Usage): T.Usage {
+    const merged = clone(previous);
+    for (const k of Object.keys(merged) as (keyof T.Usage)[]) {
+      const value = next[k];
+      if (value !== null && (merged[k] === null || BigInt(value) > BigInt(merged[k]!))) {
+        if (k === 'spendMinor') merged[k] = value as string;
+        else merged[k] = value as number;
+      }
+    }
+    return merged;
+  }
+  function settleReservation(id: string, actual: T.Usage, settled: boolean, merge = false): void {
     v.id(id); v.usage(actual); if (typeof settled !== 'boolean') v.fail('invalid_shape');
     const r = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', id)); if (!r) v.fail('reservation_not_found');
+    if (merge) { actual = mergeUsage(r.actual, actual); settled ||= r.transportSettled; }
     if (r.transportSettled && !settled) v.fail('settlement_conflict');
     // Keep measured facts monotonic and reject contradictory terminal settlement.
-    if (r.transportSettled && !v.equal(r.actual, actual)) v.fail('settlement_conflict');
+    if (!merge && r.transportSettled && !v.equal(r.actual, actual)) v.fail('settlement_conflict');
     for (const k of Object.keys(r.upperBound) as (keyof T.BudgetVector)[]) {
       const a = actual[k]; if (a !== null && BigInt(a) > BigInt(r.upperBound[k])) ledger.put('budgetOverrun', true);
       if (r.actual[k] !== null && (a === null || BigInt(a) < BigInt(r.actual[k]!))) v.fail('settlement_conflict');
     }
     r.actual = clone(actual); r.transportSettled = settled;
     ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), id);
+    if (settled) ledger.run('UPDATE recovery_reads SET active=0 WHERE reservation_id=?', id);
   }
   function observe(a: T.PreparedAction, claim: Claim, observation: T.Observation): T.Observation {
-    settleReservation(claim.reservationId, observation.actual, observation.transportSettled);
-    ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical(observation)); return clone(observation);
+    // Every caller rechecks under the writer lock. Late unknown results cannot erase conclusive evidence.
+    const latest = observationFor(a);
+    if (latest && latest.outcome !== 'unknown') return clone(latest);
+    settleReservation(claim.reservationId, observation.actual, observation.transportSettled, true);
+    const reservation = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', claim.reservationId))!;
+    const merged = { ...clone(observation), actual: reservation.actual, transportSettled: reservation.transportSettled };
+    if (!latest || !v.equal(latest, merged)) ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical(merged));
+    return clone(merged);
   }
-  function observation(a: T.PreparedAction): T.Observation | null {
+  function observationFor(a: T.PreparedAction): T.Observation | null {
     return parse<T.Observation>(ledger.get("SELECT json FROM observations WHERE action_id=? AND json_extract(json,'$.basis')!='owner_statement' ORDER BY seq DESC LIMIT 1", a.id)) ?? (claimed(a) ? { outcome: 'unknown', basis: 'uncertain', code: 'reconciliation_required', actual: v.unknownUsage(), transportSettled: false } : null);
   }
   function checkResult(result: T.AdapterResult): void { v.exact(result, ['outcome', 'actual', 'transportSettled']); if (!['succeeded', 'failed', 'unknown'].includes(result.outcome) || typeof result.transportSettled !== 'boolean' || (result.outcome !== 'unknown' && !result.transportSettled)) v.fail('invalid_adapter_result'); v.usage(result.actual); }
@@ -228,7 +250,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     const currentSlot = ledger.get<{ revision: number }>('SELECT revision FROM slots WHERE effect_key=?', a.effectKey)!;
     const currentAction = parse<T.PreparedAction>(ledger.get('SELECT json FROM actions WHERE id=? AND revision=?', a.id, currentSlot.revision))!;
     const changed = currentSlot.revision !== a.revision;
-    const observed = changed ? null : observation(a);
+    const observed = changed ? null : observationFor(a);
     let decision: T.Decision;
     try { decision = evaluate(currentWork(a.workId), a); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; decision = { state: 'deny', code: error.code }; }
     const reason = decision.state === 'allow' ? null : decision.code;
@@ -320,26 +342,38 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     revoke(actor, requestId, scope) { tx(() => { if (scope.kind === 'policy') v.exact(scope, ['kind']); else { v.exact(scope, ['kind', 'id']); if (scope.kind !== 'work') v.fail('invalid_shape'); v.id(scope.id); } receipt(actor, requestId, { kind: 'authority.revoke', scope }, () => {
       if (scope.kind === 'policy') ledger.put('policyRevoked', true); else { if (!ledger.get('SELECT id FROM works WHERE id=?', scope.id)) v.fail('authority_revoked'); ledger.run('UPDATE works SET revoked=1 WHERE id=?', scope.id); } return { recorded: true };
     }); }); },
-    inspect(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); readableAction(a); return { action: clone(a), observation: observation(a) }; }); },
+    inspect(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); readableAction(a); return { action: clone(a), observation: observationFor(a) }; }); },
     async reconcile(actor, ref, requestId) {
       const start = tx(() => {
-        ownerAuth(actor); const a = loadAction(ref); const claim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id)); if (!claim) v.fail('reconciliation_required');
+        ownerAuth(actor); v.id(requestId); const a = loadAction(ref); const claim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id)); if (!claim) v.fail('reconciliation_required');
         const adapter = adapters.get(a.adapter); if (!adapter?.reconcile) v.fail('adapter_unproven');
-        const existing = observation(a); if (existing && existing.outcome !== 'unknown') return { a, claim, adapter, result: existing, reservation: null };
+        const existing = observationFor(a); if (existing && existing.outcome !== 'unknown') return { a, claim, adapter, result: existing, reservation: null };
         const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId)); if (!w) v.fail('authority_revoked');
         const p = policyCurrent(); checkRequest(p, w.request);
         a.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
         a.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
         if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
         const bound = { ...v.zero(), calls: 1, reads: 1 };
-        const reservation = reserve(w, requestId, bound, { kind: 'reconcile', action: ref });
+        // One durable recovery lane is independent of ordinary capacity, but shares its finite cost ceiling.
+        const reservation = reserve(w, 'reconcile_' + requestId, bound, { kind: 'reconcile', action: ref }, true);
+        ledger.run('INSERT INTO recovery_reads(reservation_id,action_id,active) VALUES (?,?,1)', reservation.id, a.id);
         return { a, claim, adapter, result: null, reservation };
       });
       if (start.result) return start.result;
-      let result: T.AdapterResult;
-      try { result = await start.adapter.reconcile!(clone(start.a)); checkResult(result); } catch { result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false }; }
+      let result: T.AdapterResult, readSettled = false;
+      try {
+        result = await start.adapter.reconcile!(clone(start.a));
+        // A fulfilled read-back has finished its own transport even when the effect is still unknown.
+        readSettled = true; checkResult(result);
+      } catch { result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false }; }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
-      return tx(() => { settleReservation(start.reservation!.id, result.actual, result.transportSettled); return observe(start.a, start.claim, observed); });
+      // Commit read settlement independently: an obsolete/conflicting effect observation cannot retain a finished read's capacity.
+      tx(() => {
+        const readUsage = readSettled ? { ...v.unknownUsage(), calls: 1, reads: 1 } : v.unknownUsage();
+        settleReservation(start.reservation!.id, readUsage, readSettled, true);
+        ledger.run('UPDATE recovery_reads SET observation=? WHERE reservation_id=?', v.canonical(observed), start.reservation!.id);
+      });
+      return tx(() => observe(start.a, start.claim, observed));
     },
     recordStatement(actor, ref, requestId, outcome) { tx(() => { if (!['occurred', 'did_not_occur'].includes(outcome)) v.fail('invalid_shape'); receipt(actor, requestId, { kind: 'effect.statement', ref, outcome }, () => { const a = loadAction(ref); if (!claimed(a)) v.fail('reconciliation_required'); ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical({ outcome: 'unknown', basis: 'owner_statement', code: outcome, actual: v.unknownUsage(), transportSettled: false })); return { recorded: true }; }); }); },
   };
@@ -386,14 +420,30 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     }); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; return { state: ['finite_budget_required', 'cost_unknown', 'capacity_busy'].includes(error.code) ? 'hold' : 'deny', code: error.code }; } },
     guardRead(actor, claimId) { return tx(() => guardReadClaim(actor, claimId, true)); },
     guard(actor) { return tx(() => clone(workAuth(actor))); },
-    reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (w.mode === 'interpretation' && (input.upperBound.calls !== 1 || input.upperBound.reads !== 0 || ledger.get("SELECT id FROM reservations WHERE json_extract(json,'$.workId')=?", w.id))) v.fail('interpretation_call_claimed'); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope'); const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection); ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r); }); },
-    guardReservation(actor, reservationId) { return tx(() => {
+    reserveModelCall(actor, input) {
+      const reservation = tx(() => {
+        v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound);
+        if (input.upperBound.calls < 1) v.fail('cost_unknown');
+        const w = workAuth(actor), p = policyCurrent();
+        if (w.mode === 'interpretation' && (input.upperBound.calls !== 1 || input.upperBound.reads !== 0 || ledger.get("SELECT id FROM reservations WHERE json_extract(json,'$.workId')=?", w.id))) v.fail('interpretation_call_claimed');
+        if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned');
+        currentRef('route', input.selection.route); currentRef('model', input.selection.model);
+        if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope');
+        const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection);
+        ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r);
+      });
+      modelInvocations.set(reservation.id, actor); return reservation;
+    },
+    guardReservation(actor, reservationId) { const reservation = tx(() => {
       const w = workAuth(actor); v.id(reservationId); const r = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', reservationId));
       if (!r || r.workId !== w.id || r.transportSettled || !r.selection) v.fail('reservation_not_found');
+      if (ledger.get('SELECT reservation_id FROM model_dispatches WHERE reservation_id=?', reservationId)) v.fail('already_claimed');
+      if (modelInvocations.get(reservationId) !== actor) v.fail('reconciliation_required');
       const p = policyCurrent(); if (!v.contains(p.selections, r.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, r.selection))) v.fail('selection_pinned');
       currentRef('route', r.selection.route); currentRef('model', r.selection.model); budgetCheck(r.upperBound, true);
-      if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(r.selection) } }, null)) v.fail('outside_scope'); return clone(r);
-    }); },
+      if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(r.selection) } }, null)) v.fail('outside_scope');
+      ledger.run('INSERT INTO model_dispatches VALUES (?,?)', reservationId, time()); return clone(r);
+    }); modelInvocations.delete(reservationId); return reservation; },
     prepare(actor, input) { return tx(() => {
       v.exact(input, ['slot', 'adapter', 'proposal']); v.id(input.slot); v.id(input.adapter); v.canonical(input.proposal);
       const w = workAuth(actor); if (w.request.intent !== 'execute') v.fail('outside_scope');
@@ -479,7 +529,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
 
     bindWork(workId) { return tx(() => { v.id(workId); currentWork(workId); const actor = Object.freeze({}) as T.WorkActor; workers.set(actor, workId); return actor; }); },
     settleReservation(id, usage, transportSettled) { tx(() => settleReservation(id, usage, transportSettled)); },
-    publishable(actor, ref) { return tx(() => { const w = workAuth(actor), a = loadAction(ref); checkAction(w, a); const result = observation(a); if (!result) v.fail('observation_required'); return clone(result); }); },
+    publishable(actor, ref) { return tx(() => { const w = workAuth(actor), a = loadAction(ref); checkAction(w, a); const result = observationFor(a); if (!result) v.fail('observation_required'); return clone(result); }); },
     usage() { return tx(() => ({ charged: clone(ledger.meta<T.BudgetVector>('charged')!), unsettled: unsettled() })); },
     close() { if (!closed) { closed = true; ledger.db.close(); } },
   };

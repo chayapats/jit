@@ -57,7 +57,7 @@ export interface PreparedResult { action: PreparedAction; decision: Decision }
 export interface ApprovalInput { requestId: string; action: ActionRef; decision: 'approve' | 'deny'; expiresAt: number }
 /** Independently deduplicated model reservation; the selected call must remain inside the current work policy/pin. */
 export interface ModelCallInput { requestId: string; selection: Selection; upperBound: BudgetVector }
-/** Durable charge and transport capacity. A recovered unsettled reservation stays unknown and occupies capacity. */
+/** Durable charge and transport capacity, not a dispatch token. guardReservation consumes model send permission once for its original live actor; recovery/rebinding cannot adopt it. Unknown usage/capacity remains charged. */
 export interface Reservation { id: string; workId: string; requestId: string; upperBound: BudgetVector; actual: Usage; transportSettled: boolean; createdAt: number; selection?: Selection }
 /** Safe observation, never provider errors or credentials. Unknown is permanently reconcile-only. */
 export interface Observation { outcome: 'not_dispatched' | 'succeeded' | 'failed' | 'unknown'; basis: 'local_guard' | 'remote_verified' | 'uncertain' | 'owner_statement'; code: string | null; actual: Usage; transportSettled: boolean }
@@ -66,7 +66,13 @@ export interface AdapterResult { outcome: 'succeeded' | 'failed' | 'unknown'; ac
 /** One live invocation, retained only by the protected adapter. send is called synchronously under the final writer fence after a durable claim. No retries/redirects are allowed. */
 export interface DispatchContext { commit(finalPayload: JsonValue, send: () => Promise<AdapterResult>): Promise<AdapterResult> }
 /** Registered protected code only. prepare is synchronous/no I/O; perform owns final bytes, conditional preconditions and single-send behavior. Real adapters require their own boundary proof. */
-export interface ActionAdapter { id: string; version: number; prepare(proposal: unknown, context: { work: WorkAuthority; now: number }): ActionDraft; perform(action: PreparedAction, context: DispatchContext): Promise<AdapterResult>; reconcile?(action: PreparedAction): Promise<AdapterResult> }
+export interface ActionAdapter {
+  id: string; version: number;
+  prepare(proposal: unknown, context: { work: WorkAuthority; now: number }): ActionDraft;
+  perform(action: PreparedAction, context: DispatchContext): Promise<AdapterResult>;
+  /** Read-only: fulfillment certifies that this read's transport ended; the returned result describes the original effect, whose outcome/transport may remain unknown. A rejection supplies no read-transport settlement proof. The service charges one call/read in its single durable recovery lane, separate from ordinary concurrency. */
+  reconcile?(action: PreparedAction): Promise<AdapterResult>;
+}
 /** Protected authenticated principal; verifyOwner must check current live session/CSRF/channel binding itself. */
 export interface AuthenticatedOwner { id: string; generation: number; expiresAt: number }
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
@@ -93,7 +99,7 @@ export interface PolicyProposal { contract: 's15-policy-proposal/v1'; ownerGener
 /** Typed conversational decision only. The host supplies the complete conversation's work IDs and the exact last-presented revision; quotes/model text must never call this API. */
 export interface PendingDecisionInput { requestId: string; workIds: string[]; seen: ActionRef; decision: 'approve' | 'deny'; expiresAt: number }
 
-/** Worker consumer port. Models receive scoped tool closures, never this service's owner/control ports. */
+/** Worker consumer port. Models receive scoped tool closures, never this service's owner/control ports. guardReservation consumes model dispatch once at the final I/O boundary; it is not a reusable preflight check. */
 export interface WorkPort { reserveRead(actor: WorkActor, input: ReadInput): ReadDecision; guardRead(actor: WorkActor, claimId: string): ReadClaim; guard(actor: WorkActor): WorkAuthority; reserveModelCall(actor: WorkActor, input: ModelCallInput): Reservation; guardReservation(actor: WorkActor, reservationId: string): Reservation; prepare(actor: WorkActor, input: PrepareInput): PreparedResult; evaluate(actor: WorkActor, action: ActionRef): Decision; guardBeforeDispatch(actor: WorkActor, action: ActionRef): PreparedAction; dispatch(actor: WorkActor, action: ActionRef): Promise<Observation> }
 /** Protected owner API, suitable for authenticated HTTP/channel wrappers; no natural-language approval parsing is supplied. */
 export interface OwnerPort { authenticate(proof: unknown): OwnerActor; current(actor: OwnerActor): StandingPolicy | null; prepareInterpretation(actor: OwnerActor, input: InterpretationInput): { authority: WorkAuthority; purposes: Ref[] }; proposePolicy(actor: OwnerActor, input: PolicyInput | null): PolicyProposal; installProposal(actor: OwnerActor, requestId: string, proposalHash: string): StandingPolicy; actionSlip(actor: OwnerActor, action: ActionRef): ActionSlip; decidePending(actor: OwnerActor, input: PendingDecisionInput): void; install(actor: OwnerActor, requestId: string, expectedRevision: number, input: PolicyInput): StandingPolicy; admit(actor: OwnerActor, request: WorkRequest): WorkReceipt; decide(actor: OwnerActor, input: ApprovalInput): void; approveRecurringRule(actor: OwnerActor, requestId: string, expectedRevision: number, rule: Rule): StandingPolicy; revoke(actor: OwnerActor, requestId: string, scope: { kind: 'policy' } | { kind: 'work'; id: string }): void; inspect(actor: OwnerActor, action: ActionRef): { action: PreparedAction; observation: Observation | null }; reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation>; recordStatement(actor: OwnerActor, action: ActionRef, requestId: string, outcome: 'occurred' | 'did_not_occur'): void }

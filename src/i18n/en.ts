@@ -35,6 +35,7 @@ export const en: Record<MessageKey, string> = {
   "s15.policy.already_claimed": "This action was already claimed and cannot be sent again.",
   "s15.policy.reservation_already_claimed": "This model call was already reserved. Do not repeat it.",
   "s15.policy.reconciliation_required": "Read back the existing outcome without sending again.",
+  "s15.policy.recovery_busy": "Waiting for the current protected read-back to settle.",
   "s15.policy.adapter_unproven": "This action route is unavailable.",
   "s15.policy.policy_match_required": "No current standing rule covers this action.",
   "s15.policy.ambiguous_rule": "Several standing rules match. An exact decision is required.",

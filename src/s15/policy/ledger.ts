@@ -32,6 +32,9 @@ export class PolicyLedger {
             CREATE TABLE slots (effect_key TEXT PRIMARY KEY, action_id TEXT NOT NULL, revision INTEGER NOT NULL, proposal_hash TEXT NOT NULL);
             CREATE TABLE approvals (id TEXT PRIMARY KEY, action_id TEXT NOT NULL, revision INTEGER NOT NULL, json TEXT NOT NULL);
             CREATE TABLE reservations (id TEXT PRIMARY KEY, dedupe TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, json TEXT NOT NULL);
+            CREATE TABLE model_dispatches (reservation_id TEXT PRIMARY KEY, claimed_at INTEGER NOT NULL);
+            CREATE TABLE recovery_reads (reservation_id TEXT PRIMARY KEY, action_id TEXT NOT NULL, active INTEGER NOT NULL, observation TEXT);
+            CREATE UNIQUE INDEX recovery_single_active ON recovery_reads(active) WHERE active=1;
             CREATE TABLE read_claims (id TEXT PRIMARY KEY, work_id TEXT NOT NULL, request_id TEXT NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, json TEXT NOT NULL, observation TEXT, result_hash TEXT, UNIQUE(work_id,request_id));
             CREATE TABLE claims (effect_key TEXT PRIMARY KEY, action_id TEXT UNIQUE NOT NULL, payment_key TEXT UNIQUE, reservation_id TEXT NOT NULL, json TEXT NOT NULL);
             CREATE TABLE observations (seq INTEGER PRIMARY KEY, action_id TEXT NOT NULL, json TEXT NOT NULL);
