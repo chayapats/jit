@@ -1,5 +1,7 @@
 # S14 bot-first experience
 
+The owner-approved [Plain replacement](S14-plain-experience.md), 2026-11-02, supersedes this document's presentation and navigation details for current S14. The required authority behaviours and per-build historical evidence below remain attributable to their original deliveries. Browser-local state is specified by ADR 0062.
+
 Parent: [S14 spec](../specs/S14-bot-first-local-assistant.md), [design brief](S14-design-brief.md), issues [#244](https://github.com/chayapats/jit/issues/244) and [#245](https://github.com/chayapats/jit/issues/245).
 Author: Claude Opus 5.5 (`claude-opus-5-5`), as the sole UI/UX designer required by S14-D14. Parent verification: orchestrator creation, completed-task metadata and read-only thread configuration confirm `effort: high`. The delegate saw an internal numeric value of 25; no mapping from that value is asserted. Date: 2026-10-30.
 Interactive review artifact: [s14-bot-first-prototype.html](s14-bot-first-prototype.html). It runs on fixture data and connects to nothing.

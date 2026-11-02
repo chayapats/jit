@@ -302,7 +302,7 @@ test.each(["th", "en"] as const)("%s unresolved sessions stay unconfirmed: never
   for (const text of [words["s14.recovery.session.title"], words["s14.recovery.session.pill"], words["s14.recovery.session.detail"], words["s14.recovery.session.next"], words["s14.reason.native_busy"], words["s14.recovery.session.plan_retire"], words["s14.recovery.session.seen_active"], words["s14.reason.old_transport_unsettled"], words["s14.recovery.next.old_transport_unsettled"], "native_busy", "old_transport_unsettled"]) expect(html).toContain(text);
   expect(html).not.toContain(words["s14.recovery.settled"]); safe(html, language);
   expect(html).not.toContain(words["s14.recovery.phase.queued"]); expect(html).not.toContain("/s14/commands");
-  const home = await f.page("/"); expect(home).toContain('href="/recovery"'); expect(home).toContain(words["s14.recovery.attention"]);
+  const home = await f.page("/work"); expect(home).toContain('href="/recovery"'); expect(home).toContain(words["s14.recovery.attention"]);
   expect(await f.page("/more")).toContain('href="/recovery"');
   const work = await f.page(`/work/${run.work.id}`); expect(work).toContain(words["s14.reason.old_transport_unsettled"]); expect(work).toContain('href="/recovery"');
 });
@@ -361,7 +361,7 @@ test.each(["th", "en"] as const)("%s reconcile records the owner's statement apa
   const stale = await f.post("/s14/forms/effect-reconcile", { ...fields, requestId: rid(), outcome: "did_not_occur", note: "Changed my mind" });
   expect(stale.status).toBe(409); expect(await stale.text()).toContain(words["s14.error.stale_effect_resolution"]);
   expect(f.app.authority.effect(f.actor, run.effect.id).effect.resolution!.outcome).toBe("occurred"); expect(run.sends()).toBe(1);
-  const home = await f.page("/"); expect(home).not.toContain(`/effects/${run.effect.id}#slip`);
+  const home = await f.page("/work"); expect(home).not.toContain(`/effects/${run.effect.id}#slip`);
   const pane = await f.page(`/work/${run.work.id}`); expect(pane).toContain(words["s14.work.waiting_stated"]); expect(pane).toContain(words["s14.recover.block.stated_title"]); expect(pane).toContain(words["s14.recover.start_new"]); expect(pane).not.toContain("work.retry"); safe(pane, language);
   const later = await f.page("/recovery"); expect(later).toContain(words["s14.recovery.effect_stated"]); expect(later).toContain(words["s14.recovery.group.closed"]); safe(later, language);
 });

@@ -1,4 +1,5 @@
 import { AppError } from "../errors";
+import { createHash } from "node:crypto";
 import type { OnlineBackupCommand } from "./ops-types";
 import { readS14Ops } from "./ops-state";
 import { scopeOptions } from "./scope-options";
@@ -14,7 +15,7 @@ import type { OwnerInputCommand } from "./computer-types";
 import type { S14Overview, S14Product, S14View } from "./web-product";
 
 /** Product rendering seam; `view`, `overview`, `policy` and `now` are query data and prove nothing about authority. */
-export interface S14Page { state: Home; work: Work[]; csrf: string; locale: "th" | "en"; view: S14View; overview: S14Overview; policy: Policy; now: number }
+export interface S14Page { state: Home; work: Work[]; csrf: string; locale: "th" | "en"; view: S14View; overview: S14Overview; policy: Policy; now: number; browserKey?: string }
 /** Opus-authored Web code can replace this renderer while retaining the authenticated command handler. */
 export type S14Renderer = (page: S14Page) => string;
 const escape = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -119,7 +120,16 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const auth = app.authenticate(matches[0]!.slice(cookieName.length + 1));
       const signedInLocale = (state = app.home(auth.actor)) => state.owner?.language ?? browserLocale();
       if (product) ownerLocale = signedInLocale();
-      const view = (state: Home, selected: S14View, status = 200) => { const work = app.authority.list(auth.actor), locale = signedInLocale(state); return html(render({ state, work, csrf: auth.csrf, locale, view: selected, overview: product!.overview(auth.actor, state, work), policy: app.policy, now: app.now() }), status, locale); };
+      const view = (state: Home, selected: S14View, status = 200) => {
+        const work = app.authority.list(auth.actor), locale = signedInLocale(state);
+        // Public browser-state namespace, not an owner/session capability. Rotation prevents restoring another owner's drafts.
+        const browserKey = app.store.read(tx => {
+          const first = tx.get<{ id: string }>("SELECT id FROM conversations WHERE bot_id='jit' ORDER BY rowid LIMIT 1");
+          const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id='owner'");
+          return first && owner ? createHash("sha256").update(`${first.id}:${owner.generation}`).digest("hex").slice(0, 32) : "";
+        });
+        return html(render({ state, work, csrf: auth.csrf, locale, view: selected, overview: product!.overview(auth.actor, state, work), policy: app.policy, now: app.now(), browserKey }), status, locale);
+      };
       if (product && request.method === "POST" && url.pathname === "/s14/logout") {
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);
         return redirect("/s14/login", { "Set-Cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? "; Secure" : ""}` });
@@ -310,7 +320,15 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (conversation) return json(app.conversation(auth.actor, conversation[1]!));
       const receipt = /^\/(?:api\/)?s14\/receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (receipt) return app.store.read(tx => { app.requireOwner(tx, auth.actor); const r = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", receipt[1]!); if (!r) throw new AppError("not_found", 404); return page ? redirect(product!.surface(JSON.parse(r.result_json))) : json(JSON.parse(r.result_json)); });
-      if (page) { const state = app.home(auth.actor); return view(state, await product!.view(url, auth.actor, state, signedInLocale(state))); }
+      if (page) {
+        const state = app.home(auth.actor), lastName = secure ? "__Host-jit_s14_chat" : "jit_s14_chat";
+        const saved = (request.headers.get("cookie") ?? "").split(";").map(part => part.trim()).filter(part => part.startsWith(`${lastName}=`));
+        const last = saved.length === 1 ? saved[0]!.slice(lastName.length + 1) : "";
+        const selected = await product!.view(url, auth.actor, state, signedInLocale(state), { lastJitConversationId: /^[a-zA-Z0-9_-]{1,128}$/.test(last) ? last : null });
+        const response = view(state, selected);
+        if (selected.kind === "chat" && selected.bot.id === "jit") response.headers.append("Set-Cookie", `${lastName}=${selected.chat.conversation.id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000${secure ? "; Secure" : ""}`);
+        return response;
+      }
       if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more", saved: false }, overview: { views: [], effects: [], botStates: {}, computers: {}, defaults: app.graph.defaults(auth.actor), lanes: {}, reports: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
       throw new AppError("not_found", 404);
     } catch (error) {

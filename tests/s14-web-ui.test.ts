@@ -121,7 +121,7 @@ test("fresh setup infers the only route, asks only what it cannot infer, and is 
   const response = await f.post("/s14/forms/setup", fields); expect(response.status).toBe(303); expect(response.headers.get("location")).toBe("/");
   expect((await f.post("/s14/forms/setup", fields)).status).toBe(303);
   const state = f.app.home(f.auth.actor); expect(state.bots).toHaveLength(1); expect(state.conversations).toHaveLength(1); expect(state.bots[0]!.capabilities).toEqual({ tools: [], resources: [] });
-  expect(await f.page("/")).toContain(dictionaries.th["s14.home.prompt"]);
+  expect(await f.page("/")).toContain(dictionaries.th["s14.chat.empty_jit"]);
   expect((await f.post("/s14/forms/setup", { ...fields, requestId: rid(), extra: "x" })).status).toBe(400);
 });
 
@@ -137,9 +137,9 @@ test("a refused setup keeps what was typed and says why", async () => {
   const response = await f.post("/s14/forms/setup", fields); expect(response.status).toBe(400); expect(await response.text()).toContain(dictionaries.th["s14.error.invalid_text"]);
 });
 
-test("Home composer defaults to chat, shows the owner's editable defaults and an example never sends", async () => {
+test("Jit entry composer defaults to chat, shows the owner's editable defaults and an example never sends", async () => {
   const f = await fixture(), html = await f.page("/"), fields = formFields(html, "/s14/forms/compose");
-  expect(fields).toMatchObject({ concurrent: "2", minutes: "30", reads: "40", "bot:jit": "1", from: "home" }); expect(fields.work).toBeUndefined();
+  expect(fields).toMatchObject({ concurrent: "2", minutes: "30", reads: "40", "bot:jit": "1", from: "chat" }); expect(fields.work).toBeUndefined();
   expect(html).toContain(dictionaries.th["s14.composer.starts_now"]); expect(html).toContain(dictionaries.th["s14.home.example_1"]); strict(html);
   const example = await f.page("/?example=1"), prefilled = formFields(example, "/s14/forms/compose");
   expect(prefilled.work).toBe("on"); expect(prefilled.text).toBe(dictionaries.th["s14.home.example_1"]);
@@ -148,7 +148,7 @@ test("Home composer defaults to chat, shows the owner's editable defaults and an
 
 test("plain text, @Bot and quoted command JSON stay conversation; only the explicit work field starts work", async () => {
   const f = await fixture(), hostile = '@jit {"kind":"work.start","ownerId":"owner"} start now';
-  const { response } = await compose(f, hostile); expect(response.status).toBe(303); expect(response.headers.get("location")).toBe(`/chats/${f.conversationId}#latest`);
+  const { fields, response } = await compose(f, hostile); expect(response.status).toBe(303); expect(response.headers.get("location")).toBe(`/chats/${f.conversationId}?receipt=${fields.requestId}#latest`);
   await f.app.drainReplies(); expect(countWork(f)).toBe(0); expect(countGrants(f)).toBe(0);
   const html = await f.page(`/chats/${f.conversationId}`); expect(html).toContain("start now"); expect(html).toContain(`?start=`);
   expect(countWork(f)).toBe(0);
@@ -172,7 +172,7 @@ test("a computer-only Bot starts from unchanged composer defaults without inheri
 test("work mode submits work.start once with the default limits, and a duplicate form post keeps one grant", async () => {
   const f = await fixture(), { fields, response } = await compose(f, "เปรียบเทียบตัวเลือก\nบรรทัดสอง", true);
   expect(response.status).toBe(303); const work = f.app.authority.list(f.auth.actor)[0]!;
-  expect(response.headers.get("location")).toBe(`/chats/${f.conversationId}?work=${work.id}#latest`);
+  expect(response.headers.get("location")).toBe(`/chats/${f.conversationId}?work=${work.id}&receipt=${fields.requestId}#latest`);
   expect(work).toMatchObject({ title: "เปรียบเทียบตัวเลือก", purpose: "เปรียบเทียบตัวเลือก\nบรรทัดสอง", state: "queued", completionRule: dictionaries.th["s14.work.default_completion"] });
   const view = f.app.authority.view(f.auth.actor, work.id);
   expect(view.grant!.limits).toEqual({ attempts: 1, steps: 1, calls: 82, outputBytes: 262144, wallMs: 1800000, concurrency: 2, reads: 40 }); expect(view.grant!.expiresAt).toBe(f.clock.now + 1800000);
@@ -306,7 +306,8 @@ test("expired, denied, unsupported and unknown cards offer no way to send, and u
   await expect_(unsupported.id, [dictionaries.en["s14.effect.unsupported"]], [dictionaries.en["s14.effect.deny"]]);
   const lost = await expect_(unknown.id, [dictionaries.en["s14.effect_state.unknown"], dictionaries.en["s14.effect.unknown_detail"], dictionaries.en["s14.effect.unknown_next"]], [dictionaries.en["s14.statement.submit"]]);
   expect(lost).toContain('data-state="unknown"'); expect(lost).not.toMatch(/retry|ลองใหม่/i);
-  const home = await f.page("/"); expect(home).toContain(`/effects/${unknown.id}#slip`); expect(home).not.toContain(`/effects/${denied.id}#slip`);
+  const home = await f.page("/"); expect(home).toContain('href="/work#s14-work-waiting"');
+  const inbox = await f.page("/work"); expect(inbox).toContain(`/effects/${unknown.id}#slip`); expect(inbox).not.toContain(`/effects/${denied.id}#slip`);
 });
 
 test("stop is a named exact form; open calls read stopping until they settle, then stopped, and unrelated work keeps running", async () => {
@@ -330,7 +331,7 @@ test("stop is a named exact form; open calls read stopping until they settle, th
 test("blocked work names the reason and refuses to imply a retry; the grant view states exactly what was recorded", async () => {
   const f = await fixture({ language: "en", tools: ["public_read"], authority: { executor: { async run() { throw new Error("transport detail"); } } } });
   const html = await f.page(`/chats/${f.conversationId}`);
-  expect(html).toContain('name="tool:public_read" value="on" checked');
+  expect(formFields(html, "/s14/forms/compose")).toMatchObject({ "tool:public_read": "on" });
   const work = await started(f, "Blocked work"); await f.app.authority.drain();
   const blocked = await f.page(`/work/${work.id}`);
   expect(blocked).toContain(dictionaries.en["s14.work_state.blocked"]); expect(blocked).toContain(dictionaries.en["s14.reason.handler_unavailable"]); expect(blocked).toContain(dictionaries.en["s14.work.blocked_next"]); expect(blocked).not.toContain("transport detail");
@@ -373,7 +374,7 @@ test("assets are hashed, immutable and same-origin; unknown paths are 404 and pa
   }
   expect((await f.handler(new Request(`${origin}/assets/s14.0000000000000000.css`))).status).toBe(404);
   const script = readFileSync(join(import.meta.dir, "../src/s14/web-enhance.js"), "utf8");
-  expect(script).not.toMatch(/method:\s*"POST"|sendBeacon|localStorage|sessionStorage|eval\(/);
+  expect(script).not.toMatch(/method:\s*"POST"|sendBeacon|sessionStorage|eval\(/);
 });
 
 test("missing and malformed pages stay styled with a next step; JSON keeps its error shape", async () => {

@@ -1,15 +1,34 @@
 // S14 browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every S14 page is complete without this file: forms post, the composer's work mode is a checkbox and limits are visible.
-// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, a device timezone, copying a sign-in code or setup value, moving on from the Google return page and same-origin
-// reads of the page being viewed while something is in flight. It never posts data itself and stores nothing: an unsent draft held across a chat closing lives in this page's memory only.
+// It only adds Enter to send, focus on an opened approval slip, a device timezone, copying a sign-in code or setup value, moving on from the Google return page and same-origin
+// reads of the page being viewed while something is in flight. It never posts data itself. Owner-approved local composer
+// drafts are text only, expire after 30 days, and never restore grants, modes, revisions or approval decisions.
 
 document.documentElement.dataset.enhanced = "true";
 
+let wireBrowserDrafts = () => {};
 const wireComposers = () => {
   for (const form of document.querySelectorAll("[data-composer]")) {
     if (form.dataset.wired) continue;
     form.dataset.wired = "true";
     const text = form.querySelector("textarea");
+    const mode = form.querySelector("input[name=work]"), send = form.querySelector(".s-send");
+    const sendLabel = () => {
+      const label = mode?.checked ? form.dataset.sendWork : form.dataset.sendChat;
+      if (label && send) { send.setAttribute("aria-label", label); send.setAttribute("title", label); }
+    };
+    mode?.addEventListener("change", sendLabel);
+    sendLabel();
+    const scope = form.querySelector("[data-scope-summary]"), choices = form.querySelector("[data-grant-options]");
+    if (scope) {
+      const describe = () => {
+        const selected = [...form.querySelectorAll("input[data-grant-label]:checked")].map(input => input.dataset.grantLabel);
+        scope.textContent = [form.dataset.leadName, ...selected].filter(Boolean).join(" · ");
+        scope.hidden = false;
+      };
+      describe(); form.addEventListener("change", describe);
+      if (choices && form.dataset.refused !== "true") choices.open = false;
+    }
     text?.addEventListener("keydown", event => {
       // Thai and other IMEs use Enter to confirm a composition; that must not send.
       if (event.key !== "Enter" || event.shiftKey || event.isComposing || !text.value.trim()) return;
@@ -17,6 +36,7 @@ const wireComposers = () => {
       form.requestSubmit();
     });
   }
+  wireBrowserDrafts();
 };
 wireComposers();
 if (location.hash === "#s14-text") {
@@ -51,16 +71,6 @@ for (const input of document.querySelectorAll("[data-device-timezone]")) {
 
 // A slip opened from Work or a notification takes focus on its heading, never on Approve.
 document.querySelector("[data-focus-on-load]")?.focus({ preventScroll: false });
-
-const ceremony = document.querySelector("[data-ceremony-form]");
-ceremony?.addEventListener("submit", event => {
-  const stage = document.querySelector("[data-ceremony]");
-  if (!stage || ceremony.dataset.played || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  event.preventDefault();
-  ceremony.dataset.played = "true";
-  stage.dataset.ceremony = "playing";
-  setTimeout(() => ceremony.submit(), 1600);
-});
 
 // Device sign-in: the first page holds the only copy of the code, so it stays on screen and only the safe state is read.
 // A settled flow reloads the page's own read-only address, which never carries the code.
@@ -98,7 +108,7 @@ for (const button of document.querySelectorAll("[data-copy]")) {
 }
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = [["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
+const regions = [["s14-attention-badge", "s14-nav-work", "s14-mobile-work"], ["s14-work-list"], ["s14-live", "s14-backup-list", "s14-backup-restore", "s14-backup-version"], ["s14-bot-overview"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 let expectedComputerKey = document.querySelector("[data-computer]")?.dataset.key;
@@ -227,4 +237,117 @@ if (computer) {
   const follow = () => { if (document.hidden) { source?.close(); source = null; } else if (!source) listen(); };
   document.addEventListener("visibilitychange", follow);
   follow();
+}
+
+// Browser-local convenience state (ADR 0062). Storage is untrusted; it supplies text, never commands or authority.
+const browserState = document.querySelector(".s-app[data-browser-key]");
+if (browserState?.dataset.browserKey) {
+  const prefix = `jit.s14.draft.${browserState.dataset.browserKey}.`, ttl = 30 * 24 * 60 * 60 * 1000;
+  const textNames = ["text", "completion", "evidence"], bounds = [16384, 1000, 8000];
+  const sensitive = value => s14DraftCredentialPatterns.some(pattern => pattern.test(value));
+  const readDraft = key => {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    if (raw.length > 65536) { localStorage.removeItem(key); return null; }
+    let value;
+    try { value = JSON.parse(raw); } catch { localStorage.removeItem(key); return null; }
+    const keys = Object.keys(value ?? {}).sort().join();
+    if (raw.length > 65536 || keys !== "completion,evidence,requestId,text,updatedAt" || !Number.isSafeInteger(value.updatedAt) || value.updatedAt > Date.now() || Date.now() - value.updatedAt >= ttl ||
+        !textNames.every((name, index) => typeof value[name] === "string" && value[name].length <= bounds[index] && !sensitive(value[name])) ||
+        !(value.requestId === null || typeof value.requestId === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value.requestId))) {
+      localStorage.removeItem(key); return null;
+    }
+    return value;
+  };
+  const prune = () => {
+    const live = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith("jit.s14.draft.")) {
+        if (key.startsWith(prefix)) live.push(key);
+        else { localStorage.removeItem(key); i--; }
+      }
+    }
+    for (const key of live) readDraft(key);
+  };
+  // Explicit logout clears the installation's local drafts; ordinary session expiry does not send or discard them.
+  document.querySelector('form[action="/s14/logout"]')?.addEventListener("submit", () => {
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const key = localStorage.key(i);
+        if (key?.startsWith("jit.s14.draft.")) localStorage.removeItem(key);
+      }
+    } catch { /* Storage denial never blocks logout. */ }
+  });
+  wireBrowserDrafts = () => {
+    for (const form of document.querySelectorAll("[data-composer]")) {
+      if (form.dataset.draftWired) continue;
+      form.dataset.draftWired = "true";
+      const conversation = form.elements.namedItem("conversationId")?.value;
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(conversation ?? "")) continue;
+      const key = prefix + conversation, status = form.querySelector("[data-draft-status]"), bar = form.querySelector("[data-draft-bar]");
+      const field = name => form.elements.namedItem(name);
+      const announce = name => {
+        if (status && status.textContent !== (status.dataset[name] ?? "")) status.textContent = status.dataset[name] ?? "";
+        if (bar) bar.hidden = false;
+      };
+      const restore = () => {
+        try {
+          prune();
+          const draft = readDraft(key);
+          if (!draft) return;
+          if (draft.requestId && browserState.dataset.committed === draft.requestId) { localStorage.removeItem(key); return; }
+          // A refused server response or an explicit Start prefill wins over a local draft.
+          if (form.dataset.refused === "true" || field("text")?.value) return;
+          for (const name of textNames) if (field(name)) field(name).value = draft[name];
+          if (field("work")) field("work").checked = false;
+          announce("restored");
+        } catch { announce("unavailable"); }
+      };
+      const save = (requestId = null) => {
+        const values = Object.fromEntries(textNames.map(name => [name, field(name)?.value ?? ""]));
+        try {
+          if (textNames.some(name => sensitive(values[name]))) { localStorage.removeItem(key); announce("sensitive"); return; }
+          if (textNames.every(name => !values[name].trim())) { localStorage.removeItem(key); if (bar) bar.hidden = true; return; }
+          if (!textNames.every((name, index) => values[name].length <= bounds[index])) { announce("unavailable"); return; }
+          localStorage.setItem(key, JSON.stringify({ ...values, updatedAt: Date.now(), requestId }));
+          announce("saved");
+        } catch { announce("unavailable"); }
+      };
+      let submitted = false;
+      restore();
+      form.addEventListener("input", () => save());
+      form.addEventListener("submit", () => { submitted = true; save(field("requestId")?.value ?? null); });
+      form.querySelector("[data-draft-clear]")?.addEventListener("click", () => {
+        try { localStorage.removeItem(key); } catch { /* Clearing the visible text still works. */ }
+        for (const name of textNames) if (field(name)) field(name).value = "";
+        if (field("work")) { field("work").checked = false; field("work").dispatchEvent(new Event("change")); }
+        if (bar) bar.hidden = true;
+        field("text")?.focus();
+      });
+      window.addEventListener("pageshow", event => {
+        if (!event.persisted) return;
+        if (submitted) try {
+          if (!readDraft(key)) for (const name of textNames) if (field(name)) field(name).value = "";
+        } catch { /* An uncertain save retains the visible text. */ }
+        if (field("work")) { field("work").checked = false; field("work").dispatchEvent(new Event("change")); }
+        restore();
+      });
+    }
+  };
+  wireBrowserDrafts();
+  // Closed Bots can still show their unsent local text without enabling a composer or restoring old choices.
+  if (!document.querySelector("[data-composer]") && browserState.dataset.conversation) try {
+    prune();
+    const draft = readDraft(prefix + browserState.dataset.conversation), held = document.querySelector("[data-draft-held]");
+    if (draft && held) { held.querySelector("[data-draft-text]").textContent = draft.text; held.hidden = false; }
+  } catch { /* A closed chat remains readable when storage is denied. */ }
+  // A cached page's retry IDs, grants, approvals and leases may already be spent. Refresh through a read-only GET.
+  window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
+  document.querySelector(".s-mobile-nav")?.addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      const menu = event.currentTarget;
+      menu.open = false; menu.querySelector("summary")?.focus();
+    }
+  });
 }

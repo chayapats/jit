@@ -165,7 +165,7 @@ test("sign-in walks begin, open, Google, a session-free return page, then one fi
   const done = await get("/s14/personal/oauth/done", false), body = await done.text();
   expect(done.status).toBe(200); expect(body).toContain("data-go"); expect(body).toContain('href="/settings/google"'); expect(body).not.toContain("fixture-code-value"); strict(body);
   expect(done.headers.get("referrer-policy")).toBe("no-referrer");
-  const home = await page("/settings/google"), attention = await page("/");
+  const home = await page("/settings/google"), attention = await page("/work");
   expect(home).toContain(words["s14.google.need.finish"]); expect(attention).toContain(words["s14.google.need.finish"]);
   const detail = await page(`/settings/google/connections/${connection.id}`), form = formFields(detail, "/s14/personal/oauth/complete");
   expect(detail).toContain(words["s14.google.finish.go"]);
@@ -240,7 +240,7 @@ test("a refused callback leaves no code in the address, and a failed finish offe
   expect(failed.status).toBe(409); expect(text).toContain(words["s14.error.personal_oauth_failed_reauthorize"]); expect(text).toContain('href="/settings/google"');
   const after = await page(`/settings/google/connections/${connection.id}`);
   expect(after).toContain(words["s14.google.again.cause_1"]); expect(after).toContain(words["s14.google.again.begin"]);
-  const home = await page("/"); expect(home).toContain(words["s14.google.need.sign_in"]);
+  const home = await page("/work"); expect(home).toContain(words["s14.google.need.sign_in"]);
   const expired = await land(await post("/s14/commands", { csrf: f.app.authenticate(f.token).csrf, command: JSON.stringify(commandOf(after, "personal.oauth.begin")) }));
   f.clock.now += 11 * 60000;
   expect(expired.html).toContain(words["s14.google.open.go"]);

@@ -22,7 +22,7 @@ export function s14RoutineStyleSheet(): string {
 .s-sched-note { flex: 1 1 100%; }
 .s-sched-row:not(:has(input:checked)) .s-sched-note { display: none; }
 .s-run-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.s-run { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-control); min-width: 0; overflow-wrap: anywhere; }
+.s-run { display: flex; flex-direction: column; gap: 4px; padding: 16px 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; overflow-wrap: anywhere; }
 .s-run.quiet { padding-block: 4px; background: transparent; border-color: transparent; color: var(--fg-3); }
 .s-run-hd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--size-sm); }
 .s-steps { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
@@ -39,7 +39,7 @@ export function s14RoutineStyleSheet(): string {
 .s-cap-diff small { flex: 1 1 100%; color: var(--fg-2); font-size: var(--size-xs); }
 .s-strip > .s-btn { align-self: flex-start; }
 .s-slot-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.s-slot-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; min-height: 44px; padding: 6px 12px; background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-control); min-width: 0; overflow-wrap: anywhere; }
+.s-slot-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; min-height: 44px; padding: 16px 0; background: transparent; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; overflow-wrap: anywhere; }
 .s-slot-row small { display: block; }
 @media (max-width: 679px) {
   .s-cap-sides { grid-template-columns: minmax(0, 1fr); }

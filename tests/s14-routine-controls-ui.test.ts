@@ -73,7 +73,7 @@ test.each(["th", "en"] as const)("%s a failed run row can be dismissed without s
   const g = await fixture(language, failing), { words } = g;
   await g.enable(hostile, { schedule: "interval", hours: "1", occurrences: "9" });
   await g.run();
-  const id = g.routines()[0]!.routine.id, home = await g.page("/"); safe(home, language);
+  const id = g.routines()[0]!.routine.id, home = await g.page("/work"); safe(home, language);
   expect(home).toContain(words["s14.attention.routine.failed"]); expect(buttons(home)).toContain(words["s14.attention.dismiss"]); expect(home).toContain(words["s14.attention.dismiss_note"]);
   expect(home).toMatch(/aria-describedby="s14-notice-[a-f0-9]+"/);
   const work = await g.page("/work"); safe(work, language);
@@ -100,21 +100,21 @@ test("dismiss on a routine page returns there; a foreign address and unknown fie
   const refused = await g.post(dismissAction, { ...fields, extra: "1" }); expect(refused.status).toBe(400);
   const away = await g.land(await g.post(dismissAction, { ...fields, routineId: "../../evil" }));
   expect(away.path).toBe("/");
-  expect(await g.page("/")).not.toContain(words["s14.attention.routine.failed"]);
+  expect(await g.page("/work")).not.toContain(words["s14.attention.routine.failed"]);
 });
 
 test("decisions and blocked routines offer no Dismiss, because acknowledging would not answer them", async () => {
   const g = await fixture("en", { state: "ready", text: '{"outcome":"no_update","proposals":[{"title":"Open finding","purpose":"Decide this","completionRule":"Owner review"}]}' }), { words } = g;
   await g.enable("Finding routine", { schedule: "interval", hours: "1", occurrences: "9" });
   await g.run();
-  const home = await g.page("/"); safe(home, "en");
+  const home = await g.page("/work"); safe(home, "en");
   expect(home).toContain(words["s14.attention.routine.decision"]); expect(buttons(home)).not.toContain(words["s14.attention.dismiss"]); expect(home).not.toContain(words["s14.attention.dismiss_note"]);
   const bot = g.app.home(g.auth.actor).bots.find(item => item.id === "jit")!;
   g.app.execute(g.auth.actor, { kind: "bot.capabilities.propose", requestId: retryId(), expectedRevision: bot.revision, payload: { botId: "jit", capabilities: { tools: ["web_search"], resources: bot.capabilities.resources } } });
   const proposal = g.app.botLifecycle.view(g.auth.actor, "jit").proposals[0]!;
   g.app.execute(g.auth.actor, { kind: "bot.capabilities.accept", requestId: retryId(), expectedRevision: proposal.revision, payload: { proposalId: proposal.id, proposalHash: proposal.hash } });
   g.app.routines.tick();
-  const blocked = await g.page("/");
+  const blocked = await g.page("/work");
   expect(blocked).toContain(words["s14.attention.routine.blocked"]); expect(buttons(blocked)).not.toContain(words["s14.attention.dismiss"]);
 });
 
@@ -123,7 +123,7 @@ test.each(["th", "en"] as const)("%s attention level posts without script and go
   await g.enable("Report routine", { schedule: "interval", hours: "1", occurrences: "9" });
   await g.run();
   // Default: the run reports, and Needs you stays calm.
-  expect(await g.page("/")).not.toContain(words["s14.attention.group.updates"]);
+  expect(await g.page("/work")).not.toContain(words["s14.attention.group.updates"]);
   expect(await g.page("/routines")).toContain(words["s14.attention.level.now.needs-me"]);
   const more = await g.page("/more"); safe(more, language);
   for (const key of ["s14.attention.level.title", "s14.attention.level.lead", "s14.attention.level.needs-me", "s14.attention.level.all", "s14.attention.level.note"] as const) expect(more).toContain(words[key]);
@@ -131,13 +131,13 @@ test.each(["th", "en"] as const)("%s attention level posts without script and go
   const action = "/s14/forms/attention-level", saved = await g.submit(more, action, { level: "all" });
   expect(saved.path).toMatch(/^\/more\?receipt=[a-f0-9]+#s14-attention-level$/); expect(saved.html).toContain(words["s14.attention.level.saved_detail"]); expect(saved.html).toMatch(/name="level" value="all" checked/);
   expect(g.app.attention.view(g.auth.actor).setting).toMatchObject({ level: "all", revision: 1 });
-  expect(await g.page("/")).not.toContain(words["s14.attention.group.updates"]);
+  expect(await g.page("/work")).not.toContain(words["s14.attention.group.updates"]);
   await g.run();
-  const home = await g.page("/"); safe(home, language);
+  const home = await g.page("/work"); safe(home, language);
   expect(home).toContain(words["s14.attention.group.updates"]); expect(home).not.toContain(`${words["s14.nav.waiting"]} 1`);
   expect(await g.page("/routines")).toContain(words["s14.attention.level.now.all"]);
   // A report clears with Dismiss too.
-  const cleared = await g.submit(home, dismissAction); expect(cleared.path).toBe("/"); expect(cleared.html).not.toContain(words["s14.attention.group.updates"]);
+  const cleared = await g.submit(home, dismissAction); expect(cleared.path).toBe("/work"); expect(cleared.html).not.toContain(words["s14.attention.group.updates"]);
   // A stale form and an invented level are refused, and neither changes the setting.
   const stale = await g.land(await g.post(action, { ...formFields(more, action), requestId: retryId(), level: "needs-me" })); expect(stale.status).toBe(409); expect(stale.html).toContain('href="/more"');
   const fresh = await g.page("/more"), invented = await g.land(await g.post(action, { ...formFields(fresh, action), level: "silent" })); expect(invented.status).toBeGreaterThanOrEqual(400);
@@ -428,7 +428,7 @@ test("an old unresolved failure retains Dismiss after more than 100 resolved not
       tx.run("UPDATE attention_notices SET record_json=json_set(record_json,'$.resolvedAt',1) WHERE group_id=?", `newer_resolved_${i}`);
     }
   });
-  for (const path of ["/", "/work", `/routines/${g.routines()[0]!.routine.id}`]) {
+  for (const path of ["/work", `/routines/${g.routines()[0]!.routine.id}`]) {
     const html = await g.page(path), fields = formFields(html, dismissAction);
     expect(fields.noticeId).toBe(old.id);
     if (path.startsWith("/routines/")) expect(html).toContain(g.words["s14.routine.trigger.schedule"]);

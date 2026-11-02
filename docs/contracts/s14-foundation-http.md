@@ -1,5 +1,11 @@
 # S14 foundation HTTP handoff
 
+## Current Plain presentation refinement (2026-11-02)
+
+The owner-approved Plain replacement supersedes the historical Home dashboard and primary-navigation layout below. After setup, `/` renders a Jit conversation; a validated browser preference selects the last visited Jit conversation. `/work` is the cross-Bot attention/progress/results destination, while `/more` groups knowledge, team/work and installation management. All existing feature routes and typed commands remain available. The old S14 renderer and a UI feature flag are not retained. The default-runtime selection is governed by ADR 0061, superseding older opt-in language in this document.
+
+Authenticated message/work-start landings include `receipt=<requestId>`. A chat query re-reads that exact durable receipt and checks its command kind and conversation before exposing `data-committed` for local-draft cleanup; URL text alone cannot acknowledge a submission. The browser stores only composer text locally for 30 days, never authority selections or revisions. See [ADR 0062](../adr/0062-s14-browser-navigation-and-drafts.md) and the [Plain experience](../design/S14-plain-experience.md). No schema, command envelope, CSP or external-effect contract changes participate.
+
 Current combined logic schema: **17**; earlier unreleased 1–16 refuse with `s14_fresh_state_required` before workers. Earlier slice schema numbers below describe their introduction. All commands remain opt-in behind `--s14`.
 
 ## BOX14-01 computer/input seam
