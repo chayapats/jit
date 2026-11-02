@@ -31,6 +31,20 @@ test('approved services remain usable inside exact purpose/resource/data-class l
   expect(x.prepare({ to: 'payee', text: 'Derived business text' }, 'business').decision.state).toBe('hold');
 });
 
+test('standalone route classification may already contain both disclosure classes and still approve one exact send', async () => {
+  let sends = 0;
+  const x = setup({ route: { id: 'classified_disclosure', kind: 'adapter', resolve: () => [ref('new_service')],
+    classify: () => ({ classes: ['ordinary_edit', 'new_egress', 'disclosure'], transaction: null, github: null, impact: 'reversible' }),
+    send: async () => { sends++; return { outcome: 'succeeded', actual: unknownUsage(), transportSettled: true }; },
+  } });
+  x.disclosure.read(x.actor, ref('private'));
+  const prepared = x.prepare({ to: 'new_service', text: 'Exact private content' }, 'classified', 'classified_disclosure');
+  expect(prepared.decision.state).toBe('hold'); expect(prepared.action.classes).toHaveLength(3);
+  expect(prepared.action.classes).toEqual(expect.arrayContaining(['ordinary_edit', 'disclosure', 'new_egress']));
+  expect(sends).toBe(0); x.approve(prepared.action);
+  expect((await x.disclosure.dispatch(x.actor, actionRef(prepared.action))).outcome).toBe('succeeded'); expect(sends).toBe(1);
+});
+
 test.each(['purpose', 'resource', 'source', 'expiry'])('recipient approval with wrong %s cannot authorize release', mismatch => {
   const x = setup(); x.disclosure.read(x.actor, ref('private')); x.grant(); const a = x.approvals[0]!;
   if (mismatch === 'purpose') a.purpose = ref('other'); if (mismatch === 'resource') a.resources = [ref('repo')]; if (mismatch === 'source') a.sources = [ref('business')]; if (mismatch === 'expiry') a.expiresAt = 1000;

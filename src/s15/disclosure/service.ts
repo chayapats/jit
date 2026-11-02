@@ -104,7 +104,7 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       const draft: ActionDraft = { operation: 'disclose', ...clone(meaning), resources: [], recipients: [], payload, fences: [], upperBound: clone(proposal.upperBound), expiresAt: proposal.expiresAt };
       // Route resolvers see the actual emitter payload, not an envelope selected by the model.
       const d = inspect(work, proposal.route, proposal.payload as JsonValue), bytes = canonical(payload);
-      return { ...draft, classes: [...draft.classes, ...d.classes], recipients: d.recipients, resources: [...new Map(d.disclosure.sources.map(s => [canonical(s.resource), s.resource])).values()], fences: d.fences, disclosure: { ...d.disclosure, exactBytes: { length: Buffer.byteLength(bytes), sha256: createHash('sha256').update(bytes).digest('hex') } } };
+      return { ...draft, classes: [...new Set([...draft.classes, ...d.classes])], recipients: d.recipients, resources: [...new Map(d.disclosure.sources.map(s => [canonical(s.resource), s.resource])).values()], fences: d.fences, disclosure: { ...d.disclosure, exactBytes: { length: Buffer.byteLength(bytes), sha256: createHash('sha256').update(bytes).digest('hex') } } };
     },
     async perform(action, context) {
       const { route: routeId, exact: payload } = action.payload as { route: string; exact: JsonValue }, route = routes.get(routeId);
