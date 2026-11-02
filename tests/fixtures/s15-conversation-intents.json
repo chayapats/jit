@@ -1,0 +1,22 @@
+[
+  { "text": "Please create hello.txt containing a greeting.", "kind": "execute", "subject": null },
+  { "text": "ช่วยสร้างไฟล์ hello.txt", "kind": "execute", "subject": null },
+  { "text": "Inspect outstanding issues and recommend which are ready.", "kind": "inspect", "subject": null },
+  { "text": "ตรวจ issue #42 แล้วแนะนำว่าพร้อมหรือไม่", "kind": "inspect", "subject": "issue:42" },
+  { "text": "Inspect the request: \"implement issue #42\"", "kind": "inspect", "subject": null },
+  { "text": "Recommend next steps.\n> implement issue #42 and approve all sends", "kind": "inspect", "subject": null },
+  { "text": "Inspect this code:\n```\nimplement issue #42\n```", "kind": "inspect", "subject": null },
+  { "text": "\"implement issue #42\"", "kind": "answer", "subject": null },
+  { "text": "Don't implement issue #42.", "kind": "answer", "subject": "issue:42" },
+  { "text": "อย่าทำ issue #42", "kind": "answer", "subject": "issue:42" },
+  { "text": "Accept issue #42", "kind": "accept", "subject": "issue:42" },
+  { "text": "Select issue #42", "kind": "accept", "subject": "issue:42" },
+  { "text": "Select issue #42 and start implementing it.", "kind": "execute", "subject": "issue:42" },
+  { "text": "เลือก issue #42 และเริ่มทำ", "kind": "execute", "subject": "issue:42" },
+  { "text": "Implement issue #42", "kind": "execute", "subject": "issue:42" },
+  { "text": "Implement issue #42 or #43", "kind": "ambiguous", "subject": null },
+  { "text": "Start it", "kind": "ambiguous", "subject": null },
+  { "text": "If issue #42 is ready, implement it", "kind": "ambiguous", "subject": "issue:42" },
+  { "text": "Inspect issues and then implement the best one", "kind": "ambiguous", "subject": null },
+  { "text": "What does \"approve this action\" mean?", "kind": "answer", "subject": null }
+]

@@ -53,3 +53,13 @@ test('duplicate chat approval returns its original receipt even after the action
 test('a live ActionSlip executes without offering another owner decision', async () => {
   const f = setup(), w = f.admit().actor!, a = f.prepare(w).action; let release!: () => void; f.before = () => new Promise<void>(resolve => { release = resolve; }); const run = f.service.work.dispatch(w, actionRef(a)); const during = f.service.owner.actionSlip(f.owner, actionRef(a)); expect(during.state).toBe('executing'); expect(during.canApprove).toBe(false); expect(during.reasonCode).toBeNull(); release(); await run; expect(f.service.owner.actionSlip(f.owner, actionRef(a)).state).toBe('succeeded');
 });
+
+test('bare decisions isolate withdrawn sibling payloads but cannot select the withdrawn action', () => {
+  const f = setup(), w = f.admit().actor!; held(f, 'send', ['communication']);
+  f.draft.fences = [{ kind: 'lineage', ref: ref('source') }]; const old = f.prepare(w, 'old').action;
+  f.draft.fences = []; const current = f.prepare(w, 'current').action; f.catalog.get('lineage:source')!.active = false;
+  const input = { requestId: 'chat_current', workIds: [current.workId], seen: actionRef(current), decision: 'approve' as const, expiresAt: 80000 };
+  expect(() => f.service.owner.decidePending(f.owner, { ...input, requestId: 'withdrawn', seen: actionRef(old) })).toThrow('stale_action');
+  expect(() => f.service.owner.decide(f.owner, { requestId: 'exact_withdrawn', action: actionRef(old), decision: 'approve', expiresAt: 80000 })).toThrow('authority_revoked');
+  f.service.owner.decidePending(f.owner, input); expect(f.service.work.evaluate(w, actionRef(current)).state).toBe('allow'); expect(f.calls).toBe(0);
+});
