@@ -1,32 +1,15 @@
-import type { ExecutionBackend, ToolDefinition } from "schway/host";
+import type { VmEvidence, VmSession, WorkingVmPort } from "../vm";
 import { AppError } from "../../errors";
 import { identity } from "./validation";
 import type { ConversationPolicyWork } from "./policy-port";
 import type { ConversationToolPort } from "./types";
 
-/** Structural counterpart of VM15 VmEvidence; captured guest facts never become protected management proof. */
-export interface ConversationVmEvidence {
-  id: string; vmId: string; sessionId: string; operationId: string; payloadHash: string;
-  outcome: "not_dispatched" | "guest_reported" | "unknown";
-  responseHash: string | null; outputBytes: number | null;
-  transport: "pending" | "closed";
-  execution: "unsettled" | "guest_scope_empty" | "vm_stopped";
-  published: boolean;
-}
-/** Structural counterpart of VM15 VmSession. CHAT consumes only its guarded tool definitions and cleanup. */
-export interface ConversationVmSession {
-  readonly id: string;
-  readonly backend: ExecutionBackend;
-  readonly definitions: readonly ToolDefinition[];
-  evidence(): readonly ConversationVmEvidence[];
-  cancel(): Promise<void>;
-  close(): Promise<void>;
-}
-/** VM15 WorkingVmPort counterpart pending #355; no endpoint, credential, manager or raw backend escapes to models. */
-export interface ConversationWorkingVm {
-  openAttempt(actor: object, input: { vmId: string; workId: string; attemptId: string; signal?: AbortSignal;
-    mode?: "work" | "system"; access?: "inspect" | "execute" }): Promise<ConversationVmSession>;
-}
+/** Stable CHAT export alias for the real VM15 retained guest-evidence contract. */
+export type ConversationVmEvidence = VmEvidence;
+/** Stable CHAT export alias; backend/definitions/evidence/cleanup belong to the real VM module. */
+export type ConversationVmSession = VmSession;
+/** Real VM15 port. No endpoint, credential, manager or raw backend escapes to models. */
+export type ConversationWorkingVm = WorkingVmPort;
 const reads = new Set(["read", "ls", "find", "grep"]);
 const writes = new Set(["write", "edit", "bash"]);
 
@@ -48,7 +31,9 @@ export function createConversationVmTools<Worker extends object>(vm: Conversatio
     try { input.guard(); }
     catch (error) { await session.cancel().catch(() => {}); await session.close().catch(() => {}); throw error; }
     const definitions = session.definitions.filter(definition => reads.has(definition.name) || input.mode === "execute" && writes.has(definition.name));
-    return { tools: definitions.map(definition => ({ access: reads.has(definition.name) ? "read" : "reversible_write", definition: { ...definition, async execute(value, context) {
+    return { tools: definitions.map(definition => ({ access: reads.has(definition.name) ? "read" : "reversible_write", definition: { ...definition,
+      // Public core schemas carry TypeBox symbols; only their JSON schema crosses the model boundary.
+      inputSchema: JSON.parse(JSON.stringify(definition.inputSchema)), async execute(value, context) {
       input.guard(); const result = await definition.execute(value, context); input.guard(); return result;
     } } })), cancel: () => session.cancel(), close: () => session.close() };
   } };
