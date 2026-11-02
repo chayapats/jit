@@ -6,6 +6,10 @@ import type { ActionSlip } from "../policy";
 /** CHAT row of the Opus-authored s15.owner-view/v1 handoff; labels/layout remain the UI's responsibility. */
 export interface ConversationOwnerRow {
   requestId: string; receipt: ConversationReceipt; ownerMessage: string;
+  /** Current request revision; a clarification continuation must name it exactly. */
+  revision: number;
+  /** Subject grounded from the owner's original bytes (for example `issue:328`), never from model output. */
+  subject: string | null;
   state: "received" | "understanding" | "inspecting" | "working" | "needs_you" | "question" | "budget_hold" | "blocked" | "unsupported" | "unknown" | "stopped" | "done" | "partial" | "denied";
   intentLine: "report_only" | "started_work" | "obligation_only" | "question" | null;
   scopeLine: { authorityId: string; purposeId: string; policyRevision: number; resources: readonly string[]; access: ConversationScope["access"] } | null;
@@ -15,11 +19,17 @@ export interface ConversationOwnerRow {
   result: { status: "done"; text: string } | null;
   needsYou: ConversationNeedsYou | null;
   slips: ActionSlip[];
+  /** The owner's latest clarification reply when it differs from the root message; owner bytes, not model text. */
+  reply: string | null;
+  /** Material clarification hold only: issue references taken from the owner's own original bytes. They are reply labels, not a selection. */
+  question: { candidates: string[] } | null;
 }
 /** Safe hold entry with the real POLICY owner-only exact prepared payload projection. */
 export interface ConversationNeedsYou { id: string; requestId: string; code: string; kind: "question" | "action" | "reconciliation"; slip: ActionSlip | null }
 /** Bounded read-only owner projection; no polling/reconnect action can admit work or approve a slip. */
 export interface ConversationOwnerView { contract: "s15.owner-view/v1"; conversationId: string; rows: ConversationOwnerRow[]; needsYou: ConversationNeedsYou[] }
+/** Read-only navigation entry; the label is the owner's own first message, never model text. */
+export interface ConversationListEntry { conversationId: string; firstMessage: string; latestAt: number }
 
 function state(request: ConversationRequest): ConversationOwnerRow["state"] {
   if (request.state === "stopped") return "stopped";
@@ -49,11 +59,27 @@ export function conversationOwnerView<Actor, Work>(app: ConversationApplication<
     const disposition = request.state === "held" && request.slips.length > 0 && request.slips.every(slip => slip.state === "succeeded") ? "partial" : state(request);
     const pendingSlip = request.slips.find(slip => slip.state === "pending" || slip.state === "unknown");
     const needsYou: ConversationNeedsYou | null = pendingSlip ? { id: `action_${pendingSlip.action.id}_${pendingSlip.action.revision}`, requestId: id, code: pendingSlip.reasonCode ?? "approval_required", kind: pendingSlip.state === "unknown" ? "reconciliation" : "action", slip: pendingSlip } : request.slips.length === 0 && ["question", "needs_you", "budget_hold", "unknown"].includes(disposition) ? { id: `hold_${id}_${request.revision}`, requestId: id, code: request.code ?? "policy_match_required", kind: disposition === "question" ? "question" : disposition === "unknown" ? "reconciliation" : "action", slip: null } : null;
-    return { requestId: id, receipt: request.receipt, ownerMessage: request.command.text, state: disposition,
+    const question = request.state === "held" && request.code === "material_ambiguity" && request.phase === "interpretation"
+      ? { candidates: [...new Set([...request.command.text.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `#${match[1]}`))].slice(0, 4) } : null;
+    return { requestId: id, receipt: request.receipt, ownerMessage: request.command.text, revision: request.revision, subject: request.intent.subject, state: disposition,
       intentLine: request.phase === "decision" ? null : request.state === "accepted" ? "obligation_only" : request.phase === "interpretation" ? request.state === "held" ? "question" : null : request.intent.kind === "inspect" ? "report_only" : request.intent.kind === "execute" ? "started_work" : null,
       scopeLine: request.authority && request.intent.scope ? { authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
-      result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips };
+      result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, question,
+      reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text };
   });
   return { contract: "s15.owner-view/v1", conversationId, rows, needsYou: [...new Map(rows.flatMap(row => row.needsYou ? [[row.needsYou.id, row.needsYou] as const] : [])).values()] };
+}
+
+/** Recent conversations for the authenticated owner, newest first. Reading starts no model, tool or queue. */
+export function conversationList<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, limit = 32): ConversationListEntry[] {
+  const owner = app.options.policy.requireOwner(actor);
+  const rows = app.store.db.query<{ conversation_id: string; latest: number }, [number]>("SELECT conversation_id, max(rowid) AS latest FROM requests GROUP BY conversation_id ORDER BY latest DESC LIMIT ?").all(Math.max(1, Math.min(limit, 64)));
+  return rows.flatMap(row => {
+    const first = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid LIMIT 1").get(row.conversation_id)!;
+    const latest = app.store.db.query<{ id: string }, [number]>("SELECT id FROM requests WHERE rowid=?").get(row.latest)!;
+    const opening = app.store.request(first.id), last = app.store.request(latest.id);
+    if (opening.owner.id !== owner.id || opening.owner.generation !== owner.generation) return [];
+    return [{ conversationId: row.conversation_id, firstMessage: opening.command.text, latestAt: last.receipt.receivedAt }];
+  });
 }
