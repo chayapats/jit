@@ -1,7 +1,7 @@
 import { AppError } from "../../errors";
 import { negotiateLocale, tr, withLocale, type Locale } from "../../i18n";
 import { s14ContentSecurityPolicy } from "../../s14/web";
-import { conversationList, conversationOwnerView, conversationPendingNeeds, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
+import { conversationAction, conversationList, conversationOwnerView, conversationPendingNeeds, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
 import { BrowserError } from "../browser";
 import { PolicyError } from "../policy";
 import type { VmStatus } from "../vm";
@@ -23,7 +23,7 @@ import type { S15BudgetEntry, S15ForgetImpact, S15GithubCapture, S15MemoryClaim,
 /** Adapts the real CHAT15-01 application to the Web consumer seam; reading starts no model, tool or queue. */
 export function s15ConversationPort<Actor, Work>(app: ConversationApplication<Actor, Work>): S15WebConversation<Actor> {
   return { view: (actor, id) => conversationOwnerView(app, actor, id), list: actor => conversationList(app, actor), submit: (actor, command) => app.submit(actor, command),
-    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), needs: actor => conversationPendingNeeds(app, actor), decide: (actor, command) => app.decide(actor, command), drain: () => app.drain() };
+    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), needs: actor => conversationPendingNeeds(app, actor), action: (actor, id) => conversationAction(app, actor, id), decide: (actor, command) => app.decide(actor, command), drain: () => app.drain() };
 }
 
 /** Explicit opt-in mount options. S14 never mounts this handler; only S15 composition does. */
@@ -100,6 +100,12 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       const views = (): ConversationOwnerView[] => viewCache ??= ports.conversation.list(actor).flatMap(item => { try { return [ports.conversation.view(actor, item.conversationId)]; } catch (error) { if (codeOf(error) === "authentication_required") throw error; return []; } });
       const decisions = (conversationId?: string): S15SlipDecision[] => views().filter(view => !conversationId || view.conversationId === conversationId).flatMap(view => view.rows.filter(row => row.decision).map(row => ({ row, conversationId: view.conversationId })));
       const findSlip = (actionId: string, revision: number | null): { slip: ActionSlip; conversationId: string; latest: ActionSlip } | null => {
+        if (ports.conversation.action) {
+          const found = ports.conversation.action(actor, actionId); if (!found?.slips.length) return null;
+          const latest = found.slips.reduce((a, b) => b.action.revision > a.action.revision ? b : a);
+          const slip = revision === null ? latest : found.slips.find(item => item.action.revision === revision);
+          return slip ? { slip, conversationId: found.conversationId, latest } : null;
+        }
         for (const view of views()) for (const row of view.rows) {
           const matches = row.slips.filter(slip => slip.action.id === actionId); if (!matches.length) continue;
           const latest = matches.reduce((a, b) => b.action.revision > a.action.revision ? b : a);

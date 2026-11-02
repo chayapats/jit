@@ -55,21 +55,36 @@ test("one approval on the exact revision dispatches once; a replayed form, brows
   expect(chat).toContain(`คุณอนุมัติ r${slip.action.revision}`); expect(chat).not.toContain(`approve ${slip.action.id}</p>`);
 });
 
-test("a changed action cannot reuse the earlier review: r1 shows superseded with a diff and only r2 can be approved", async () => {
+test("a changed action cannot reuse the earlier review: r1 shows superseded with a diff, r2 opens from POLICY's replacement and is approved once", async () => {
   const f = setup(); await f.hold({}, "Send the prepared note"); const r1 = latest(f);
   await f.html(`/actions/${r1.action.id}`); // the owner saw r1
   const r2 = f.revise({ payload: { to: "fixture-recipient", body: "Changed final text" } }).action;
   expect(r2.id).toBe(r1.action.id); expect(r2.revision).toBe(r1.action.revision + 1);
-  // Posting the r1 form now refuses; nothing is approved or sent.
+  // The r1 form refuses before anything is approved or sent.
   const stale = await f.post("/s15/forms/action/decide", { ...refFields(r1), decision: "approve" });
   expect(stale.status).toBe(409); expect(approvals(f)).toBe(0); expect(f.f.calls).toBe(0);
   const old = (await f.html(`/actions/${r1.action.id}?r=${r1.action.revision}`)).html;
-  expect(old).toContain(`ถูกแทนด้วย r${r2.revision} การอนุมัติเดิมใช้ไม่ได้`); expect(old).toContain(`เปิด r${r2.revision}`);
-  expect(old).toContain(`href="/actions/${r1.action.id}?r=${r2.revision}"`); expect(old).not.toContain("/s15/forms/action/decide");
-  // r2 was never presented in this conversation, so even its exact reference cannot be approved from a forged form.
-  const forged = await f.post("/s15/forms/action/decide", { conversationId, actionId: r2.id, revision: String(r2.revision), actionHash: r2.actionHash, decision: "approve" });
-  expect([404, 409]).toContain(forged.status); expect(approvals(f)).toBe(0); expect(f.f.calls).toBe(0);
-  expect((await f.html("/needs")).html).not.toContain("ส่ง 1 ครั้ง");
+  expect(old).toContain(`ถูกแทนด้วย r${r2.revision} การอนุมัติเดิมใช้ไม่ได้`); expect(old).toContain(`href="/actions/${r1.action.id}?r=${r2.revision}"`);
+  expect(old).toContain('class="s-diff-old"'); expect(old).toContain('class="s-diff-new"'); expect(old).toContain("Changed final text"); expect(old).not.toContain("/s15/forms/action/decide");
+  // The replacement link resolves through the protected reference and presents r2 for an exact decision.
+  const current = await f.html(`/actions/${r1.action.id}?r=${r2.revision}`);
+  expect(current.status).toBe(200); expect(current.html).toContain("Changed final text"); expect(current.html).toContain(`name="actionHash" value="${r2.actionHash}"`);
+  expect((await f.post("/s15/forms/action/decide", { conversationId, actionId: r2.id, revision: String(r2.revision), actionHash: r2.actionHash, decision: "approve" })).status).toBe(303);
+  await f.app.drain(); expect(f.f.calls).toBe(1); expect(approvals(f)).toBe(1);
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(r1), decision: "approve" })).status).toBe(409); await f.app.drain(); expect(f.f.calls).toBe(1);
+});
+
+test("an older held action outside the thread and navigation windows still opens from Needs you", async () => {
+  const f = setup(); await f.hold({}, "Send the oldest prepared note"); const oldest = latest(f);
+  // 33 later held messages push the original request out of the 32-row thread window.
+  for (let i = 0; i < 33; i++) f.app.submit(f.owner, { contract: "s15-conversation/v1", requestId: crypto.randomUUID().replaceAll("-", ""), conversationId, text: `compare #${i + 1} and #${i + 100}`, continuation: null });
+  expect(f.ports.conversation.view(f.owner, conversationId).rows.some(row => row.slips.some(slip => slip.action.id === oldest.action.id))).toBe(false);
+  expect((await f.html("/needs")).html).toContain(`href="/actions/${oldest.action.id}"`);
+  const page = await f.html(`/actions/${oldest.action.id}`);
+  expect(page.status).toBe(200); expect(page.html).toContain("Send the oldest prepared note"); expect(page.html).toContain("ส่ง 1 ครั้ง");
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(oldest), decision: "approve" })).status).toBe(303);
+  await f.app.drain(); expect(f.f.calls).toBe(1);
+  expect((await f.get("/actions/neverprepared")).status).toBe(404);
 });
 
 test("deny records a veto on this revision and shows it without any further control", async () => {

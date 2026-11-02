@@ -2,7 +2,7 @@ import type { Locale } from "../../i18n";
 import type { LoginState, OwnerBrowserInput } from "../browser";
 import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
 import type { ModelBudgetView } from "../model";
-import type { ActionRef, Observation, PolicyProposal, Ref, Rule, StandingPolicy } from "../policy";
+import type { ActionRef, ActionSlip, Observation, PolicyProposal, Ref, Rule, StandingPolicy } from "../policy";
 import type { RecurringFrequency, RecurringRuleProposal } from "../policy/recurring";
 import type { ResponsibilityProjection } from "../work";
 import type { VmStatus } from "../vm";
@@ -55,6 +55,8 @@ export interface S15WebConversation<Actor> {
   events(actor: Actor, conversationId: string, after: number): { events: ConversationEvent[]; cursor: number };
   /** Every outstanding owner item across all conversations, not limited to the navigation or thread windows. */
   needs(actor: Actor): { conversationId: string; entry: ConversationNeedsYou }[];
+  /** Owner-checked lookup of one action across all conversations (`conversationAction`), independent of navigation windows. */
+  action?(actor: Actor, actionId: string): { conversationId: string; requestId: string; slips: ActionSlip[] } | null;
   /** Typed exact slip decision (`ConversationApplication.decide`). Absent: slips show no decision buttons. */
   decide?(actor: Actor, command: ConversationDecisionCommand): ConversationReceipt;
   /** Wakes the durable queue after a committed receipt. It never resubmits anything. */

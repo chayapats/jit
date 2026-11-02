@@ -160,6 +160,21 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     let slips: ActionSlip[] = [];
     try {
       slips = this.options.policy.actionSlips?.(actor, request.actions) ?? [];
+      // A re-prepared action keeps its id in the same protected slot. Follow POLICY's own `replacement`
+      // reference so the owner sees (and can decide on) the current revision, never a model-chosen one.
+      for (let hop = 0; hop < 8 && request.phase === "work" && request.actions.length < 64; hop++) {
+        const known = (ref: ActionRef) => request.actions.some(a => a.id === ref.id && a.revision === ref.revision && a.actionHash === ref.actionHash);
+        const missing = slips.filter(slip => slip.state === "changed" && slip.replacement && slip.replacement.id === slip.action.id && !known(slip.replacement)).map(slip => slip.replacement!);
+        if (!missing.length) break;
+        const next = (this.options.policy.actionSlips?.(actor, missing) ?? []).filter(slip => missing.some(ref => ref.id === slip.action.id && ref.revision === slip.action.revision && ref.actionHash === slip.action.actionHash));
+        if (!next.length) break;
+        this.store.transaction(() => {
+          const current = this.store.request(requestId);
+          for (const slip of next) if (!current.actions.some(a => a.id === slip.action.id && a.revision === slip.action.revision)) current.actions.push({ id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash });
+          this.store.save(current); request.actions = current.actions;
+        });
+        slips = [...slips, ...next];
+      }
       rememberActionPresentation(this, request, slips);
     } catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips: [] }; }
     if (projected.decision && projected.decision.observation === null) {

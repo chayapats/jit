@@ -105,3 +105,16 @@ export function conversationList<Actor, Work>(app: ConversationApplication<Actor
     return [{ conversationId: row.conversation_id, firstMessage: opening.command.text, latestAt: last.receipt.receivedAt }];
   });
 }
+
+/**
+ * Owner-checked lookup of one prepared action across every conversation, independent of the bounded
+ * thread and navigation windows. It reads the newest work request that prepared the action through
+ * app.view, so ownership, presentation and replacement resolution are the same as for a thread read.
+ */
+export function conversationAction<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, actionId: string): { conversationId: string; requestId: string; slips: ActionSlip[] } | null {
+  app.options.policy.requireOwner(actor); identity(actionId);
+  const row = app.store.db.query<{ id: string; conversation_id: string }, [string]>("SELECT r.id, r.conversation_id FROM requests r, json_each(r.record_json, '$.actions') a WHERE json_extract(a.value, '$.id')=? AND json_extract(r.record_json, '$.phase')='work' ORDER BY r.rowid DESC LIMIT 1").get(actionId);
+  if (!row) return null;
+  const view = app.view(actor, row.id);
+  return { conversationId: row.conversation_id, requestId: row.id, slips: view.slips.filter(slip => slip.action.id === actionId) };
+}
