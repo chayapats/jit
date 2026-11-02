@@ -73,7 +73,8 @@ export function policy(v: unknown): asserts v is PolicyInput {
   if (v.budget !== null) { exact(v.budget, ['currency', 'startsAt', 'expiresAt', 'ceiling', 'concurrency']); currency(v.budget.currency); nat(v.budget.startsAt); nat(v.budget.expiresAt, true); vector(v.budget.ceiling); nat(v.budget.concurrency, true); if (v.budget.startsAt >= v.budget.expiresAt) fail('invalid_budget'); }
 }
 export function workRequest(v: unknown): asserts v is WorkRequest {
-  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences', 'access']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
+  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences', 'access', 'readLimit']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
+  if (v.readLimit !== undefined) nat(v.readLimit);
   if (v.access !== undefined && (!['read', 'reversible_write', 'effect'].includes(v.access as string) || (v.intent !== 'execute' && v.access !== 'read'))) fail('invalid_intent');
   if (v.fences !== undefined) fences(v.fences);
   if (v.subject !== undefined && v.subject !== null) { exact(v.subject, ['resource', 'issue']); ref(v.subject.resource); nat(v.subject.issue, true); }
@@ -89,4 +90,4 @@ export function draft(v: unknown): asserts v is ActionDraft {
   if (v.impact === 'major' && !(v.classes as string[]).includes('major_change')) fail('adapter_unproven');
 }
 
-function fences(v: unknown): void { array(v, x => { exact(x, ['kind', 'ref']); if (!['purpose', 'bot', 'resource', 'recipient', 'route', 'model', 'lineage', 'vm', 'input'].includes(x.kind as string)) fail('invalid_shape'); ref(x.ref); }); }
+export function fences(v: unknown): void { array(v, x => { exact(x, ['kind', 'ref']); if (!['purpose', 'bot', 'resource', 'recipient', 'route', 'model', 'lineage', 'vm', 'input'].includes(x.kind as string)) fail('invalid_shape'); ref(x.ref); }); }

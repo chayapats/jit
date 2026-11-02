@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openPolicyService, type ActionAdapter, type ActionDraft, type ActionRef, type AdapterResult, type BudgetVector, type CatalogKind, type Fence, type OwnerActor, type PolicyInput, type Ref, type Rule, type Selection, type S15PolicyService, type WorkActor, type WorkRequest } from '../../src/s15/policy';
+import { openPolicyService, type ActionAdapter, type ActionDraft, type ActionRef, type AdapterResult, type BudgetVector, type CatalogKind, type Fence, type OwnerActor, type PolicyInput, type Ref, type ReadHandler, type Rule, type Selection, type S15PolicyService, type WorkActor, type WorkRequest } from '../../src/s15/policy';
 import { unknownUsage, zero } from '../../src/s15/policy/validation';
 
 export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
@@ -10,7 +10,7 @@ export const bound = (): BudgetVector => ({ ...zero(), calls: 1, spendMinor: '3'
 export const actionRef = (a: ActionRef): ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
 export const rule = (id = 'ordinary'): Rule => ({ id, mode: 'ordinary', purposes: [ref('purpose')], bots: [ref('bot')], resources: [ref('account'), ref('repo')], recipients: [ref('payee'), ref('other')], selections: [selection], adapters: ['fixture', 'fixture_payment'], operations: ['edit', 'send', 'publish', 'merge', 'pay', 'local_admin', 'system_admin', 'egress', 'production', 'major'], classes: ['ordinary_edit', 'guest_local_admin', 'guest_system_admin', 'new_egress', 'communication', 'github_publish', 'github_merge', 'financial', 'production', 'disclosure', 'major_change'], expiresAt: 100000, recurrence: null });
 export const draft = (): ActionDraft => ({ operation: 'edit', classes: ['ordinary_edit'], resources: [ref('account')], recipients: [], payload: { content: 'exact\ntext  ', attachments: [] }, fences: [], upperBound: bound(), expiresAt: 90000, transaction: null, github: null, impact: 'reversible' });
-export function fixture(extra: { adapters?: ActionAdapter[]; create?: boolean; path?: string } = {}) {
+export function fixture(extra: { adapters?: ActionAdapter[]; reads?: ReadHandler[]; create?: boolean; path?: string } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'jit-s15-policy-'));
   const path = extra.path ?? join(dir, 'policy.sqlite');
   let clock = 1000, ownerGeneration = 1, live = true, allow = true;
@@ -25,7 +25,7 @@ export function fixture(extra: { adapters?: ActionAdapter[]; create?: boolean; p
     async reconcile() { return structuredClone(outcome); },
   };
   let service: S15PolicyService;
-  const open = (create: boolean) => openPolicyService({ runtime: 's15', path, create, installationId: 'test_installation', now: () => clock, ownerGeneration: () => ownerGeneration, verifyOwner: proof => proof === 'fixture_owner_session' && live ? { id: 'owner', generation: ownerGeneration, expiresAt: 1000000 } : null, catalogs: { current: (kind, id) => catalog.get(kind + ':' + id) ?? null, allows: () => allow }, adapters: [adapter, ...(extra.adapters ?? [])] });
+  const open = (create: boolean) => openPolicyService({ runtime: 's15', path, create, installationId: 'test_installation', now: () => clock, ownerGeneration: () => ownerGeneration, verifyOwner: proof => proof === 'fixture_owner_session' && live ? { id: 'owner', generation: ownerGeneration, expiresAt: 1000000 } : null, catalogs: { current: (kind, id) => catalog.get(kind + ':' + id) ?? null, allows: () => allow }, adapters: [adapter, ...(extra.adapters ?? [])], reads: extra.reads ?? [] });
   service = open(extra.create ?? true);
   const owner = service.owner.authenticate('fixture_owner_session');
   const input: PolicyInput = { purposes: [ref('purpose')], bots: [ref('bot')], resources: [ref('account'), ref('repo')], recipients: [ref('payee'), ref('other')], selections: [selection], budget: { currency: 'USD', startsAt: 0, expiresAt: 100000, ceiling: { attempts: 20, steps: 20, calls: 20, reads: 20, outputBytes: 10000, activeMs: 100000, spendMinor: '100' }, concurrency: 5 }, rules: [rule()], expiresAt: 100000 };

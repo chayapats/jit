@@ -44,3 +44,10 @@ test('crash after one fixture payment send but before response is unknown and ne
   try { expect(await w.line()).toBe('ready'); w.go(); expect(await w.line()).toBe('sent:1'); w.child.kill('SIGKILL'); await w.child.exited; expect(f.service.owner.inspect(f.owner, actionRef(a)).observation?.outcome).toBe('unknown'); await expect(f.service.work.dispatch(actor!, actionRef(a))).rejects.toThrow('already_claimed'); expect(f.service.control.usage().unsettled).toBe(1); }
   finally { w.child.kill(); await w.child.exited; }
 });
+
+test('two processes cannot over-reserve the same work read bound', async () => {
+  const f = fixture({ reads: [{ operation: 'read', validate() {} }] }); fixtures.push(f); f.install(); const work = f.admit({ intent: 'inspect', access: 'read', readLimit: 1 }).receipt.work!;
+  const workers = ['first', 'second'].map(id => worker({ path: f.path, workId: work.id, mode: 'reserve_read', read: { requestId: id, resource: ref('account'), operation: 'read', exactPayload: { path: '/workspace/evidence' }, upperBound: { attempts: 0, steps: 0, calls: 0, reads: 1, outputBytes: 0, activeMs: 0, spendMinor: '0' }, fences: [] } }));
+  try { await Promise.all(workers.map(w => w.line())); workers.forEach(w => w.go()); const results = (await Promise.all(workers.map(w => w.line()))).map(x => JSON.parse(x)); expect(results.map(r => r.state).sort()).toEqual(['read_bound_exhausted', 'reserved']); expect(f.service.control.usage().charged.reads).toBe(1); }
+  finally { workers.forEach(w => w.child.stdin.end()); await Promise.all(workers.map(w => w.child.exited)); }
+});

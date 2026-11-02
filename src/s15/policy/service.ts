@@ -21,6 +21,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   const ledger = new PolicyLedger(options.path, options.create, options.installationId);
   const owners = new WeakMap<T.OwnerActor, { proof: unknown; id: string; generation: number }>();
   const workers = new WeakMap<T.WorkActor, string>();
+  const readHandlers = new Map((options.reads ?? []).map(h => { if (!['read', 'grep', 'find', 'ls', 'workspace_setup'].includes(h.operation)) v.fail('read_operation_unavailable'); return [h.operation, h] as const; }));
+  if (readHandlers.size !== (options.reads ?? []).length) { ledger.db.close(); v.fail('read_operation_unavailable'); }
   const adapters = new Map(options.adapters.map(a => { v.id(a.id); v.nat(a.version, true); return [a.id, a] as const; }));
   if (adapters.size !== options.adapters.length) { ledger.db.close(); v.fail('adapter_unproven'); }
   let closed = false;
@@ -50,6 +52,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
     currentRef('purpose', r.purpose); currentRef('bot', r.bot); currentRef('route', r.selection.route); currentRef('model', r.selection.model);
     r.resources.forEach(x => currentRef('resource', x)); r.recipients.forEach(x => currentRef('recipient', x)); r.fences?.forEach(x => currentRef(x.kind, x.ref));
+    if (r.readLimit !== undefined && r.readLimit > (p.budget?.ceiling.reads ?? 0)) v.fail('outside_scope');
     if (r.selectionPin && !v.equal(r.selectionPin, r.selection)) v.fail('selection_pinned');
   }
   function currentWork(workId: string): T.WorkAuthority {
@@ -274,7 +277,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         const p = policyCurrent(); if (!p.interpretationPurpose) v.fail('interpretation_policy_required');
         const request: T.WorkRequest = { requestId: input.requestId, intent: 'inspect', access: 'read', purpose: clone(p.interpretationPurpose), bot: clone(p.bots[0] ?? v.fail('outside_scope')), resources: [], recipients: [], selection: clone(input.selection), selectionPin: clone(input.selection), expiresAt: input.expiresAt };
         checkRequest(p, request); if (time() >= input.expiresAt || input.expiresAt > p.expiresAt || (p.budget && input.expiresAt > p.budget.expiresAt)) v.fail('expired');
-        const authority: T.WorkAuthority = { id: uid(), mode: 'interpretation', ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request, createdAt: time(), expiresAt: input.expiresAt };
+        const authority: T.WorkAuthority = { id: uid(), mode: 'interpretation', readLimit: 0, ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request, createdAt: time(), expiresAt: input.expiresAt };
         if (!options.catalogs.allows(clone(authority), null)) v.fail('outside_scope');
         ledger.run('INSERT INTO works(id,json) VALUES (?,?)', authority.id, v.canonical(authority)); return { authority, purposes: p.purposes.filter(r => !v.equal(r, p.interpretationPurpose)) };
       });
@@ -299,7 +302,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       const p = policyCurrent(); checkRequest(p, request); if (p.interpretationPurpose && v.equal(p.interpretationPurpose, request.purpose)) v.fail('outside_scope');
       if (time() >= request.expiresAt || request.expiresAt > p.expiresAt || (p.budget && request.expiresAt > p.budget.expiresAt)) v.fail('expired');
       if (request.intent === 'accept_obligation') return { work: null, receiptId: request.requestId };
-      const w: T.WorkAuthority = { id: uid(), mode: 'work', ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
+      const w: T.WorkAuthority = { id: uid(), mode: 'work', readLimit: request.readLimit ?? p.budget?.ceiling.reads ?? 0, ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
       if (!options.catalogs.allows(clone(w), null)) v.fail('outside_scope');
       ledger.run('INSERT INTO works(id,json) VALUES (?,?)', w.id, v.canonical(w)); return { work: w, receiptId: request.requestId };
     }); }); },
@@ -340,7 +343,47 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     },
     recordStatement(actor, ref, requestId, outcome) { tx(() => { if (!['occurred', 'did_not_occur'].includes(outcome)) v.fail('invalid_shape'); receipt(actor, requestId, { kind: 'effect.statement', ref, outcome }, () => { const a = loadAction(ref); if (!claimed(a)) v.fail('reconciliation_required'); ledger.run('INSERT INTO observations(action_id,json) VALUES (?,?)', a.id, v.canonical({ outcome: 'unknown', basis: 'owner_statement', code: outcome, actual: v.unknownUsage(), transportSettled: false })); return { recorded: true }; }); }); },
   };
+  function readClaim(id: string): { claim: T.ReadClaim; dispatched: number; observation: T.Observation | null; resultHash: string | null } {
+    v.id(id); const row = ledger.get<{ json: string; dispatched: number; observation: string | null; result_hash: string | null }>('SELECT * FROM read_claims WHERE id=?', id); if (!row) v.fail('read_claim_not_found');
+    const claim = JSON.parse(row.json) as T.ReadClaim, { claimHash, ...body } = claim;
+    if (v.digest('s15.read.claim.v1', body) !== claimHash || v.digest('s15.read.payload.v1', claim.input.exactPayload) !== claim.payloadHash) v.fail('hash_mismatch');
+    return { claim, dispatched: row.dispatched, observation: row.observation ? JSON.parse(row.observation) as T.Observation : null, resultHash: row.result_hash };
+  }
+  function checkRead(w: T.WorkAuthority, input: T.ReadInput): void {
+    if (w.mode !== 'work' || !['inspect', 'execute'].includes(w.request.intent) || !v.contains(w.request.resources, input.resource)) v.fail('outside_scope');
+    const handler = readHandlers.get(input.operation); if (!handler) v.fail('read_operation_unavailable');
+    currentRef('resource', input.resource); input.fences.forEach(f => currentRef(f.kind, f.ref));
+    handler.validate(clone(input.exactPayload), { work: clone(w), resource: clone(input.resource) });
+  }
+  function guardReadClaim(actor: T.WorkActor, id: string, consume: boolean): T.ReadClaim {
+    const w = workAuth(actor), row = readClaim(id), c = row.claim;
+    if (c.workId !== w.id || c.policyHash !== w.policyHash || c.ownerGeneration !== options.ownerGeneration()) v.fail('outside_scope');
+    if (time() >= c.expiresAt) v.fail('expired'); checkRead(w, c.input);
+    if (consume) {
+      if (row.dispatched || row.observation) v.fail('already_claimed');
+      budgetCheck(c.input.upperBound, true);
+      const reservation = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', c.reservationId));
+      if (!reservation || reservation.transportSettled || !v.equal(reservation.upperBound, c.input.upperBound)) v.fail('reservation_not_found');
+      ledger.run('UPDATE read_claims SET dispatched=1 WHERE id=?', id);
+    }
+    return clone(c);
+  }
   const work: T.WorkPort = {
+    reserveRead(actor, input) { try { return tx(() => {
+        v.exact(input, ['requestId', 'resource', 'operation', 'exactPayload', 'upperBound', 'fences']); v.id(input.requestId); v.ref(input.resource); v.vector(input.upperBound); v.fences(input.fences); v.canonical(input.exactPayload);
+        if (!['read', 'grep', 'find', 'ls', 'workspace_setup'].includes(input.operation)) v.fail('read_operation_unavailable');
+        if (input.upperBound.reads < 1) v.fail('cost_unknown');
+        const w = workAuth(actor); checkRead(w, input);
+        const previous = ledger.get<{ json: string }>('SELECT json FROM read_claims WHERE work_id=? AND request_id=?', w.id, input.requestId);
+        if (previous) { const old = JSON.parse(previous.json) as T.ReadClaim; if (!v.equal(old.input, input)) v.fail('request_id_conflict'); v.fail('already_claimed'); }
+        const used = ledger.all<{ json: string }>('SELECT json FROM read_claims WHERE work_id=?', w.id).reduce((sum, r) => { const count = sum + (JSON.parse(r.json) as T.ReadClaim).input.upperBound.reads; v.nat(count); return count; }, 0);
+        if (used + input.upperBound.reads > w.readLimit) v.fail('read_bound_exhausted');
+        const reservation = reserve(w, 'read_' + input.requestId, input.upperBound, { kind: 'read', input });
+        const body: Omit<T.ReadClaim, 'claimHash'> = { id: uid(), workId: w.id, input: clone(input), payloadHash: v.digest('s15.read.payload.v1', input.exactPayload), policyHash: w.policyHash, ownerGeneration: w.ownerGeneration, reservationId: reservation.id, expiresAt: Math.min(w.expiresAt, policyCurrent().budget?.expiresAt ?? w.expiresAt), createdAt: time() };
+        const claim: T.ReadClaim = { ...body, claimHash: v.digest('s15.read.claim.v1', body) };
+        ledger.run('INSERT INTO read_claims(id,work_id,request_id,json) VALUES (?,?,?,?)', claim.id, w.id, input.requestId, v.canonical(claim)); return { state: 'allow', claim };
+    }); } catch (error) { if (!(error instanceof v.PolicyError)) throw error; return { state: ['finite_budget_required', 'cost_unknown', 'capacity_busy'].includes(error.code) ? 'hold' : 'deny', code: error.code }; } },
+    guardRead(actor, claimId) { return tx(() => guardReadClaim(actor, claimId, true)); },
     guard(actor) { return tx(() => clone(workAuth(actor))); },
     reserveModelCall(actor, input) { return tx(() => { v.exact(input, ['requestId', 'selection', 'upperBound']); v.id(input.requestId); v.selection(input.selection); v.vector(input.upperBound); if (input.upperBound.calls < 1) v.fail('cost_unknown'); const w = workAuth(actor), p = policyCurrent(); if (w.mode === 'interpretation' && (input.upperBound.calls !== 1 || input.upperBound.reads !== 0 || ledger.get("SELECT id FROM reservations WHERE json_extract(json,'$.workId')=?", w.id))) v.fail('interpretation_call_claimed'); if (!v.contains(p.selections, input.selection) || (w.request.selectionPin && !v.equal(w.request.selectionPin, input.selection))) v.fail('selection_pinned'); currentRef('route', input.selection.route); currentRef('model', input.selection.model); if (!options.catalogs.allows({ ...clone(w), request: { ...clone(w.request), selection: clone(input.selection) } }, null)) v.fail('outside_scope'); const r = reserve(w, input.requestId, input.upperBound, input); r.selection = clone(input.selection); ledger.run('UPDATE reservations SET json=? WHERE id=?', v.canonical(r), r.id); return clone(r); }); },
     guardReservation(actor, reservationId) { return tx(() => {
@@ -420,6 +463,19 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     },
   };
   const control: T.ControlPort = {
+    settleRead(claimId, observation, resultHash) { tx(() => {
+      const row = readClaim(claimId); v.exact(observation, ['outcome', 'basis', 'code', 'actual', 'transportSettled']); v.usage(observation.actual);
+      if (!['not_dispatched', 'succeeded', 'failed', 'unknown'].includes(observation.outcome) || !['local_guard', 'remote_verified', 'uncertain'].includes(observation.basis) || typeof observation.transportSettled !== 'boolean') v.fail('invalid_read_result');
+      if (observation.code !== null) v.id(observation.code); if (resultHash !== null) v.hash(resultHash);
+      if (observation.outcome === 'not_dispatched' && (row.dispatched || observation.basis !== 'local_guard' || !observation.transportSettled)) v.fail('invalid_read_result');
+      if (['succeeded', 'failed'].includes(observation.outcome) && (!row.dispatched || !observation.transportSettled || observation.basis !== 'remote_verified')) v.fail('invalid_read_result');
+      if ((observation.outcome === 'succeeded') !== (resultHash !== null)) v.fail('invalid_read_result');
+      if (row.observation && row.observation.outcome !== 'unknown' && (!v.equal(row.observation, observation) || row.resultHash !== resultHash)) v.fail('settlement_conflict');
+      settleReservation(row.claim.reservationId, observation.actual, observation.transportSettled);
+      ledger.run('UPDATE read_claims SET observation=?,result_hash=? WHERE id=?', v.canonical(observation), resultHash, claimId);
+    }); },
+    publishRead(actor, claimId) { return tx(() => { guardReadClaim(actor, claimId, false); const row = readClaim(claimId); if (!row.observation) v.fail('observation_required'); return { observation: clone(row.observation), resultHash: row.resultHash }; }); },
+
     bindWork(workId) { return tx(() => { v.id(workId); currentWork(workId); const actor = Object.freeze({}) as T.WorkActor; workers.set(actor, workId); return actor; }); },
     settleReservation(id, usage, transportSettled) { tx(() => settleReservation(id, usage, transportSettled)); },
     publishable(actor, ref) { return tx(() => { const w = workAuth(actor), a = loadAction(ref); checkAction(w, a); const result = observation(a); if (!result) v.fail('observation_required'); return clone(result); }); },

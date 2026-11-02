@@ -19,9 +19,9 @@ export interface StandingPolicy { contract: 's15-standing-policy/v1'; revision: 
 /** Protected owner configuration, never a model-provided current-policy object. Recurring rules use their separate approval command. */
 export type PolicyInput = Omit<StandingPolicy, 'contract' | 'revision' | 'ownerGeneration'>;
 /** Actual authenticated ingress interpretation. Acceptance retains an obligation but creates no execution authority. */
-export interface WorkRequest { requestId: string; intent: 'inspect' | 'execute' | 'accept_obligation'; access?: 'read' | 'reversible_write' | 'effect'; purpose: Ref; bot: Ref; resources: Ref[]; recipients: Ref[]; selection: Selection; selectionPin: Selection | null; expiresAt: number; fences?: Fence[]; subject?: { resource: Ref; issue: number } | null }
+export interface WorkRequest { requestId: string; intent: 'inspect' | 'execute' | 'accept_obligation'; access?: 'read' | 'reversible_write' | 'effect'; purpose: Ref; bot: Ref; resources: Ref[]; recipients: Ref[]; selection: Selection; selectionPin: Selection | null; expiresAt: number; readLimit?: number; fences?: Fence[]; subject?: { resource: Ref; issue: number } | null }
 /** Durable narrowed authority; a transport logout does not revoke this independently bounded work. */
-export interface WorkAuthority { id: string; mode: 'interpretation' | 'work'; ownerGeneration: number; policyRevision: number; policyHash: string; request: WorkRequest; createdAt: number; expiresAt: number }
+export interface WorkAuthority { id: string; mode: 'interpretation' | 'work'; readLimit: number; ownerGeneration: number; policyRevision: number; policyHash: string; request: WorkRequest; createdAt: number; expiresAt: number }
 /** Deduplicated authenticated ingress result. No actor or capability is serialized in a receipt. */
 export interface WorkReceipt { work: WorkAuthority | null; receiptId: string }
 declare const ownerBrand: unique symbol, workBrand: unique symbol;
@@ -70,7 +70,19 @@ export interface ActionAdapter { id: string; version: number; prepare(proposal: 
 /** Protected authenticated principal; verifyOwner must check current live session/CSRF/channel binding itself. */
 export interface AuthenticatedOwner { id: string; generation: number; expiresAt: number }
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
-export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; now?: () => number }
+export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; reads?: readonly ReadHandler[]; now?: () => number }
+
+
+/** Closed operations with no domain write, system administration or outbound-destination authority. workspace_setup is trusted isolated workspace/unit initialization only. */
+export type ReadOperation = 'read' | 'grep' | 'find' | 'ls' | 'workspace_setup';
+/** Protected handler registration, never a model read-only hint. validate must bind a supported exact resource/path/query without I/O or effects. The VM/broker owns actual implementation and bypass proof. */
+export interface ReadHandler { operation: ReadOperation; validate(payload: JsonValue, context: { work: WorkAuthority; resource: Ref }): void }
+/** One handler-owned read invocation. Existing approved resources only; fences bind source/VM/input generations and exactPayload contains all final read arguments. */
+export interface ReadInput { requestId: string; resource: Ref; operation: ReadOperation; exactPayload: JsonValue; upperBound: BudgetVector; fences: Fence[] }
+/** Durable single-use read claim. guardRead consumes dispatch once; reopen cannot recreate a consumed invocation. Read data remains in the protected owning service, bound by resultHash at settlement. */
+export interface ReadClaim { id: string; workId: string; input: ReadInput; payloadHash: string; policyHash: string; ownerGeneration: number; reservationId: string; expiresAt: number; createdAt: number; claimHash: string }
+/** Current read admission, not a model-visible permit. Neither a denial nor a duplicate charges again. */
+export type ReadDecision = { state: 'allow'; claim: ReadClaim } | { state: 'hold' | 'deny'; code: string };
 
 /** One pre-retrieval model call, with no resources, recipients, tools or effect authority. */
 export interface InterpretationInput { requestId: string; selection: Selection; expiresAt: number }
@@ -82,10 +94,10 @@ export interface PolicyProposal { contract: 's15-policy-proposal/v1'; ownerGener
 export interface PendingDecisionInput { requestId: string; workIds: string[]; seen: ActionRef; decision: 'approve' | 'deny'; expiresAt: number }
 
 /** Worker consumer port. Models receive scoped tool closures, never this service's owner/control ports. */
-export interface WorkPort { guard(actor: WorkActor): WorkAuthority; reserveModelCall(actor: WorkActor, input: ModelCallInput): Reservation; guardReservation(actor: WorkActor, reservationId: string): Reservation; prepare(actor: WorkActor, input: PrepareInput): PreparedResult; evaluate(actor: WorkActor, action: ActionRef): Decision; guardBeforeDispatch(actor: WorkActor, action: ActionRef): PreparedAction; dispatch(actor: WorkActor, action: ActionRef): Promise<Observation> }
+export interface WorkPort { reserveRead(actor: WorkActor, input: ReadInput): ReadDecision; guardRead(actor: WorkActor, claimId: string): ReadClaim; guard(actor: WorkActor): WorkAuthority; reserveModelCall(actor: WorkActor, input: ModelCallInput): Reservation; guardReservation(actor: WorkActor, reservationId: string): Reservation; prepare(actor: WorkActor, input: PrepareInput): PreparedResult; evaluate(actor: WorkActor, action: ActionRef): Decision; guardBeforeDispatch(actor: WorkActor, action: ActionRef): PreparedAction; dispatch(actor: WorkActor, action: ActionRef): Promise<Observation> }
 /** Protected owner API, suitable for authenticated HTTP/channel wrappers; no natural-language approval parsing is supplied. */
 export interface OwnerPort { authenticate(proof: unknown): OwnerActor; current(actor: OwnerActor): StandingPolicy | null; prepareInterpretation(actor: OwnerActor, input: InterpretationInput): { authority: WorkAuthority; purposes: Ref[] }; proposePolicy(actor: OwnerActor, input: PolicyInput | null): PolicyProposal; installProposal(actor: OwnerActor, requestId: string, proposalHash: string): StandingPolicy; actionSlip(actor: OwnerActor, action: ActionRef): ActionSlip; decidePending(actor: OwnerActor, input: PendingDecisionInput): void; install(actor: OwnerActor, requestId: string, expectedRevision: number, input: PolicyInput): StandingPolicy; admit(actor: OwnerActor, request: WorkRequest): WorkReceipt; decide(actor: OwnerActor, input: ApprovalInput): void; approveRecurringRule(actor: OwnerActor, requestId: string, expectedRevision: number, rule: Rule): StandingPolicy; revoke(actor: OwnerActor, requestId: string, scope: { kind: 'policy' } | { kind: 'work'; id: string }): void; inspect(actor: OwnerActor, action: ActionRef): { action: PreparedAction; observation: Observation | null }; reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation>; recordStatement(actor: OwnerActor, action: ActionRef, requestId: string, outcome: 'occurred' | 'did_not_occur'): void }
 /** Host-only control integration. Recording usage never grants publication or dispatch authority. */
-export interface ControlPort { bindWork(workId: string): WorkActor; settleReservation(id: string, usage: Usage, transportSettled: boolean): void; publishable(actor: WorkActor, action: ActionRef): Observation; usage(): { charged: BudgetVector; unsettled: number }; close(): void }
+export interface ControlPort { settleRead(claimId: string, observation: Observation, resultHash: string | null): void; publishRead(actor: WorkActor, claimId: string): { observation: Observation; resultHash: string | null }; bindWork(workId: string): WorkActor; settleReservation(id: string, usage: Usage, transportSettled: boolean): void; publishable(actor: WorkActor, action: ActionRef): Observation; usage(): { charged: BudgetVector; unsettled: number }; close(): void }
 /** Explicit opt-in protected policy service. It does not select a runtime, migrate S14 or expose an unauthenticated network server. */
 export interface S15PolicyService { owner: OwnerPort; work: WorkPort; control: ControlPort }
