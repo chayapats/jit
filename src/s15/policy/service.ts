@@ -373,23 +373,36 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         a.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
         a.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
         if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
-        const bound = { ...v.zero(), calls: 1, reads: 1 };
+        const bound = clone(adapter.reconcileUpperBound ?? { ...v.zero(), calls: 1, reads: 1 });
+        v.vector(bound); if (bound.calls < 1 || bound.reads < 1) v.fail('cost_unknown');
         // One durable recovery lane is independent of ordinary capacity, but shares its finite cost ceiling.
         const reservation = reserve(w, 'reconcile_' + requestId, bound, { kind: 'reconcile', action: ref }, true);
         ledger.run('INSERT INTO recovery_reads(reservation_id,action_id,active) VALUES (?,?,1)', reservation.id, a.id);
         return { a, claim, adapter, result: null, reservation };
       });
       if (start.result) return start.result;
-      let result: T.AdapterResult, readSettled = false;
+      let result: T.AdapterResult, readSettled = false, readCalls = 0, recoveryLive = true;
       try {
-        result = await start.adapter.reconcile!(clone(start.a));
+        result = await start.adapter.reconcile!(clone(start.a), { beforeRead() { tx(() => {
+          if (!recoveryLive) v.fail('already_claimed');
+          ownerAuth(actor);
+          const current = loadAction(ref), work = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', current.workId));
+          if (!work) v.fail('authority_revoked');
+          const p = policyCurrent(); checkRequest(p, work.request);
+          current.resources.forEach(r => currentRef('resource', r)); current.recipients.forEach(r => currentRef('recipient', r)); current.fences.forEach(f => currentRef(f.kind, f.ref));
+          if (!options.catalogs.allows(clone(work), clone(current))) v.fail('outside_scope');
+          budgetCheck(start.reservation!.upperBound, true, true);
+          if (readCalls >= Math.min(start.reservation!.upperBound.calls, start.reservation!.upperBound.reads)) v.fail('read_bound_exhausted');
+          readCalls++;
+        }); } });
         // A fulfilled read-back has finished its own transport even when the effect is still unknown.
         readSettled = true; checkResult(result);
       } catch { result = { outcome: 'unknown', actual: v.unknownUsage(), transportSettled: false }; }
+      finally { recoveryLive = false; }
       const observed: T.Observation = { ...clone(result), basis: result.outcome === 'unknown' ? 'uncertain' : 'remote_verified', code: result.outcome === 'unknown' ? 'reconciliation_required' : null };
       // Commit read settlement independently: an obsolete/conflicting effect observation cannot retain a finished read's capacity.
       tx(() => {
-        const readUsage = readSettled ? { ...v.unknownUsage(), calls: 1, reads: 1 } : v.unknownUsage();
+        const readUsage = readSettled ? { ...v.unknownUsage(), calls: readCalls || 1, reads: readCalls || 1 } : v.unknownUsage();
         settleReservation(start.reservation!.id, readUsage, readSettled, true);
         ledger.run('UPDATE recovery_reads SET observation=? WHERE reservation_id=?', v.canonical(observed), start.reservation!.id);
       });

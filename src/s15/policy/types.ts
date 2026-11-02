@@ -71,8 +71,12 @@ export interface ActionAdapter {
   prepare(proposal: unknown, context: { work: WorkAuthority; now: number }): ActionDraft;
   perform(action: PreparedAction, context: DispatchContext): Promise<AdapterResult>;
   /** Read-only: fulfillment certifies that this read's transport ended; the returned result describes the original effect, whose outcome/transport may remain unknown. A rejection supplies no read-transport settlement proof. The service charges one call/read in its single durable recovery lane, separate from ordinary concurrency. */
-  reconcile?(action: PreparedAction): Promise<AdapterResult>;
+  reconcile?(action: PreparedAction, context: ReconcileContext): Promise<AdapterResult>;
+  /** Explicit conservative read-back profile when reconciliation needs more than one call/read. */
+  reconcileUpperBound?: BudgetVector;
 }
+/** Original charged recovery invocation; call before each actual read after all credential/transport waits. */
+export interface ReconcileContext { beforeRead(): void }
 /** Protected authenticated principal; verifyOwner must check current live session/CSRF/channel binding itself. */
 export interface AuthenticatedOwner { id: string; generation: number; expiresAt: number }
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
