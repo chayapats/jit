@@ -203,12 +203,8 @@ function decisionCard(page: S15SlipPage): string {
   const impacts = card.impacts.map(code => e(trMaybe(`s15.decision.impact.${code}`) ?? code)).join(" · ");
   const evidence = card.evidence.length ? `<ul class="s15-facts">${card.evidence.map(item => `<li>${pill(tr(key(`s15.decision.evidence.${item.status}`)), item.status === "fact" ? "ok" : "warn")} ${untrusted(`<p class="s15-text">${e(item.value)}</p>`, tr("s15.decision.evidence_source"))}<span class="s-meta s-mono">${e(item.id)} r${item.revision}</span></li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.result.no_evidence")}</p>`;
   if (card.retained) return `<section class="s15-decision"><p><b>${impacts}</b></p>${banner("", fill("s15.decision.already", { date: clockText(card.retained.at) + " UTC", option: tr(key(`s15.decision.option.${card.retained.option}`)) }))}</section>`;
-  const options = card.options.map(option => {
-    const control = option.id === "apply_exact" ? (page.canDecide && slip.state === "pending" && slip.canApprove ? decideForm(page, "approve", tr("s15.decision.option.apply_exact"), "primary") : "")
-      : option.id === "keep" ? (page.canDecide && slip.state === "pending" ? decideForm(page, "deny", tr("s15.decision.option.keep")) : "")
-      : `<a class="s-btn" href="/chats/${e(page.conversationId)}?again=${e(slip.action.id)}&amp;mode=investigate#s15-text">${tr("s15.decision.option.investigate")}</a>`;
-    return `<li class="s15-option"><p><b>${tr(key(`s15.decision.option.${option.id}`))}</b> · ${tr(option.reversible ? "s15.decision.reversible" : "s15.decision.irreversible")}</p><p class="s-sub s15-text">${e(option.consequence)}</p>${control}</li>`;
-  }).join("");
+  // Option rows describe consequences only; their controls live in the OwnerStrip after the exact content (§7.3).
+  const options = card.options.map(option => `<li class="s15-option"><p><b>${tr(key(`s15.decision.option.${option.id}`))}</b> · ${tr(option.reversible ? "s15.decision.reversible" : "s15.decision.irreversible")}</p><p class="s-sub s15-text">${e(option.consequence)}</p></li>`).join("");
   return `<section class="s15-decision" aria-label="${tr("s15.hold.asks.decision")}"><p><b>${impacts || e(tr("s15.hold.asks.decision"))}</b></p>${kv([[tr("s15.decision.target"), `${mono(card.target)} · v${card.version}`]])}
     <h4 class="s-section-t">${tr("s15.decision.evidence")}</h4>${evidence}<ul class="s15-options">${options}</ul>${untrusted(`<p class="s15-text">${tr(key(`s15.decision.option.${card.recommendation.option}`))}: ${e(card.recommendation.text)}</p>`, tr("s15.decision.recommend"))}</section>`;
 }
@@ -226,7 +222,14 @@ function controls(page: S15SlipPage): string {
   switch (slip.state) {
     case "pending": {
       if (!page.canDecide) return ownerStrip(revise, tr("s15.slip.no_decide_port"));
-      if (kind === "decision" && page.card) return ownerStrip(`${decideForm(page, "deny", tr("s15.decision.not_now"))}${revise}`, tr("s15.hold.single_use"));
+      if (kind === "decision" && page.card) {
+        if (page.card.retained) return "";
+        // One control per system option, below the exact content; "keep" is the denial of this exact revision.
+        const buttons = page.card.options.map(option => option.id === "apply_exact" ? (slip.canApprove ? decideForm(page, "approve", tr("s15.decision.option.apply_exact"), "primary") : "")
+          : option.id === "keep" ? decideForm(page, "deny", tr("s15.decision.option.keep"))
+          : `<a class="s-btn" href="/chats/${conv}?again=${id}&amp;mode=investigate#s15-text">${tr("s15.decision.option.investigate")}</a>`).join("");
+        return ownerStrip(`${buttons}${page.card.options.some(option => option.id === "keep") ? "" : decideForm(page, "deny", tr("s15.decision.not_now"))}${revise}`, slip.canApprove ? tr("s15.hold.single_use") : `${tr("s15.hold.cannot_approve")} ${codeText(slip.reasonCode)}`);
+      }
       const primary = slip.canApprove ? decideForm(page, "approve", primaryLabel(slip), "primary") : "";
       const note = slip.canApprove ? tr("s15.hold.single_use") : slip.reasonCode === "adapter_unproven" ? tr("s15.hold.unsupported") : `${tr("s15.hold.cannot_approve")} ${codeText(slip.reasonCode)}`;
       const recurring = page.recurring && kind === "payment" && slip.action.classes.every(c => c === "financial") ? `<p class="s15-secondary"><a class="s-link-text" href="/rules/recurring?from=${id}&amp;r=${slip.action.revision}">${tr("s15.rules.recurring_from_payment")}</a> <span class="s-meta">${tr("s15.rules.recurring_separate")}</span></p>` : "";

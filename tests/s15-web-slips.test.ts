@@ -92,7 +92,10 @@ test("DecisionCard: system options with one button each, untrusted recommendatio
   const html = th(major, { card });
   expect(html).toContain("ต้องให้คุณเลือกทาง"); expect(html).toContain("ทำตามที่เตรียมไว้ 1 ครั้ง"); expect(html).toContain("ให้จิตตรวจเพิ่มก่อน"); expect(html).toContain("ย้อนไม่ได้");
   expect(html).toContain("จิตแนะนำ"); expect(html).toContain("Ask the customer first &lt;script&gt;"); expect(html).toContain("ข้อเท็จจริง"); expect(html).toContain("ข้อสันนิษฐาน");
-  expect(html.split('name="decision" value="approve"').length).toBe(2);
+  expect(html.split('name="decision" value="approve"').length).toBe(2); expect(html.split('name="decision" value="deny"').length).toBe(2);
+  // Review first: every decision control comes after the complete exact content and inside the owner strip.
+  const exact = html.indexOf("ข้อมูลที่จะใช้จริง ครบทุกไบต์"), firstControl = html.indexOf('name="decision"'), ownerStrip = html.indexOf('class="s-strip"');
+  expect(exact).toBeGreaterThan(0); expect(firstControl).toBeGreaterThan(exact); expect(firstControl).toBeGreaterThan(ownerStrip); expect(html.indexOf("mode=investigate")).toBeGreaterThan(ownerStrip);
   const retained = th(major, { card: { ...card, retained: { at: 1800000000000, option: "keep" } } });
   expect(retained).toContain("ตัดสินใจไว้แล้ว"); expect(retained).not.toContain('name="decision" value="approve"');
 });
