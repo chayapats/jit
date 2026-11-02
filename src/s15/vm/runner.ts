@@ -4,7 +4,7 @@
  */
 export const vmRunnerSource = String.raw`
 import os,sys,json,base64,hashlib,stat,tempfile,subprocess,selectors,time,signal,errno
-MAX=8388608
+MAX=16777216
 r=json.loads(sys.stdin.buffer.read(MAX+1)); op=r['op']; root=r['root']; tmp=r['tmp']; cap=r['cap']
 def fail(code): raise OSError(getattr(errno,code,errno.EIO),code)
 def path(p):

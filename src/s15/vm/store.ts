@@ -2,12 +2,13 @@ import { Database } from "bun:sqlite";
 import { chmodSync, lstatSync, mkdirSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 import { vmFail } from "./validation";
-import type { VmEndpoint, VmEvidence } from "./types";
+import type { VmEndpoint, VmEvidence, VmMachineFacts } from "./types";
 
 /** Credential-free protected VM registry row. Private keys live in dedicated mode-0600 files. */
 export interface VmRegistration {
   id: string; generation: number; endpoint: VmEndpoint; managerId: string | null;
   state: "ready" | "unproven" | "uncertain" | "stopped"; networkCheckedAt: number;
+  facts?: VmMachineFacts;
   networkIsolated: boolean; maxSessions: number; reason: string | null; machineIdentity: string | null; boot: string | null;
 }
 /** Append-only claim/evidence metadata in a separate protected store; never a guest snapshot or S14 migration. */

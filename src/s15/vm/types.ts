@@ -83,10 +83,13 @@ export interface WorkingVmPort {
 }
 /** Owner-visible capability evidence. Configured adapters alone are unproven, never a live certification. */
 export interface VmCapability { id: "network-isolated" | "snapshot-recovery" | "hypervisor-stop"; state: "proven" | "unproven" | "unavailable"; reason: string | null }
+/** Bounded machine inventory; guest OS/architecture/software facts remain adversarial observations. */
+export interface VmMachineFacts { architecture: string; os: string; cpuCount: number; memoryBytes: number; diskBytes: number; sudo: boolean; docker: boolean; basis: "guest_reported" }
 /** Enrollment/health projection, safe for the authenticated owner API and i18n. */
 export interface VmStatus {
   id: string; generation: number; state: "ready" | "unproven" | "uncertain" | "stopped";
   networkIsolated: boolean; recoveryAvailable: boolean; activeSessions: number; maxSessions: number;
   reason: string | null;
   capabilities: readonly VmCapability[];
+  facts: VmMachineFacts | null;
 }

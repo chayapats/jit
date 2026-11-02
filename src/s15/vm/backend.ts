@@ -10,6 +10,11 @@ export interface VmBackendPort {
   call(operation: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal): Promise<Record<string, unknown>>;
 }
 const safeBytes = (bytes: Uint8Array): Uint8Array => { if (containsCredential(Buffer.from(bytes).toString("utf8"))) vmFail("vm_sensitive_output", 403); return bytes; };
+const prefix = (text: string, bytes: number): string => {
+  const encoded = Buffer.from(text); if (encoded.length <= bytes) return text;
+  let end = Math.max(0, bytes); while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end--;
+  return encoded.subarray(0, end).toString("utf8");
+};
 const clean = (s: string) => redactRegisteredSecrets(redactCredentials(s)).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 /** Public Schway backend over the VM port; observations are backend-instance/path-bound and cannot be serialized. */
 export function createVmBackend(port: VmBackendPort, root: string, temporaryDirectory: string, limits: VmLimits,
@@ -100,7 +105,9 @@ export function createVmBackend(port: VmBackendPort, root: string, temporaryDire
       if (r.exitCode !== null) vmInteger(r.exitCode, 255, 0);
       vmInteger(r.totalBytes, Number.MAX_SAFE_INTEGER, 0);
       if (r.totalBytes < stdoutBytes.length + stderrBytes.length || (!r.truncated && r.totalBytes !== stdoutBytes.length + stderrBytes.length)) bad();
-      const stdout = clean(Buffer.from(stdoutBytes).toString("utf8")), stderr = clean(Buffer.from(stderrBytes).toString("utf8")) + (r.truncated ? "\n[VM output truncated]" : "");
+      const fullOut = clean(Buffer.from(stdoutBytes).toString("utf8")), fullError = clean(Buffer.from(stderrBytes).toString("utf8"));
+      const notice = r.truncated || Buffer.byteLength(fullOut) + Buffer.byteLength(fullError) > limits.outputBytes ? prefix("\n[VM output truncated]", limits.outputBytes) : "";
+      const budget = limits.outputBytes - Buffer.byteLength(notice), stdout = prefix(fullOut, budget), stderr = prefix(fullError, budget - Buffer.byteLength(stdout)) + notice;
       if (stdout) request.onOutput?.({ stream: "stdout", text: stdout });
       if (stderr) request.onOutput?.({ stream: "stderr", text: stderr });
       return { stdout, stderr, exitCode: r.exitCode as number | null, timedOut: r.timedOut };

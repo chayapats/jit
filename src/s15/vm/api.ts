@@ -22,7 +22,7 @@ export function createVmApi(enrollment: VmEnrollment, authenticate: (request: Re
       }
       if (url.pathname === "/s15/vm/setup") { vmRecord(data, []); return Response.json(await enrollment.begin(actor)); }
       if (url.pathname === "/s15/vm/check") {
-        vmRecord(data, ["setupId", "host", "port", "user"], ["managerId"]);
+        vmRecord(data, ["setupId", "host"], ["port", "user", "managerId"]);
         return Response.json(await enrollment.checkMachine(actor, data as Parameters<VmEnrollment["checkMachine"]>[1]));
       }
       if (url.pathname === "/s15/vm/enroll") {

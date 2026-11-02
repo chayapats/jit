@@ -227,3 +227,8 @@ test("policy hold before a system snapshot leaves the VM available and sends no 
   expect(f.snapshots()).toBe(0); expect(f.store.registration("vm1").state).toBe("ready");
   expect(f.store.db.query<{ state: string }, []>("SELECT state FROM vm_sessions").get()?.state).toBe("closed");
 });
+
+test("decoded/sanitized process output stays inside its UTF-8 byte ceiling", async () => {
+  const invalid = Buffer.alloc(32, 0xff), backend = createVmBackend({ async call() { return { stdout: invalid.toString("base64"), stderr: "", exitCode: 0, timedOut: false, truncated: false, totalBytes: 32 }; } }, "/workspace", "/workspace/.tmp", { ...limits, outputBytes: 32 });
+  const result = await backend.spawn({ command: "fixture", cwd: "/workspace" }); expect(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(32); expect(result.stderr).toContain("truncated");
+});

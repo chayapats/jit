@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-11-02
+status: accepted
+date: 2026-11-03
 scope: VM15-01 (#321) implementation; FR-14/15/17/18/35/36/38; NFR-01/04/06/07/14
 ---
 

@@ -25,6 +25,7 @@ export class VmManagers extends Map<string, VmManagement> {
   /** Single owner form installs a VM-scoped adapter. No later config file edits or guest credentials are needed. */
   register(actor: object, input: VmManagerInput): { managerId: string } {
     this.options.requireOwner(actor);
+    if (!input || typeof input !== "object") vmFail("vm_invalid_setup", 400);
     if (this.size >= 64) vmFail("vm_setup_capacity");
     const id = crypto.randomUUID();
     if (input.kind === "lima") {

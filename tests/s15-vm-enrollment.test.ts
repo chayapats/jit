@@ -15,7 +15,7 @@ async function fixture(network: "isolated" | "unproven" = "isolated") {
     if (argv[0] === "ssh-keygen") { const result = await vmHostCommand(argv, opts); publicKey = (await Bun.file(`${argv.at(-1)}.pub`).text()).trim().split(" ").slice(0, 2).join(" "); return result; }
     if (argv[0] === "ssh-keyscan") return { exitCode: 0, stdout: Buffer.from(`vm.test ${publicKey}\n`) };
     opts.beforeStart?.();
-    return { exitCode: 0, stdout: Buffer.from(argv.at(-1)?.includes("reachable") ? JSON.stringify({ reachable: [reachable, false, false, false, false, false] }) : "jit-vm-ready-v1\n") };
+    return { exitCode: 0, stdout: Buffer.from(argv.at(-1)?.includes("platform.machine") ? JSON.stringify({architecture:"aarch64",os:"ubuntu:24.04",cpuCount:4,memoryBytes:8388608,diskBytes:1048576,sudo:true,docker:true,basis:"guest_reported"}) : argv.at(-1)?.includes("reachable") ? JSON.stringify({ reachable: [reachable, false, false, false, false, false] }) : "jit-vm-ready-v1\n") };
   };
   const manager: VmManagement = { async inspect() { return { state: "running", identity: "vm", boot: "boot", cpuCount: 4, memoryBytes: 100, diskBytes: 100, network }; }, async stop() {}, async snapshot() {}, async restore() {} };
   const enrollment = new VmEnrollment({ store, keyDirectory: join(directory, "keys"), requireOwner: actor => { if (actor !== owner) throw new Error("not owner"); }, managers: new Map([["manager", manager]]), run });

@@ -6,31 +6,33 @@ import { VmStore, type VmRegistration } from "./store";
 import { VmSshTransport } from "./transport";
 import { probeVmDirectEgress } from "./network";
 import { defaultVmLimits, type VmEvidence, type VmLimits, type VmManagement, type VmPolicyOperation, type VmPolicyPort, type VmSession, type WorkingVmPort } from "./types";
-import { vmCanonical, vmFail, vmHash, vmId, vmLimits } from "./validation";
+import { vmCanonical, vmFail, vmHash, vmId, vmLimits, vmPath, vmInteger } from "./validation";
 import { fetchVmArtifact, type VmArtifactRequest } from "./acquisition";
 import type { VmProxyLease } from "./proxy";
 
 /** Protected composition dependencies; the service is opt-in and never replaces the S14 computer/runtime. */
 export interface WorkingVmOptions {
   store: VmStore; policy: VmPolicyPort; managers: ReadonlyMap<string, VmManagement>;
-  limits?: VmLimits; now?: () => number; requireOwner?: (actor: object) => void;
+  limits?: VmLimits; now?: () => number; monotonic?: () => number; requireOwner?: (actor: object) => void;
   transport?: (registration: VmRegistration) => VmSshTransport;
   proxyLease?: (sessionId: string, expiresAt: number) => VmProxyLease;
   artifactFetch?: typeof fetchVmArtifact;
 }
 interface LiveSession { id: string; vmId: string; workId: string; attemptId: string; generation: number; mode: "work" | "system";
   unit: string; root: string; temporary: string; deadline: number; calls: number; cancelled: boolean; closed: boolean;
-  controller: AbortController; tail: Promise<void>; pending: number; closing: Promise<void> | null; timer: ReturnType<typeof setTimeout> | null; proxy: VmProxyLease | null }
+  controller: AbortController; tail: Promise<void>; pending: number; closing: Promise<void> | null; timer: ReturnType<typeof setTimeout> | null; proxy: VmProxyLease | null; removeSignal: () => void }
 const uuid = () => crypto.randomUUID().replaceAll("-", "");
 /** Shared working VM with exact-unit cooperative cleanup and protected hypervisor recovery. No automatic command replay. */
 export class WorkingVmService implements WorkingVmPort {
   readonly #limits: VmLimits;
   readonly #now: () => number;
+  readonly #clock: () => number;
+  readonly #checked = new Map<string, number>();
   readonly #live = new WeakMap<VmSession, LiveSession>();
   readonly #sessions = new Map<string, LiveSession>();
   readonly #health = new Map<string, Promise<void>>();
   constructor(readonly options: WorkingVmOptions) {
-    this.#limits = vmLimits(options.limits ?? { ...defaultVmLimits }); this.#now = options.now ?? Date.now;
+    this.#limits = vmLimits(options.limits ?? { ...defaultVmLimits }); this.#now = options.now ?? Date.now; this.#clock = options.monotonic ?? (() => performance.now());
     // Existing process-local contexts are not reconstructed. Claims survive, mutation authority does not.
     options.store.transaction(() => {
       const orphans = options.store.db.query<{ vm_id: string }, []>("SELECT DISTINCT vm_id FROM vm_sessions WHERE state<>'closed'").all();
@@ -43,13 +45,13 @@ export class WorkingVmService implements WorkingVmPort {
     for (const s of this.#sessions.values()) if (s.vmId === vmId) { s.cancelled = true; s.controller.abort(); s.proxy?.close(); }
   }
   private current(actor: object, s: LiveSession): void {
-    if (s.cancelled || s.closed || this.#now() >= s.deadline) throw new DOMException("Aborted", "AbortError");
+    if (s.cancelled || s.closed || this.#clock() >= s.deadline) throw new DOMException("Aborted", "AbortError");
     const row = this.options.store.registration(s.vmId);
     if (row.generation !== s.generation || row.state !== "ready" || !row.networkIsolated) vmFail(row.reason ?? "vm_fenced", 403);
     this.options.policy.assertCurrent(actor, { vmId: s.vmId, workId: s.workId, attemptId: s.attemptId, mode: s.mode });
   }
   private async health(row: VmRegistration, force = false): Promise<void> {
-    if (!force && this.#now() - row.networkCheckedAt < this.#limits.networkProbeMs) return;
+    if (!force && this.#checked.has(row.id) && this.#clock() - this.#checked.get(row.id)! < this.#limits.networkProbeMs) return;
     const running = this.#health.get(row.id); if (running) return running;
     const promise = (async () => {
       try {
@@ -58,7 +60,7 @@ export class WorkingVmService implements WorkingVmPort {
         if (!machine || machine.state !== "running" || machine.identity !== row.machineIdentity || machine.boot !== row.boot || machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
         const current = this.options.store.registration(row.id);
         if (current.generation !== row.generation || current.state !== "ready") vmFail("vm_fenced");
-        current.networkCheckedAt = this.#now(); this.options.store.save(current);
+        current.networkCheckedAt = this.#now(); this.options.store.save(current); this.#checked.set(row.id, this.#clock());
       } catch (error) { this.uncertain(row.id, error instanceof AppError ? error.code : "vm_network_unproven"); throw error; }
     })().finally(() => this.#health.delete(row.id));
     this.#health.set(row.id, promise); return promise;
@@ -101,8 +103,8 @@ export class WorkingVmService implements WorkingVmPort {
       await this.health(row, true);
       const root = `/var/lib/jit-work/${input.workId}/${input.attemptId}`, temporary = `${root}/.tmp-${id}`;
       s = { id, vmId: row.id, workId: input.workId, attemptId: input.attemptId, generation: row.generation, mode, unit, root, temporary,
-        deadline: this.#now() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), tail: Promise.resolve(),
-        pending: 0, closing: null, timer: null, proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs) ?? null };
+        deadline: this.#clock() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), tail: Promise.resolve(),
+        pending: 0, closing: null, timer: null, removeSignal: () => {}, proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs) ?? null };
       this.#sessions.set(id, s);
       const state = s, transport = this.transport(row);
       const guard = () => { if (input.signal?.aborted) { state.cancelled = true; throw new DOMException("Aborted", "AbortError"); } this.current(actor, state); };
@@ -121,6 +123,7 @@ export class WorkingVmService implements WorkingVmPort {
       state.timer = setTimeout(() => { void this.closeState(state).catch(() => {}); }, this.#limits.sessionMs);
       const abort = () => { void session.cancel().catch(() => {}); };
       input.signal?.addEventListener("abort", abort, { once: true });
+      state.removeSignal = () => input.signal?.removeEventListener("abort", abort);
       if (input.signal?.aborted) { await session.cancel(); throw new DOMException("Aborted", "AbortError"); }
       this.options.store.db.query("UPDATE vm_sessions SET state='active' WHERE id=?").run(id);
       return session;
@@ -147,7 +150,7 @@ export class WorkingVmService implements WorkingVmPort {
       if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
       const action: VmPolicyOperation = { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
         operationId, kind: operation.op === "init" ? "setup" : s.mode === "system" && kind === "shell" ? "system_admin" : kind, payload, payloadHash,
-        timeoutMs: Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#now()), outputBytes: this.#limits.outputBytes };
+        timeoutMs: Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#clock()), outputBytes: this.#limits.outputBytes };
       const claim = await this.options.policy.claim(actor, Object.freeze(action)); this.current(actor, s);
       const evidence: VmEvidence = { id, vmId: s.vmId, sessionId: s.id, operationId, payloadHash, outcome: "not_dispatched", responseHash: null,
         outputBytes: null, transport: "pending", execution: "unsettled", published: false };
@@ -172,7 +175,7 @@ export class WorkingVmService implements WorkingVmPort {
   }
   private closeState(s: LiveSession): Promise<void> {
     if (s.closing) return s.closing;
-    s.cancelled = true; s.controller.abort(); s.proxy?.close(); if (s.timer) clearTimeout(s.timer);
+    s.cancelled = true; s.controller.abort(); s.proxy?.close(); s.removeSignal(); if (s.timer) clearTimeout(s.timer);
     this.options.store.db.query("UPDATE vm_sessions SET state='stopping' WHERE id=? AND state<>'closed'").run(s.id);
     s.closing = (async () => {
       // Client/channel closure is separate from guest scope cessation. Never stop a sibling unit here.
@@ -191,11 +194,15 @@ export class WorkingVmService implements WorkingVmPort {
   /** Downloads an exact separately authorized artifact, then performs a separately claimed bounded guest write. */
   async acquire(actor: object, session: VmSession, input: VmArtifactRequest & { path: string }): Promise<void> {
     const s = this.#live.get(session); if (!s) vmFail("vm_session_invalid", 403); this.current(actor, s);
+    vmPath(input.path, [s.root, s.temporary]); vmInteger(input.maxBytes, this.#limits.fileBytes);
+    if (!/^[a-f0-9]{64}$/.test(input.sha256)) vmFail("vm_acquisition_invalid", 400);
     const payload = vmCanonical(input), operationId = uuid();
+    if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
     const claim = await this.options.policy.claim(actor, { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
       operationId, kind: "acquire", payloadHash: vmHash(payload), payload, timeoutMs: 30000, outputBytes: input.maxBytes });
     const bytes = await claim.dispatch(() => { this.current(actor, s); return (this.options.artifactFetch ?? fetchVmArtifact)(input, s.controller.signal); });
     claim.publish(() => this.current(actor, s));
+    if (bytes.length > input.maxBytes || vmHash(bytes) !== input.sha256) vmFail("vm_acquisition_invalid");
     await this.call(actor, s, { op: "write", path: input.path, data: Buffer.from(bytes).toString("base64"), createParents: false }, "write");
   }
   /** Explicit owner start/re-verification after recovery. No old session, command or policy claim is resumed. */
@@ -227,6 +234,6 @@ export class WorkingVmService implements WorkingVmPort {
     });
     this.options.store.db.query("INSERT INTO vm_events(vm_id,kind,generation) VALUES (?,'stop',?)").run(row.id, row.generation);
     if (input.snapshotId) { requireOwner(actor); await manager.restore(input.snapshotId); this.options.store.db.query("INSERT INTO vm_events(vm_id,kind,generation) VALUES (?,'restore',?)").run(row.id, row.generation); }
-    const current = this.options.store.registration(row.id); current.state = "stopped"; current.reason = null; current.boot = null; this.options.store.save(current);
+    const current = this.options.store.registration(row.id); current.state = "stopped"; current.reason = null; current.boot = null; current.networkIsolated = false; this.options.store.save(current);
   }
 }
