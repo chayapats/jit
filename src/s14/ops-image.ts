@@ -90,7 +90,7 @@ export function inspectOpsImage(bytes: Uint8Array, schemaHash: string): void {
   } finally { db.close(); }
 }
 /** Produces a freshly compacted allowlisted image with credentials, sessions and transient payloads excluded. */
-export function credentialFreeImage(store: S14Store): Uint8Array {
+export function credentialFreeImage(store: Pick<S14Store, "read" | "snapshotBytes">): Uint8Array {
   store.read(assertOpsTableClassification);
   const source = store.snapshotBytes();
   if (source.length > opsLimits.bytes) throw new AppError("s14_ops_backup_too_large", 409);

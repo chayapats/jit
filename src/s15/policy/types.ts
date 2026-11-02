@@ -83,7 +83,14 @@ export interface ReconcileContext { beforeRead(): void }
 /** Protected authenticated principal; verifyOwner must check current live session/CSRF/channel binding itself. */
 export interface AuthenticatedOwner { id: string; generation: number; expiresAt: number }
 /** Explicit opt-in construction only. The path is the current protected ledger, never a VM disk or ordinary backup projection. create is allowed only for a new installation, never recovery. */
-export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; reads?: readonly ReadHandler[]; now?: () => number; subscriptionModels?: SubscriptionModels }
+export interface PolicyOptions { runtime: 's15'; path: string; create: boolean; installationId: string; ownerGeneration: () => number; verifyOwner: (proof: unknown) => AuthenticatedOwner | null; catalogs: CatalogPort; adapters: readonly ActionAdapter[]; reads?: readonly ReadHandler[]; now?: () => number; subscriptionModels?: SubscriptionModels;
+  /** Protected adoption composition calls its durable activity fence before admission/dispatch. Omitted only by standalone opt-in consumers. */
+  activityGuard?: () => void;
+  /** Protected adoption reserves historical ingress IDs before any owner command can create a fresh effect/work. */
+  requestGuard?: (requestId: string) => void;
+  /** One-time protected S14 reservation floor. Known counters survive adoption; this creates no policy or spend allowance. */
+  initialReservations?: { sourceHash: string; usage: Pick<BudgetVector, 'attempts' | 'steps' | 'calls' | 'reads' | 'outputBytes'> };
+}
 
 /** Protected approved subscription registry, never caller/model metadata. Only inference reservations may
  * use it when no monetary budget is installed. Required finite technical bounds apply per durable work;
