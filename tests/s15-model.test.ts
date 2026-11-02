@@ -127,3 +127,20 @@ test('a filtered work view still shows all usage charged against the installatio
   const view = service.project(f.owner, source.authority!.id);
   expect(view.selections).toHaveLength(1); expect(view.ceilings.find(row => row.dimension === 'calls')).toMatchObject({ ceiling: 20, charged: 2 });
 });
+
+test.each([false, true])('Schway owns transient retries and rechecks revocation during fake-clock backoff (revoke=%s)', async revoke => {
+  const f = modelWorkFixture(); cleanups.push(() => f.cleanup()); const source = f.source('source'); let calls = 0, sleeps = 0;
+  const service = openModelService({ ...f.modelOptions(), limits: { ...f.modelOptions().limits, attempts: 2 },
+    clock: { ...f.clock, async sleep(ms, signal) { if (ms >= 10000) return f.clock.sleep(ms, signal); f.advance(ms); sleeps++; if (revoke) f.policy.owner.revoke(f.owner, 'revoke_retry', { kind: 'work', id: source.authority!.id }); } },
+    scripted: route => ({ provider: 'codex-subscription', id: route.modelId, async *stream(request) {
+      calls++; expect(request.thinking).toBe('low');
+      if (calls === 1) throw Object.assign(new Error('fixture_transient_transport'), { code: 'ECONNRESET' });
+      yield { type: 'usage', usage: { inputTokens: 12, outputTokens: 3 } };
+      yield { type: 'message_complete', message: { type: 'assistant', id: crypto.randomUUID(), content: [{ type: 'text', text: 'Recovered inside Schway.' }] } };
+    } }),
+  }); cleanups.push(() => service.close());
+  const result = await service.runStep(source.actor!, step()); expect(sleeps).toBe(1);
+  expect(calls).toBe(revoke ? 1 : 2); expect(f.policy.control.usage().charged.calls).toBe(revoke ? 1 : 2);
+  if (revoke) expect(result).toMatchObject({ state: 'reconcile_only', code: 'authority_revoked' });
+  else { expect(result.state).toBe('completed'); expect(result.tokenSamples).toHaveLength(2); expect(result.tokens?.inputTokens).toBeNull(); }
+});
