@@ -50,7 +50,8 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
   const db = store.db;
   const get = <V>(key: string): V | null => {
     const row = db.query<{ json: string }, [string]>('SELECT json FROM meta WHERE key=?').get(key);
-    return row ? JSON.parse(row.json) as V : null;
+    try { return row ? JSON.parse(row.json) as V : null; }
+    catch { return adoptionFail('transition_integrity_failed'); }
   };
   const put = (key: string, value: unknown) => db.query('INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run(key, encode(value));
   const configHash = hashValue({ source: o.source, directory: o.directory, target: o.target });

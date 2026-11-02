@@ -4,8 +4,9 @@ import { dirname, join } from 'node:path';
 import { readServiceConfigFile, serviceDatabasePath } from '../../../ops/package/service-config';
 import { opsRead, opsPath } from '../../s14/ops-files';
 import { credentialFreeImage, opsLedgerTables, opsSchema } from '../../s14/ops-image';
-import { inspectS14Store } from '../../s14/store';
+import { FreshStateRequired, inspectS14Store } from '../../s14/store';
 import { containsCredential } from '../../security/credentials';
+import { AppError } from '../../errors';
 import type { AppTransaction } from '../../store';
 import type { AdoptionCell, AdoptionOptions, AdoptionReport, AdoptionRow } from './types';
 import type { PolicyOptions } from '../policy';
@@ -74,7 +75,7 @@ function assertNoSidecars(path: string): void {
   if (['-wal', '-shm', '-journal'].some(suffix => lstatSync(path + suffix, { throwIfNoEntry: false }))) adoptionFail('transition_sqlite_settlement_required');
 }
 /** Reads only quiescent schema-17 source bytes into memory. Unknown/legacy continuity is refused explicitly. */
-export function snapshotSource(o: AdoptionOptions): SourceSnapshot {
+function readSnapshot(o: AdoptionOptions): SourceSnapshot {
   validateOptions(o);
   if (o.source.runtime !== 's14') adoptionFail('transition_legacy_continuity_unsupported');
   if (inspectS14Store(o.source.database) !== 's14') adoptionFail('transition_source_unsupported');
@@ -121,6 +122,7 @@ export function snapshotSource(o: AdoptionOptions): SourceSnapshot {
     // Keep every orphan high-water mark. The projection is a maximum, never a new allowance.
     const usage = new Map<string, Record<string, bigint | string>>();
     for (const d of [clean, ledger]) for (const row of d.query('SELECT * FROM grant_usage ORDER BY grant_id').all() as Record<string, bigint | string>[]) {
+      if (typeof row.grant_id !== 'string' || ['attempts', 'steps', 'calls', 'output_bytes', 'reads'].some(k => typeof row[k] !== 'bigint' || BigInt(row[k]!) < 0n)) adoptionFail('transition_usage_unrepresentable');
       const prior = usage.get(row.grant_id as string);
       if (!prior) usage.set(row.grant_id as string, { ...row });
       else for (const key of ['attempts', 'steps', 'calls', 'output_bytes', 'reads']) prior[key] = BigInt(prior[key]!) > BigInt(row[key]!) ? prior[key]! : row[key]!;
@@ -172,6 +174,16 @@ export function snapshotSource(o: AdoptionOptions): SourceSnapshot {
     return { report: { ...body, planHash: hashValue(body) }, files: before, rows: history, facts, requests, ownerGeneration: owner.generation,
       reservations: { sourceHash: checkpointHash, usage: floor } };
   } finally { clean?.close(); db.close(); ledger.close(); }
+}
+
+/** Refuses corrupt/unrepresentable originals without exposing parser excerpts, payloads or filesystem diagnostics. */
+export function snapshotSource(o: AdoptionOptions): SourceSnapshot {
+  try { return readSnapshot(o); }
+  catch (error) {
+    if (error instanceof FreshStateRequired) return adoptionFail('transition_source_unsupported');
+    if (error instanceof AppError && /^(transition_|s14_ops_|s14_fresh_state_required$|s14_lifecycle_)[a-z0-9_]*$/.test(error.code)) throw error;
+    return adoptionFail('transition_source_invalid');
+  }
 }
 
 /** Dry run creates no files, locks, candidate, policy, credentials or workers. Safe refusal codes contain no payload. */

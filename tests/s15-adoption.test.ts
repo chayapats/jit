@@ -202,6 +202,14 @@ test('unknown schema, sidecars, foreign installation, changed binary and overlap
   const changed = preservedBytes(f); expect(() => reportAdoption(f.options)).toThrow('transition_schema_unreviewed'); expect(preservedBytes(f)).toEqual(changed);
 });
 
+test.each([16, 18, 45])('source schema %i refuses before creating target or lock files', async version => {
+  const f = await fixture(), bytes = Buffer.from(readFileSync(f.database)); bytes.writeUInt32BE(version, 60); writeFileSync(f.database, bytes);
+  const before = preservedBytes(f);
+  expect(() => openAdoptionService(f.options)).toThrow('transition_source_unsupported');
+  expect(existsSync(f.options.directory)).toBe(false); expect(existsSync(f.database + '.runtime-lock.sqlite')).toBe(false);
+  expect(preservedBytes(f)).toEqual(before);
+});
+
 test('source drift after validate refuses activation while the prior build stays fenced', async () => {
   const f = await fixture(), service = f.open(), p = prepare(service, f.options);
   const v = service.command(p.actor, { kind: 'validate', requestId: retryId(), expectedRevision: p.status.revision, hash: p.status.report.planHash });
