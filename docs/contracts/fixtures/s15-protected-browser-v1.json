@@ -340,6 +340,7 @@
     {
       "id": "image_2mib_response",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -383,6 +384,7 @@
       "id": "BROW15-D001",
       "purpose": "Accepted navigation intent performs no input, network, claim or reservation.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -404,6 +406,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 0,
@@ -427,6 +430,7 @@
       "id": "BROW15-D002",
       "purpose": "Actually captured text becomes available after independent scope and channel settlement; browser process stays allocated.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -448,6 +452,7 @@
         {"kind":"publish","request":null,"evidence":null,"note":"publish"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 0,
@@ -471,6 +476,7 @@
       "id": "BROW15-D003",
       "purpose": "Proved ordinary navigation uses exact protected input and separately admitted requests.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -497,6 +503,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -520,6 +527,7 @@
       "id": "BROW15-D004",
       "purpose": "Proved ordinary click uses exact protected input and separately admitted requests.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -545,6 +553,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -568,6 +577,7 @@
       "id": "BROW15-D005",
       "purpose": "Proved ordinary fill uses exact protected input and separately admitted requests.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -593,6 +603,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -616,6 +627,7 @@
       "id": "BROW15-D006",
       "purpose": "Proved ordinary select uses exact protected input and separately admitted requests.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -641,6 +653,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -664,6 +677,7 @@
       "id": "BROW15-D007",
       "purpose": "Proved ordinary scroll uses exact protected input and separately admitted requests.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -689,6 +703,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -712,6 +727,7 @@
       "id": "BROW15-D008",
       "purpose": "A bounded actual download returns quarantined bytes with source lineage and no execution/import.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -736,6 +752,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "decision": "available",
         "code": null,
         "inputCount": 0,
@@ -759,6 +776,7 @@
       "id": "BROW15-D009",
       "purpose": "Already sent parent remains recorded while the known redirect child waits at its own gate.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -779,6 +797,7 @@
         {"kind":"dispatch_request","request":{"id":"request_child","source":"redirect","parentRequestId":"request_a","frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://other.example.test/action","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":["communication"],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"known_child_held"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "hold",
         "code": "approval_required",
         "inputCount": 1,
@@ -802,6 +821,7 @@
       "id": "BROW15-D010",
       "purpose": "Already sent parent remains recorded while the known frame child waits at its own gate.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -822,6 +842,7 @@
         {"kind":"dispatch_request","request":{"id":"request_child","source":"frame","parentRequestId":"request_a","frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://other.example.test/action","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"new_recipient","revision":1,"generation":1}],"classes":["disclosure"],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"known_child_held"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "hold",
         "code": "recipient_approval_required",
         "inputCount": 1,
@@ -845,6 +866,7 @@
       "id": "BROW15-D011",
       "purpose": "Unknown popup consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -865,6 +887,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"popup"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -888,6 +911,7 @@
       "id": "BROW15-D012",
       "purpose": "Unknown script consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -908,6 +932,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"script"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -931,6 +956,7 @@
       "id": "BROW15-D013",
       "purpose": "Unknown service_worker consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -951,6 +977,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"service_worker"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -974,6 +1001,7 @@
       "id": "BROW15-D014",
       "purpose": "Unknown misleading_label consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -994,6 +1022,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"misleading_label"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1017,6 +1046,7 @@
       "id": "BROW15-D015",
       "purpose": "Unknown unknown_onchange consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1037,6 +1067,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"unknown_onchange"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1060,6 +1091,7 @@
       "id": "BROW15-D016",
       "purpose": "Unknown unknown_autosave consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1080,6 +1112,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"unknown_autosave"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1103,6 +1136,7 @@
       "id": "BROW15-D017",
       "purpose": "Unknown hidden_submit_unknown consequences refuse before the initial input; no discovery by dispatch.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1123,6 +1157,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"hidden_submit_unknown"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1146,6 +1181,7 @@
       "id": "BROW15-D018",
       "purpose": "Known hidden_submit semantics are prepared exactly and held before input/request.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1166,6 +1202,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"hidden_submit"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "approval_required",
         "inputCount": 0,
@@ -1189,6 +1226,7 @@
       "id": "BROW15-D019",
       "purpose": "Known get_payment semantics are prepared exactly and held before input/request.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1209,6 +1247,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"get_payment"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "approval_required",
         "inputCount": 0,
@@ -1232,6 +1271,7 @@
       "id": "BROW15-D020",
       "purpose": "Known new_recipient semantics are prepared exactly and held before input/request.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1252,6 +1292,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"new_recipient"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "recipient_approval_required",
         "inputCount": 0,
@@ -1275,6 +1316,7 @@
       "id": "BROW15-D021",
       "purpose": "Known business_commitment semantics are prepared exactly and held before input/request.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1295,6 +1337,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"business_commitment"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "owner_direction_required",
         "inputCount": 0,
@@ -1318,6 +1361,7 @@
       "id": "BROW15-D022",
       "purpose": "No generic get_unknown route can infer support from a label or HTTP method.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJraW5kIjoiZ2V0X3Vua25vd24iLCJsYWJlbCI6IlJlYWQgb25seSJ9","bytes":42,"sha256":"e58ac0b6c480d0fab0ca74f022054d5f7e4d73a05c29978269bbcdb7a9c130a4"},
         "priorReceipt": null,
@@ -1338,6 +1382,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"get_unknown"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1361,6 +1406,7 @@
       "id": "BROW15-D023",
       "purpose": "No generic upload route can infer support from a label or HTTP method.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJraW5kIjoidXBsb2FkIiwibGFiZWwiOiJSZWFkIG9ubHkifQ==","bytes":37,"sha256":"7057c468eb7293b73aeb8791843ad54914de962fc5db02293e9b8c5c0388b67a"},
         "priorReceipt": null,
@@ -1381,6 +1427,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"upload"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1404,6 +1451,7 @@
       "id": "BROW15-D024",
       "purpose": "No generic clipboard route can infer support from a label or HTTP method.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJraW5kIjoiY2xpcGJvYXJkIiwibGFiZWwiOiJSZWFkIG9ubHkifQ==","bytes":40,"sha256":"97416816960b4a196b55d33a33a7ff4c1a724f75c163e74a008f8e827519b18c"},
         "priorReceipt": null,
@@ -1424,6 +1472,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"clipboard"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1447,6 +1496,7 @@
       "id": "BROW15-D025",
       "purpose": "No generic file_chooser route can infer support from a label or HTTP method.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJraW5kIjoiZmlsZV9jaG9vc2VyIiwibGFiZWwiOiJSZWFkIG9ubHkifQ==","bytes":43,"sha256":"65f898b746ffaa0012acc82ce8c4c7583e4d2d38d0fe0f64d80508364b5f151e"},
         "priorReceipt": null,
@@ -1467,6 +1517,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"file_chooser"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1490,6 +1541,7 @@
       "id": "BROW15-D026",
       "purpose": "No generic drag_drop route can infer support from a label or HTTP method.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJraW5kIjoiZHJhZ19kcm9wIiwibGFiZWwiOiJSZWFkIG9ubHkifQ==","bytes":40,"sha256":"5af8bfb853ba78a41126162877d5df557e3fea6ec935001af37f23d32e6b60f6"},
         "priorReceipt": null,
@@ -1510,6 +1562,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"drag_drop"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "effect_semantics_unknown",
         "inputCount": 0,
@@ -1533,6 +1586,7 @@
       "id": "BROW15-D027",
       "purpose": "Untrusted raw_cdp proposal is outside the closed operation schema.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"eyJleHByZXNzaW9uIjoiZG9jdW1lbnQuY29va2llIiwia2luZCI6IlJ1bnRpbWUuZXZhbHVhdGUifQ==","bytes":58,"sha256":"f1b426daf102b9f64807143aa80142a68177e4ad9d6f5c0f12d3ab0573680d92"},
         "priorReceipt": null,
@@ -1553,6 +1607,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"raw_cdp"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "invalid_shape",
         "inputCount": 0,
@@ -1576,6 +1631,7 @@
       "id": "BROW15-D028",
       "purpose": "Untrusted arbitrary_js proposal is outside the closed operation schema.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"eyJraW5kIjoiZXZhbCIsInNvdXJjZSI6ImZldGNoKGVuZHBvaW50KSJ9","bytes":42,"sha256":"8de33c77cf9c14f839998f9c58beb1e166bfbbb5c882d8b492e2df0cda0b158a"},
         "priorReceipt": null,
@@ -1596,6 +1652,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"arbitrary_js"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "invalid_shape",
         "inputCount": 0,
@@ -1619,6 +1676,7 @@
       "id": "BROW15-D029",
       "purpose": "Untrusted guest_socket proposal is outside the closed operation schema.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"eyJlbmRwb2ludCI6Imd1ZXN0X3NlbGVjdGVkX2VuZHBvaW50Iiwia2luZCI6ImNvbm5lY3QifQ==","bytes":55,"sha256":"e2f716e5088459027803c90602da52af952b3a52c61b9fed99092c3571b527d6"},
         "priorReceipt": null,
@@ -1639,6 +1697,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"guest_socket"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "invalid_shape",
         "inputCount": 0,
@@ -1662,6 +1721,7 @@
       "id": "BROW15-D030",
       "purpose": "Cross-profile read refuses before capture even when IDs and hashes are well-formed.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1682,6 +1742,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "outside_scope",
         "inputCount": 0,
@@ -1705,6 +1766,7 @@
       "id": "BROW15-D031",
       "purpose": "A stale screenshot/target cannot dispatch an otherwise named interaction.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1725,6 +1787,7 @@
         {"kind":"dispatch_input","request":null,"evidence":null,"note":"dispatch_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "stale_observation",
         "inputCount": 0,
@@ -1748,6 +1811,7 @@
       "id": "BROW15-D032",
       "purpose": "Takeover fences queued input at the final barrier and preserves its conservative claimed charge.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1769,6 +1833,7 @@
         {"kind":"continue_original","request":null,"evidence":null,"note":"continue_original"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "takeover_active",
         "inputCount": 0,
@@ -1792,6 +1857,7 @@
       "id": "BROW15-D033",
       "purpose": "Owner takeover waits while a previously sent physical input is unsettled.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1813,6 +1879,7 @@
         {"kind":"owner_input","request":null,"evidence":null,"note":"wait_old_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "pending",
         "code": "input_busy",
         "inputCount": 1,
@@ -1836,6 +1903,7 @@
       "id": "BROW15-D034",
       "purpose": "Owner input follows proved prior input settlement, with no concurrent input or retained secret.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1858,6 +1926,7 @@
         {"kind":"owner_input","request":null,"evidence":null,"note":"owner_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 2,
@@ -1881,6 +1950,7 @@
       "id": "BROW15-D035",
       "purpose": "Takeover end clears ownership, advances generation and does not approve or revise the action.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1902,6 +1972,7 @@
         {"kind":"takeover_end","request":null,"evidence":null,"note":"takeover_end"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 0,
@@ -1925,6 +1996,7 @@
       "id": "BROW15-D036",
       "purpose": "A stale agent release cannot clear the newer owner lease.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1945,6 +2017,7 @@
         {"kind":"stale_release","request":null,"evidence":null,"note":"stale_release"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 0,
@@ -1968,6 +2041,7 @@
       "id": "BROW15-D037",
       "purpose": "Lease expiry is checked before input without waiting for a sweep.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -1988,6 +2062,7 @@
         {"kind":"dispatch_input","request":null,"evidence":null,"note":"dispatch_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "expired",
         "inputCount": 0,
@@ -2011,6 +2086,7 @@
       "id": "BROW15-D038",
       "purpose": "Revoke before original final input prevents send and retains the claimed upper bound.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2032,6 +2108,7 @@
         {"kind":"continue_original","request":null,"evidence":null,"note":"continue_original"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "authority_revoked",
         "inputCount": 0,
@@ -2055,6 +2132,7 @@
       "id": "BROW15-D039",
       "purpose": "Revoke after input but before request cannot rewind the input fact.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2076,6 +2154,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"navigation","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"dispatch_request"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "authority_revoked",
         "inputCount": 1,
@@ -2099,6 +2178,7 @@
       "id": "BROW15-D040",
       "purpose": "Revoke after actual request dispatch retains unknown remote effect and prevents late publication.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2120,6 +2200,7 @@
         {"kind":"publish","request":null,"evidence":null,"note":"publish"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "withheld",
         "code": "authority_revoked",
         "inputCount": 1,
@@ -2143,6 +2224,7 @@
       "id": "BROW15-D041",
       "purpose": "Withdrawal after response capture/closure withholds bytes without erasing those facts.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2164,6 +2246,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "withheld",
         "code": "lineage_withdrawn",
         "inputCount": 0,
@@ -2187,6 +2270,7 @@
       "id": "BROW15-D042",
       "purpose": "Already aborted dispatch refuses before a new claim or charge.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2208,6 +2292,7 @@
         {"kind":"claim","request":null,"evidence":null,"note":"claim"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "aborted",
         "inputCount": 0,
@@ -2231,6 +2316,7 @@
       "id": "BROW15-D043",
       "purpose": "Abort after dispatch requests one cleanup and keeps actual sent/unknown facts.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2251,6 +2337,7 @@
         {"kind":"cancel","request":null,"evidence":null,"note":"cancel"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "withheld",
         "code": "aborted",
         "inputCount": 1,
@@ -2274,6 +2361,7 @@
       "id": "BROW15-D044",
       "purpose": "Repeated signal and explicit cancellation reuse the original memoized cleanup without a new charge.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2296,6 +2384,7 @@
         {"kind":"cancel","request":null,"evidence":null,"note":"cancel"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unknown",
         "code": "settlement_required",
         "inputCount": 0,
@@ -2319,6 +2408,7 @@
       "id": "BROW15-D045",
       "purpose": "Channel closure alone proves neither operation quiescence nor browser stop.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2340,6 +2430,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "pending",
         "code": "settlement_required",
         "inputCount": 0,
@@ -2363,6 +2454,7 @@
       "id": "BROW15-D046",
       "purpose": "Captured response alone is retained but unavailable while channel and scope remain unsettled.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2383,6 +2475,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "pending",
         "code": "settlement_required",
         "inputCount": 0,
@@ -2406,6 +2499,7 @@
       "id": "BROW15-D047",
       "purpose": "Registered exact-scope proof plus known channel closure allows guarded result retrieval.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2427,6 +2521,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "available",
         "code": null,
         "inputCount": 0,
@@ -2450,6 +2545,7 @@
       "id": "BROW15-D048",
       "purpose": "Rejected copied stop proof cannot erase captured response or already closed channel/quiescent scope.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2470,6 +2566,7 @@
         {"kind":"reject_evidence","request":null,"evidence":{"contract":"s15-browser-evidence/v1","id":"evidence_process_stopped","manager":{"id":"manager","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","session":{"id":"session","revision":1,"generation":1},"processGeneration":1,"invocationId":null,"kind":"process_stopped","capturedAt":3000,"proofHash":"f5aa721a711f698e8e97f878e1cc3de1700c7b3fcc84518452adf4543b797378","hash":"d46eaa0808019e6e3d66b8ae25646a2ae5263572fb5e4ae5760047e9f1f6de04"},"note":"reject_evidence"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "evidence_refused",
         "inputCount": 0,
@@ -2493,6 +2590,7 @@
       "id": "BROW15-D049",
       "purpose": "Rejected owner_statement stop proof cannot erase captured response or already closed channel/quiescent scope.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2513,6 +2611,7 @@
         {"kind":"reject_evidence","request":null,"evidence":{"contract":"s15-browser-evidence/v1","id":"evidence_process_stopped","manager":{"id":"manager","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","session":{"id":"session","revision":1,"generation":1},"processGeneration":1,"invocationId":null,"kind":"process_stopped","capturedAt":3000,"proofHash":"f5aa721a711f698e8e97f878e1cc3de1700c7b3fcc84518452adf4543b797378","hash":"d46eaa0808019e6e3d66b8ae25646a2ae5263572fb5e4ae5760047e9f1f6de04"},"note":"reject_evidence"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "evidence_refused",
         "inputCount": 0,
@@ -2536,6 +2635,7 @@
       "id": "BROW15-D050",
       "purpose": "Valid process stop settles exact scope/process, preserves captured response, and cannot infer channel closure or remote non-occurrence.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2557,6 +2657,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "pending",
         "code": "settlement_required",
         "inputCount": 1,
@@ -2580,6 +2681,7 @@
       "id": "BROW15-D051",
       "purpose": "Valid old-scope stop after revoke preserves known closed channel/response and unknown effect; no publication.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2602,6 +2704,7 @@
         {"kind":"publish","request":null,"evidence":null,"note":"publish"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "withheld",
         "code": "authority_revoked",
         "inputCount": 1,
@@ -2625,6 +2728,7 @@
       "id": "BROW15-D052",
       "purpose": "Copied work actor refuses despite structurally valid current records.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2645,6 +2749,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "authentication_required",
         "inputCount": 0,
@@ -2668,6 +2773,7 @@
       "id": "BROW15-D053",
       "purpose": "Wrong manager epoch cannot settle or authenticate a session.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2688,6 +2794,7 @@
         {"kind":"observe_scope","request":null,"evidence":{"contract":"s15-browser-evidence/v1","id":"evidence_scope_quiescent","manager":{"id":"manager","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","session":{"id":"session","revision":1,"generation":1},"processGeneration":1,"invocationId":"invocation","kind":"scope_quiescent","capturedAt":3000,"proofHash":"f5aa721a711f698e8e97f878e1cc3de1700c7b3fcc84518452adf4543b797378","hash":"6e4b598182da95ee7229ad8ce820abf26132d1371b7393a0048cba9c1675cc80"},"note":"observe_scope"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "evidence_refused",
         "inputCount": 0,
@@ -2711,6 +2818,7 @@
       "id": "BROW15-D054",
       "purpose": "Caller-selected alternate endpoint refuses without a fallback browser or host shell.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2731,6 +2839,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "outside_scope",
         "inputCount": 0,
@@ -2754,6 +2863,7 @@
       "id": "BROW15-D055",
       "purpose": "Same request and operation hash returns its historical receipt with no new effect.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": {"contract":"s15-browser-receipt/v1","requestId":"owner_request","operationId":"operation","operationHash":"cf9ef2c350ab949a698b0056bab7228cf1fafb6e6730e78acd9506ab031460b4","state":"accepted","code":null,"hash":"03896ac7b54e235184462ef96b896128820ebf77c896eb8e346e0b50ba1e5cbf"},
@@ -2774,6 +2884,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 0,
@@ -2797,6 +2908,7 @@
       "id": "BROW15-D056",
       "purpose": "Same request with changed payload conflicts with its original committed hash.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"eyJiaW5kaW5nIjp7ImF0dGVtcHQiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJhdHRlbXB0IiwicmV2aXNpb24iOjF9LCJjb250cm9sbGVyRXBvY2giOiJjb250cm9sbGVyX2Vwb2NoX2EiLCJpbnB1dExlYXNlIjp7ImdlbmVyYXRpb24iOjEsImlkIjoibGVhc2UiLCJyZXZpc2lvbiI6MX0sIm1hbmFnZXJFcG9jaCI6Im1hbmFnZXJfZXBvY2hfYSIsIm9ic2VydmF0aW9uR2VuZXJhdGlvbiI6MSwib3duZXJHZW5lcmF0aW9uIjoxLCJwcm9jZXNzR2VuZXJhdGlvbiI6MSwicHJvZmlsZSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InByb2ZpbGUiLCJyZXZpc2lvbiI6MX0sInJlZ2lzdHJhdGlvbiI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InJlZ2lzdHJhdGlvbiIsInJldmlzaW9uIjoxfSwic2Vzc2lvbiI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InNlc3Npb24iLCJyZXZpc2lvbiI6MX0sInRha2VvdmVyR2VuZXJhdGlvbiI6MSwid29yayI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6IndvcmsiLCJyZXZpc2lvbiI6MX19LCJib2R5Ijp7ImtpbmQiOiJuYXZpZ2F0ZSIsInVybCI6Imh0dHBzOi8vc2l0ZS5leGFtcGxlLnRlc3QvY2hhbmdlZCJ9LCJjb250cmFjdCI6InMxNS1icm93c2VyLW9wZXJhdGlvbi92MSIsImNyZWF0ZWRBdCI6MTAwMCwiZXhwaXJlc0F0IjoxMDAwMDAsImhhc2giOiJlNjY4NGMwMGM3NzJmZTIxNTc2NTNhOTA0NDk1Zjc2M2I0OTU5Y2QyYTA3ZTgwNmIzNDkxMTM0NDhkNTM4ZTQ1IiwiaWQiOiJvcGVyYXRpb24iLCJwb2xpY3kiOnsiYWN0aW9uIjp7ImFjdGlvbkhhc2giOiJiYzI5MzI1NzU2OGExYjBiNDZkZGE5Mzg0MTRiODFlMDIwNjgxOTY0ZjE1OWIzMzdlNmIwZTI3YzQyMWFmZWNhIiwiaWQiOiJhY3Rpb25faW5wdXQiLCJyZXZpc2lvbiI6MX0sImF1dGhvcml0eSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImF1dGhvcml0eSIsInJldmlzaW9uIjoxfSwiYXV0aG9yaXR5SGFzaCI6IjgyN2JhZTBiZDQ4ZjJkMmYxZjg0ODQ5OGU1NzU4NGFlNWI4MzlhYzQ2YjkwOTA2MmU3N2Y3YjAzMmRiNjY1YjkiLCJidWRnZXQiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJidWRnZXQiLCJyZXZpc2lvbiI6MX0sImNvbnRpbnVpdHlJZCI6ImNvbnRpbnVpdHkiLCJjb3N0QmFzaXMiOnsiYnl0ZXMiOjQxLCJpZCI6ImNvc3RfYmFzaXMiLCJtZWRpYVR5cGUiOiJ0ZXh0L3BsYWluIiwic2hhMjU2IjoiMzQyNjgyYWY5MGUzNGJjZTZiMmMzZTY2MjgyNGJlMTE4NGMxZTJlNmJhOTg0N2JhZGJlMTgyZDgxMzU4NWYyZCJ9LCJsaW5lYWdlIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InNvdXJjZSIsInJldmlzaW9uIjoxfV0sInBvbGljeSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InBvbGljeSIsInJldmlzaW9uIjoxfSwicG9saWN5SGFzaCI6ImYwYjk1NWRhMjZjOTNkNTA4ZmUxN2NlZWE0OTFkYjdhNTM4NGRjN2FlMGI5NjM5NjMzODY2ZWEwZDAwZDExNjkiLCJyZWNpcGllbnRzIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InJlY2lwaWVudCIsInJldmlzaW9uIjoxfV0sInJlc291cmNlcyI6W3siZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9XSwidXBwZXJCb3VuZCI6eyJhY3RpdmVNcyI6MzAwMDAsImF0dGVtcHRzIjowLCJjYWxscyI6MSwib3V0cHV0Qnl0ZXMiOjMyNzY4LCJyZWFkcyI6MSwic3BlbmRNaW5vciI6IjAiLCJzdGVwcyI6MX19LCJyZWdpc3RyYXRpb25IYXNoIjoiMTY4NzRhNmIwZWU3OTIzNjMxMDg2OGM0YTdjODczNmRkMzIzNmI4YTY0M2IwMmM2YjVmOGU2NmY0ZDk1ZjVhNCIsInJlcXVlc3RJZCI6Im93bmVyX3JlcXVlc3QiLCJzbG90SWQiOiJpbnZvY2F0aW9uX3Nsb3QiLCJzdXBwb3J0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoic3VwcG9ydCIsInJldmlzaW9uIjoxfSwic3VwcG9ydEhhc2giOiI2ZGM3ODgzN2U4NTZkNzkwOTEyYTgxOWFhYzE4OTg2ZDZmZGQ1ZDE4NWM2NTMxOTBiNmYwOWEwMDVlZmIyZTNiIn0=","bytes":1946,"sha256":"f818a5060a86254840538212443278b7661efc310c63079ad8ac281fa3a7d2f9"},
         "priorReceipt": {"contract":"s15-browser-receipt/v1","requestId":"owner_request","operationId":"operation","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","state":"accepted","code":null,"hash":"c0f118f453e208529ad1a60c8df9e272f4282016cb2a2109e237b7c0c3de70a0"},
@@ -2817,6 +2929,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "request_id_conflict",
         "inputCount": 0,
@@ -2840,6 +2953,7 @@
       "id": "BROW15-D057",
       "purpose": "A recovered claim cannot reconstruct the original mutation context, even before a known send.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2861,6 +2975,7 @@
         {"kind":"continue_original","request":null,"evidence":null,"note":"continue_original"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "context_lost",
         "inputCount": 0,
@@ -2884,6 +2999,7 @@
       "id": "BROW15-D058",
       "purpose": "A consumed context cannot emit again.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2904,6 +3020,7 @@
         {"kind":"continue_original","request":null,"evidence":null,"note":"continue_original"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "deny",
         "code": "context_consumed",
         "inputCount": 1,
@@ -2927,6 +3044,7 @@
       "id": "BROW15-D059",
       "purpose": "Original unconsumed continuation may use its exact already charged reservation at zero remaining allowance.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2953,6 +3071,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"read_result"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "available",
         "code": null,
         "inputCount": 1,
@@ -2976,6 +3095,7 @@
       "id": "BROW15-D060",
       "purpose": "A new dispatch call against an existing claim is denied without charging again.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -2996,6 +3116,7 @@
         {"kind":"claim","request":null,"evidence":null,"note":"claim"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "already_claimed",
         "inputCount": 0,
@@ -3019,6 +3140,7 @@
       "id": "BROW15-D061",
       "purpose": "Exact action.decide appends approval and leaves prepared-action revision/hash unchanged.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3039,6 +3161,7 @@
         {"kind":"action_decide","request":null,"evidence":null,"note":"approve_exact"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 0,
@@ -3062,6 +3185,7 @@
       "id": "BROW15-D062",
       "purpose": "An exact denied revision cannot be released by a standing rule or takeover return.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3084,6 +3208,7 @@
         {"kind":"claim","request":null,"evidence":null,"note":"claim"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "action_denied",
         "inputCount": 0,
@@ -3107,6 +3232,7 @@
       "id": "BROW15-D063",
       "purpose": "Final recipient substitution mismatches the exact prepared request and sends nothing.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3127,6 +3253,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"navigation","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"other_recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"substitution"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "hash_mismatch",
         "inputCount": 0,
@@ -3150,6 +3277,7 @@
       "id": "BROW15-D064",
       "purpose": "Final body substitution mismatches the exact prepared request and sends nothing.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3170,6 +3298,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"navigation","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"Y2hhbmdlZC1maW5hbC1ieXRlcw==","bytes":19,"sha256":"1be4399986f8fefbdcc99c45c44f069b2e6248be86933ca5e83d3f2744d4f409"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"substitution"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "hash_mismatch",
         "inputCount": 0,
@@ -3193,6 +3322,7 @@
       "id": "BROW15-D065",
       "purpose": "Final header substitution mismatches the exact prepared request and sends nothing.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3213,6 +3343,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"navigation","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[{"name":"x-purpose","value":"changed"}],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"substitution"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "hash_mismatch",
         "inputCount": 0,
@@ -3236,6 +3367,7 @@
       "id": "BROW15-D066",
       "purpose": "Final target_version substitution mismatches the exact prepared request and sends nothing.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3256,6 +3388,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"navigation","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_2","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"substitution"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "hash_mismatch",
         "inputCount": 0,
@@ -3279,6 +3412,7 @@
       "id": "BROW15-D067",
       "purpose": "A complete forged SupportV1 cannot install itself or prove browser enforcement.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3299,6 +3433,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "adapter_unproven",
         "inputCount": 0,
@@ -3322,6 +3457,7 @@
       "id": "BROW15-D068",
       "purpose": "Missing service-worker coverage refuses before input even with an exact approval.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3342,6 +3478,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "scope_unproven",
         "inputCount": 0,
@@ -3365,6 +3502,7 @@
       "id": "BROW15-D069",
       "purpose": "No configured finite budget is a hold, not zero-cost permission.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3385,6 +3523,7 @@
         {"kind":"claim","request":null,"evidence":null,"note":"claim"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "finite_budget_required",
         "inputCount": 0,
@@ -3408,6 +3547,7 @@
       "id": "BROW15-D070",
       "purpose": "Unknown actual usage remains null and cannot refund the conservative charged upper bound.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3429,6 +3569,7 @@
         {"kind":"reconcile","request":null,"evidence":null,"note":"reconcile"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unknown",
         "code": "settlement_required",
         "inputCount": 0,
@@ -3452,6 +3593,7 @@
       "id": "BROW15-D071",
       "purpose": "MIME/active-content mismatch quarantines and withholds download bytes.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJhY3R1YWwiOiJleGVjdXRhYmxlLWNvbnRlbnQiLCJtaW1lIjoidGV4dC9wbGFpbiJ9","bytes":51,"sha256":"147d1caf5ffd1f85aacdfdc0925349ef772816106d4deaa843b8da5a6c36e3fc"},
         "priorReceipt": null,
@@ -3472,6 +3614,7 @@
         {"kind":"read_result","request":null,"evidence":null,"note":"active_content"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "withheld",
         "code": "download_quarantined",
         "inputCount": 0,
@@ -3495,6 +3638,7 @@
       "id": "BROW15-D072",
       "purpose": "Oversized download refuses without allocating or publishing the declared payload.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": {"base64":"eyJieXRlcyI6MTA0ODU3Nywic2hhMjU2IjoiOGZmYzkwMWZhMjAyYWI2OTRlMzMyOGE4YWY2YmI3YzRjZmNlYzhlNTFiOTBkMzUzZjczYTAyM2QzMzE2NjczNCJ9","bytes":93,"sha256":"b822b98adc8f2b0bad52d4a1686bb940ebc6bf08203421ec170c473f7b9076f6"},
         "priorReceipt": null,
@@ -3515,6 +3659,7 @@
         {"kind":"capture_response","request":null,"evidence":null,"note":"oversized_download"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "limit_exceeded",
         "inputCount": 0,
@@ -3538,6 +3683,7 @@
       "id": "BROW15-D073",
       "purpose": "Download availability does not imply a frozen workspace import adapter.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3558,6 +3704,7 @@
         {"kind":"import_download","request":null,"evidence":null,"note":"import_download"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unsupported",
         "code": "import_unsupported",
         "inputCount": 0,
@@ -3581,6 +3728,7 @@
       "id": "BROW15-D074",
       "purpose": "Cross-profile download import refuses before byte release.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3601,6 +3749,7 @@
         {"kind":"import_download","request":null,"evidence":null,"note":"import_download"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "outside_scope",
         "inputCount": 0,
@@ -3624,6 +3773,7 @@
       "id": "BROW15-D075",
       "purpose": "Observed login_required returns only a payload-free protected handoff event.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3644,6 +3794,7 @@
         {"kind":"login_boundary","request":null,"evidence":null,"note":"login_boundary"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "login_required",
         "inputCount": 0,
@@ -3667,6 +3818,7 @@
       "id": "BROW15-D076",
       "purpose": "Observed two_factor_required returns only a payload-free protected handoff event.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3687,6 +3839,7 @@
         {"kind":"two_factor_boundary","request":null,"evidence":null,"note":"two_factor_boundary"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "two_factor_required",
         "inputCount": 0,
@@ -3710,6 +3863,7 @@
       "id": "BROW15-D077",
       "purpose": "Protected owner secret input is transient and grants no agent effect authority.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3731,6 +3885,7 @@
         {"kind":"owner_input","request":null,"evidence":null,"note":"owner_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "recorded",
         "code": null,
         "inputCount": 1,
@@ -3754,6 +3909,7 @@
       "id": "BROW15-D078",
       "purpose": "Owner-input retry after process loss is unknown with no resend or raw/unkeyed secret digest.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3775,6 +3931,7 @@
         {"kind":"owner_input","request":null,"evidence":null,"note":"historical_input_request"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "unknown",
         "code": "transport_unknown",
         "inputCount": 0,
@@ -3798,6 +3955,7 @@
       "id": "BROW15-D079",
       "purpose": "Login/session transition fences every old document/observation/input binding.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3819,6 +3977,7 @@
         {"kind":"dispatch_input","request":null,"evidence":null,"note":"dispatch_input"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "stale_observation",
         "inputCount": 0,
@@ -3842,6 +4001,7 @@
       "id": "BROW15-D080",
       "purpose": "Secret-bearing screenshot/text is withheld rather than redacted under the raw hash.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3862,6 +4022,7 @@
         {"kind":"capture_response","request":null,"evidence":null,"note":"secret_boundary"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "withheld",
         "code": "secret_boundary",
         "inputCount": 0,
@@ -3885,6 +4046,7 @@
       "id": "BROW15-D081",
       "purpose": "GitHub default with communication,github_publish preserves separate publication/merge/production gates.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3905,6 +4067,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "approval_required",
         "inputCount": 0,
@@ -3928,6 +4091,7 @@
       "id": "BROW15-D082",
       "purpose": "GitHub personal_publish with communication,github_publish preserves separate publication/merge/production gates.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3948,6 +4112,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "allow",
         "code": null,
         "inputCount": 0,
@@ -3971,6 +4136,7 @@
       "id": "BROW15-D083",
       "purpose": "GitHub personal_publish with github_merge preserves separate publication/merge/production gates.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -3991,6 +4157,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "merge_authority_required",
         "inputCount": 0,
@@ -4014,6 +4181,7 @@
       "id": "BROW15-D084",
       "purpose": "GitHub personal_merge with github_merge,production preserves separate publication/merge/production gates.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4034,6 +4202,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"prepare"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "hold",
         "code": "production_approval_required",
         "inputCount": 0,
@@ -4057,6 +4226,7 @@
       "id": "BROW15-D085",
       "purpose": "Missing current continuity refuses admission instead of restoring an empty ledger.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4078,6 +4248,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "continuity_required",
         "inputCount": 0,
@@ -4101,6 +4272,7 @@
       "id": "BROW15-D086",
       "purpose": "Rollback preserves current claims/charges and leaves old grants/approvals/routines nondispatchable.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4122,6 +4294,7 @@
         {"kind":"claim","request":null,"evidence":null,"note":"claim"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "deny",
         "code": "already_claimed",
         "inputCount": 0,
@@ -4145,6 +4318,7 @@
       "id": "BROW15-D087",
       "purpose": "S14-private profile/history cannot be promoted by shared-team defaults.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4165,6 +4339,7 @@
         {"kind":"prepare","request":null,"evidence":null,"note":"s14_private_profile"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "outside_scope",
         "inputCount": 0,
@@ -4188,6 +4363,7 @@
       "id": "BROW15-D088",
       "purpose": "A new inference recipient cannot resolve an otherwise captured browser observation.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4208,6 +4384,7 @@
         {"kind":"publish","request":null,"evidence":null,"note":"unapproved_model_recipient"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "withheld",
         "code": "outside_scope",
         "inputCount": 0,
@@ -4231,6 +4408,7 @@
       "id": "BROW15-D089",
       "purpose": "Framing zero_length refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAAAA==","bytes":4,"sha256":"df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"},
         "priorReceipt": null,
@@ -4251,6 +4429,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"zero_length"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4274,6 +4453,7 @@
       "id": "BROW15-D090",
       "purpose": "Framing oversized_length refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAIAAQ==","bytes":4,"sha256":"209425336127279cd1b301b5a1a159ffd74aaa96dd64dae5ba81c9f84f3e78c8"},
         "priorReceipt": null,
@@ -4294,6 +4474,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"oversized_length"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4317,6 +4498,7 @@
       "id": "BROW15-D091",
       "purpose": "Framing short_eof refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAIGHsiY29udHJhY3QiOiJqaXQucHJvdGVjdGVkLWJyb3dzZXIvdjEiLCJpbnZvY2F0aW9uSWQiOiJpbnZvY2F0aW9uIiwibm9uY2UiOiJzeW50aGV0aWNfbm9uY2VfMTI4Yml0c18wMDAwMDAwMDAwMDEiLCJvcGVyYXRpb24iOnsiYmluZGluZyI6eyJhdHRlbXB0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoiYXR0ZW1wdCIsInJldmlzaW9uIjoxfSwiY29udHJvbGxlckVwb2NoIjoiY29udHJvbGxlcl9lcG9jaF9hIiwiaW5wdXRMZWFzZSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImxlYXNlIiwicmV2aXNpb24iOjF9LCJtYW5hZ2VyRXBvY2giOiJtYW5hZ2VyX2Vwb2NoX2EiLCJvYnNlcnZhdGlvbkdlbmVyYXRpb24iOjEsIm93bmVyR2VuZXJhdGlvbiI6MSwicHJvY2Vzc0dlbmVyYXRpb24iOjEsInByb2ZpbGUiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9LCJyZWdpc3RyYXRpb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJyZWdpc3RyYXRpb24iLCJyZXZpc2lvbiI6MX0sInNlc3Npb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJzZXNzaW9uIiwicmV2aXNpb24iOjF9LCJ0YWtlb3ZlckdlbmVyYXRpb24iOjEsIndvcmsiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJ3b3JrIiwicmV2aXNpb24iOjF9fSwiYm9keSI6eyJraW5kIjoibmF2aWdhdGUiLCJ1cmwiOiJodHRwczovL3NpdGUuZXhhbXBsZS50ZXN0L3JlcG9ydCJ9LCJjb250cmFjdCI6InMxNS1icm93c2VyLW9wZXJhdGlvbi92MSIsImNyZWF0ZWRBdCI6MTAwMCwiZXhwaXJlc0F0IjoxMDAwMDAsImhhc2giOiIzZjAyMDVmNDUwZmRhNTA4MDhjZWZhYzYxZTA1NjdiNDY4Y2Y2MTQ4MjBjNTcxZjllNjgzM2UwMzhlZGFjMGUyIiwiaWQiOiJvcGVyYXRpb24iLCJwb2xpY3kiOnsiYWN0aW9uIjp7ImFjdGlvbkhhc2giOiJiNWY4M2U0ODIyNjVkNmM1N2QyMTQ1NDU0MzcwZWJiZmJhM2VjOTM5OTc5ZGI2MmRlNTM3YzVhMmM2N2Q2ZjA3IiwiaWQiOiJhY3Rpb25faW5wdXQiLCJyZXZpc2lvbiI6MX0sImF1dGhvcml0eSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImF1dGhvcml0eSIsInJldmlzaW9uIjoxfSwiYXV0aG9yaXR5SGFzaCI6IjgyN2JhZTBiZDQ4ZjJkMmYxZjg0ODQ5OGU1NzU4NGFlNWI4MzlhYzQ2YjkwOTA2MmU3N2Y3YjAzMmRiNjY1YjkiLCJidWRnZXQiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJidWRnZXQiLCJyZXZpc2lvbiI6MX0sImNvbnRpbnVpdHlJZCI6ImNvbnRpbnVpdHkiLCJjb3N0QmFzaXMiOnsiYnl0ZXMiOjQxLCJpZCI6ImNvc3RfYmFzaXMiLCJtZWRpYVR5cGUiOiJ0ZXh0L3BsYWluIiwic2hhMjU2IjoiMzQyNjgyYWY5MGUzNGJjZTZiMmMzZTY2MjgyNGJlMTE4NGMxZTJlNmJhOTg0N2JhZGJlMTgyZDgxMzU4NWYyZCJ9LCJsaW5lYWdlIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InNvdXJjZSIsInJldmlzaW9uIjoxfV0sInBvbGljeSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InBvbGljeSIsInJldmlzaW9uIjoxfSwicG9saWN5SGFzaCI6ImYwYjk1NWRhMjZjOTNkNTA4ZmUxN2NlZWE0OTFkYjdhNTM4NGRjN2FlMGI5NjM5NjMzODY2ZWEwZDAwZDExNjkiLCJyZWNpcGllbnRzIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InJlY2lwaWVudCIsInJldmlzaW9uIjoxfV0sInJlc291cmNlcyI6W3siZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9XSwidXBwZXJCb3VuZCI6eyJhY3RpdmVNcyI6MzAwMDAsImF0dGVtcHRzIjowLCJjYWxscyI6MSwib3V0cHV0Qnl0ZXMiOjMyNzY4LCJyZWFkcyI6MSwic3BlbmRNaW5vciI6IjAiLCJzdGVwcyI6MX19LCJyZWdpc3RyYXRpb25IYXNoIjoiMTY4NzRhNmIwZWU3OTIzNjMxMDg2OGM0YTdjODczNmRkMzIzNmI4YTY0M2IwMmM2YjVmOGU2NmY0ZDk1ZjVhNCIsInJlcXVlc3RJZCI6Im93bmVyX3JlcXVlc3QiLCJzbG90SWQiOiJpbnZvY2F0aW9uX3Nsb3QiLCJzdXBwb3J0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoic3VwcG9ydCIsInJldmlzaW9uIjoxfSwic3VwcG9ydEhhc2giOiI2ZGM3ODgzN2U4NTZkNzkwOTEyYTgxOWFhYzE4OTg2ZDZmZGQ1ZDE4NWM2NTMxOTBiNmYwOWEwMDVlZmIyZTNiIn0=","bytes":2075,"sha256":"bf9ab82dec6afa9b028f007995a6cd7a5e8e54835b800931673eb399aba3c628"},
         "priorReceipt": null,
@@ -4337,6 +4519,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"short_eof"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4360,6 +4543,7 @@
       "id": "BROW15-D092",
       "purpose": "Framing trailing_second_frame refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAIGHsiY29udHJhY3QiOiJqaXQucHJvdGVjdGVkLWJyb3dzZXIvdjEiLCJpbnZvY2F0aW9uSWQiOiJpbnZvY2F0aW9uIiwibm9uY2UiOiJzeW50aGV0aWNfbm9uY2VfMTI4Yml0c18wMDAwMDAwMDAwMDEiLCJvcGVyYXRpb24iOnsiYmluZGluZyI6eyJhdHRlbXB0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoiYXR0ZW1wdCIsInJldmlzaW9uIjoxfSwiY29udHJvbGxlckVwb2NoIjoiY29udHJvbGxlcl9lcG9jaF9hIiwiaW5wdXRMZWFzZSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImxlYXNlIiwicmV2aXNpb24iOjF9LCJtYW5hZ2VyRXBvY2giOiJtYW5hZ2VyX2Vwb2NoX2EiLCJvYnNlcnZhdGlvbkdlbmVyYXRpb24iOjEsIm93bmVyR2VuZXJhdGlvbiI6MSwicHJvY2Vzc0dlbmVyYXRpb24iOjEsInByb2ZpbGUiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9LCJyZWdpc3RyYXRpb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJyZWdpc3RyYXRpb24iLCJyZXZpc2lvbiI6MX0sInNlc3Npb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJzZXNzaW9uIiwicmV2aXNpb24iOjF9LCJ0YWtlb3ZlckdlbmVyYXRpb24iOjEsIndvcmsiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJ3b3JrIiwicmV2aXNpb24iOjF9fSwiYm9keSI6eyJraW5kIjoibmF2aWdhdGUiLCJ1cmwiOiJodHRwczovL3NpdGUuZXhhbXBsZS50ZXN0L3JlcG9ydCJ9LCJjb250cmFjdCI6InMxNS1icm93c2VyLW9wZXJhdGlvbi92MSIsImNyZWF0ZWRBdCI6MTAwMCwiZXhwaXJlc0F0IjoxMDAwMDAsImhhc2giOiIzZjAyMDVmNDUwZmRhNTA4MDhjZWZhYzYxZTA1NjdiNDY4Y2Y2MTQ4MjBjNTcxZjllNjgzM2UwMzhlZGFjMGUyIiwiaWQiOiJvcGVyYXRpb24iLCJwb2xpY3kiOnsiYWN0aW9uIjp7ImFjdGlvbkhhc2giOiJiNWY4M2U0ODIyNjVkNmM1N2QyMTQ1NDU0MzcwZWJiZmJhM2VjOTM5OTc5ZGI2MmRlNTM3YzVhMmM2N2Q2ZjA3IiwiaWQiOiJhY3Rpb25faW5wdXQiLCJyZXZpc2lvbiI6MX0sImF1dGhvcml0eSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImF1dGhvcml0eSIsInJldmlzaW9uIjoxfSwiYXV0aG9yaXR5SGFzaCI6IjgyN2JhZTBiZDQ4ZjJkMmYxZjg0ODQ5OGU1NzU4NGFlNWI4MzlhYzQ2YjkwOTA2MmU3N2Y3YjAzMmRiNjY1YjkiLCJidWRnZXQiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJidWRnZXQiLCJyZXZpc2lvbiI6MX0sImNvbnRpbnVpdHlJZCI6ImNvbnRpbnVpdHkiLCJjb3N0QmFzaXMiOnsiYnl0ZXMiOjQxLCJpZCI6ImNvc3RfYmFzaXMiLCJtZWRpYVR5cGUiOiJ0ZXh0L3BsYWluIiwic2hhMjU2IjoiMzQyNjgyYWY5MGUzNGJjZTZiMmMzZTY2MjgyNGJlMTE4NGMxZTJlNmJhOTg0N2JhZGJlMTgyZDgxMzU4NWYyZCJ9LCJsaW5lYWdlIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InNvdXJjZSIsInJldmlzaW9uIjoxfV0sInBvbGljeSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InBvbGljeSIsInJldmlzaW9uIjoxfSwicG9saWN5SGFzaCI6ImYwYjk1NWRhMjZjOTNkNTA4ZmUxN2NlZWE0OTFkYjdhNTM4NGRjN2FlMGI5NjM5NjMzODY2ZWEwZDAwZDExNjkiLCJyZWNpcGllbnRzIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InJlY2lwaWVudCIsInJldmlzaW9uIjoxfV0sInJlc291cmNlcyI6W3siZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9XSwidXBwZXJCb3VuZCI6eyJhY3RpdmVNcyI6MzAwMDAsImF0dGVtcHRzIjowLCJjYWxscyI6MSwib3V0cHV0Qnl0ZXMiOjMyNzY4LCJyZWFkcyI6MSwic3BlbmRNaW5vciI6IjAiLCJzdGVwcyI6MX19LCJyZWdpc3RyYXRpb25IYXNoIjoiMTY4NzRhNmIwZWU3OTIzNjMxMDg2OGM0YTdjODczNmRkMzIzNmI4YTY0M2IwMmM2YjVmOGU2NmY0ZDk1ZjVhNCIsInJlcXVlc3RJZCI6Im93bmVyX3JlcXVlc3QiLCJzbG90SWQiOiJpbnZvY2F0aW9uX3Nsb3QiLCJzdXBwb3J0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoic3VwcG9ydCIsInJldmlzaW9uIjoxfSwic3VwcG9ydEhhc2giOiI2ZGM3ODgzN2U4NTZkNzkwOTEyYTgxOWFhYzE4OTg2ZDZmZGQ1ZDE4NWM2NTMxOTBiNmYwOWEwMDVlZmIyZTNiIn19AAAIGHsiY29udHJhY3QiOiJqaXQucHJvdGVjdGVkLWJyb3dzZXIvdjEiLCJpbnZvY2F0aW9uSWQiOiJpbnZvY2F0aW9uIiwibm9uY2UiOiJzeW50aGV0aWNfbm9uY2VfMTI4Yml0c18wMDAwMDAwMDAwMDEiLCJvcGVyYXRpb24iOnsiYmluZGluZyI6eyJhdHRlbXB0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoiYXR0ZW1wdCIsInJldmlzaW9uIjoxfSwiY29udHJvbGxlckVwb2NoIjoiY29udHJvbGxlcl9lcG9jaF9hIiwiaW5wdXRMZWFzZSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImxlYXNlIiwicmV2aXNpb24iOjF9LCJtYW5hZ2VyRXBvY2giOiJtYW5hZ2VyX2Vwb2NoX2EiLCJvYnNlcnZhdGlvbkdlbmVyYXRpb24iOjEsIm93bmVyR2VuZXJhdGlvbiI6MSwicHJvY2Vzc0dlbmVyYXRpb24iOjEsInByb2ZpbGUiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9LCJyZWdpc3RyYXRpb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJyZWdpc3RyYXRpb24iLCJyZXZpc2lvbiI6MX0sInNlc3Npb24iOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJzZXNzaW9uIiwicmV2aXNpb24iOjF9LCJ0YWtlb3ZlckdlbmVyYXRpb24iOjEsIndvcmsiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJ3b3JrIiwicmV2aXNpb24iOjF9fSwiYm9keSI6eyJraW5kIjoibmF2aWdhdGUiLCJ1cmwiOiJodHRwczovL3NpdGUuZXhhbXBsZS50ZXN0L3JlcG9ydCJ9LCJjb250cmFjdCI6InMxNS1icm93c2VyLW9wZXJhdGlvbi92MSIsImNyZWF0ZWRBdCI6MTAwMCwiZXhwaXJlc0F0IjoxMDAwMDAsImhhc2giOiIzZjAyMDVmNDUwZmRhNTA4MDhjZWZhYzYxZTA1NjdiNDY4Y2Y2MTQ4MjBjNTcxZjllNjgzM2UwMzhlZGFjMGUyIiwiaWQiOiJvcGVyYXRpb24iLCJwb2xpY3kiOnsiYWN0aW9uIjp7ImFjdGlvbkhhc2giOiJiNWY4M2U0ODIyNjVkNmM1N2QyMTQ1NDU0MzcwZWJiZmJhM2VjOTM5OTc5ZGI2MmRlNTM3YzVhMmM2N2Q2ZjA3IiwiaWQiOiJhY3Rpb25faW5wdXQiLCJyZXZpc2lvbiI6MX0sImF1dGhvcml0eSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6ImF1dGhvcml0eSIsInJldmlzaW9uIjoxfSwiYXV0aG9yaXR5SGFzaCI6IjgyN2JhZTBiZDQ4ZjJkMmYxZjg0ODQ5OGU1NzU4NGFlNWI4MzlhYzQ2YjkwOTA2MmU3N2Y3YjAzMmRiNjY1YjkiLCJidWRnZXQiOnsiZ2VuZXJhdGlvbiI6MSwiaWQiOiJidWRnZXQiLCJyZXZpc2lvbiI6MX0sImNvbnRpbnVpdHlJZCI6ImNvbnRpbnVpdHkiLCJjb3N0QmFzaXMiOnsiYnl0ZXMiOjQxLCJpZCI6ImNvc3RfYmFzaXMiLCJtZWRpYVR5cGUiOiJ0ZXh0L3BsYWluIiwic2hhMjU2IjoiMzQyNjgyYWY5MGUzNGJjZTZiMmMzZTY2MjgyNGJlMTE4NGMxZTJlNmJhOTg0N2JhZGJlMTgyZDgxMzU4NWYyZCJ9LCJsaW5lYWdlIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InNvdXJjZSIsInJldmlzaW9uIjoxfV0sInBvbGljeSI6eyJnZW5lcmF0aW9uIjoxLCJpZCI6InBvbGljeSIsInJldmlzaW9uIjoxfSwicG9saWN5SGFzaCI6ImYwYjk1NWRhMjZjOTNkNTA4ZmUxN2NlZWE0OTFkYjdhNTM4NGRjN2FlMGI5NjM5NjMzODY2ZWEwZDAwZDExNjkiLCJyZWNpcGllbnRzIjpbeyJnZW5lcmF0aW9uIjoxLCJpZCI6InJlY2lwaWVudCIsInJldmlzaW9uIjoxfV0sInJlc291cmNlcyI6W3siZ2VuZXJhdGlvbiI6MSwiaWQiOiJwcm9maWxlIiwicmV2aXNpb24iOjF9XSwidXBwZXJCb3VuZCI6eyJhY3RpdmVNcyI6MzAwMDAsImF0dGVtcHRzIjowLCJjYWxscyI6MSwib3V0cHV0Qnl0ZXMiOjMyNzY4LCJyZWFkcyI6MSwic3BlbmRNaW5vciI6IjAiLCJzdGVwcyI6MX19LCJyZWdpc3RyYXRpb25IYXNoIjoiMTY4NzRhNmIwZWU3OTIzNjMxMDg2OGM0YTdjODczNmRkMzIzNmI4YTY0M2IwMmM2YjVmOGU2NmY0ZDk1ZjVhNCIsInJlcXVlc3RJZCI6Im93bmVyX3JlcXVlc3QiLCJzbG90SWQiOiJpbnZvY2F0aW9uX3Nsb3QiLCJzdXBwb3J0Ijp7ImdlbmVyYXRpb24iOjEsImlkIjoic3VwcG9ydCIsInJldmlzaW9uIjoxfSwic3VwcG9ydEhhc2giOiI2ZGM3ODgzN2U4NTZkNzkwOTEyYTgxOWFhYzE4OTg2ZDZmZGQ1ZDE4NWM2NTMxOTBiNmYwOWEwMDVlZmIyZTNiIn19","bytes":4152,"sha256":"e590124f4b927a242bf99f9968f81856c978fbd003f40ba8710316eb564d176b"},
         "priorReceipt": null,
@@ -4380,6 +4564,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"trailing_second_frame"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4403,6 +4588,7 @@
       "id": "BROW15-D093",
       "purpose": "Framing duplicate_keys refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAADXsieCI6MSwieCI6Mn0=","bytes":17,"sha256":"eec883f9b05fe012381832ba7e0383514ab9ff3303c6d3ce9ac85a5df36b8e24"},
         "priorReceipt": null,
@@ -4423,6 +4609,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"duplicate_keys"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4446,6 +4633,7 @@
       "id": "BROW15-D094",
       "purpose": "Framing invalid_utf8 refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAAAf8=","bytes":5,"sha256":"12552a62d3a764ff4ae0b11562095143d71161aafd4cd9d36a8e324b5940eb90"},
         "priorReceipt": null,
@@ -4466,6 +4654,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"invalid_utf8"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4489,6 +4678,7 @@
       "id": "BROW15-D095",
       "purpose": "Framing noncanonical refuses before operation dispatch; no peer/owner authority inferred.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAAA3sgfQ==","bytes":7,"sha256":"501a3daf74c85ec1a41bb94dbc9c97d1da994a2a406b9565e955799342163493"},
         "priorReceipt": null,
@@ -4509,6 +4699,7 @@
         {"kind":"validate_frame","request":null,"evidence":null,"note":"noncanonical"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "protocol_error",
         "inputCount": 0,
@@ -4532,6 +4723,7 @@
       "id": "BROW15-D096",
       "purpose": "Malformed response after possible dispatch records unknown, never not_sent or automatic retry.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": {"base64":"AAAAAf8=","bytes":5,"sha256":"12552a62d3a764ff4ae0b11562095143d71161aafd4cd9d36a8e324b5940eb90"},
         "priorReceipt": null,
@@ -4552,6 +4744,7 @@
         {"kind":"transport_error","request":null,"evidence":null,"note":"bad_response_utf8"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "unknown",
         "code": "protocol_error",
         "inputCount": 1,
@@ -4575,6 +4768,7 @@
       "id": "BROW15-D097",
       "purpose": "An absolute deadline cannot be reset by trickling bytes, redirects or reconnect.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4595,6 +4789,7 @@
         {"kind":"transport_error","request":null,"evidence":null,"note":"absolute_deadline"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"dc05e408ca9f2deabf1e713c78ad0f80424e4cf8dec266a03c9d9ff10b76c77b","operationHash":"3f0205f450fda50808cefac61e0567b468cf614820c571f9e6833e038edac0e2","requestHash":"eb5f3432d26ccd56cb22cfdf5f84c531c211c2571d997701238496494da0ea53","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"bccccb56224973926eaf90904456feadc8693f5c539d8d093b6a1f274f1c4a88"}],
         "decision": "unknown",
         "code": "transport_unknown",
         "inputCount": 1,
@@ -4618,6 +4813,7 @@
       "id": "BROW15-D098",
       "purpose": "Wrong-generation stop evidence preserves every already captured response/channel/scope fact.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4638,6 +4834,7 @@
         {"kind":"reject_evidence","request":null,"evidence":{"contract":"s15-browser-evidence/v1","id":"evidence_process_stopped","manager":{"id":"manager","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","session":{"id":"session","revision":1,"generation":1},"processGeneration":2,"invocationId":null,"kind":"process_stopped","capturedAt":3000,"proofHash":"f5aa721a711f698e8e97f878e1cc3de1700c7b3fcc84518452adf4543b797378","hash":"ac454425f3121c8ef8a33aa49316fd2663d0b19e7743a0d73a6ba2333be7d15f"},"note":"reject_evidence"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "evidence_refused",
         "inputCount": 0,
@@ -4661,6 +4858,7 @@
       "id": "BROW15-D099",
       "purpose": "Manager restart requires reconciliation and cannot silently attach an old callable handle.",
       "input": {
+        "readCharges": [],
         "priorCaptures": [],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4682,6 +4880,7 @@
         {"kind":"accept","request":null,"evidence":null,"note":"accept"}
       ],
       "expected": {
+        "readCharges": [],
         "decision": "deny",
         "code": "stale_authority",
         "inputCount": 0,
@@ -4705,6 +4904,7 @@
       "id": "BROW15-D100",
       "purpose": "An exact public read request uses its original registered read reservation at zero remaining allowance without a prepared action or double charge.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4725,6 +4925,7 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"dispatch_request"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "decision": "allow",
         "code": null,
         "inputCount": 0,
@@ -4748,6 +4949,7 @@
       "id": "BROW15-D101",
       "purpose": "Recovered read reservation JSON cannot reconstruct the original request dispatch context.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4768,12 +4970,13 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"dispatch_request"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "decision": "deny",
         "code": "context_lost",
         "inputCount": 0,
         "networkCount": 0,
         "requestClaimCount": 0,
-        "requestReservationCount": 0,
+        "requestReservationCount": 1,
         "cancelCount": 0,
         "claimCount": 1,
         "reservationCount": 1,
@@ -4791,6 +4994,7 @@
       "id": "BROW15-D102",
       "purpose": "A consumed original read request context cannot send again, even with matching bytes and reservation.",
       "input": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
         "untrustedInput": null,
         "priorReceipt": null,
@@ -4811,8 +5015,54 @@
         {"kind":"dispatch_request","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"dispatch_request"}
       ],
       "expected": {
+        "readCharges": [{"contract":"s15-browser-read-charge/v1","reservationId":"read_reservation_0","reservationHash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"charged":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"chargedAt":1500,"hash":"dc5cd55146ff214751be74e11758f0e99f969971897d7d38bf0e2925713ac8f6"}],
         "decision": "deny",
         "code": "context_consumed",
+        "inputCount": 0,
+        "networkCount": 0,
+        "requestClaimCount": 0,
+        "requestReservationCount": 1,
+        "cancelCount": 0,
+        "claimCount": 1,
+        "reservationCount": 1,
+        "payloadAvailable": false,
+        "facts": {"input":"not_sent","network":"not_sent","responseHash":null,"channel":"open","scope":"unsettled","process":"running","outcome":"not_dispatched","cancel":"none","charged":true,"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"published":false},
+        "actionRevision": 1,
+        "actionHash": "bf9adf2f281e549fb1a173ca299cc01987f6aa0a99fb192e7e39bab654b9b649",
+        "lease": {"id":"lease","revision":1,"generation":1},
+        "takeoverGeneration": 1,
+        "secretRetained": false
+      },
+      "status": "UNEXECUTED"
+    },
+    {
+      "id": "BROW15-D103",
+      "purpose": "A new public read at zero remaining allowance with no committed child charge is refused before admission, charge or request dispatch.",
+      "input": {
+        "readCharges": [],
+        "priorCaptures": [{"observation":{"contract":"s15-browser-observation/v1","ref":{"id":"prior_observation","revision":1,"generation":1},"operationHash":"61f7c298fbddbbb88d8d0fbcf6893a722065c5c798ce715ec271d26fe3657271","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"requestHashes":[],"capturedAt":900,"source":"browser_text","payload":{"id":"prior_payload","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece","mediaType":"text/plain"},"lineage":[{"id":"source","revision":1,"generation":1}],"coverage":"complete","truncated":false,"untrusted":true,"hash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0"},"output":{"base64":"U3ludGhldGljIG9ic2VydmVkIGRvY3VtZW50IGFuZCB0YXJnZXQK","bytes":39,"sha256":"7982ba87d2358005814b15c158aaca463fa2634b3367bc6485fa301a2e58eece"},"targets":[{"id":"target_page_2","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","bindingHash":"51ffa59390a6913a303c41ed1725219e8e698b8b1cf8124272978fe6a44d8977","frame":{"id":"frame","revision":1,"generation":1},"document":{"id":"document","revision":1,"generation":1},"hash":"83df76c7304fced973787ecba5de38cf30ab9ae10e0967f31ce94914334cc745"}]}],
+        "untrustedInput": null,
+        "priorReceipt": null,
+        "preparedAction": {"contract":"s15-prepared-action/v1","id":"action_input","revision":1,"installationId":"synthetic_installation","effectKey":"action_input_slot","work":{"id":"work","revision":1,"generation":1},"attempt":{"id":"attempt","revision":1,"generation":1},"ownerGeneration":1,"policy":{"id":"policy","revision":1,"generation":1},"policyHash":"f0b955da26c93d508fe17ceea491db7a5384dc7ae0b9639633866ea0d00d1169","purpose":{"id":"purpose","revision":1,"generation":1},"bot":{"id":"bot","revision":1,"generation":1},"selection":{"route":{"id":"route","revision":1,"generation":1},"model":{"id":"model","revision":1,"generation":1},"effort":"pinned_fixture"},"resources":[{"id":"profile","revision":1,"generation":1}],"lineage":[{"id":"source","revision":1,"generation":1}],"budget":{"id":"budget","revision":1,"generation":1},"adapter":{"id":"fixture_browser","version":1,"schemaHash":"6240b9b86376130fa631f9df2775e8aeb987f733881855d2104833fbbf7b20e4"},"details":{"operation":"browser_input","classes":["ordinary_edit"],"target":{"id":"profile","revision":1,"generation":1},"targetVersion":"version_1","recipients":[{"id":"recipient","revision":1,"generation":1}],"payload":{"id":"action_input_payload","bytes":2295,"sha256":"4b4d2be1be325501c6edb27ef910010dd3acf9526ddaeeadbd7e4712952fbf7c","mediaType":"application/json"},"attachments":[],"transaction":null,"github":null,"disclosure":null,"impact":"reversible","directionDecision":null},"vm":null,"inputLease":{"id":"lease","revision":1,"generation":1},"upperBound":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"costBasis":{"id":"cost_basis","bytes":41,"sha256":"342682af90e34bce6b2c3e662824be1184c1e2e6ba9847badbe182d813585f2d","mediaType":"text/plain"},"createdAt":1000,"expiresAt":100000,"actionHash":"bf9adf2f281e549fb1a173ca299cc01987f6aa0a99fb192e7e39bab654b9b649"},
+        "requestBindings": [{"requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","payload":{"contract":"s15-browser-web-action/v1","operationProjectionHash":"4b4d2be1be325501c6edb27ef910010dd3acf9526ddaeeadbd7e4712952fbf7c","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"}},"authority":{"kind":"read","reservation":{"contract":"s15-browser-read-reservation/v1","id":"read_reservation_0","operationId":"operation","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","requestHash":"10ada47d78cf7cd17bc4075c9fb11f7d95c8f8d561b8041ad1ac96eb1813696d","work":{"id":"work","revision":1,"generation":1},"attempt":{"id":"attempt","revision":1,"generation":1},"profile":{"id":"profile","revision":1,"generation":1},"session":{"id":"session","revision":1,"generation":1},"budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","continuityGeneration":1,"upperBound":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"costBasis":{"id":"cost_basis","bytes":41,"sha256":"342682af90e34bce6b2c3e662824be1184c1e2e6ba9847badbe182d813585f2d","mediaType":"text/plain"},"createdAt":1000,"expiresAt":100000,"hash":"37cd711e547911daba3e7154cb8d19e63c13f913ff865522ba9e02c639ad2a33"}}}],
+        "scriptedResponse": null,
+        "registration": {"contract":"s15-browser-registration/v1","ref":{"id":"registration","revision":1,"generation":1},"installationId":"synthetic_installation","manager":{"id":"manager","revision":1,"generation":1},"endpoint":{"id":"endpoint","revision":1,"generation":1},"profile":{"id":"profile","revision":1,"generation":1},"adapter":{"id":"fixture_browser","version":1,"schemaHash":"6240b9b86376130fa631f9df2775e8aeb987f733881855d2104833fbbf7b20e4"},"limits":{"requestBytes":131072,"responseBytes":4194304,"outputBytes":32768,"downloadBytes":1048576,"operationMs":30000,"connectMs":10000,"idleMs":300000,"cleanupMs":5000,"queue":16,"processes":2,"cpuMillis":500,"memoryBytes":536870912,"pids":128,"diskBytes":1073741824},"hash":"16874a6b0ee79236310868c4a7c8736dd3236b8a643b02c6b5f8e66f4d95f5a4"},
+        "operation": {"contract":"s15-browser-operation/v1","id":"operation","requestId":"owner_request","slotId":"invocation_slot","registrationHash":"16874a6b0ee79236310868c4a7c8736dd3236b8a643b02c6b5f8e66f4d95f5a4","binding":{"registration":{"id":"registration","revision":1,"generation":1},"profile":{"id":"profile","revision":1,"generation":1},"session":{"id":"session","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","controllerEpoch":"controller_epoch_a","processGeneration":1,"ownerGeneration":1,"work":{"id":"work","revision":1,"generation":1},"attempt":{"id":"attempt","revision":1,"generation":1},"inputLease":{"id":"lease","revision":1,"generation":1},"takeoverGeneration":1,"observationGeneration":1},"policy":{"policy":{"id":"policy","revision":1,"generation":1},"policyHash":"f0b955da26c93d508fe17ceea491db7a5384dc7ae0b9639633866ea0d00d1169","authority":{"id":"authority","revision":1,"generation":1},"authorityHash":"827bae0bd48f2d2f1f848498e57584ae5b839ac46b909062e77f7b032db665b9","resources":[{"id":"profile","revision":1,"generation":1}],"lineage":[{"id":"source","revision":1,"generation":1}],"recipients":[{"id":"recipient","revision":1,"generation":1}],"budget":{"id":"budget","revision":1,"generation":1},"continuityId":"continuity","upperBound":{"attempts":0,"steps":1,"calls":1,"reads":1,"outputBytes":32768,"activeMs":30000,"spendMinor":"0"},"costBasis":{"id":"cost_basis","bytes":41,"sha256":"342682af90e34bce6b2c3e662824be1184c1e2e6ba9847badbe182d813585f2d","mediaType":"text/plain"},"action":{"id":"action_input","revision":1,"actionHash":"bf9adf2f281e549fb1a173ca299cc01987f6aa0a99fb192e7e39bab654b9b649"}},"support":{"id":"support","revision":1,"generation":1},"supportHash":"6dc78837e856d790912a819aac18986d6fdd5d185c653190b6f09a005efb2e3b","body":{"kind":"download","observationHash":"27c9f9dab5d579df267c7aa79f0acc4c8395f40247b839d72534ae64cea78ac0","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"}},"createdAt":1000,"expiresAt":100000,"hash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b"},
+        "support": {"contract":"s15-browser-support/v1","ref":{"id":"support","revision":1,"generation":1},"adapter":{"id":"fixture_browser","version":1,"schemaHash":"6240b9b86376130fa631f9df2775e8aeb987f733881855d2104833fbbf7b20e4"},"browserArtifactHash":"c366eb52b027bcb5837ad20a400be24b744f5bca2ee5d8b3ec508ccf56c47dc8","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b","proofHash":"f45d62155afeb273dfe789bf2a08cc0c3192cb044e9730eafeeceaf9193958b6","operations":["download","interact","navigate","read"],"coverage":["input","local_state","navigation","redirect","frame","popup","script","service_worker","download","upload","clipboard","file_chooser","websocket","webrtc","dns","credentials","alternate_guest_routes"],"expiresAt":200000,"hash":"6dc78837e856d790912a819aac18986d6fdd5d185c653190b6f09a005efb2e3b"},
+        "claim": {"contract":"s15-browser-claim/v1","id":"claim","operationId":"operation","operationHash":"6fe426066ee9a39c34bb6e38cd29e5c93a70980fdb8e71b80cfaa7a15aedb32b","policyClaimId":"policy_claim","reservationId":"reservation","continuityGeneration":1,"invocationId":"invocation","nonce":"synthetic_nonce_128bits_000000000001","controllerEpoch":"controller_epoch_a","hash":"0bdd4af09531d4a7d1b14f6dc6bb047126ff7caa637924acabcfdf2e97385fb8"},
+        "requests": [{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"}],
+        "response": null,
+        "evidence": [],
+        "facts": {"input":"not_sent","network":"not_sent","responseHash":null,"channel":"open","scope":"unsettled","process":"running","outcome":"not_dispatched","cancel":"none","charged":true,"actual":{"attempts":null,"steps":null,"calls":null,"reads":null,"outputBytes":null,"activeMs":null,"spendMinor":null},"published":false},
+        "ports": {"now":2000,"monotonicElapsedMs":1000,"targetRegistered":true,"actor":"registered_work","context":"original","requestContext":"none","verifier":"registered","policy":"allow","policyCode":null,"supportRegistered":true,"currentBinding":{"registration":{"id":"registration","revision":1,"generation":1},"profile":{"id":"profile","revision":1,"generation":1},"session":{"id":"session","revision":1,"generation":1},"managerEpoch":"manager_epoch_a","controllerEpoch":"controller_epoch_a","processGeneration":1,"ownerGeneration":1,"work":{"id":"work","revision":1,"generation":1},"attempt":{"id":"attempt","revision":1,"generation":1},"inputLease":{"id":"lease","revision":1,"generation":1},"takeoverGeneration":1,"observationGeneration":1},"continuityCurrent":true,"remaining":{"attempts":0,"steps":0,"calls":0,"reads":0,"outputBytes":0,"activeMs":0,"spendMinor":"0"},"actionRevision":1,"actionHash":"bf9adf2f281e549fb1a173ca299cc01987f6aa0a99fb192e7e39bab654b9b649","approval":"absent","ownerInput":"none","githubMode":"default","deployment":"none","secretRetained":false}
+      },
+      "events": [
+        {"kind":"dispatch_request","request":{"id":"request_a","source":"download","parentRequestId":null,"frame":{"id":"frame","revision":1,"generation":1},"method":"GET","url":"https://site.example.test/report","headers":[],"body":{"base64":"","bytes":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"recipients":[{"id":"recipient","revision":1,"generation":1}],"classes":[],"targetVersion":"version_1","semanticsHash":"188aa02d1518c5e08db6be935e1da14d7ca20c3e7739446fa386ce68fe7a933b"},"evidence":null,"note":"dispatch_request"}
+      ],
+      "expected": {
+        "readCharges": [],
+        "decision": "deny",
+        "code": "budget_exhausted",
         "inputCount": 0,
         "networkCount": 0,
         "requestClaimCount": 0,

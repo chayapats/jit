@@ -2602,9 +2602,74 @@
       ],
       "additionalProperties": false
     },
+    "ReadRequestChargeV1": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "enum": [
+            "s15-browser-read-charge/v1"
+          ]
+        },
+        "reservationId": {
+          "$ref": "#/$defs/Id"
+        },
+        "reservationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "operationHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "requestHash": {
+          "$ref": "#/$defs/Hash"
+        },
+        "budget": {
+          "$ref": "#/$defs/RefV1"
+        },
+        "continuityId": {
+          "$ref": "#/$defs/Id"
+        },
+        "continuityGeneration": {
+          "$ref": "#/$defs/Pos"
+        },
+        "charged": {
+          "$ref": "#/$defs/VectorV1"
+        },
+        "actual": {
+          "$ref": "#/$defs/UsageV1"
+        },
+        "chargedAt": {
+          "$ref": "#/$defs/Nat"
+        },
+        "hash": {
+          "$ref": "#/$defs/Hash"
+        }
+      },
+      "required": [
+        "contract",
+        "reservationId",
+        "reservationHash",
+        "operationHash",
+        "requestHash",
+        "budget",
+        "continuityId",
+        "continuityGeneration",
+        "charged",
+        "actual",
+        "chargedAt",
+        "hash"
+      ],
+      "additionalProperties": false
+    },
     "WorldV1": {
       "type": "object",
       "properties": {
+        "readCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadRequestChargeV1"
+          },
+          "maxItems": 64
+        },
         "priorCaptures": {
           "type": "array",
           "items": {
@@ -2710,6 +2775,7 @@
         }
       },
       "required": [
+        "readCharges",
         "priorCaptures",
         "untrustedInput",
         "priorReceipt",
@@ -2798,6 +2864,13 @@
     "ExpectedV1": {
       "type": "object",
       "properties": {
+        "readCharges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadRequestChargeV1"
+          },
+          "maxItems": 64
+        },
         "decision": {
           "enum": [
             "allow",
@@ -2872,6 +2945,7 @@
         }
       },
       "required": [
+        "readCharges",
         "decision",
         "code",
         "inputCount",
@@ -4058,6 +4132,24 @@
                   },
                   "value": {
                     "$ref": "#/$defs/RequestBindingV1"
+                  }
+                },
+                "required": [
+                  "type",
+                  "value"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "enum": [
+                      "ReadRequestChargeV1"
+                    ]
+                  },
+                  "value": {
+                    "$ref": "#/$defs/ReadRequestChargeV1"
                   }
                 },
                 "required": [
