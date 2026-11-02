@@ -187,8 +187,8 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
         if (!action) return true;
         if (!action.disclosure) {
           const contract = action.payload && typeof action.payload === 'object' && !Array.isArray(action.payload) ? action.payload.contract : null;
-          // Solo Calendar edits still disclose their fields to Google, even with no attendees.
-          const outbound = action.recipients.length > 0 || contract === 's15-google-effect/v1' || contract === 's15-browser-request/v1';
+          // Solo Calendar writes and repository publication still disclose with no person list.
+          const outbound = action.recipients.length > 0 || ['s15-google-effect/v1', 's15-browser-request/v1', 's15-github-effect/v1'].includes(contract as string);
           return !lineage.some(s => s.classification !== 'public') || !outbound;
         }
         const d = action.disclosure;
