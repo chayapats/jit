@@ -9,7 +9,7 @@ import { exact, fail, identity } from "./validation";
  * cannot take an issue number from a model; the authenticated owner's frozen subject supplies it.
  * Publication uses separate exact POLICY actions and CHAT's existing owner-slip/decision path.
  */
-export function createGithubConversationTools<Attempt>(service: GithubService<Attempt>, repositoryId: string): ConversationToolPort<ConversationPolicyWork> {
+export function createGithubConversationTools(service: GithubService, repositoryId: string): ConversationToolPort<ConversationPolicyWork> {
   identity(repositoryId);
   return { async open(work, input) {
     input.guard();

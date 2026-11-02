@@ -6,7 +6,7 @@ import { GithubService } from "./service";
 import { exact, fail } from "./validation";
 
 /** Explicit owner JSON API only; protected composition resolves each work ID through authenticated CHAT. */
-export function createGithubHandler<Attempt>(service: GithubService<Attempt>, options: {
+export function createGithubHandler(service: GithubService, options: {
   origin: string; cookieName: string; authentication: ConversationHttpAuthentication<OwnerActor>;
   resolveWork(owner: OwnerActor, workId: string): WorkActor;
 }): (request: Request) => Promise<Response> {

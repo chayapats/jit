@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { GithubService, GithubStore, HttpProtectedGithubGateway, createGithubActionAdapter, githubReadHandler, type GithubCodingEvidence, type GithubEffect, type GithubEffectResult, type GithubLimits, type GithubRepository, type GithubResponsibilities, type GithubSnapshot } from "../../src/s15/github";
-import type { OwnerActor } from "../../src/s15/policy";
+import { GithubService, GithubStore, HttpProtectedGithubGateway, createGithubActionAdapter, githubReadHandler, type GithubCodingEvidence, type GithubEffect, type GithubEffectResult, type GithubLimits, type GithubRepository, type GithubSnapshot } from "../../src/s15/github";
+import { openWorkService, type AttemptSettlement, type ResponsibilityPort, type WorkOptions } from "../../src/s15/work/index";
+import type { ConversationRequest } from "../../src/s15/conversation";
 import { canonical, digest } from "../../src/s15/github/validation";
-import { fixture, ref, selection } from "./s15-policy";
+import { fixture, ref } from "./s15-policy";
 
 export const base = "a".repeat(40), head = "b".repeat(40), nextHead = "c".repeat(40);
 export const repo: GithubRepository = { resource: ref("repo"), name: "fixture/sandbox", target: "main" };
@@ -71,23 +72,31 @@ export function githubFixture(profile: "default" | "publish" | "personal" = "def
     f.install();
   }
   let implementations = 0, liveVm = 0, next = coding(), assignments = 0, waits = 0, attempts = 0;
-  const responsibility: { id: string; state: string; readyEventId: string | null; workId: string | null } = { id: "responsibility_42", state: "ready", readyEventId: "assigned_42", workId: null };
-  const handles = new WeakSet<object>();
-  const attemptRows: { id: string; eventId: string }[] = [];
-  const settlements: Parameters<GithubResponsibilities["settle"]>[1][] = [];
-  let waited: { kind: string; key: string } | null = null;
-  const key = (value: string) => { if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new Error("invalid WORK key"); };
-  const responsibilities: GithubResponsibilities = {
-    assign(_owner, input) { assignments++; responsibility.workId = work.receipt.work!.id; return { ...responsibility }; },
-    beginAttempt(_id, input) { if (liveVm || responsibility.state !== "ready" || responsibility.readyEventId !== input.eventId || attemptRows.some(a => a.eventId === input.eventId)) throw new Error("attempt_not_ready"); attempts++; attemptRows.push({ id: `attempt_${attempts}`, eventId: input.eventId }); const handle = {}; handles.add(handle); responsibility.state = "working"; responsibility.readyEventId = null; return handle; },
-    wait(_id, input) { key(input.key); if (liveVm || responsibility.state === "working") throw new Error("VM retained during wait"); waits++; responsibility.state = "waiting"; responsibility.readyEventId = null; waited = input; return { ...responsibility }; },
-    observeEvent(_id, event) { key(event.key); if (responsibility.state === "waiting" && waited?.kind === event.kind && waited.key === event.key || responsibility.state === "ready" && responsibility.readyEventId === null) { responsibility.state = "ready"; responsibility.readyEventId = event.eventId; } return { ...responsibility }; },
-    settle(handle, observation) { if (!handles.has(handle)) throw new Error("copied handle"); handles.delete(handle); settlements.push(structuredClone(observation)); responsibility.state = observation.effects === "unknown" ? "reconcile_only" : observation.complete ? "completed" : "ready"; responsibility.readyEventId = null; return { state: responsibility.state }; },
-    reconcile(_id, _attempt, observed) { responsibility.state = observed.basis !== "remote_verified" || !observed.transportSettled || !observed.executionSettled || observed.effects !== "known" ? "reconcile_only" : observed.complete ? "completed" : "ready"; return {}; }, stop() { responsibility.state = "stopped"; }, project() { return { ...responsibility, attempts: attemptRows, waits }; },
-    guard(handle) { if (!handles.has(handle)) throw new Error("copied handle"); }, signal() { return new AbortController().signal; }, publish(_handle, consume) { consume({}); }, resume() {},
-  };
   const inspect = f.admit({ intent: "inspect", access: "read", resources: [ref("repo")], recipients: [], readLimit: 200 });
   const work = f.admit({ intent: "execute", access: "effect", resources: [ref("repo")], recipients: [], readLimit: 200, subject: { resource: ref("repo"), issue: 42 } });
+  const command = { contract: "s15-conversation/v1" as const, requestId: "chat_root", conversationId: "conversation", text: "Implement issue #42 and follow its PR until safely settled.", continuation: null };
+  // Controlled completed CHAT source over a real POLICY admission. WORK itself is the production service.
+  const chatSource: ConversationRequest = { receipt: { contract: "s15-conversation-receipt/v1", requestId: "chat_root", rootRequestId: "chat_root", conversationId: "conversation", receivedAt: now }, command, interpretationRequest: command, owner: { id: "owner", generation: 1 }, revision: 1,
+    intent: { kind: "execute", subject: "issue:42", instruction: command.text, scope: { purposeId: "purpose", resourceIds: ["repo"], access: "effect" } }, state: "completed", code: null,
+    authority: { id: work.receipt.work!.id, purposeId: "purpose", policyRevision: work.receipt.work!.policyRevision, resources: ["repo"], route: { provider: "codex", model: "scripted" }, limits: { modelCalls: 20, toolCalls: 200, outputBytes: 10000, activeMs: 60000 } },
+    phase: "work", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: "Local implementation evidence committed.", usage: null, actions: [], decision: null };
+  const workOptions = (create: boolean): WorkOptions => ({ runtime: "s15", path: join(f.dir, "work.sqlite"), installationId: "github_test", create, policy: f.service, now: () => now,
+    remainingCalls: () => f.input.budget!.ceiling.calls - f.service.control.usage().charged.calls,
+    conversation: { view(owner, requestId) { f.service.owner.current(owner); if (requestId !== "chat_root") throw new Error("unknown source"); return structuredClone(chatSource); } } });
+  let workService = openWorkService(workOptions(true));
+  const settlements: AttemptSettlement[] = [];
+  const responsibilities: ResponsibilityPort = {
+    assign(owner, input) { const r = workService.assign(owner, input); assignments++; return r; },
+    beginAttempt(id, input) { const handle = workService.beginAttempt(id, input); attempts++; return handle; },
+    wait(id, input) { if (liveVm) throw new Error("VM retained during wait"); const r = workService.wait(id, input); waits++; return r; },
+    observeEvent: (id, input) => workService.observeEvent(id, input),
+    settle(handle, input) { const r = workService.settle(handle, input); settlements.push(structuredClone(input)); return r; },
+    reconcile: (id, attempt, input) => workService.reconcile(id, attempt, input),
+    stop: (owner, id, requestId) => workService.stop(owner, id, requestId),
+    project: (owner, id) => workService.project(owner, id),
+    guard: handle => workService.guard(handle), signal: handle => workService.signal(handle),
+    publish: (handle, consume) => workService.publish(handle, consume), resume: (owner, id, source) => workService.resume(owner, id, source),
+  };
   const workspace = { async implement(input: Parameters<import("../../src/s15/github").GithubWorkspace["implement"]>[0]) { implementations++; liveVm++; try { input.guard(); return structuredClone(next); } finally { liveVm--; } } };
   const serviceOptions = { runtime: "s15" as const, store, policy: f.service, repositories: [repo], gateway: protocol.gateway, workspace, responsibilities, limits, now: () => now };
   let service = new GithubService(serviceOptions);
@@ -99,11 +108,11 @@ export function githubFixture(profile: "default" | "publish" | "personal" = "def
     const pr = await service.prepare(work.actor!, s.id, { kind: "pr_create", title: "Selected issue fix", body: "Implements #42 with actual deterministic evidence." }); await service.dispatch(work.actor!, pr.action);
     return s;
   };
-  return { f, protocol, limits, inspect, work, get store() { return store; }, get service() { return service; }, responsibilities, settlements, selected, publish,
+  return { f, protocol, limits, inspect, work, get store() { return store; }, get service() { return service; }, responsibilities, settlements, chatSource, selected, publish,
     get counts() { return { implementations, liveVm, assignments, waits, attempts }; }, set evidence(value: GithubCodingEvidence) { next = value; },
     advance(ms: number) { now += ms; f.now = now; },
-    reopen() { store.close(); store = new GithubStore(join(f.dir, "github.sqlite"), "github_test", false); service = new GithubService({ ...serviceOptions, store, policy: f.service }); return service; },
-    cleanup() { store.close(); protocol.close(); f.cleanup(); },
+    reopen() { workService.close(); workService = openWorkService(workOptions(false)); store.close(); store = new GithubStore(join(f.dir, "github.sqlite"), "github_test", false); service = new GithubService({ ...serviceOptions, store, policy: f.service }); return service; },
+    cleanup() { workService.close(); store.close(); protocol.close(); f.cleanup(); },
   };
 }
 export type GithubFixture = ReturnType<typeof githubFixture>;

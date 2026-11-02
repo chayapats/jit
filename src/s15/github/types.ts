@@ -1,4 +1,4 @@
-import type { ActionRef, AdapterResult, BudgetVector, Fence, OwnerActor, Ref, Usage, WorkAuthority } from "../policy";
+import type { ActionRef, AdapterResult, BudgetVector, Fence, Ref, WorkAuthority } from "../policy";
 
 /** Protected configured repository identity. Neither owner text nor a checkout chooses a credential or endpoint. */
 export interface GithubRepository { resource: Ref; name: string; target: string }
@@ -75,21 +75,6 @@ export interface ProtectedGithubGateway {
 /** One isolated VM attempt; closing is mandatory before CI/review wait. No protected-host execution fallback. */
 export interface GithubWorkspace {
   implement(input: { selection: GithubSelection; issue: GithubIssue; authority: WorkAuthority; findings: readonly GithubReview[]; signal?: AbortSignal; guard(): void }): Promise<GithubCodingEvidence>;
-}
-/** Narrow WORK15 consumer. The concrete adapter imports only work/index exports once integrated. */
-export interface GithubResponsibilities<Attempt = object> {
-  assign(owner: OwnerActor, input: { requestId: string; sourceRequestId: string; completion: string; triggers: ("ci" | "review" | "owner" | "schedule" | "assigned")[]; stallPolicy: { noProgressApproaches: number; reserveCalls: number; maxAttempts: number } }): { id: string; state: string; readyEventId: string | null; workId: string | null };
-  beginAttempt(id: string, input: { eventId: string; approach: string }): Attempt;
-  wait(id: string, input: { requestId: string; kind: "ci" | "review" | "owner" | "schedule"; key: string; evidenceRefs: string[] }): unknown;
-  observeEvent(id: string, event: { eventId: string; kind: "ci" | "review" | "owner" | "schedule" | "assigned"; key: string; purposeId: string; resourceIds: string[]; subject: string | null; evidenceRefs: string[] }): { state: string; readyEventId: string | null };
-  settle(handle: Attempt, input: { transportSettled: boolean; executionSettled: boolean; effects: "known" | "unknown"; progress: "none" | "made"; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean; basis?: "remote_verified" | "owner_statement" | "uncertain" }): { state: string };
-  reconcile(id: string, attemptId: string, input: { transportSettled: boolean; executionSettled: boolean; effects: "known" | "unknown"; progress: "none" | "made"; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean; basis?: "remote_verified" | "owner_statement" | "uncertain" }): unknown;
-  stop(owner: OwnerActor, id: string, requestId: string): unknown;
-  project(owner: OwnerActor, id: string): unknown;
-  guard(handle: Attempt): void;
-  signal(handle: Attempt): AbortSignal;
-  publish(handle: Attempt, consume: (attempt: unknown) => void): void;
-  resume(owner: OwnerActor, id: string, sourceRequestId: string): unknown;
 }
 /** Durable PR responsibility is independent of transient VM/native sessions. */
 export interface GithubBabysitting {
