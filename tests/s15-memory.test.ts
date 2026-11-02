@@ -165,3 +165,14 @@ test("shared working-knowledge ancestry stays bounded and a fresh retrieval rech
   expect(f.memory.prepare(context, "withdrawn_ancestry", "working knowledge").claims).toHaveLength(0);
   expect(() => f.memory.guard(context, "shared_ancestry")).toThrow("memory_context_stale");
 });
+
+test("P1: the full 128-parent context preserves every distinct source and withdrawal fence", () => {
+  const f = fixture(), context = f.context(), parents = [];
+  for (let index = 0; index < 128; index++) parents.push(f.memory.retain(context, f.source(`Working knowledge: independent source ${index}.`))[0]!);
+  const descendant = f.memory.retain(context, f.source("Working knowledge: combined evidence.", { parents: parents.map(parent => parent.id) }))[0]!;
+  expect(descendant.dependencies).toHaveLength(128);
+  expect(f.team.source(context, descendant.provenance.teamSourceId!).parents).toHaveLength(128);
+  f.team.withdraw(f.f.owner, parents[127]!.provenance.teamSourceId!);
+  expect(() => f.team.source(context, descendant.provenance.teamSourceId!)).toThrow("lineage_withdrawn");
+  expect(f.team.isWithdrawn(descendant.provenance.teamSourceId!)).toBe(true);
+});

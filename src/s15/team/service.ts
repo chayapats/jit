@@ -84,7 +84,7 @@ export class TeamService {
   }
   /** Captures only a bounded immutable work/message subset; every ancestor keeps its original fences. */
   capture(context: TeamContext, value: Pick<TeamSource, "id" | "text" | "scope" | "origin" | "resources" | "parents">): TeamSource {
-    canonical(value); exact(value, ["id", "text", "scope", "origin", "resources", "parents"]); identity(value.id); content(value.text, 32768); scope(value.scope); origin(value.origin); ids(value.parents, 32);
+    canonical(value); exact(value, ["id", "text", "scope", "origin", "resources", "parents"]); identity(value.id); content(value.text, 32768); scope(value.scope); origin(value.origin); ids(value.parents, 128);
     if (!Array.isArray(value.resources) || value.resources.length > 32) throw new AppError("invalid_source");
     value.resources.forEach(reference);
     if (new Set(value.resources.map(r => r.id)).size !== value.resources.length) throw new AppError("invalid_source");
@@ -103,7 +103,7 @@ export class TeamService {
   source(context: TeamContext, id: string): TeamSource {
     identity(id); const work = this.guard(context), seen = new Set<string>();
     const visit = (currentId: string): TeamSource => {
-      if (seen.has(currentId) || seen.size >= 128) throw new AppError("lineage_withdrawn", 409);
+      if (seen.has(currentId) || seen.size >= 256) throw new AppError("lineage_withdrawn", 409);
       seen.add(currentId);
       const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(currentId);
       const item = row ? JSON.parse(row.record_json) as TeamSource : null;
@@ -119,7 +119,7 @@ export class TeamService {
     identity(sourceId); const pending = [sourceId], seen = new Set<string>();
     while (pending.length) {
       const current = pending.pop()!; if (seen.has(current)) continue; seen.add(current);
-      if (seen.size > 128 || this.store.db.query("SELECT 1 FROM withdrawals WHERE id=?").get(current)) return true;
+      if (seen.size > 256 || this.store.db.query("SELECT 1 FROM withdrawals WHERE id=?").get(current)) return true;
       const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(current);
       if (!row) return true;
       pending.push(...(JSON.parse(row.record_json) as TeamSource).parents);

@@ -66,7 +66,7 @@ export class MemoryService {
    * private data remains private and cannot create execution, decisions, grants or account changes.
    */
   retain(context: TeamContext, input: MemoryInput, candidates: readonly MemoryCandidate[] = extractMemory(input.text)): MemoryClaim[] {
-    canonical(input); exact(input, ["id", "text", "origin", "scope", "resources", "parents"]); identity(input.id); content(input.text, 32768); origin(input.origin); scope(input.scope); ids(input.parents, 32);
+    canonical(input); exact(input, ["id", "text", "origin", "scope", "resources", "parents"]); identity(input.id); content(input.text, 32768); origin(input.origin); scope(input.scope); ids(input.parents, 128);
     if (!Array.isArray(input.resources) || input.resources.length > 32) throw new AppError("invalid_source"); input.resources.forEach(reference);
     if (!Array.isArray(candidates) || candidates.length > 16) throw new AppError("invalid_memory_extraction");
     const work = this.options.team.guard(context), allowed = this.options.retention(work);
@@ -138,7 +138,7 @@ export class MemoryService {
   }
   /** Adds actual tool-observed knowledge to the complete context lineage before its bytes reach the model. */
   include(context: TeamContext, packetId: string, claimIds: string[]): void {
-    ids(claimIds, 16);
+    ids(claimIds, 128);
     this.store.transaction(() => {
       this.guard(context, packetId);
       for (const claimId of claimIds) if (!this.accessible(context, this.claim(claimId))) throw new AppError("memory_context_stale", 409);

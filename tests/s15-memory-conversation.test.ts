@@ -17,7 +17,7 @@ afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await
 let serial = 0;
 const command = (text: string): ConversationCommand => ({ contract: "s15-conversation/v1", requestId: `chat_${serial++}`, conversationId: "conversation", text, continuation: null });
 
-function fixture() {
+function fixture(limits = { modelCalls: 3, toolCalls: 2 }) {
   const f = teamMemoryFixture(); cleanup.push(() => f.cleanup());
   f.f.add("purpose", ref("interpret")); f.f.input.purposes.push(ref("interpret")); f.f.input.interpretationPurpose = ref("interpret"); f.f.install();
   const workInputs: string[] = [], interpretationInputs: string[] = [];
@@ -38,7 +38,7 @@ function fixture() {
     yield { type: "message_complete", message: { type: "assistant", id: `work_${serial++}`, content: [{ type: "text", text }] } };
   } };
   const store = new ConversationStore(join(f.f.dir, "chat.sqlite"), "test_installation", true); cleanup.push(() => store.close());
-  const policy = createConversationPolicy(f.f.service, { ownerId: "owner", ownerGeneration: () => 1, bot: ref("bot"), selection, route: { provider: "codex", model: "scripted" }, limits: { modelCalls: 3, toolCalls: 2, outputBytes: 8192, activeMs: 60000 }, modelCallUpperBound: { ...zero(), calls: 1, spendMinor: "1" } });
+  const policy = createConversationPolicy(f.f.service, { ownerId: "owner", ownerGeneration: () => 1, bot: ref("bot"), selection, route: { provider: "codex", model: "scripted" }, limits: { ...limits, outputBytes: 8192, activeMs: 60000 }, modelCallUpperBound: { ...zero(), calls: 1, spendMinor: "1" } });
   const app = new ConversationApplication(store, { policy, model, memory: createConversationMemory(f.memory), tools: { async open() { return { tools: [{ access: "read", definition: { name: "read_test", description: "Read scripted working knowledge", inputSchema: { type: "object" }, execution: "exclusive", async execute() { return { content: "The test command is bun test." }; } } }], async cancel() {}, async close() {} }; } }, nativeDirectory: join(f.f.dir, "native"), clock: { now: () => f.f.now, sleep: (_ms, signal) => new Promise<void>((_resolve, reject) => { if (signal?.aborted) reject(new Error("aborted")); else signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); }) } });
   cleanup.push(() => app.shutdown());
   const handler = createConversationHandler(app, { origin: "http://localhost:3333", cookieName: "owner_session", authentication: { authenticate(token) { if (token !== "fixture") throw new Error("invalid fixture session"); return { actor: f.f.owner, csrf: "csrf" }; }, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new Error("invalid fixture csrf"); } }, resources: actor => f.team.resources(actor), memory: f.memory });
@@ -166,4 +166,25 @@ test("clarification retains original owner knowledge with its original source ti
   expect(seen).toContainEqual({ requestId: root.requestId, text: root.text });
   f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_clarified", kind: "memory.forget", claim: { id: retained.id, revision: retained.revision } });
   await f.submit("Explain another result."); expect(f.interpretationInputs.at(-1)).not.toContain("I prefer concise replies.");
+});
+
+test("P1: observation after 33 accumulated claims keeps all parents and CHAT commits its result", async () => {
+  const f = fixture({ modelCalls: 4, toolCalls: 3 });
+  const initial = f.f.memory.retain(f.f.context(), f.f.source(Array.from({ length: 16 }, (_, index) => `I prefer format number ${index}.`).join("\n")));
+  expect(initial).toHaveLength(16);
+  const outputs = [Array.from({ length: 16 }, (_, index) => `Working knowledge: first observation ${index}.`).join("\n"), "Working knowledge: second observation.", "Working knowledge: third observation."];
+  let turn = 0, reads = 0;
+  f.app.options.model = { provider: "codex", id: "scripted", async *stream(request) {
+    const interpretation = request.systemPrompt.includes("JIT_ISOLATED_INTERPRETATION_V1");
+    yield { type: "message_complete", message: { type: "assistant", id: `accumulated_${serial++}`, content: interpretation ? [{ type: "text", text: JSON.stringify({ intent: "inspect", purposeId: "purpose", resourceIds: ["repo"], access: "read", subject: null }) }] : turn++ < 3 ? [{ type: "tool_call", id: `accumulated_call_${serial++}`, name: "read_test", arguments: {} }] : [{ type: "text", text: "All observations retained." }] } };
+  } };
+  f.app.options.tools = { async open() { return { tools: [{ access: "read", definition: { name: "read_test", description: "Read successive observations", inputSchema: { type: "object" }, execution: "exclusive", async execute() { return { content: outputs[reads++]! }; } } }], async cancel() {}, async close() {} }; } };
+  const request = await f.submit("Inspect test command.");
+  expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ state: "completed", toolCalls: 3, result: "All observations retained." });
+  const claims = f.f.memory.view(f.f.f.owner).claims;
+  const third = claims.find(claim => claim.text === outputs[2])!;
+  expect(third.dependencies).toHaveLength(33);
+  expect(new Set(third.dependencies)).toEqual(new Set(claims.filter(claim => claim.id !== third.id).map(claim => claim.id)));
+  f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_accumulated_parent", kind: "memory.forget", claim: { id: initial[0]!.id, revision: initial[0]!.revision } });
+  expect(f.app.view(f.f.f.owner, request.requestId)).toMatchObject({ result: null, code: "memory_context_stale" });
 });
