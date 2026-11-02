@@ -3,7 +3,7 @@ import { canonical, currency, equal, exact, fail, id, nat, ref, string, unknownU
 
 /** Explicit trusted currency precision. No exchange rate, provider support or spend allowance is implied. */
 export interface PaymentCurrency { currency: string; minorUnit: number }
-/** Fixture-only final quote. id identifies one protected logical obligation across revisions/work/restarts. Never create a new id to retry an unknown payment. */
+/** Fixture-only final quote. id identifies one installation-unique protected logical obligation across revisions/work/restarts. Never create a new id to retry an unknown payment. */
 export interface PaymentQuote { id: string; version: string; purpose: Ref; account: Ref; payee: Ref; currency: string; amount: string; memo: string; expiresAt: number }
 /** Deterministic fixture transport behavior. lost_response records a remote success but loses its reply. */
 export type PaymentScript = 'succeed' | 'reject' | 'unknown' | 'lost_response';
@@ -25,7 +25,7 @@ export class FixturePaymentPort {
   /** Single fixture send. The policy service commits its claim before invoking this method; this port also refuses duplicate obligation IDs. */
   async pay(q: PaymentQuote): Promise<AdapterResult> {
     if (!equal(this.quote(q.id), q)) fail('stale_quote');
-    const key = q.account.id + ':' + q.id;
+    const key = q.id;
     if (this.#results.has(key)) fail('payment_already_submitted');
     this.mutationCalls++;
     const script = this.#scripts.shift() ?? 'succeed';
@@ -35,7 +35,7 @@ export class FixturePaymentPort {
     return structuredClone(result);
   }
   /** Read-only fixture reconciliation; never calls pay, even for absent/ambiguous results. */
-  async reconcile(t: Transaction): Promise<AdapterResult> { this.reconcileReads++; return structuredClone(this.#results.get(t.account.id + ':' + t.quoteId) ?? { outcome: 'unknown', actual: unknownUsage(), transportSettled: false }); }
+  async reconcile(t: Transaction): Promise<AdapterResult> { this.reconcileReads++; return structuredClone(this.#results.get(t.quoteId) ?? { outcome: 'unknown', actual: unknownUsage(), transportSettled: false }); }
 }
 /** Exact decimal parsing using trusted currency precision. Rejects floats, exponent/negative/leading-zero forms and excess precision. */
 export function parsePaymentAmount(amount: unknown, minorUnit: number): string {

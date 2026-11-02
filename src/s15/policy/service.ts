@@ -8,7 +8,7 @@ const uid = () => randomUUID().replaceAll('-', '');
 const clone = <T>(x: T): T => JSON.parse(v.canonical(x)) as T;
 const actionRef = (a: T.PreparedAction): T.ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
 const parse = <T>(row: { json: string } | null): T | null => row ? JSON.parse(row.json) as T : null;
-const paymentKey = (a: T.PreparedAction): string | null => a.transaction ? v.digest('s15.payment.intent.v1', { account: a.transaction.account.id, quote: a.transaction.quoteId }) : null;
+const paymentKey = (a: T.PreparedAction): string | null => a.transaction ? v.digest('s15.payment.intent.v1', { quote: a.transaction.quoteId }) : null;
 
 /** Opens only an explicitly opted-in, protected S15 ledger. S14/legacy stores and runtime selection are untouched.
  * The caller retains owner/control ports outside agent/VM reach and injects verified catalogs and finite adapters.
@@ -108,9 +108,10 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   function matching(r: T.Rule, w: T.WorkAuthority, a: T.PreparedAction): boolean {
     return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && (a.recipients.every(x => v.contains(r.recipients, x)) || a.classes.some(c => c === 'new_egress' || c === 'disclosure')) && (!r.mode.startsWith('personal_github') || (!!r.github && !!a.github && v.equal(r.github.repository, a.github.repository) && r.github.target === a.github.target));
   }
-  function recurringMatch(r: T.Rule, a: T.PreparedAction, continuation: boolean): boolean {
+  function recurringMatch(r: T.Rule, a: T.PreparedAction, continuation: boolean, identityOnly = false): boolean {
     const t = a.transaction, f = r.recurrence;
     if (!t || !f || !v.equal(t.account, f.account) || !v.equal(t.payee, f.payee) || t.currency !== f.currency || t.minorUnit !== f.minorUnit || BigInt(t.amountMinor) > BigInt(f.amountCeilingMinor) || time() < f.startsAt) return false;
+    if (identityOnly) return true;
     const used = ledger.get<{ count: number; amount_minor: string; last_at: number }>('SELECT * FROM recurring_usage WHERE id=?', r.id);
     if (continuation) return !!used; // This exact claim already charged frequency and total under the writer lock.
     return (!used || (time() - used.last_at >= f.minIntervalMs && used.count < f.maxPayments)) && BigInt(used?.amount_minor ?? '0') + BigInt(t.amountMinor) <= BigInt(f.totalCeilingMinor);
@@ -136,7 +137,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         if (approved) continue;
         let candidates: T.Rule[] = [];
         if (c === 'communication') candidates = rules.filter(r => r.mode === 'communication' || (r.mode === 'personal_github_publish' && a.classes.includes('github_publish')));
-        if (c === 'financial') candidates = rules.filter(r => r.mode === 'recurring_payment' && recurringMatch(r, a, continuation));
+        if (c === 'financial') { candidates = rules.filter(r => r.mode === 'recurring_payment' && recurringMatch(r, a, continuation, true)); if (candidates.length === 1 && !recurringMatch(candidates[0]!, a, continuation)) candidates = []; }
         if (c === 'github_publish' || c === 'github_merge') candidates = rules.filter(r => r.mode === (c === 'github_publish' ? 'personal_github_publish' : 'personal_github_merge'));
         if (c === 'github_publish' || c === 'github_merge' || (c === 'communication' && candidates.some(r => r.mode === 'personal_github_publish'))) {
           const g = a.github, subject = w.request.subject;

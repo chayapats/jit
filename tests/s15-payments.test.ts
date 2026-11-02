@@ -78,3 +78,10 @@ describe('money precision', () => {
 test('current owner can reconcile a prior payment after originating work expires', async () => {
   const { f, port, prepare } = setup(['lost_response']); const w = f.admit({ expiresAt: 10000 }).actor!, a = prepare(w).action; f.service.owner.decide(f.owner, { requestId: 'approve_short_work', action: actionRef(a), decision: 'approve', expiresAt: 9999 }); await f.service.work.dispatch(w, actionRef(a)); f.now = 10000; expect((await f.service.owner.reconcile(f.owner, actionRef(a), 'read_after_work_expiry')).outcome).toBe('succeeded'); expect(port.mutationCalls).toBe(1); await expect(f.service.work.dispatch(w, actionRef(a))).rejects.toThrow('expired');
 });
+
+test('unknown obligation cannot be cloned to a different account under a fresh work', async () => {
+  const { f, port, prepare } = setup(['unknown']); const w = f.admit().actor!, a = prepare(w).action; f.approve(a); await f.service.work.dispatch(w, actionRef(a)); port.setQuote(quote('invoice', { account: ref('repo'), version: 'v2' })); const next = f.admit().actor!; expect(() => prepare(next, 'invoice', 'v2')).toThrow('already_claimed'); expect(port.mutationCalls).toBe(1);
+});
+test('overlapping recurring rules remain ambiguous even when only one has remaining frequency', async () => {
+  const { f, port, prepare, recurring } = setup(); const first = recurring(); const w = f.admit().actor!; await f.service.work.dispatch(w, actionRef(prepare(w).action)); const second = structuredClone(first); second.id = 'other_rent'; f.service.owner.approveRecurringRule(f.owner, 'other_recurring', f.service.owner.current(f.owner)!.revision, second); port.setQuote(quote('second')); expect(prepare(f.admit().actor!, 'second').decision).toEqual({ state: 'hold', code: 'ambiguous_rule' });
+});
