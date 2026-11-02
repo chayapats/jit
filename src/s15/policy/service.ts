@@ -353,6 +353,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (w.mode !== 'work' || !['inspect', 'execute'].includes(w.request.intent) || !v.contains(w.request.resources, input.resource)) v.fail('outside_scope');
     const handler = readHandlers.get(input.operation); if (!handler) v.fail('read_operation_unavailable');
     currentRef('resource', input.resource); input.fences.forEach(f => currentRef(f.kind, f.ref));
+    if (policyCurrent().rules.some(r => r.mode === 'deny' && time() < r.expiresAt && r.operations.includes(input.operation) && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && v.contains(r.resources, input.resource))) v.fail('rule_denied');
     handler.validate(clone(input.exactPayload), { work: clone(w), resource: clone(input.resource) });
   }
   function guardReadClaim(actor: T.WorkActor, id: string, consume: boolean): T.ReadClaim {

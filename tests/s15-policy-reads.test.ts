@@ -44,3 +44,7 @@ test('inference-only bootstrap cannot obtain a read claim', () => {
 test('claim serialization failure rolls back its reservation and all read charges', () => {
   const f = fixture({ reads: [{ operation: 'read', validate() {} }] }); fixtures.push(f); f.install(); const w = f.admit({ intent: 'inspect' }).actor!; const before = f.service.control.usage(); const result = f.service.work.reserveRead(w, { ...input(), exactPayload: { text: 'a'.repeat(130900) } }); expect(result.state).toBe('deny'); expect(f.service.control.usage()).toEqual(before);
 });
+
+test('an explicit owner deny rule fences the declared read path before charge', () => {
+  const f = setup(), deny = structuredClone(f.input.rules[0]!); deny.id = 'deny_read'; deny.mode = 'deny'; deny.operations = ['read']; f.input.rules.push(deny); f.install(); const w = f.admit({ intent: 'inspect' }).actor!; expect(f.service.work.reserveRead(w, input())).toEqual({ state: 'deny', code: 'rule_denied' }); expect(f.service.control.usage().charged.reads).toBe(0);
+});
