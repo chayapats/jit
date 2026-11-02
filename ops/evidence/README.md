@@ -1,0 +1,9 @@
+# S15 composition evidence
+
+S14 remains the default. `init|setup|serve --s15 --config <protected-file>` selects separate fresh S15 state; `src/s15/main.ts` exports the credential-free configuration contract. `init` installs no owner, standing policy, budget or personal GitHub exception. Existing omitted-runtime service configurations retain legacy selection. Current source imports no Schway internals or protected-host execution backend.
+
+Run deterministic composed coverage with `bun test tests/s15-composition.test.ts tests/s15-runtime.test.ts tests/s15-vm-relay.test.ts --timeout 30000`. The suite uses the real protected services, scripted Schway models, a fake VM transport, HTTP GitHub/Google fixtures and controlled document/task/business records. The AC matrix in the PR separates fixture results from actual host/provider acceptance.
+
+`JIT_S15_ARM64_EVIDENCE=1 bun run s15:evidence:arm64` is a separate, non-default paired-host runner. It uses only the new disposable controller and the approved expendable working VM. It retains baseline snapshots, uses an authenticated loopback relay over dedicated SSH forwards, records exact build/config/Schway hashes in ignored `.local/s15-evidence`, and stops the working VM after the run. No model inference, owner credentials, live money, real recipients or existing installation cutover is used. The installer helper stages a separate service with no owner or policy.
+
+Guest command results and scoped cleanup remain cooperative. Protected hypervisor stop/snapshot/restore are separate observations. Registry destination controls are not content-level disclosure prevention. The owner checklist is kept in the main checkout's ignored `.local/s15-owner-morning-steps.md`; live GitHub/provider/Google/x64 and exact host adoption/rollback acceptance remain separate gates. Never infer release readiness from fixture success.
