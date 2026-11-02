@@ -5,6 +5,8 @@ import type { GithubCodingEvidence, GithubOperation, GithubRepository, GithubSna
 
 export { canonical, digest, exact, identity, integer, content };
 export function fail(code: string): never { throw new AppError(code, 409); }
+/** Unix millisecond observations are nonnegative safe integers, independent of finite counter ceilings. */
+export function timestamp(value: unknown): asserts value is number { integer(value, 0, Number.MAX_SAFE_INTEGER); }
 /** Strict full SHA-1 commit identity; expressions, options and abbreviated OIDs refuse. */
 export function oid(value: unknown): asserts value is string { if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value)) fail("github_commit_invalid"); }
 /** Exact safe branch, never a ref expression or shell fragment. */
@@ -22,7 +24,7 @@ export function snapshot(value: GithubSnapshot, repo: GithubRepository, now: num
   canonical(value); repository(repo);
   if (value.repository !== repo.name || value.target !== repo.target) fail("github_destination_changed");
   oid(value.base); content(value.version, 256);
-  const source = (s: { ref: string; observedAt: number }) => { content(s.ref, 2048); integer(s.observedAt, 0); if (s.observedAt > now || now - s.observedAt > maxAge) fail("github_snapshot_stale"); };
+  const source = (s: { ref: string; observedAt: number }) => { content(s.ref, 2048); timestamp(s.observedAt); if (s.observedAt > now || now - s.observedAt > maxAge) fail("github_snapshot_stale"); };
   source(value.source); source(value.protection.source); content(value.protection.version, 256);
   integer(value.protection.requiredApprovals, 0);
   if ([value.protection.known, value.protection.strict, value.protection.enforcesReviews, value.protection.requireCodeOwners].some(x => typeof x !== "boolean")) fail("github_protocol_invalid");
@@ -42,7 +44,7 @@ export function snapshot(value: GithubSnapshot, repo: GithubRepository, now: num
     issue.assignees.forEach(x => content(x, 256)); issue.branches.forEach(branch); issue.pulls.forEach(x => integer(x, 1));
   }
   const p = value.pull;
-  if (p) { integer(p.number, 1); integer(p.issue, 1); branch(p.branch); oid(p.head); oid(p.base); if (p.base !== value.base || !["open", "merged", "closed"].includes(p.state) || typeof p.mergeable !== "boolean" || typeof p.draft !== "boolean") fail("github_protocol_invalid");
+  if (p) { integer(p.number, 1); integer(p.issue, 1); branch(p.branch); oid(p.head); oid(p.base); if (p.state === "open" && p.base !== value.base || !["open", "merged", "closed"].includes(p.state) || typeof p.mergeable !== "boolean" || typeof p.draft !== "boolean") fail("github_protocol_invalid");
     for (const c of p.checks) { content(c.name, 256); oid(c.head); oid(c.base); source(c.source); if (!["pending", "success", "failure", "flaky"].includes(c.state)) fail("github_protocol_invalid"); }
     for (const r of p.reviews) { identity(r.id); content(r.author, 256); oid(r.head); oid(r.base); source(r.source); if (r.body) content(r.body, 16000); if (!["approved", "changes_requested", "commented"].includes(r.state) || typeof r.resolved !== "boolean" || typeof r.codeOwner !== "boolean") fail("github_protocol_invalid"); }
   }
@@ -54,8 +56,9 @@ export function codingEvidence(value: GithubCodingEvidence, criteria: string[], 
   if (value.base !== base || !/^[a-f0-9]{64}$/.test(value.diffHash)) fail("github_evidence_changed");
   exact(value.bundle, ["id", "revision", "generation"]); identity(value.bundle.id); integer(value.bundle.revision, 1); integer(value.bundle.generation, 1);
   if (!value.tests.length || new Set(value.criteria.map(x => x.id)).size !== value.criteria.length || canonical([...criteria].sort()) !== canonical(value.criteria.map(x => x.id).sort())) fail("github_evidence_required");
+  content(value.source.ref, 2048); timestamp(value.source.observedAt);
   for (const t of value.tests) { content(t.command, 4096); integer(t.exitCode, 0); if (!/^[a-f0-9]{64}$/.test(t.outputHash)) fail("github_evidence_required"); }
-  for (const c of value.criteria) { if (typeof c.passed !== "boolean" || !c.evidence.length) fail("github_evidence_required"); c.evidence.forEach(s => { content(s.ref, 2048); integer(s.observedAt, 0); }); }
+  for (const c of value.criteria) { if (typeof c.passed !== "boolean" || !c.evidence.length) fail("github_evidence_required"); c.evidence.forEach(s => { content(s.ref, 2048); timestamp(s.observedAt); }); }
 }
 /** Closed operation validation refuses arbitrary API, metadata fields and hidden delivery destinations. */
 export function operation(value: GithubOperation): void {

@@ -11,7 +11,10 @@ import { ref } from "./fixtures/s15-policy";
 const fixtures: GithubFixture[] = [], roots: string[] = [];
 afterEach(() => { fixtures.splice(0).forEach(f => f.cleanup()); roots.splice(0).forEach(r => rmSync(r, { recursive: true, force: true })); });
 
-test.each([true, false])("real VM-protocol files, Bun tests and immutable bundle (execution settled=%s)", async executionSettled => {
+for (const { executionSettled, ownershipPath } of [
+  { executionSettled: true, ownershipPath: null }, { executionSettled: false, ownershipPath: null },
+  ...[".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"].map(ownershipPath => ({ executionSettled: true, ownershipPath })),
+]) test(ownershipPath ? `remediation refuses ${ownershipPath} ownership changes` : `real VM files, Bun tests and immutable bundle (settled=${executionSettled})`, async () => {
   const f = githubFixture("personal"); fixtures.push(f);
   const runtime = new CodingRuntimeFixture(); roots.push(runtime.root); const initial = await runtime.seed();
   writeFileSync(runtime.local("/workspace/repositories/repo/behavior.test.ts"), 'import {test,expect} from "bun:test"; test("selected behavior",()=>expect(Bun.file("answer.txt").text()).resolves.toBe("fixed\\n"));\n');
@@ -21,11 +24,15 @@ test.each([true, false])("real VM-protocol files, Bun tests and immutable bundle
   runtime.handles.set(handle, {} as BotComputer);
   const backend = createBoxBackend({ exec: (_h, request) => runtime.exec(handle, request, () => f.f.service.work.guard(actor)) }, { projectId: "fixture", name: "fixture", mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp" });
   const path = `/workspace/coding/${selected.id}`; let closed = 0, captured: Uint8Array | null = null;
-  const script = codingScript(() => path, true, p => `printf 'fixed\\n' > '${p}/answer.txt' && git -C '${p}' -c core.hooksPath=/dev/null -c user.name=Fixture -c user.email=fixture@invalid add answer.txt && git -C '${p}' -c core.hooksPath=/dev/null -c user.name=Fixture -c user.email=fixture@invalid commit -qm 'Fix selected behavior'`);
+  const script = codingScript(() => path, true, p => `printf 'fixed\\n' > '${p}/answer.txt' && git -C '${p}' -c core.hooksPath=/dev/null -c user.name=Fixture -c user.email=fixture@invalid add answer.txt${ownershipPath ? ` && mkdir -p '${p}/.github' '${p}/docs' && printf '* @changed-owner\\n' > '${p}/${ownershipPath}' && git -C '${p}' -c core.hooksPath=/dev/null add '${ownershipPath}'` : ""} && git -C '${p}' -c core.hooksPath=/dev/null -c user.name=Fixture -c user.email=fixture@invalid commit -qm 'Fix selected behavior'`);
   const workspace = createGithubVmWorkspace({ vm: { async openAttempt() { return { backend, definitions: coreToolDefinitions(backend), evidence: () => [{ transport: "closed", execution: closed && executionSettled ? "guest_scope_empty" : "unsettled" }], async cancel() {}, async close() { closed++; } }; } }, vmId: "vm", policy: f.f.service, nativeDirectory: join(f.f.dir, "native"), route: { provider: "codex", model: "scripted" }, scripted: { ...script, provider: "codex", id: "scripted" }, modelCallUpperBound: f.limits.actionUpperBound, maxTurns: 4, activeMs: 30000, maxBundleBytes: 1024 * 1024, tests: [{ command: "bun test", timeoutMs: 10000 }],
     async preload(b) { const r = await b.spawn({ cwd: "/workspace", command: `mkdir -p /workspace/coding && git -c core.hooksPath=/dev/null -c protocol.file.allow=always clone --no-local --template= /workspace/repositories/repo '${path}'`, timeoutMs: 10000 }); if (r.exitCode !== 0) throw new Error("preload failed"); return path; },
     capture(bytes) { captured = bytes; return ref("bundle"); }, verifyCriteria({ criteria, evidence }) { return criteria.map(c => ({ id: c.id, passed: evidence.tests.every(t => t.exitCode === 0), evidence: [evidence.source] })); },
   });
+  if (ownershipPath) {
+    await expect(workspace.implement({ selection: selected, issue: f.protocol.value.issues[0]!, authority, findings: [], guard() { f.f.service.work.guard(actor); } })).rejects.toThrow("github_required_checks_changed");
+    expect(captured).toBeNull(); expect(closed).toBe(1); expect(f.protocol.calls).toHaveLength(0); return;
+  }
   const evidence = await workspace.implement({ selection: selected, issue: f.protocol.value.issues[0]!, authority, findings: [], guard() { f.f.service.work.guard(actor); } });
   expect(closed).toBe(1); expect(evidence.tests[0]!.exitCode).toBe(0); expect(evidence.criteria[0]!.passed).toBe(true);
   expect(evidence.head).not.toBe(base); expect(evidence.diffHash).toMatch(/^[a-f0-9]{64}$/); expect(captured!.length).toBeGreaterThan(100);

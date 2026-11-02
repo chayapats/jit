@@ -82,7 +82,7 @@ export interface GithubResponsibilities<Attempt = object> {
   beginAttempt(id: string, input: { eventId: string; approach: string }): Attempt;
   wait(id: string, input: { requestId: string; kind: "ci" | "review" | "owner" | "schedule"; key: string; evidenceRefs: string[] }): unknown;
   observeEvent(id: string, event: { eventId: string; kind: "ci" | "review" | "owner" | "schedule" | "assigned"; key: string; purposeId: string; resourceIds: string[]; subject: string | null; evidenceRefs: string[] }): { state: string; readyEventId: string | null };
-  settle(handle: Attempt, input: { transportSettled: boolean; executionSettled: boolean; effects: "known" | "unknown"; progress: "none" | "made"; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean }): { state: string };
+  settle(handle: Attempt, input: { transportSettled: boolean; executionSettled: boolean; effects: "known" | "unknown"; progress: "none" | "made"; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean; basis?: "remote_verified" | "owner_statement" | "uncertain" }): { state: string };
   reconcile(id: string, attemptId: string, input: { transportSettled: boolean; executionSettled: boolean; effects: "known" | "unknown"; progress: "none" | "made"; evidenceRefs: string[]; recommendation: string; usage: Usage; complete?: boolean; basis?: "remote_verified" | "owner_statement" | "uncertain" }): unknown;
   stop(owner: OwnerActor, id: string, requestId: string): unknown;
   project(owner: OwnerActor, id: string): unknown;

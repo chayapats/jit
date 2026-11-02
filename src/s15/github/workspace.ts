@@ -79,7 +79,7 @@ export function createGithubVmWorkspace(options: {
         if (!unchanged) fail("github_changed_during_tests");
         const diff = await git(["diff", "--binary", "--no-ext-diff", "--no-textconv", input.selection.base, head, "--"]), diffHash = digest(diff);
         const changedPaths = (await git(["diff", "--name-only", "--no-ext-diff", input.selection.base, head, "--"])).trim().split("\n").filter(Boolean);
-        if (changedPaths.some(p => p.startsWith(".github/workflows/") || p === ".github/CODEOWNERS")) fail("github_required_checks_changed");
+        if (changedPaths.some(p => p.startsWith(".github/workflows/") || [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"].includes(p))) fail("github_required_checks_changed");
         const bundlePath = `${path}/.git/jit-evidence.bundle`;
         await git(["merge-base", "--is-ancestor", input.selection.base, head]);
         await git(["bundle", "create", bundlePath, "HEAD"]);
