@@ -229,9 +229,13 @@ test('source drift after validate refuses activation while the prior build stays
 });
 
 test('a pre-existing S14 store handle cannot write through the persisted boot fence', async () => {
-  const f = await fixture(), old = new S14Store(f.database), service = f.open(); prepare(service, f.options);
+  const f = await fixture(), old = new S14Store(f.database), oldMaintenance = new S14Store(f.database, {}), service = f.open(); prepare(service, f.options);
   expect(() => old.transaction(tx => tx.run("UPDATE installation SET revision=revision+1"))).toThrow('s14_ops_reconciliation_required'); old.close();
+  expect(() => oldMaintenance.transaction(tx => tx.run("UPDATE installation SET revision=revision+1"))).toThrow('s14_foreign_maintenance_fence'); oldMaintenance.close();
   f.close(); expect(() => new S14Store(f.database)).toThrow('s14_ops_reconciliation_required');
+  const before = preservedBytes(f);
+  expect(() => new S14Store(f.database, {})).toThrow('s14_foreign_maintenance_fence');
+  expect(preservedBytes(f)).toEqual(before);
 });
 
 test('omitted-runtime old service configuration remains legacy; explicit S15 report never selects another installation', async () => {
