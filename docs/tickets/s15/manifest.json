@@ -543,7 +543,7 @@
       ],
       "deliver": "Jit selects or escalates model/effort within approved routes, the existing account and budget, while preserving explicit pins and Schway ownership.",
       "steps": [
-        "Define the reviewed route/model/effort policy and usage-reservation contract through supported Schway exports.",
+        "Define the reviewed route/model/effort policy and usage-reservation contract through supported Schway exports. The bounded proposal prepares review only; MODEL15-FZ01\u2013FZ07 and demonstrated public-dispatch/effort/cost requirements remain open, without bypassing native #323.",
         "Implement selection/recording and permitted retries or escalation without new account/provider/billing authority.",
         "Preserve current owner decisions and source/purpose labels across model/context changes.",
         "Expose honest unavailable/unknown usage states; record a capability gap rather than implementing provider protocols locally."
@@ -560,7 +560,7 @@
         "Packed-consumer checks -> no private Schway imports, Jit refresh protocol or replacement retry loop."
       ],
       "requirements": "FR-02/13/14/18/21/27/31; NFR-02/03/06/09",
-      "contract": "Delivers approved model/effort selection and usage contract; requires verified Schway surface from ARCH15-01.",
+      "contract": "Proposes s15-model-selection/v1 closed route/model/effort/selection/context/usage records and trusted ports, ADR0070, complete UNEXECUTED synthetic definitions and MODEL15-FZ01\u2013FZ07; bounded pre-admission preparation only. Runtime acceptance/native #323 remain outstanding; exact unmerged inputs require actual merged-revision reconciliation and implementation evidence. Demonstrated public-dispatch/effort/cost requirements are not supplied runtime APIs.",
       "out": "Opening provider accounts, silently enabling paid routes or changing a pinned task model.",
       "kind": "implementation",
       "number": 326,
@@ -575,7 +575,18 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/MODEL15-01.md"
+      "path": "docs/tickets/s15/MODEL15-01.md",
+      "preparation": {
+        "scope": "Owner-authorized bounded DOCUMENTATION-ONLY implementation step 1 preparation; not runtime admission or final freeze.",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contractPath": "docs/contracts/s15-model-selection-v1.md",
+        "schemaPath": "docs/contracts/fixtures/s15-model-selection-v1.schema.json",
+        "fixturePath": "docs/contracts/fixtures/s15-model-selection-v1.json",
+        "guidePath": "docs/contracts/fixtures/s15-model-selection-v1.md",
+        "adrPath": "docs/adr/0070-s15-approved-model-selection-and-disclosure.md",
+        "evidencePath": "docs/evidence/s15-model-contract-preparation.md",
+        "status": "proposed; UNEXECUTED documentation; all original criteria/native prerequisites/labels/readiness/ownership unchanged; MODEL15-FZ01\u2013FZ07 open"
+      }
     },
     {
       "key": "WORK15-01",
