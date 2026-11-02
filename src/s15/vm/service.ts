@@ -1,4 +1,5 @@
 import { coreToolDefinitions } from "schway/host";
+import { containsCredential } from "../../security/credentials";
 import { AppError } from "../../errors";
 import { createVmBackend } from "./backend";
 import { VmStore, type VmRegistration } from "./store";
@@ -73,6 +74,7 @@ export class WorkingVmService implements WorkingVmPort {
     if (row.state !== "ready" || !row.networkIsolated) vmFail(row.reason ?? "vm_network_unproven");
     const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
     if (mode === "system" && !manager) vmFail("vm_recovery_unavailable", 423);
+    if (mode === "system" && this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_snapshots WHERE vm_id=?").get(row.id)!.n >= 8) vmFail("vm_snapshot_capacity", 423);
     this.options.store.transaction(() => {
       this.options.policy.assertCurrent(actor, { ...input, mode });
       const r = this.options.store.registration(row.id);
@@ -81,15 +83,13 @@ export class WorkingVmService implements WorkingVmPort {
       if (active.length >= Math.min(r.maxSessions, this.#limits.maxSessions) || active.some(s => s.mode === "system") || mode === "system" && active.length) vmFail("vm_capacity");
       this.options.store.db.query("INSERT INTO vm_sessions VALUES (?,?,?,?,?,?,?,?)").run(id, row.id, input.workId, input.attemptId, mode, "opening", unit, row.generation);
     });
-    let s: LiveSession | undefined;
+    let s: LiveSession | undefined; let managementStarted = false;
     try {
       if (mode === "system") {
-        const count = this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_snapshots WHERE vm_id=?").get(row.id)!.n;
-        if (count >= 8) vmFail("vm_snapshot_capacity", 423);
         const snapshot = `jit-${uuid()}`, payload = vmCanonical({ kind: "snapshot", snapshot, vmId: row.id, generation: row.generation });
         const claim = await this.options.policy.claim(actor, { vmId: row.id, generation: row.generation, sessionId: id, workId: input.workId,
-          attemptId: input.attemptId, operationId: uuid(), kind: "system_admin", payloadHash: vmHash(payload), payload, timeoutMs: this.#limits.commandMs, outputBytes: 0 });
-        await claim.dispatch(() => manager!.snapshot(snapshot));
+          attemptId: input.attemptId, operationId: uuid(), kind: "system_admin", payloadHash: vmHash(payload), payload, timeoutMs: 360000, outputBytes: 0 });
+        await claim.dispatch(() => { managementStarted = true; return manager!.snapshot(snapshot); });
         const machine = await manager!.inspect();
         this.options.store.transaction(() => {
           const current = this.options.store.registration(row.id); current.generation++; current.boot = machine.boot; this.options.store.save(current);
@@ -99,7 +99,7 @@ export class WorkingVmService implements WorkingVmPort {
         });
       }
       await this.health(row, true);
-      const root = `/var/lib/jit-work/${input.workId}`, temporary = `${root}/.tmp-${id}`;
+      const root = `/var/lib/jit-work/${input.workId}/${input.attemptId}`, temporary = `${root}/.tmp-${id}`;
       s = { id, vmId: row.id, workId: input.workId, attemptId: input.attemptId, generation: row.generation, mode, unit, root, temporary,
         deadline: this.#now() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), tail: Promise.resolve(),
         pending: 0, closing: null, timer: null, proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs) ?? null };
@@ -110,9 +110,9 @@ export class WorkingVmService implements WorkingVmPort {
       const call = (operation: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal) => this.call(actor, state, operation, kind, signal);
       // Fixed, work-root-only infrastructure setup is separately claimed; it cannot dispatch a domain edit/shell.
       await call({ op: "init" }, "read");
-      const backend = createVmBackend({ call }, root, temporary, this.#limits, {}, access);
+      const backend = createVmBackend({ call, protocolError: () => this.uncertain(state.vmId, "vm_protocol_invalid") }, root, temporary, this.#limits, {}, access);
       const session: VmSession = Object.freeze({ id, backend,
-        definitions: Object.freeze(coreToolDefinitions(backend).filter(definition => access === "execute" || ["read", "list", "search"].includes(definition.name)).map(definition => ({ ...definition, execute: async (value: unknown, context: Parameters<typeof definition.execute>[1]) => {
+        definitions: Object.freeze(coreToolDefinitions(backend).filter(definition => access === "execute" || ["read", "grep", "find", "ls"].includes(definition.name)).map(definition => ({ ...definition, execute: async (value: unknown, context: Parameters<typeof definition.execute>[1]) => {
           guard(); const result = await definition.execute(value, context); guard(); return result;
         } }))),
         evidence: () => Object.freeze(this.options.store.evidence(id).map(e => Object.freeze(e))),
@@ -126,7 +126,8 @@ export class WorkingVmService implements WorkingVmPort {
       return session;
     } catch (error) {
       if (s) await this.closeState(s).catch(() => {});
-      else { this.uncertain(row.id, "vm_reconciliation_required"); this.options.store.db.query("UPDATE vm_sessions SET state='unknown' WHERE id=?").run(id); }
+      else if (managementStarted) { this.uncertain(row.id, "vm_reconciliation_required"); this.options.store.db.query("UPDATE vm_sessions SET state='unknown' WHERE id=?").run(id); }
+      else this.options.store.db.query("UPDATE vm_sessions SET state='closed' WHERE id=?").run(id);
       throw error;
     }
   }
@@ -143,6 +144,7 @@ export class WorkingVmService implements WorkingVmPort {
       await this.health(this.options.store.registration(s.vmId)); this.current(actor, s);
       const id = uuid(), request: Record<string, unknown> = { v: 1, id, root: s.root, tmp: s.temporary, cap: kind === "shell" ? this.#limits.outputBytes : this.#limits.fileBytes, ...structuredClone(operation) };
       const payload = vmCanonical(request), operationId = id, payloadHash = vmHash(payload);
+      if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
       const action: VmPolicyOperation = { vmId: s.vmId, generation: s.generation, sessionId: s.id, workId: s.workId, attemptId: s.attemptId,
         operationId, kind: operation.op === "init" ? "setup" : s.mode === "system" && kind === "shell" ? "system_admin" : kind, payload, payloadHash,
         timeoutMs: Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#now()), outputBytes: this.#limits.outputBytes };
@@ -195,6 +197,18 @@ export class WorkingVmService implements WorkingVmPort {
     const bytes = await claim.dispatch(() => { this.current(actor, s); return (this.options.artifactFetch ?? fetchVmArtifact)(input, s.controller.signal); });
     claim.publish(() => this.current(actor, s));
     await this.call(actor, s, { op: "write", path: input.path, data: Buffer.from(bytes).toString("base64"), createParents: false }, "write");
+  }
+  /** Explicit owner start/re-verification after recovery. No old session, command or policy claim is resumed. */
+  async start(actor: object, vm: string): Promise<void> {
+    const requireOwner = this.options.requireOwner; if (!requireOwner) vmFail("vm_owner_required", 403);
+    requireOwner(actor); vmId(vm); const row = this.options.store.registration(vm);
+    if (row.state !== "stopped" || this.options.store.db.query("SELECT id FROM vm_sessions WHERE vm_id=? AND state<>'closed' LIMIT 1").get(vm)) vmFail("vm_fenced");
+    const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
+    if (!manager?.start) vmFail("vm_management_unavailable");
+    this.options.store.transaction(() => { requireOwner(actor); row.generation++; row.state = "uncertain"; row.reason = "vm_recovery_in_progress"; this.options.store.save(row); });
+    await manager.start(); requireOwner(actor); const machine = await manager.inspect();
+    if (machine.state !== "running" || machine.identity !== row.machineIdentity || machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
+    this.options.store.transaction(() => { requireOwner(actor); row.boot = machine.boot; row.state = "ready"; row.reason = null; row.networkIsolated = true; row.networkCheckedAt = this.#now(); this.options.store.save(row); });
   }
   /** Owner-authorized strong settlement/restore. The caller supplies a real owner verifier; no guest actor can invoke it. */
   async recover(actor: object, input: { vmId: string; snapshotId?: string }): Promise<void> {

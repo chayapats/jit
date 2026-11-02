@@ -3,9 +3,11 @@ import { join, resolve } from "node:path";
 import type { VmHostCommand, VmManagement, VmStatus, VmCapability } from "./types";
 import { vmHostCommand, vmQuote } from "./host";
 import { vmEndpoint, vmFail, vmId, vmInteger } from "./validation";
+import { defaultVmRegistryHosts } from "./proxy";
 import { VmSshTransport } from "./transport";
 import { VmStore, type VmRegistration } from "./store";
 import { probeVmDirectEgress } from "./network";
+import { isIP } from "node:net";
 import { createHash } from "node:crypto";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
 
@@ -19,10 +21,11 @@ export class VmEnrollment {
   readonly #setups = new Set<string>();
   readonly #checks = new Map<string, { input: Omit<VmEnrollmentInput, "id">; fingerprint: string; expiresAt: number }>();
   constructor(readonly options: { store: VmStore; keyDirectory: string; requireOwner: (actor: object) => void;
-    managers: ReadonlyMap<string, VmManagement>; run?: VmHostCommand; now?: () => number }) {
+    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number }) {
     if (!options.keyDirectory.startsWith("/") || resolve(options.keyDirectory) !== options.keyDirectory) vmFail("vm_invalid_setup");
     mkdirSync(options.keyDirectory, { recursive: true, mode: 0o700 });
     const stat = lstatSync(options.keyDirectory); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
+    options.store.db.exec("CREATE TABLE IF NOT EXISTS vm_settings (id TEXT PRIMARY KEY,data TEXT NOT NULL)");
   }
   private capabilities(row: VmRegistration): readonly VmCapability[] {
     const manager = row.managerId !== null && this.options.managers.has(row.managerId);
@@ -107,6 +110,19 @@ export class VmEnrollment {
     const count = this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_sessions WHERE vm_id=? AND state<>'closed'").get(id)!.n;
     return { id, generation: row.generation, state: row.state, networkIsolated: row.networkIsolated,
       recoveryAvailable: row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row) };
+  }
+  /** Owner-only exact approved registry settings, persisted outside the guest and ordinary VM recovery. */
+  registryHosts(actor: object): readonly string[] {
+    this.options.requireOwner(actor); const row = this.options.store.db.query<{ data: string }, []>("SELECT data FROM vm_settings WHERE id='registry-hosts'").get();
+    return row ? JSON.parse(row.data) : [...defaultVmRegistryHosts];
+  }
+  /** An authenticated owner edit changes the destination ceiling, closes old tunnels, and grants no account/effect authority. */
+  setRegistryHosts(actor: object, hosts: readonly string[]): readonly string[] {
+    this.options.requireOwner(actor);
+    if (!Array.isArray(hosts) || !hosts.length || hosts.length > 128 || hosts.some(h => typeof h !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h)) || new Set(hosts).size !== hosts.length) vmFail("vm_invalid_setup", 400);
+    if (!this.options.updateRegistryHosts) vmFail("vm_proxy_unavailable", 503);
+    this.options.store.transaction(() => { this.options.requireOwner(actor); this.options.store.db.query("INSERT INTO vm_settings VALUES ('registry-hosts',?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(JSON.stringify(hosts)); this.options.updateRegistryHosts!([...hosts]); });
+    return [...hosts];
   }
   /** Edits only the concurrent-session ceiling. Reducing it never evicts or silently settles current work. */
   setMaxSessions(actor: object, id: string, maximum: number): VmStatus {

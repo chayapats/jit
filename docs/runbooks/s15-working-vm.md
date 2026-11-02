@@ -1,0 +1,34 @@
+# S15 working VM server integration
+
+This is an opt-in server module for #321; S14 remains the default. Read [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md) and the [contract](../contracts/s15-working-vm-v1.md#implemented-server-contract-2026-11-03). It does not migrate/adopt an existing installation or run an inference loop.
+
+## Protected composition
+
+Create `VmStore` at a new protected absolute path, `VmManagers` over that journal and a `ConnectionVault`, `VmEnrollment` with the real authenticated-owner verifier, `WorkingVmService` with the current-work policy port, and `startVmRegistryProxy` on a protected controller port. Mount `createVmApi` behind the existing owner-authenticated ingress (including Host/Origin/CSRF checks). Never expose its actor callback, management registry or backend factory as model tools.
+
+Use `WorkingVmPort.openAttempt` from the conversation executor. Pass the real policy work actor, exact VM/work/attempt, cancellation signal, and `access:'inspect'` for inspection. Use `mode:'system'` only for a trusted system-administration handler; it is exclusive and snapshots first. A plain root shell can still disrupt the guest; there is no root-proof command classifier or prevention promise under option B. Close sessions when work waits for CI/review. Never route failures to `localExecutionBackend` or a protected-host shell.
+
+`VmSession.evidence()` returns safe metadata, not command output or credentials. Output is guest-reported. `cancel` immediately fences publication, then closes the exact unit; failed cooperative read-back retains capacity and makes the whole shared VM uncertain. Only explicit owner recovery may escalate to hypervisor stop/restore. Strong stop does not turn an unknown historical outcome into success/non-occurrence or refund policy usage.
+
+## Owner JSON setup
+
+1. `POST /s15/vm/setup {}` returns one public-key bootstrap command. Paste it once in the new VM. It configures only dedicated public-key access, key-file permissions and stable cloud-init SSH host keys. The private key stays protected.
+2. Optionally `POST /s15/vm/management` with either `{kind:'lima',instance}` or `{kind:'proxmox',baseUrl,node,vmid,token,proxy:{address,port}}`. This write-only secret input returns only `managerId`. The Proxmox token is stored in the protected vault and never returned or injected into the guest.
+3. `POST /s15/vm/check {setupId,host,port,user,managerId?}` observes the typed target's host key and returns `checkId`, `fingerprint`, typed address and transport profile. Confirm that fingerprint through the VM console/management channel.
+4. `POST /s15/vm/enroll {id,checkId,fingerprint,transportProfile:'ssh-sudo-systemd/v1',maxSessions?:2}` checks SSH/sudo/Python/systemd, external management and direct-egress refusal, and persists the exact target. Host-key changes refuse; no silent key replacement or config editing follows.
+5. `GET /s15/vm/status?id=<id>` returns safe status/capability rows only. Missing audit/network proof is unproven, missing recovery is unavailable, and a configured adapter alone is not proven recovery. `POST /s15/vm/settings {id,maxSessions}` edits capacity without evicting or settling current work.
+6. `POST /s15/vm/recover {vmId,snapshotId?}` is owner-only. It fences the VM, strongly stops it and optionally restores only a registered protected snapshot. It leaves the VM stopped; it never resumes old commands or authority. Restart/re-verification is a separate explicit owner `POST /s15/vm/start {vmId}` action. It rechecks external custody/egress and creates a new fence without resuming old work.
+
+HTTP requests use bounded JSON bodies. Management secrets need the owning ingress's secret-redaction/write-only handling. Public errors/status use English/Thai i18n keys; this module supplies no visual design. The S15 UX handoff owns presentation.
+
+## External network and VM setup
+
+The x64 owner steps are installation-specific and live in ignored `.local/s15-jit-work-owner-steps.md` in the main checkout. The protected controller is `jit-vm`; create a new `jit-work` VM with 4 CPU/8 GiB/60 GiB and passwordless sudo. A VM-scoped Proxmox role gets only VM.Audit, VM.PowerMgmt, VM.Snapshot and VM.Snapshot.Rollback on the new VM; read-only Sys.Audit on `/` and the selected node permits all firewall activation checks. Enable Datacenter/Node/VM firewall and the VM NIC firewall flag. Outbound default is DROP with only TCP to the protected controller proxy port allowed; existing host-initiated SSH replies remain allowed. No guest-facing Jit API, management token, host mount, socket, browser profile or generic tunnel is allowed.
+
+For a new arm64 Lima VM, use QEMU plain mode, empty mounts/networks, no agent forwarding/proxy environment propagation and a fixed SSH port. Install Python/sudo/systemd/Docker in the trusted baseline. `limaRestrictedQemu` supplies a protected QEMU wrapper that injects restricted user networking and one fixed proxy guest-forward. Set the trusted `LimaVmManagement` environment to that wrapper; specify the real QEMU UEFI firmware in the new Lima config because the wrapper changes Lima's firmware search location. Do not modify `jit-arm` or `jit-ac12-*`. Snapshot uses graceful shutdown before capture; an uncooperative guest that cannot quiesce fails rather than claiming a consistent snapshot. Strong emergency recovery may force-stop the guest.
+
+The proxy supports anonymous apt/npm/pip/registry acquisition through owner-approved exact hosts. Each active work gets a revocable scoped proxy lease. CLI tools receive its proxy environment; tools that discard environment (sudo, Docker daemon) require explicit guest-local proxy configuration within the current work. Owner `GET/POST /s15/vm/registries` reads/replaces the exact list through the protected settings callback; replacing it closes existing tunnels. No upstream account credential is injected. Logs contain only session, destination host and byte counts. Default host lists do not include `github.com` or `api.github.com`; new hosts use protected policy and a new proxy incarnation. An exact HTTPS URL/SHA-256 bounded artifact path supplements it. TLS passthrough is destination control, not content-level disclosure prevention, and registry access may disclose workspace data.
+
+## Validation
+
+Run `bun test tests/s15-vm*.test.ts`, `bun run typecheck`, the full `bun test` and `git diff --check`. Tests use scripted transports, opaque actor fakes, fake time and disposable local helper stand-ins; they are not VM/root isolation evidence. Real arm64 operations, guest network bypass attempts, cooperative cancellation, protected snapshot/restore and strong stop are opt-in and recorded only in ignored `.local` evidence. x64 live evidence is pending, not failed, until the owner provides `jit-work`. No paid inference, existing Jit deployment, provider/billing change or live website session is needed for these VM tests.

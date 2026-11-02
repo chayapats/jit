@@ -42,3 +42,22 @@ test("JSON API rejects extra authority fields and requires the authenticated own
   const extra = await api(new Request("http://localhost/s15/vm/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ setupId: f.setup.setupId, host: "vm.test", port: 22, user: "jit", owner: true }) })); expect(extra.status).toBe(409);
   const foreign = createVmApi(f.enrollment, async () => ({})); expect((await foreign(new Request("http://localhost/s15/vm/status?id=vm"))).status).toBe(503);
 });
+
+test("foreign store headers are refused before writable SQLite or sidecars", async () => {
+  const { writeFileSync, readFileSync, readdirSync } = await import("node:fs");
+  const directory = mkdtempSync(join(tmpdir(), "jit-vm-header-")); close.push(() => rmSync(directory, { recursive: true, force: true }));
+  const file = join(directory, "foreign.sqlite"), bytes = Buffer.alloc(100); bytes.write("SQLite format 3\0"); bytes.writeUInt32BE(0x4a495431, 68); bytes.writeUInt32BE(17, 60); writeFileSync(file, bytes);
+  expect(() => new VmStore(file)).toThrow("vm_store_invalid"); expect(readFileSync(file)).toEqual(bytes); expect(readdirSync(directory)).toEqual(["foreign.sqlite"]);
+});
+test("VM management setup persists only an opaque token reference; the token stays in the protected vault", async () => {
+  const { realpathSync, readFileSync } = await import("node:fs"); const { ConnectionVault } = await import("../src/exec/connections"); const { VmManagers } = await import("../src/s15/vm/managers");
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "jit-vm-manager-"))), path = join(directory, "journal.sqlite"), store = new VmStore(path); close.push(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const owner = {}, vault = new ConnectionVault(join(directory, "vault"), { forbidden: [path] });
+  const options = { store, vault, requireOwner: (a: object) => { if (a !== owner) throw new Error("not owner"); } };
+  const token = "fixture-" + "x".repeat(32), managers = new VmManagers(options);
+  const { managerId } = managers.register(owner, { kind: "proxmox", baseUrl: "https://proxmox.test:8006", node: "node", vmid: 123, token, proxy: { address: "192.0.2.1", port: 3128 } });
+  expect(managers.has(managerId)).toBe(true); expect(vault.read(managerId)).toBe(token);
+  expect(store.db.query<{ data: string }, [string]>("SELECT data FROM vm_managers WHERE id=?").get(managerId)?.data).not.toContain(token);
+  expect(new VmManagers(options).has(managerId)).toBe(true);
+  expect(() => managers.register({}, { kind: "lima", instance: "jit-work-arm" })).toThrow("not owner");
+});

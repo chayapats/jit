@@ -33,6 +33,8 @@ export interface VmMachineState {
 /** Protected, VM-scoped management. Credentials remain in this implementation, outside the guest. */
 export interface VmManagement {
   inspect(): Promise<VmMachineState>;
+  /** Explicit protected start never replays an old work command. */
+  start?(): Promise<void>;
   stop(): Promise<void>;
   snapshot(name: string): Promise<void>;
   restore(name: string): Promise<void>;

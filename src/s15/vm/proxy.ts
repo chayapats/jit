@@ -37,7 +37,7 @@ export function vmPublicAddress(address: string): boolean {
 }
 /** Starts a protected finite CONNECT/HTTP proxy. TLS is passthrough: registries see metadata/content; this is not a disclosure firewall. */
 export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Promise<{
-  port: number; lease(sessionId: string, expiresAt: number): VmProxyLease; close(): Promise<void>;
+  port: number; lease(sessionId: string, expiresAt: number): VmProxyLease; setHosts(hosts: readonly string[]): void; close(): Promise<void>;
 }> {
   const hosts = new Set(options.hosts ?? defaultVmRegistryHosts);
   if (!hosts.size || hosts.size > 128 || [...hosts].some(h => !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h))) vmFail("vm_invalid_setup");
@@ -114,6 +114,11 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
       const url = `http://${sessionId}:${password}@${options.guestHostname}:${address.port}`;
       return { environment: Object.freeze(Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map(k => [k, url]))),
         close() { sessions.delete(sessionId); for (const s of session.sockets) s.destroy(); } };
+    },
+    setHosts(next) {
+      if (!next.length || next.length > 128 || next.some(h => typeof h !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h)) || new Set(next).size !== next.length) vmFail("vm_invalid_setup");
+      // A changed allowlist closes existing tunnels before any new connection can use its narrowed scope.
+      for (const socket of sockets) socket.destroy(); hosts.clear(); for (const host of next) hosts.add(host);
     },
     close: () => new Promise<void>(resolve => { sessions.clear(); for (const socket of sockets) socket.destroy(); server.close(() => resolve()); }),
   };

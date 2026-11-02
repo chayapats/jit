@@ -24,7 +24,7 @@ export class LimaVmManagement implements VmManagement {
   async inspect(): Promise<VmMachineState> {
     let rows; try { rows = (await this.command(["list", "--json", this.options.instance])).trim().split("\n").filter(Boolean).map(s => JSON.parse(s)); } catch { vmFail("vm_management_unavailable", 503); }
     const row = rows.find(r => r.name === this.options.instance);
-    if (rows.length !== 1 || !row || row.vmType !== "qemu" || !["Running", "Stopped"].includes(row.status) || row.config?.plain !== true || (row.config?.mounts?.length ?? 0) !== 0 || (row.config?.networks?.length ?? 0) !== 0 || row.config?.ssh?.forwardAgent !== false || row.config?.propagateProxyEnv !== false) vmFail("vm_boundary_unproven");
+    if (rows.length !== 1 || !row || row.vmType !== "qemu" || !["Running", "Stopped"].includes(row.status) || row.config?.plain !== true || (row.config?.mounts?.length ?? 0) !== 0 || (row.config?.networks?.length ?? 0) !== 0 || row.config?.ssh?.forwardAgent !== false || row.config?.ssh?.loadDotSSHPubKeys !== false || row.config?.hostResolver?.enabled !== false || row.config?.propagateProxyEnv !== false) vmFail("vm_boundary_unproven");
     for (const value of [row.cpus, row.memory, row.disk]) vmInteger(value);
     vmInteger(row.sshLocalPort, 65535); this.#sshPort = row.sshLocalPort;
     let boot = "stopped", network: VmMachineState["network"] = "unproven";
@@ -36,11 +36,22 @@ export class LimaVmManagement implements VmManagement {
       const args = Buffer.from(p.stdout).toString("utf8");
       if (p.exitCode !== 0 || !args.includes(`lima-${this.options.instance}`) || /(?:-fsdev|-virtfs|mount_tag=|-nic\s|\s-net\s)/.test(args) || (args.match(/-netdev /g)?.length ?? 0) !== 1) vmFail("vm_boundary_unproven");
       const netdev = /-netdev ([^\n]*?)(?= -[a-z]|$)/.exec(args)?.[1] ?? "";
-      if (/^user,/.test(netdev) && /(?:^|,)restrict=on(?:,|$)/.test(netdev) && /(?:^|,)ipv6=off(?:,|$)/.test(netdev)) network = netdev.includes("guestfwd=") ? "proxy-only" : "isolated";
+      if (/^user,/.test(netdev) && /(?:^|,)restrict=on(?:,|$)/.test(netdev) && /(?:^|,)ipv6=off(?:,|$)/.test(netdev)) {
+        const forwards = netdev.match(/guestfwd=/g)?.length ?? 0;
+        const proxy = /,guestfwd=tcp:192\.168\.5\.100:3128-cmd:\/usr\/bin\/nc 127\.0\.0\.1 [0-9]{1,5}$/.test(netdev);
+        if (!/(?:smb|tftp|guestfwd)\s*=/.test(netdev)) network = "isolated";
+        else if (forwards === 1 && proxy && !/(?:smb|tftp)=/.test(netdev)) network = "proxy-only";
+      }
       boot = `${pid}:${args.slice(0, 24).trim()}`;
     }
     return { state: row.status === "Running" ? "running" : "stopped", identity: `lima:${this.options.instance}`, boot,
       cpuCount: row.cpus, memoryBytes: row.memory, diskBytes: row.disk, network };
+  }
+  /** Explicit owner start of the enrolled VM only; stable SSH port and external network profile are retained. */
+  async start(): Promise<void> {
+    const state = await this.inspect(); if (state.state !== "stopped") vmFail("vm_fenced");
+    await this.command(["start", "--tty=false", "--ssh-port", String(this.#sshPort), this.options.instance]);
+    if ((await this.inspect()).state !== "running") vmFail("vm_management_unavailable");
   }
   /** Exact VM stop plus host read-back is the root-resistant settlement available on Lima. */
   async stop(): Promise<void> { await this.command(["stop", "--force", this.options.instance]); if ((await this.inspect()).state !== "stopped") vmFail("vm_stop_unconfirmed"); }
@@ -74,7 +85,7 @@ export class ProxmoxVmManagement implements VmManagement {
   readonly #base: string;
   constructor(readonly options: ProxmoxVmOptions) {
     const url = new URL(options.baseUrl);
-    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !/^[a-zA-Z0-9_-]{1,64}$/.test(options.node)) vmFail("vm_invalid_setup");
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || url.pathname !== "/" || !/^[a-zA-Z0-9_-]{1,64}$/.test(options.node)) vmFail("vm_invalid_setup");
     vmInteger(options.vmid, 999999999); vmInteger(options.proxy.port, 65535);
     this.#base = `${url.origin}/api2/json`; this.#fetch = options.fetch ?? fetch;
   }
@@ -97,7 +108,8 @@ export class ProxmoxVmManagement implements VmManagement {
     const task = await this.api(`${this.path}/${suffix}`, "POST", params);
     if (typeof task !== "string" || !task.startsWith(`UPID:${this.options.node}:`) || task.length > 1024) vmFail("vm_management_unavailable");
     // Bounded infrastructure task observation, never mutation replay.
-    for (let i = 0; i < 120; i++) {
+    const deadline = performance.now() + 105000;
+    for (let i = 0; i < 120 && performance.now() < deadline; i++) {
       const status = await this.api(`/nodes/${this.options.node}/tasks/${encodeURIComponent(task)}/status`);
       if (status?.status === "stopped") { if (status.exitstatus !== "OK") vmFail("vm_management_unavailable"); return; }
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -126,6 +138,8 @@ export class ProxmoxVmManagement implements VmManagement {
     return { state: status.status, identity: `proxmox:${this.options.node}:${this.options.vmid}`, boot: `${status.pid ?? 0}`,
       cpuCount, memoryBytes, diskBytes, network: filtered && firewall.enable === 1 && firewall.policy_out === "DROP" && proxyOnly && active ? "proxy-only" : "unproven" };
   }
+  /** Explicit VM-scoped start, with no guest command or authority replay. */
+  async start(): Promise<void> { if ((await this.inspect()).state !== "stopped") vmFail("vm_fenced"); await this.mutate("status/start"); if ((await this.inspect()).state !== "running") vmFail("vm_management_unavailable"); }
   /** Stops this exact VM only, then independently reads its hypervisor state. */
   async stop(): Promise<void> { if ((await this.inspect()).state === "stopped") return; await this.mutate("status/stop"); if ((await this.inspect()).state !== "stopped") vmFail("vm_stop_unconfirmed"); }
   /** VM-scoped API snapshot, no RAM/authority/credentials included. */
@@ -137,5 +151,5 @@ export class ProxmoxVmManagement implements VmManagement {
 /** QEMU wrapper source for a NEW Lima VM; restrict is enforced in the protected host's network backend. */
 export function limaRestrictedQemu(qemu: string, proxyPort: number): string {
   if (!qemu.startsWith("/") || /[\n\r\0]/.test(qemu)) vmFail("vm_invalid_setup"); vmInteger(proxyPort, 65535);
-  return `#!/usr/bin/python3\nimport os,sys\na=sys.argv[1:]\nif '-netdev' in a and a[a.index('-netdev')+1]!='help':\n i=a.index('-netdev')+1\n if not a[i].startswith('user,') or a.count('-netdev')!=1 or any(x in a for x in ('-fsdev','-virtfs','-nic','-net')): sys.exit(126)\n a[i]+=',restrict=on,ipv6=off,guestfwd=tcp:192.168.5.100:3128-cmd:/usr/bin/nc 127.0.0.1 ${proxyPort}'\nos.execv(${JSON.stringify(qemu)},[${JSON.stringify(qemu)}]+a)\n`;
+  return `#!/usr/bin/python3\nimport os,sys\na=sys.argv[1:]\nif '-netdev' in a and a[a.index('-netdev')+1]!='help':\n i=a.index('-netdev')+1\n if not a[i].startswith('user,') or any(x in a[i] for x in ('guestfwd=','smb=','tftp=','restrict=','ipv6=')) or a.count('-netdev')!=1 or any(x in a for x in ('-fsdev','-virtfs','-nic','-net')): sys.exit(126)\n a[i]+=',restrict=on,ipv6=off,guestfwd=tcp:192.168.5.100:3128-cmd:/usr/bin/nc 127.0.0.1 ${proxyPort}'\nos.execv(${JSON.stringify(qemu)},[${JSON.stringify(qemu)}]+a)\n`;
 }

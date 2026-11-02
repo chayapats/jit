@@ -20,6 +20,7 @@ afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of d
 function fixture() {
   const store = new VmStore(":memory:"); stores.push(store);
   const actor = {}, valid = new WeakSet([actor]); let revoked = false, beforeClaim: (() => Promise<void>) | undefined;
+  let afterSend: (() => Promise<void>) | undefined;
   const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = []; let stops = 0, empty = true, snapshot = 0;
   const policy: VmPolicyPort = {
     assertCurrent(a) { if (!valid.has(a) || revoked) throw new Error("revoked"); },
@@ -36,7 +37,7 @@ function fixture() {
     override async openScope(_unit: string, _ms: number, guard: () => void) { guard(); }
     override async closeScope() { stops++; return empty; }
     override async invoke(request: Record<string, unknown>, settings: Parameters<VmSshTransport["invoke"]>[1]) {
-      settings.beforeStart(); sends.push(request);
+      settings.beforeStart(); sends.push(request); await afterSend?.();
       if (request.op === "init" || request.op === "write") return {};
       if (request.op === "spawn") return { stdout: Buffer.from("guest result").toString("base64"), stderr: "", exitCode: 0, timedOut: false, truncated: false, totalBytes: 12 };
       if (request.op === "realpath") return { path: request.path };
@@ -47,7 +48,7 @@ function fixture() {
   const service = new WorkingVmService({ store, policy, managers: new Map([["mgr", manager]]), transport: () => new Transport(endpoint), now: () => 100,
     requireOwner: a => { if (a !== actor) throw new Error("owner required"); } });
   return { store, service, actor, manager, state, claims, sends, revoke: () => { revoked = true; }, setBeforeClaim: (f: () => Promise<void>) => { beforeClaim = f; },
-    setEmpty: (value: boolean) => { empty = value; }, stops: () => stops, snapshots: () => snapshot };
+    setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setEmpty: (value: boolean) => { empty = value; }, stops: () => stops, snapshots: () => snapshot };
 }
 const open = (f: ReturnType<typeof fixture>, workId = "work1", extra = {}) => f.service.openAttempt(f.actor, { vmId: "vm1", workId, attemptId: `attempt_${workId}`, ...extra });
 
@@ -88,6 +89,25 @@ describe("working VM authority/lifecycle", () => {
     new WorkingVmService({ store: f.store, policy: { assertCurrent() {}, async claim() { throw new Error("no replay"); } }, managers: new Map() });
     expect(f.store.registration("vm1").state).toBe("uncertain"); expect(f.sends).toHaveLength(count);
     await f.service.recover(f.actor, { vmId: "vm1" }); expect(s.evidence()[0]?.outcome).toBe("guest_reported");
+  });
+  test("inspect setup has its own claim and never grants mutation or bash", async () => {
+    const f = fixture(), session = await open(f, "inspection", { access: "inspect" });
+    expect(f.claims[0]?.kind).toBe("setup"); expect(session.definitions.map(t => t.name).sort()).toEqual(["find", "grep", "ls", "read"]);
+    await expect(session.backend.writeFileAtomically(session.backend.workspaceRoot + "/x", "no")).rejects.toMatchObject({ code: "vm_inspect_only" });
+    await expect(session.backend.spawn({ command: "true", cwd: session.backend.workspaceRoot })).rejects.toMatchObject({ code: "vm_inspect_only" }); await session.close();
+  });
+  test("late output after revocation is retained as guest evidence but never published", async () => {
+    const f = fixture(), session = await open(f); f.setAfterSend(async () => f.revoke());
+    await expect(session.backend.spawn({ command: "echo late", cwd: session.backend.workspaceRoot })).rejects.toThrow("revoked");
+    expect(session.evidence().at(-1)?.outcome).toBe("guest_reported"); expect(session.evidence().at(-1)?.published).toBe(false); await session.close();
+  });
+  test("cancel fences a late transport response and retains capacity until exact-unit cleanup", async () => {
+    const f = fixture(), session = await open(f), barrier = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+    f.setAfterSend(async () => { entered.resolve(); await barrier.promise; });
+    const command = session.backend.spawn({ command: "echo late", cwd: session.backend.workspaceRoot }); await entered.promise;
+    const closing = session.cancel(); expect(f.store.db.query<{ state: string }, []>("SELECT state FROM vm_sessions").get()?.state).toBe("stopping");
+    barrier.resolve(); await expect(command).rejects.toHaveProperty("name", "AbortError"); await closing;
+    expect(session.evidence().at(-1)?.published).toBe(false); expect(f.stops()).toBe(1);
   });
   test("already aborted request creates no session or send", async () => {
     const f = fixture(), c = new AbortController(); c.abort();
@@ -181,4 +201,29 @@ describe("real helper semantics in disposable host-local stand-ins (not VM evide
     expect((await call("sleep 10", 30)).timedOut).toBe(true);
     expect(Buffer.from((await call("printf '%s' \"${SSH_AUTH_SOCK-unset}\"", 1000)).stdout, "base64").toString()).toBe("unset");
   });
+});
+
+test("VM file reads with credential-shaped content are withheld without returning the bytes", async () => {
+  const token = ["ghp_", "a".repeat(32)].join("");
+  const backend = createVmBackend({ async call() { return { data: Buffer.from(token).toString("base64") }; } }, "/workspace", "/workspace/.tmp", limits);
+  await expect((async () => { for await (const _ of backend.readFile("/workspace/a")) throw new Error("leaked"); })()).rejects.toMatchObject({ code: "vm_sensitive_output" });
+});
+test("malformed guest file results invoke the protocol fence before delivery", async () => {
+  let fenced = false;
+  const backend = createVmBackend({ protocolError() { fenced = true; }, async call() { return { data: "not valid base64" }; } }, "/workspace", "/workspace/.tmp", limits);
+  await expect((async () => { for await (const _ of backend.readFile("/workspace/a")) throw new Error("leaked"); })()).rejects.toMatchObject({ code: "vm_protocol_invalid" }); expect(fenced).toBe(true);
+});
+
+test("explicit owner start after strong recovery advances fences and resumes no old command", async () => {
+  const f = fixture(), session = await open(f), sent = f.sends.length;
+  await session.close(); await f.service.recover(f.actor, { vmId: "vm1" });
+  f.manager.start = async () => { f.state.state = "running"; f.state.boot = "boot2"; };
+  await f.service.start(f.actor, "vm1"); expect(f.store.registration("vm1").generation).toBe(3); expect(f.sends).toHaveLength(sent);
+  const next = await open(f, "new-work"); await next.close();
+});
+test("policy hold before a system snapshot leaves the VM available and sends no management mutation", async () => {
+  const f = fixture(); f.setBeforeClaim(async () => { throw new Error("held"); });
+  await expect(open(f, "admin", { mode: "system" })).rejects.toThrow("held");
+  expect(f.snapshots()).toBe(0); expect(f.store.registration("vm1").state).toBe("ready");
+  expect(f.store.db.query<{ state: string }, []>("SELECT state FROM vm_sessions").get()?.state).toBe("closed");
 });
