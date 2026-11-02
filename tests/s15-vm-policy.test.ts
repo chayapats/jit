@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openPolicyService, type CatalogKind, type PolicyInput, type Ref, type WorkActor } from "../src/s15/policy";
+import { AppError } from '../src/errors';
+import { openPolicyService, type ActionRef, type CatalogKind, type PolicyInput, type Ref, type WorkActor } from "../src/s15/policy";
 import { VmPolicyIntegration } from "../src/s15/vm/policy";
 import { WorkingVmService } from "../src/s15/vm/service";
 import { VmStore } from "../src/s15/vm/store";
@@ -68,7 +69,7 @@ function setup(privateData = false) {
     sessions.push(session); return { ...work, session };
   };
   cleanups.push(async () => { await Promise.allSettled(sessions.map(s => s.close())); policy.control.close(); disclosure?.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { policy, owner, store, integration, port, service, sends, admit, open, generations, attempts, disclosure, source, approvals, snapshots: () => snapshots, fetched: () => fetched };
+  return { policy, owner, store, integration, port, service, sends, sessions, admit, open, generations, attempts, disclosure, source, approvals, snapshots: () => snapshots, fetched: () => fetched };
 }
 function operation(workId: string, kind: VmPolicyOperation["kind"], body: Record<string, unknown>): VmPolicyOperation {
   const operationId = crypto.randomUUID().replaceAll("-", ""), sessionId = "a".repeat(32), root = `/var/lib/jit-work/${workId}/attempt`;
@@ -161,6 +162,38 @@ test('DATA15 acquisition holds actual URL/query and resumes the same exact actio
   expect(slip.action.payload).toMatchObject({ request: input });
   f.policy.owner.decide(f.owner, { requestId: 'approve_acquisition', action, decision: 'approve', expiresAt: 700000 });
   await f.service.acquire(actor, session, input); expect(f.fetched()).toBe(1); expect(f.sends.filter(s => s.op === 'write')).toHaveLength(1);
+});
+
+test.each(['close', 'retire'] as const)('session %s releases 2,048 abandoned acquisition invocations while retaining durable actions', async mode => {
+  const f = setup(), { actor, workId, session } = await f.open();
+  let first: { operation: VmPolicyOperation; action: ActionRef } | null = null, holds = 0;
+  for (let i = 0; i < 2048; i++) {
+    const payload = vmCanonical({ url: `https://new-download.test/source.tar?request=${i}`, sha256: vmHash(new Uint8Array()), maxBytes: 1024, path: `${session.backend.workspaceRoot}/source.tar` });
+    const operation: VmPolicyOperation = { vmId: 'vm', workId, attemptId: 'attempt', sessionId: session.id, generation: 1, operationId: crypto.randomUUID().replaceAll('-', ''), kind: 'acquire', payload, payloadHash: vmHash(payload), timeoutMs: 1000, outputBytes: 1024 };
+    try { await f.port.claim(actor, operation); throw Error('expected_held_acquisition'); }
+    catch (error) {
+      if (!(error instanceof AppError) || error.status !== 423 || error.code !== 'egress_approval_required') throw error;
+      holds++;
+      if (!first) first = { operation, action: { id: error.detail!.actionId as string, revision: error.detail!.revision as number, actionHash: error.detail!.actionHash as string } };
+    }
+  }
+  expect(holds).toBe(2048); if (!first) throw Error('expected_held_action');
+  if (mode === 'retire') { const row = f.store.registration('vm'); row.generation++; f.store.save(row); }
+  await session.close();
+  expect(f.policy.owner.inspect(f.owner, first.action).action.actionHash).toBe(first.action.actionHash);
+  const fresh = await f.service.openAttempt(actor, { vmId: 'vm', workId, attemptId: 'attempt' }); f.sessions.push(fresh);
+  const bytes = []; for await (const chunk of fresh.backend.readFile(`${fresh.backend.workspaceRoot}/evidence.txt`)) bytes.push(chunk);
+  expect(Buffer.concat(bytes).toString()).toBe('from VM'); expect(f.fetched()).toBe(0);
+  if (mode === 'close') {
+    // The old session's memory was dropped; its unchanged unclaimed action is still approvable.
+    f.policy.owner.decide(f.owner, { requestId: 'approve_after_close', action: first.action, decision: 'approve', expiresAt: 700000 });
+    const claim = await f.port.claim(actor, { ...first.operation, sessionId: fresh.id }); let sends = 0;
+    try {
+      expect(await claim.dispatch(async () => { sends++; return 'acquired'; })).toBe('acquired');
+      expect(f.policy.owner.inspect(f.owner, first.action).observation?.outcome).toBe('succeeded');
+      await expect(claim.dispatch(async () => { sends++; })).rejects.toMatchObject({ code: 'already_claimed' }); expect(sends).toBe(1);
+    } finally { claim.release?.(); }
+  } else expect(f.policy.owner.actionSlip(f.owner, first.action).canApprove).toBe(false);
 });
 
 test('DATA15 previously approved acquisition stays usable within captured data and purpose scope', async () => {

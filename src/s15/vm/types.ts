@@ -66,6 +66,9 @@ export interface VmPolicyClaim {
 export interface VmPolicyPort {
   assertCurrent(actor: object, scope: { vmId: string; workId: string; attemptId: string; mode: "work" | "system" }): void;
   claim(actor: object, operation: Readonly<VmPolicyOperation>): Promise<VmPolicyClaim>;
+  /** Protected host lifecycle cleanup, including expired/revoked sessions. Drops only unclaimed held
+   * invocation data for this exact session scope; durable actions, approvals and claims remain intact. */
+  releaseSession?(scope: Pick<VmPolicyOperation, "vmId" | "workId" | "attemptId" | "sessionId" | "generation">): void;
 }
 /** Safe metadata only. All command results are guest-reported; scoped cgroup checks are cooperative, not root-proof. */
 export interface VmEvidence {

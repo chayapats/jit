@@ -206,8 +206,13 @@ export class WorkingVmService implements WorkingVmPort {
       } finally { claim.release?.(); }
     });
   }
+  private releaseHeld(s: LiveSession): void {
+    s.acquisitions.clear();
+    this.options.policy.releaseSession?.({ vmId: s.vmId, workId: s.workId, attemptId: s.attemptId, sessionId: s.id, generation: s.generation });
+  }
   private retireLive(s: LiveSession): void {
     s.cancelled = true; s.closed = true; s.controller.abort(); s.cleanupController.abort(); s.proxy?.close(); s.removeSignal(); s.cancelExpiry();
+    this.releaseHeld(s);
     this.#sessions.delete(s.id);
   }
   private async retireExact(row: VmRegistration, manager: VmManagement, snapshotId: string): Promise<void> {
@@ -249,10 +254,12 @@ export class WorkingVmService implements WorkingVmPort {
     if (s.closed || this.options.store.registration(s.vmId).generation !== s.generation) { this.retireLive(s); return Promise.resolve(); }
     if (s.closing) return s.closing;
     s.cancelled = true; s.controller.abort(); s.proxy?.close(); s.removeSignal(); s.cancelExpiry();
+    this.releaseHeld(s);
     this.options.store.db.query("UPDATE vm_sessions SET state='stopping' WHERE id=? AND generation=? AND state<>'closed'").run(s.id, s.generation);
     s.closing = (async () => {
       // Client/channel closure is separate from guest scope cessation. Never stop a sibling unit here.
       await s.tail;
+      this.releaseHeld(s);
       if (s.closed || this.options.store.registration(s.vmId).generation !== s.generation) return;
       const row = this.options.store.registration(s.vmId);
       const empty = await this.transport(row).closeScope(s.unit, () => {

@@ -8,7 +8,7 @@ import { vmCanonical, vmFail, vmHash, vmId, vmInteger, vmPath, vmRecord } from "
 const unknownUsage = (): Usage => ({ attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null });
 const same = (a: unknown, b: unknown) => vmCanonical(a) === vmCanonical(b);
 const reference = (a: ActionRef): ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
-interface Invocation { operation: Readonly<VmPolicyOperation>; request: Record<string, unknown>; payload: JsonValue; read: ReadOperation | null; bound: BudgetVector | null }
+interface Invocation { operation: Readonly<VmPolicyOperation>; request: Record<string, unknown>; payload: JsonValue; read: ReadOperation | null; bound: BudgetVector | null; held: boolean }
 interface Pending { invocation: Invocation; send: (guard: () => void) => Promise<AdapterResult> }
 
 /** Protected VM/policy composition. Every resolver is owning-service code, never guest/model/current-state JSON. */
@@ -149,13 +149,21 @@ export class VmPolicyIntegration {
     const projected = Buffer.byteLength(input.payload) <= 60_000 ? request : { op: request.op as string, ...(typeof request.path === "string" ? { path: request.path } : { cwd: request.cwd as string }), dataHash: vmHash(input.payload), bytes: Buffer.byteLength(input.payload) };
     const payload: JsonValue = { contract: "s15-working-vm-policy/v1", operationId: input.operationId, payloadHash: input.payloadHash,
       payloadBytes: Buffer.byteLength(input.payload), request: projected as JsonValue };
-    const invocation = { operation: Object.freeze({ ...input }), request, payload, read, bound: this.options.upperBound(input) };
+    const invocation = { operation: Object.freeze({ ...input }), request, payload, read, bound: this.options.upperBound(input), held: false };
     this.#invocations.set(input.operationId, invocation); return invocation;
   }
   /** Binds once to the actual POLICY module; actor verification, reservations, claims and publication stay there. */
   bind(policy: S15PolicyService): VmPolicyPort {
     if (this.#policy) vmFail("vm_policy_denied", 403); this.#policy = policy;
     return Object.freeze({
+      releaseSession: (scope: Parameters<NonNullable<VmPolicyPort['releaseSession']>>[0]) => {
+        for (const value of [scope.vmId, scope.workId, scope.attemptId, scope.sessionId]) vmId(value);
+        vmInteger(scope.generation);
+        for (const [id, invocation] of this.#invocations) {
+          const op = invocation.operation;
+          if (invocation.held && op.vmId === scope.vmId && op.workId === scope.workId && op.attemptId === scope.attemptId && op.sessionId === scope.sessionId && op.generation === scope.generation) this.#invocations.delete(id);
+        }
+      },
       assertCurrent: (actor: object, scope: Parameters<VmPolicyPort["assertCurrent"]>[1]) => {
         const work = policy.work.guard(actor as WorkActor), row = this.options.store.registration(scope.vmId);
         this.checkScope(work, { ...scope, generation: row.generation });
@@ -198,7 +206,12 @@ export class VmPolicyIntegration {
         try { prepared = policy.work.prepare(worker, { slot: operation.operationId, adapter: this.adapter.id, proposal: invocation.payload }); }
         catch (error) { this.#invocations.delete(operation.operationId); throw error; }
         const action = reference(prepared.action);
-        if (prepared.decision.state !== "allow") { if (prepared.decision.state !== 'hold' || operation.kind !== 'acquire') this.#invocations.delete(operation.operationId); throw new AppError(prepared.decision.code, prepared.decision.state === "hold" ? 423 : 403, { actionId: action.id, revision: action.revision, actionHash: action.actionHash }); }
+        if (prepared.decision.state !== "allow") {
+          if (prepared.decision.state === 'hold' && operation.kind === 'acquire') invocation.held = true;
+          else this.#invocations.delete(operation.operationId);
+          throw new AppError(prepared.decision.code, prepared.decision.state === "hold" ? 423 : 403, { actionId: action.id, revision: action.revision, actionHash: action.actionHash });
+        }
+        invocation.held = false;
         let originalGuard: (() => void) | null = null;
         return { guard: () => { if (!originalGuard) vmFail('vm_reconciliation_required', 403); originalGuard(); }, release: () => { this.#invocations.delete(operation.operationId); }, dispatch: async <T>(start: () => Promise<T>): Promise<T> => {
           try {
