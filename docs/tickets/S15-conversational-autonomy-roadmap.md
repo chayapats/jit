@@ -16,6 +16,8 @@ Required UX authoring is separately tracked in UX15-00. The prescribed Claude Op
 
 All current slices are Frontier because they retain authority/isolation, lifecycle, cross-contract, design or evidence judgment. Extract mechanical Standard slices only after exact files, signatures, schemas/migrations, dictionary keys, ordered steps and fixture inputs/outputs are checked on main. This is not a blanket permission to spend on a model.
 
+MODEL15-01 [#326](https://github.com/chayapats/jit/issues/326) has bounded DOCUMENTATION-ONLY step 1 preparation: [approved selection/disclosure/usage contract](../contracts/s15-model-selection-v1.md), [ADR0070](../adr/0070-s15-approved-model-selection-and-disclosure.md) and [preparation record](../evidence/s15-model-contract-preparation.md), with complete UNEXECUTED synthetic definitions. Native #323 remains OPEN, all implementation criteria/readiness/ownership stay unchanged, and MODEL15-FZ01–FZ07 plus demonstrated public-dispatch/effort/cost requirements remain open. Exact unmerged proposal inputs need reconciliation with actual merged reviewed revisions/evidence; this creates no dependency on #324 and admits no runtime slice or activation.
+
 ## Scoped delivery graph
 
 | Ticket | Outcome | Direct blockers | Current readiness |
