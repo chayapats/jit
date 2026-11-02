@@ -171,6 +171,15 @@ test("unknown babysitting merge recovers through read-only evidence after restar
   const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
   f.protocol.failAfterSend = true; expect((await f.service.tick(row.id)).state).toBe("reconcile_only"); const writes = f.protocol.calls.length;
   f.reopen(); expect((await f.service.reconcile(f.f.owner, f.work.actor!, row.id, "read_only_merge_recovery")).state).toBe("merged"); expect(f.protocol.calls).toHaveLength(writes);
+  expect(f.responsibilities.project(f.f.owner, row.responsibilityId)).toMatchObject({ state: "completed" });
+});
+test("owner statements cannot turn an unknown GitHub outcome into verified WORK completion", async () => {
+  const f = setup("personal"), s = await f.publish(); f.protocol.green();
+  const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
+  f.protocol.failAfterSend = true; const unknown = await f.service.tick(row.id); expect(unknown.state).toBe("reconcile_only");
+  f.protocol.results.clear(); f.f.service.owner.recordStatement(f.f.owner, unknown.action!, "owner_merge_statement", "occurred");
+  expect((await f.service.reconcile(f.f.owner, f.work.actor!, row.id, "unconfirmed_readback")).state).toBe("reconcile_only");
+  expect(f.responsibilities.project(f.f.owner, row.responsibilityId)).toMatchObject({ state: "reconcile_only" });
 });
 test("an advancing approved target rebases and retests within the same responsibility", async () => {
   const f = setup("personal"), s = await f.publish(); f.protocol.green();

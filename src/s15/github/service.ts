@@ -302,13 +302,14 @@ export class GithubService<Attempt = object> {
     const s = this.selected(actor, row.selectionId);
     if (row.state !== "reconcile_only" || !row.action || !row.attemptEventId) fail("github_vm_reconciliation_required");
     const observed = await this.options.policy.owner.reconcile(owner, row.action, requestId);
-    if (observed.outcome === "unknown") return row;
+    if (observed.outcome === "unknown" || observed.basis !== "remote_verified") return row;
     const projection = this.options.responsibilities.project(owner, row.responsibilityId) as { attempts?: { id: string; eventId: string }[] };
     const attempt = projection.attempts?.find(a => a.eventId === row.attemptEventId); if (!attempt) fail("github_attempt_reconciliation_required");
     const action = this.options.policy.owner.inspect(owner, row.action).action, merge = (action.payload as unknown as GithubEffect).operation.kind === "merge";
     const executionSettled = merge || s.evidence?.settlement.executionSettled === true;
-    this.options.responsibilities.reconcile(row.responsibilityId, attempt.id, { transportSettled: observed.transportSettled, executionSettled, effects: "known", progress: observed.outcome === "succeeded" ? "made" : "none", evidenceRefs: [s.evidence?.source.ref ?? `github:${requestId}`], recommendation: executionSettled ? "Continue only from the reconciled current GitHub state." : "Obtain owning VM execution settlement before continuing.", usage: observed.actual, complete: merge && observed.outcome === "succeeded" });
-    row.state = !executionSettled ? "reconcile_only" : merge && observed.outcome === "succeeded" ? "merged" : "active"; row.nextAt = this.now(); row.reasons = executionSettled ? [] : ["github_vm_reconciliation_required"];
+    const fullySettled = executionSettled && observed.transportSettled;
+    this.options.responsibilities.reconcile(row.responsibilityId, attempt.id, { transportSettled: observed.transportSettled, executionSettled, effects: "known", progress: observed.outcome === "succeeded" ? "made" : "none", evidenceRefs: [s.evidence?.source.ref ?? `github:${requestId}`], recommendation: fullySettled ? "Continue only from the reconciled current GitHub state." : "Obtain owning VM execution and transport settlement before continuing.", usage: observed.actual, complete: fullySettled && merge && observed.outcome === "succeeded", basis: observed.basis });
+    row.state = !fullySettled ? "reconcile_only" : merge && observed.outcome === "succeeded" ? "merged" : "active"; row.nextAt = this.now(); row.reasons = fullySettled ? [] : ["github_vm_reconciliation_required"];
     this.options.store.tx(() => this.options.store.put("babysit", row.id, row)); return row;
   }
   /** Authenticated read-only JSON, including actual eligibility rows, personal-rule state and WORK projection. */
