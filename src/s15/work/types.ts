@@ -9,7 +9,7 @@ export interface ResponsibilityWait { kind: 'ci' | 'review' | 'owner' | 'schedul
 /** Immutable protected-handler scope; an event cannot broaden the assigned purpose or selected subject. */
 export interface ResponsibilityEvent { eventId: string; kind: 'ci' | 'review' | 'owner' | 'schedule' | 'assigned'; key: string; purposeId: string; resourceIds: string[]; subject: string | null; evidenceRefs: string[] }
 /** Attempt facts retain independent transport settlement, progress evidence and unknown usage. */
-export interface WorkAttempt { id: string; eventId: string; approach: string; startedAt: number; endedAt: number | null; state: 'active' | 'settled' | 'unknown'; capacityHeld: boolean; publicationFenced: boolean; progress: 'unknown' | 'none' | 'made'; evidenceRefs: string[]; recommendation: string | null; usage: Usage }
+export interface WorkAttempt { id: string; eventId: string; approach: string; startedAt: number; endedAt: number | null; state: 'active' | 'settled' | 'unknown'; capacityHeld: boolean; transportSettled: boolean; executionSettled: boolean; effects: 'known' | 'unknown'; publicationFenced: boolean; progress: 'unknown' | 'none' | 'made'; evidenceRefs: string[]; recommendation: string | null; usage: Usage }
 /** Read-only report. Recommendations are untrusted suggestions and cannot resume work by themselves. */
 export interface StallReport { code: 'no_progress' | 'budget_headroom' | 'attempt_limit'; at: number; attempts: { id: string; approach: string; evidenceRefs: string[]; progress: WorkAttempt['progress'] }[]; recommendation: string; otherAuthorizedWorkContinues: true }
 /** Durable responsibility projection, separate from any Schway loop or working VM allocation. */

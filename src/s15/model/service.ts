@@ -64,6 +64,8 @@ export function openModelService(options: ModelOptions): ModelService {
       if (journal.all<ModelSelectionRecord>().some(row => row.workId === work.id && ['selected', 'running', 'reconcile_only'].includes(row.state))) fail('reconciliation_required');
       if (input.tools?.length && !options.guardWork) fail('responsibility_guard_required');
       const baseline = options.registry.current(work.request.selection); if (!baseline) fail('route_unavailable'); route(baseline);
+      const anchor = journal.all<ModelSelectionRecord>().find(row => row.workId === work.id)?.route;
+      if (anchor && (anchor.provider !== baseline.provider || !equal(anchor.account, baseline.account) || !equal(anchor.billing, baseline.billing) || !equal(anchor.recipient, baseline.recipient) || anchor.charge !== baseline.charge)) fail('account_changed');
       const pin = clone(options.registry.pins(work.id)); pins(pin);
       const candidates = registry().filter(candidate => candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
       const available = candidates.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || canonical(a.selection).localeCompare(canonical(b.selection)));
@@ -73,7 +75,7 @@ export function openModelService(options: ModelOptions): ModelService {
       const record: ModelSelectionRecord = { contract: 's15-model-selection/v1', id: stepKey, workId: work.id, stepId: input.stepId, inputHash,
         route: chosen, pins: pin, reason: work.request.selectionPin || pin.route || pin.model || pin.effort ? 'owner_pin' : baseline.availability !== 'available' && !equal(baseline.selection, chosen.selection) ? 'approved_alternative' : input.difficulty,
         state: 'selected', code: null, createdAt: time(), reservations: [], usage: unknownUsage(), tokens: null, tokenSamples: [],
-        effort: { requested: chosen.selection.effort, evidence: chosen.effortEvidence, providerConfirmed: false }, output: null, session: null };
+        effort: { requested: chosen.selection.effort, evidence: chosen.effortEvidence, providerConfirmed: false }, physicalDispatches: null, output: null, session: null };
       journal.put(record.id, record); return record;
     });
   }
@@ -95,7 +97,7 @@ export function openModelService(options: ModelOptions): ModelService {
             const output = await tool.execute(value, { ...context, onOutput: chunk => { guard(actor, record); context.onOutput?.(chunk); } });
             guard(actor, record); return output;
           } })), hostedLookup: 'off' },
-          limits: { maxTurns: limits.turns, maxAttempts: limits.attempts, maxConcurrentTools: 1, deadlineMs: limits.activeMs, contextWindow: limits.contextWindow, maxInputChars: limits.inputChars },
+          limits: { maxTurns: limits.turns, maxAttempts: limits.attempts, maxConcurrentTools: 1, deadlineMs: Math.min(limits.activeMs, record.route.upperBound!.activeMs), contextWindow: limits.contextWindow, maxInputChars: limits.inputChars },
           ...(options.scripted ? {} : { auth: { route: record.route.provider, model: record.route.modelId, credentialWriteGuard: () => guard(actor, record) } }),
         });
         guard(actor, record); const selected = options.scripted ? options.scripted(clone(record.route)) : await host.auth!.createModel(); guard(actor, record);

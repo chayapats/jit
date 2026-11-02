@@ -27,6 +27,8 @@ export interface ModelSelectionRecord {
   createdAt: number; reservations: string[]; usage: Usage; tokens: ModelUsage | null;
   tokenSamples: { reservationId: string; usage: ModelUsage | null }[];
   effort: { requested: string; evidence: ApprovedModelRoute['effortEvidence']; providerConfirmed: false };
+  /** The supported seam observes streams; it cannot count provider-internal authentication resends. */
+  physicalDispatches: null;
   output: string | null; session: { id: string; branchId: string } | null;
 }
 /** Explicit opt-in composition, outside working VM/native snapshots. Scripted injection is a no-network

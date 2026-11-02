@@ -8,6 +8,9 @@ S15 — https://github.com/chayapats/jit/issues/316. Canonical spec: docs/specs/
 Frontier: authority, isolation, lifecycle, cross-contract or evidence decisions remain in this slice. Mechanical Standard work can be extracted only after exact signatures/schema/paths/tests/dictionary keys are verified on main; do not label speculative contracts Standard-ready.
 
 ## Status
+Implemented as an explicit opt-in host service on the #326/#327 integration branch: `src/s15/model/`, protected POLICY subscription-reservation additions, read-only JSON projections and deterministic public-host/restart tests. Exported TSDoc and the executable contract refinement supersede the historical preparation design. Review/merge, real provider/host enforcement and installation adoption remain separate; no monetary allowance or live account readiness is inferred.
+
+Historical preparation status:
 Blocked / needs triage. Owner-authorized bounded DOCUMENTATION-ONLY step 1 preparation proposes [s15-model-selection/v1](../../contracts/s15-model-selection-v1.md), [ADR0070](../../adr/0070-s15-approved-model-selection-and-disclosure.md), complete synthetic documentation and a [preparation record](../../evidence/s15-model-contract-preparation.md). This is not runtime admission, final freeze, ready/complete status or acceptance evidence. Native #323 remains OPEN and all four original implementation criteria remain outstanding. Exact reviewed #318/#320/#321/#322/#323 inputs are unmerged proposals pending reconciliation with actual merged reviewed revisions and implementation evidence. S14 remains default; RT15-01/RF15-G01–G08 remain unproven.
 
 ## Context to read

@@ -24,6 +24,13 @@ test('authenticated assignment dedupes original conversation, and acceptance nev
   expect(f.policy.control.reservations()).toHaveLength(0);
 });
 
+test('an interrupted or still-running CHAT source cannot be rebound as a fresh ready responsibility', () => {
+  const { f, service } = setup(); f.source('interrupted'); f.sources.get('interrupted')!.state = 'reconcile_only';
+  expect(() => service.assign(f.owner, assignment('interrupted'))).toThrow('source_reconciliation_required');
+  f.source('active'); f.sources.get('active')!.state = 'running';
+  expect(() => service.assign(f.owner, assignment('active'))).toThrow('source_reconciliation_required');
+});
+
 test('CI wait survives disconnect/restart without VM/model capacity; exact event starts one next attempt', () => {
   const f = setup(), { responsibility: r } = f;
   const handle = f.service.beginAttempt(r.id, { eventId: 'source', approach: 'Implement selected scope' });
@@ -130,4 +137,31 @@ test('work usage projection reports unknown parts without converting them to zer
   const reservation = f.policy.work.reserveModelCall(source.actor!, { requestId: 'call', selection: source.authority!.request.selection, upperBound: { attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 100, activeMs: 100, spendMinor: '3' } });
   f.policy.control.settleReservation(reservation.id, observed().usage, true);
   const view = service.project(f.owner, r.id); expect(view.budget.measured.spendMinor).toBeNull(); expect(view.budget.unknown).toContain('spendMinor'); expect(view.budget.charged.spendMinor).toBe('3');
+});
+
+test('scoped stop aborts the original attempt signal once and leaves another responsibility live', () => {
+  const { f, service, responsibility: r } = setup(); f.source('other'); const other = service.assign(f.owner, assignment('other'));
+  const first = service.beginAttempt(r.id, { eventId: 'source', approach: 'First scope' }), second = service.beginAttempt(other.id, { eventId: 'other', approach: 'Other scope' });
+  let aborts = 0; service.signal(first).addEventListener('abort', () => aborts++);
+  service.stop(f.owner, r.id, 'stop'); service.stop(f.owner, r.id, 'stop');
+  expect(aborts).toBe(1); expect(service.signal(first).aborted).toBe(true); expect(service.signal(second).aborted).toBe(false);
+});
+
+test('rejected reconciliation cannot erase known transport, execution, usage or evidence facts', () => {
+  const { f, service, responsibility: r } = setup(), handle = service.beginAttempt(r.id, { eventId: 'source', approach: 'Observed scope' });
+  service.settle(handle, observed({ executionSettled: false, effects: 'unknown', progress: 'made' }));
+  const before = service.project(f.owner, r.id).attempts[0]!;
+  expect(() => service.reconcile(r.id, before.id, observed({ transportSettled: false, executionSettled: true, effects: 'known', progress: 'made' }))).toThrow('settlement_conflict');
+  expect(service.project(f.owner, r.id).attempts[0]).toEqual(before);
+  expect(service.reconcile(r.id, before.id, observed({ progress: 'made' })).state).toBe('ready');
+});
+
+test('only a fresh authenticated same-scope instruction resumes a stall, preserving original authority and report', () => {
+  const f = setup(), r = f.responsibility;
+  for (let i = 0; i < 3; i++) { if (i) f.next('event_' + i); const handle = f.service.beginAttempt(r.id, { eventId: i ? 'event_' + i : 'source', approach: 'method_' + i }); f.service.settle(handle, observed()); }
+  expect(f.service.observeEvent(r.id, event('new_ci')).state).toBe('paused');
+  f.f.source('resume'); const resumed = f.service.resume(f.f.owner, r.id, 'resume');
+  expect(resumed).toMatchObject({ state: 'ready', workId: r.workId, readyEventId: 'resume', report: { code: 'no_progress' } });
+  expect(() => f.service.beginAttempt(r.id, { eventId: 'resume', approach: 'Fresh owner-approved approach' })).not.toThrow();
+  expect(() => f.service.resume({} as never, r.id, 'resume')).toThrow('authentication_required');
 });

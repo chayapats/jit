@@ -19,7 +19,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   v.id(options.installationId); v.nat(options.ownerGeneration(), true);
   const now = options.now ?? Date.now;
   const subscription = options.subscriptionModels;
-  if (subscription) { v.nat(subscription.concurrency, true); for (const value of Object.values(subscription.perWork)) v.nat(value, true); }
+  if (subscription) { v.exact(subscription, ['current', 'concurrency', 'perWork']); if (typeof subscription.current !== 'function') v.fail('invalid_shape'); v.nat(subscription.concurrency, true); v.exact(subscription.perWork, ['calls', 'steps', 'activeMs']); for (const value of Object.values(subscription.perWork)) v.nat(value, true); }
   const subscriptionBounds = subscription ? clone({ concurrency: subscription.concurrency, perWork: subscription.perWork }) : null;
   const ledger = new PolicyLedger(options.path, options.create, options.installationId);
   const owners = new WeakMap<T.OwnerActor, { proof: unknown; id: string; generation: number }>();

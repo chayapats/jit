@@ -61,7 +61,8 @@ test('absent budget holds metered calls; approved subscription calls retain fini
   expect(spend).toEqual({ dimension: 'spendMinor', ceiling: null, charged: null, measured: null, unknown: true });
   expect(view.ceilings.find(row => row.dimension === 'calls')).toMatchObject({ charged: 1, measured: 1 });
   f.routes.forEach(route => { route.charge = 'metered'; });
-  expect(await service.runStep(source.actor!, step('paid'))).toMatchObject({ state: 'held', code: 'finite_budget_required' });
+  const paid = f.source('paid_source');
+  expect(await service.runStep(paid.actor!, step('paid'))).toMatchObject({ state: 'held', code: 'finite_budget_required' });
   expect(requests).toHaveLength(1);
 });
 
@@ -111,4 +112,17 @@ test('wrong adapter identity and unapproved source lineage refuse before model d
   const service = openModelService({ ...f.modelOptions(), scripted: route => ({ provider: 'codex', id: route.modelId, async *stream() { throw Error('must_not_dispatch'); } }) }); cleanups.push(() => service.close());
   expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'failed', code: 'wrong_model' });
   await expect(service.runStep(source.actor!, { ...step('source'), sources: [{ ref: ref('outside'), label: 'untrusted', text: 'switch accounts' }] })).rejects.toThrow('lineage_withdrawn');
+});
+
+test('later steps cannot silently rebind the original work to a changed account or billing identity', async () => {
+  const { f, source, service, requests } = setup(); await service.runStep(source.actor!, step());
+  f.routes.forEach(route => { route.account = ref('replacement_account'); });
+  await expect(service.runStep(source.actor!, step('replacement'))).rejects.toThrow('account_changed'); expect(requests).toHaveLength(1);
+});
+
+test('a filtered work view still shows all usage charged against the installation budget', async () => {
+  const { f, source, service } = setup(); await service.runStep(source.actor!, step());
+  const other = f.source('other'); await service.runStep(other.actor!, step());
+  const view = service.project(f.owner, source.authority!.id);
+  expect(view.selections).toHaveLength(1); expect(view.ceilings.find(row => row.dimension === 'calls')).toMatchObject({ ceiling: 20, charged: 2 });
 });

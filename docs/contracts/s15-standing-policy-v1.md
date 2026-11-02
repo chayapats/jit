@@ -20,6 +20,8 @@ Inspect/report-only work has a separate declared READ path: `reserveRead`, singl
 
 S14 remains default. Real effect adapters, protected VM/browser/egress proofs, authenticated transport wrappers/approval UX and full adoption/rollback remain their separate slices. No Schway internals or replacement execution loop is needed by this policy-only service.
 
+MODEL15-01 adds only a protected optional `PolicyOptions.subscriptionModels` registry for inference when `budget:null`. Current installed selections, pins, privacy and generation checks still apply; explicit finite per-work call/step/active-time bounds and installation concurrency are required. It cannot fund metered routes, actions or reads, add an account, change billing or infer a monetary allowance. Reservations/unknown usage remain durable and nonrefundable; the original live actor alone consumes the guard. Host-only `reservations`/`subscriptionLimits` provide read-only projection data. Existing budget-null metered/action/read behavior has regression tests in `tests/s15-model-policy.test.ts`.
+
 ## Historical revision-1 proposal
 
 

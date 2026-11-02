@@ -63,7 +63,8 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
     }
     // Facts may advance after stop/revoke; neither current authority nor a new dispatch is required.
     for (const k of Object.keys(a.usage) as (keyof typeof a.usage)[]) if (a.usage[k] !== null && (o.usage[k] === null || BigInt(o.usage[k]!) < BigInt(a.usage[k]!))) fail('settlement_conflict');
-    if (!a.capacityHeld && (!o.transportSettled || !o.executionSettled)) fail('settlement_conflict');
+    if ((a.transportSettled && !o.transportSettled) || (a.executionSettled && !o.executionSettled) || (a.effects === 'known' && o.effects !== 'known') || (a.progress === 'made' && o.progress !== 'made')) fail('settlement_conflict');
+    a.transportSettled = o.transportSettled; a.executionSettled = o.executionSettled; a.effects = o.effects;
     a.capacityHeld = !o.transportSettled || !o.executionSettled; a.endedAt = Math.max(a.startedAt, now()); a.usage = clone(o.usage);
     a.state = !a.capacityHeld && o.effects === 'known' ? 'settled' : 'unknown';
     a.progress = o.progress; a.evidenceRefs = [...new Set([...a.evidenceRefs, ...o.evidenceRefs])]; a.recommendation = o.recommendation;
@@ -89,6 +90,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       const source = options.conversation.view(owner, input.sourceRequestId);
       if (!['accept', 'inspect', 'execute'].includes(source.intent.kind) || source.state === 'stopped') fail('execution_not_authorized');
       if (source.intent.kind !== 'accept' && !source.authority) fail('execution_not_authorized');
+      if (source.authority && source.state !== 'completed') fail('source_reconciliation_required');
       return journal.once(input.requestId, digest('s15.work.assign.v1', input), () => {
         if (journal.all<Responsibility>().some(r => r.sourceRequestId === source.receipt.rootRequestId)) fail('responsibility_exists');
         const work = source.authority ? options.policy.work.guard(options.policy.control.bindWork(source.authority.id)) : null;
@@ -105,7 +107,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       if (r.state !== 'ready' || held(r) || r.readyEventId !== input.eventId || r.attempts.some(a => a.eventId === input.eventId)) fail('attempt_not_ready');
       stall(r, 'Review the recorded approaches and choose a materially different next step.');
       if (r.state !== 'ready') { save(r); return null; }
-      const a: WorkAttempt = { id: digest('s15.work.attempt.v1', { responsibilityId, eventId: input.eventId }), eventId: input.eventId, approach: input.approach, startedAt: now(), endedAt: null, state: 'active', capacityHeld: true, publicationFenced: false, progress: 'unknown', evidenceRefs: [], recommendation: null, usage: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null } };
+      const a: WorkAttempt = { id: digest('s15.work.attempt.v1', { responsibilityId, eventId: input.eventId }), eventId: input.eventId, approach: input.approach, startedAt: now(), endedAt: null, state: 'active', capacityHeld: true, transportSettled: false, executionSettled: false, effects: 'unknown', publicationFenced: false, progress: 'unknown', evidenceRefs: [], recommendation: null, usage: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null } };
       r.attempts.push(a); r.state = 'working'; r.wait = null; r.readyEventId = null; save(r);
       const handle = Object.freeze({}) as AttemptHandle, controller = new AbortController(); handles.set(handle, { responsibilityId, attemptId: a.id, controller }); running.set(a.id, controller); return handle;
     }); if (!handle) fail('work_paused'); return handle; },

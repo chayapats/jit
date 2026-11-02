@@ -34,6 +34,8 @@ S15 target terms below refine product intent. Definitions explicitly marked S14 
 
 **Work item:** A proposed or owner-requested obligation with a status, explicit completion rule, origin and evidence. A work item may involve multiple Bots and conversations without becoming a Project.
 
+**Responsibility (S15 opt-in):** An authenticated conversational assignment retaining its original purpose, selected subject, completion rule and current policy authority across bounded attempts and durable waits. Waiting holds no VM/native session; interrupted effects reconcile before new attempts. A measured stall pauses this responsibility with evidence and a recommendation while other authorized work continues. See `src/s15/work/` and `docs/contracts/s15-responsibility-v1.md`.
+
 **Task acceptance:** The owner's decision to retain an obligation. Acceptance alone does not start execution.
 
 **Work command:** An authenticated owner action requesting execution. In S15, ordinary conversation can request work within standing policy without Work mode; inspect/recommend requests still authorize only inspection/recommendation. In S14, typed work.start creates work plus its grant; message.post does not. Models and quoted/retrieved content cannot mint or widen authority in either version.

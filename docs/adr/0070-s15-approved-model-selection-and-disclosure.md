@@ -6,6 +6,16 @@ scope: MODEL15-01 (#326) step 1 preparation; FR-02/13/14/18/21/27/31; NFR-02/03/
 
 # Approved model selection and bounded disclosure
 
+## Executable refinement, 2026-11-03
+
+MODEL15-01 and WORK15-01 implement explicit opt-in host services in `src/s15/model/` and `src/s15/work/`, with exported TSDoc as their API contract. Use the actual POLICY single-use model reservation/guard/settlement surface instead of the historical synthetic world/port materializer. Preserve public Schway host/model/session composition and leave provider protocols, renewal, retries and compaction to Schway. The stream guard's physical-send and effort limits remain disclosed; no stronger enforcement or live-host evidence is claimed.
+
+The owner authorized approved subscription inference without selecting a monetary budget. A small protected POLICY registry applies only to inference with no monetary budget and requires explicit finite per-work calls/steps/active time and installation concurrency. Metered routes, effects and reads retain their existing budget gates. No numeric operating allowance, new account or billing permission is invented; unknown measured usage stays unknown.
+
+Durable responsibility belongs to a separate protected journal with an exclusive process lease, original CHAT source/current POLICY authority, deduplicated trigger identities and finite configured stall criteria. Attempts and waits are distinct. Lost attempts reconcile; no native/effect call replays. Transport, execution cessation and historical effect outcome are independent monotonic facts. Scoped stop commits a POLICY/publication fence before cooperative cancellation and retains unsettled capacity. A stall pauses only that responsibility with attempts/evidence/recommendation and reporting headroom; an authenticated same-scope instruction may resume it. The [responsibility contract](../contracts/s15-responsibility-v1.md) and read-only JSON projections implement the F9/F10 data requirements without visual UI. S14 remains default and adoption remains separate.
+
+## Historical proposal
+
 ## Confirmed inputs and bounded status
 
 [S15](../specs/S15-conversational-autonomy.md) permits selection of model/effort within current owner-approved routes, the existing account and finite budget, with recorded rationale and explicit pins. A new provider/account/billing/private recipient or required unavailable author is not an automatic fallback. The owner chose no numeric operating allowance, resource profile or currency period. Schway owns providers, renewal, loops, retries, native sessions and compaction; Jit owns product authority, current data scope, reservations and durable responsibility.
