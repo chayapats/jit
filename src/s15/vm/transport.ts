@@ -2,16 +2,21 @@ import type { VmEndpoint, VmHostCommand } from "./types";
 import { vmHostCommand, vmQuote, vmSshArgs } from "./host";
 import { vmRunnerSource } from "./runner";
 import { vmCanonical, vmFail, vmRecord } from "./validation";
+import { vmSshDialGate } from "./dial";
 
 /** Host-initiated bounded transport, with no command retries, ambient SSH config, or host execution fallback. */
 export class VmSshTransport {
   constructor(readonly endpoint: VmEndpoint, readonly run: VmHostCommand = vmHostCommand) {}
+  private execute(argv: readonly string[], options: Parameters<VmHostCommand>[1]) {
+    return vmSshDialGate.start(vmCanonical(this.endpoint), options.timeoutMs, options.signal,
+      timeoutMs => this.run(argv, { ...options, timeoutMs }));
+  }
   /** The remote program is fixed by trusted service code; all operation data travels only on stdin. */
   async invoke(request: Record<string, unknown>, settings: { unit: string; timeoutMs: number; maxBytes: number; signal?: AbortSignal; beforeStart: () => void }): Promise<Record<string, unknown>> {
     if (!/^jit-[a-f0-9]{32}\.slice$/.test(settings.unit)) vmFail("vm_scope_invalid");
     const program = ["sudo", "-n", "systemd-run", "--quiet", "--pipe", "--wait", "--collect", `--slice=${settings.unit}`,
       `--unit=jit-op-${crypto.randomUUID().replaceAll("-", "")}`, "/usr/bin/python3", "-I", "-c", vmRunnerSource];
-    const result = await this.run([...vmSshArgs(this.endpoint), program.map(vmQuote).join(" ")], { input: Buffer.from(vmCanonical(request)), timeoutMs: settings.timeoutMs,
+    const result = await this.execute([...vmSshArgs(this.endpoint), program.map(vmQuote).join(" ")], { input: Buffer.from(vmCanonical(request)), timeoutMs: settings.timeoutMs,
       maxBytes: settings.maxBytes, ...(settings.signal ? { signal: settings.signal } : {}), beforeStart: settings.beforeStart });
     if (result.exitCode !== 0) vmFail("vm_connection_failed", 503);
     let decoded: unknown; const raw = Buffer.from(result.stdout).toString("utf8");
@@ -27,16 +32,16 @@ export class VmSshTransport {
     return vmRecord(response.result, Object.keys(response.result));
   }
   /** Fixed lifecycle/health commands are trusted infrastructure, not a model-accessible management shell. */
-  async control(argv: readonly string[], options: { timeoutMs?: number; maxBytes?: number; beforeStart?: () => void } = {}): Promise<string> {
-    const result = await this.run([...vmSshArgs(this.endpoint), argv.map(vmQuote).join(" ")], { timeoutMs: options.timeoutMs ?? 15000,
-      maxBytes: options.maxBytes ?? 16384, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}) });
+  async control(argv: readonly string[], options: { timeoutMs?: number; maxBytes?: number; beforeStart?: () => void; signal?: AbortSignal } = {}): Promise<string> {
+    const result = await this.execute([...vmSshArgs(this.endpoint), argv.map(vmQuote).join(" ")], { timeoutMs: options.timeoutMs ?? 15000,
+      maxBytes: options.maxBytes ?? 16384, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(options.signal ? { signal: options.signal } : {}) });
     if (result.exitCode !== 0) vmFail("vm_connection_failed", 503);
     return Buffer.from(result.stdout).toString("utf8");
   }
   /** Keep an allocation alive while work is active; this cgroup is guest-owned and is labelled accordingly. */
-  async openScope(unit: string, milliseconds: number, beforeStart: () => void): Promise<void> {
+  async openScope(unit: string, milliseconds: number, beforeStart: () => void, signal?: AbortSignal): Promise<void> {
     await this.control(["sudo", "-n", "systemd-run", "--quiet", `--slice=${unit}`, `--unit=${unit.slice(0, -6)}-keeper`,
-      `--property=RuntimeMaxSec=${Math.ceil(milliseconds / 1000)}`, "/usr/bin/sleep", "infinity"], { beforeStart });
+      `--property=RuntimeMaxSec=${Math.ceil(milliseconds / 1000)}`, "/usr/bin/sleep", "infinity"], { beforeStart, ...(signal ? { signal } : {}) });
   }
   /** Host-initiated cooperative stop/read-back. It cannot attest root-resistant descendant settlement. */
   async closeScope(unit: string): Promise<boolean> {

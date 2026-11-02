@@ -13,6 +13,7 @@ import { defaultVmLimits, type VmPolicyPort, type VmPolicyOperation, type VmMana
 import { LimaVmManagement, ProxmoxVmManagement, limaRestrictedQemu } from "../src/s15/vm/management";
 import { VmEnrollment } from "../src/s15/vm/enrollment";
 import { vmRunnerSource } from "../src/s15/vm/runner";
+import { VmSshDialGate } from "../src/s15/vm/dial";
 
 const limits = { ...defaultVmLimits }, endpoint = { host: "vm.example.test", port: 22, user: "jit", identityFile: "/protected/key", knownHostsFile: "/protected/known" };
 const stores: VmStore[] = [], directories: string[] = [];
@@ -21,7 +22,7 @@ function fixture() {
   const store = new VmStore(":memory:"); stores.push(store);
   const actor = {}, valid = new WeakSet([actor]); let revoked = false, beforeClaim: (() => Promise<void>) | undefined;
   let afterSend: (() => Promise<void>) | undefined;
-  const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = []; let stops = 0, empty = true, snapshot = 0;
+  const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = [], scopeLifetimes: number[] = []; let stops = 0, empty = true, snapshot = 0;
   const policy: VmPolicyPort = {
     assertCurrent(a) { if (!valid.has(a) || revoked) throw new Error("revoked"); },
     async claim(a, operation) {
@@ -34,7 +35,7 @@ function fixture() {
   store.save({ id: "vm1", generation: 1, endpoint, managerId: "mgr", state: "ready", networkCheckedAt: 1, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture-vm", boot: "boot1" });
   class Transport extends VmSshTransport {
     override async control(argv: readonly string[]) { if (argv.includes("-c")) return '{"reachable":[false,false,false,false,false,false]}'; return ""; }
-    override async openScope(_unit: string, _ms: number, guard: () => void) { guard(); }
+    override async openScope(_unit: string, ms: number, guard: () => void) { guard(); scopeLifetimes.push(ms); }
     override async closeScope() { stops++; return empty; }
     override async invoke(request: Record<string, unknown>, settings: Parameters<VmSshTransport["invoke"]>[1]) {
       settings.beforeStart(); sends.push(request); await afterSend?.();
@@ -47,7 +48,7 @@ function fixture() {
   }
   const service = new WorkingVmService({ store, policy, managers: new Map([["mgr", manager]]), transport: () => new Transport(endpoint), now: () => 100,
     requireOwner: a => { if (a !== actor) throw new Error("owner required"); } });
-  return { store, service, actor, manager, state, claims, sends, revoke: () => { revoked = true; }, setBeforeClaim: (f: () => Promise<void>) => { beforeClaim = f; },
+  return { store, service, actor, manager, state, claims, sends, scopeLifetimes, revoke: () => { revoked = true; }, setBeforeClaim: (f: () => Promise<void>) => { beforeClaim = f; },
     setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setEmpty: (value: boolean) => { empty = value; }, stops: () => stops, snapshots: () => snapshot };
 }
 const open = (f: ReturnType<typeof fixture>, workId = "work1", extra = {}) => f.service.openAttempt(f.actor, { vmId: "vm1", workId, attemptId: `attempt_${workId}`, ...extra });
@@ -55,6 +56,7 @@ const open = (f: ReturnType<typeof fixture>, workId = "work1", extra = {}) => f.
 describe("working VM authority/lifecycle", () => {
   test("two works share the VM, have different workspaces/units; third waits", async () => {
     const f = fixture(), a = await open(f), b = await open(f, "work2");
+    expect(f.scopeLifetimes.every(ms => ms > limits.commandMs && ms <= limits.sessionMs)).toBe(true);
     expect(a.backend.workspaceRoot).not.toBe(b.backend.workspaceRoot); expect(a.definitions.map(t => t.name)).toEqual(coreToolDefinitions(a.backend).map(t => t.name));
     await expect(open(f, "work3")).rejects.toMatchObject({ code: "vm_capacity" });
     await a.close(); expect(f.stops()).toBe(1); expect(b.evidence()[0]?.execution).toBe("unsettled");
@@ -131,7 +133,7 @@ describe("VM protocol and backend", () => {
   test("connection failure never falls back to host shell", async () => {
     const commands: readonly string[][] = []; const recorded = commands as string[][];
     const run: VmHostCommand = async argv => { recorded.push([...argv]); return { stdout: new Uint8Array(), exitCode: 255 }; };
-    await expect(new VmSshTransport(endpoint, run).invoke({ id: "x", op: "spawn", command: "touch /host/pwn" }, { unit: `jit-${"a".repeat(32)}.slice`, timeoutMs: 100, maxBytes: 1024, beforeStart() {} })).rejects.toMatchObject({ code: "vm_connection_failed" });
+    await expect(new VmSshTransport(endpoint, run).invoke({ id: "x", op: "spawn", command: "touch /host/pwn" }, { unit: `jit-${"a".repeat(32)}.slice`, timeoutMs: 1000, maxBytes: 1024, beforeStart() {} })).rejects.toMatchObject({ code: "vm_connection_failed" });
     expect(commands).toHaveLength(1); expect(commands[0]?.[0]).toBe("ssh");
   });
   test("opaque file observations reject copies and foreign paths", async () => {

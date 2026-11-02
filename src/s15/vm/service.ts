@@ -161,7 +161,7 @@ export class WorkingVmService implements WorkingVmPort {
           this.current(actor, s); evidence.outcome = "unknown"; this.options.store.saveEvidence(evidence);
           const transport = this.transport(this.options.store.registration(s.vmId)), began = this.#clock();
           const invoke = async () => {
-            if (operation.op === "init") await transport.openScope(s.unit, Math.min(action.timeoutMs, this.#limits.sessionMs), () => this.current(actor, s));
+            if (operation.op === "init") await transport.openScope(s.unit, Math.max(1, s.deadline - this.#clock()), () => this.current(actor, s), s.controller.signal);
             this.current(actor, s);
             return transport.invoke(transportRequest, { unit: s.unit, timeoutMs: Math.max(1, Math.floor(action.timeoutMs - (this.#clock() - began))),
             maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart: () => this.current(actor, s) });
