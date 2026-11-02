@@ -21,7 +21,7 @@ export function createGithubHandler<Attempt>(service: GithubService<Attempt>, op
       const cookies = (request.headers.get("cookie") ?? "").split(";").map(c => c.trim()).filter(c => c.startsWith(`${options.cookieName}=`)); if (cookies.length !== 1) throw new AppError("authentication_required", 401);
       const auth = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1));
       if (request.method === "POST") options.authentication.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
-      const match = /^\/s15\/github\/work\/([A-Za-z0-9_-]+)\/(discover|select|implement|prepare|dispatch|capture|install-personal|revoke-personal|babysit|responsibilities)(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname);
+      const match = /^\/s15\/github\/work\/([A-Za-z0-9_-]+)\/(discover|select|implement|prepare|dispatch|reconcile|capture|install-personal|revoke-personal|babysit|responsibilities)(?:\/([A-Za-z0-9_-]+))?$/.exec(url.pathname);
       if (!match || url.search) throw new AppError("not_found", 404);
       const actor = options.resolveWork(auth.actor, match[1]!);
       if (request.method === "GET") {
@@ -40,6 +40,7 @@ export function createGithubHandler<Attempt>(service: GithubService<Attempt>, op
         case "implement": exact(body, ["selectionId"]); return json(await service.implement(actor, body.selectionId as string));
         case "prepare": exact(body, ["selectionId", "operation"]); return json(await service.prepare(actor, body.selectionId as string, body.operation as Parameters<typeof service.prepare>[2]));
         case "dispatch": exact(body, ["action"]); return json(await service.dispatch(actor, body.action as Parameters<typeof service.dispatch>[1]));
+        case "reconcile": exact(body, ["id", "requestId"]); return json(await service.reconcile(auth.actor, actor, body.id as string, body.requestId as string));
         case "install-personal": return json(await service.installPersonal(auth.actor, actor, body as Parameters<typeof service.installPersonal>[2]));
         case "revoke-personal": exact(body, ["requestId", "expectedPolicyRevision", "ruleIds"]); service.revokePersonal(auth.actor, body as Parameters<typeof service.revokePersonal>[1]); return json({ state: "revoked" });
         case "babysit": exact(body, ["requestId", "sourceRequestId", "selectionId", "pull", "reserveCalls"]); return json(await service.babysit(auth.actor, actor, body as Parameters<typeof service.babysit>[2]));

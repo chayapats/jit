@@ -21,7 +21,7 @@ function fixture() {
     if (path.endsWith("/check-runs")) return Response.json({ total_count: 1, check_runs: [{ id: 1, name: "ci", head_sha: state.head, status: "completed", conclusion: state.checks ? "success" : "failure" }] });
     if (path.endsWith("/statuses")) return Response.json([]);
     if (path.endsWith("/reviews")) return Response.json(state.reviews ? [{ id: 1, user: { login: "reviewer" }, state: "APPROVED", commit_id: state.head, body: "Approved" }] : []);
-    if (path === "/graphql") return Response.json({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } });
+    if (path === "/graphql") return Response.json({ data: { repository: { pullRequest: { headRefOid: state.head, baseRefOid: state.base, reviewDecision: state.reviews ? "APPROVED" : "REVIEW_REQUIRED", reviewThreads: { pageInfo: { hasNextPage: false }, nodes: [] } } } } });
     if (path.endsWith("/merge") && request.method === "PUT") {
       const body = await request.json(); state.writes.push({ path, body }); state.beforeMerge?.();
       if (body.sha !== state.head) return Response.json({ message: "Head changed" }, { status: 409 });

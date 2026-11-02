@@ -29,7 +29,7 @@ export interface GithubReview { id: string; author: string; head: string; base: 
 export interface GithubSnapshot {
   repository: string; target: string; base: string; version: string; issues: GithubIssue[];
   protection: GithubProtection; production: GithubProduction; source: GithubSource;
-  pull: null | { number: number; issue: number; branch: string; head: string; base: string; state: "open" | "merged" | "closed"; draft: boolean; mergeable: boolean; checks: GithubCheck[]; reviews: GithubReview[] };
+  pull: null | { number: number; issue: number; branch: string; head: string; base: string; state: "open" | "merged" | "closed"; draft: boolean; mergeable: boolean; checks: GithubCheck[]; reviews: GithubReview[]; codeOwnerReviewSatisfied?: boolean };
 }
 /** Immutable VM workspace result captured by trusted host code after actual commands, never from model done text. */
 export interface GithubCodingEvidence {
@@ -68,7 +68,7 @@ export interface GithubEffectResult { key: string; effectHash: string; outcome: 
  * owns atomic head/freshness/check/review enforcement; this is not an invented full-vector API CAS.
  */
 export interface ProtectedGithubGateway {
-  snapshot(repository: GithubRepository, pull: number | null): Promise<GithubSnapshot>;
+  snapshot(repository: GithubRepository, pull: number | null, selectedIssue?: number): Promise<GithubSnapshot>;
   mutate(effect: GithubEffect, dispatch: (send: () => Promise<GithubEffectResult>) => Promise<AdapterResult>): Promise<AdapterResult>;
   reconcile(effect: GithubEffect): Promise<GithubEffectResult>;
 }
@@ -97,6 +97,7 @@ export interface GithubBabysitting {
   cursor: string | null; nextAt: number; lastProgressAt: number; attempts: number; noProgress: number;
   lastEvidenceHash: string | null; action: ActionRef | null; reasons: string[];
   report: null | { attempts: number; evidenceRefs: string[]; recommendation: string };
+  attemptEventId: string | null;
 }
 /** Host-selected finite limits/costs, never inferred from a missing budget. */
 export interface GithubLimits { snapshotMaxAgeMs: number; waitMs: number; stallMs: number; maxNoProgress: number; maxAttempts: number; readUpperBound: BudgetVector; actionUpperBound: BudgetVector }

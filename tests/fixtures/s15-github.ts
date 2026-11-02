@@ -73,13 +73,14 @@ export function githubFixture(profile: "default" | "publish" | "personal" = "def
   let implementations = 0, liveVm = 0, next = coding(), assignments = 0, waits = 0, attempts = 0;
   const responsibility: { id: string; state: string; readyEventId: string | null; workId: string | null } = { id: "responsibility_42", state: "ready", readyEventId: "assigned_42", workId: null };
   const handles = new WeakSet<object>();
+  const attemptRows: { id: string; eventId: string }[] = [];
   const responsibilities: GithubResponsibilities = {
     assign(_owner, input) { assignments++; responsibility.workId = work.receipt.work!.id; return { ...responsibility }; },
-    beginAttempt(_id, input) { if (liveVm) throw new Error("busy"); attempts++; const handle = {}; handles.add(handle); responsibility.state = "working"; return handle; },
+    beginAttempt(_id, input) { if (liveVm) throw new Error("busy"); attempts++; attemptRows.push({ id: `attempt_${attempts}`, eventId: input.eventId }); const handle = {}; handles.add(handle); responsibility.state = "working"; return handle; },
     wait() { if (liveVm) throw new Error("VM retained during wait"); waits++; responsibility.state = "waiting"; return { ...responsibility }; },
     observeEvent(_id, event) { responsibility.state = "ready"; responsibility.readyEventId = event.eventId; return { ...responsibility }; },
     settle(handle, observation) { if (!handles.has(handle)) throw new Error("copied handle"); handles.delete(handle); responsibility.state = observation.effects === "unknown" ? "reconcile_only" : observation.complete ? "completed" : "ready"; return { state: responsibility.state }; },
-    reconcile() { return {}; }, stop() { responsibility.state = "stopped"; }, project() { return { ...responsibility, attempts, waits }; },
+    reconcile(_id, _attempt, observed) { responsibility.state = observed.complete ? "completed" : "ready"; return {}; }, stop() { responsibility.state = "stopped"; }, project() { return { ...responsibility, attempts: attemptRows, waits }; },
     guard(handle) { if (!handles.has(handle)) throw new Error("copied handle"); }, signal() { return new AbortController().signal; }, publish(_handle, consume) { consume({}); }, resume() {},
   };
   const inspect = f.admit({ intent: "inspect", access: "read", resources: [ref("repo")], recipients: [], readLimit: 200 });

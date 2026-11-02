@@ -41,6 +41,12 @@ test("actual immutable command evidence is required and a crashed coding claim i
   await expect(f.service.implement(f.work.actor!, s.id)).rejects.toThrow("github_evidence_required");
   f.reopen(); await expect(f.service.implement(f.work.actor!, s.id)).rejects.toThrow("github_reconciliation_required"); expect(f.counts.implementations).toBe(1);
 });
+test("local selected implementation uses reversible-write authority without granting publication", async () => {
+  const f = setup(), local = f.f.admit({ intent: "execute", access: "reversible_write", resources: [ref("repo")], recipients: [], readLimit: 100, subject: { resource: ref("repo"), issue: 42 } }).actor!;
+  const report = await f.service.discover(f.inspect.actor!, "repo"), selected = await f.service.select(local, { requestId: "local_start", reportId: report.id, issue: 42, base, issueVersion: "issue_1" });
+  expect((await f.service.implement(local, selected.id)).state).toBe("reviewable");
+  await expect(f.service.prepare(local, selected.id, { kind: "push", branch: selected.branch, previous: null })).rejects.toThrow("github_publication_scope_required"); expect(f.protocol.calls).toHaveLength(0);
+});
 test("default exact push approval dispatches once and does not approve the PR", async () => {
   const f = setup(), s = await f.selected(); await f.service.implement(f.work.actor!, s.id);
   const p = await f.service.prepare(f.work.actor!, s.id, { kind: "push", branch: s.branch, previous: null }); expect(p.decision).toEqual({ state: "hold", code: "approval_required" });
@@ -158,4 +164,10 @@ test("conclusive GitHub refusal permits a fresh protected re-evaluation, unknown
   const reply = await g.service.prepare(g.work.actor!, selected.id, { kind: "review_reply", pull: 1, thread: "review_1", body: "Exact reply" }); g.protocol.failAfterSend = true;
   expect((await g.service.dispatch(g.work.actor!, reply.action)).outcome).toBe("unknown"); g.protocol.bump();
   await expect(g.service.prepare(g.work.actor!, selected.id, { kind: "merge", pull: 1 })).rejects.toThrow("github_reconciliation_required");
+});
+test("unknown babysitting merge recovers through read-only evidence after restart without another merge", async () => {
+  const f = setup("personal"), s = await f.publish(); f.protocol.green();
+  const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
+  f.protocol.failAfterSend = true; expect((await f.service.tick(row.id)).state).toBe("reconcile_only"); const writes = f.protocol.calls.length;
+  f.reopen(); expect((await f.service.reconcile(f.f.owner, f.work.actor!, row.id, "read_only_merge_recovery")).state).toBe("merged"); expect(f.protocol.calls).toHaveLength(writes);
 });

@@ -54,11 +54,16 @@ export class GithubApiGateway implements ProtectedGithubGateway {
       requiredChecks: names, requiredApprovals: reviews?.required_approving_review_count ?? 0, requireCodeOwners: reviews?.require_code_owner_reviews === true, source: this.source(path) };
   }
   /** Full bounded issue/PR/protection protocol capture; comments are retained only as untrusted evidence. */
-  async snapshot(configured: GithubRepository, pullNumber: number | null): Promise<GithubSnapshot> {
+  async snapshot(configured: GithubRepository, pullNumber: number | null, selectedIssue?: number): Promise<GithubSnapshot> {
     const repo = this.repo(configured.name, configured.target), root = `/repos/${repo.name}`;
     const branch = await this.request(repo, `${root}/git/ref/heads/${encodeURIComponent(repo.target)}`); if (branch.status !== 200) fail("github_base_unavailable"); oid(branch.value?.object?.sha);
     const base = branch.value.object.sha as string, protection = await this.protection(repo);
     const [rawIssues, branches, pulls] = await Promise.all([this.list(repo, `${root}/issues?state=open`), this.list(repo, `${root}/branches`), this.list(repo, `${root}/pulls?state=open`)]);
+    if (selectedIssue !== undefined && !rawIssues.some(i => i.number === selectedIssue)) {
+      integer(selectedIssue, 1); const selected = await this.request(repo, `${root}/issues/${selectedIssue}`); if (selected.status !== 200 || selected.value?.pull_request) fail("github_issue_unavailable"); rawIssues.push(selected.value);
+    }
+    let requestedPull: Awaited<ReturnType<GithubApiGateway["request"]>> | null = null;
+    if (pullNumber !== null) { requestedPull = await this.request(repo, `${root}/pulls/${pullNumber}`); if (requestedPull.status !== 200) fail("github_pull_changed"); if (!pulls.some(p => p.number === pullNumber)) pulls.push(requestedPull.value); }
     const issues: GithubIssue[] = [];
     for (const raw of rawIssues.filter(i => !i.pull_request)) {
       integer(raw.number, 1); const body = raw.body ?? "", comments = await this.list(repo, `${root}/issues/${raw.number}/comments`);
@@ -68,24 +73,26 @@ export class GithubApiGateway implements ProtectedGithubGateway {
       const blockers = [...new Set([...section("Blocked by").matchAll(new RegExp(`https://github\\.com/${repo.name.replaceAll(".", "\\.")}/issues/(\\d+)`, "g"))].map(m => Number(m[1])))];
       const related = pulls.filter(p => new RegExp(`(?:#|/issues/)${raw.number}(?!\\d)`).test(`${p.title}\n${p.body ?? ""}`));
       const ownedBranches = branches.filter(b => new RegExp(`(?:^|/)(?:issue-?)?${raw.number}(?:-|/|$)`).test(b.name)).map(b => b.name as string);
-      issues.push({ number: raw.number, title: raw.title, body, comments: comments.map(c => c.body), version: digest(canonical({ issue: raw, comments })), state: "open", scope: scope || null, criteria,
+      issues.push({ number: raw.number, title: raw.title, body, comments: comments.map(c => c.body), version: digest(canonical({ issue: raw, comments })), state: raw.state ?? "open", scope: scope || null, criteria,
         blockers: await Promise.all(blockers.map(n => this.options.prerequisite ? this.options.prerequisite(repo, n) : { issue: n, satisfied: false, contract: null, evidence: [this.source(`${root}/issues/${n}`)] })),
         assignees: (raw.assignees ?? []).map((a: Json) => a.login), branches: [...new Set([...ownedBranches, ...related.map(p => p.head.ref)])], pulls: related.map(p => p.number), source: this.source(`${root}/issues/${raw.number}`) });
     }
     let pull: GithubSnapshot["pull"] = null;
     if (pullNumber !== null) {
-      const p = await this.request(repo, `${root}/pulls/${pullNumber}`); if (p.status !== 200 || p.value.base?.repo?.full_name !== repo.name || p.value.head?.repo?.full_name !== repo.name || p.value.base?.ref !== repo.target) fail("github_pull_changed");
+      const p = requestedPull!; if (p.value.base?.repo?.full_name !== repo.name || p.value.head?.repo?.full_name !== repo.name || p.value.base?.ref !== repo.target) fail("github_pull_changed");
       const data = p.value; oid(data.head.sha); oid(data.base.sha);
       const checksRead = await this.request(repo, `${root}/commits/${data.head.sha}/check-runs?filter=latest&per_page=100`);
       if (checksRead.status !== 200 || !Array.isArray(checksRead.value?.check_runs) || checksRead.value.total_count >= 100 || checksRead.headers.has("link")) fail("github_read_incomplete");
       const statuses = await this.list(repo, `${root}/commits/${data.head.sha}/statuses`), reviews = await this.list(repo, `${root}/pulls/${pullNumber}/reviews`);
       const latestStatuses = new Map<string, Json>(); for (const s of statuses) if (!latestStatuses.has(s.context)) latestStatuses.set(s.context, s);
       const [owner, name] = repo.name.split("/");
-      const threads = await this.request(repo, "/graphql", "POST", { query: "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved comments(first:1){nodes{databaseId body author{login} commit{oid}}}}}}}}", variables: { owner, name, number: pullNumber } });
+      const threads = await this.request(repo, "/graphql", "POST", { query: "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid baseRefOid reviewDecision reviewThreads(first:100){pageInfo{hasNextPage} nodes{id isResolved comments(first:1){nodes{databaseId body author{login} commit{oid}}}}}}}}", variables: { owner, name, number: pullNumber } });
+      const reviewedPull = threads.value?.data?.repository?.pullRequest;
       const threadData = threads.value?.data?.repository?.pullRequest?.reviewThreads;
       if (threads.status !== 200 || threads.value.errors || !threadData || threadData.pageInfo.hasNextPage) fail("github_review_incomplete");
+      if (reviewedPull.headRefOid !== data.head.sha || reviewedPull.baseRefOid !== data.base.sha) fail("github_head_changed");
       const latestReviews = new Map<string, Json>(); for (const r of reviews) if (r.state !== "PENDING") latestReviews.set(r.user.login, r);
-      pull = { number: pullNumber, issue: issues.find(i => i.pulls.includes(pullNumber))?.number ?? 0, branch: data.head.ref, head: data.head.sha, base: data.base.sha, state: data.merged ? "merged" : data.state, draft: data.draft, mergeable: data.mergeable === true && data.mergeable_state === "clean",
+      pull = { number: pullNumber, issue: issues.find(i => i.pulls.includes(pullNumber) && (selectedIssue === undefined || i.number === selectedIssue))?.number ?? 0, branch: data.head.ref, head: data.head.sha, base: data.base.sha, state: data.merged ? "merged" : data.state, draft: data.draft, mergeable: data.mergeable === true && data.mergeable_state === "clean", codeOwnerReviewSatisfied: protection.requireCodeOwners && reviewedPull.reviewDecision === "APPROVED",
         checks: [...checksRead.value.check_runs.map((c: Json) => ({ name: c.name, head: c.head_sha, base, state: c.status !== "completed" ? "pending" : c.conclusion === "success" ? "success" : "failure", source: this.source(`check:${c.id}`) })), ...[...latestStatuses.values()].map(c => ({ name: c.context, head: data.head.sha, base, state: c.state === "success" ? "success" : c.state === "pending" ? "pending" : "failure", source: this.source(`status:${c.id}`) }))],
         reviews: [...[...latestReviews.values()].map(r => ({ id: `review_${r.id}`, author: r.user.login, head: r.commit_id, base, state: r.state === "APPROVED" ? "approved" : r.state === "CHANGES_REQUESTED" ? "changes_requested" : "commented", resolved: r.state !== "CHANGES_REQUESTED", codeOwner: false, body: r.body ?? "", source: this.source(`review:${r.id}`) })), ...threadData.nodes.filter((t: Json) => !t.isResolved).map((t: Json) => { const c = t.comments.nodes[0]; return { id: `comment_${c.databaseId}`, author: c.author.login, head: c.commit.oid, base, state: "changes_requested", resolved: false, codeOwner: false, body: c.body, source: this.source(`thread:${t.id}`) }; })] };
     }
@@ -100,7 +107,7 @@ export class GithubApiGateway implements ProtectedGithubGateway {
     const repo = this.repo(effect.repository, effect.target), key = `${repo.name}:${"pull" in effect.operation ? effect.operation.pull : effect.branch}`;
     if (this.busy.has(key)) fail("github_publication_busy"); this.busy.add(key);
     try {
-      const op = effect.operation, current = await this.snapshot(repo, "pull" in op ? op.pull : null);
+      const op = effect.operation, current = await this.snapshot(repo, "pull" in op ? op.pull : null, effect.issue);
       if (current.version !== effect.snapshotVersion || current.base !== effect.base) fail("github_remote_changed");
       if (op.kind === "push") return await this.options.push.push(effect, this.options.credential(repo), dispatch);
       if (op.kind === "merge") {

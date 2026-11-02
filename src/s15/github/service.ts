@@ -17,9 +17,10 @@ type ActionFamily = { id: string; selectionId: string; key: string; slot: string
 export function githubReadHandler(repositories: readonly GithubRepository[]): ReadHandler {
   const allowed = structuredClone(repositories);
   return { operation: "read", validate(payload, context) {
-    exact(payload, ["kind", "repository", "pull"]);
+    exact(payload, ["kind", "repository", "pull", "selectedIssue"]);
     if (payload.kind !== "github_snapshot" || typeof payload.repository !== "string" || !allowed.some(r => r.name === payload.repository && canonical(r.resource) === canonical(context.resource))) fail("github_repository_denied");
     if (payload.pull !== null) integer(payload.pull, 1);
+    if (payload.selectedIssue !== null) integer(payload.selectedIssue, 1);
   } };
 }
 
@@ -45,21 +46,21 @@ export class GithubService<Attempt = object> {
   private guard(actor: WorkActor, repo: GithubRepository, execute = false): WorkAuthority {
     const w = this.options.policy.work.guard(actor);
     if (!w.request.resources.some(r => canonical(r) === canonical(repo.resource))) fail("outside_scope");
-    if (execute && (w.request.intent !== "execute" || w.request.access !== "effect")) fail("github_selection_required"); return w;
+    if (execute && (w.request.intent !== "execute" || !["reversible_write", "effect"].includes(w.request.access ?? ""))) fail("github_selection_required"); return w;
   }
   private selected(actor: WorkActor, id: string): GithubSelection {
     identity(id); const s = this.options.store.get<GithubSelection>("selection", id); if (!s) fail("github_selection_required");
     const w = this.guard(actor, s.repository, true);
     if (w.id !== s.workId || w.request.subject?.issue !== s.issue || canonical(w.request.subject.resource) !== canonical(s.repository.resource)) fail("github_selection_required"); return s;
   }
-  private async read(actor: WorkActor, repo: GithubRepository, pull: number | null): Promise<GithubSnapshot> {
+  private async read(actor: WorkActor, repo: GithubRepository, pull: number | null, selectedIssue?: number): Promise<GithubSnapshot> {
     this.guard(actor, repo);
-    const p = this.options.policy, admitted = p.work.reserveRead(actor, { requestId: `gr_${crypto.randomUUID().replaceAll("-", "")}`, resource: repo.resource, operation: "read", exactPayload: { kind: "github_snapshot", repository: repo.name, pull }, upperBound: this.options.limits.readUpperBound, fences: [] });
+    const p = this.options.policy, admitted = p.work.reserveRead(actor, { requestId: `gr_${crypto.randomUUID().replaceAll("-", "")}`, resource: repo.resource, operation: "read", exactPayload: { kind: "github_snapshot", repository: repo.name, pull, selectedIssue: selectedIssue ?? null }, upperBound: this.options.limits.readUpperBound, fences: [] });
     if (admitted.state !== "allow") fail(admitted.code);
     let returned = false;
     try {
       p.work.guardRead(actor, admitted.claim.id);
-      const value = await this.options.gateway.snapshot(repo, pull); returned = true;
+      const value = await this.options.gateway.snapshot(repo, pull, selectedIssue); returned = true;
       snapshot(value, repo, this.now(), this.options.limits.snapshotMaxAgeMs);
       if (pull !== null && value.pull?.number !== pull) fail("github_pull_changed");
       this.guard(actor, repo);
@@ -111,7 +112,8 @@ export class GithubService<Attempt = object> {
   /** Prepare exactly one logical technical effect; caller's retry IDs never create a second effect slot. */
   async prepare(actor: WorkActor, selectionId: string, op: GithubOperation): Promise<PreparedResult> {
     operation(op); const s = this.selected(actor, selectionId), e = s.evidence; if (s.state !== "reviewable" || !e) fail("github_evidence_required");
-    const remote = await this.read(actor, s.repository, "pull" in op ? op.pull : null), issue = remote.issues.find(i => i.number === s.issue);
+    if (this.guard(actor, s.repository, true).request.access !== "effect") fail("github_publication_scope_required");
+    const remote = await this.read(actor, s.repository, "pull" in op ? op.pull : null, s.issue), issue = remote.issues.find(i => i.number === s.issue);
     if (remote.base !== e.base || issue?.version !== s.issueVersion) fail("github_selection_changed");
     if ("pull" in op && (remote.pull?.issue !== s.issue || remote.pull.branch !== s.branch || remote.pull.head !== e.head)) fail("github_pull_changed");
     if (op.kind === "push" && (op.branch !== s.branch || op.branch === s.repository.target)) fail("github_ref_denied");
@@ -192,7 +194,7 @@ export class GithubService<Attempt = object> {
   /** Selected PR only, explicitly assigned from the original authenticated CHAT request via WORK15. */
   async babysit(owner: OwnerActor, actor: WorkActor, input: { requestId: string; sourceRequestId: string; selectionId: string; pull: number; reserveCalls: number }): Promise<GithubBabysitting> {
     identity(input.requestId); integer(input.pull, 1); integer(input.reserveCalls, 0);
-    const s = this.selected(actor, input.selectionId), remote = await this.read(actor, s.repository, input.pull);
+    const s = this.selected(actor, input.selectionId), remote = await this.read(actor, s.repository, input.pull, s.issue);
     if (remote.pull?.issue !== s.issue || remote.pull.branch !== s.branch) fail("github_pull_changed");
     let assigned: ReturnType<GithubResponsibilities<Attempt>["assign"]>;
     try { assigned = this.options.responsibilities.assign(owner, { requestId: input.requestId, sourceRequestId: input.sourceRequestId, completion: `Review and safely settle ${s.repository.name}#${input.pull} for issue #${s.issue}`, triggers: ["ci", "review", "schedule", "owner"], stallPolicy: { noProgressApproaches: this.options.limits.maxNoProgress, reserveCalls: input.reserveCalls, maxAttempts: this.options.limits.maxAttempts } }); }
@@ -200,7 +202,7 @@ export class GithubService<Attempt = object> {
     if (assigned.workId !== s.workId) fail("github_responsibility_changed");
     const id = `babysit_${digest(canonical({ selectionId: s.id, pull: input.pull }))}`;
     const old = this.options.store.get<GithubBabysitting>("babysit", id); if (old) return old;
-    const row: GithubBabysitting = { id, responsibilityId: assigned.id, selectionId: s.id, pull: input.pull, state: "active", cursor: null, nextAt: this.now(), lastProgressAt: this.now(), attempts: 0, noProgress: 0, lastEvidenceHash: null, action: null, reasons: [], report: null };
+    const row: GithubBabysitting = { id, responsibilityId: assigned.id, selectionId: s.id, pull: input.pull, state: "active", cursor: null, nextAt: this.now(), lastProgressAt: this.now(), attempts: 0, noProgress: 0, lastEvidenceHash: null, action: null, reasons: [], report: null, attemptEventId: null };
     this.options.store.tx(() => this.options.store.put("babysit", id, row)); return row;
   }
   /** One durable wake, no polling loop. Pending CI/review closes all VM work before recording the WORK wait. */
@@ -212,16 +214,20 @@ export class GithubService<Attempt = object> {
     try {
       const selection = this.options.store.get<GithubSelection>("selection", row.selectionId)!;
       const actor = this.options.policy.control.bindWork(selection.workId), s = this.selected(actor, selection.id), e = s.evidence; if (!e) fail("github_evidence_required");
-      const remote = await this.read(actor, s.repository, row.pull), p = remote.pull!;
+      const remote = await this.read(actor, s.repository, row.pull, s.issue), p = remote.pull!;
       if (p.issue !== s.issue || p.branch !== s.branch) fail("github_pull_changed");
       if (p.state === "merged") { row.state = "merged"; row.reasons = ["github_remote_merge_verified"]; return save(); }
       if (p.state !== "open") { row.state = "stopped"; row.reasons = ["github_pull_closed"]; return save(); }
-      if (p.head !== e.head || p.base !== e.base || remote.issues.find(i => i.number === s.issue)?.version !== s.issueVersion) { row.state = "waiting_owner"; row.reasons = ["github_head_or_scope_changed"]; return save(); }
+      if (p.head !== e.head || p.base !== e.base || remote.issues.find(i => i.number === s.issue)?.version !== s.issueVersion) {
+        row.state = "waiting_owner"; row.reasons = ["github_head_or_scope_changed"]; row.nextAt = this.now() + this.options.limits.waitMs;
+        this.options.responsibilities.wait(row.responsibilityId, { requestId: `scope_${digest(remote.version)}`, kind: "owner", key: `${s.repository.name}#${row.pull}`, evidenceRefs: [remote.source.ref] }); return save();
+      }
       const scheduled = row.cursor === remote.version, eventId = `ge_${digest(canonical({ id, version: remote.version, approach: scheduled ? row.attempts : null }))}`, w = this.guard(actor, s.repository, true);
       const observed = this.options.responsibilities.observeEvent(row.responsibilityId, { eventId, kind: scheduled ? "schedule" : "ci", key: `${s.repository.name}#${row.pull}`, purposeId: w.request.purpose.id, resourceIds: w.request.resources.map(r => r.id), subject: `issue:${s.issue}`, evidenceRefs: [remote.source.ref] });
       row.cursor = remote.version;
       if (["paused", "stopping", "stopped", "reconcile_only"].includes(observed.state)) { row.state = observed.state === "reconcile_only" ? "reconcile_only" : "stalled"; row.reasons = ["github_responsibility_paused"]; return save(); }
-      const eligibility = githubEligibility(remote, { head: e.head, acceptance: e.criteria.every(c => c.passed), evidence: e.tests.every(t => t.exitCode === 0) });
+      const mergeRule = this.options.policy.control.policyForWork(s.workId).rules.find(r => r.mode === "personal_github_merge" && r.github?.target === s.repository.target && canonical(r.github.repository) === canonical(s.repository.resource));
+      const eligibility = githubEligibility(remote, { head: e.head, acceptance: e.criteria.every(c => c.passed), evidence: e.tests.every(t => t.exitCode === 0), ...(mergeRule?.github ? { requirements: mergeRule.github } : {}) });
       row.reasons = eligibility.reasons;
       const failed = p.checks.some(c => c.head === e.head && c.base === e.base && ["failure", "flaky"].includes(c.state));
       const findings = p.reviews.filter(r => r.head === e.head && r.base === e.base && r.state === "changes_requested" && !r.resolved);
@@ -232,24 +238,27 @@ export class GithubService<Attempt = object> {
         }
         if (!observed.readyEventId) { row.state = "waiting_ci"; row.nextAt = this.now() + this.options.limits.waitMs; return save(); }
         const handle = this.options.responsibilities.beginAttempt(row.responsibilityId, { eventId: observed.readyEventId, approach: `github_remediation_${row.attempts + 1}` });
-        row.state = "remediating"; row.attempts++; save();
+        row.attemptEventId = observed.readyEventId; row.action = null; row.state = "remediating"; row.attempts++; save();
+        let captured: GithubCodingEvidence | null = null, uncertainEffect = false, attemptSettled = false;
         try {
           const fixed = await this.implement(actor, s.id, findings.length ? findings : [{ id: "ci_failure", author: "github", head: e.head, base: e.base, state: "changes_requested", resolved: false, codeOwner: false, body: "Investigate the observed failing checks within the selected issue; preserve acceptance and required checks.", source: remote.source }], handle);
           const hash = digest(canonical(fixed.evidence)), progress = fixed.evidence!.head !== e.head;
+          captured = fixed.evidence;
           row.noProgress = progress ? 0 : row.noProgress + 1; if (progress) row.lastProgressAt = this.now(); row.lastEvidenceHash = hash;
           row.state = "active";
           // A separate exact push action is prepared. Default holds it; personal publication can dispatch.
           if (progress) {
-            const prepared = await this.prepare(actor, s.id, { kind: "push", branch: s.branch, previous: e.head }); row.action = actionRef(prepared);
+            const prepared = await this.prepare(actor, s.id, { kind: "push", branch: s.branch, previous: e.head }); row.action = actionRef(prepared); save();
             if (prepared.decision.state !== "allow") { row.state = "waiting_owner"; row.reasons = [prepared.decision.code]; }
-            else { const result = await this.dispatch(actor, row.action, handle); if (result.outcome !== "succeeded") { row.state = "reconcile_only"; row.reasons = ["github_publication_uncertain"]; } }
+            else { uncertainEffect = true; const result = await this.dispatch(actor, row.action, handle); uncertainEffect = result.outcome === "unknown"; if (result.outcome !== "succeeded") { row.state = uncertainEffect ? "reconcile_only" : "waiting_owner"; row.reasons = [uncertainEffect ? "github_publication_uncertain" : "github_publication_refused"]; } }
           }
           const settled = this.options.responsibilities.settle(handle, { transportSettled: fixed.evidence!.settlement.transportSettled, executionSettled: fixed.evidence!.settlement.executionSettled, effects: row.state === "reconcile_only" ? "unknown" : "known", progress: progress ? "made" : "none", evidenceRefs: [fixed.evidence!.source.ref], recommendation: progress ? "Wait for the verified current-head checks and reviews." : "Inspect the retained failing evidence and choose another scoped technical approach.", usage: unknownUsage() });
+          attemptSettled = true;
           if (settled.state === "paused") row.state = "stalled";
           if (row.state !== "reconcile_only") this.options.responsibilities.publish(handle, () => {});
           if (row.state === "active" || row.state === "waiting_owner") this.options.responsibilities.wait(row.responsibilityId, { requestId: `fix_wait_${row.attempts}`, kind: row.state === "waiting_owner" ? "owner" : "ci", key: `${s.repository.name}#${row.pull}`, evidenceRefs: [fixed.evidence!.source.ref] });
         } catch (error) {
-          this.options.responsibilities.settle(handle, { transportSettled: false, executionSettled: false, effects: "unknown", progress: "none", evidenceRefs: [remote.source.ref], recommendation: "Reconcile the original VM/effect attempt before retrying.", usage: unknownUsage() });
+          if (!attemptSettled) this.options.responsibilities.settle(handle, { transportSettled: captured?.settlement.transportSettled === true && !uncertainEffect, executionSettled: captured?.settlement.executionSettled === true, effects: uncertainEffect || !captured ? "unknown" : "known", progress: "none", evidenceRefs: [remote.source.ref, ...(captured ? [captured.source.ref] : [])], recommendation: "Reconcile the original VM/effect attempt before retrying.", usage: unknownUsage() });
           row.state = "reconcile_only"; row.reasons = [safeCode(error)];
         }
         row.nextAt = this.now() + this.options.limits.waitMs; return save();
@@ -259,6 +268,7 @@ export class GithubService<Attempt = object> {
         if (prepared.decision.state === "allow") {
           if (!observed.readyEventId) fail("github_responsibility_not_ready");
           const handle = this.options.responsibilities.beginAttempt(row.responsibilityId, { eventId: observed.readyEventId, approach: "github_exact_head_merge" });
+          row.attemptEventId = observed.readyEventId; row.state = "remediating"; save();
           let settled = false;
           try {
             const result = await this.dispatch(actor, row.action, handle);
@@ -268,17 +278,32 @@ export class GithubService<Attempt = object> {
             if (result.outcome !== "unknown") this.options.responsibilities.publish(handle, () => {});
           } finally { if (!settled) this.options.responsibilities.settle(handle, { transportSettled: false, executionSettled: true, effects: "unknown", progress: "none", evidenceRefs: [remote.source.ref], recommendation: "Reconcile the exact original merge.", usage: unknownUsage() }); }
         } else { row.state = "waiting_owner"; row.reasons = [prepared.decision.code]; }
-      } else row.state = !eligibility.checksPassed ? "waiting_ci" : "waiting_review";
+      } else row.state = eligibility.reasons.includes("github_branch_protection") ? "waiting_owner" : !eligibility.checksPassed ? "waiting_ci" : "waiting_review";
       row.cursor = remote.version; row.nextAt = this.now() + this.options.limits.waitMs;
       if (row.state.startsWith("waiting_")) this.options.responsibilities.wait(row.responsibilityId, { requestId: `gw_${digest(canonical({ id, version: remote.version, state: row.state }))}`, kind: row.state === "waiting_owner" ? "owner" : row.state === "waiting_ci" ? "ci" : "review", key: `${s.repository.name}#${row.pull}`, evidenceRefs: [remote.source.ref] });
       return save();
     } catch (e) { row.state = "reconcile_only"; row.reasons = [safeCode(e)]; return save(); }
     finally { this.active.delete(id); }
   }
+  /** Read-only exact unknown-action recovery. Lost VM execution still requires its owning VM proof; nothing is resent. */
+  async reconcile(owner: OwnerActor, actor: WorkActor, id: string, requestId: string): Promise<GithubBabysitting> {
+    identity(id); identity(requestId); const row = this.options.store.get<GithubBabysitting>("babysit", id); if (!row) fail("not_found");
+    const s = this.selected(actor, row.selectionId);
+    if (row.state !== "reconcile_only" || !row.action || !row.attemptEventId) fail("github_vm_reconciliation_required");
+    const observed = await this.options.policy.owner.reconcile(owner, row.action, requestId);
+    if (observed.outcome === "unknown") return row;
+    const projection = this.options.responsibilities.project(owner, row.responsibilityId) as { attempts?: { id: string; eventId: string }[] };
+    const attempt = projection.attempts?.find(a => a.eventId === row.attemptEventId); if (!attempt) fail("github_attempt_reconciliation_required");
+    const action = this.options.policy.owner.inspect(owner, row.action).action, merge = (action.payload as unknown as GithubEffect).operation.kind === "merge";
+    const executionSettled = merge || s.evidence?.settlement.executionSettled === true;
+    this.options.responsibilities.reconcile(row.responsibilityId, attempt.id, { transportSettled: observed.transportSettled, executionSettled, effects: "known", progress: observed.outcome === "succeeded" ? "made" : "none", evidenceRefs: [s.evidence?.source.ref ?? `github:${requestId}`], recommendation: executionSettled ? "Continue only from the reconciled current GitHub state." : "Obtain owning VM execution settlement before continuing.", usage: observed.actual, complete: merge && observed.outcome === "succeeded" });
+    row.state = !executionSettled ? "reconcile_only" : merge && observed.outcome === "succeeded" ? "merged" : "active"; row.nextAt = this.now(); row.reasons = executionSettled ? [] : ["github_vm_reconciliation_required"];
+    this.options.store.tx(() => this.options.store.put("babysit", row.id, row)); return row;
+  }
   /** Authenticated read-only JSON, including actual eligibility rows, personal-rule state and WORK projection. */
   async project(owner: OwnerActor, actor: WorkActor, id: string): Promise<unknown> {
     this.options.policy.owner.current(owner); const row = this.options.store.get<GithubBabysitting>("babysit", id); if (!row) fail("not_found");
-    const s = this.selected(actor, row.selectionId), remote = await this.read(actor, s.repository, row.pull);
+    const s = this.selected(actor, row.selectionId), remote = await this.read(actor, s.repository, row.pull, s.issue);
     return { ...row, repository: s.repository, issue: s.issue, head: s.evidence?.head ?? null, eligibility: githubEligibility(remote, { head: s.evidence?.head ?? "", acceptance: s.evidence?.criteria.every(c => c.passed) ?? false, evidence: s.evidence?.tests.every(t => t.exitCode === 0) ?? false }), responsibility: this.options.responsibilities.project(owner, row.responsibilityId) };
   }
   /** Scoped authenticated stop delegates current authority fencing to WORK and preserves uncertain attempts. */

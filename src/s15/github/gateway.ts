@@ -29,7 +29,7 @@ export class HttpProtectedGithubGateway implements ProtectedGithubGateway {
     } catch { fail("github_gateway_unavailable"); }
   }
   /** Protected read only, charged/guarded by the caller before reaching this transport. */
-  snapshot(repository: GithubRepository, pull: number | null): Promise<GithubSnapshot> { return this.request("snapshot", { repository, pull }); }
+  snapshot(repository: GithubRepository, pull: number | null, selectedIssue?: number): Promise<GithubSnapshot> { return this.request("snapshot", { repository, pull, selectedIssue: selectedIssue ?? null }); }
   /** One exact CAS operation. Transport exceptions are unknown to the POLICY adapter, never retryable. */
   mutate(effect: GithubEffect, dispatch: (send: () => Promise<GithubEffectResult>) => Promise<AdapterResult>): Promise<AdapterResult> { return dispatch(() => this.request("mutate", effect)); }
   /** Read-only lookup by immutable effect identity; never resends an unknown mutation. */

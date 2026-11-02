@@ -50,17 +50,19 @@ export function createGithubActionAdapter(input: {
         upperBound: structuredClone(input.limits.actionUpperBound) as BudgetVector, expiresAt: Math.min(work.expiresAt, now + input.limits.snapshotMaxAgeMs), transaction: null, github, impact: "reversible" };
     },
     async perform(action: PreparedAction, context) {
-      const r = load(action.payload), latest = await input.gateway.snapshot(r.selection.repository, "pull" in r.effect.operation ? r.effect.operation.pull : null);
+      const r = load(action.payload), latest = await input.gateway.snapshot(r.selection.repository, "pull" in r.effect.operation ? r.effect.operation.pull : null, r.effect.issue);
       snapshot(latest, r.selection.repository, input.now(), input.limits.snapshotMaxAgeMs);
       if (latest.version !== r.effect.snapshotVersion || latest.base !== r.effect.base) fail("github_remote_changed");
       // commit rechecks current owner/rule/lineage/gate generations synchronously immediately before send.
-      return input.gateway.mutate(structuredClone(r.effect), send => context.commit(action.payload, async () => {
+      return input.gateway.mutate(structuredClone(r.effect), send => {
         input.store.dispatchGuards.get(r.effect.key)?.();
+        return context.commit(action.payload, async () => {
         const observed = await send();
         const actual = result(observed, r.effect);
         input.store.tx(() => input.store.put("remote_result", r.id, { outcome: actual.outcome, receipt: actual.outcome === "succeeded" ? observed.receipt : null }));
         return actual;
-      }));
+        });
+      });
     },
     async reconcile(action) { const r = load(action.payload); return result(await input.gateway.reconcile(structuredClone(r.effect)), r.effect); },
   };

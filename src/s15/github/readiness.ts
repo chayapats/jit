@@ -22,7 +22,7 @@ export function githubReadiness(snapshot: GithubSnapshot): GithubReadiness[] {
 }
 
 /** Exact-head eligibility from actual branch protection, checks, reviews, mergeability and captured coding evidence. */
-export function githubEligibility(snapshot: GithubSnapshot, input: { head: string; acceptance: boolean; evidence: boolean }): {
+export function githubEligibility(snapshot: GithubSnapshot, input: { head: string; acceptance: boolean; evidence: boolean; requirements?: { requiredChecks?: string[]; requiredApprovals?: number; requireCodeOwners?: boolean } }): {
   eligible: boolean; checksPassed: boolean; reviewsPassed: boolean; reasons: string[];
   rows: { code: string; passed: boolean; evidence: string[] }[];
 } {
@@ -34,11 +34,12 @@ export function githubEligibility(snapshot: GithubSnapshot, input: { head: strin
   const checksPassed = protection.known && required.length > 0 && new Set(checks.map(c => c.name)).size === checks.length && required.every(name => checks.some(c => c.name === name && c.head === input.head && c.base === snapshot.base && c.state === "success")) && checks.every(c => c.head === input.head && c.base === snapshot.base && c.state === "success");
   const latest = new Map<string, typeof reviews[number]>(); for (const r of reviews) latest.set(r.author, r);
   const approvals = [...latest.values()].filter(r => r.state === "approved" && r.head === input.head && r.base === snapshot.base);
-  const reviewsPassed = protection.known && [...latest.values()].every(r => r.resolved || r.state !== "changes_requested") && approvals.length >= protection.requiredApprovals && (!protection.requireCodeOwners || approvals.some(r => r.codeOwner));
+  const reviewsPassed = protection.known && [...latest.values()].every(r => r.resolved || r.state !== "changes_requested") && approvals.length >= protection.requiredApprovals && (!protection.requireCodeOwners || p?.codeOwnerReviewSatisfied === true || approvals.some(r => r.codeOwner));
   const production = snapshot.production.consequence === "none" || snapshot.production.consequence === "protected_gate" && !!snapshot.production.fence;
   const rows = [
     { code: "github_head_current", passed: current, evidence: [snapshot.source.ref] },
     { code: "github_mergeable", passed: !!p && p.state === "open" && !p.draft && p.mergeable, evidence: [snapshot.source.ref] },
+    { code: "github_branch_protection", passed: githubProtectionMatches(protection, input.requirements ?? protection), evidence: [protection.source.ref] },
     { code: "github_acceptance", passed: input.acceptance && input.evidence, evidence: [] as string[] },
     { code: "github_required_checks", passed: checksPassed, evidence: checks.map(c => c.source.ref) },
     { code: "github_required_reviews", passed: reviewsPassed, evidence: reviews.map(r => r.source.ref) },
