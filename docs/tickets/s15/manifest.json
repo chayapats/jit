@@ -291,7 +291,39 @@
         "needs-triage"
       ],
       "readiness": "blocked",
-      "path": "docs/tickets/s15/VM15-01.md"
+      "path": "docs/tickets/s15/VM15-01.md",
+      "boundedPreparation": {
+        "status": "proposed_documentation_only_not_implementation_admission",
+        "inspectedMain": "64f3a94726fdbce2283aec0944884ca7406d9934",
+        "contract": "docs/contracts/s15-working-vm-v1.md",
+        "schema": "docs/contracts/fixtures/s15-working-vm-v1.schema.json",
+        "fixtures": "docs/contracts/fixtures/s15-working-vm-v1.json",
+        "fixtureGuide": "docs/contracts/fixtures/s15-working-vm-v1.md",
+        "adr": "docs/adr/0067-s15-working-vm-operation-and-settlement.md",
+        "evidence": "docs/evidence/s15-vm-contract-preparation.md",
+        "nativeBlockersUnchanged": true,
+        "implementationAcceptanceUnchanged": true,
+        "prReference": "Refs #321",
+        "gates": [
+          "VM15-FZ01",
+          "VM15-FZ02",
+          "VM15-FZ03",
+          "VM15-FZ04",
+          "VM15-FZ05",
+          "VM15-FZ06",
+          "VM15-FZ07"
+        ],
+        "unmergedInputs": [
+          {
+            "pullRequest": 345,
+            "head": "c79aab9d098c902db0cdff7f3d649ca389fff08c"
+          },
+          {
+            "pullRequest": 346,
+            "head": "de2a4b08f9653d01dc0766e5cefa65ac6e2b9919"
+          }
+        ]
+      }
     },
     {
       "key": "BROW15-01",
