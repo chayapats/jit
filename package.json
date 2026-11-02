@@ -24,6 +24,7 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
+    "playwright-core": "1.64.1",
     "schway": "file:vendor/schway-1.0.0-rc.2-697bf40.tgz"
   }
 }
