@@ -14,6 +14,8 @@ Implementation review is tracked separately in https://github.com/chayapats/jit/
 
 Bounded local evidence recorded on 2026-11-02; OPEN, needs-triage, pending evidence review. Owner-authorized work is on `t3/plain14-02-device-coverage`, stacked from `1844be4309c3f5670ffa2c217350682c892823a3` above runtime implementation `388c119773bcb1244912fa70ec3ec67b5cd0544d`. PR #310 remains OPEN against main on the separate #308 branch; it was not changed or taken over. This ticket creates no new release gate, deployment permission or live-provider/account/effect authorization. The prior owner-deferred VoiceOver decision remains in force. The owner confirmed no safe physical-iPhone route/observer is available this round; physical iPhone/touch/on-screen keyboard remain NOT RUN.
 
+Evidence review: [PR #312](https://github.com/chayapats/jit/pull/312), OPEN against `t3/plain-handoff-scope-review` while #310 is unmerged. No merge, deployment or issue closure was performed.
+
 ## Current evidence result
 
 Canonical record: [docs/evidence/s14-plain-ui.md](https://github.com/chayapats/jit/blob/t3/plain14-02-device-coverage/docs/evidence/s14-plain-ui.md), section PLAIN14-02 bounded local coverage. Tested source/assets are labelled there; all 22 historical per-file source/test hashes matched, with fingerprint `f29f7b047d6b56bd38a9d0929b41ca674f50c8a1ad06372efb4af0c0bdb93fb4` unchanged. The original 438 deterministic passes/460 Chrome loads and earlier full-suite checkpoint were not rerun or promoted to device proof.

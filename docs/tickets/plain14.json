@@ -24,6 +24,8 @@
       "number": 309,
       "state": "OPEN",
       "status": "bounded-evidence-recorded-pending-review",
+      "pullRequest": "https://github.com/chayapats/jit/pull/312",
+      "pullRequestState": "OPEN",
       "head": "t3/plain14-02-device-coverage",
       "stackedBase": "t3/plain-handoff-scope-review",
       "file": "s14/PLAIN14-02.md",
