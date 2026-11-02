@@ -121,6 +121,7 @@ test("durable CI/review wait survives reopen without holding or reopening a VM",
   const waiting = await f.service.tick(row.id); expect(waiting.state).toBe("waiting_ci"); expect(f.counts.liveVm).toBe(0); expect(f.counts.waits).toBe(1);
   f.reopen(); expect((await f.service.tick(row.id)).state).toBe("waiting_ci"); expect(f.counts.implementations).toBe(1);
   f.advance(11); f.protocol.green(); f.protocol.value.pull!.reviews = []; const review = await f.service.tick(row.id); expect(review.state).toBe("waiting_review"); expect(f.counts.liveVm).toBe(0);
+  f.advance(11); f.protocol.green(); expect((await f.service.tick(row.id)).state).toBe("merged");
 });
 test("selected personal PR automatically merges only its current eligible head", async () => {
   const f = setup("personal"), s = await f.publish(); f.protocol.green(); const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
@@ -170,4 +171,10 @@ test("unknown babysitting merge recovers through read-only evidence after restar
   const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
   f.protocol.failAfterSend = true; expect((await f.service.tick(row.id)).state).toBe("reconcile_only"); const writes = f.protocol.calls.length;
   f.reopen(); expect((await f.service.reconcile(f.f.owner, f.work.actor!, row.id, "read_only_merge_recovery")).state).toBe("merged"); expect(f.protocol.calls).toHaveLength(writes);
+});
+test("an advancing approved target rebases and retests within the same responsibility", async () => {
+  const f = setup("personal"), s = await f.publish(); f.protocol.green();
+  const advancedBase = "d".repeat(40); f.protocol.value.base = advancedBase; f.protocol.value.pull!.base = advancedBase; f.protocol.bump(); f.evidence = { ...coding(nextHead), base: advancedBase };
+  const row = await f.service.babysit(f.f.owner, f.work.actor!, { requestId: "follow", sourceRequestId: "chat_root", selectionId: s.id, pull: 1, reserveCalls: 2 });
+  expect((await f.service.tick(row.id)).state).toBe("active"); expect(f.protocol.calls.at(-1)!.base).toBe(advancedBase); expect(f.protocol.value.pull!.head).toBe(nextHead); expect(f.counts.assignments).toBe(1);
 });

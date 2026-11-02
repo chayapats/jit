@@ -74,12 +74,14 @@ export function githubFixture(profile: "default" | "publish" | "personal" = "def
   const responsibility: { id: string; state: string; readyEventId: string | null; workId: string | null } = { id: "responsibility_42", state: "ready", readyEventId: "assigned_42", workId: null };
   const handles = new WeakSet<object>();
   const attemptRows: { id: string; eventId: string }[] = [];
+  let waited: { kind: string; key: string } | null = null;
+  const key = (value: string) => { if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new Error("invalid WORK key"); };
   const responsibilities: GithubResponsibilities = {
     assign(_owner, input) { assignments++; responsibility.workId = work.receipt.work!.id; return { ...responsibility }; },
-    beginAttempt(_id, input) { if (liveVm) throw new Error("busy"); attempts++; attemptRows.push({ id: `attempt_${attempts}`, eventId: input.eventId }); const handle = {}; handles.add(handle); responsibility.state = "working"; return handle; },
-    wait() { if (liveVm) throw new Error("VM retained during wait"); waits++; responsibility.state = "waiting"; return { ...responsibility }; },
-    observeEvent(_id, event) { responsibility.state = "ready"; responsibility.readyEventId = event.eventId; return { ...responsibility }; },
-    settle(handle, observation) { if (!handles.has(handle)) throw new Error("copied handle"); handles.delete(handle); responsibility.state = observation.effects === "unknown" ? "reconcile_only" : observation.complete ? "completed" : "ready"; return { state: responsibility.state }; },
+    beginAttempt(_id, input) { if (liveVm || responsibility.state !== "ready" || responsibility.readyEventId !== input.eventId || attemptRows.some(a => a.eventId === input.eventId)) throw new Error("attempt_not_ready"); attempts++; attemptRows.push({ id: `attempt_${attempts}`, eventId: input.eventId }); const handle = {}; handles.add(handle); responsibility.state = "working"; responsibility.readyEventId = null; return handle; },
+    wait(_id, input) { key(input.key); if (liveVm || responsibility.state === "working") throw new Error("VM retained during wait"); waits++; responsibility.state = "waiting"; responsibility.readyEventId = null; waited = input; return { ...responsibility }; },
+    observeEvent(_id, event) { key(event.key); if (responsibility.state === "waiting" && waited?.kind === event.kind && waited.key === event.key || responsibility.state === "ready" && responsibility.readyEventId === null) { responsibility.state = "ready"; responsibility.readyEventId = event.eventId; } return { ...responsibility }; },
+    settle(handle, observation) { if (!handles.has(handle)) throw new Error("copied handle"); handles.delete(handle); responsibility.state = observation.effects === "unknown" ? "reconcile_only" : observation.complete ? "completed" : "ready"; responsibility.readyEventId = null; return { state: responsibility.state }; },
     reconcile(_id, _attempt, observed) { responsibility.state = observed.complete ? "completed" : "ready"; return {}; }, stop() { responsibility.state = "stopped"; }, project() { return { ...responsibility, attempts: attemptRows, waits }; },
     guard(handle) { if (!handles.has(handle)) throw new Error("copied handle"); }, signal() { return new AbortController().signal; }, publish(_handle, consume) { consume({}); }, resume() {},
   };
