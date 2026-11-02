@@ -55,6 +55,13 @@ A closed upstream issue alone is insufficient: verify its actual supported contr
 Delivers proposed s15-state-transition/v1, including schema and policy-version adoption; no schema is changed in this audit.
 Proposed identifiers/paths are deliverables, not an assertion that a public API exists. Freeze exported function/type TSDoc and protocol fixtures before dependent tickets start. Propose a Schway change for a verified missing host contract rather than importing internals.
 
+Audit artifacts prepared against main `bf59e4c42c182b8a9c8611bdc2b76c44918faa2b` (DOC15-01 PR #343 merged):
+
+- [s15-state-transition/v1](../../contracts/s15-state-transition-v1.md) records the exact schema/table inventory, restricted-history mappings, explicit adoption, proposed signatures/shapes, refusal fixtures and recovery/rollback checkpoints.
+- [Proposed ADR 0065](../../adr/0065-s15-state-preservation-and-policy-adoption.md) records the preservation, continuity and policy-adoption choices.
+
+This is a read-only documentation delivery. The contract's downstream freeze gates remain mandatory; closing this audit does not certify S15 implementation, host acceptance or MIG15-01 readiness.
+
 ## Out of scope
 Applying migrations, choosing a live host or changing legacy/S14 activation.
 
