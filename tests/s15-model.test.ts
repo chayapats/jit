@@ -37,7 +37,7 @@ test('explicit owner model/effort pins are honored, and unavailable pinned autho
 test('POLICY full selection pin narrows the model selection even for a difficult step', async () => {
   const { f, service } = setup(); const source = f.source('pinned', { selectionPin: ordinary });
   expect(await service.runStep(source.actor!, { ...step(), difficulty: 'difficult' })).toMatchObject({ route: { selection: ordinary }, reason: 'owner_pin', pins: ordinary });
-  expect(service.project(f.owner, source.authority!.id).pins).toEqual([{ workId: source.authority!.id, pins: ordinary }]);
+  expect(service.project(f.owner, source.authority!.id).pins).toEqual([{ workId: source.authority!.id, pins: { route: ordinary.route, model: ordinary.model, effort: 'low' } }]);
 });
 
 test('quota fallback stays inside the same approved account, billing and recipient', async () => {
