@@ -15,6 +15,8 @@ import { personalProxyRequest, personalServiceBinding } from '../s14/personal-or
 import { GooglePersonal } from '../s14/personal-protocol';
 import type { PersonalConnection } from '../s14/personal-types';
 import { s14CredentialLifecycle } from '../s14/lifecycle';
+import { requireS14OwnerLinkPipe, writeS14OwnerSetupLink } from '../s14/owner-bootstrap';
+import { lookupS14Asset } from '../s14/web-assets';
 import { composeS15, type S15CompositionOptions } from './composition';
 import { LimaVmManagement } from './vm';
 import { RemoteVmManagement } from './vm/remote';
@@ -57,18 +59,26 @@ export function readS15RuntimeConfig(path: string): S15RuntimeConfig {
  */
 export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const index = args.indexOf('--config'), path = args[index + 1];
-  if (!['setup', 'serve'].includes(args[0] ?? '') || !args.includes('--s15') || index < 0 || !path) throw new AppError('explicit_s15_config_required');
-  const config = readS15RuntimeConfig(path), setup = args[0] === 'setup';
-  if (setup) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
+  if (!['setup', 'init', 'serve', 'owner-link', 'credential'].includes(args[0] ?? '') || !args.includes('--s15') || index < 0 || !path) throw new AppError('explicit_s15_config_required');
+  const config = readS15RuntimeConfig(path), setup = args[0] === 'setup', initialize = setup || args[0] === 'init', localCommand = ['owner-link', 'credential'].includes(args[0]!);
+  if (args[0] === 'owner-link') requireS14OwnerLinkPipe(3);
+  if (initialize) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
   const state = lstatSync(config.directory);
   if (!state.isDirectory() || state.isSymbolicLink() || state.mode & 0o077) throw new AppError('unprotected_ledger');
   const ownerPath = join(config.directory, 'owner.sqlite');
-  if (!setup && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
+  if (!initialize && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
   const ownerStore = new S14Store(ownerPath);
   const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [join(config.directory, 'runtime')] });
   const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
   let service: Awaited<ReturnType<typeof composeS15>> | undefined;
   try {
+    if (args[0] === 'owner-link') { writeS14OwnerSetupLink(ownerStore, config.origin, 3); return; }
+    if (args[0] === 'credential') {
+      const key = args[args.indexOf('--key') + 1]; if (!key || !args.includes('--secret-stdin')) throw new AppError('secret_stdin_required');
+      const secret = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, '');
+      if (!secret || secret.length > 4096 || /[\r\n\0]/.test(secret)) throw new AppError('invalid_credential');
+      vault.write(key, secret); console.log(JSON.stringify({ state: 'credential_stored' })); return;
+    }
     if (setup) {
       if (!process.stdin.isTTY && !args.includes('--password-stdin')) throw new AppError('password_stdin_flag_required');
       const password = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, '');
@@ -99,7 +109,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const site: BrowserSitePolicy = { loginDocuments: [], session: null,
       observable: url => !!config.browser?.publicOrigins.includes(new URL(url).origin),
       classify(request) { const u = new URL(request.url); return config.browser?.publicOrigins.includes(u.origin) && request.method === 'GET' && request.navigation && !request.bodyBase64 && !u.search ? { kind: 'read', private: false } : null; } };
-    service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: setup, installationId: config.installationId, origin: config.origin,
+    service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
@@ -112,11 +122,11 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },
         recipients: () => config.google!.recipients, attachment: () => null, bounds: config.google.bounds, now: Date.now } } : {}),
     });
-    if (setup) { await service.close(); service = undefined; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified' })); return; }
+    if (initialize) { await service.close(); service = undefined; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified' })); return; }
     const binding = personalServiceBinding(config.origin), auth = createS14Handler(ownerApp, config.origin, renderS14, createS14Product(ownerApp), createS14Auth(ownerApp));
     const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
       try { const incoming = binding.proxy ? personalProxyRequest(request, config.origin) : request, url = new URL(incoming.url);
-        return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || url.pathname.startsWith('/assets/s14') ? auth(incoming) : service!.fetch(incoming);
+        return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || !!lookupS14Asset(url.pathname) ? auth(incoming) : service!.fetch(incoming);
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
@@ -125,5 +135,5 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
   } catch (error) { await service?.close(); ownerStore.close(); throw error; }
-  finally { if (setup) ownerStore.close(); }
+  finally { if (initialize || localCommand) ownerStore.close(); }
 }

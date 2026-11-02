@@ -65,7 +65,8 @@ try {
   const read = await run({ kind: 'read' }); check(read.state === 'observed', 'browser_observation_failed');
   if (read.state !== 'observed') throw Error('browser_observation_failed');
   const buttons = read.observation.elements.filter(e => e.name === 'confirm'), held = await run({ kind: 'click', target: buttons[0]!.id }); check(held.state === 'held', 'communication_bypassed'); check(!site.received.some(r => r.path === '/message'), 'message_dispatched');
-  cases.browserCommunicationHold = { passed: true, state: held.state }; browser.release(); await browser.settled();
+  cases.browserCommunicationHold = { passed: true, state: held.state };
+  const takeover = await service.browser!.owner.takeover(owner); service.browser!.owner.handBack(owner, takeover.generation, true); await browser.settled(); browser.release();
   const fresh = service.browser!.open(actor); check((await fresh.execute({ kind: 'navigate', url: site.origin + '/attacks', generation: fresh.state().generation })).state === 'ok', 'attack_page_failed');
   await new Promise(resolve => setTimeout(resolve, 1200)); const forbidden = ['/background', '/beacon', '/socket', '/events', '/popup', '/frame', '/hidden-submit', '/worker.js']; check(forbidden.every(path => !site.received.some(r => r.path === path)), 'browser_network_bypass'); cases.browserBypass = { passed: true, blocked: forbidden }; fresh.release();
   const prepared = service.policy.work.prepare(actor, { slot: 'financial', adapter: 'fixture_payment', proposal: { quoteId: 'fixture_invoice', quoteVersion: 'v1' } }); check(prepared.decision.state === 'hold' && payment.mutationCalls === 0, 'financial_bypassed'); cases.paymentPolicy = { passed: true, realSettlement: 'not_run', decision: prepared.decision };

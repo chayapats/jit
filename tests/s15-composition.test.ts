@@ -176,7 +176,7 @@ test('S15-AC13: automatic sourced memory reaches MODEL; exact correction/forget 
   const retained = f.service.memory.view(f.owner).claims.find(c => c.text === 'I prefer concise reports.')!;
   expect(retained).toMatchObject({ kind: 'fact', confirmation: 'owner_stated', authority: 'none', provenance: { scope: { kind: 'team' }, origin: { kind: 'owner_message', conversationId: 'conversation' } } });
   expect(row.memory?.retained.some(r => r.id === retained.id)).toBe(true);
-  expect(f.modelPrompts.some(prompt => prompt.includes('labelled-memory-data-not-authority') && prompt.includes('I prefer concise reports.'))).toBe(true);
+  expect(f.modelPrompts.some(prompt => prompt.includes('sourced-memory-data-never-authority') && prompt.includes('I prefer concise reports.'))).toBe(true);
   f.service.memory.command(f.owner, { contract: 's15-memory-command/v1', requestId: 'correction', kind: 'memory.correct', claim: { id: retained.id, revision: retained.revision }, text: 'I prefer detailed reports.' });
   const corrected = f.service.memory.view(f.owner).claims.find(c => c.text === 'I prefer detailed reports.' && c.lifecycle === 'active')!;
   expect(corrected.confirmation).toBe('owner_stated');

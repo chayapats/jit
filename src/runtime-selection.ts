@@ -29,7 +29,9 @@ export function selectRuntime(args: string[], env: NodeJS.ProcessEnv = process.e
     return { runtime: "adoption", args: [command, "--s15", ...optionRest] };
   }
   if (selectors[0] === "--s15") {
-    if (!["serve", "setup"].includes(command) || literal.length || optionRest[0] !== "--config" || !optionRest[1] || optionRest[1].startsWith("--") || !(optionRest.length === 2 || command === "setup" && optionRest.length === 3 && optionRest[2] === "--password-stdin")) refuse("explicit_s15_config_required");
+    const tail = optionRest.slice(2);
+    const valid = ["serve", "init"].includes(command) ? tail.length === 0 : command === "setup" ? tail.length === 0 || tail.join() === "--password-stdin" : command === "owner-link" ? tail.join() === "--output-fd,3" : command === "credential" ? tail.length === 3 && tail[0] === "--key" && /^[A-Za-z0-9_-]{1,128}$/.test(tail[1] ?? "") && tail[2] === "--secret-stdin" : false;
+    if (!valid || literal.length || optionRest[0] !== "--config" || !optionRest[1] || optionRest[1].startsWith("--")) refuse("explicit_s15_config_required");
     return { runtime: "s15", args: [command, "--s15", ...optionRest] };
   }
   const explicit = selectors[0] === "--s14" ? "s14" : selectors[0] === "--legacy" ? "legacy" : undefined;
