@@ -238,7 +238,7 @@ function controls(page: S15SlipPage): string {
       const said = slip.statements.length ? `<p class="s-sub">${slip.statements.map(item => fill("s15.slip.you_said", { outcome: tr(key(`s15.slip.statement.${item.outcome}`)) })).join(" · ")}</p>` : "";
       return ownerStrip(check || `<span class="s-sub">${tr("s15.slip.no_check_port")}</span>`, tr("s15.slip.unknown_note"), "", `${said}${statements}`);
     }
-    case "changed": return slip.replacement ? `<div class="s-strip"><div class="s-strip-acts"><a class="s-btn primary" href="/actions/${id}">${fill("s15.slip.open_revision", { n: slip.replacement.revision })}</a></div></div>` : "";
+    case "changed": return slip.replacement ? `<div class="s-strip"><div class="s-strip-acts"><a class="s-btn primary" href="/actions/${id}?r=${slip.replacement.revision}">${fill("s15.slip.open_revision", { n: slip.replacement.revision })}</a></div></div>` : "";
     case "expired": case "stale_rules": return `<div class="s-strip"><div class="s-strip-acts">${again}</div></div>`;
     case "failed": return `<div class="s-strip"><div class="s-strip-acts">${revise}</div></div>`;
     default: return "";

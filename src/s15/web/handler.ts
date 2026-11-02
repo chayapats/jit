@@ -89,7 +89,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       const render = (body: () => string, status = 200) => html(withLocale(locale, body), status, locale);
 
       // Navigation reads: recent conversations and every item that truly waits on the owner.
-      const needs = (): S15NeedItem[] => ports.conversation.needs(actor);
+      // A decision message and its source request both reference the same exact action; list it once.
+      const needs = (): S15NeedItem[] => [...new Map(ports.conversation.needs(actor).map(item => [item.entry.id, item] as const)).values()];
       const dutyList = (): ResponsibilityProjection[] | null => { if (!ports.duties) return null; try { return ports.duties.list(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } };
       const browsers = () => (ports.browsers ?? []).map(browser => ({ browser: { id: browser.id, site: browser.site, twoFactor: browser.twoFactor, fields: browser.fields } as S15BrowserInfo, state: browserState.get(browser.id) }));
       const needsCount = () => needs().length + (dutyList()?.filter(dutyNeedsYou).length ?? 0) + browsers().filter(item => browserNeedsYou(item.state)).length;
