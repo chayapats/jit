@@ -8,11 +8,11 @@ S15 — https://github.com/chayapats/jit/issues/316. Canonical spec: docs/specs/
 Frontier: authority, isolation, lifecycle, cross-contract or evidence decisions remain in this slice. Mechanical Standard work can be extracted only after exact signatures/schema/paths/tests/dictionary keys are verified on main; do not label speculative contracts Standard-ready.
 
 ## Status
-Prepared; needs triage. Not ready-for-agent: direct blockers and required contract/evidence revisions must be verified before admission.
+Blocked / needs triage. Owner-authorized bounded DOCUMENTATION-ONLY step 1 preparation proposes [s15-model-selection/v1](../../contracts/s15-model-selection-v1.md), [ADR0070](../../adr/0070-s15-approved-model-selection-and-disclosure.md), complete synthetic documentation and a [preparation record](../../evidence/s15-model-contract-preparation.md). This is not runtime admission, final freeze, ready/complete status or acceptance evidence. Native #323 remains OPEN and all four original implementation criteria remain outstanding. Exact reviewed #318/#320/#321/#322/#323 inputs are unmerged proposals pending reconciliation with actual merged reviewed revisions and implementation evidence. S14 remains default; RT15-01/RF15-G01–G08 remain unproven.
 
 ## Context to read
 AGENTS.md; CONTEXT.md; docs/agents/workflow.md; docs/specs/S15-conversational-autonomy.md; docs/product/02-prd.md; docs/adr/0064-conversational-authority-and-protected-control-plane.md.
-Current main audited at 17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b. Existing implementation references (not promised S15 APIs):
+Initial planning main was `17e5110daf1491f2d1e918fef4cb5b5aec8f8f1b`; bounded preparation rechecked `64f3a94726fdbce2283aec0944884ca7406d9934`. Existing implementation references (not promised S15 APIs):
 - src/s14/types.ts
 - src/s14/lifecycle.ts
 - src/s14/coding-model.ts
@@ -25,7 +25,7 @@ Read the parent, this issue's comments, current assignees and related branches/P
 Jit selects or escalates model/effort within approved routes, the existing account and budget, while preserving explicit pins and Schway ownership.
 
 ## Implementation steps
-1. Define the reviewed route/model/effort policy and usage-reservation contract through supported Schway exports.
+1. Define the reviewed route/model/effort policy and usage-reservation contract through supported Schway exports. The bounded proposal prepares review only; MODEL15-FZ01–FZ07 and demonstrated public-dispatch/effort/cost requirements remain open, without bypassing native #323.
 2. Implement selection/recording and permitted retries or escalation without new account/provider/billing authority.
 3. Preserve current owner decisions and source/purpose labels across model/context changes.
 4. Expose honest unavailable/unknown usage states; record a capability gap rather than implementing provider protocols locally.
@@ -60,4 +60,4 @@ Do not infer owner authority from model/retrieved text; widen accounts/providers
 
 ## Definition of done
 Run the focused enumerated behavior fixtures, bun run typecheck, bun test and git diff --check on final HEAD. Record commands, tested SHA, contract revisions, actual evidence and not-run limitations. Live/paid/host operations are separate opt-in commands with owner approval.
-PR body includes Closes #326. No merge by the implementer.
+The full implementation PR body includes Closes #326. A bounded documentation-only preparation PR uses Refs #326, preserves all original criteria/native prerequisites/labels/ownership and leaves the issue open. It runs static document/link/schema/type/fixture/hash/requirement/monotonic-fact/causal-time checks and git diff --check only. All scenarios are UNEXECUTED documentation, not passing tests; runtime tests/typecheck, executable/live probes and model/provider/account/catalog/readiness/session/VM/browser operations are not required or claimed. No merge by the implementer.
