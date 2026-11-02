@@ -21,6 +21,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
   const continuity = browserContinuity(options.continuity.path, options.continuity.create, options.resource.id);
   let policy: S15PolicyService | null = null, actor: WorkActor | null = null, generation = continuity.advance();
   let login: LoginState = 'not_signed_in', currentUrl = 'about:blank', closed = false;
+  let currentLease: object | null = null;
   let active: Scope | null = null, busy = false, ownerSettling: Promise<unknown> = Promise.resolve();
   const pending = new Map<string, Pending>();
   const now = options.now ?? Date.now;
@@ -152,16 +153,19 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
     } },
     attach(p) { if (policy) throw new BrowserError('policy_already_attached'); policy = p; },
     open(workActor) {
-      service().work.guard(workActor); if (actor && actor !== workActor) throw new BrowserError('input_busy'); actor = workActor;
-      const bound = () => { if (actor !== workActor) throw new BrowserError('stale_input'); service().work.guard(workActor); };
+      service().work.guard(workActor); if (actor) throw new BrowserError('input_busy'); actor = workActor;
+      const lease = Object.freeze({}); currentLease = lease;
+      const bound = () => { if (actor !== workActor || currentLease !== lease) throw new BrowserError('stale_input'); service().work.guard(workActor); };
       const work: BrowserWork = {
         state: () => { bound(); return { generation, login, reconciliation: continuity.uncertain() }; },
         async execute(input) {
+          let ownsBusy = false;
           try {
             operation(input); bound();
             if (input.generation !== generation || generation !== continuity.generation()) throw new BrowserError('stale_input');
             if (login === 'owner_control' || login === 'checking') throw new BrowserError('owner_control');
             if (busy || pending.size) throw new BrowserError('input_busy');
+            busy = true; ownsBusy = true;
             if (input.kind === 'read' || input.kind === 'find' || input.kind === 'screenshot') {
               safe(); busy = true;
               const p = service(), admission = p.work.reserveRead(workActor, { requestId: id(), resource: options.resource, operation: 'read', exactPayload: { contract: 's15-browser-observe/v1', url: currentUrl, format: input.kind === 'screenshot' ? 'image' : 'text', generation }, upperBound: options.upperBound, fences: options.fences });
@@ -193,10 +197,15 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
             if (result.state !== 'held') { s.stopped = true; s.abort.abort(); if (active === s) active = null; }
             return result;
           } catch (e) { return { state: 'denied', code: e instanceof BrowserError ? e.code : 'authority_unavailable' }; }
+          finally { if (ownsBusy) busy = false; }
+        },
+        release() { if (actor !== workActor || currentLease !== lease) return; if (busy || pending.size || login === 'owner_control') throw new BrowserError('input_busy'); generation = continuity.advance(); stop(); actor = null; currentLease = null; },
+        async resume(action) {
+          bound(); if (login === 'owner_control') return { state: 'denied', code: 'owner_control' };
+          if (busy) return { state: 'denied', code: 'input_busy' }; busy = true;
+          try { const attempt = dispatch(action); ownerSettling = attempt; const result = await attempt; if (result.state !== 'held' && active) { active.stopped = true; active.abort.abort(); active = null; } return result; }
           finally { busy = false; }
         },
-        release() { if (actor !== workActor) return; if (busy || pending.size || login === 'owner_control') throw new BrowserError('input_busy'); generation = continuity.advance(); stop(); actor = null; },
-        async resume(action) { bound(); if (login === 'owner_control') return { state: 'denied', code: 'owner_control' }; const result = await dispatch(action); if (result.state !== 'held' && active) { active.stopped = true; active.abort.abort(); active = null; } return result; },
       }; return work;
     },
     owner: {

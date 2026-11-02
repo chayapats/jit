@@ -156,3 +156,14 @@ test('an automatic document submission cannot borrow a navigation input even whe
   expect(await f.execute({ kind: 'navigate', url: f.server.origin + '/clean-task' })).toMatchObject({ state: 'unsupported', code: 'unattributable_request' });
   expect(f.server.received.some(r => r.path === '/edit')).toBe(false);
 });
+
+
+test('reopening with the same durable actor does not resurrect a released closure or its release', async () => {
+  const f = await setup(); f.work.release(); const next = f.gateway.open(f.actor);
+  expect(() => f.work.state()).toThrow('stale_input'); f.work.release();
+  let release!: () => void; const wait = new Promise<void>(r => { release = r; }); f.engine.blockRead = () => wait;
+  const pending = next.execute({ kind: 'read', generation: next.state().generation });
+  expect((await f.work.execute({ kind: 'read', generation: next.state().generation })).state).toBe('denied');
+  expect(await next.execute({ kind: 'read', generation: next.state().generation })).toMatchObject({ state: 'denied', code: 'input_busy' });
+  release(); expect((await pending).state).toBe('observed'); next.release();
+});

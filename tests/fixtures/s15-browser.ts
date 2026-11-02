@@ -67,5 +67,5 @@ export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy,
   f.input.budget!.ceiling = { attempts: 1000, steps: 1000, calls: 1000, reads: 1000, outputBytes: 2_000_000_000, activeMs: 30_000_000, spendMinor: '100' };
   f.input.rules[0]!.adapters.push('protected_browser'); f.input.rules[0]!.operations.push('browser_request');
   f.install(); gateway.attach(f.service); const actor = f.admit({ access: 'effect', readLimit: 1000 }).actor!, work = gateway.open(actor);
-  return { ...f, approve(action: import('../../src/s15/policy').ActionRef) { f.service.owner.decide(f.owner, { requestId: 'approve_' + action.id, action, decision: 'approve', expiresAt: 20000 }); }, gateway, work, async cleanup() { await gateway.close(); f.cleanup(); rmSync(dir, { recursive: true, force: true }); } };
+  return { ...f, approve(action: import('../../src/s15/policy').ActionRef) { f.service.owner.decide(f.owner, { requestId: 'approve_' + action.id, action, decision: 'approve', expiresAt: 20000 }); }, gateway, work, actor, async cleanup() { await gateway.close(); f.cleanup(); rmSync(dir, { recursive: true, force: true }); } };
 }
