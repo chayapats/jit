@@ -27,7 +27,7 @@ export class LimaVmManagement implements VmManagement {
     if (rows.length !== 1 || !row || row.vmType !== "qemu" || !["Running", "Stopped"].includes(row.status) || row.config?.plain !== true || (row.config?.mounts?.length ?? 0) !== 0 || (row.config?.networks?.length ?? 0) !== 0 || row.config?.ssh?.forwardAgent !== false || row.config?.ssh?.loadDotSSHPubKeys !== false || row.config?.hostResolver?.enabled !== false || row.config?.propagateProxyEnv !== false) vmFail("vm_boundary_unproven");
     for (const value of [row.cpus, row.memory, row.disk]) vmInteger(value);
     vmInteger(row.sshLocalPort, 65535); this.#sshPort = row.sshLocalPort;
-    let boot = "stopped", network: VmMachineState["network"] = "unproven";
+    let boot = "stopped", network: VmMachineState["network"] = "unproven", nicMac: string | undefined;
     if (row.status === "Running") {
       let pid: string;
       try { pid = readFileSync(join(this.options.limaHome ?? join(homedir(), ".lima"), this.options.instance, "qemu.pid"), "utf8").trim(); } catch { vmFail("vm_management_unavailable", 503); }
@@ -36,6 +36,9 @@ export class LimaVmManagement implements VmManagement {
       const args = Buffer.from(p.stdout).toString("utf8");
       if (p.exitCode !== 0 || !args.includes(`lima-${this.options.instance}`) || /(?:-fsdev|-virtfs|mount_tag=|-nic\s|\s-net\s)/.test(args) || (args.match(/-netdev /g)?.length ?? 0) !== 1) vmFail("vm_boundary_unproven");
       const netdev = /-netdev ([^\n]*?)(?= -[a-z]|$)/.exec(args)?.[1] ?? "";
+      const sshForward = /(?:^|,)hostfwd=tcp:127\.0\.0\.1:([0-9]+)-(?:[0-9.]+)?:22(?:,|$)/.exec(netdev);
+      if (Number(sshForward?.[1]) !== row.sshLocalPort || (netdev.match(/hostfwd=/g)?.length ?? 0) !== 1) vmFail("vm_boundary_unproven");
+      nicMac = /(?:^|[,\s])mac=((?:[a-f0-9]{2}:){5}[a-f0-9]{2})(?=[,\s]|$)/i.exec(args)?.[1]?.toLowerCase();
       if (/^user,/.test(netdev) && /(?:^|,)restrict=on(?:,|$)/.test(netdev) && /(?:^|,)ipv6=off(?:,|$)/.test(netdev)) {
         const forwards = netdev.match(/guestfwd=/g)?.length ?? 0;
         const proxy = /,guestfwd=tcp:192\.168\.5\.100:3128-cmd:\/usr\/bin\/nc 127\.0\.0\.1 [0-9]{1,5}$/.test(netdev);
@@ -45,7 +48,7 @@ export class LimaVmManagement implements VmManagement {
       boot = `${pid}:${args.slice(0, 24).trim()}`;
     }
     return { state: row.status === "Running" ? "running" : "stopped", identity: `lima:${this.options.instance}`, boot,
-      cpuCount: row.cpus, memoryBytes: row.memory, diskBytes: row.disk, network };
+      cpuCount: row.cpus, memoryBytes: row.memory, diskBytes: row.disk, network, ...(nicMac ? { nicMac } : {}), sshEndpoint: { host: "127.0.0.1", port: row.sshLocalPort } };
   }
   /** Explicit owner start of the enrolled VM only; stable SSH port and external network profile are retained. */
   async start(): Promise<void> {
@@ -67,6 +70,11 @@ export class LimaVmManagement implements VmManagement {
   async restore(name: string): Promise<void> {
     if (!/^jit-[a-f0-9]{32}$/.test(name)) vmFail("vm_invalid_setup");
     await this.stop(); await this.command(["snapshot", "apply", this.options.instance, "--tag", name]);
+  }
+  /** Retires only a service-selected exact tag; no guest or broad snapshot deletion command exists. */
+  async retireSnapshot(name: string): Promise<void> {
+    if (!/^jit-[a-f0-9]{32}$/.test(name)) vmFail("vm_invalid_setup");
+    await this.command(["snapshot", "delete", this.options.instance, "--tag", name]);
   }
 }
 
@@ -104,8 +112,8 @@ export class ProxmoxVmManagement implements VmManagement {
       return JSON.parse(Buffer.concat(chunks).toString("utf8")).data;
     } catch { vmFail("vm_management_unavailable", 503); }
   }
-  private async mutate(suffix: string, params?: Record<string, string>): Promise<void> {
-    const task = await this.api(`${this.path}/${suffix}`, "POST", params);
+  private async mutate(suffix: string, params?: Record<string, string>, method: "POST" | "DELETE" = "POST"): Promise<void> {
+    const task = await this.api(`${this.path}/${suffix}`, method, params);
     if (typeof task !== "string" || !task.startsWith(`UPID:${this.options.node}:`) || task.length > 1024) vmFail("vm_management_unavailable");
     // Bounded infrastructure task observation, never mutation replay.
     const deadline = performance.now() + 105000;
@@ -136,6 +144,7 @@ export class ProxmoxVmManagement implements VmManagement {
     })) vmFail("vm_boundary_unproven");
     const nics = Object.keys(config).filter(k => /^net\d+$/.test(k));
     const filtered = nics.length === 1 && /(?:^|,)firewall=1(?:,|$)/.test(config[nics[0]!]);
+    const nicMac = nics.length === 1 ? /^(?:virtio|e1000|e1000e|rtl8139|vmxnet3|ne2k_pci)=((?:[a-f0-9]{2}:){5}[a-f0-9]{2})(?:,|$)/i.exec(config[nics[0]!])?.[1]?.toLowerCase() : undefined;
     const outbound = Array.isArray(rules) ? rules.filter(r => r.enable === 1 && r.type === "out" && r.action === "ACCEPT") : [];
     const proxyOnly = Array.isArray(rules) && !rules.some(r => r.enable !== 0 && (r.type === "group" || r.action === "GROUP" || ![0, 1].includes(r.enable))) && outbound.length === 1 && outbound[0].dest === this.options.proxy.address && String(outbound[0].dport) === String(this.options.proxy.port) && outbound[0].proto === "tcp" && !outbound[0].macro;
     let active = false;
@@ -143,7 +152,7 @@ export class ProxmoxVmManagement implements VmManagement {
     const cpuCount = Number(config.cores ?? 1) * Number(config.sockets ?? 1), memoryBytes = Number(config.memory) * 1048576, diskBytes = Number(status.maxdisk);
     for (const n of [cpuCount, memoryBytes, diskBytes]) vmInteger(n);
     return { state: status.status, identity: `proxmox:${this.options.node}:${this.options.vmid}`, boot: `${status.pid ?? 0}`,
-      cpuCount, memoryBytes, diskBytes, network: filtered && firewall.enable === 1 && firewall.policy_out === "DROP" && proxyOnly && active ? "proxy-only" : "unproven" };
+      cpuCount, memoryBytes, diskBytes, ...(nicMac ? { nicMac } : {}), network: filtered && firewall.enable === 1 && firewall.policy_out === "DROP" && proxyOnly && active ? "proxy-only" : "unproven" };
   }
   /** Explicit VM-scoped start, with no guest command or authority replay. */
   async start(): Promise<void> { if ((await this.inspect()).state !== "stopped") vmFail("vm_fenced"); await this.mutate("status/start"); if ((await this.inspect()).state !== "running") vmFail("vm_management_unavailable"); }
@@ -153,6 +162,8 @@ export class ProxmoxVmManagement implements VmManagement {
   async snapshot(name: string): Promise<void> { if (!/^jit-[a-f0-9]{32}$/.test(name)) vmFail("vm_invalid_setup"); await this.mutate("snapshot", { snapname: name, vmstate: "0" }); }
   /** Exact rollback while fenced; does not automatically start the restored VM. */
   async restore(name: string): Promise<void> { if (!/^jit-[a-f0-9]{32}$/.test(name)) vmFail("vm_invalid_setup"); await this.stop(); await this.mutate(`snapshot/${name}/rollback`); }
+  /** VM.Snapshot-scoped exact deletion; a completed protected task confirms retirement. */
+  async retireSnapshot(name: string): Promise<void> { if (!/^jit-[a-f0-9]{32}$/.test(name)) vmFail("vm_invalid_setup"); await this.mutate(`snapshot/${name}`, undefined, "DELETE"); }
 }
 
 /** QEMU wrapper source for a NEW Lima VM; restrict is enforced in the protected host's network backend. */

@@ -13,16 +13,17 @@ import { defaultVmLimits, type VmPolicyPort, type VmPolicyOperation, type VmMana
 import { LimaVmManagement, ProxmoxVmManagement, limaRestrictedQemu } from "../src/s15/vm/management";
 import { VmEnrollment } from "../src/s15/vm/enrollment";
 import { vmRunnerSource } from "../src/s15/vm/runner";
+import { vmIdentityMatches } from "../src/s15/vm/binding";
 import { VmSshDialGate } from "../src/s15/vm/dial";
 
 const limits = { ...defaultVmLimits }, endpoint = { host: "vm.example.test", port: 22, user: "jit", identityFile: "/protected/key", knownHostsFile: "/protected/known" };
 const stores: VmStore[] = [], directories: string[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of directories.splice(0)) rmSync(d, { recursive: true, force: true }); });
-function fixture() {
+function fixture(options: Partial<import("../src/s15/vm/service").WorkingVmOptions> = {}) {
   const store = new VmStore(":memory:"); stores.push(store);
   const actor = {}, valid = new WeakSet([actor]); let revoked = false, beforeClaim: (() => Promise<void>) | undefined;
   let afterSend: (() => Promise<void>) | undefined;
-  const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = [], scopeLifetimes: number[] = []; let stops = 0, empty = true, snapshot = 0;
+  const claims: VmPolicyOperation[] = [], sends: Record<string, unknown>[] = [], scopeLifetimes: number[] = []; let stops = 0, empty = true, snapshot = 0; const retired: string[] = []; let stopBarrier: (() => Promise<boolean>) | undefined;
   const policy: VmPolicyPort = {
     assertCurrent(a) { if (!valid.has(a) || revoked) throw new Error("revoked"); },
     async claim(a, operation) {
@@ -30,13 +31,13 @@ function fixture() {
       return { async dispatch(start) { policy.assertCurrent(a, operation as never); return start(); }, publish(consume) { policy.assertCurrent(a, operation as never); return consume(); }, observe() {} };
     },
   };
-  const state: VmMachineState = { state: "running", identity: "fixture-vm", boot: "boot1", cpuCount: 4, memoryBytes: 8388608, diskBytes: 1048576, network: "proxy-only" };
-  const manager: VmManagement = { async inspect() { return { ...state }; }, async stop() { state.state = "stopped"; }, async snapshot() { snapshot++; }, async restore() { state.state = "stopped"; } };
-  store.save({ id: "vm1", generation: 1, endpoint, managerId: "mgr", state: "ready", networkCheckedAt: 1, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture-vm", boot: "boot1" });
+  const state: VmMachineState = { state: "running", identity: "fixture-vm", boot: "boot1", cpuCount: 4, memoryBytes: 8388608, diskBytes: 1048576, network: "proxy-only", nicMac: "52:54:00:12:34:56" };
+  const manager: VmManagement = { async inspect() { return { ...state }; }, async stop() { state.state = "stopped"; }, async snapshot() { snapshot++; }, async restore() { state.state = "stopped"; }, async retireSnapshot(name) { retired.push(name); } };
+  store.save({ id: "vm1", generation: 1, endpoint, managerId: "mgr", state: "ready", networkCheckedAt: 1, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture-vm", boot: "boot1", bindingMac: "52:54:00:12:34:56" });
   class Transport extends VmSshTransport {
-    override async control(argv: readonly string[]) { if (argv.includes("-c")) return '{"reachable":[false,false,false,false,false,false]}'; return ""; }
+    override async control(argv: readonly string[]) { if (argv.some(a => a.includes("nicMacs"))) return '{"nicMacs":["52:54:00:12:34:56"]}'; if (argv.includes("-c")) return '{"reachable":[false,false,false,false,false,false]}'; return ""; }
     override async openScope(_unit: string, ms: number, guard: () => void) { guard(); scopeLifetimes.push(ms); }
-    override async closeScope() { stops++; return empty; }
+    override async closeScope() { stops++; return stopBarrier ? stopBarrier() : empty; }
     override async invoke(request: Record<string, unknown>, settings: Parameters<VmSshTransport["invoke"]>[1]) {
       settings.beforeStart(); sends.push(request); await afterSend?.();
       if (request.op === "init" || request.op === "write") return {};
@@ -47,9 +48,9 @@ function fixture() {
     }
   }
   const service = new WorkingVmService({ store, policy, managers: new Map([["mgr", manager]]), transport: () => new Transport(endpoint), now: () => 100,
-    requireOwner: a => { if (a !== actor) throw new Error("owner required"); } });
+    requireOwner: a => { if (a !== actor) throw new Error("owner required"); }, ...options });
   return { store, service, actor, manager, state, claims, sends, scopeLifetimes, revoke: () => { revoked = true; }, setBeforeClaim: (f: () => Promise<void>) => { beforeClaim = f; },
-    setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setEmpty: (value: boolean) => { empty = value; }, stops: () => stops, snapshots: () => snapshot };
+    setAfterSend: (f: () => Promise<void>) => { afterSend = f; }, setEmpty: (value: boolean) => { empty = value; }, setStopBarrier: (f: () => Promise<boolean>) => { stopBarrier = f; }, retired, stops: () => stops, snapshots: () => snapshot };
 }
 const open = (f: ReturnType<typeof fixture>, workId = "work1", extra = {}) => f.service.openAttempt(f.actor, { vmId: "vm1", workId, attemptId: `attempt_${workId}`, ...extra });
 
@@ -158,6 +159,17 @@ describe("VM protocol and backend", () => {
 describe("protected management", () => {
   test("Lima refuses all pre-existing non-working VM names", () => { for (const instance of ["jit-arm", "jit-vm", "jit-ac12-arm64-20261101", "../jit-work"]) expect(() => new LimaVmManagement({ instance })).toThrow(); });
   test("QEMU wrapper denies host mounts and injects protected restrict/proxy network", () => { const source = limaRestrictedQemu("/trusted/qemu", 3128); expect(source).toContain("restrict=on,ipv6=off"); expect(source).toContain("guestfwd=tcp:192.168.5.100:3128"); expect(source).toContain("'-fsdev','-virtfs'"); });
+  test("Lima binds its protected QEMU NIC and exact SSH forward, refusing a different pinned endpoint", async () => {
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    const directory = mkdtempSync(join(tmpdir(), "jit-vm-lima-")); directories.push(directory); mkdirSync(join(directory, "jit-work-test")); writeFileSync(join(directory, "jit-work-test", "qemu.pid"), "123");
+    const run: VmHostCommand = async argv => ({ exitCode: 0, stdout: Buffer.from(argv[0] === "limactl" ? JSON.stringify({ name: "jit-work-test", vmType: "qemu", status: "Running", cpus: 4, memory: 1024, disk: 1024, sshLocalPort: 2222,
+      config: { plain: true, mounts: [], networks: [], ssh: { forwardAgent: false, loadDotSSHPubKeys: false }, hostResolver: { enabled: false }, propagateProxyEnv: false } }) : "Mon Nov 2 00:00:00 2026 qemu -name lima-jit-work-test -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2222-:22,restrict=on,ipv6=off -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56") });
+    const machine = await new LimaVmManagement({ instance: "jit-work-test", limaHome: directory, run }).inspect();
+    expect(machine.nicMac).toBe("52:54:00:12:34:56"); expect(machine.sshEndpoint).toEqual({ host: "127.0.0.1", port: 2222 });
+    let queries = 0; const transport = new VmSshTransport(endpoint, async () => { queries++; return { exitCode: 0, stdout: Buffer.from('{"nicMacs":["52:54:00:12:34:56"]}') }; });
+    expect(await vmIdentityMatches(transport, machine, { ...endpoint, host: "127.0.0.1", port: 3333 })).toBe(false); expect(queries).toBe(0);
+    expect(await vmIdentityMatches(transport, machine, { ...endpoint, host: "127.0.0.1", port: 2222 })).toBe(true);
+  });
   test("Proxmox cannot advertise isolation without enabled audit at every firewall level", async () => {
     const seen: string[] = [];
     const api = new ProxmoxVmManagement({ baseUrl: "https://proxmox.test:8006", node: "node1", vmid: 321, token: () => "fixture-only", proxy: { address: "192.0.2.4", port: 3128 },
@@ -165,12 +177,12 @@ describe("protected management", () => {
         seen.push(String(url)); expect(options?.redirect).toBe("error");
         const p = String(url); let data: unknown = {};
         if (p.endsWith("status/current")) data = { status: "running", pid: 1, maxdisk: 1024 };
-        else if (p.endsWith("/config")) data = { cores: 4, memory: 8192, scsi0: "local-lvm:vm-321-disk-0,size=60G", net0: "virtio=xx,firewall=1" };
+        else if (p.endsWith("/config")) data = { cores: 4, memory: 8192, scsi0: "local-lvm:vm-321-disk-0,size=60G", net0: "virtio=52:54:00:12:34:56,firewall=1" };
         else if (p.endsWith("/firewall/rules")) data = [{ type: "out", action: "ACCEPT", enable: 1, dest: "192.0.2.4", dport: "3128", proto: "tcp" }];
         else if (p.endsWith("/firewall/options")) data = { enable: p.includes("/cluster/") ? 0 : 1, policy_out: "DROP" };
         return Response.json({ data });
       }) as typeof fetch });
-    expect((await api.inspect()).network).toBe("unproven"); expect(seen.some(p => p.includes("/cluster/firewall/options"))).toBe(true);
+    const observed = await api.inspect(); expect(observed.nicMac).toBe("52:54:00:12:34:56"); expect(observed.network).toBe("unproven"); expect(seen.some(p => p.includes("/cluster/firewall/options"))).toBe(true);
   });
 });
 
@@ -222,6 +234,92 @@ test("explicit owner start after strong recovery advances fences and resumes no 
   f.manager.start = async () => { f.state.state = "running"; f.state.boot = "boot2"; };
   await f.service.start(f.actor, "vm1"); expect(f.store.registration("vm1").generation).toBe(3); expect(f.sends).toHaveLength(sent);
   const next = await open(f, "new-work"); await next.close();
+});
+test("strong recovery retires old expiry callbacks and an in-flight failed cleanup", async () => {
+  const timers: (() => void)[] = []; let cleared = 0;
+  const f = fixture({ expiryTimer: (_ms, expire) => { timers.push(expire); return () => { cleared++; }; } }), session = await open(f);
+  const stopping = Promise.withResolvers<boolean>(), entered = Promise.withResolvers<void>();
+  f.setStopBarrier(async () => { entered.resolve(); return stopping.promise; });
+  const oldClose = session.close(); await entered.promise;
+  await f.service.recover(f.actor, { vmId: "vm1" });
+  stopping.resolve(false); await oldClose; timers[0]!(); await session.close();
+  expect(cleared).toBeGreaterThan(0); expect(f.store.registration("vm1").state).toBe("stopped");
+  expect(f.store.db.query<{ state: string }, []>("SELECT state FROM vm_sessions").get()!.state).toBe("closed");
+  expect(session.evidence()[0]!.execution).toBe("vm_stopped");
+  f.manager.start = async () => { f.state.state = "running"; f.state.boot = "boot2"; };
+  await f.service.start(f.actor, "vm1"); timers[0]!(); await session.cancel();
+  expect(f.store.registration("vm1").state).toBe("ready"); expect(f.store.registration("vm1").generation).toBe(3);
+});
+test("late pre-recovery output cannot overwrite strong settlement or fence a new generation", async () => {
+  const f = fixture(), session = await open(f), entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  f.setAfterSend(async () => { entered.resolve(); await finish.promise; });
+  const old = session.backend.spawn({ command: "old", cwd: session.backend.workspaceRoot }); const outcome = old.catch(error => error);
+  await entered.promise; await f.service.recover(f.actor, { vmId: "vm1" });
+  f.manager.start = async () => { f.state.state = "running"; f.state.boot = "boot2"; }; await f.service.start(f.actor, "vm1");
+  finish.resolve(); expect((await outcome).name).toBe("AbortError");
+  expect(session.evidence().every(e => e.execution === "vm_stopped")).toBe(true); expect(f.store.registration("vm1").state).toBe("ready");
+});
+test("automatic snapshot retirement permits more than eight system sessions and keeps the latest three", async () => {
+  const f = fixture();
+  for (let i = 0; i < 10; i++) { const session = await open(f, `admin${i}`, { mode: "system" }); await session.close(); }
+  expect(f.snapshots()).toBe(10); expect(f.retired).toHaveLength(7);
+  const remaining = f.store.db.query<{ generation: number }, []>("SELECT generation FROM vm_snapshots ORDER BY rowid").all();
+  expect(remaining.map(r => r.generation)).toEqual([9, 10, 11]);
+  expect(f.claims.filter(c => JSON.parse(c.payload).kind === "retire_snapshot")).toHaveLength(7);
+});
+test("owner snapshot retirement refuses an active fence and removes only the exact unpinned tag", async () => {
+  const f = fixture(), session = await open(f, "admin", { mode: "system" });
+  const snapshotId = f.store.db.query<{ id: string }, []>("SELECT id FROM vm_snapshots").get()!.id;
+  await expect(f.service.retireSnapshot(f.actor, { vmId: "vm1", snapshotId })).rejects.toMatchObject({ code: "vm_snapshot_in_use" }); expect(f.retired).toHaveLength(0);
+  await session.close(); await expect(f.service.retireSnapshot({}, { vmId: "vm1", snapshotId })).rejects.toThrow("owner required");
+  await f.service.retireSnapshot(f.actor, { vmId: "vm1", snapshotId }); expect(f.retired).toEqual([snapshotId]);
+  expect(f.store.db.query<{ n: number }, []>("SELECT count(*) n FROM vm_snapshots").get()!.n).toBe(0);
+});
+test("artifact acquisition shares call accounting with the guest-write queue", async () => {
+  let downloads = 0;
+  const f = fixture({ limits: { ...limits, calls: 5 }, artifactFetch: async () => { downloads++; return new Uint8Array(); } }), session = await open(f);
+  const request = { url: "https://download.test/file", sha256: vmHash(new Uint8Array()), maxBytes: 1024, path: session.backend.workspaceRoot + "/file" };
+  await f.service.acquire(f.actor, session, request); await f.service.acquire(f.actor, session, request);
+  await expect(f.service.acquire(f.actor, session, request)).rejects.toMatchObject({ code: "vm_limit_exhausted" });
+  expect(downloads).toBe(2); expect(f.sends.filter(r => r.op === "write")).toHaveLength(2); await session.close();
+});
+test("queued acquisition waits behind its sibling and cancellation retains capacity until it settles", async () => {
+  let downloads = 0; const entered = Promise.withResolvers<void>(), finished = Promise.withResolvers<Uint8Array>();
+  const f = fixture({ artifactFetch: async () => { downloads++; entered.resolve(); return finished.promise; } }), session = await open(f);
+  const request = { url: "https://download.test/file", sha256: vmHash(new Uint8Array()), maxBytes: 1024, path: session.backend.workspaceRoot + "/file" };
+  const a = f.service.acquire(f.actor, session, request).catch(error => error); await entered.promise;
+  const b = f.service.acquire(f.actor, session, request).catch(error => error), closing = session.cancel();
+  expect(downloads).toBe(1); expect(f.store.db.query<{ state: string }, []>("SELECT state FROM vm_sessions").get()!.state).toBe("stopping");
+  finished.resolve(new Uint8Array()); expect((await a).name).toBe("AbortError"); expect((await b).name).toBe("AbortError"); await closing;
+  expect(downloads).toBe(1); expect(f.sends.filter(r => r.op === "write")).toHaveLength(0);
+});
+test("DNS/download waits cannot exceed the session's finite pending-operation queue", async () => {
+  const entered = Promise.withResolvers<void>(), finish = Promise.withResolvers<Uint8Array>(); let downloads = 0;
+  const f = fixture({ artifactFetch: async () => { downloads++; entered.resolve(); return finish.promise; } }), session = await open(f);
+  const request = { url: "https://download.test/file", sha256: vmHash(new Uint8Array()), maxBytes: 1, path: session.backend.workspaceRoot + "/file" };
+  const first = f.service.acquire(f.actor, session, request).catch(error => error); await entered.promise;
+  const waiting = Array.from({ length: 32 }, () => f.service.acquire(f.actor, session, request).catch(error => error));
+  expect((await waiting.at(-1)).code).toBe("vm_limit_exhausted"); expect(downloads).toBe(1);
+  const closing = session.cancel(); finish.resolve(new Uint8Array()); await Promise.all([first, ...waiting]); await closing;
+});
+test("listing and search reject intermediate/final symlink escapes before opening the target", async () => {
+  const { mkdirSync, symlinkSync, writeFileSync } = await import("node:fs");
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "jit-vm-link-"))); directories.push(directory);
+  const root = `${directory}/workspace`, tmp = `${root}/.tmp`, outside = `${directory}/outside`;
+  const call = async (operation: Record<string, unknown>) => {
+    const result = await vmHostCommand(["python3", "-I", "-c", vmRunnerSource], { input: Buffer.from(vmCanonical({ id: "links", root, tmp, cap: 65536, ...operation })), timeoutMs: 3000, maxBytes: 262144 });
+    return JSON.parse(Buffer.from(result.stdout).toString());
+  };
+  expect((await call({ op: "init" })).ok).toBe(true);
+  mkdirSync(`${outside}/nested`, { recursive: true }); writeFileSync(`${outside}/nested/private.txt`, "outside-only-marker");
+  mkdirSync(`${root}/local`); writeFileSync(`${root}/local/ok.txt`, "local marker"); symlinkSync(outside, `${root}/escape`); symlinkSync(`${outside}/nested/private.txt`, `${root}/file-link`);
+  const search = { op: "search", cwd: root, pattern: "marker", limit: 10, ignoreCase: false, glob: null, timeoutMs: 1000 };
+  for (const operation of [{ op: "list", path: `${root}/escape/nested`, recursive: false }, { ...search, path: `${root}/escape/nested` }, { ...search, path: `${root}/local`, cwd: `${root}/escape/nested` }, { ...search, path: `${root}/file-link` }]) {
+    const result = await call(operation); expect(result.ok).toBe(false); expect(["ELOOP", "ENOTDIR"]).toContain(result.code); expect(JSON.stringify(result)).not.toContain("outside-only-marker");
+  }
+  const local = await call({ op: "list", path: root, recursive: true }); expect(local.ok).toBe(true);
+  expect(local.result.entries.some((entry: { name: string }) => entry.name === "local/ok.txt")).toBe(true);
+  expect(local.result.entries.some((entry: { name: string }) => entry.name.includes("private.txt"))).toBe(false);
 });
 test("policy hold before a system snapshot leaves the VM available and sends no management mutation", async () => {
   const f = fixture(); f.setBeforeClaim(async () => { throw new Error("held"); });

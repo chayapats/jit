@@ -20,6 +20,9 @@ export function createVmApi(enrollment: VmEnrollment, authenticate: (request: Re
       if (url.pathname === "/s15/vm/recover" && options.service) {
         vmRecord(data, ["vmId"], ["snapshotId"]); await options.service.recover(actor, data as Parameters<WorkingVmService["recover"]>[1]); return Response.json({ state: "stopped" });
       }
+      if (url.pathname === "/s15/vm/snapshots/retire" && options.service) {
+        vmRecord(data, ["vmId", "snapshotId"]); await options.service.retireSnapshot(actor, data as Parameters<WorkingVmService["retireSnapshot"]>[1]); return Response.json({ state: "retired" });
+      }
       if (url.pathname === "/s15/vm/setup") { vmRecord(data, []); return Response.json(await enrollment.begin(actor)); }
       if (url.pathname === "/s15/vm/check") {
         vmRecord(data, ["setupId", "host"], ["port", "user", "managerId"]);

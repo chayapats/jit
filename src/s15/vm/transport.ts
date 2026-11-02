@@ -44,14 +44,15 @@ export class VmSshTransport {
       `--property=RuntimeMaxSec=${Math.ceil(milliseconds / 1000)}`, "/usr/bin/sleep", "infinity"], { beforeStart, ...(signal ? { signal } : {}) });
   }
   /** Host-initiated cooperative stop/read-back. It cannot attest root-resistant descendant settlement. */
-  async closeScope(unit: string): Promise<boolean> {
+  async closeScope(unit: string, beforeStart?: () => void, signal?: AbortSignal): Promise<boolean> {
+    const options = { ...(beforeStart ? { beforeStart } : {}), ...(signal ? { signal } : {}) };
     try {
-      await this.control(["sudo", "-n", "systemctl", "stop", unit]);
-      const state = (await this.control(["sudo", "-n", "systemctl", "show", unit, "--property=ActiveState", "--property=ControlGroup"])).trim().split("\n");
+      await this.control(["sudo", "-n", "systemctl", "stop", unit], options);
+      const state = (await this.control(["sudo", "-n", "systemctl", "show", unit, "--property=ActiveState", "--property=ControlGroup"], options)).trim().split("\n");
       const group = state.find(s => s.startsWith("ControlGroup="))?.slice(13);
       if (!state.includes("ActiveState=inactive") || group === undefined || group && !/^\/jit-[a-f0-9]{32}\.slice$/.test(group)) return false;
       if (!group) return true;
-      const events = await this.control(["sudo", "-n", "cat", `/sys/fs/cgroup${group}/cgroup.events`]);
+      const events = await this.control(["sudo", "-n", "cat", `/sys/fs/cgroup${group}/cgroup.events`], options);
       return /^populated 0$/m.test(events);
     } catch { return false; }
   }

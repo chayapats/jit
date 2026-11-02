@@ -9,6 +9,8 @@ export interface VmRegistration {
   id: string; generation: number; endpoint: VmEndpoint; managerId: string | null;
   state: "ready" | "unproven" | "uncertain" | "stopped"; networkCheckedAt: number;
   facts?: VmMachineFacts;
+  /** Enrollment binding to the NIC observed independently through the management adapter. Missing is unproven. */
+  bindingMac?: string;
   networkIsolated: boolean; maxSessions: number; reason: string | null; machineIdentity: string | null; boot: string | null;
 }
 /** Append-only claim/evidence metadata in a separate protected store; never a guest snapshot or S14 migration. */
@@ -53,6 +55,11 @@ export class VmStore {
   }
   /** Records before dispatch and updates facts monotonically under the original operation identity. */
   saveEvidence(evidence: VmEvidence): void {
+    const previous = this.db.query<{ data: string }, [string]>("SELECT data FROM vm_claims WHERE id=?").get(evidence.id);
+    if (previous) {
+      const old: VmEvidence = JSON.parse(previous.data), rank = { unsettled: 0, guest_scope_empty: 1, vm_stopped: 2 };
+      if (rank[old.execution] > rank[evidence.execution]) evidence = { ...evidence, execution: old.execution };
+    }
     this.db.query("INSERT INTO vm_claims VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(evidence.id, evidence.sessionId, JSON.stringify(evidence));
   }
   /** Releases only this process's database connection; unsettled claims remain for explicit reconciliation. */

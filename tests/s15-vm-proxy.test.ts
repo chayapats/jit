@@ -41,3 +41,17 @@ test("HTTP acquisition strips proxy authorization and logs only session/destinat
   expect(request).toContain("GET /package?version=1 HTTP/1.1"); expect(request.toLowerCase()).not.toContain("authorization");
   expect(Object.keys(logs[0]!).sort()).toEqual(["host", "receivedBytes", "sentBytes", "sessionId", "state"]); expect(logs[0]?.receivedBytes).toBeGreaterThan(0);
 });
+test("a pending DNS lookup reserves the session connection slot and failure releases it", async () => {
+  const entered = Promise.withResolvers<void>(), dns = Promise.withResolvers<readonly { address: string; family: number }[]>(); let lookups = 0, connects = 0;
+  const upstream = createServer(socket => socket.once("data", () => socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")));
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve)); cleanups.push(() => new Promise(resolve => upstream.close(() => resolve())));
+  const upstreamPort = (upstream.address() as { port: number }).port;
+  const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", guestHostname: "127.0.0.1", port: 0, hosts: ["registry.test"], maxConnections: 1, log() {},
+    resolve: async () => { if (++lookups === 1) { entered.resolve(); return dns.promise; } return [{ address: "93.184.216.34", family: 4 }]; },
+    connect: () => { connects++; return connect(upstreamPort, "127.0.0.1"); } }); cleanups.unshift(proxy.close);
+  const lease = proxy.lease("dns_session", Date.now() + 10000), request = input("http://registry.test/package", auth(lease.environment.HTTP_PROXY!), "GET");
+  const first = exchange(proxy.port, request); await entered.promise;
+  expect(await exchange(proxy.port, request)).toContain("403"); expect(lookups).toBe(1); expect(connects).toBe(0);
+  dns.reject(new Error("DNS failure")); expect(await first).toContain("502");
+  expect(await exchange(proxy.port, request)).toContain("ok"); expect(lookups).toBe(2); expect(connects).toBe(1);
+});

@@ -17,7 +17,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "jit-vm-policy-")), store = new VmStore(":memory:");
   store.save({ id: "vm", generation: 1, endpoint, managerId: "manager", state: "ready", networkCheckedAt: 0,
-    networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture", boot: "boot" });
+    networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture", boot: "boot", bindingMac: "52:54:00:12:34:56" });
   const attempts = new Map<string, string>(), generations = new Map<CatalogKind, number>(), proof = {}, sessions: VmSession[] = [], sends: Record<string, unknown>[] = [];
   const integration = new VmPolicyIntegration({ store, resource: () => ref("computer"), attemptCurrent: (work, attempt) => attempts.get(work.id) === attempt,
     upperBound: op => ({ attempts: 0, steps: 0, calls: 1, reads: ["setup", "read"].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs, spendMinor: "0" }),
@@ -35,10 +35,10 @@ function setup() {
   policy.owner.install(owner, "install", 0, input);
   let serial = 0, snapshots = 0, fetched = 0;
   const port = integration.bind(policy);
-  const manager: VmManagement = { async inspect() { return { state: "running", identity: "fixture", boot: "boot", cpuCount: 4, memoryBytes: 8388608, diskBytes: 1048576, network: "isolated" }; },
-    async stop() {}, async snapshot() { snapshots++; }, async restore() {} };
+  const manager: VmManagement = { async inspect() { return { state: "running", identity: "fixture", boot: "boot", cpuCount: 4, memoryBytes: 8388608, diskBytes: 1048576, network: "isolated", nicMac: "52:54:00:12:34:56" }; },
+    async stop() {}, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
   class Transport extends VmSshTransport {
-    override async control() { return '{"reachable":[false,false,false,false,false,false]}'; }
+    override async control(argv: readonly string[]) { if (argv.some(a => a.includes("nicMacs"))) return '{"nicMacs":["52:54:00:12:34:56"]}'; return '{"reachable":[false,false,false,false,false,false]}'; }
     override async openScope(_unit: string, _ms: number, guard: () => void) { guard(); }
     override async closeScope() { return true; }
     override async invoke(request: Record<string, unknown>, options: Parameters<VmSshTransport["invoke"]>[1]) {
@@ -94,6 +94,12 @@ test("exclusive automatic snapshot supplies the real protected lineage fence for
   expect(await session.backend.spawn({ command: "sudo id -u", cwd: session.backend.workspaceRoot })).toMatchObject({ stdout: "done", exitCode: 0 });
   expect(f.policy.control.usage().unsettled).toBe(0);
 });
+test("automatic snapshot retirement uses a real local-administration claim and preserves three recovery fences", async () => {
+  const f = setup();
+  for (let i = 0; i < 4; i++) { const { session } = await f.open("execute", "system"); await session.close(); }
+  expect(f.snapshots()).toBe(4); expect(f.store.db.query<{ n: number }, []>("SELECT count(*) n FROM vm_snapshots").get()!.n).toBe(3);
+  expect(f.policy.control.usage().charged.calls).toBe(9); expect(f.policy.control.usage().unsettled).toBe(0);
+});
 test("new artifact destination is held by real POLICY before HTTP or guest write", async () => {
   const f = setup(), { actor, session } = await f.open(); const before = f.sends.length;
   await expect(f.service.acquire(actor, session, { url: "https://new-download.test/source.tar", sha256: "a".repeat(64), maxBytes: 1024, path: `${session.backend.workspaceRoot}/source.tar` })).rejects.toMatchObject({ code: "egress_approval_required", status: 423 });
@@ -113,8 +119,12 @@ test("real POLICY refuses copied actors and revoked late publication", async () 
   await expect(f.port.claim({} as WorkActor, op)).rejects.toThrow();
   const claim = await f.port.claim(actor, op); await claim.dispatch(async () => ({}));
   claim.observe({ id: op.operationId, vmId: "vm", sessionId: op.sessionId, operationId: op.operationId, payloadHash: op.payloadHash, outcome: "guest_reported", responseHash: "b".repeat(64), outputBytes: 2, transport: "closed", execution: "unsettled", published: false });
+  const authority = f.policy.work.guard(actor), payload = { contract: "s15-working-vm-policy/v1", operationId: op.operationId, payloadHash: op.payloadHash, payloadBytes: Buffer.byteLength(op.payload), request: JSON.parse(op.payload) };
+  const validate = () => f.integration.reads.find(r => r.operation === "read")!.validate(payload, { work: authority, resource: ref("computer") });
+  expect(validate).not.toThrow();
   f.policy.owner.revoke(f.owner, "revoke", { kind: "work", id: workId });
   expect(() => claim.publish(() => "late")).toThrow(); expect(f.policy.control.usage().unsettled).toBe(0);
+  expect(validate).toThrow("vm_reconciliation_required");
 });
 
 test("large exact guest writes bind all bytes without enlarging the POLICY command limit", async () => {

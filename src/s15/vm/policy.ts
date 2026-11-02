@@ -43,7 +43,7 @@ export class VmPolicyIntegration {
         const invocation = this.lookup(proposal), op = invocation.operation;
         this.checkScope(context.work, op);
         if (invocation.read) vmFail("vm_policy_denied", 403);
-        const snapshot = this.snapshot(op.vmId), snapshotPreparation = invocation.request.kind === "snapshot";
+        const snapshot = this.snapshot(op.vmId), snapshotPreparation = ["snapshot", "retire_snapshot"].includes(invocation.request.kind as string);
         const classes: ActionDraft["classes"] = op.kind === "acquire" ? ["new_egress"] : op.kind === "system_admin" && !snapshotPreparation ? ["guest_system_admin"] : ["guest_local_admin"];
         let recipients: Ref[] = [];
         if (op.kind === "acquire") {
@@ -112,7 +112,7 @@ export class VmPolicyIntegration {
       vmRecord(request, ["url", "sha256", "maxBytes", "path"]);
       const url = new URL(request.url as string); if (url.protocol !== "https:" || url.username || url.password || url.hash) vmFail("vm_acquisition_invalid", 400);
       vmInteger(request.maxBytes, 8_388_608);
-    } else if (input.kind === "system_admin" && request.kind === "snapshot") {
+    } else if (input.kind === "system_admin" && ["snapshot", "retire_snapshot"].includes(request.kind as string)) {
       vmRecord(request, ["kind", "snapshot", "vmId", "generation"]);
       if (!/^jit-[a-f0-9]{32}$/.test(request.snapshot as string) || request.vmId !== input.vmId || request.generation !== input.generation) vmFail("vm_policy_denied", 403);
     } else {
@@ -157,25 +157,32 @@ export class VmPolicyIntegration {
         const invocation = this.register(operation), bound = invocation.bound;
         if (!bound) { this.#invocations.delete(operation.operationId); vmFail("vm_cost_unknown", 423); }
         if (invocation.read) {
-          const decision = policy.work.reserveRead(worker, { requestId: operation.operationId, resource: this.options.resource(operation.vmId),
-            operation: invocation.read, exactPayload: invocation.payload, upperBound: bound, fences: [{ kind: "vm", ref: this.vmRef(operation.vmId) }] });
+          let decision;
+          try { decision = policy.work.reserveRead(worker, { requestId: operation.operationId, resource: this.options.resource(operation.vmId),
+            operation: invocation.read, exactPayload: invocation.payload, upperBound: bound, fences: [{ kind: "vm", ref: this.vmRef(operation.vmId) }] }); }
+          catch (error) { this.#invocations.delete(operation.operationId); throw error; }
           if (decision.state !== "allow") { this.#invocations.delete(operation.operationId); throw new AppError(decision.code, decision.state === "hold" ? 423 : 403); }
           let dispatched = false, observedHash: string | null = null;
-          return { dispatch: async start => {
-            this.checkScope(policy.work.guard(worker), operation); policy.work.guardRead(worker, decision.claim.id); dispatched = true;
-            return start();
+          return { release: () => { this.#invocations.delete(operation.operationId); }, dispatch: async start => {
+            try {
+              this.checkScope(policy.work.guard(worker), operation); policy.work.guardRead(worker, decision.claim.id); dispatched = true;
+              return await start();
+            } catch (error) { this.#invocations.delete(operation.operationId); throw error; }
           }, observe: evidence => {
             observedHash = evidence.responseHash;
             const succeeded = evidence.outcome === "guest_reported" && observedHash !== null;
             const observation: Observation = { outcome: succeeded ? "succeeded" : dispatched ? "unknown" : "not_dispatched",
               basis: succeeded ? "remote_verified" : dispatched ? "uncertain" : "local_guard", code: null, actual: unknownUsage(), transportSettled: evidence.transport === "closed" };
-            policy.control.settleRead(decision.claim.id, observation, succeeded ? observedHash : null);
+            try { policy.control.settleRead(decision.claim.id, observation, succeeded ? observedHash : null); }
+            catch (error) { this.#invocations.delete(operation.operationId); throw error; }
             if (!succeeded) this.#invocations.delete(operation.operationId);
           }, publish: consume => {
-            this.checkScope(policy.work.guard(worker), operation);
-            const read = policy.control.publishRead(worker, decision.claim.id);
-            if (read.observation.outcome !== "succeeded" || read.resultHash !== observedHash) vmFail("vm_policy_denied", 403);
-            try { return consume(); } finally { this.#invocations.delete(operation.operationId); }
+            try {
+              this.checkScope(policy.work.guard(worker), operation);
+              const read = policy.control.publishRead(worker, decision.claim.id);
+              if (read.observation.outcome !== "succeeded" || read.resultHash !== observedHash) vmFail("vm_policy_denied", 403);
+              return consume();
+            } finally { this.#invocations.delete(operation.operationId); }
           } };
         }
         let prepared;
@@ -183,7 +190,8 @@ export class VmPolicyIntegration {
         catch (error) { this.#invocations.delete(operation.operationId); throw error; }
         const action = reference(prepared.action);
         if (prepared.decision.state !== "allow") { this.#invocations.delete(operation.operationId); throw new AppError(prepared.decision.code, prepared.decision.state === "hold" ? 423 : 403, { actionId: action.id, revision: action.revision, actionHash: action.actionHash }); }
-        return { dispatch: async <T>(start: () => Promise<T>): Promise<T> => {
+        return { release: () => { this.#invocations.delete(operation.operationId); }, dispatch: async <T>(start: () => Promise<T>): Promise<T> => {
+          try {
           this.checkScope(policy.work.guard(worker), operation); policy.work.guardBeforeDispatch(worker, action);
           let result: T | undefined, captured = false, failure: unknown;
           const pending: Pending = { invocation, send: async () => {
@@ -197,10 +205,13 @@ export class VmPolicyIntegration {
           if (failure) throw failure;
           if (!captured || observation.outcome !== "succeeded") { this.#invocations.delete(operation.operationId); throw new AppError(observation.code ?? "vm_reconciliation_required", 409); }
           return result as T;
+          } finally { this.#invocations.delete(operation.operationId); }
         }, observe: (_evidence: VmEvidence) => {}, publish: consume => {
-          this.checkScope(policy.work.guard(worker), operation); const observation = policy.control.publishable(worker, action);
-          if (observation.outcome !== "succeeded") vmFail("vm_reconciliation_required", 409);
-          try { return consume(); } finally { this.#invocations.delete(operation.operationId); }
+          try {
+            this.checkScope(policy.work.guard(worker), operation); const observation = policy.control.publishable(worker, action);
+            if (observation.outcome !== "succeeded") vmFail("vm_reconciliation_required", 409);
+            return consume();
+          } finally { this.#invocations.delete(operation.operationId); }
         } };
       },
     });

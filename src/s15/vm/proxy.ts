@@ -80,9 +80,11 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
       }
       const denied = () => { options.log({ sessionId, host, sentBytes: 0, receivedBytes: 0, state: "denied" }); refuse(); };
       if (!hosts.has(host)) return denied();
-      let addresses; try { addresses = await resolve(host); } catch { return refuse(502); }
-      if (!addresses.length || addresses.some(a => !vmPublicAddress(a.address)) || !sessions.has(sessionId) || Date.now() >= session.expiresAt || client.destroyed) return denied();
-      const remote = upstream(addresses[0]!.address, port); session.sockets.add(client); sockets.add(remote);
+      // Reserve before asynchronous DNS so concurrent requests cannot all pass the same capacity check.
+      session.sockets.add(client); client.once("close", () => session.sockets.delete(client));
+      let addresses; try { addresses = await resolve(host); } catch { session.sockets.delete(client); return refuse(502); }
+      if (!addresses.length || addresses.some(a => !vmPublicAddress(a.address)) || !sessions.has(sessionId) || Date.now() >= session.expiresAt || client.destroyed) { session.sockets.delete(client); return denied(); }
+      const remote = upstream(addresses[0]!.address, port); sockets.add(remote);
       let sentBytes = 0, receivedBytes = 0, logged = false;
       const record = () => { if (logged) return; logged = true; options.log({ sessionId, host, sentBytes, receivedBytes, state: "closed" }); };
       client.on("close", () => { remote.destroy(); session.sockets.delete(client); record(); });

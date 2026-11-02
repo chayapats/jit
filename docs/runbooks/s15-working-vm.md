@@ -25,6 +25,10 @@ Use `WorkingVmPort.openAttempt` from the conversation executor. Pass the real po
 5. `GET /s15/vm/status?id=<id>` returns safe status/capability rows only. Missing audit/network proof is unproven, missing recovery is unavailable, and a configured adapter alone is not proven recovery. `POST /s15/vm/settings {id,maxSessions}` edits capacity without evicting or settling current work.
 6. `POST /s15/vm/recover {vmId,snapshotId?}` is owner-only. It fences the VM, strongly stops it and optionally restores only a registered protected snapshot. It leaves the VM stopped; it never resumes old commands or authority. Restart/re-verification is a separate explicit owner `POST /s15/vm/start {vmId}` action. It rechecks external custody/egress and creates a new fence without resuming old work.
 
+7. `POST /s15/vm/snapshots/retire {vmId,snapshotId}` retires only that protected recovery point. An active or uncertain system session's fence refuses retirement. Automatic policy-claimed retirement retains the latest three points by default (`snapshotRetention`, bounded 1–8), preventing a lifetime system-administration cap.
+
+Enrollment compares the SSH guest's NIC with the independently read hypervisor NIC. Lima also requires the exact protected SSH forward. A wrong/missing binding leaves isolation unproven and recovery unavailable; pre-binding provisional registrations must be checked/enrolled again rather than silently trusted. Recovery retires old live sessions, timers and cleanup transports before strong stop; old-generation callbacks cannot fence a successfully recovered/restarted VM.
+
 HTTP requests use bounded JSON bodies. Management secrets need the owning ingress's secret-redaction/write-only handling. Public errors/status use English/Thai i18n keys; this module supplies no visual design. The S15 UX handoff owns presentation.
 
 ## External network and VM setup

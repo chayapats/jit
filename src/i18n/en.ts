@@ -108,6 +108,8 @@ export const en: Record<MessageKey, string> = {
   "error.vm_management_scope_denied": "This management adapter cannot control that VM.",
   "error.vm_management_unavailable": "VM management is unavailable. Check the scoped management token and permissions.",
   "error.vm_network_unproven": "Network isolation is unproven. Check external firewall rules and audit permissions.",
+  "error.vm_identity_unproven": "The pinned SSH machine does not match the managed VM. Check the address and management adapter.",
+  "error.vm_snapshot_in_use": "An active system session is using this recovery point. Close that session before retiring it.",
   "error.vm_not_enrolled": "Enroll a working VM first.",
   "error.vm_output_limit": "The VM response exceeded its byte limit.",
   "error.vm_owner_required": "This recovery action requires the authenticated owner.",

@@ -30,6 +30,10 @@ export interface VmMachineState {
   memoryBytes: number;
   diskBytes: number;
   network: "isolated" | "proxy-only" | "unproven";
+  /** NIC identity read from protected hypervisor configuration, never from a guest report. */
+  nicMac?: string;
+  /** Lima's protected host-forward binds its loopback SSH endpoint as well as the NIC. */
+  sshEndpoint?: { host: string; port: number };
 }
 /** Protected, VM-scoped management. Credentials remain in this implementation, outside the guest. */
 export interface VmManagement {
@@ -39,6 +43,8 @@ export interface VmManagement {
   stop(): Promise<void>;
   snapshot(name: string): Promise<void>;
   restore(name: string): Promise<void>;
+  /** Deletes only an exact protected recovery tag, after the service checks active fences. */
+  retireSnapshot(name: string): Promise<void>;
 }
 /** Immutable operation supplied to the policy consumer; the payload is credential-free exact runner input. */
 export interface VmPolicyOperation {
@@ -51,6 +57,8 @@ export interface VmPolicyClaim {
   dispatch<T>(start: () => Promise<T>): Promise<T>;
   publish<T>(consume: () => T): T;
   observe(evidence: VmEvidence): void;
+  /** Drops ephemeral invocation data on every terminal path; never refunds or erases durable claims. */
+  release?(): void;
 }
 /** Trusted consumer seam for POLICY15. Neither guest nor model can install this port or issue its actor. */
 export interface VmPolicyPort {

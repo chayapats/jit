@@ -42,19 +42,22 @@ def observe(p):
   b=os.readlink(name,dir_fd=fd).encode() if stat.S_ISLNK(s.st_mode) else filedata(p)
   return hashlib.sha256(('%s:%s:%s:%s:%s:'%(s.st_dev,s.st_ino,s.st_mode,s.st_mtime_ns,s.st_size)).encode()+b).hexdigest()
  finally: os.close(fd)
+def anchored(p,directory=False):
+ fd,name=parent(p)
+ try: return os.open(name,os.O_RDONLY|os.O_NONBLOCK|os.O_NOFOLLOW|(os.O_DIRECTORY if directory else 0),dir_fd=fd)
+ finally: os.close(fd)
 def listing(p,recursive=False):
- path(p); out=[]; deadline=time.monotonic()+10
- def walk(d):
-  fd=os.open(d,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+ out=[]; deadline=time.monotonic()+10
+ def walk(fd,prefix):
   try:
    for name in sorted(os.listdir(fd)):
     if len(out)>=10000 or time.monotonic()>deadline: fail('EFBIG')
-    s=os.stat(name,dir_fd=fd,follow_symlinks=False); full=d+'/'+name
+    s=os.stat(name,dir_fd=fd,follow_symlinks=False); relative=prefix+name
     kind='symlink' if stat.S_ISLNK(s.st_mode) else 'file' if stat.S_ISREG(s.st_mode) else 'directory' if stat.S_ISDIR(s.st_mode) else 'other'
-    out.append({'name':full[len(p)+1:] if recursive else name,'type':kind})
-    if recursive and kind=='directory': walk(full)
+    out.append({'name':relative if recursive else name,'type':kind})
+    if recursive and kind=='directory': walk(os.open(name,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd),relative+'/')
   finally: os.close(fd)
- walk(p); return out
+ walk(anchored(p,True),''); return out
 try:
  if op=='init':
   for p in (root,tmp):
@@ -98,10 +101,19 @@ try:
  elif op=='list': result={'entries':listing(r['path'],r.get('recursive',False))}
  elif op in ('spawn','search'):
   path(r['cwd']); environment={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':root,'LANG':'C.UTF-8','TZ':'UTC'}; environment.update(r.get('env',{}))
+  opened=[]; searchDirectory=False
   if op=='search':
-   path(r['path']);command=['/usr/bin/rg','--json','--no-follow','--max-count',str(r['limit'])]+(['--ignore-case'] if r['ignoreCase'] else [])+(['--glob',r['glob']] if r['glob'] is not None else [])+['--',r['pattern'],r['path']]
+   try:
+    cwdFd=anchored(r['cwd'],True);opened.append(cwdFd)
+    targetFd=anchored(r['path']);opened.append(targetFd);targetStat=os.fstat(targetFd);searchDirectory=stat.S_ISDIR(targetStat.st_mode)
+    if not searchDirectory and not stat.S_ISREG(targetStat.st_mode): fail('EACCES')
+    cwdFd=targetFd if searchDirectory else cwdFd
+    command=['/usr/bin/rg','--json','--no-follow','--max-count',str(r['limit'])]+(['--ignore-case'] if r['ignoreCase'] else [])+(['--glob',r['glob']] if r['glob'] is not None else [])+([] if searchDirectory else ['--label',r['path']])+['--',r['pattern'],'.' if searchDirectory else '-']
+    proc=subprocess.Popen(command,preexec_fn=lambda:os.fchdir(cwdFd),pass_fds=(cwdFd,),env=environment,stdin=subprocess.DEVNULL if searchDirectory else targetFd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+   finally:
+    for fd in opened: os.close(fd)
   else: command=['/bin/bash','--noprofile','--norc','-c',r['command']]
-  proc=subprocess.Popen(command,cwd=r['cwd'],env=environment,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+  if op=='spawn': proc=subprocess.Popen(command,cwd=r['cwd'],env=environment,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
   sel=selectors.DefaultSelector(); sel.register(proc.stdout,selectors.EVENT_READ,'stdout'); sel.register(proc.stderr,selectors.EVENT_READ,'stderr'); out={'stdout':bytearray(),'stderr':bytearray()}; end=time.monotonic()+r['timeoutMs']/1000; timed=False; truncated=False; total=0
   while sel.get_map():
    if time.monotonic()>=end:
@@ -116,6 +128,14 @@ try:
   if timed:
    for key in list(sel.get_map().values()): key.fileobj.close()
   sel.close(); code=proc.wait(timeout=2)
+  if op=='search' and searchDirectory and not timed and not truncated:
+   rewritten=bytearray()
+   for line in out['stdout'].splitlines():
+    event=json.loads(line); item=event.get('data',{}).get('path',{})
+    if isinstance(item.get('text'),str) and item['text'].startswith('./'): item['text']=r['path']+'/'+item['text'][2:]
+    data=(json.dumps(event,separators=(',',':'),ensure_ascii=False)+'\n').encode();budget=max(0,cap-len(out['stderr'])-len(rewritten));rewritten.extend(data[:budget])
+    if len(data)>budget: truncated=True;break
+   out['stdout']=rewritten;total=len(rewritten)+len(out['stderr'])+(1 if truncated else 0)
   result={k:base64.b64encode(v).decode() for k,v in out.items()}; result.update({'exitCode':code if code>=0 and not timed else None,'timedOut':timed,'truncated':truncated,'totalBytes':total})
  else: fail('EINVAL')
  response={'v':1,'id':r['id'],'ok':True,'result':result}

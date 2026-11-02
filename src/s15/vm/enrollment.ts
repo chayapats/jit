@@ -10,6 +10,7 @@ import { probeVmDirectEgress } from "./network";
 import { isIP } from "node:net";
 import { createHash } from "node:crypto";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
+import { vmIdentityMatches } from "./binding";
 
 /** One setup form; all transport settings persist atomically with the registered VM, without later config editing. */
 export interface VmEnrollmentInput {
@@ -49,7 +50,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     return { architecture: r.architecture, os: r.os, cpuCount: Number(r.cpuCount), memoryBytes: Number(r.memoryBytes), diskBytes: Number(r.diskBytes), sudo: true, docker: r.docker, basis: "guest_reported" };
   }
   private capabilities(row: VmRegistration): readonly VmCapability[] {
-    const manager = row.managerId !== null && this.options.managers.has(row.managerId);
+    const manager = !!row.bindingMac && row.managerId !== null && this.options.managers.has(row.managerId);
     const observed = (kind: string) => !!this.options.store.db.query("SELECT sequence FROM vm_events WHERE vm_id=? AND kind=? LIMIT 1").get(row.id, kind);
     return [{ id: "network-isolated", state: row.networkIsolated && row.state === "ready" ? "proven" : "unproven", reason: row.networkIsolated ? null : "vm_network_unproven" },
       { id: "snapshot-recovery", state: manager ? observed("restore") ? "proven" : "unproven" : "unavailable", reason: manager ? null : "vm_recovery_unavailable" },
@@ -118,17 +119,19 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     if (ready.trim() !== "jit-vm-ready-v1") vmFail("vm_prerequisite_missing", 503);
     const manager = input.managerId ? this.options.managers.get(input.managerId)! : null;
     const machine = manager ? await manager.inspect() : null;
+    const bound = !!machine && await vmIdentityMatches(transport, machine, endpoint);
     const directDenied = await probeVmDirectEgress(transport);
     this.options.requireOwner(actor);
     return this.options.store.transaction(() => {
       this.options.requireOwner(actor);
       if (this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(input.id)) vmFail("vm_already_enrolled");
-      const networkIsolated = directDenied && !!machine && machine.state === "running" && machine.network !== "unproven";
-      const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: input.managerId ?? null,
+      const networkIsolated = bound && directDenied && !!machine && machine.network !== "unproven";
+      const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId ?? null : null,
         state: networkIsolated ? "ready" : "unproven", networkCheckedAt: (this.options.now ?? Date.now)(), networkIsolated, facts,
-        maxSessions: input.maxSessions ?? 2, reason: networkIsolated ? null : "vm_network_unproven", machineIdentity: machine?.identity ?? null, boot: machine?.boot ?? null };
+        ...(bound ? { bindingMac: machine!.nicMac } : {}),
+        maxSessions: input.maxSessions ?? 2, reason: networkIsolated ? null : machine && !bound ? "vm_identity_unproven" : "vm_network_unproven", machineIdentity: bound ? machine!.identity : null, boot: bound ? machine!.boot : null };
       this.options.store.save(row); this.#setups.delete(input.setupId);
-      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: manager !== null, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
     });
   }
   /** Owner-only status; this query starts no VM/session, returns no credentials or raw endpoints. */
@@ -136,7 +139,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     this.options.requireOwner(actor); vmId(id); const row = this.options.store.registration(id);
     const count = this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_sessions WHERE vm_id=? AND state<>'closed'").get(id)!.n;
     return { id, generation: row.generation, state: row.state, networkIsolated: row.networkIsolated && row.state === "ready",
-      recoveryAvailable: row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      recoveryAvailable: !!row.bindingMac && row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
   }
   /** Owner-only exact approved registry settings, persisted outside the guest and ordinary VM recovery. */
   registryHosts(actor: object): readonly string[] {

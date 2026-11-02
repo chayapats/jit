@@ -111,6 +111,8 @@ export const th = {
   "error.vm_management_scope_denied": "management adapter นี้ไม่มีสิทธิ์ควบคุม VM ดังกล่าว",
   "error.vm_management_unavailable": "VM management ไม่พร้อมใช้งาน ตรวจสอบ scoped token และสิทธิ์",
   "error.vm_network_unproven": "ยังยืนยัน network isolation ไม่ได้ ตรวจสอบ firewall ภายนอกและสิทธิ์ audit",
+  "error.vm_identity_unproven": "เครื่องที่ pin ผ่าน SSH ไม่ตรงกับ VM ที่จัดการ ตรวจสอบ address และ management adapter",
+  "error.vm_snapshot_in_use": "system session ที่กำลังทำงานใช้ recovery point นี้อยู่ ปิด session ก่อน retire",
   "error.vm_not_enrolled": "ลงทะเบียน working VM ก่อน",
   "error.vm_output_limit": "ผลตอบกลับจาก VM เกินเพดานขนาด",
   "error.vm_owner_required": "การ recovery นี้ต้องใช้สิทธิ์ owner ที่ยืนยันตัวตนแล้ว",
