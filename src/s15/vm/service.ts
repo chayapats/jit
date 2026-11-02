@@ -250,6 +250,12 @@ export class WorkingVmService implements WorkingVmPort {
     try { await this.checkManager(row, manager); this.options.requireOwner(actor); await this.retireExact(row, manager, input.snapshotId); }
     finally { this.#managementBusy.delete(row.id); }
   }
+  /** Owner-only read of this VM's retained protected recovery snapshots, newest first. It performs no hypervisor I/O. */
+  snapshots(actor: object, vm: string): { id: string; generation: number }[] {
+    if (!this.options.requireOwner) vmFail("vm_owner_required", 403);
+    this.options.requireOwner(actor); vmId(vm); this.options.store.registration(vm);
+    return this.options.store.db.query<{ id: string; generation: number }, [string]>("SELECT id, generation FROM vm_snapshots WHERE vm_id=? ORDER BY rowid DESC LIMIT 32").all(vm);
+  }
   private closeState(s: LiveSession): Promise<void> {
     if (s.closed || this.options.store.registration(s.vmId).generation !== s.generation) { this.retireLive(s); return Promise.resolve(); }
     if (s.closing) return s.closing;

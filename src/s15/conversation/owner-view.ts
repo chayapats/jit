@@ -1,7 +1,7 @@
 import type { ConversationApplication } from "./application";
 import type { ConversationEvidence, ConversationReceipt, ConversationRequest, ConversationScope } from "./types";
 import { identity } from "./validation";
-import type { ActionSlip } from "../policy";
+import type { ActionRef, ActionSlip, Observation } from "../policy";
 
 /** CHAT row of the Opus-authored s15.owner-view/v1 handoff; labels/layout remain the UI's responsibility. */
 export interface ConversationOwnerRow {
@@ -24,6 +24,8 @@ export interface ConversationOwnerRow {
   reply: string | null;
   /** Material clarification hold only: issue references taken from the owner's own original bytes. They are reply labels, not a selection. */
   question: { candidates: string[] } | null;
+  /** Owner decision this message recorded on one exact action revision, with its dispatch observation when known. */
+  decision: { action: ActionRef; decision: "approve" | "deny"; outcome: Observation["outcome"] | null } | null;
 }
 /** Safe hold entry with the real POLICY owner-only exact prepared payload projection. */
 export interface ConversationNeedsYou { id: string; requestId: string; code: string; kind: "question" | "action" | "reconciliation"; slip: ActionSlip | null }
@@ -75,7 +77,8 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       scopeLine: request.authority && request.intent.scope ? { authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
       result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, memory: request.memory ?? null, question,
-      reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text };
+      reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
+      decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
 }
 
 /**

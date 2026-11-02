@@ -7,7 +7,7 @@ import { groundConversationIntent } from "./intent";
 import { runConversation } from "./schway";
 import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
-import type { ConversationAuthority, ConversationCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
+import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
 
 const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "memory_context_stale", "resource_busy", "stale_lease"]);
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
@@ -113,6 +113,33 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     // Process-local actor registration is never reconstructed from a serialized owner identity.
     if (this.store.request(receipt.rootRequestId).state === "queued") this.#owners.set(receipt.rootRequestId, { actor, commandId: this.store.request(receipt.rootRequestId).interpretationRequest.requestId });
     return receipt;
+  }
+  /**
+   * Typed exact owner decision from an authenticated slip form (`s15-conversation-decision/v1`). The posted
+   * revision and hash must equal both the revision last presented to this owner in this conversation and the
+   * current pending, approvable POLICY slip; a changed, expired or settled action refuses with `stale_action`.
+   * It then records one ordinary explicit decision command through the same ingress writer and dedupe path as
+   * a typed `approve <id>`, so a replayed request ID returns the original receipt and never decides twice.
+   */
+  decide(actor: OwnerActor, value: unknown): ConversationReceipt {
+    this.options.policy.requireOwner(actor); canonical(value);
+    exact(value, ["contract", "requestId", "conversationId", "action", "decision"]);
+    const input = value as unknown as ConversationDecisionCommand;
+    if (input.contract !== "s15-conversation-decision/v1" || (input.decision !== "approve" && input.decision !== "deny")) throw new AppError("invalid_contract");
+    identity(input.requestId); identity(input.conversationId); exact(input.action, ["id", "revision", "actionHash"]); identity(input.action.id); integer(input.action.revision, 1);
+    if (typeof input.action.actionHash !== "string" || !/^[a-f0-9]{64}$/.test(input.action.actionHash)) throw new AppError("invalid_body");
+    const text = `${input.decision} ${input.action.id}`;
+    return this.store.transaction(() => {
+      if (!this.store.db.query("SELECT id FROM commands WHERE id=?").get(input.requestId)) {
+        const principal = this.options.policy.requireOwner(actor);
+        const presented = this.store.db.query<{ record_json: string }, [string, string, number]>("SELECT record_json FROM presentations WHERE conversation_id=? AND action_id=? AND owner_generation=?").get(input.conversationId, input.action.id, principal.generation);
+        const same = (a: ActionRef) => a.id === input.action.id && a.revision === input.action.revision && a.actionHash === input.action.actionHash;
+        if (!presented || !same((JSON.parse(presented.record_json) as { action: ActionRef }).action)) throw new AppError("stale_action", 409);
+        const current = this.options.policy.actionSlips?.(actor, [input.action]) ?? [];
+        if (!current.some(slip => same(slip.action) && slip.state === "pending" && slip.canApprove)) throw new AppError("stale_action", 409);
+      }
+      return this.submit(actor, { contract: "s15-conversation/v1", requestId: input.requestId, conversationId: input.conversationId, text, continuation: null });
+    });
   }
   private owner(actor: OwnerActor, request: ConversationRequest): void {
     const current = this.options.policy.requireOwner(actor);

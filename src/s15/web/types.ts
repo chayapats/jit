@@ -1,7 +1,10 @@
 import type { Locale } from "../../i18n";
-import type { ConversationCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
+import type { LoginState, OwnerBrowserInput } from "../browser";
+import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
 import type { ModelBudgetView } from "../model";
-import type { PolicyProposal, StandingPolicy } from "../policy";
+import type { ActionRef, Observation, PolicyProposal, Ref, Rule, StandingPolicy } from "../policy";
+import type { RecurringFrequency, RecurringRuleProposal } from "../policy/recurring";
+import type { ResponsibilityProjection } from "../work";
 import type { VmStatus } from "../vm";
 import type { VmMachineFacts } from "../vm/types";
 
@@ -23,6 +26,22 @@ export interface S15WebPorts<Actor extends object> {
   memory?: S15WebMemory<Actor>;
   /** MODEL15-01 `ModelService.project` (`s15-model-budget/v1`); composition adapts the owner actor. Absent until composed. */
   models?: S15WebModels<Actor>;
+  /** UX15-02 owner commands on an exact held action: read-only re-check and owner statement for unknown outcomes. */
+  actions?: S15WebActions<Actor>;
+  /** WORK15-01 responsibilities (`s15-responsibility/v1`). Absent until composed. */
+  duties?: S15WebDuties<Actor>;
+  /** BROW15 protected browser registrations, one per website session. Absent until composed. */
+  browsers?: S15WebBrowser<Actor>[];
+  /** F13 recurring-payment rules over POLICY (`createRecurringRules`). Absent until composed. */
+  recurring?: S15WebRecurring<Actor>;
+  /** GIT15-02 personal GitHub profile capture/install/revoke. Feature-detected until that slice is composed. */
+  github?: S15WebGithub<Actor>;
+  /** BIZ15 owner-only DecisionCard projection for a major change. Feature-detected until composed. */
+  decisions?: (actor: Actor, action: ActionRef) => S15DecisionCard | null;
+  /** TEAM15 team resources view (`s15-team-resources-view/v1`). Feature-detected until composed. */
+  team?: S15WebTeam<Actor>;
+  /** MIG15 adoption status (`s15-adoption-status/v1`). Feature-detected until composed. */
+  adoption?: (actor: Actor) => S15AdoptionStatus | null;
   /** Owner language preference; Accept-Language decides when absent. */
   locale?: (actor: Actor) => Locale | null;
 }
@@ -36,6 +55,8 @@ export interface S15WebConversation<Actor> {
   events(actor: Actor, conversationId: string, after: number): { events: ConversationEvent[]; cursor: number };
   /** Every outstanding owner item across all conversations, not limited to the navigation or thread windows. */
   needs(actor: Actor): { conversationId: string; entry: ConversationNeedsYou }[];
+  /** Typed exact slip decision (`ConversationApplication.decide`). Absent: slips show no decision buttons. */
+  decide?(actor: Actor, command: ConversationDecisionCommand): ConversationReceipt;
   /** Wakes the durable queue after a committed receipt. It never resubmits anything. */
   drain(): Promise<void>;
 }
@@ -55,6 +76,10 @@ export interface S15WebComputer<Actor> {
   useMachine(actor: Actor, input: { id: string; checkId: string; fingerprint: string; transportProfile: "ssh-sudo-systemd/v1" }): Promise<VmStatus>;
   /** Throws `vm_not_enrolled` before the owner registers the machine. */
   status(actor: Actor, id: string): VmStatus;
+  /** Retained protected snapshots, newest first (`WorkingVmService.snapshots`). Absent: no restore control. */
+  snapshots?(actor: Actor, id: string): { id: string; generation: number }[];
+  /** Owner-authorized stop and restore (`WorkingVmService.recover`). The UI posts only after the exact restore slip. */
+  restore?(actor: Actor, input: { vmId: string; snapshotId: string }): Promise<void>;
 }
 
 /** Owner-typed finite amount. Currency and period come only from `budgetOptions`. */
@@ -104,3 +129,78 @@ export interface S15WebMemory<Actor> { view(actor: Actor): { contract: "s15-memo
 /** MODEL15-01 read-only projection (`s15-model-budget/v1`), the real `ModelService.project` result. */
 export type S15ModelBudgetView = ModelBudgetView;
 export interface S15WebModels<Actor> { project(actor: Actor, workId?: string): S15ModelBudgetView }
+
+/** POLICY owner reads/commands for one exact action revision. Neither resends nor certifies an effect. */
+export interface S15WebActions<Actor> {
+  /** Read-only reconciliation through the owning adapter; unknown stays unknown when the read cannot tell. */
+  reconcile(actor: Actor, action: ActionRef, requestId: string): Promise<Observation>;
+  /** Owner statement for an unknown outcome. It is recorded beside the action and never attests remote truth. */
+  statement(actor: Actor, action: ActionRef, requestId: string, outcome: "occurred" | "did_not_occur"): void;
+}
+/** WORK15-01 owner seam: list/project and a scoped stop. Resume is an ordinary later owner message. */
+export interface S15WebDuties<Actor> {
+  list(actor: Actor): ResponsibilityProjection[];
+  project(actor: Actor, id: string): ResponsibilityProjection;
+  stop(actor: Actor, id: string, requestId: string): ResponsibilityProjection;
+}
+/** One trusted owner-input field of a website's sign-in documents, from protected registration. */
+export interface S15BrowserField { name: string; kind: "type" | "click"; secret: boolean; label: string }
+/** One protected website session. The UI never stores, echoes or logs what the owner types into it. */
+export interface S15WebBrowser<Actor> {
+  /** Stable registration id used in routes; never a URL. */
+  id: string;
+  /** Trusted site label from composition, for example `example.com`. */
+  site: string;
+  /** Whether this registration's sign-in documents ask for a second factor. */
+  twoFactor: boolean;
+  fields: S15BrowserField[];
+  owner: {
+    takeover(actor: Actor): Promise<{ generation: number }>;
+    frame(actor: Actor, generation: number): Promise<Uint8Array>;
+    input(actor: Actor, generation: number, input: OwnerBrowserInput): Promise<void>;
+    handBack(actor: Actor, generation: number, cancel?: boolean): { generation: number; login: LoginState };
+    checkSession(actor: Actor): Promise<LoginState>;
+  };
+}
+/** F13 seam (`createRecurringRules`): exact proposal from a payment, exact install and revoke. */
+export interface S15WebRecurring<Actor> {
+  frequencies(): RecurringFrequency[];
+  propose(actor: Actor, input: { action: ActionRef; amountCeilingMinor: string; frequencyId: string }): RecurringRuleProposal;
+  install(actor: Actor, requestId: string, proposalHash: string): StandingPolicy;
+  revoke(actor: Actor, requestId: string, ruleId: string): StandingPolicy;
+}
+/** Structural subset of GIT15-02 `GithubPersonalCapture`; installation is an explicit owner command. */
+export interface S15GithubCapture {
+  contract: "s15-github-personal-capture/v1"; captureId: string; expectedPolicyRevision: number;
+  repositories: { repository: { resource: Ref; name: string; target: string }; protection: { known: boolean; requiredChecks: string[]; requiredApprovals: number; requireCodeOwners: boolean }; production: { consequence: "none" | "protected_gate" | "would_deploy" | "unknown" }; autoMergeAvailable: boolean; reason: string | null }[];
+  publication: "off" | "personal"; merge: "off" | "personal"; ruleIds: string[]; revoke: { expectedPolicyRevision: number; ruleIds: string[] };
+}
+export interface S15WebGithub<Actor> {
+  capture(actor: Actor): Promise<S15GithubCapture>;
+  install(actor: Actor, input: { requestId: string; captureId: string; repositoryIds: string[]; publication: boolean; merge: boolean }): Promise<{ revision: number; ruleIds: string[] }>;
+  revoke(actor: Actor, input: { requestId: string; expectedPolicyRevision: number; ruleIds: string[] }): void;
+}
+/** Structural subset of BIZ15 `EffectDecisionCard`. Option consequences are trusted adapter text; the recommendation is not. */
+export interface S15DecisionCard {
+  contract: "s15-effect-decision/v1"; action: ActionRef; target: string; version: number; impacts: string[];
+  evidence: { id: string; revision: number; status: "fact" | "inference" | "missing"; value: string }[];
+  options: { id: "apply_exact" | "investigate" | "keep"; consequence: string; reversible: boolean }[];
+  recommendation: { option: "investigate" | "keep"; text: string; authority: "none" };
+  /** A decision already recorded for the same impact and target; it is shown, never asked again. */
+  retained?: { at: number; option: "apply_exact" | "investigate" | "keep" } | null;
+}
+/** Structural subset of TEAM15 `TeamResourcesView`. */
+export interface S15TeamResource {
+  id: string; revision: number; label: string; kind: "account" | "browser" | "workspace" | "data";
+  scope: { kind: "team" } | { kind: "bot"; botId: string; origin: "s15" | "s14" };
+  operations: ("read" | "write" | "input")[]; active: boolean; whoCanUse: "enabled_team" | string[]; restrictions: string[];
+}
+export interface S15WebTeam<Actor> { view(actor: Actor): { contract: "s15-team-resources-view/v1"; resources: S15TeamResource[] } }
+/** Structural subset of MIG15 `AdoptionStatus`; the adoption command itself is out of this UI's scope. */
+export interface S15AdoptionStatus {
+  contract: "s15-adoption-status/v1"; state: "preparing" | "validated" | "activating" | "active_fenced" | "complete" | "rolling_back" | "rolled_back" | "discarded" | "blocked";
+  selectedRuntime: "s14" | "legacy" | "s15"; reason: string | null;
+  report: { sourceRuntime: "s14" | "legacy"; targetBuild: { commit: string; sha256: string }; historyRows: number; privateItems: number; pendingRequests: number; unknownEffects: number };
+  historyPreserved: true; privateScopePreserved: true;
+}
+export type { Rule };
