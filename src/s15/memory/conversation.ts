@@ -16,10 +16,12 @@ export function createConversationMemory(memory: MemoryService): ConversationMem
     return current;
   };
   return {
-    prepare(work, request: ConversationRequest) {
+    prepare(work, request: ConversationRequest, ingress) {
       const current = context(work, request.receipt.rootRequestId), authority = memory.options.team.guard(current);
       const scope = memory.options.retention(authority);
-      const retained = scope ? memory.retain(current, { id: `message_${request.interpretationRequest.requestId}`, text: request.interpretationRequest.text, origin: { kind: "owner_message", id: request.interpretationRequest.requestId, conversationId: request.receipt.conversationId, at: request.receipt.receivedAt }, scope, resources: [], parents: [] }) : [];
+      const messages = [{ command: request.command, at: request.receipt.receivedAt }];
+      if (request.interpretationRequest.requestId !== request.command.requestId) messages.push({ command: request.interpretationRequest, at: ingress?.receivedAt ?? request.receipt.receivedAt });
+      const retained = scope ? messages.flatMap(({ command, at }) => memory.retain(current, { id: `message_${command.requestId}`, text: command.text, origin: { kind: "owner_message", id: command.requestId, conversationId: request.receipt.conversationId, at }, scope, resources: [], parents: [] })) : [];
       const packet = memory.prepare(current, request.receipt.rootRequestId, request.intent.instruction);
       return { section: packet.section, retained: retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin })) };
     },

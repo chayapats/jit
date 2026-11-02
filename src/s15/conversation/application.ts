@@ -287,7 +287,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       // Persist continuity dependency before MEM can retain/withdraw anything. A later boot without
       // that protected service must refuse rather than replay raw owner/history or publish old data.
       if (this.options.memory) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
-      const memory = this.options.memory?.prepare(work!, request);
+      const ingress = this.store.db.query<{ receipt_json: string }, [string]>("SELECT receipt_json FROM commands WHERE id=?").get(request.interpretationRequest.requestId)!;
+      const memory = this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
       if (memory) {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
@@ -396,9 +397,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       WHERE r.conversation_id=? AND c.rowid<(SELECT rowid FROM commands WHERE id=?) AND r.id<>? ORDER BY c.rowid DESC LIMIT 8`).all(request.receipt.conversationId, request.interpretationRequest.requestId, request.receipt.rootRequestId);
     for (const row of prior) {
       const value = this.store.request(row.id);
-      if (this.options.memory && !this.options.memory.allowHistory(value.interpretationRequest.requestId, value.command.text)) continue;
       if (value.owner.id !== request.owner.id || value.owner.generation !== request.owner.generation) continue;
       const ownerCommand = JSON.parse(row.command_json) as ConversationCommand;
+      if (this.options.memory && (!this.options.memory.allowHistory(ownerCommand.requestId, ownerCommand.text) || !this.options.memory.allowHistory(row.id, ownerCommand.text))) continue;
       const next: { role: "owner" | "assistant"; text: string }[] = [{ role: "owner", text: ownerCommand.text }];
       // Only tool-free answers published before this ingress may enter owner/assistant context.
       const answeredBefore = this.store.db.query<{ sequence: number }, [string, number]>("SELECT sequence FROM events WHERE request_id=? AND kind='result' AND sequence<? LIMIT 1").get(row.id, cutoff);

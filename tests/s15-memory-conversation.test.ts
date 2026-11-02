@@ -146,3 +146,24 @@ test("two independent scripted Schway Bots overlap actual mediated team-file rea
   let delivered = 0; f.f.team.handoff(contexts[0]!, contexts[1]!, sourceIds, sources => { delivered = sources.length; }); expect(delivered).toBe(2);
   expect(f.f.team.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM commands").get()!.n).toBe(5);
 });
+
+test("clarification retains original owner knowledge with its original source time and filters each command's actual history bytes", async () => {
+  const f = fixture(), root = command("Implement issue #42 or #43. I prefer concise replies.");
+  f.app.submit(f.f.f.owner, root); const held = f.app.view(f.f.f.owner, root.requestId);
+  expect(held).toMatchObject({ state: "held", code: "material_ambiguity" });
+  f.f.f.now += 2000;
+  f.app.options.interpreterModel = { provider: "codex", id: "scripted", async *stream() { yield { type: "message_complete", message: { type: "assistant", id: `clarification_${serial++}`, content: [{ type: "text", text: JSON.stringify({ intent: "answer", purposeId: "purpose", resourceIds: ["repo"], access: "read", subject: "issue:42" }) }] } }; } };
+  const selected: ConversationCommand = { ...command("issue #42"), continuation: { requestId: root.requestId, revision: held.revision } };
+  f.app.submit(f.f.f.owner, selected); await f.app.drain();
+  expect(f.app.view(f.f.f.owner, root.requestId).state).toBe("completed");
+  const retained = f.f.memory.view(f.f.f.owner).claims[0]!;
+  expect(retained).toMatchObject({ text: "I prefer concise replies.", provenance: { origin: { id: root.requestId, at: held.receipt.receivedAt } } });
+  const seen: { requestId: string; text: string }[] = [], memory = f.app.options.memory!;
+  f.app.options.memory = { ...memory, allowHistory(requestId, text) { seen.push({ requestId, text }); return memory.allowHistory(requestId, text); } };
+  delete f.app.options.interpreterModel;
+  await f.submit("Explain the result.");
+  expect(seen).toContainEqual({ requestId: selected.requestId, text: selected.text });
+  expect(seen).toContainEqual({ requestId: root.requestId, text: root.text });
+  f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_clarified", kind: "memory.forget", claim: { id: retained.id, revision: retained.revision } });
+  await f.submit("Explain another result."); expect(f.interpretationInputs.at(-1)).not.toContain("I prefer concise replies.");
+});

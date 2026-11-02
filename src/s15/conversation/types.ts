@@ -107,7 +107,7 @@ export interface ConversationRequest {
 }
 /** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
 export interface ConversationMemoryPort<WorkContext> {
-  prepare(work: WorkContext, request: ConversationRequest): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
+  prepare(work: WorkContext, request: ConversationRequest, ingress?: { receivedAt: number }): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
   guard(work: WorkContext, requestId: string): void;
   observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence): NonNullable<ConversationRequest["memory"]>["retained"];
   complete(work: WorkContext, requestId: string, text: string): void;
