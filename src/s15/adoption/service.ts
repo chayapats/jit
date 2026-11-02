@@ -174,7 +174,7 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
     } finally { expected.close(); }
     if (priorConfig === null) store.transaction(() => put('config', configHash));
     const stage = get<Stage>('stage');
-    if (stage && stage.state !== 'preparing' && !existsSync(join(o.directory, 'policy.sqlite'))) adoptionFail('transition_continuity_unavailable');
+    if (stage && !['preparing', 'discarded'].includes(stage.state) && !existsSync(join(o.directory, 'policy.sqlite'))) adoptionFail('transition_continuity_unavailable');
     if (stage?.candidateHash && candidateHash() !== stage.candidateHash) adoptionFail('transition_integrity_failed');
     // Terminal journals cannot accidentally fence/reselect another installation on reopen.
     if (stage && !['rolled_back', 'discarded'].includes(stage.state)) sourceUnlock = acquireS14RuntimeLock(o.source.database);
@@ -206,11 +206,20 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
       if (Object.keys(command).sort().join(',') !== 'expectedRevision,hash,kind,requestId' || !['prepare', 'validate', 'activate', 'release', 'rollback', 'discard'].includes(command.kind)) adoptionFail('transition_invalid_command');
       id(command.requestId); nat(command.expectedRevision); hash(command.hash);
       const requestHash = hashValue(command);
+      const aborted = get<{ requestId: string; hash: string }>('aborted_prepare');
+      if (aborted?.requestId === command.requestId) {
+        if (aborted.hash !== requestHash) adoptionFail('transition_request_id_conflict');
+        const retained = get<Stage>('stage');
+        if (!retained) adoptionFail('transition_integrity_failed');
+        return status(retained, currentPolicy(actor));
+      }
       const existing = db.query<{ hash: string; result_json: string }, [string]>('SELECT hash,result_json FROM receipts WHERE id=?').get(command.requestId);
       if (existing) { if (existing.hash !== requestHash) adoptionFail('transition_request_id_conflict'); return JSON.parse(existing.result_json) as T.AdoptionStatus; }
       let pending = get<Pending>('pending');
-      if (pending?.command.kind === 'prepare' && command.kind === 'discard' && get<Stage>('stage')?.state === 'preparing') {
-        store.transaction(() => put('pending', null)); pending = null;
+      const interrupted = get<Stage>('stage');
+      if (pending?.command.kind === 'prepare' && command.kind === 'discard' && interrupted?.state === 'preparing' && command.expectedRevision === interrupted.revision && command.hash === rollbackHash(interrupted) && principal.generation === interrupted.ownerGeneration) {
+        const old = pending;
+        store.transaction(() => { put('aborted_prepare', { requestId: old.command.requestId, hash: old.hash }); put('pending', null); }); pending = null;
       }
       if (pending && (pending.command.requestId !== command.requestId || pending.hash !== requestHash)) adoptionFail('transition_request_in_progress');
       if (pending?.result) {
@@ -232,6 +241,7 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
         if (!stage) {
           const snapshot = snapshotSource(o);
           if (snapshot.ownerGeneration !== principal.generation) adoptionFail('transition_owner_generation_changed');
+          if (snapshot.requests.some(r => r.id === command.requestId)) adoptionFail('transition_historical_request_no_replay');
           if (snapshot.report.refusals.length || command.hash !== snapshot.report.planHash) adoptionFail('transition_stale_validation');
           if (existsSync(fencePath)) adoptionFail('transition_source_maintenance_required');
           sourceUnlock ??= acquireS14RuntimeLock(o.source.database);
@@ -278,7 +288,13 @@ export function openAdoptionService(o: T.AdoptionOptions): T.AdoptionService {
             stage.state = 'blocked'; stage.reason = 'transition_new_s15_facts_require_reverse_projection'; stage.revision++;
             store.transaction(() => put('stage', stage)); adoptionFail('transition_rollback_unsupported');
           }
-          if (stage.files.length) unchanged(stage); else { assertFence(stage); boundary(stage); }
+          if (discard) {
+            // Before activation, the original remains current. Discard never rewinds newer source facts.
+            const current = snapshotSource(o);
+            if (current.report.refusals.length || current.ownerGeneration !== principal.generation) adoptionFail('transition_protected_settlement_required');
+            if (existsSync(fencePath)) assertFence(stage);
+            boundary(stage);
+          } else unchanged(stage);
           begin();
           stage.state = 'rolling_back'; store.transaction(() => put('stage', stage)); checkpoint('rollback_intent');
           auth(actor); stage.state = discard ? 'discarded' : 'rolled_back'; stage.revision++;

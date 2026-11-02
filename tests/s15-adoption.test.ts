@@ -50,6 +50,14 @@ test('old request IDs stay reserved and changed payloads conflict without replay
   expect(() => policy.owner.admit(owner, { ...workRequest(), requestId: original.request_id })).toThrow('transition_historical_request_no_replay');
 });
 
+test('the prepare command cannot reuse an original owner request ID', async () => {
+  const f = await fixture(), source = new Database(f.database, { readonly: true });
+  const original = source.query<{ request_id: string }, []>('SELECT request_id FROM command_receipts LIMIT 1').get()!; source.close();
+  const service = f.open(), actor = service.authenticate('owner_session');
+  expect(() => service.command(actor, { kind: 'prepare', requestId: original.request_id, expectedRevision: 0, hash: reportAdoption(f.options).planHash })).toThrow('transition_historical_request_no_replay');
+  expect(existsSync(fence(f))).toBe(false);
+});
+
 test.each(['preparing', 'source_fenced', 'candidate_committed', 'activation_intent', 'active_fenced', 'workers_released', 'rollback_intent', 'prior_selected', 'source_released'] as AdoptionCheckpoint[])('SIGKILL at %s retains single-writer fencing and exact-request recovery', async point => {
   const f = await fixture(), before = preservedBytes(f); let service = f.open(), actor = service.authenticate('owner_session');
   let command: AdoptionCommand = { kind: 'prepare', requestId: retryId(), expectedRevision: 0, hash: reportAdoption(f.options).planHash };
@@ -114,6 +122,17 @@ test('discard after a pre-fence crash preserves source and removes only its reco
   const current = service.status(actor)!;
   const discarded = service.command(actor, { kind: 'discard', requestId: retryId(), expectedRevision: current.revision, hash: current.rollbackHash });
   expect(discarded.state).toBe('discarded'); expect(preservedBytes(f)).toEqual(before); expect(existsSync(fence(f))).toBe(false);
+  f.close(); const reopened = f.open(); expect(reopened.status(reopened.authenticate('owner_session'))?.state).toBe('discarded');
+});
+
+test('discard before activation keeps newer source facts written after a pre-fence crash', async () => {
+  const f = await fixture(); let service = f.open(), actor = service.authenticate('owner_session');
+  f.fault = 'preparing'; expect(() => service.command(actor, { kind: 'prepare', requestId: retryId(), expectedRevision: 0, hash: reportAdoption(f.options).planHash })).toThrow('fixture_crash');
+  f.close(); f.fault = null;
+  const prior = new S14Store(f.database); prior.transaction(tx => tx.run("INSERT INTO lifecycle.withdrawals VALUES ('source','newer_source','forgotten')")); prior.close();
+  const newer = preservedBytes(f); service = f.open(); actor = service.authenticate('owner_session'); const current = service.status(actor)!;
+  expect(service.command(actor, { kind: 'discard', requestId: retryId(), expectedRevision: current.revision, hash: current.rollbackHash }).state).toBe('discarded');
+  expect(preservedBytes(f)).toEqual(newer);
 });
 
 test('missing target continuity cannot create an empty replacement or release the prior boot fence', async () => {
