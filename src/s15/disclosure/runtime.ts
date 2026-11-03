@@ -3,6 +3,7 @@ import type { ApprovedModelRoute } from '../model';
 import type { CatalogPort, JsonValue, Ref } from '../policy';
 import { equal } from '../policy/validation';
 import type { ComposedDisclosure } from './composition';
+import { googleEffectPeople, googleRecipientRefs } from '../effects/google';
 import type { DisclosureSource, RecipientApproval } from './types';
 
 /** Owner-controlled classifications and exact service destinations. This is a proposal/configuration,
@@ -35,10 +36,10 @@ export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: reado
       ...models.map((model, index) => ({ id: `inference_${index}`, kind: 'model' as const, resolve: () => [model.recipient] })),
       ...(config.githubRecipient ? [{ id: 'github', kind: 'adapter' as const, resolve: () => [config.githubRecipient!] }] : []),
       ...(config.googleRecipient ? [{ id: 'google', kind: 'adapter' as const, resolve: (_work: unknown, payload: JsonValue) => {
-        const p = payload as { message?: { to: string[]; cc: string[]; bcc: string[] }; calendar?: { event: { attendees: string[] } } };
-        const addresses = p.message ? [...p.message.to, ...p.message.cc, ...p.message.bcc] : p.calendar?.event.attendees ?? [];
-        const recipients = addresses.map(address => googleRecipients.find(r => r.address === address)?.ref);
-        return recipients.some(r => !r) ? null : [config.googleRecipient!, ...recipients as Ref[]];
+        // Same derivation and address identity as the Google adapter itself (removed attendees, a
+        // non-owner organizer, case-insensitive bindings); any unbound person keeps the route unknown.
+        try { return [config.googleRecipient!, ...googleRecipientRefs(googleEffectPeople(payload as unknown as Parameters<typeof googleEffectPeople>[0]), googleRecipients)]; }
+        catch { return null; }
       } }] : []),
       { id: 'browser', kind: 'browser', resolve: (_work, payload) => { const binding = config.browser.find(r => r.origin === origin(payload)); return binding ? [binding.recipient] : null; } },
       { id: 'acquisition', kind: 'artifact', resolve: (_work, payload) => { const binding = config.acquisitions.find(r => r.origin === origin(payload, true)); return binding ? [binding.recipient] : null; } },

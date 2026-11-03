@@ -2,7 +2,7 @@ import { GoogleFailure, GooglePersonal, googleObject } from '../../s14/personal-
 import { containsCredential } from '../../security/credentials';
 import { personalEventBody, validatePersonalDraft } from '../../s14/personal-effect-validation';
 import type { PersonalEventDraft, PersonalEventFields } from '../../s14/personal-effect-types';
-import type { ActionAdapter, ActionRef, AdapterResult, JsonValue, PreparedAction, ReadHandler, S15PolicyService, WorkActor, WorkAuthority } from '../policy';
+import type { ActionAdapter, ActionRef, AdapterResult, JsonValue, PreparedAction, ReadHandler, Ref, S15PolicyService, WorkActor, WorkAuthority } from '../policy';
 import { canonical, contains, digest, equal, exact, fail, id, nat, ref, string, unknownUsage, vector } from '../policy/validation';
 import type { ConversationPolicyWork, ConversationToolPort } from '../conversation';
 import { attachmentDigest, finalMailRaw, MAIL_ENCODED_PAYLOAD_LIMIT, validateMailAttachment, validateMailProposal } from './mail';
@@ -57,6 +57,26 @@ function matchingMail(raw: unknown, expected: string): boolean {
   const a = parse(raw), b = parse(expected); return !!a && !!b && a.body === b.body && [...b.headers].every(([k, v]) => a.headers.get(k) === v);
 }
 
+/** Case-insensitive address identity shared by the adapter and DATA15 route resolution. */
+export const googleAddressKey = (address: string): string => address.toLowerCase();
+/**
+ * Every actual person an exact Google effect payload reaches: mail to/cc/bcc, or calendar attendees after
+ * the change plus attendees removed by it and a non-owner organizer. This is the single derivation used
+ * by the Google adapter and by the protected disclosure route, so both always name the same recipients.
+ */
+export function googleEffectPeople(payload: { account: { account: string }; message: { to: readonly string[]; cc: readonly string[]; bcc: readonly string[] } | null; calendar: { event: { attendees: readonly string[] } } | null; before: { event: { attendees: readonly string[] }; organizer: string | null } | null }): string[] {
+  if (payload.message) return [...payload.message.to, ...payload.message.cc, ...payload.message.bcc];
+  if (!payload.calendar) fail('invalid_effect');
+  const organizer = payload.before?.organizer;
+  const people = [...payload.calendar.event.attendees, ...(payload.before?.event.attendees ?? []), ...(organizer && googleAddressKey(organizer) !== googleAddressKey(payload.account.account) ? [organizer] : [])];
+  return people.filter((address, index) => people.findIndex(other => googleAddressKey(other) === googleAddressKey(address)) === index);
+}
+/** Exactly one protected recipient binding per address (case-insensitive), deduplicated; otherwise refused. */
+export function googleRecipientRefs(addresses: readonly string[], bindings: readonly { ref: Ref; address: string }[]): Ref[] {
+  const refs = addresses.map(address => { const matches = bindings.filter(r => googleAddressKey(r.address) === googleAddressKey(address)); if (matches.length !== 1) fail('recipient_binding_required'); ref(matches[0]!.ref); return matches[0]!.ref; });
+  return refs.filter((r, i) => refs.findIndex(other => equal(r, other)) === i);
+}
+
 /**
  * Real fixed Google endpoints over S14's no-retry protocol. Registration is opt-in and must be composed
  * only in the protected service. No OAuth scopes, accounts or grants are installed by this function.
@@ -74,10 +94,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     ref(a.resource); string(a.account, 254); if (!a.account || /[\r\n]/.test(a.account) || kind === 'calendar' && !a.calendarId) fail('personal_account_required');
     return JSON.parse(canonical(a)) as GoogleEffectAccount;
   }
-  function recipients(addresses: readonly string[]) {
-    const refs = addresses.map(address => { const matches = options.recipients().filter(r => r.address.toLowerCase() === address.toLowerCase()); if (matches.length !== 1) fail('recipient_binding_required'); ref(matches[0]!.ref); return matches[0]!.ref; });
-    return refs.filter((r, i) => refs.findIndex(other => equal(r, other)) === i);
-  }
+  const recipients = (addresses: readonly string[]) => googleRecipientRefs(addresses, options.recipients());
   function attachments(p: MailProposal): MailAttachment[] { return p.attachments.map(r => { const a = options.attachment(r.id, r.revision); if (!a || a.id !== r.id || a.revision !== r.revision) fail('attachment_changed'); validateMailAttachment(a); return structuredClone(a); }); }
   function payload(kind: 'mail' | 'calendar', proposal: unknown, work: WorkAuthority): Payload {
     const a = account(kind, kind === 'mail' ? 'gmail.send' : 'calendar.events');
@@ -131,7 +148,7 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     return { id: kind === 'mail' ? 'gmail_send' : 'google_calendar', version: 1,
       prepare(proposal, context) {
         const p = payload(kind, proposal, context.work);
-        const people = p.message ? [...p.message.to, ...p.message.cc, ...p.message.bcc] : [...new Set([...p.calendar!.event.attendees, ...(p.before?.event.attendees ?? []), ...(p.before?.organizer && p.before.organizer.toLowerCase() !== p.account.account.toLowerCase() ? [p.before.organizer] : [])])];
+        const people = googleEffectPeople(p);
         const communication = kind === 'mail' || people.length > 0 || p.calendar!.sendUpdates !== 'none', actualRecipients = recipients(people);
         const classes = kind === 'calendar' ? ['ordinary_edit' as const, ...(communication ? communicationClasses() : [])] : communicationClasses();
         if (actualRecipients.some(r => !contains(context.work.request.recipients, r))) classes.push('disclosure');
