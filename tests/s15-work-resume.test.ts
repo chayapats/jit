@@ -62,6 +62,22 @@ test('an owner generation change before settlement refuses the binding instead o
   expect(f.service.resumes.refusal(f.owner, duty)).toBe('owner_changed');
 });
 
+test('long-queued pending bindings never starve a later completed reply', async () => {
+  const { f, duty } = await pausedDuty();
+  f.service.resumes.submit(f.owner, reply('late_reply'), duty);
+  await f.service.conversation.drain();
+  const db = f.service.conversation.store.db;
+  // More pending bindings than one settlement pass reads, all older and all waiting on requests that are still queued.
+  db.transaction(() => { for (let i = 0; i < 70; i++) {
+    db.query("INSERT INTO requests (id, conversation_id, state, record_json) VALUES (?, 'conversation', 'queued', '{}')").run(`queued_${i}`);
+    db.query("INSERT INTO resume_bindings_v1 VALUES (?, ?, 'conversation', 'owner', 1, 0, 'pending', NULL, NULL)").run(`queued_${i}`, duty);
+  } })();
+  expect(f.service.resumes.settle()).toEqual({ resumed: 1, refused: 0 });
+  expect(f.service.work.project(f.owner, duty)).toMatchObject({ state: 'ready', readyEventId: 'late_reply' });
+  expect(db.query<{ n: number }, []>("SELECT count(*) AS n FROM resume_bindings_v1 WHERE state='pending'").get()!.n).toBe(70);
+  db.transaction(() => { db.query("DELETE FROM resume_bindings_v1 WHERE request_id LIKE 'queued_%'").run(); db.query("DELETE FROM requests WHERE id LIKE 'queued_%'").run(); })();
+});
+
 test('concurrent drains and a lost settlement commit still resume exactly once', async () => {
   const { f, duty } = await pausedDuty();
   f.service.resumes.submit(f.owner, reply('concurrent_reply'), duty);

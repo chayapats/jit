@@ -106,7 +106,8 @@ export function openResumeBindings<Actor>(options: ResumeBindingOptions<Actor>):
     },
     settle() {
       let resumed = 0, refused = 0;
-      const pending = store.db.query<{ request_id: string }, []>("SELECT request_id FROM resume_bindings_v1 WHERE state='pending' ORDER BY created_at, rowid LIMIT 64").all();
+      // Only bindings whose owner request is terminal are candidates, so long-queued requests never starve later completed replies.
+      const pending = store.db.query<{ request_id: string }, []>("SELECT b.request_id FROM resume_bindings_v1 b JOIN requests r ON r.id=b.request_id WHERE b.state='pending' AND r.state NOT IN ('queued','running') ORDER BY b.created_at, b.rowid LIMIT 64").all();
       for (const { request_id } of pending) { const result = settleOne(request_id); if (result === 'resumed') resumed++; else if (result === 'refused') refused++; }
       if (resumed || refused) store.transaction(prune);
       return { resumed, refused };

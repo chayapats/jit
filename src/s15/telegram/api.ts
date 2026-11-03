@@ -16,7 +16,8 @@ export function createTelegramBotApi(token: string, fetchImpl: typeof fetch = fe
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs), redirect: 'error' });
     } catch { throw new TelegramTransportError('telegram_unreachable', unknown); }
     let json: { ok?: unknown; result?: unknown; parameters?: { retry_after?: unknown } };
-    try { json = await response.json() as typeof json; } catch { throw new TelegramTransportError('telegram_protocol', response.status >= 500 ? unknown : 'not_sent'); }
+    // An unreadable body after headers may follow an accepted send (connection lost mid-body): only a valid response confirms refusal.
+    try { json = await response.json() as typeof json; } catch { throw new TelegramTransportError('telegram_protocol', unknown); }
     if (json.ok === true && response.ok) return json.result as T;
     const retry = typeof json.parameters?.retry_after === 'number' && Number.isFinite(json.parameters.retry_after) ? Math.min(3600, Math.max(1, Math.ceil(json.parameters.retry_after))) : null;
     throw new TelegramTransportError(statusCode(response.status), response.status >= 500 ? unknown : 'not_sent', response.status === 429 ? retry ?? 5 : null);

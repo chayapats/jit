@@ -12,6 +12,8 @@ import { TelegramTransportError, type TelegramBinding, type TelegramChannel, typ
 
 const defaults: TelegramLimits = { codeTtlMs: 10 * 60_000, codeAttempts: 5, retentionMs: 24 * 3_600_000, progressAfterMs: 2 * 60_000, sendSpacingMs: 1000, pollTimeoutSeconds: 25, backoffMs: { min: 1000, max: 60_000 }, horizonMs: 7 * 24 * 3_600_000 };
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
+/** Independent notice observation cadence of the delivery loop. */
+const observeEveryMs = 5000;
 const refusedClasses = ['unauthorized_sender', 'unauthorized_chat', 'group_rejected', 'forward_rejected', 'bot_origin_rejected', 'stale_code'];
 const codeOf = (error: unknown) => error instanceof AppError || error instanceof PolicyError || error instanceof TelegramTransportError ? error.code : 'conversation_unavailable';
 interface InboxRow { sequence: number; bot_id: number; update_id: number; kind: string; classification: string; user_id: number | null; chat_id: number | null; message_id: number | null; reply_to: number | null; text: string | null; binding_revision: number; received_at: number; status: 'persisted' | 'processed'; request_id: string | null; duty_id: string | null; outbound: 'none' | 'open' | 'closed'; code: string | null; processed_at: number | null }
@@ -271,6 +273,8 @@ export function openTelegramChannel(options: TelegramChannelOptions): TelegramCh
         const state = read(), binding = state.binding, t = now();
         if (binding.state !== 'bound' || !state.bot || t < state.send.notBefore) break;
         const secret = token(); if (!secret) break;
+        // Every send re-establishes the bound owner: after a password reset/owner change nothing queued leaves for the old account.
+        if (!owner(binding)) { db.query("UPDATE telegram_outbox_v1 SET state='cancelled', code='owner_changed', settled_at=? WHERE state='pending'").run(t); break; }
         const row = db.query<OutboxRow, [number]>("SELECT * FROM telegram_outbox_v1 WHERE state='pending' AND next_at<=? ORDER BY sequence LIMIT 1").get(t);
         if (!row) break;
         if (row.chat_id !== binding.chatId) { db.query("UPDATE telegram_outbox_v1 SET state='cancelled', code='telegram_unbound', settled_at=? WHERE sequence=?").run(t, row.sequence); continue; }
@@ -311,7 +315,14 @@ export function openTelegramChannel(options: TelegramChannelOptions): TelegramCh
         }
       })();
       const sending = (async () => {
-        while (!signal.aborted) { try { await channel.deliver(signal); } catch { /* Recorded per part; the loop continues. */ } await sleep(limits.sendSpacingMs); }
+        let observedAt = -Infinity;
+        while (!signal.aborted) {
+          // Notices are derived here as well as after a drain: a long running request holds the shared drain, and
+          // its progress note must still be observed while it runs.
+          if (now() - observedAt >= observeEveryMs) { observedAt = now(); try { channel.observe(); } catch { /* Retried next round. */ } }
+          try { await channel.deliver(signal); } catch { /* Recorded per part; the loop continues. */ }
+          await sleep(limits.sendSpacingMs);
+        }
       })();
       loops = { controller, done: Promise.allSettled([polling, sending]) };
     },

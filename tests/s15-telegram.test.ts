@@ -266,4 +266,23 @@ test('the real Bot API transport keeps the token out of every error and classifi
   expect(network).toMatchObject({ code: 'telegram_unreachable', outcome: 'unknown' }); expect(String(network.message) + String(network.stack)).not.toContain(token);
   expect(await failure(api(respond(502, { ok: false })).sendMessage({ chatId: 1, text: 'x', replyTo: null }))).toMatchObject({ outcome: 'unknown' });
   expect(await failure(api(respond(401, { ok: false })).getMe())).toMatchObject({ code: 'telegram_token_rejected', outcome: 'not_sent' });
+  // An unreadable body after the headers may follow an accepted send: only a valid response confirms refusal.
+  const broken = (status: number) => async () => new Response('{"ok":tr', { status });
+  expect(await failure(api(broken(200)).sendMessage({ chatId: 1, text: 'x', replyTo: null }))).toMatchObject({ code: 'telegram_protocol', outcome: 'unknown' });
+  expect(await failure(api(broken(400)).sendMessage({ chatId: 1, text: 'x', replyTo: null }))).toMatchObject({ code: 'telegram_protocol', outcome: 'unknown' });
+  expect(await failure(api(broken(200)).getMe())).toMatchObject({ code: 'telegram_protocol', outcome: 'not_sent' });
+});
+
+test('queued notices never leave for the old account after an owner generation change', async () => {
+  const h = await telegramFixture(); await h.bind();
+  const sent = h.tg.state.sent.length;
+  h.tg.state.updates.push(message(2, 'Summarize what you can do'));
+  await h.t().pollOnce(); await h.f.service.drain();
+  const outbox = () => h.f.service.conversation.store.db.query<{ state: string; code: string | null }, []>("SELECT state, code FROM telegram_outbox_v1 WHERE event_id NOT LIKE 'bound:%' ORDER BY sequence").all();
+  expect(outbox().some(row => row.state === 'pending')).toBe(true);
+  h.f.generation = 2;
+  expect(await h.t().deliver()).toBe(0);
+  expect(h.tg.state.sent.length).toBe(sent);
+  expect(outbox().every(row => row.state === 'cancelled' && row.code === 'owner_changed')).toBe(true);
+  h.f.generation = 1;
 });
