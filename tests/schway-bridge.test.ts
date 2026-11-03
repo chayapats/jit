@@ -98,7 +98,7 @@ test("pinned artifact gate reports the exact vendored release", () => {
 });
 
 test("vendored tarball matches the pinned sha256", () => {
-  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-697bf40.tgz"));
+  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-0a10abe.tgz"));
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
 });
 
@@ -701,14 +701,14 @@ test("coordinator reserves exactly the worst-case retry budget", async () => {
 test("host retry accounting maps multi-attempt usage exactly", () => {
   const usage = mapHostUsage({
     attempts: [
-      { complete: true, phase: "turn", usage: { inputTokens: 10, outputTokens: 5 } },
-      { complete: true, phase: "turn", usage: { inputTokens: null, outputTokens: 7 } },
-      { complete: true, phase: "compaction", usage: { inputTokens: 3, outputTokens: null } },
+      { complete: true, phase: "turn", usage: { inputTokens: 10, outputTokens: 5 }, effort: null, outputCap: null },
+      { complete: true, phase: "turn", usage: { inputTokens: null, outputTokens: 7 }, effort: null, outputCap: null },
+      { complete: true, phase: "compaction", usage: { inputTokens: 3, outputTokens: null }, effort: null, outputCap: null },
     ],
-    complete: true, totalMs: 120,
+    complete: true, totalMs: 120, providerRequests: null,
   } as HostRunUsage, 500);
   expect(usage).toEqual({ calls: 3, rounds: 3, hops: 0, contextTokens: 13, outputTokens: 12, retries: 2, wallMs: 500, tokensUnknown: true });
-  expect(mapHostUsage({ attempts: [], complete: false, totalMs: 0 } as HostRunUsage, 0)).toMatchObject({ calls: 0, retries: 0 });
+  expect(mapHostUsage({ attempts: [], complete: false, totalMs: 0, providerRequests: null } as HostRunUsage, 0)).toMatchObject({ calls: 0, retries: 0 });
 });
 
 test("production validation accepts coherent zero-attempt failures and stays production on malformed output", () => {

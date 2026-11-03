@@ -20,7 +20,7 @@ export function routePicker(options: { route: RoleRoute | null; models: RouteMod
     const catalog = options.catalogs?.[provider];
     if (!catalog) return "";
     if (!catalog.models?.length) return catalog.status ? `<p>${escape(providerLabel(provider))} · ${escape(readinessLabel(catalog.status))}</p>` : "";
-    const choices = [...catalog.models].sort((a, b) => Number(b.recommended) - Number(a.recommended));
+    const choices: { id: string; recommended: boolean }[] = [...catalog.models].sort((a, b) => Number(b.recommended) - Number(a.recommended));
     const saved = route?.provider === provider ? route.model : null;
     if (saved && !choices.some(choice => choice.id === saved)) choices.push({ id: saved, recommended: false });
     const selected = saved ?? choices[0]!.id;

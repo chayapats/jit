@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 test("packed public consumer proves concurrent renewal, cancellation, close and exact-route logout", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-packed-"));
   try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", dependencies: { schway: `file:${resolve("vendor/schway-1.0.0-rc.2-697bf40.tgz")}` } }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", dependencies: { schway: `file:${resolve("vendor/schway-1.0.0-rc.2-0a10abe.tgz")}` } }));
     const fixture = readFileSync(join(import.meta.dir, "fixtures/s14-host-consumer.ts"), "utf8");
     expect([...fixture.matchAll(/from "([^"]+)"/g)].map(m => m[1])).toEqual(["schway/host"]);
     writeFileSync(join(root, "consumer.ts"), fixture);
