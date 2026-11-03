@@ -52,7 +52,7 @@ The live independent `<database>.lifecycle.sqlite` remains authoritative. Archiv
 
 ## Public host pin and residuals
 
-`vendor/schway-1.0.0-rc.2-697bf40.tgz`, upstream `697bf406a84c8d1deb8d4a6d71876ea1003be5b3`, SHA-256 `1c9d83de46edddff58a0163452e7f5ec8357e656c90093990fa28fa606a0f41b`. Uses only `schway/host`: release/v2, credential-lifecycle/v1, session-inventory/v1, session-snapshot/v1, native format **4**, `snapshotSessions`, `validateSessionSnapshot`, `restoreSessionSnapshot`, inventory/retire/delete/close. Public snapshot restore is identical-byte retry-safe and returns restored/quarantined/partial; no model is constructed.
+`vendor/schway-1.0.0-rc.2-0a10abe.tgz`, upstream `0a10abedcd72aae7c92371fee277af7d90d4e52c`, SHA-256 `fe219842340f850015dda54ffebd989b52ef4bf3a9da6badfba48dc6a4efbf94` (re-vendored by MODEL15-02 from `697bf40`, whose snapshot and lifecycle capabilities it retains). Uses only `schway/host`: release/v2, credential-lifecycle/v1, session-inventory/v1, session-snapshot/v1, native format **4**, `snapshotSessions`, `validateSessionSnapshot`, `restoreSessionSnapshot`, inventory/retire/delete/close. Public snapshot restore is identical-byte retry-safe and returns restored/quarantined/partial; no model is constructed.
 
 The host has no caller byte ceiling: one session capture may allocate up to its own 32 MiB artifact / 256 MiB decoded-snapshot bound before Jit checks the 64 MiB serialized budget. Cross-host/path relocation is unsupported because native workspace identity must match. No private native parser or filesystem relocation is introduced. Linux x64/arm64 round-trip and real power-loss/filesystem durability remain pending; see the [opt-in runbook](../runbooks/s14-backup-restore.md).
 

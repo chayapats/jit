@@ -73,8 +73,9 @@ const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * replay. One admitted attempt therefore issues at most two inference sends
  * plus two token sends. The counting transport below reports exact
  * counts and fails the attempt closed when the bound is ever exceeded, so a
- * future pin change cannot silently widen the budget. Exact per-request
- * accounting beyond this bound awaits schway#415.
+ * future pin change cannot silently widen the budget. The adopted pin also
+ * reports exact per-run `providerRequests` (schway#415); this probe does not
+ * consume them, so its own counting transport and bound stay authoritative.
  */
 export const BRIDGE_MAX_INFERENCE_SENDS = 2;
 export const BRIDGE_MAX_TOKEN_SENDS = 2;
