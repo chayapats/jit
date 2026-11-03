@@ -155,11 +155,16 @@ export async function runS15X64Evidence(argv = process.argv.slice(2)): Promise<v
       report.stage = 'docker';
       const s = await open();
       const result = await shell(s, 'sudo -n sh -c \'install -d /etc/systemd/system/docker.service.d && printf "[Service]\\nEnvironment=HTTPS_PROXY=%s\\nEnvironment=HTTP_PROXY=%s\\n" "$HTTPS_PROXY" "$HTTP_PROXY" > /etc/systemd/system/docker.service.d/jit-proxy.conf && systemctl daemon-reload && systemctl restart docker\' && sudo -n docker run --rm hello-world | grep -m1 "Hello from Docker"; echo exit=$?; sudo -n rm -f /etc/systemd/system/docker.service.d/jit-proxy.conf');
-      cases.docker = { passed: result.stdout.includes('Hello from Docker'), output: result.stdout.trim().slice(0, 2000), basis: 'guest_reported' }; await close(s);
+      cases.docker = { passed: result.stdout.includes('Hello from Docker'), output: result.stdout.trim().slice(0, 2000), basis: 'guest_reported', deniedDestinations: [...new Set(proxyLog.filter(e => e.state === 'denied').map(e => e.host))] }; await close(s);
     }
     if (selected.includes('concurrency')) {
       report.stage = 'concurrency';
-      const [a, b] = await Promise.all([open(), open()]), t0 = Date.now();
+      // Two raw VM sessions: TEAM coordination deliberately serializes writers of one shared resource.
+      const raw = async () => {
+        const work = service.policy.owner.admit(owner, { requestId: crypto.randomUUID().replaceAll('-', ''), intent: 'execute', access: 'effect', purpose: ref('evidence'), bot: ref('bot'), resources: [ref('computer')], recipients: [], selection, selectionPin: null, expiresAt: until - 1000, readLimit: 1000 }).work!;
+        const session = await service.vm.openAttempt(service.policy.control.bindWork(work.id), { vmId: 'x64', workId: work.id, attemptId: `chat_${work.id}` }); sessions.push(session); return session;
+      };
+      const [a, b] = await Promise.all([raw(), raw()]), t0 = Date.now();
       const results = await Promise.all([shell(a!, 'sleep 5; echo a'), shell(b!, 'sleep 5; echo b')]);
       cases.concurrency = { passed: results.every(r => r.exitCode === 0) && Date.now() - t0 < 9000, elapsedMs: Date.now() - t0 }; await close(a!); await close(b!);
     }
