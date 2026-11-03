@@ -146,6 +146,8 @@ S15 policy/payment refinement (#320/#333): `src/s15/policy/index.ts` is an expli
 
 ## Historical terms
 
+**S15 staged adoption:** Explicit protected maintenance of one named S14 installation. Original bytes remain in place under the prior build's fence; a separate store retains restricted history, current withdrawals/effect/request continuity and nonrefundable usage. POLICY starts empty and needs an owner-installed proposal. Worker release is separate from activation; activity is durably recorded before admission/dispatch. Pre-activity rollback reselects unchanged originals; newer unrepresentable S15 facts refuse rollback under fences. Legacy continuity has no implicit mapper, omitted runtime remains legacy, and live host adoption/acceptance is separate. See ADR 0065 and `s15-state-transition/v1` revision 2.
+
 Project, Project group, Topic promotion and General system project describe the implemented v1 model and historical specs. They are not required S14 entities, hidden permission scopes or aliases for a work item. Old sources retain their historical meaning in the old store; S14 requires no conversion.
 
 ## Development policy

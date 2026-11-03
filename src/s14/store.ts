@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "../errors";
-import { assertS14OpsUnfenced, assertS14BackupUnfenced } from "./ops-state";
+import { assertS14OpsUnfenced, assertS14BackupUnfenced, assertS14MaintenanceFenceCompatible } from "./ops-state";
 import { opsPath } from "./ops-files";
 import type { AppTransaction } from "../store";
 
@@ -38,6 +38,7 @@ export class S14Store {
     if (!Number.isSafeInteger(attachWait) || attachWait < 1 || attachWait > 2000) throw new AppError("invalid_store_busy_timeout");
     opsPath(path);
     if (!maintenance) { assertS14OpsUnfenced(path); assertS14BackupUnfenced(path); }
+    else assertS14MaintenanceFenceCompatible(path);
     const state = inspectS14Store(path);
     const ledgerPath = maintenance?.lifecyclePath ?? `${path}.lifecycle.sqlite`;
     opsPath(ledgerPath);
@@ -211,6 +212,7 @@ export class S14Store {
   /** Reads an owner projection without admitting work or performing inference. */
   read<T>(fn: (tx: AppTransaction) => T): T {
     if (!this.maintenance) assertS14OpsUnfenced(this.path);
+    else assertS14MaintenanceFenceCompatible(this.path);
     return this.#db.transaction(() => fn(this.#tx)).deferred();
   }
   /** Commits one synchronous receipt/state/outbox transition under the writer lock. */
@@ -236,6 +238,7 @@ export class S14Store {
   }
   private assertWritable(): void {
     if (!this.maintenance) { assertS14OpsUnfenced(this.path); assertS14BackupUnfenced(this.path); }
+    else assertS14MaintenanceFenceCompatible(this.path);
   }
   /** Copies a consistent main-database image while its caller holds the exclusive maintenance lock. */
   snapshotBytes(): Uint8Array { return this.#db.serialize("main"); }

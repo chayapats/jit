@@ -22,6 +22,21 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   if (subscription) { v.exact(subscription, ['current', 'concurrency', 'perWork']); if (typeof subscription.current !== 'function') v.fail('invalid_shape'); v.nat(subscription.concurrency, true); v.exact(subscription.perWork, ['calls', 'steps', 'activeMs']); for (const value of Object.values(subscription.perWork)) v.nat(value, true); }
   const subscriptionBounds = subscription ? clone({ concurrency: subscription.concurrency, perWork: subscription.perWork }) : null;
   const ledger = new PolicyLedger(options.path, options.create, options.installationId);
+  try {
+    if (options.initialReservations) {
+      const initial = options.initialReservations;
+      v.exact(initial, ['sourceHash', 'usage']); v.hash(initial.sourceHash);
+      v.exact(initial.usage, ['attempts', 'steps', 'calls', 'reads', 'outputBytes']); Object.values(initial.usage).forEach(x => v.nat(x));
+      const initialHash = v.digest('s15.inherited.reservations.v1', initial);
+      ledger.tx(() => {
+        const previous = ledger.meta<string>('initialReservations');
+        if (previous !== null) { if (previous !== initialHash) v.fail('continuity_unavailable'); return; }
+        if (!options.create || ledger.meta('policy') !== null) v.fail('continuity_unavailable');
+        const charged = ledger.meta<T.BudgetVector>('charged')!;
+        ledger.put('charged', { ...charged, ...initial.usage }); ledger.put('initialReservations', initialHash);
+      });
+    }
+  } catch (error) { ledger.db.close(); throw error; }
   const owners = new WeakMap<T.OwnerActor, { proof: unknown; id: string; generation: number }>();
   const workers = new WeakMap<T.WorkActor, string>();
   const readHandlers = new Map((options.reads ?? []).map(h => { if (!['read', 'grep', 'find', 'ls', 'workspace_setup'].includes(h.operation)) v.fail('read_operation_unavailable'); return [h.operation, h] as const; }));
@@ -46,11 +61,15 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!current || !current.active) v.fail('authority_revoked');
     if (!v.equal(current.ref, r)) v.fail('stale_authority');
   }
-  function policyCurrent(): T.StandingPolicy {
+  function usablePolicy(): T.StandingPolicy {
     const p = getPolicy(); if (!p) v.fail('policy_required');
     if (ledger.meta('policyRevoked') || p.ownerGeneration !== options.ownerGeneration()) v.fail('authority_revoked');
     if (time() >= p.expiresAt) v.fail('expired');
     return p;
+  }
+  function policyCurrent(): T.StandingPolicy {
+    options.activityGuard?.();
+    return usablePolicy();
   }
   function checkRequest(p: T.StandingPolicy, r: T.WorkRequest): void {
     if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
@@ -75,6 +94,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   function receipt<R>(actor: T.OwnerActor, requestId: string, command: unknown, operation: () => R): R {
     const principal = ownerAuth(actor); v.id(requestId);
+    options.requestGuard?.(requestId);
     const hash = v.digest('s15.command.v1', command);
     const previous = ledger.get<{ hash: string; json: string }>('SELECT hash,json FROM receipts WHERE id=?', requestId);
     if (previous) { if (previous.hash !== hash) v.fail('request_id_conflict'); return JSON.parse(previous.json) as R; }
@@ -306,7 +326,11 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   const owner: T.OwnerPort = {
     authenticate(proof) { return tx(() => { const principal = options.verifyOwner(proof); if (!principal || principal.generation !== options.ownerGeneration() || principal.expiresAt <= time()) v.fail('authentication_required'); v.id(principal.id); v.nat(principal.generation, true); const actor = Object.freeze({}) as T.OwnerActor; owners.set(actor, { proof, id: principal.id, generation: principal.generation }); ownerAuth(actor); return actor; }); },
-    current(actor) { return tx(() => { ownerAuth(actor); return clone(getPolicy()); }); },
+    current(actor, options) { return tx(() => {
+      ownerAuth(actor);
+      if (options !== undefined) { v.exact(options, ['requireUsable']); if (options.requireUsable !== true) v.fail('invalid_shape'); }
+      return clone(options?.requireUsable ? usablePolicy() : getPolicy());
+    }); },
     prepareInterpretation(actor, input) { return tx(() => {
       v.exact(input, ['requestId', 'selection', 'expiresAt']); v.id(input.requestId); v.selection(input.selection); v.nat(input.expiresAt, true);
       return receipt(actor, input.requestId, { kind: 'interpretation.prepare', input }, () => {

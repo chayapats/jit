@@ -2,10 +2,11 @@ import type { GithubReadiness, GithubService } from "../github";
 import type { EffectDecisionCard } from "../effects";
 import type { MemoryOwnerApi } from "../memory";
 import type { TeamService } from "../team";
+import type { AdoptionOwner, AdoptionService } from "../adoption";
 import type { ActionRef, OwnerActor, S15PolicyService, WorkActor } from "../policy";
 import type { RecurringRules } from "../policy/recurring";
 import type { ResponsibilityPort, ResponsibilityProjection } from "../work";
-import type { S15DecisionCard, S15ReadinessReport, S15WebActions, S15WebDuties, S15WebGithub, S15WebMemory, S15WebRecurring, S15WebTeam } from "./types";
+import type { S15AdoptionStatus, S15DecisionCard, S15ReadinessReport, S15WebActions, S15WebDuties, S15WebGithub, S15WebMemory, S15WebRecurring, S15WebTeam } from "./types";
 
 /**
  * Composition adapters from the real protected S15 modules to the Web consumer seams. Each adapter maps the
@@ -47,4 +48,8 @@ export function s15TeamPort<Actor>(team: Pick<TeamService, "resources">, owner: 
 /** MEM15 owner API (`MemoryService.view`/`command`, `s15-memory-view/v1` and revision-bound `s15-memory-command/v1`). */
 export function s15MemoryPort<Actor>(memory: MemoryOwnerApi, owner: S15OwnerOf<Actor>): S15WebMemory<Actor> {
   return { view: actor => memory.view(owner(actor)), command: (actor, input) => memory.command(owner(actor), input) };
+}
+/** MIG15 owner status for recovery. Composition authenticates the adoption owner; this port cannot adopt, install policy or release workers. */
+export function s15AdoptionPort<Actor>(adoption: Pick<AdoptionService, "status">, owner: (actor: Actor) => AdoptionOwner): (actor: Actor) => S15AdoptionStatus | null {
+  return actor => adoption.status(owner(actor));
 }

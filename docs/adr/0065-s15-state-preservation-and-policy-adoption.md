@@ -6,6 +6,10 @@ scope: STATE15-01 (#319); S15-AC16; FR-04/05/15/16/18/23/35; NFR-05/07/08/12
 
 # Preserve state separately from S15 policy adoption
 
+## Implemented constrained refinement (MIG15-01, 2026-11-03)
+
+`src/s15/adoption` implements protected staged adoption with original bytes retained in place, a separate restricted-history/current-continuity store, prior-build S14 ops fencing, exact owner commands and a separate worker-release barrier. Known prior usage becomes a one-time POLICY reservation floor; no policy or team conversion is imported. The executable revision-2 contract supersedes the proposed API names below. Legacy continuity and post-activity reverse projection explicitly refuse; real-host custody, prior-executable acceptance and cutover remain #340/#341. This implementation does not change S14 defaults or establish ADR 0064's physical proof gates.
+
 ## Confirmed inputs and inspected implementation
 
 [S15](../specs/S15-conversational-autonomy.md) requires explicit adoption with preserved S14/legacy data, private scopes and rollback. It does not authorize conversion, deletion, team publication or installation of the personal GitHub exception. [ADR 0064](0064-conversational-authority-and-protected-control-plane.md) still requires protected authority, browser and guest-administration proofs.

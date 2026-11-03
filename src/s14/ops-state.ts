@@ -10,6 +10,20 @@ export const opsRoot = (path: string): string => `${path}.ops`;
 export function assertS14OpsUnfenced(path: string): void {
   if (lstatSync(join(opsRoot(path), "fence.json"), { throwIfNoEntry: false })) throw new AppError("s14_ops_reconciliation_required", 503);
 }
+/**
+ * Bridge-build boot fence: maintenance may resume only its own restore protocol, never S15 adoption.
+ * Unreadable/foreign fences refuse before a writable SQLite open. Prior artifacts lacking this guard
+ * require an S14 bridge upgrade and independent negative boot tests before S15 adoption can accept them.
+ */
+export function assertS14MaintenanceFenceCompatible(path: string): void {
+  const file = join(opsRoot(path), "fence.json");
+  if (!lstatSync(file, { throwIfNoEntry: false })) return;
+  try {
+    const fence = JSON.parse(opsRead(file, 4096).toString()) as { contract?: string };
+    if (fence.contract === restoreActivationContract) return;
+  } catch { /* Unknown/torn fences never authorize maintenance writes. */ }
+  throw new AppError("s14_foreign_maintenance_fence", 503);
+}
 /** Capture permits authenticated reads/progress but excludes every other managed writer and new store instance. */
 export function assertS14BackupUnfenced(path: string): void {
   if (lstatSync(join(opsRoot(path), "capture.json"), { throwIfNoEntry: false })) throw new AppError("s14_backup_in_progress", 409);

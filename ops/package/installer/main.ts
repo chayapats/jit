@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { installerDefaults, installerOwnerLink, installerSchemaVersion, installerS14Schema, inspectInstallerS14Database, prepareInstallerHome, runInstaller, InstallerFailure, type HostFacts } from "./installer";
 import { parseServiceConfig, serviceDatabasePath } from "../service-config";
+import { readInstallerAdoptionReport } from "./adoption";
 
 const args = process.argv.slice(2), command = args.shift();
 try {
@@ -10,7 +11,11 @@ try {
     if (!args[i]?.startsWith("--") || flags.has(args[i]!) || !args[i + 1]) throw new Error("invalid-installer-arguments");
     flags.set(args[i]!, args[i + 1]!);
   }
-  if (command === "check-s14") {
+  if (command === "adoption-report") {
+    if (flags.size !== 1 || !flags.has("--config")) throw new Error("invalid-installer-arguments");
+    const report = readInstallerAdoptionReport(flags.get("--config")!);
+    console.log(JSON.stringify(report)); if (report.refusals.length) process.exitCode = 2;
+  } else if (command === "check-s14") {
     if (flags.size !== 1 || !flags.has("--config")) throw new Error("invalid-installer-arguments");
     const config = parseServiceConfig(JSON.parse(readFileSync(flags.get("--config")!, "utf8")));
     if (config.runtime !== "s14") throw new Error("invalid-installer-arguments");
