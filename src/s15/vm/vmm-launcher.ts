@@ -80,7 +80,9 @@ case "$name" in jit-work-${hex(12)}) ;; *) refuse ;; esac
 dir=${literal(layout.machines)}/"$name"
 disk="$dir/disk.qcow2"
 unit="$name.service"
-prepare() { [ -d "$dir" ] || mkdir -m 2750 -- "$dir"; }
+# umask 027 gives 0750; the setgid machines/ parent passes on its group and setgid bit (no special mode is set
+# here: the controller unit's RestrictSUIDSGID also covers this sudo child).
+prepare() { [ -d "$dir" ] || mkdir -- "$dir"; }
 case "$op" in
   show)
     [ "$#" -eq 0 ] || refuse

@@ -108,6 +108,7 @@ Project access levels, scripted replies, `jit ask`/`pending`, signed webhooks, T
 | Guide | Covers |
 | --- | --- |
 | [Service install and upgrade](docs/runbooks/ops-service.md) | Build, plan, install and upgrade the systemd service |
+| [S15 install](docs/runbooks/s15-install.md) | Opt-in S15 installation (`install.sh --s15`), upgrade, rollback, uninstall and owner steps |
 | [Execution box](docs/runbooks/execution-box.md) | Rootless Podman setup and `box-doctor` |
 | [Pi live round](docs/runbooks/pi-live-round.md) | Host, subscription and reboot evidence on a Pi |
 | [Load drill](docs/runbooks/ops-load-drill.md) | Capacity and release-evidence drills |

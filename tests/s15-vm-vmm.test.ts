@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { QemuVmManagement, qemuArgv, qemuArgvFacts } from '../src/s15/vm/qemu';
 import { renderVmmLauncher } from '../src/s15/vm/vmm-launcher';
-import { validateVmm, vmmCommand, vmmHostProbe, vmmLayout, type QemuVmmOptions } from '../src/s15/vm/vmm';
+import { takeInheritedSocket, validateVmm, vmmCommand, vmmHostProbe, vmmLayout, type QemuVmmOptions } from '../src/s15/vm/vmm';
 import { assertVmmLayout, startLocalVmControl } from '../src/s15/vm/local-control';
 import { probeLocalVmHost } from '../src/s15/vm/local';
 import { VmStore } from '../src/s15/vm/store';
@@ -20,11 +20,15 @@ const shortRoot = () => { const root = realpathSync(mkdtempSync(join(process.pla
 const identity = { name: 'jit-work-0123456789ab', architecture: 'x86_64' as const, mac: '52:54:00:12:34:56', sshPort: 22022, resources: { cpus: 5, memoryMiB: 9216, diskGiB: 60 } };
 const sha = 'ab'.repeat(32), tag = `jit-${'cd'.repeat(16)}`;
 
-/** Installer-made shared layout: root not group/world-writable, controller-owned control/, a separate machines/ owner (faked by mode). */
+/**
+ * Installer-made shared layout: root not group/world-writable, controller-owned setgid control/ and control/images/,
+ * a separate machines/ owner (faked by mode). The group is the test user's own, so macOS keeps the setgid bit too.
+ */
 function layout(root: string) {
   const directory = join(root, 'vmm'), l = vmmLayout(directory);
-  mkdirSync(l.control, { recursive: true }); mkdirSync(l.machines);
-  chmodSync(directory, 0o750); chmodSync(l.control, 0o2750); chmodSync(l.machines, 0o2750);
+  mkdirSync(l.images, { recursive: true }); mkdirSync(l.machines);
+  for (const path of [directory, l.control, l.images, l.machines]) chownSync(path, process.getuid!(), process.getgid!());
+  chmodSync(directory, 0o750); chmodSync(l.control, 0o2750); chmodSync(l.images, 0o2750); chmodSync(l.machines, 0o2750);
   return { directory, ...l };
 }
 
@@ -179,9 +183,8 @@ describe('QEMU as the separate identity', () => {
     expect(readdirSync(hyper).sort()).toEqual(['disk.qcow2', 'seed.img']);
     // The verified base is controller-owned and group-readable for the QEMU identity only; nobody else can write it.
     const base = join(l.images, `${h.options().images!.x86_64.sha256}.qcow2`);
-    expect(lstatSync(base).mode & 0o777).toBe(0o440); expect(lstatSync(l.images).mode & 0o777).toBe(0o750);
-    // Linux keeps setgid so new images inherit the shared group (macOS drops it for a foreign /tmp group).
-    if (process.platform === 'linux') expect(lstatSync(l.images).mode & 0o2000).toBe(0o2000);
+    expect(lstatSync(base).mode & 0o777).toBe(0o440); expect(lstatSync(l.images).mode & 0o7777).toBe(0o2750);
+    expect(lstatSync(base).gid).toBe(lstatSync(l.images).gid);
     expect(existsSync(join(h.directory, 'images'))).toBe(false);
     const launch = h.launches[0]!, joined = launch.join(' ');
     expect(joined).toContain(`file=${join(hyper, 'disk.qcow2')},`); expect(joined).toContain(`-cmd:/usr/bin/nc -U ${l.proxySocket}`);
@@ -238,6 +241,8 @@ describe('shared layout, proxy socket and host probe', () => {
     const root = shortRoot(), l = layout(root), vmm: QemuVmmOptions = { user: 'jit-test-vmm', uid: 4242, directory: l.directory, launcher: '/opt/x/launcher' };
     chmodSync(l.directory, 0o770); expect(() => assertVmmLayout(vmm)).toThrow('vm_key_directory_unsafe'); chmodSync(l.directory, 0o750);
     chmodSync(l.control, 0o2770); expect(() => assertVmmLayout(vmm)).toThrow('vm_key_directory_unsafe'); chmodSync(l.control, 0o2750);
+    // Without setgid, new images and a path-bound socket would not carry the shared group; the unit cannot repair it.
+    chmodSync(l.images, 0o750); expect(() => assertVmmLayout(vmm)).toThrow('vm_key_directory_unsafe'); chmodSync(l.images, 0o2750);
     rmSync(l.control, { recursive: true }); symlinkSync(root, l.control); expect(() => assertVmmLayout(vmm)).toThrow('vm_key_directory_unsafe');
     for (const bad of [{ ...vmm, user: 'Root' }, { ...vmm, uid: 0 }, { ...vmm, directory: 'relative' }, { ...vmm, directory: `/${'a'.repeat(70)}` }, { ...vmm, launcher: '/x/../y' }, { ...vmm, extra: true }])
       expect(() => validateVmm(bad as QemuVmmOptions)).toThrow('vm_invalid_setup');
@@ -249,5 +254,35 @@ describe('shared layout, proxy socket and host probe', () => {
     expect(readS15VmPool({ ...vm, local: true, vmm })).toEqual({ poolId: 'working', defaultMemberId: 'working', local: true });
     expect(() => readS15VmPool({ ...vm, vmm })).toThrow('invalid_s15_config');
     expect(() => readS15VmPool({ ...vm, local: true, vmm: { ...vmm, uid: -1 } })).toThrow('invalid_s15_config');
+  });
+});
+
+describe('the registry proxy socket from systemd socket activation', () => {
+  test('only this process takes its named socket, and the activation variables never reach children', () => {
+    const env = (pid: string, names = 'other:jit-s15-vm-proxy') => ({ LISTEN_PID: pid, LISTEN_FDS: '2', LISTEN_FDNAMES: names } as NodeJS.ProcessEnv);
+    const sockets = new Set([3, 4]);
+    let e = env('4321'); expect(takeInheritedSocket('jit-s15-vm-proxy', e, 4321, fd => sockets.has(fd))).toBe(4);
+    expect(e).toEqual({});
+    expect(takeInheritedSocket('jit-s15-vm-proxy', env('4322'), 4321, fd => sockets.has(fd))).toBeNull();
+    expect(takeInheritedSocket('jit-s15-vm-proxy', env('4321', 'other'), 4321, fd => sockets.has(fd))).toBeNull();
+    expect(takeInheritedSocket('jit-s15-vm-proxy', env('4321'), 4321, () => false)).toBeNull();
+    expect(takeInheritedSocket('jit-s15-vm-proxy', {}, 4321, () => true)).toBeNull();
+  });
+
+  test('the proxy serves an inherited listening socket without unlinking or re-binding its path', async () => {
+    // A non-accepting binder (as systemd is) listens, then execs the Bun child with the socket as fd 3.
+    const root = shortRoot(), path = join(root, 'proxy.sock'), child = join(import.meta.dir, 'fixtures/s15-proxy-fd-child.ts');
+    const binder = 'import os,socket,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(sys.argv[1]);s.listen(16)\nos.dup2(s.fileno(),3);os.set_inheritable(3,True)\nos.execv(sys.argv[2],[sys.argv[2],sys.argv[3],sys.argv[1]])\n';
+    const proc = Bun.spawn(['python3', '-I', '-c', binder, path, process.execPath, child], { stdout: 'pipe', stderr: 'pipe' });
+    closers.push(() => { proc.kill(); });
+    const reader = proc.stdout.getReader(); const { value } = await reader.read(); expect(new TextDecoder().decode(value)).toContain('ready');
+    const { connect } = await import('node:net');
+    const reply = await new Promise<string>((done, fail) => {
+      const socket = connect(path, () => socket.write('CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: registry.npmjs.org:443\r\n\r\n'));
+      let text = ''; socket.on('data', chunk => { text += chunk; socket.end(); }); socket.on('close', () => done(text)); socket.on('error', fail);
+    });
+    // The proxy itself answered (no lease: refused), on the very socket the binder created.
+    expect(reply).toMatch(/^HTTP\/1\.1 4\d\d /);
+    expect(lstatSync(path).isSocket()).toBe(true);
   });
 });

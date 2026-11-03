@@ -28,6 +28,7 @@ import { runtimeDisclosure } from './disclosure/runtime';
 import { createTelegramBotApi } from './telegram';
 import { liveRouteAvailability } from './model/availability';
 import { readS15RuntimeConfig, readS15VmPool } from './runtime-config';
+import { takeInheritedSocket, vmmProxySocketName } from './vm/vmm';
 
 export { parseS15RuntimeConfig, readS15RuntimeConfig, readS15VmPool, type S15RuntimeConfig } from './runtime-config';
 
@@ -73,6 +74,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       try { ownerStore.read(tx => ownerApp.requireOwner(tx, proof as import('../s14/types').OwnerActor)); return { id: 'owner', generation: generation(), expiresAt: Date.now() + 1000 }; } catch { return null; }
     };
     const vmPool = readS15VmPool(config.vm);
+    // VM15-03: under the installed unit, systemd binds the registry-proxy socket in the root mount namespace.
+    const proxySocketFd = !initialize && config.vm.vmm ? takeInheritedSocket(vmmProxySocketName) : null;
     // Approved subscription routes become available once this identity's Web device login stores a credential.
     const availability = liveRouteAvailability();
     let availabilityTimer: ReturnType<typeof setInterval> | undefined;
@@ -119,7 +122,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ]; } } },
       // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
       telegram: { vault, transport: token => createTelegramBotApi(token) },
-      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm } : {} } : {}) },
+      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm, ...(proxySocketFd !== null ? { proxySocketFd } : {}) } : {} } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));

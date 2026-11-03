@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInstaller, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
-import { readS15ComputerProgress, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, type S15InstallerOptions } from "../ops/package/installer/s15";
+import { readS15ComputerProgress, renderS15ProxySocket, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, type S15InstallerOptions } from "../ops/package/installer/s15";
 import { assertNoSecretValues } from "../ops/package/service-config";
 import { renderVmmLauncher } from "../src/s15/vm/vmm-launcher";
 import { parseS15RuntimeConfig, readS15RuntimeConfig } from "../src/s15/runtime-config";
@@ -32,7 +32,7 @@ function tree(f: ReturnType<typeof fixture>, paths: string[]) {
   };
   return paths.map(path => visit(f.at(path)));
 }
-const s15Trees = ["var/lib/jit-s15", "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm", "opt/jit-s15", "etc/jit-s15", "etc/sudoers.d", "etc/systemd/system/jit-s15.service", "etc/systemd/journald@jit-s15.conf"];
+const s15Trees = ["var/lib/jit-s15", "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm", "opt/jit-s15", "etc/jit-s15", "etc/sudoers.d", "etc/systemd/system/jit-s15.service", "etc/systemd/system/jit-s15-vm-proxy.socket", "etc/systemd/journald@jit-s15.conf"];
 const otherTrees = (name: "jit" | "jit-s14") => [`var/lib/${name}`, `opt/${name}`, `etc/${name}`, `etc/systemd/system/${name}.service`, `etc/systemd/journald@${name}.conf`];
 const stateMarker = (f: ReturnType<typeof fixture>) => f.at("var/lib/jit-s15/state/runtime/composition.json");
 
@@ -58,6 +58,11 @@ test("a fresh S15 install creates the separate installation, its QEMU identity b
   expect(unit).toContain("BindPaths=/run/user/1002\n"); expect(unit).toContain("LogNamespace=jit-s15\n"); expect(unit).not.toContain("NoNewPrivileges");
   expect(unit).not.toMatch(/qemu|kvm/i);
   expect(readFileSync(f.at(s15Installation.journald), "utf8")).toContain("SystemMaxUse=");
+  // The registry-proxy socket is bound by systemd in the root mount namespace and passed to the controller.
+  const socket = readFileSync(f.at(s15Installation.proxySocketUnit), "utf8");
+  expect(socket).toBe(renderS15ProxySocket());
+  for (const line of ["ListenStream=/var/lib/jit-s15-vm/control/proxy.sock", "FileDescriptorName=jit-s15-vm-proxy", "SocketUser=jit-s15", "SocketGroup=jit-s15-vm", "SocketMode=0660", "PartOf=jit-s15.service"]) expect(socket).toContain(`${line}\n`);
+  for (const line of ["Requires=jit-s15-vm-proxy.socket", "Sockets=jit-s15-vm-proxy.socket"]) expect(unit).toContain(`${line}\n`);
   expect(readFileSync(f.at(s15Installation.launcher), "utf8")).toBe(renderVmmLauncher(config.vm.vmm));
   expect(lstatSync(f.at(s15Installation.launcher)).mode & 0o777).toBe(0o755);
   expect(readFileSync(f.at(s15Installation.sudoers), "utf8")).toBe(renderS15Sudoers());
@@ -65,7 +70,7 @@ test("a fresh S15 install creates the separate installation, its QEMU identity b
   expect(lstatSync(f.at(s15Installation.sudoers)).mode & 0o777).toBe(0o440);
   expect(readdirSync(f.at("etc/sudoers.d"))).toEqual(["jit-s15-vmm"]);
   // Directories and the atomically switched release.
-  for (const [path, mode] of [["var/lib/jit-s15", 0o700], ["var/lib/jit-s15-vmm", 0o700], ["var/lib/jit-s15-vm", 0o750], ["var/lib/jit-s15-vm/control", 0o750], ["var/lib/jit-s15-vm/machines", 0o750], ["etc/jit-s15", 0o750]] as const)
+  for (const [path, mode] of [["var/lib/jit-s15", 0o700], ["var/lib/jit-s15-vmm", 0o700], ["var/lib/jit-s15-vm", 0o750], ["var/lib/jit-s15-vm/control", 0o750], ["var/lib/jit-s15-vm/control/images", 0o750], ["var/lib/jit-s15-vm/machines", 0o750], ["etc/jit-s15", 0o750]] as const)
     expect({ path, mode: lstatSync(f.at(path)).mode & 0o777 }).toEqual({ path, mode });
   expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-a"));
   expect(existsSync(stateMarker(f))).toBe(true);
@@ -108,7 +113,7 @@ const freshSteps = ["preflight", "disk-reserve", "identity", "directories", "key
 test.each(freshSteps)("a fresh install failing at %s leaves no unit, release link or new state, and a re-run completes", async failStep => {
   const f = fixture();
   await expect(install(f, { release: "release-a", ...(failStep === "health" ? { health: [false] } : { failStep }) })).rejects.toThrow(`Failed at ${failStep}.`);
-  for (const path of [s15Installation.unit, s15Installation.journald, "opt/jit-s15/current", "var/lib/jit-s15/state"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
+  for (const path of [s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "opt/jit-s15/current", "var/lib/jit-s15/state"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
   expect(f.lines.includes("Step: rollback")).toBe(["service-install", "service-start", "health"].includes(failStep));
   const result = await install(f, { release: "release-a" });
   expect(result.events.at(-1)).toBe("owner-link");
@@ -117,9 +122,9 @@ test.each(freshSteps)("a fresh install failing at %s leaves no unit, release lin
 
 test.each([...freshSteps.filter(step => step !== "preflight"), "service-stop"])("an upgrade failing at %s keeps the previous release, unit, config and state", async failStep => {
   const f = fixture(); await install(f, { release: "release-a" });
-  const before = tree(f, ["opt/jit-s15/current", "etc/jit-s15/s15-runtime.json", s15Installation.unit, s15Installation.journald, "var/lib/jit-s15/state"]);
+  const before = tree(f, ["opt/jit-s15/current", "etc/jit-s15/s15-runtime.json", s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "var/lib/jit-s15/state"]);
   await expect(install(f, { release: "release-b", ...(failStep === "health" ? { health: [false, true] } : { failStep }) })).rejects.toThrow(`Failed at ${failStep}.`);
-  expect(tree(f, ["opt/jit-s15/current", "etc/jit-s15/s15-runtime.json", s15Installation.unit, s15Installation.journald, "var/lib/jit-s15/state"])).toEqual(before);
+  expect(tree(f, ["opt/jit-s15/current", "etc/jit-s15/s15-runtime.json", s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "var/lib/jit-s15/state"])).toEqual(before);
   await install(f, { release: "release-b" });
   expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-b"));
 });
@@ -175,7 +180,7 @@ test("uninstall removes only the S15 service units and retains config, state, re
   const retained = ["etc/jit-s15", "var/lib/jit-s15/state", "var/lib/jit-s15-vm", "opt/jit-s15", "etc/sudoers.d"], before = tree(f, retained);
   const result = await runS15Installer({ ...f.options, uninstall: true });
   expect(result.events).toEqual(["uninstall"]);
-  for (const path of [s15Installation.unit, s15Installation.journald, "var/lib/jit-s15/.config/systemd/user/gnome-keyring-daemon.service"]) expect(existsSync(f.at(path))).toBe(false);
+  for (const path of [s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "var/lib/jit-s15/.config/systemd/user/gnome-keyring-daemon.service"]) expect(existsSync(f.at(path))).toBe(false);
   expect(tree(f, retained)).toEqual(before);
   await runS15Installer({ ...f.options, uninstall: true });
   expect(tree(f, retained)).toEqual(before);
@@ -238,7 +243,9 @@ test("the privileged re-exec carries --s15 through local and downloaded bootstra
 test("the generated config initializes a fresh S15 runtime with the separate QEMU identity, and the progress helper reads it", async () => {
   const root = realpathSync(mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "js15-"))); roots.push(root);
   const vmm = { user: "jit-s15-vmm", uid: 4242, directory: join(root, "vm"), launcher: "/opt/jit-s15/libexec/jit-s15-vmm" };
-  for (const [path, mode] of [[vmm.directory, 0o750], [join(vmm.directory, "control"), 0o2750], [join(vmm.directory, "machines"), 0o2750]] as const) { mkdirSync(path); chmodSync(path, mode); }
+  for (const [path, mode] of [[vmm.directory, 0o750], [join(vmm.directory, "control"), 0o2750], [join(vmm.directory, "control/images"), 0o2750], [join(vmm.directory, "machines"), 0o2750]] as const) {
+    mkdirSync(path); chownSync(path, process.getuid!(), process.getgid!()); chmodSync(path, mode);
+  }
   const config = { ...s15InstallerConfig({ installationId: "s15_0123456789abcdef", vmm }), directory: join(root, "state") }, path = join(root, "s15-runtime.json");
   writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
   expect(readS15RuntimeConfig(path).vm.vmm).toEqual(vmm);

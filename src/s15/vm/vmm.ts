@@ -1,3 +1,4 @@
+import { fstatSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { localVmHostProbe, type LocalVmHostProbe } from "./local";
 import { vmFail } from "./validation";
@@ -67,4 +68,21 @@ export function vmmHostProbe(vmm: QemuVmmOptions, base: LocalVmHostProbe = local
     if (!cached || now() - cached.at > 5000) cached = { at: now(), kvm: spawn(vmmCommand(vmm, ["kvm"])) === 0 };
     return cached.kvm;
   } };
+}
+
+/** systemd `FileDescriptorName=` of the installer's registry-proxy socket unit (`jit-s15-vm-proxy.socket`). */
+export const vmmProxySocketName = "jit-s15-vm-proxy";
+
+/**
+ * Takes one listening socket that systemd passed to this exact process (`LISTEN_PID`, `LISTEN_FDS`,
+ * `LISTEN_FDNAMES`; descriptors start at 3) by its `FileDescriptorName=`, or null when none was passed.
+ * The activation variables are removed from `env` once read, so no child process ever sees them.
+ */
+export function takeInheritedSocket(name: string, env: NodeJS.ProcessEnv = process.env, pid: number = process.pid, isSocket: (fd: number) => boolean = fd => { try { return fstatSync(fd).isSocket(); } catch { return false; } }): number | null {
+  const listenPid = env.LISTEN_PID, count = Number(env.LISTEN_FDS), names = (env.LISTEN_FDNAMES ?? "").split(":");
+  delete env.LISTEN_PID; delete env.LISTEN_FDS; delete env.LISTEN_FDNAMES;
+  if (listenPid !== String(pid) || !Number.isSafeInteger(count) || count < 1 || count > 64) return null;
+  const index = names.indexOf(name);
+  if (index < 0 || index >= count || !isSocket(3 + index)) return null;
+  return 3 + index;
 }

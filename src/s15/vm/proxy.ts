@@ -28,6 +28,13 @@ export interface VmRegistryProxyOptions {
    * shared group, so that layout uses 0660 inside a setgid directory owned by the controller.
    */
   socketMode?: 0o600 | 0o660;
+  /**
+   * Serve an already-listening Unix socket inherited from systemd socket activation instead of binding
+   * `socketPath` (VM15-03). The socket is then bound by the service manager in the host's root mount namespace,
+   * so a confined guest-forward helper (AppArmor `nc.openbsd`) can reach it from outside the controller unit's
+   * private mount namespace. Its owner, group and mode come from the socket unit; nothing is unlinked or chmodded.
+   */
+  socketFd?: number;
   /** Port the guest uses in its lease URL when it differs from the listener (fixed guest-forward port). */
   guestPort?: number;
   bytesPerSession?: number; maxConnections?: number; connectionMs?: number;
@@ -121,14 +128,19 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
     };
     const onData = (chunk: Buffer) => { void handle(chunk).catch(() => client.destroy()); }; client.on("data", onData);
   });
-  if (options.socketPath) {
+  if (options.socketFd !== undefined) {
+    vmInteger(options.socketFd, 1024, 3);
+    if (!options.socketPath || options.guestPort === undefined) vmFail("vm_invalid_setup");
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen({ fd: options.socketFd! }, resolve); });
+  } else if (options.socketPath) {
     // A stale socket from an earlier controller process is replaced; any other file type is refused.
     const stale = lstatSync(options.socketPath, { throwIfNoEntry: false });
     if (stale && !stale.isSocket()) vmFail("vm_proxy_unavailable"); if (stale) unlinkSync(options.socketPath);
   }
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); if (options.socketPath) server.listen(options.socketPath, resolve); else server.listen(options.port, options.hostname, resolve); });
+  if (options.socketFd === undefined) await new Promise<void>((resolve, reject) => { server.once("error", reject); if (options.socketPath) server.listen(options.socketPath, resolve); else server.listen(options.port, options.hostname, resolve); });
   const address = server.address();
-  if (options.socketPath) { if (address !== options.socketPath) vmFail("vm_proxy_unavailable"); chmodSync(options.socketPath, options.socketMode ?? 0o600); }
+  if (options.socketFd !== undefined) { /* Inherited listener: the socket unit owns its path, owner, group and mode. */ }
+  else if (options.socketPath) { if (address !== options.socketPath) vmFail("vm_proxy_unavailable"); chmodSync(options.socketPath, options.socketMode ?? 0o600); }
   else if (!address || typeof address === "string") vmFail("vm_proxy_unavailable");
   const listenerPort = typeof address === "object" && address ? address.port : 0, guestPort = options.guestPort ?? listenerPort;
   return { port: listenerPort,

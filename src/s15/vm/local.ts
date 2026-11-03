@@ -176,16 +176,18 @@ export function localVmFileHash(file: string): Promise<string> {
 /**
  * Returns the read-only verified base image path, downloading it once. A cached or downloaded image whose
  * SHA-256 differs from the pin is deleted and refused with `vm_image_unverified`; there is no fallback.
- * `access: "group"` (VM15-03) keeps the controller-owned image directory and file group-readable (setgid
- * 2750, file 0440) inside the shared hypervisor `control/` directory, so only the separate QEMU identity can
- * read the base image beside the controller; nobody but the controller can write either.
+ * `access: "group"` (VM15-03) uses the installer-made, controller-owned image directory inside the shared
+ * hypervisor `control/` directory (setgid 2750, so images carry the shared group) and keeps files 0440, so only
+ * the separate QEMU identity can read the base image beside the controller; nobody but the controller writes.
  */
 export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void, guard: () => void = () => {}, access: "private" | "group" = "private"): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(image.sha256)) vmFail("vm_image_unverified");
-  const group = access === "group", images = join(directory, "images"); mkdirSync(images, { recursive: true, mode: group ? 0o750 : 0o700 });
-  const stat = lstatSync(images); if (!stat.isDirectory() || stat.isSymbolicLink() || (group ? stat.mode & 0o027 || stat.uid !== process.getuid?.() : stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
-  // The controller's UMask strips group bits from new directories; restore group traversal (keeping setgid).
-  if (group) chmodSync(images, 0o2750);
+  // The group-readable image directory is installer-made (setgid 2750): the hardened controller unit may not set
+  // a setgid bit itself (RestrictSUIDSGID), and without setgid a new image would not carry the shared group.
+  const group = access === "group", images = join(directory, "images");
+  if (!group) mkdirSync(images, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(images, { throwIfNoEntry: false });
+  if (!stat || !stat.isDirectory() || stat.isSymbolicLink() || (group ? (stat.mode & 0o2777) !== 0o2750 || stat.uid !== process.getuid?.() : stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
   const fileMode = group ? 0o440 : 0o400;
   const file = join(images, `${image.sha256}.qcow2`);
   const cached = lstatSync(file, { throwIfNoEntry: false });

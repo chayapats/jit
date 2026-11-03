@@ -9,8 +9,8 @@ import { validateVmm, vmmHostProbe, vmmLayout, type QemuVmmOptions } from "./vmm
 
 /**
  * Verifies the installer-made shared hypervisor layout (VM15-03) before anything is created in it: the root is
- * a real directory nobody but its owner can write; `control/` belongs to this controller and is not group- or
- * world-writable; `machines/` (the QEMU identity's) is a real directory that is not world-writable. The controller
+ * a real directory nobody but its owner can write; `control/` and `control/images/` belong to this controller,
+ * are setgid and group-readable but not group- or world-writable; `machines/` (the QEMU identity's) is a real directory that is not world-writable. The controller
  * never writes below `machines/`; it only connects to QMP and stats files there. Anything else is refused, never
  * repaired, because a writable or replaced parent would let another identity redirect controller writes.
  */
@@ -22,7 +22,9 @@ export function assertVmmLayout(vmm: QemuVmmOptions): void {
     if (!stat || !stat.isDirectory() || stat.isSymbolicLink() || !test(stat)) vmFail("vm_key_directory_unsafe");
   };
   check(vmm.directory, stat => !(stat.mode & 0o022));
-  check(layout.control, stat => stat.uid === uid && !(stat.mode & 0o027));
+  // setgid 2750: new images and the path-bound proxy socket inherit the shared group (the unit cannot set it).
+  check(layout.control, stat => stat.uid === uid && (stat.mode & 0o2777) === 0o2750);
+  check(layout.images, stat => stat.uid === uid && (stat.mode & 0o2777) === 0o2750);
   check(layout.machines, stat => !(stat.mode & 0o002));
 }
 
@@ -32,6 +34,8 @@ export interface LocalVmControlOptions extends Omit<QemuHostOptions, "proxySocke
   proxyLog?: (entry: VmProxyLog) => void;
   resolve?: (host: string) => Promise<readonly { address: string; family: number }[]>;
   connect?: (address: string, port: number) => Socket;
+  /** Listening socket for the shared layout's proxy path, inherited from the installer's socket unit (VM15-03). */
+  proxySocketFd?: number;
 }
 /** Composed protected local-VM control: manager host options, the registry proxy's leases and its host settings. */
 export interface LocalVmControl {
@@ -57,8 +61,9 @@ export async function startLocalVmControl(store: VmStore, options: LocalVmContro
   // controller-owned `control/` directory, group-connectable (0660) by that identity only.
   if (options.vmm) assertVmmLayout(options.vmm);
   const proxySocket = options.vmm ? vmmLayout(options.vmm.directory).proxySocket : join(options.directory, "proxy.sock");
-  const { proxyLog, resolve, connect, ...host } = options;
-  const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", port: 0, socketPath: proxySocket, socketMode: options.vmm ? 0o660 : 0o600, guestHostname: qemuGuestNetwork.proxy, guestPort: qemuGuestNetwork.proxyPort,
+  const { proxyLog, resolve, connect, proxySocketFd, ...host } = options;
+  if (proxySocketFd !== undefined && !options.vmm) vmFail("vm_invalid_setup");
+  const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", port: 0, socketPath: proxySocket, socketMode: options.vmm ? 0o660 : 0o600, ...(proxySocketFd !== undefined ? { socketFd: proxySocketFd } : {}), guestHostname: qemuGuestNetwork.proxy, guestPort: qemuGuestNetwork.proxyPort,
     ...(saved ? { hosts: JSON.parse(saved.data) as string[] } : {}), log: proxyLog ?? (() => {}), ...(resolve ? { resolve } : {}), ...(connect ? { connect } : {}) });
   // `/dev/kvm` readiness is the QEMU identity's access, probed through its launcher, never the controller's.
   const probe = host.probe ?? (options.vmm ? vmmHostProbe(options.vmm) : undefined);

@@ -10,7 +10,7 @@ import { spawnRunner, type CommandRunner } from "../../../src/ops/supervisor";
 import { releaseReadableByService } from "../../../src/ops/service-package";
 import { parseS15RuntimeConfig, readS15RuntimeConfig, type S15RuntimeConfig } from "../../../src/s15/runtime-config";
 import { renderVmmLauncher } from "../../../src/s15/vm/vmm-launcher";
-import { vmmCommand, vmmHostProbe, vmmLayout, type QemuVmmOptions } from "../../../src/s15/vm/vmm";
+import { vmmCommand, vmmHostProbe, vmmLayout, vmmProxySocketName, type QemuVmmOptions } from "../../../src/s15/vm/vmm";
 import { probeLocalVmHost } from "../../../src/s15/vm/local";
 import { personalServiceBinding } from "../../../src/s14/personal-origin";
 import { zero } from "../../../src/s15/policy/validation";
@@ -29,6 +29,7 @@ export const s15Installation = Object.freeze({
   prefix: "/opt/jit-s15", configDir: "/etc/jit-s15", config: "/etc/jit-s15/s15-runtime.json", installerState: "/etc/jit-s15/installer-state.json",
   launcher: "/opt/jit-s15/libexec/jit-s15-vmm", sudoers: "/etc/sudoers.d/jit-s15-vmm",
   unit: "/etc/systemd/system/jit-s15.service", journald: "/etc/systemd/journald@jit-s15.conf", service: "jit-s15.service", journal: "jit-s15",
+  proxySocketUnit: "/etc/systemd/system/jit-s15-vm-proxy.socket", proxySocket: "jit-s15-vm-proxy.socket",
   origin: "http://127.0.0.1:3002",
 });
 
@@ -67,8 +68,9 @@ export function renderS15Unit(input: { uid: number; vmmUid: number; memoryMaxByt
 Description=Jit S15 controller
 Documentation=https://github.com/chayapats/jit/blob/main/docs/runbooks/s15-install.md
 After=systemd-journald@${p.journal}.service
-After=network-online.target user@${input.uid}.service user@${input.vmmUid}.service
+After=network-online.target user@${input.uid}.service user@${input.vmmUid}.service ${p.proxySocket}
 Wants=network-online.target user@${input.uid}.service user@${input.vmmUid}.service
+Requires=${p.proxySocket}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -78,6 +80,7 @@ User=${p.user}
 Group=${p.user}
 WorkingDirectory=${p.home}/work
 ExecStart=${p.prefix}/bin/bun ${p.prefix}/current/src/main.ts serve --s15 --config ${p.config}
+Sockets=${p.proxySocket}
 Environment=HOME=${p.home}
 Environment=XDG_RUNTIME_DIR=/run/user/${input.uid}
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${input.uid}/bus
@@ -108,6 +111,31 @@ LogRateLimitBurst=1000
 
 [Install]
 WantedBy=multi-user.target
+`;
+}
+
+/**
+ * The working VM's registry-proxy socket, bound by systemd in the host's root mount namespace and passed to the
+ * controller as `jit-s15-vm-proxy`. A socket the hardened controller bound itself would sit in the unit's private
+ * mount namespace, where AppArmor's `nc.openbsd` profile refuses the guest-forward helper's connect
+ * ("disconnected path"). Only the shared group (the QEMU identity) can connect besides the controller. It starts
+ * with the controller and stops with it (PartOf), so guest traffic never starts a stopped controller.
+ */
+export function renderS15ProxySocket(): string {
+  const p = s15Installation, layout = vmmLayout(p.vmmRoot);
+  return `# Rendered by install.sh --s15 (VM15-03). Re-run the installer to repair; do not edit.
+[Unit]
+Description=Jit S15 working-VM registry proxy socket
+PartOf=${p.service}
+
+[Socket]
+ListenStream=${layout.proxySocket}
+FileDescriptorName=${vmmProxySocketName}
+SocketUser=${p.user}
+SocketGroup=${p.group}
+SocketMode=0660
+RemoveOnStop=yes
+Service=${p.service}
 `;
 }
 
@@ -251,11 +279,11 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
   };
   const health = [...(options.simulation?.health ?? [])], computers = [...(options.simulation?.computer ?? [])];
   const paths = { home: at(p.home), state: at(p.state), vmmHome: at(p.vmmHome), vmmRoot: at(p.vmmRoot), prefix: at(p.prefix), releases: at(join(p.prefix, "releases")), current: at(join(p.prefix, "current")),
-    libexec: at(join(p.prefix, "libexec")), launcher: at(p.launcher), configDir: at(p.configDir), config: at(p.config), installerState: at(p.installerState), sudoers: at(p.sudoers), unit: at(p.unit), journald: at(p.journald) };
+    libexec: at(join(p.prefix, "libexec")), launcher: at(p.launcher), configDir: at(p.configDir), config: at(p.config), installerState: at(p.installerState), sudoers: at(p.sudoers), unit: at(p.unit), journald: at(p.journald), socket: at(p.proxySocketUnit) };
   const layout = vmmLayout(paths.vmmRoot);
   if (!dry) {
     try {
-      for (const path of [paths.config, options.bunPath, paths.releases, paths.launcher, paths.sudoers, paths.unit, paths.journald, paths.vmmRoot]) assertRootPath(path);
+      for (const path of [paths.config, options.bunPath, paths.releases, paths.launcher, paths.sudoers, paths.unit, paths.journald, paths.socket, paths.vmmRoot]) assertRootPath(path);
       assertRootTree(resolve(options.source));
     } catch { throw new InstallerFailure("trusted-paths", "use root-owned executable/config/system parents without symlinks or group/other write, then re-run from a trusted release"); }
   }
@@ -265,7 +293,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
   const vmmOptions = () => ({ user: p.vmmUser, uid: vmmUid, directory: p.vmmRoot, launcher: p.launcher });
   let ownedStaging: string | null = null, frozenContainer: string | null = null, ownerTerminal: ReturnType<typeof operatorTerminal> | undefined, pendingOwner: PendingOwnerLink | undefined;
   let release: string | null = null, config: S15RuntimeConfig | null = null, createdState = false, armed = false, committed = false;
-  let previous: { release: string | null; unit: string | null; journald: string | null; active: boolean } | null = null;
+  let previous: { release: string | null; unit: string | null; journald: string | null; socket: string | null; active: boolean } | null = null;
   const currentTarget = () => { try { return lstatSync(paths.current).isSymbolicLink() ? resolve(dirname(paths.current), readlinkSync(paths.current)) : null; } catch { return null; } };
   // The active-release link is the one symlink the installer manages; its parent must not be a link.
   const link = (path: string) => { safe(dirname(path)); const stat = lstatSync(path, { throwIfNoEntry: false }); if (stat && !stat.isSymbolicLink()) throw new InstallerFailure("paths", `move the non-link ${path.slice(root === "/" ? 0 : root.length)} aside, then re-run install.sh --s15`); };
@@ -307,7 +335,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
           await call(asUser(["systemctl", "--user", "disable", "--now", "gnome-keyring-daemon.service"]));
         }
       }
-      for (const path of [paths.unit, paths.journald, join(paths.home, ".config/systemd/user/gnome-keyring-daemon.service")]) { safe(path); rmSync(path, { force: true }); }
+      for (const path of [paths.unit, paths.journald, paths.socket, join(paths.home, ".config/systemd/user/gnome-keyring-daemon.service")]) { safe(path); rmSync(path, { force: true }); }
       if (!dry) await call(["systemctl", "daemon-reload"]);
       out("Uninstalled jit-s15.service. Identities, linger, packages, Bun, releases, launcher, sudoers rule, config, state, working-VM disks and keyring are retained. Legacy and S14 installations were not touched.");
       return { events, config: null, computer: null, release: currentTarget(), rolledBack: false };
@@ -353,7 +381,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     step("directories", "remove unexpected symlinks or repair directory ownership under /var/lib/jit-s15, /var/lib/jit-s15-vm and /opt/jit-s15, then re-run install.sh --s15");
     own(paths.home, 0o700, uid, gid); own(paths.vmmHome, 0o700, vmmUid, sharedGid);
-    own(paths.vmmRoot, 0o750, 0, sharedGid); own(layout.control, 0o2750, uid, sharedGid); own(layout.machines, 0o2750, vmmUid, sharedGid);
+    own(paths.vmmRoot, 0o750, 0, sharedGid); own(layout.control, 0o2750, uid, sharedGid); own(layout.images, 0o2750, uid, sharedGid); own(layout.machines, 0o2750, vmmUid, sharedGid);
     for (const path of [paths.prefix, join(paths.prefix, "bin"), paths.releases, paths.libexec]) own(path, 0o755, 0, 0);
     own(paths.configDir, 0o750, 0, gid);
 
@@ -444,6 +472,18 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     step("owner-terminal", "re-run install.sh --s15 from an operator terminal (for SSH use ssh -t); nothing has been stopped or changed in the running service");
     if (!dry) { try { ownerTerminal = operatorTerminal(); } catch { throw new InstallerFailure(currentStep, next); } }
 
+    // An upgrade or repair stops the controller (and, through PartOf, its proxy socket) before anything else changes.
+    if (existsSync(paths.unit)) {
+      step("service-stop", `inspect journalctl --namespace=${p.journal} -u ${p.service}, then re-run install.sh --s15; the working VM keeps running`);
+      const active = dry ? options.simulation?.serviceActive !== false : ["active", "activating", "reloading"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim());
+      previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), socket: read(paths.socket), active };
+      armed = true;
+      if (!dry && active) {
+        await must(["systemctl", "stop", p.service], 120_000);
+        if (["active", "activating", "deactivating"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim())) throw new InstallerFailure(currentStep, next);
+      }
+    }
+
     step("state-initialize", `repair ${p.state} ownership and re-run install.sh --s15; existing state is never re-initialized`);
     const marker = join(paths.state, "runtime/composition.json");
     if (existsSync(paths.state) && !existsSync(marker)) {
@@ -460,17 +500,6 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       }
     }
 
-    if (existsSync(paths.unit)) {
-      step("service-stop", `inspect journalctl --namespace=${p.journal} -u ${p.service}, then re-run install.sh --s15; the working VM keeps running`);
-      const active = dry ? options.simulation?.serviceActive !== false : ["active", "activating", "reloading"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim());
-      previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), active };
-      armed = true;
-      if (!dry && active) {
-        await must(["systemctl", "stop", p.service], 120_000);
-        if (["active", "activating", "deactivating"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim())) throw new InstallerFailure(currentStep, next);
-      }
-    }
-
     step("owner-link-prepare", "repair the S15 owner store and the private fd 3 delivery, then re-run install.sh --s15 from the operator terminal; no link is printed before health");
     if (!dry) {
       const terminal = ownerTerminal!; ownerTerminal = undefined;
@@ -482,6 +511,10 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     step("service-install", `inspect ${p.unit} and the journald namespace, then re-run install.sh --s15`);
     write(paths.unit, renderS15Unit({ uid, vmmUid, memoryMaxBytes: defaults.memoryMaxBytes }), 0o644, { uid: 0, gid: 0 });
     write(paths.journald, renderS15Journald(defaults.logBytes), 0o644, { uid: 0, gid: 0 });
+    write(paths.socket, renderS15ProxySocket(), 0o644, { uid: 0, gid: 0 });
+    // The socket unit binds the path itself; a socket file left by `init --s15` (or a crash) is removed first.
+    const stale = lstatSync(layout.proxySocket, { throwIfNoEntry: false });
+    if (stale?.isSocket() && (dry || (await call(["systemctl", "is-active", p.proxySocket])).stdout.trim() !== "active")) rmSync(layout.proxySocket, { force: true });
     switchCurrent(release!);
     if (!dry) { await must(["systemctl", "daemon-reload"]); await must(["systemctl", "enable", p.service]); }
 
@@ -538,12 +571,13 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
           switchCurrent(previous.release);
           if (previous.unit !== null) write(paths.unit, previous.unit, 0o644, { uid: 0, gid: 0 });
           if (previous.journald !== null) write(paths.journald, previous.journald, 0o644, { uid: 0, gid: 0 });
+          if (previous.socket !== null) write(paths.socket, previous.socket, 0o644, { uid: 0, gid: 0 });
           if (!dry) await must(["systemctl", "daemon-reload"]);
           if (previous.active) { if (!dry) await must(["systemctl", "start", p.service], 180_000); restored = await healthy(); }
           else restored = true;
         } else {
           if (!dry) await call(["systemctl", "disable", p.service]);
-          for (const path of [paths.unit, paths.journald]) { safe(path); rmSync(path, { force: true }); }
+          for (const path of [paths.unit, paths.journald, paths.socket]) { safe(path); rmSync(path, { force: true }); }
           link(paths.current); rmSync(paths.current, { force: true });
           if (!dry) await call(["systemctl", "daemon-reload"]);
           restored = true;
