@@ -7,7 +7,7 @@ After the installer finishes, the owner never edits a file or types a value the 
 ## Requirements
 
 - 64-bit Linux (x86_64 or aarch64) with systemd, run as root (or by a user with sudo; the bootstrap re-executes itself under sudo after you approve the plan).
-- Debian or Ubuntu for the working computer's packages. The installer installs `sudo`, `openssh-client`, `qemu-system-x86` (x86_64) or `qemu-system-arm` and `qemu-efi-aarch64` (aarch64), `qemu-utils`, `cloud-image-utils` and `netcat-openbsd`, plus the core packages every runtime needs. On other distributions the controller still installs, and the Web offers enrolling your own VM instead.
+- Debian or Ubuntu for the working computer's packages. The installer installs `sudo`, `openssh-client`, `qemu-system-x86` (x86_64) or `qemu-system-arm` and `qemu-efi-aarch64` (aarch64), `qemu-utils`, `cloud-image-utils` and `netcat-openbsd`, plus the core packages every runtime needs and the protected browser's Chromium libraries and fonts (Playwright's list; a failure there does not stop the install, and the Web names any missing library). On other distributions the controller still installs, and the Web offers enrolling your own VM instead.
 - KVM: `/dev/kvm`. If this host is itself a VM, turn on nested virtualization in its hypervisor (Proxmox: CPU type `host`).
 - Disk: the installer reserve plus 512 MiB to install; the working computer then needs about 60 GiB (sparse) plus a 0.6 GiB base image.
 - An operator terminal (`ssh -t` over SSH). The first-owner link is shown only on `/dev/tty`, never in logs.
@@ -40,7 +40,7 @@ The installer prints its plan, asks once for approval (`--yes` approves non-inte
 | `/etc/jit-s15/s15-runtime.json` | root:jit-s15 0640 | generated config (credential-free) |
 | `/etc/jit-s15/installer-state.json` | root:jit-s15 0640 | last installed release and host facts |
 | `/var/lib/jit-s15` | jit-s15 0700 | controller home: Secret Service, Schway lock, `work/`, `state/` |
-| `/var/lib/jit-s15/state` | jit-s15 0700 | S15 state from `init --s15`, including the connection vault and VM keys |
+| `/var/lib/jit-s15/state` | jit-s15 0700 | S15 state from `init --s15`, including the connection vault, VM keys, the approved-website list (`browser-sites.sqlite`) and the verified Chromium (`browser-engine/`) |
 | `/var/lib/jit-s15-vm` | root:jit-s15-vm 0750 | shared working-VM root |
 | `/var/lib/jit-s15-vm/control{,/images}` | jit-s15:jit-s15-vm 2750 | verified base images (0440), registry-proxy socket (0660) |
 | `/var/lib/jit-s15-vm/machines` | jit-s15-vmm:jit-s15-vm 2750 | per-VM disk, seed and QMP socket |
@@ -56,7 +56,7 @@ The installer prints its plan, asks once for approval (`--yes` approves non-inte
 - the approved Codex subscription route for one device login (`gpt-6.1-sol`, effort `high`, subscription charge). It is `available` once `jit-s15` holds a signed-in Codex credential, which Jit reads from the local credential store every 15 seconds (no network); before sign-in it is unavailable;
 - `policy: null`, no budget, no personal GitHub rule, `github: null`, `google: null`, team concurrency 2 with memory off, and the empty disclosure configuration;
 - `vm: { id: "working", resource: computer, local: true, vmm: { user: "jit-s15-vmm", uid, directory: "/var/lib/jit-s15-vm", launcher } }`, or `local: false` without `vmm` on a host without a `kvm` group;
-- `browser: null`. The protected S15 browser needs owner-approved public origins and a disclosure route, and Playwright's Chromium download has no pinned hash Jit can verify, so the installer leaves it off and says so.
+- `browser: null`, which selects the provisioned protected browser ([s15-browser.md](s15-browser.md)): the controller downloads and verifies the SHA-256-pinned Chromium itself at its first start, and the websites Jit may read are the owner's list in the Web, empty until the owner adds one. Nothing about the browser is written to this file.
 
 A re-run preserves the file byte for byte and changes only the installer-owned `vm.local`/`vm.vmm` in place: it refreshes `vmm` (for example if `jit-s15-vmm` was recreated with a new uid) and turns `local` on once the host has a `kvm` group. A file at that path that is not an `s15-runtime/v1` config for `/var/lib/jit-s15/state` (for example a legacy or S14 service config) is refused before any change. An existing HTTPS private-ingress `origin` is preserved; note that S15 then listens on `127.0.0.1:3001`, the same port as a default S14 installation on the same host.
 
@@ -67,7 +67,8 @@ All in the Web UI; nothing is typed into a file:
 1. Open the link the installer showed (on the host, or from your computer through `ssh -L 3002:127.0.0.1:3002 <host>`) and set the owner password. An existing owner signs in at `http://127.0.0.1:3002/s14/login`.
 2. **Settings → Provider** (`/settings/provider`): sign in to Codex with the device code. The credential is stored for the `jit-s15` identity only, and the approved Codex route becomes available within 15 seconds.
 3. **Manage → Telegram** (`/resources/telegram`): paste the new BotFather token, press **Check and save**, then bind your account with the one-time code ([s15-telegram.md](s15-telegram.md)).
-4. Install your standing rules when you are ready. The installer installs no policy, budget or personal GitHub rule.
+4. **Manage → Websites Jit may read** (`/resources/websites`): check that the protected browser shows **Ready**, then add the websites Jit may read ([s15-browser.md](s15-browser.md)).
+5. Install your standing rules when you are ready. The installer installs no policy, budget or personal GitHub rule.
 
 ### Working computer outcomes
 
@@ -79,7 +80,7 @@ All in the Web UI; nothing is typed into a file:
 
 ## Upgrade
 
-Run the new release's `install.sh --s15`. The installer seals the new release beside the old ones, stops `jit-s15.service` (the working VM keeps running in `jit-s15-vmm`'s user manager), switches `/opt/jit-s15/current`, rewrites the units, starts and health-checks the controller. Existing state is never re-initialized or migrated. If the new controller does not start or its sign-in page does not answer within 30 seconds, the installer restores the previous release link, unit, socket unit and journald file, starts the previous controller again, checks it and reports `The previous release … is active again and healthy`.
+Run the new release's `install.sh --s15`. The installer seals the new release beside the old ones, stops `jit-s15.service` (the working VM keeps running in `jit-s15-vmm`'s user manager), switches `/opt/jit-s15/current`, rewrites the units, starts and health-checks the controller. Existing state is never re-initialized or migrated; the only addition is the protected browser's fresh `runtime/browser.sqlite` on an installation that predates it ([s15-browser.md](s15-browser.md#upgrades-and-state)). If the new controller does not start or its sign-in page does not answer within 30 seconds, the installer restores the previous release link, unit, socket unit and journald file, starts the previous controller again, checks it and reports `The previous release … is active again and healthy`.
 
 ## Rollback by hand
 
@@ -123,6 +124,7 @@ It stops and disables `jit-s15.service` (its proxy socket stops with it) and sto
 - QEMU runs as `jit-s15-vmm` ([VM15-03 #378](https://github.com/chayapats/jit/issues/378), [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md#separate-qemu-identity-vm15-03-2026-11-03)). A QEMU escape lands as that unprivileged identity, which cannot read `jit-s15`'s home, vault, state, keys or configuration and has no sudo rule.
 - `jit-s15.service` runs with a private mount namespace (`ProtectSystem=strict`, `ProtectHome=tmpfs` with only the two identities' runtime directories bound in, `PrivateTmp`), `RestrictSUIDSGID`, `ProtectKernel*`/`ProtectControlGroups`, `UMask=0077` and bounded memory and tasks. It does not set `NoNewPrivileges`, because the controller reaches the QEMU identity through sudo; the sudoers rule allows one command.
 - The registry-proxy socket is bound by `jit-s15-vm-proxy.socket` in the host's root mount namespace. Ubuntu's AppArmor profile for `nc.openbsd` (the guest-forward helper) refuses a socket bound inside the controller's private namespace.
+- The protected browser's Chromium runs as `jit-s15` inside the controller unit, never in the working VM; it reaches websites only through the controller's broker, and only the owner's approved websites ([s15-browser.md](s15-browser.md)).
 - Logs: `journalctl --namespace=jit-s15 -u jit-s15.service`. The installer never prints the owner link, cookies, tokens or unlock values to a log.
 
 ## Dry run

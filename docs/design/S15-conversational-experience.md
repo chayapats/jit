@@ -71,6 +71,7 @@ Sidebar (desktop) / navigation disclosure (mobile)
 | `/memory` | Existing | Extended with fact/inference filters, correction and forget impact. |
 | `/resources/computer` | Proposed | Working VM status, enrolment, snapshot/restore. |
 | `/resources/accounts` | Proposed | Connected accounts and website sessions; team sharing and narrower restrictions. |
+| `/resources/websites` | Implemented (BROW15-02) | "เว็บที่จิตอ่านได้" (Websites Jit may read): protected browser status (ready, preparing with the current step, failed with step, reason, missing library, next step and Try again), the owner's approved websites with add and remove, what an approval does and does not allow, and the sign-in handoff for configured sign-in sites. A refused unlisted website in a LimitNotice links here. |
 | `/rules` | Proposed | Standing rules: summary, personal GitHub profile, communication and recurring-payment rules, revoke. |
 | `/models` | Proposed | Approved accounts/models/effort, pins, budget meters. |
 | `/recovery` | Existing | Extended with unknown actions and VM/browser settlement facts. |
