@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { selectRuntime } from '../src/runtime-selection';
 import { composeS15 } from '../src/s15/composition';
 import { composedFixture } from './fixtures/s15-composition';
+import { adoptionFixture, prepare, preservedBytes } from './fixtures/s15-adoption';
 const fixtures: Awaited<ReturnType<typeof composedFixture>>[] = [];
 afterEach(async () => { for (const f of fixtures.splice(0)) await f.close(); });
 const fixture = async () => { const f = await composedFixture(); fixtures.push(f); return f; };
@@ -326,4 +327,33 @@ test('S15-AC12 UX responsibilities project and stop through the composed owner f
   const duty = f.service.work.assign(f.owner, { requestId: 'ui_duty', sourceRequestId: source.receipt.rootRequestId, completion: 'Observe only this diagnostic', triggers: ['schedule'], stallPolicy: { noProgressApproaches: 2, reserveCalls: 2, maxAttempts: 4 } });
   expect((await f.request('/duties/' + duty.id)).status).toBe(200);
   expect((await f.form('/s15/forms/duty/stop', { duty: duty.id })).status).toBe(303); expect(f.service.work.project(f.owner, duty.id).state).toBe('stopped');
+});
+
+test('S15-AC16: composed recovery reads the actual selected adoption without importing history or releasing workers', async () => {
+  const transition = await adoptionFixture();
+  try {
+    const adoption = transition.open(), prepared = prepare(adoption, transition.options), before = preservedBytes(transition);
+    const f = await composedFixture('default', false, { service: adoption, authenticate: () => adoption.authenticate('owner_session') }); fixtures.push(f);
+    expect(selectRuntime(['adoption', '--s15', '--report', '--config', transition.configPath], {})).toMatchObject({ runtime: 'adoption' });
+    expect(selectRuntime(['serve', '--s15', '--config', '/protected/runtime.json'], {})).toMatchObject({ runtime: 's15' });
+    const status = await (await f.request('/s15/adoption/status')).json();
+    expect(status).toMatchObject({ contract: 's15-adoption-status/v1', state: 'validated', selectedRuntime: 's14', workers: 'fenced', historyPreserved: true, privateScopePreserved: true });
+    expect((await f.request('/recovery')).status).toBe(200); expect(await (await f.request('/recovery')).text()).toContain(transition.options.target.commit);
+    expect((await f.request('/s15/adoption/status', 'POST', {})).status).toBe(405);
+    expect((await f.request('/s15/adoption/status', 'GET', undefined, { cookie: '' })).status).toBe(401);
+    expect((await f.chat('Run the requested command')).state).toBe('held'); expect(f.interpreterPrompts).toHaveLength(0);
+    expect(adoption.status(prepared.actor)).toEqual(prepared.status); expect(preservedBytes(transition)).toEqual(before);
+    expect(f.service.memory.view(f.owner).claims).toHaveLength(0); expect(f.vmCalls).toHaveLength(0);
+    await f.service.close();
+  } finally { transition.cleanup(); }
+});
+
+test('protected VM manager registration is owner/CSRF checked and persists only metadata outside the guest', async () => {
+  const f = await fixture(), token = 'fixture_management_' + crypto.randomUUID().replaceAll('-', '');
+  const input = { kind: 'proxmox', baseUrl: 'https://proxmox.fixture.invalid', node: 'node', vmid: 100, token, proxy: { address: '192.0.2.1', port: 3128 } };
+  expect((await f.request('/s15/vm/management', 'POST', input, { 'x-csrf-token': '' })).status).toBe(403);
+  const response = await f.request('/s15/vm/management', 'POST', input); expect(response.status).toBe(200); const value = await response.json();
+  expect(typeof value.managerId).toBe('string'); expect(JSON.stringify(value)).not.toContain(token);
+  const rows = f.service.vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_managers').all(); expect(rows).toHaveLength(1); expect(rows[0]!.data).not.toContain(token);
+  await f.reopen(); expect(f.service.vmStore.db.query('SELECT id FROM vm_managers').all()).toHaveLength(1); expect(f.vmCalls).toHaveLength(0);
 });

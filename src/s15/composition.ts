@@ -5,7 +5,7 @@ import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels } from './policy';
 import { canonical, equal, unknownUsage } from './policy/validation';
 import { ConversationApplication, ConversationStore, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
-import { WorkingVmService, VmEnrollment, VmPolicyIntegration, VmStore, createVmApi, type WorkingVmOptions } from './vm';
+import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmStore, createVmApi, type WorkingVmOptions } from './vm';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
@@ -18,7 +18,7 @@ import type { ComposedDisclosure } from './disclosure/composition';
 import { TeamService, type DataScope, type TeamOptions } from './team';
 import { coordinateWorkingVm } from './team/vm';
 import { MemoryService, createConversationMemory } from './memory';
-import { createS15WebHandler, s15ConversationPort, s15ActionsPort, s15DutiesPort, s15RecurringPort, s15TeamPort, s15ReadinessFromGithub, type S15WebPorts } from './web';
+import { createS15WebHandler, s15ConversationPort, s15ActionsPort, s15DutiesPort, s15RecurringPort, s15TeamPort, s15ReadinessFromGithub, s15AdoptionPort, type S15WebPorts } from './web';
 
 /** Existing protected owner service. Proofs are process-local actors, never JSON/VM bearer credentials. */
 export interface S15OwnerAuthentication {
@@ -35,10 +35,13 @@ export interface S15CompositionOptions {
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
   recurring?: RecurringRuleOptions;
+  /** Selected host transition. Status is read-only; its activity guard fences work and records released
+   * activity durably. Composition cannot activate/release or import old authority through this port. */
+  adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
   interpreter?: Model; clock?: HostClock; subscriptionModels?: SubscriptionModels;
   /** A proposal is displayed for authenticated installation; constructing a service never installs it. */
   proposedPolicy: PolicyInput | null;
-  vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'] };
+  vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; managementVault?: import('../exec/connections').ConnectionVault; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'] };
   browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'> };
   google?: GoogleEffectsOptions;
   github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
@@ -103,7 +106,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const baseGithubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
     const githubAdapter = baseGithubAdapter && disclosure && options.disclosure?.githubRoute ? disclosure.protectAdapter(baseGithubAdapter, options.disclosure.githubRoute) : baseGithubAdapter;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
-      ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
+      ...(options.adoption ? { activityGuard: () => options.adoption!.service.guardActivity() } : {}), ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
       adapters: [vmIntegration.adapter, ...(disclosure ? [disclosure.adapter] : []), ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? []).map(adapter => disclosure && options.disclosure?.adapterRoutes?.[adapter.id] ? disclosure.protectAdapter(adapter, options.disclosure.adapterRoutes[adapter.id]!) : adapter)],
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
@@ -112,10 +115,12 @@ export async function composeS15(options: S15CompositionOptions) {
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
-    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers: options.vm.managers, requireOwner, ...(disclosure ? { disclosure } : {}),
+    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner }) : new Map(options.vm.managers);
+    for (const [id, manager] of options.vm.managers) managers.set(id, manager);
+    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id);
-    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers: options.vm.managers,
+    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     const authentication = { authenticate(token: string) { const auth = options.owner.authenticate(token); return { actor: policy.owner.authenticate(auth.proof), csrf: auth.csrf }; }, verifyCsrf: options.owner.verifyCsrf };
     const cookieName = new URL(options.origin).protocol === 'https:' ? '__Host-jit_s14' : 'jit_s14';
@@ -192,7 +197,10 @@ export async function composeS15(options: S15CompositionOptions) {
       return actor;
     };
     const recurring = options.recurring ? createRecurringRules(policy, { ...options.recurring, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    const selectedAdoptionStatus = options.adoption ? s15AdoptionPort<OwnerActor>(options.adoption.service, owner => { policy.owner.current(owner); return options.adoption!.authenticate(owner); }) : undefined;
+    const adoptionStatus = (owner: OwnerActor) => { policy.owner.current(owner); return selectedAdoptionStatus?.(owner) ?? null; };
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
+      ...(adoptionStatus ? { adoption: adoptionStatus } : {}),
       actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), team: s15TeamPort<OwnerActor>(team, actor => actor),
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
@@ -204,19 +212,19 @@ export async function composeS15(options: S15CompositionOptions) {
         const report = githubStore.get<{ repository: GithubRepository; rows: import('./github').GithubReadiness[] }>('report', reportId);
         return report ? s15ReadinessFromGithub(report.repository.name, report.rows) : null;
       },
-      computer: { vmId: options.vm.id, managerId: options.vm.managers.keys().next().value ?? null, hypervisor: null,
+      computer: { vmId: options.vm.id, get managerId() { return managers.keys().next().value ?? null; }, hypervisor: null,
         begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: (actor, input) => vm.recover(actor, input) },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
-    const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm });
+    const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
     const githubHandler = github ? createGithubHandler(github, { origin: options.origin, cookieName, authentication, resolveWork(owner, id) {
       requireOwner(owner); const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(id);
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, team, memory, disclosure, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication,
+    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
@@ -224,6 +232,7 @@ export async function composeS15(options: S15CompositionOptions) {
         try {
           if (closing) throw new AppError('service_closed', 503);
           const path = new URL(request.url).pathname;
+          if (path === '/s15/adoption/status') { const owner = authenticate(request); if (request.method !== 'GET') throw new AppError('method_rejected', 405); return Response.json(adoptionStatus?.(owner) ?? null, { headers: { 'Cache-Control': 'no-store' } }); }
           if (path === '/s15/team/resources' || path === '/s15/memory') {
             const owner = authenticate(request);
             if (request.method === 'GET') return Response.json(path === '/s15/memory' ? memory.view(owner) : team.resources(owner), { headers: { 'Cache-Control': 'no-store' } });

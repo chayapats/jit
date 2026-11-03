@@ -61,7 +61,7 @@ export function readS15RuntimeConfig(path: string): S15RuntimeConfig {
  * separate protected state, mounts the Opus-authored S15 Web UI, and starts no S14 work pump. Setup
  * requires a fresh directory; serve refuses partial/missing journals. This is not live host adoption.
  */
-export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
+export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.env, protectedPorts: Pick<S15CompositionOptions, 'adoption'> = {}): Promise<void> {
   const index = args.indexOf('--config'), path = args[index + 1];
   if (!['setup', 'init', 'serve', 'owner-link', 'credential'].includes(args[0] ?? '') || !args.includes('--s15') || index < 0 || !path) throw new AppError('explicit_s15_config_required');
   const config = readS15RuntimeConfig(path), setup = args[0] === 'setup', initialize = setup || args[0] === 'init', localCommand = ['owner-link', 'credential'].includes(args[0]!);
@@ -114,6 +114,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       observable: url => !!config.browser?.publicOrigins.includes(new URL(url).origin),
       classify(request) { const u = new URL(request.url); return config.browser?.publicOrigins.includes(u.origin) && request.method === 'GET' && request.navigation && !request.bodyBase64 && !u.search ? { kind: 'read', private: false } : null; } };
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
+      ...protectedPorts,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
       ...(config.disclosure ? { disclosure: runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? []) } : {}),
       ...(config.recurring ? { recurring: config.recurring } : {}),
@@ -126,7 +127,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
-      vm: { id: config.vm.id, resource: config.vm.resource, managers, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
+      vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => { const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_connections WHERE json_extract(record_json,'$.account')=? AND json_extract(record_json,'$.revision')=?", binding.account, binding.resource.revision); if (!row) throw new AppError('personal_connection_unavailable'); const value = JSON.parse(row.record_json) as PersonalConnection; if (!value.scopes.includes(scope)) throw new AppError('personal_consent_required'); return ownerApp.personal.connection(tx, value.id, value.revision); });

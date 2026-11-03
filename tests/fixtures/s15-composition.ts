@@ -1,5 +1,6 @@
+import { ConnectionVault } from '../../src/exec/connections';
 import { AppError } from '../../src/errors';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Model } from 'schway/host';
@@ -19,8 +20,8 @@ export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 export const bound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 32768, activeMs: 10000 });
 /** Boots the production composition in-process. Every model and VM transport is scripted; no inference or live account is used. */
-export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false) {
-  const parent = mkdtempSync(join(tmpdir(), 'jit-composed-')), directory = join(parent, 'protected');
+export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption']) {
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'jit-composed-'))), directory = join(parent, 'protected');
   let now = 1000, generation = 1, sourceLive = true, service!: Awaited<ReturnType<typeof composeS15>>, turn = 0;
   const google = googleFixture(), engine = recordEngine();
   const recordService = openFixtureRecordService({ runtime: 's15', path: join(parent, 'records.sqlite'), create: true, resource: ref('account'), rule: () => ref('business_rule'), recipients: () => [{ id: 'new_recipient', ref: ref('new_recipient') }] });
@@ -69,6 +70,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   } };
   const interpreter: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) { interpreterPrompts.push(JSON.stringify(request)); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
   const options = (create: boolean): S15CompositionOptions => ({ runtime: 's15', directory, create, installationId: 'fixture', origin: 'http://localhost:3099',
+    ...(adoption ? { adoption } : {}),
     owner: { authenticate(token) { if (token !== secretSession) throw new AppError('authentication_required', 401); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation, expiresAt: 900000 } : null, generation: () => generation, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError('csrf_rejected', 403); } },
     disclosure: { catalogs: { source: value => dataSources.find(s => equal(s.ref, value)) ?? null, recipient: value => records.get('recipient:' + value.id) ?? null, approvals: () => recipientApprovals },
       routes: [
@@ -86,7 +88,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     team: { maxConcurrentOperations: 8, retention: () => ({ kind: 'team' }) },
     model: { limits: { turns: 5, attempts: 1, activeMs: 30000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 }, registry: { list: () => [route], current: selection => equal(selection, choice) ? route : null, pins: () => ({ route: null, model: null, effort: null }) }, scripted: () => model }, interpreter,
     clock: { now: () => now, monotonicNow: () => now, sleep: (_ms, signal) => new Promise((_, reject) => { signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); }) },
-    vm: { id: 'vm', resource: ref('computer'), managers: new Map([['manager', manager]]), transport: () => new Transport(endpoint), upperBound: op => ({ ...zero(), calls: 1, reads: ['setup', 'read'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }), destination: () => null },
+    vm: { id: 'vm', resource: ref('computer'), managementVault: new ConnectionVault(join(parent, 'management-vault'), { forbidden: [directory] }), managers: new Map([['manager', manager]]), transport: () => new Transport(endpoint), upperBound: op => ({ ...zero(), calls: 1, reads: ['setup', 'read'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }), destination: () => null },
     github: { repositories: [repo], catalogPurpose: ref('purpose'), gateway: protocol.gateway, limits: { snapshotMaxAgeMs: 20000, waitMs: 10, stallMs: 10000, maxNoProgress: 2, maxAttempts: 4, readUpperBound: { ...zero(), calls: 1, reads: 1 }, actionUpperBound: { ...zero(), calls: 1 } }, workspace: () => ({ async implement() { implementations++; return coding(); } }) },
     google: google.options,
     browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: '/fixture/chromium', site: recordService.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 65536, activeMs: 30000 }, factory: engine.factory, now: () => now, ownerUi: { id: 'fixture_browser', site: 'Controlled fixture', fields: [], twoFactor: false } },
