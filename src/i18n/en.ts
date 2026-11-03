@@ -5612,6 +5612,7 @@ export const en: Record<MessageKey, string> = {
   "s15.code.website_invalid": "That isn’t a website address Jit can use. Enter it like https://example.com.",
   "s15.code.website_https_required": "Jit reads only https websites. Enter an address that starts with https://.",
   "s15.code.website_not_public": "That’s an IP address, localhost or an internal network name. Jit doesn’t open those, so it can’t reach machines on your network.",
+  "s15.code.website_address_not_public": "This website’s name points to a local or private network address, so Jit didn’t open it.",
   "s15.code.website_list_full": "The list is full (200 websites). Remove one you no longer need first.",
   "s15.code.website_history_full": "No new websites can be added: this installation has approved 500 different websites in total, and removed ones still count. Websites that were on the list before can be added back as usual. To add new ones, reset the list: stop jit-s15, delete /var/lib/jit-s15/state/browser-sites.sqlite, start it again, then add the websites you still need.",
   "s15.code.website_changed": "The list changed in the meantime. Check the current list below and try again.",

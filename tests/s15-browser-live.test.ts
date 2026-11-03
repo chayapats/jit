@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { join } from 'node:path';
-import type { BrowserOperation, BrowserResult, BrowserObservation, BrowserSitePolicy } from '../src/s15/browser';
-import { browserFixture, browserSite } from './fixtures/s15-browser';
+import type { BrowserEgressPorts, BrowserOperation, BrowserResult, BrowserObservation, BrowserSitePolicy } from '../src/s15/browser';
+import { browserFixture, browserSite, fixturePublicAddress } from './fixtures/s15-browser';
 
 const live = describe.skipIf(process.env.JIT_BROWSER_LIVE !== '1');
 const observed = (result: BrowserResult): BrowserObservation => { expect(result.state).toBe('observed'); if (result.state !== 'observed') throw Error(JSON.stringify(result)); return result.observation; };
@@ -59,6 +60,26 @@ live('opt-in real protected browser engine', () => {
       } finally { await f.cleanup(); server.close(); }
     }, 60000);
   }
+  for (const mode of ['static', 'general'] as const) {
+    test(`${mode}: an approved name that resolves to loopback cannot reach a controller-local service (BROW15-03)`, async () => {
+      const local: string[] = [];
+      const controller = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) { local.push(new URL(request.url).pathname); return new Response('controller-local', { headers: { 'content-type': 'text/plain' } }); } });
+      const page = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch() { return new Response(`<!doctype html><p id="s">Page</p><script>fetch('http://rebind.invalid:${controller.port}/secret').catch(()=>{});fetch('http://127.0.0.1:${controller.port}/direct').catch(()=>{});document.getElementById('s').textContent='Probes attempted'</script>`, { headers: { 'content-type': 'text/html' } }); } });
+      const pageOrigin = `http://page.invalid:${page.port}`, rebound = `http://rebind.invalid:${controller.port}`;
+      const site: BrowserSitePolicy = { loginDocuments: [], session: null, observable: url => [pageOrigin, rebound].includes(new URL(url).origin), classify: r => [pageOrigin, rebound].includes(new URL(r.url).origin) && ['GET', 'HEAD'].includes(r.method) && !r.bodyBase64 ? { kind: 'read', private: false } : null };
+      // Hostile DNS: the page's name answers with a public stand-in for its loopback server; the second approved name answers 127.0.0.1.
+      const egress: BrowserEgressPorts = { resolve: async host => [{ address: host === 'page.invalid' ? fixturePublicAddress : '127.0.0.1', family: 4 }], connect: (address, port) => connect({ host: address === fixturePublicAddress ? '127.0.0.1' : address, port }) };
+      const f = await browserFixture(mode, site, undefined, undefined, egress);
+      const run = (input: { kind: 'navigate'; url: string } | { kind: 'read' }) => f.work.execute({ ...input, generation: f.work.state().generation } as BrowserOperation);
+      try {
+        expect(await run({ kind: 'navigate', url: pageOrigin + '/' })).toMatchObject({ state: 'ok' });
+        expect(observed(await run({ kind: 'read' })).text).toContain(mode === 'general' ? 'Probes attempted' : 'Page');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        expect(await run({ kind: 'navigate', url: rebound + '/secret' })).toEqual({ state: 'unsupported', code: 'website_address_not_public' });
+        expect(local).toEqual([]);
+      } finally { await f.cleanup(); controller.stop(true); page.stop(true); }
+    }, 60000);
+  }
   test('general: real JavaScript application read-only task without a bespoke business API', async () => {
     const origin = 'https://excalidraw.com';
     const site: BrowserSitePolicy = {
@@ -72,7 +93,7 @@ live('opt-in real protected browser engine', () => {
         return null;
       },
     };
-    const f = await browserFixture('general', site);
+    const f = await browserFixture('general', site, undefined, undefined, {});
     try {
       const result = await f.work.execute({ kind: 'navigate', url: origin + '/', generation: f.work.state().generation }); if (result.state !== 'ok') throw Error(JSON.stringify(result)); expect(result.state).toBe('ok');
       const page = observed(await f.work.execute({ kind: 'read', generation: f.work.state().generation }));

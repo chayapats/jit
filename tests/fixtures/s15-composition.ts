@@ -13,6 +13,7 @@ import type { PolicyInput, Ref, Rule } from '../../src/s15/policy';
 import { GithubProtocolFixture, coding, repo } from './s15-github';
 import { googleFixture } from './s15-effects';
 import { recordEngine, documentRecord, taskRecord, businessRecord } from './s15-effect-browser';
+import { loopbackFixtureEgress } from './s15-browser';
 import { openFixtureRecordService } from '../../src/s15/effects';
 import { createFixturePaymentAdapter, FixturePaymentPort } from '../../src/s15/payments';
 
@@ -92,7 +93,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     vm: { id: 'vm', resource: ref('computer'), managementVault: new ConnectionVault(join(parent, 'management-vault'), { forbidden: [directory] }), managers: new Map([['manager', manager]]), transport: () => new Transport(endpoint), upperBound: op => ({ ...zero(), calls: 1, reads: ['setup', 'read'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }), destination: () => null },
     github: { repositories: [repo], catalogPurpose: ref('purpose'), gateway: protocol.gateway, limits: { snapshotMaxAgeMs: 20000, waitMs: 10, stallMs: 10000, maxNoProgress: 2, maxAttempts: 4, readUpperBound: { ...zero(), calls: 1, reads: 1 }, actionUpperBound: { ...zero(), calls: 1 } }, workspace: () => ({ async implement() { implementations++; return coding(); } }) },
     google: google.options,
-    browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: '/fixture/chromium', site: recordService.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 65536, activeMs: 30000 }, factory: engine.factory, now: () => now, ownerUi: { id: 'fixture_browser', site: 'Controlled fixture', fields: [], twoFactor: false } },
+    browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: '/fixture/chromium', site: recordService.site, egress: loopbackFixtureEgress, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 65536, activeMs: 30000 }, factory: engine.factory, now: () => now, ownerUi: { id: 'fixture_browser', site: 'Controlled fixture', fields: [], twoFactor: false } },
     tools: [{ resourceId: 'account', port: { open(work, input) { return createConversationPolicyTools(service.policy, [{ name: 'pay_fixture_invoice', description: 'Pay the protected controlled fixture invoice', inputSchema: { type: 'object', properties: { quoteId: { type: 'string' }, quoteVersion: { type: 'string' } }, required: ['quoteId', 'quoteVersion'], additionalProperties: false }, access: 'effect', adapter: 'fixture_payment', proposal: value => value }]).open(work, input); } } }],
     adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
   });

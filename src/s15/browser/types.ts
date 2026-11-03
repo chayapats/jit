@@ -28,6 +28,8 @@ export interface BrowserOptions {
   upperBound: BudgetVector; now?: () => number;
   /** Protected DATA15 composition, required when work can read private lineage. */
   disclosure?: import('../disclosure').BrowserDisclosurePort;
+  /** Deterministic DNS/dial test seams (BROW15-03). Host composition leaves this unset; the public-address rule is fixed. */
+  egress?: import('./egress').BrowserEgressPorts;
 }
 /** Bounded untrusted observed content. Targets are fresh per observation, never CSS/JS/coordinates. */
 export interface BrowserObservation { id: string; generation: number; url: string; text: string; truncated: boolean; elements: { id: string; tag: string; name: string; type: string }[] }

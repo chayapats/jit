@@ -27,6 +27,15 @@ export async function denyProxy(): Promise<{ url: string; close(): Promise<void>
   const address = server.address(); if (!address || typeof address === 'string') throw new BrowserError('engine_unavailable');
   return { url: `http://127.0.0.1:${address.port}`, count: () => count, close: () => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close(e => e && (e as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING' ? reject(e) : resolve()); }) };
 }
+/**
+ * Chromium switches that leave the deny-only proxy as its only network path (BROW15-03 asserts each one): no QUIC or
+ * HTTP/3, no WebTransport, no name resolution at all (every host maps to NOTFOUND, so neither the built-in async
+ * resolver nor DNS-over-HTTPS can run), no non-proxied WebRTC UDP, and no background, sync, component-update,
+ * domain-reliability, prerender or speculative traffic. The proxy itself has no bypass list, loopback included.
+ */
+export const protectedEngineArgs: readonly string[] = Object.freeze(['--disable-quic', '--disable-background-networking', '--disable-extensions', '--disable-sync', '--disable-component-update', '--disable-domain-reliability', '--disable-features=WebTransport,MediaRouter,DnsOverHttps,AsyncDns,Prerender2,SpeculationRules', '--host-resolver-rules=MAP * ~NOTFOUND', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp']);
+/** Chromium's proxy settings: the deny-only listener for every scheme; `<-loopback>` removes the implicit loopback bypass. */
+export const protectedEngineProxy = (server: string): { server: string; bypass: string } => ({ server, bypass: '<-loopback>' });
 /** Chromium runs in the protected host, with a pipe-only control channel and no direct network route.
  * HTTP goes through route interception -> host policy broker -> fulfill. Missing interception reaches
  * a deny-only proxy; QUIC, WebRTC UDP, DNS, workers, downloads and extensions are disabled.
@@ -42,8 +51,8 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
     context = await chromium.launchPersistentContext(options.profilePath, {
       executablePath: options.executablePath, headless: true, javaScriptEnabled: options.mode === 'general',
       serviceWorkers: 'block', acceptDownloads: false, viewport: { width: 1280, height: 800 },
-      proxy: { server: proxy.url, bypass: '<-loopback>' },
-      args: ['--disable-quic', '--disable-background-networking', '--disable-extensions', '--disable-sync', '--disable-component-update', '--disable-domain-reliability', '--disable-features=WebTransport,MediaRouter,DnsOverHttps,Prerender2,SpeculationRules', '--host-resolver-rules=MAP * ~NOTFOUND', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+      proxy: protectedEngineProxy(proxy.url),
+      args: [...protectedEngineArgs],
     });
   } catch { await proxy.close(); throw new BrowserError('engine_unavailable'); }
   context.setDefaultTimeout(5000); context.setDefaultNavigationTimeout(30000);
