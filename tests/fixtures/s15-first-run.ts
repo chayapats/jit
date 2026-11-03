@@ -7,6 +7,7 @@ import { AppError } from '../../src/errors';
 import { s15InstallerConfig } from '../../ops/package/installer/s15';
 import { composeS15, type S15CompositionOptions } from '../../src/s15/composition';
 import { runtimeDisclosure } from '../../src/s15/disclosure/runtime';
+import { openProvisionedBrowser } from '../../src/s15/browser';
 import { s15GithubRecipient } from '../../src/s15/github/connection';
 import { githubConnectionRuntime } from '../../src/s15/github/runtime';
 import type { ApprovedModelRoute } from '../../src/s15/model';
@@ -80,13 +81,15 @@ export async function firstRunFixture(tune?: (options: S15CompositionOptions, co
   } };
   const interpreter: Model = { provider: 'codex-subscription', id: 'gpt-6.1-sol', async *stream(request) { prompts.push(JSON.stringify(request)); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
   const vault = new ConnectionVault(join(parent, 'vault'), { forbidden: [directory] });
-  // Mirrors runS15: explicit rows first, then the protected default catalog.
+  // Mirrors runS15: the provisioned browser (BROW15-02; nothing is downloaded here), explicit rows first, then the
+  // browser's and the protected default catalog's rows.
+  const provisioned = openProvisionedBrowser({ directory: parent, installationId: config.installationId, ports: { arch: () => 'x64', platform: () => 'linux', freeBytes: () => 0, async download() { throw new Error('not used'); }, async hash() { return ''; }, async extract() {}, async libraries() { return { ok: true as const }; } } });
   const defaultCatalog = s15DefaultCatalog(config.models);
-  const catalogs: S15CompositionOptions['catalogs'] = { current: (kind, id) => config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null, allows: () => true };
+  const catalogs: S15CompositionOptions['catalogs'] = { current: (kind, id) => config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned.catalog(kind, id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null, allows: () => true };
   const options = (create: boolean): S15CompositionOptions => {
     const base: S15CompositionOptions = { runtime: 's15', directory, create, installationId: config.installationId, origin: config.origin,
       owner: { authenticate(token) { if (token !== session) throw new AppError('authentication_required', 401); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation: 1, expiresAt: now + 3_600_000 } : null, generation: () => 1, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError('csrf_rejected', 403); } },
-      catalogs, disclosure: runtimeDisclosure(config.disclosure!, config.models, catalogs, [], { ...s15GithubRecipient }),
+      catalogs, disclosure: provisioned.disclosure(runtimeDisclosure(config.disclosure!, config.models, catalogs, [], { ...s15GithubRecipient })), browser: provisioned.options(),
       team: { maxConcurrentOperations: config.team!.maxConcurrentOperations, retention: () => null },
       conversation: config.conversation, proposedPolicy: config.policy,
       model: { limits: config.modelLimits, registry: { list: () => routes, current: selection => routes.find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) }, scripted: () => model }, interpreter,
@@ -116,6 +119,6 @@ export async function firstRunFixture(tune?: (options: S15CompositionOptions, co
     async reopen(tuneAgain?: typeof tune) { await service.close(); if (tuneAgain) tune = tuneAgain; service = await composeS15(options(false)); },
     /** The test closed the service itself and left no live one; cleanup only removes the directory. */
     abandon() { abandoned = true; },
-    async close() { if (!abandoned) await service.close(); rmSync(parent, { recursive: true, force: true }); },
+    async close() { if (!abandoned) await service.close(); await provisioned.close(); rmSync(parent, { recursive: true, force: true }); },
   };
 }

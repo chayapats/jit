@@ -4181,6 +4181,8 @@ export const en: Record<MessageKey, string> = {
   "s15.policy.charge.metered": "pay per use · needs your budget",
   "s15.policy.recipient.provider": "model provider, for the work you ask for",
   "s15.policy.recipient.github": "your selected repositories only",
+  "s15.policy.browser": "Protected browser",
+  "s15.policy.browser_note": "reads only the websites you approved",
   "s15.policy.computer_pool": "Working computers",
   "s15.policy.no_repositories": "No GitHub repository is connected.",
   "s15.policy.connect_github": "Connect GitHub",

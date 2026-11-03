@@ -4185,6 +4185,8 @@ export const th = {
   "s15.policy.charge.metered": "คิดเงินตามการใช้ · ต้องตั้งงบ",
   "s15.policy.recipient.provider": "ผู้ให้บริการโมเดล สำหรับงานที่คุณสั่ง",
   "s15.policy.recipient.github": "เฉพาะ repository ที่คุณเลือกไว้",
+  "s15.policy.browser": "เบราว์เซอร์ที่ปลอดภัยของจิต",
+  "s15.policy.browser_note": "อ่านได้เฉพาะเว็บไซต์ที่คุณอนุมัติ",
   "s15.policy.computer_pool": "เครื่องทำงานของทีม",
   "s15.policy.no_repositories": "ยังไม่ได้เชื่อม repository ของ GitHub",
   "s15.policy.connect_github": "เชื่อม GitHub",

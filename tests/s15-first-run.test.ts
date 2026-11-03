@@ -39,7 +39,9 @@ test('POLICY15-02: a fresh installer config shows an installable default proposa
   expect(policy.bots.map(r => r.id)).toEqual(['jit']);
   expect(policy.purposes.map(r => r.id)).toEqual(['owner_requested_work', 'conversation_interpretation']);
   expect(policy.interpretationPurpose?.id).toBe('conversation_interpretation');
-  expect(policy.resources.map(r => r.id)).toEqual(['computer']);
+  // The provisioned protected browser (BROW15-02) is composed, so it is a row too.
+  expect(policy.resources.map(r => r.id)).toEqual(['computer', 'browser']);
+  expect(policy.rules[0]!.adapters).toEqual(['private_disclosure', 'protected_browser', 'working_vm']);
   expect(policy.recipients.map(r => r.id)).toEqual(['codex_provider']);
   expect(policy.selections).toEqual([f.config.conversation.selection]);
   expect(policy.budget).toBeNull();
@@ -47,7 +49,7 @@ test('POLICY15-02: a fresh installer config shows an installable default proposa
   expect(policy.rules.some(r => r.mode.startsWith('personal_github'))).toBe(false);
   expect(policy.expiresAt - f.now).toBeGreaterThan(179 * 86_400_000); expect(policy.expiresAt - f.now).toBeLessThanOrEqual(180 * 86_400_000);
   // The same click registered the exact TEAM list, so setup has nothing left.
-  expect(f.service.team.currentResource('computer')?.active).toBe(true);
+  expect(f.service.team.currentResource('computer')?.active).toBe(true); expect(f.service.team.currentResource('browser')?.active).toBe(true);
   const row = await f.chat('Run the requested command in the working computer');
   expect(row.state).toBe('completed'); expect(row.evidence[0]?.tool).toBe('bash'); expect(row.evidence[0]?.content).toContain('first-run');
   expect(f.vmCalls).toContain('spawn');
@@ -115,7 +117,7 @@ test('GIT15-04: Web token connect, repository selection, updated proposal and re
   const rules = await f.page('/rules', 'en'); expect(rules.html).toContain('Updated standing rules to review'); expect(rules.html).toContain('chayapats/jit-s15-sandbox');
   expect((await install(f, 'rules')).status).toBe(303);
   const policy = f.service.policy.owner.current(f.owner())!;
-  expect(policy.resources.map(r => r.id)).toEqual(['computer', repository.resource.id]);
+  expect(policy.resources.map(r => r.id)).toEqual(['computer', 'browser', repository.resource.id]);
   expect(policy.recipients.map(r => r.id).sort()).toEqual(['codex_provider', 'github_service']);
   expect(policy.rules.some(r => r.mode.startsWith('personal_github'))).toBe(false);
   // Readiness is report-only and runs through the composed runtime with the vault token.

@@ -50,4 +50,4 @@ Then ask in a conversation, for example "Inspect the GitHub issues in chayapats/
 
 ## Upgrading an existing installation
 
-An installation created before this release has no `github.sqlite`. The first start of this release creates it once and records it in `runtime/composition.json`. A ledger that is listed there but missing still refuses to start, as before.
+An installation created before this release has no `github.sqlite`. The first start of this release creates it once and records it in `runtime/composition.json`, under the same rollback-safe rule as the browser store. A ledger that is listed there but missing still refuses to start, as before.

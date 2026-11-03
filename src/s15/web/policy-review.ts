@@ -29,6 +29,7 @@ function rowValue(row: S15PolicyRow): string {
   if (row.kind === "recipient") return row.detail === "github" ? `<b>GitHub</b> <small>${tr("s15.policy.recipient.github")}</small>` : `<b>${e(providerName(row.label))}</b> <small>${tr("s15.policy.recipient.provider")}</small>`;
   if (row.kind === "repository") return `<b class="s-mono s15-break">${e(row.label)}</b>`;
   if (row.kind === "computer") return `${tr("s15.policy.computer_pool")} ${mono(row.label)}`;
+  if (row.kind === "browser") return `${tr("s15.policy.browser")} <small>${tr("s15.policy.browser_note")}</small>`;
   return `<b>${e(row.label)}</b>`;
 }
 
