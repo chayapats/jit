@@ -7,6 +7,8 @@ import type { OwnerActor, Ref, TeamActor, TeamContext, TeamLease, TeamLeaseSubje
 interface Context { actor: TeamActor; authority: WorkAuthority }
 interface LeaseRecord { id: string; workId: string; resources: string[]; keys: { key: string; fence: number }[]; mode: "write" | "input"; expiresAt: number; state: "reserved" | "in_flight" | "unknown" | "settled"; subject?: TeamLeaseSubject }
 const key = () => crypto.randomUUID().replaceAll("-", "");
+/** Digest of the exact registration rows shown to the owner; any change refuses the confirmation. */
+export const teamCandidatesHash = (items: readonly TeamResource[]): string => digest(canonical({ contract: "s15-team-registration/v1", items }));
 const same = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision && a.generation === b.generation;
 
 /**
@@ -36,13 +38,39 @@ export class TeamService {
       const hash = digest(canonical({ expectedRevision, value }));
       const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(requestId);
       if (prior) { if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamResource; }
-      const existing = this.findResource(value.id);
-      if ((existing?.revision ?? 0) !== expectedRevision || value.revision !== expectedRevision + 1 || existing && value.generation < existing.generation) throw new AppError("stale_revision", 409);
-      if (existing && existing.coordinationKey !== value.coordinationKey) throw new AppError("coordination_identity_changed", 409);
-      if (existing?.scope.kind === "bot" && existing.scope.origin === "s14" && canonical(existing.scope) !== canonical(value.scope)) throw new AppError("private_promotion_requires_migration", 409);
-      this.store.db.query("INSERT INTO resources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(value.id, canonical(value));
+      this.put(value, expectedRevision);
       this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(requestId, hash, canonical(value));
       return structuredClone(value);
+    });
+  }
+  /** Compare-and-set write inside the caller's transaction. Revisions only increase, so a first
+   * registration can adopt the owning catalog's current revision; private S14 scope never widens here. */
+  private put(value: TeamResource, expectedRevision: number): void {
+    const existing = this.findResource(value.id);
+    if ((existing?.revision ?? 0) !== expectedRevision || value.revision <= expectedRevision || existing && value.generation < existing.generation) throw new AppError("stale_revision", 409);
+    if (existing && existing.coordinationKey !== value.coordinationKey) throw new AppError("coordination_identity_changed", 409);
+    if (existing?.scope.kind === "bot" && existing.scope.origin === "s14" && canonical(existing.scope) !== canonical(value.scope)) throw new AppError("private_promotion_requires_migration", 409);
+    this.store.db.query("INSERT INTO resources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(value.id, canonical(value));
+  }
+  /**
+   * One authenticated owner confirmation of an exact reviewed list of new registrations. `candidates`
+   * is recomputed from protected state inside the transaction; if its digest differs from what the owner
+   * saw, nothing is registered. All items register atomically; a repeated request returns its result.
+   */
+  registerReviewed(actor: OwnerActor, requestId: string, reviewedHash: string, candidates: () => readonly TeamResource[]): string[] {
+    this.owner(actor); identity(requestId);
+    if (!/^[a-f0-9]{64}$/.test(reviewedHash)) throw new AppError("invalid_body");
+    return this.store.transaction(() => {
+      this.owner(actor); this.store.capacity();
+      const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(requestId);
+      if (prior) { if (prior.payload_hash !== reviewedHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as string[]; }
+      const items = candidates().map(item => structuredClone(item));
+      items.forEach(resource);
+      if (!items.length || items.length > 64 || teamCandidatesHash(items) !== reviewedHash) throw new AppError("team_resources_changed", 409);
+      for (const item of items) { if (this.findResource(item.id)) throw new AppError("team_resources_changed", 409); this.put(item, 0); }
+      const ids = items.map(item => item.id);
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(requestId, reviewedHash, canonical(ids));
+      return ids;
     });
   }
   /** Read-only owner projection. A team default is still bounded by current enabled Bot/work policy. */
