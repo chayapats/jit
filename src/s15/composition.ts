@@ -99,7 +99,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // One credential lifecycle per composed installation (one per process in production) for CHAT, MODEL15 and the
     // GitHub runner, so two renewals on the same store can never race on a rotating refresh token. It closes last.
     const credentials = createHostCredentialLifecycle(options.credentials?.store ? { store: options.credentials.store } : {});
-    cleanup.push(() => closeCredentialLifecycle(credentials));
+    cleanup.push(async () => { await closeCredentialLifecycle(credentials); });
     const routeAuth = { lifecycle: credentials, ...(options.credentials?.fetch ? { fetch: options.credentials.fetch } : {}) };
     const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create); cleanup.push(() => store.close());
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());

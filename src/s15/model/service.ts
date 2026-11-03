@@ -5,6 +5,7 @@ import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
 import { add, canonical, digest, equal, exact, fail, id, nat, ref, selection, string, unknownUsage, vector, zero } from '../policy/validation';
+import { closeCredentialLifecycle, routeCredentialGuard } from './credentials';
 import { summarizeReservations } from './usage';
 import type { ApprovedModelRoute, ModelBudgetView, ModelDispatchRecord, ModelOptions, ModelPins, ModelRouteAuth, ModelRouteControls, ModelSelectionRecord, ModelService, ModelStepInput } from './types';
 
@@ -47,19 +48,6 @@ async function bounded<T>(work: Promise<T>, clock: HostClock, ms: number, signal
 /** Owner-visible codes for a route's listing or provider status; anything else is `route_unavailable`. */
 const ROUTE_STATUS_CODES: Partial<Record<HostAuthStatusCode, string>> = { 'needs-login': 'route_needs_login', 'store-unavailable': 'route_store_unavailable', 'invalid-store': 'route_store_invalid',
   rejected: 'route_rejected', 'quota-exceeded': 'quota_exceeded', 'integration-unavailable': 'route_integration_unavailable' };
-/** Close a credential lifecycle its creator owns. `busy` means a renewal whose caller stopped waiting is still
- * storing a possibly rotated token (bounded by Schway's 30-second refresher timeout and the store write), so the
- * close is retried until it settles instead of abandoning that token. Never rejects, so shutdown continues. */
-export async function closeCredentialLifecycle(lifecycle: HostCredentialLifecycle, boundMs = 45_000): Promise<void> {
-  const started = performance.now();
-  for (let wait = 25; ; wait = Math.min(wait * 2, 1000)) {
-    try { await lifecycle.close(); return; }
-    catch (error) {
-      if (!(error instanceof HostError && error.code === 'busy') || performance.now() - started >= boundMs) return;
-      await new Promise(resolve => setTimeout(resolve, wait));
-    }
-  }
-}
 /** One live model stream: its frozen request projection and the POLICY-reserved physical sends it made. */
 interface LiveStream { request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number; settled?: boolean }[] }
 function pins(value: ModelPins): void { exact(value, ['route', 'model', 'effort']); if (value.route !== null) ref(value.route); if (value.model !== null) ref(value.model); if (value.effort !== null && !levels.includes(value.effort)) fail('selection_pinned'); }
@@ -99,9 +87,9 @@ export function openModelService(options: ModelOptions): ModelService {
   /** The only fresh listing. A listing never renews, so it first renews the route credential without inference
    * (`host.auth.renew`, schway#455): at most one token request, only when the stored access is expired or inside
    * the refresh skew, shared with runs on the same lifecycle. A stopped or failed renewal sends no catalog request. */
-  async function listChoices(route: ApprovedModelRoute['provider'], credentialWriteGuard: () => void, deadlineMs: number, signal: AbortSignal | undefined,
-    renew: (options: HostRouteRenewalOptions) => Promise<HostRouteRenewal>, observe: (renewal: HostRouteRenewal) => void): Promise<readonly HostModelChoice[]> {
-    const cached = catalogs.get(route); if (cached) return cached;
+  async function listChoices(route: ApprovedModelRoute['provider'], deadlineMs: number, signal: AbortSignal | undefined,
+    renew: (options: HostRouteRenewalOptions) => Promise<HostRouteRenewal>, observe: (renewal: HostRouteRenewal) => void): Promise<{ choices: readonly HostModelChoice[]; cached: boolean }> {
+    const cached = catalogs.get(route); if (cached) return { choices: cached, cached: true };
     const renewal = await renew({ deadlineMs, ...(signal ? { signal } : {}) }); observe(renewal);
     // Decide on the outcome, not the auth status, when a renewal stops.
     if (renewal.outcome === 'cancelled') fail('cancelled');
@@ -111,10 +99,10 @@ export function openModelService(options: ModelOptions): ModelService {
     const owner = credentials(), catalogAbort = new AbortController(), base: HostAuthFetch = owner.fetch ?? ((input, init) => fetch(input, init));
     const catalogFetch: HostAuthFetch = (input, init) => base(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, catalogAbort.signal]) : catalogAbort.signal });
     let listing: Awaited<ReturnType<typeof listRouteModels>>;
-    try { listing = await bounded(listRouteModels({ lifecycle: owner.lifecycle, fetch: catalogFetch, route, credentialWriteGuard }), clock, deadlineMs, signal); }
+    try { listing = await bounded(listRouteModels({ lifecycle: owner.lifecycle, fetch: catalogFetch, route, credentialWriteGuard: routeCredentialGuard(route) }), clock, deadlineMs, signal); }
     finally { catalogAbort.abort(); }
     if (listing.status !== 'listed') fail(ROUTE_STATUS_CODES[listing.status] ?? 'route_unavailable');
-    catalogs.set(route, listing.models); return listing.models;
+    catalogs.set(route, listing.models); return { choices: listing.models, cached: false };
   }
   if (limits.turns > 64 || limits.attempts > 8 || limits.activeMs > 3600000 || limits.outputBytes > 32768) fail('invalid_limits');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a4d5135), clock = options.clock ?? defaultClock;
@@ -193,7 +181,7 @@ export function openModelService(options: ModelOptions): ModelService {
             guard(actor, record); return output;
           } })), hostedLookup: 'off' },
           limits: { maxTurns: limits.turns, maxAttempts: limits.attempts, maxConcurrentTools: 1, deadlineMs: Math.min(limits.activeMs, upperBound.activeMs), contextWindow: limits.contextWindow, maxInputChars: limits.inputChars },
-          ...(options.scripted ? {} : { auth: { ...credentials(), route: record.route.provider, model: record.route.modelId, credentialWriteGuard: () => guard(actor, record) } }),
+          ...(options.scripted ? {} : { auth: { ...credentials(), route: record.route.provider, model: record.route.modelId, credentialWriteGuard: routeCredentialGuard(record.route.provider) } }),
         });
         guard(actor, record);
         let ordinal = 0, admitted = 0, streamCode: string | null = null, live: LiveStream | null = null;
@@ -258,11 +246,12 @@ export function openModelService(options: ModelOptions): ModelService {
         };
         if (options.scripted) selected = options.scripted(clone(record.route));
         else {
-          // Cached per process and credential owner; a choice Schway rejects as `invalid-input` (for example after a
-          // lifecycle logout started a new credential epoch) is dropped and listed once more.
-          for (let fresh = false; ; fresh = true) {
+          // Cached per process and credential owner. A cached choice Schway rejects as `invalid-input` (for example after
+          // a lifecycle logout started a new credential epoch) is dropped and listed once more; a choice listed in this
+          // same step that Schway rejects is an honest `route_choice_refused`, never a loop.
+          for (;;) {
             const runtime = host;
-            const choices = await listChoices(record.route.provider, () => guard(actor, record), Math.min(limits.activeMs, upperBound.activeMs), signal, renewal => runtime.auth!.renew(renewal), renewal => {
+            const { choices, cached } = await listChoices(record.route.provider, Math.min(limits.activeMs, upperBound.activeMs), signal, renewal => runtime.auth!.renew(renewal), renewal => {
               // The pre-listing renewal is part of this step's provider requests even when the step stops here.
               // Cumulative across listing attempts in this step: a re-list after `invalid-input` never erases a sent request.
               const attempts = [...(record.catalogRenewal?.attempts ?? []), { outcome: renewal.outcome, renewalRequests: renewal.renewalRequests, status: renewal.auth.status }];
@@ -278,8 +267,9 @@ export function openModelService(options: ModelOptions): ModelService {
                 ...(pinned.maxOutputTokens === null ? {} : { maxOutputTokens: pinned.maxOutputTokens, requireOutputCap: true }) });
               break;
             } catch (error) {
-              if (fresh || !(error instanceof HostError && error.code === 'invalid-input')) throw error;
+              if (!(error instanceof HostError && error.code === 'invalid-input')) throw error;
               catalogs.delete(record.route.provider);
+              if (!cached) fail('route_choice_refused');
             }
           }
         }
@@ -384,7 +374,7 @@ export function openModelService(options: ModelOptions): ModelService {
     close() {
       if (active.size) fail('capacity_busy'); journal.close();
       const owned = ownedLifecycle; ownedLifecycle = undefined; lifecycle = routeAuth.lifecycle;
-      return owned ? closeCredentialLifecycle(owned) : Promise.resolve();
+      return owned ? closeCredentialLifecycle(owned).then(() => undefined) : Promise.resolve();
     },
   };
 }
