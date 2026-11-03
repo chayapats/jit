@@ -13,7 +13,6 @@ import { renderS14 } from '../s14/web-pages';
 import { PersonalVault } from '../s14/personal-vault';
 import { personalProxyRequest, personalServiceBinding } from '../s14/personal-origin';
 import { GooglePersonal } from '../s14/personal-protocol';
-import type { PersonalConnection } from '../s14/personal-types';
 import { s14CredentialLifecycle } from '../s14/lifecycle';
 import { requireS14OwnerLinkPipe, writeS14OwnerSetupLink } from '../s14/owner-bootstrap';
 import { lookupS14Asset } from '../s14/web-assets';
@@ -26,7 +25,7 @@ import type { ApprovedModelRoute, ModelRunLimits } from './model';
 import type { EffectBounds, GoogleEffectAccount } from './effects';
 import type { BrowserSitePolicy } from './browser';
 import { githubRuntime, type GithubRuntimeConfig } from './github/runtime';
-import { readS15Credential, s15CredentialKey } from './credentials';
+import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure, type RuntimeDisclosureConfig } from './disclosure/runtime';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
@@ -136,7 +135,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
-        async token(binding, scope) { const current = ownerStore.read(tx => { const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_connections WHERE json_extract(record_json,'$.account')=? AND json_extract(record_json,'$.revision')=?", binding.account, binding.resource.revision); if (!row) throw new AppError('personal_connection_unavailable'); const value = JSON.parse(row.record_json) as PersonalConnection; if (!value.scopes.includes(scope)) throw new AppError('personal_consent_required'); return ownerApp.personal.connection(tx, value.id, value.revision); });
+        async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },
         recipients: () => config.google!.recipients, attachment: () => null, bounds: config.google.bounds, now: Date.now } } : {}),
     });

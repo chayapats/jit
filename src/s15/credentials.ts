@@ -16,3 +16,20 @@ export function s15CredentialKey(installationId: string, alias: string): string 
 export function readS15Credential(vault: ConnectionVault, installationId: string, alias: string): string {
   const secret = vault.read(s15CredentialKey(installationId, alias)); registerSecretFingerprint(secret); return secret;
 }
+
+/**
+ * Resolve a pinned Google effect binding to its exact configured personal connection. Gmail and Calendar
+ * connections for one account can share a revision, so the configured resource->connection binding is the
+ * only identity; revision, account and scope are then checked on that exact connection.
+ */
+export function s15GoogleConnection<C extends { id: string; account: string; revision: number; scopes: readonly string[] }>(
+  bindings: readonly { connectionId: string; resource: { id: string; generation: number } }[],
+  binding: { resource: { id: string; revision: number; generation: number }; account: string },
+  scope: string, read: (connectionId: string) => C): C {
+  const matches = bindings.filter(r => r.resource.id === binding.resource.id && r.resource.generation === binding.resource.generation);
+  if (matches.length !== 1) throw new AppError('personal_connection_unavailable');
+  const connection = read(matches[0]!.connectionId);
+  if (connection.id !== matches[0]!.connectionId || connection.revision !== binding.resource.revision || connection.account !== binding.account) throw new AppError('personal_account_changed');
+  if (!connection.scopes.includes(scope)) throw new AppError('personal_consent_required');
+  return connection;
+}
