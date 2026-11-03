@@ -185,16 +185,23 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
 }
 
 /**
- * CLI progress for the automatic working computer: one `s15_computer_progress` line per step as it begins,
- * then the terminal projection (`enrolled`, `failed` with its step and code, or `fallback` with the host code).
+ * CLI progress for the automatic working computer: one `s15_computer_progress` line for every step transition
+ * the job recorded (its retained history, so a step finished between polls is still printed, in order), then
+ * the terminal projection (`enrolled`, `failed` with its step and code, `paused`, or `fallback` with the host code).
  */
 export async function setupComputer(provisioning: import('./vm').LocalVmProvisioning, print: (line: Record<string, unknown>) => void, poll: (ms: number) => Promise<void> = ms => Bun.sleep(ms)): Promise<Record<string, unknown>> {
   const started = provisioning.ensure();
   if (!started) { const host = provisioning.options.host(); return host.state === 'ready' ? { state: 'enrolled', vmId: provisioning.options.vmId } : { state: 'fallback', code: host.code }; }
-  let last = '';
+  // A job that already finished (setup re-run) prints no progress, only its terminal state.
+  if (started.state === 'enrolled') return { state: 'enrolled', vmId: started.vmId };
+  if (started.state === 'failed') return { state: 'failed', step: started.failedStep, code: started.error };
+  let printed = 0, attemptStart = started.history[0]?.at ?? null;
   for (;;) {
     const view = provisioning.view()!;
-    if (view.step !== last && view.state === 'running') { last = view.step; print({ state: 's15_computer_progress', step: view.step }); }
+    // A new attempt (owner retry elsewhere) restarts its history; print it from the beginning.
+    if ((view.history[0]?.at ?? null) !== attemptStart) { attemptStart = view.history[0]?.at ?? null; printed = 0; }
+    for (const entry of view.history.slice(printed)) if (entry.step !== 'enrolled') print({ state: 's15_computer_progress', step: entry.step });
+    printed = view.history.length;
     if (view.state === 'enrolled') return { state: 'enrolled', vmId: view.vmId };
     if (view.state === 'failed') return { state: 'failed', step: view.failedStep, code: view.error };
     if (!view.active) return { state: 'paused', step: view.step };

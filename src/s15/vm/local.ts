@@ -177,7 +177,7 @@ export function localVmFileHash(file: string): Promise<string> {
  * Returns the read-only verified base image path, downloading it once. A cached or downloaded image whose
  * SHA-256 differs from the pin is deleted and refused with `vm_image_unverified`; there is no fallback.
  */
-export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void): Promise<string> {
+export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void, guard: () => void = () => {}): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(image.sha256)) vmFail("vm_image_unverified");
   const images = join(directory, "images"); mkdirSync(images, { recursive: true, mode: 0o700 });
   const stat = lstatSync(images); if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077) vmFail("vm_key_directory_unsafe");
@@ -186,18 +186,19 @@ export async function ensureLocalVmImage(directory: string, image: LocalVmImage,
   if (cached) {
     progress?.("checksum");
     if (cached.isFile() && !cached.isSymbolicLink() && await localVmFileHash(file) === image.sha256) { chmodSync(file, 0o400); return file; }
-    rmSync(file, { force: true });
+    guard(); rmSync(file, { force: true });
   }
   // A partial download left by a controller crash never held verified bytes; only this exact prefix is removed.
+  guard();
   for (const name of readdirSync(images)) if (/^\.partial-[a-f0-9]{16}$/.test(name) && lstatSync(join(images, name)).isFile()) rmSync(join(images, name), { force: true });
   const partial = join(images, `.partial-${randomBytes(8).toString("hex")}`);
   try {
-    progress?.("download");
+    progress?.("download"); guard();
     try { await download(image.url, partial, { maxBytes: image.maxBytes, ...(signal ? { signal } : {}) }); }
     catch (error) { if (error instanceof AppError) throw error; vmFail("vm_image_unavailable", 503); }
     progress?.("checksum");
     if (!existsSync(partial) || await localVmFileHash(partial) !== image.sha256) vmFail("vm_image_unverified");
-    chmodSync(partial, 0o400); renameSync(partial, file);
+    guard(); chmodSync(partial, 0o400); renameSync(partial, file);
     return file;
   } finally { rmSync(partial, { force: true }); }
 }

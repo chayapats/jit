@@ -139,3 +139,22 @@ test("uncertainty on one member fences only that member", async () => {
   expect(f.pool.holder("w2")).toBe("b"); expect(f.s.registration("b").state).toBe("ready");
   await fresh.close(); await first.close().catch(() => {});
 });
+
+test("an existing installation seeds affinity from recorded sessions, so old work keeps its computer when B is added", () => {
+  const s = store();
+  // Before the pool existed: work ran on A only (its first session is the workspace holder).
+  s.save(row("a"));
+  s.db.query("INSERT INTO vm_sessions VALUES (?,?,?,?,?,?,?,?)").run("old1", "a", "old_work", "chat_old_work", "work", "closed", "unit", 1);
+  s.db.query("INSERT INTO vm_sessions VALUES (?,?,?,?,?,?,?,?)").run("old2", "a", "old_work", "chat_old_work", "work", "closed", "unit", 1);
+  // The owner adds B; A is now busier, yet the old work returns to A.
+  s.save(row("b")); busy(s, "a");
+  const pool = new VmPool({ store: s, id: "a" });
+  expect(pool.holder("old_work")).toBe("a"); expect(pool.place("old_work")).toBe("a");
+  expect(pool.place("new_work")).toBe("b");
+  // Seeding happens once, when the pool tables are created; reopening never rebinds or duplicates.
+  s.db.query("INSERT INTO vm_sessions VALUES (?,?,?,?,?,?,?,?)").run("later", "b", "inspected_only", "a1", "work", "closed", "unit", 1);
+  const again = new VmPool({ store: s, id: "a" });
+  expect(again.holder("old_work")).toBe("a"); expect(again.holder("inspected_only")).toBeNull();
+  // Exactly the two works that had sessions when the tables were created: old_work and the busy work on A.
+  expect(s.db.query<{ n: number }, []>("SELECT count(*) n FROM vm_affinity").get()!.n).toBe(2);
+});

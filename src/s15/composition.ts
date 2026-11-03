@@ -165,6 +165,8 @@ export async function composeS15(options: S15CompositionOptions) {
       host: () => probeLocalVmHost(localVm.host.directory, localVm.host.probe), manager: () => managers.ensureLocal(),
       enroll: input => enrollment.provisionLocal(input), ...(options.clock ? { now: options.clock.now } : {}) }) : null;
     if (provisioning) cleanup.push(() => provisioning.close());
+    const checkedManagers = new Map<string, string | null>();
+    const unboundAdapter = (id: string) => { const manager = managers.get(id); return !!manager && !isVmLocalManagement(manager) && !enrolledManagers().has(id); };
     const enrolledManagers = () => new Set(vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_registry').all().map(row => (JSON.parse(row.data) as { managerId: string | null }).managerId));
     const localHost = (owner: OwnerActor) => {
       requireOwner(owner); if (!localVm) return null;
@@ -304,12 +306,27 @@ export async function composeS15(options: S15CompositionOptions) {
       },
       computer: { vmId: options.vm.id,
         // An owner-supplied VM binds only a configured, still-unbound adapter; never the Jit-created local manager.
-        get managerId() { const bound = enrolledManagers(); for (const [id, manager] of managers) if (!isVmLocalManagement(manager) && !bound.has(id)) return id; return null; }, hypervisor: null,
+        get managerId() { for (const [id] of managers) if (unboundAdapter(id)) return id; return null; }, hypervisor: null,
         ...(provisioning ? { local: { host: localHost, job: (owner: OwnerActor) => { requireOwner(owner); return provisioning.view(); }, start: (owner: OwnerActor) => { requireOwner(owner); provisioning.start(); } } } : {}),
         pool: { members: (owner: OwnerActor) => { requireOwner(owner); return pool.members().map(member => ({ ...member, local: (() => { const row = vmStore.registration(member.id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); })(), status: enrollment.status(owner, member.id) })); },
           drain: (owner: OwnerActor, id: string, drained: boolean) => { requireOwner(owner); pool.setDrained(id, drained); },
+          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); } } : {}),
           nextId: (owner: OwnerActor) => { requireOwner(owner); const job = provisioning?.view(); return pool.nextId(!!job && job.state !== 'enrolled'); } },
-        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
+        begin: actor => enrollment.begin(actor),
+        // POOL15-01: an added (non-default) computer is enrolled only with an unused, non-local management
+        // adapter, so its hypervisor binding can be proven and placement can select it.
+        async checkMachine(actor, input) {
+          const job = provisioning?.view(), adding = pool.nextId(!!job && job.state !== 'enrolled') !== options.vm.id;
+          if (adding && (!input.managerId || !unboundAdapter(input.managerId))) throw new AppError('vm_management_required', 409);
+          const check = await enrollment.checkMachine(actor, input);
+          checkedManagers.set(check.checkId, input.managerId ?? null); for (const id of [...checkedManagers.keys()].slice(0, Math.max(0, checkedManagers.size - 64))) checkedManagers.delete(id);
+          return check;
+        },
+        async useMachine(actor, input) {
+          if (input.id !== options.vm.id && (!checkedManagers.get(input.checkId) || !unboundAdapter(checkedManagers.get(input.checkId)!))) throw new AppError('vm_management_required', 409);
+          const status = await enrollment.useMachine(actor, input); checkedManagers.delete(input.checkId); return status;
+        },
+        status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });

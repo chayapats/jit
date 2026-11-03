@@ -35,8 +35,15 @@ export class VmPool {
   readonly #now: () => number;
   constructor(readonly options: VmPoolOptions) {
     vmId(options.id); vmInteger(options.maxSessions ?? 16, 64); this.id = options.id; this.#maxSessions = options.maxSessions ?? 16; this.#now = options.now ?? Date.now;
-    options.store.db.exec(`CREATE TABLE IF NOT EXISTS vm_pool (vm_id TEXT PRIMARY KEY, drained INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS vm_affinity (work_id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, placed_at INTEGER NOT NULL);`);
+    options.store.transaction(() => {
+      const created = !options.store.db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='vm_affinity'").get();
+      options.store.db.exec(`CREATE TABLE IF NOT EXISTS vm_pool (vm_id TEXT PRIMARY KEY, drained INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS vm_affinity (work_id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, placed_at INTEGER NOT NULL);`);
+      // An installation from before the pool already has workspaces: seed each work's affinity once, from the
+      // VM of its first recorded session, before any placement can send that work elsewhere.
+      if (created) options.store.db.query(`INSERT INTO vm_affinity (work_id, vm_id, placed_at) SELECT work_id, vm_id, 0 FROM vm_sessions
+        WHERE rowid IN (SELECT min(rowid) FROM vm_sessions GROUP BY work_id) ON CONFLICT(work_id) DO NOTHING`).run();
+    });
   }
   /** Whether `vm` is the default member or an enrolled member of this pool. */
   has(vm: string): boolean { return vm === this.id || !!this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(vm); }

@@ -33,7 +33,7 @@ function computer(input: { host?: S15LocalHost | null; job?: S15ProvisioningJob 
     status: (_actor, id) => { const found = id === "working" ? state.defaultStatus : state.members.find(m => m.id === id)?.status ?? null; if (!found) throw new AppError("vm_not_enrolled", 404); return found; },
     snapshots: () => [], restore: async (_actor, value) => { calls.push(`restore:${value.vmId}:${value.snapshotId}`); },
     local: { host: () => state.host, job: () => state.job, start: () => { calls.push("start"); } },
-    pool: { members: () => state.members, drain: (_actor, id, drained) => { calls.push(`drain:${id}:${drained}`); }, nextId: () => "computer_0011aabb" },
+    pool: { members: () => state.members, drain: (_actor, id, drained) => { calls.push(`drain:${id}:${drained}`); }, nextId: () => state.defaultStatus ? "computer_0011aabb" : "working" },
   };
   return { port, calls, state };
 }
@@ -122,7 +122,9 @@ for (const locale of ["th", "en"] as const) test(`Resources list (${locale}): ev
   expect(page).toContain(escaped(T("s15.pool.drained", locale))); expect(page).toContain(escaped(T("s15.code.vm_stop_unconfirmed", locale)));
   expect(page).toContain(escaped(T("s15.pool.drain", locale))); expect(page).toContain(escaped(T("s15.pool.undrain", locale))); expect(page).toContain(escaped(T("s15.pool.drain_note", locale)));
   expect((page.match(/class="s15-caps"/g) ?? []).length).toBe(2);
-  expect(page).toContain('id="s15-computer-add"'); expect(page).toContain(escaped(T("s15.pool.add_title", locale))); expect(page).toContain('action="/s15/forms/computer/begin"');
+  expect(page).toContain('id="s15-computer-add"'); expect(page).toContain(escaped(T("s15.pool.add_title", locale)));
+  // No unused management adapter yet: the add section starts with that step, not with enrollment.
+  expect(page).toContain(escaped(T("s15.pool.manager_title", locale))); expect(page).not.toContain('action="/s15/forms/computer/begin"');
   // Each member has its own restore section with unique ids.
   expect(page).toContain('id="s15-restore-title"'); expect(page).toContain('id="s15-restore-title-computer_0011aabb"');
 });
@@ -139,7 +141,7 @@ test("drain and undrain are owner no-script posts naming a listed computer; unkn
 });
 
 test("adding another computer enrolls under a composition-chosen id; restore names the exact member", async () => {
-  const c = computer({ members: members(), defaultStatus: members()[0]!.status });
+  const c = computer({ members: members(), defaultStatus: members()[0]!.status }); c.port.managerId = "proxmox_2";
   const used: string[] = [];
   c.port.checkMachine = async () => ({ checkId: "c".repeat(32), address: "jit@vm.test:22", fingerprint: "SHA256:fixture", transportProfile: "ssh-sudo-systemd/v1", facts: status("x").facts! });
   c.port.useMachine = async (_actor, value) => { used.push(value.id); return status(value.id); };
@@ -152,6 +154,30 @@ test("adding another computer enrolls under a composition-chosen id; restore nam
   expect(restored.status).toBe(303); expect(restored.headers.get("location")).toBe("/resources/computer?restored=1&vm=computer_0011aabb#s15-restore-title-computer_0011aabb");
   expect((await f.post("/s15/forms/computer/restore", { vmId: "not_listed", snapshotId: `jit-${"d".repeat(32)}`, generation: "1" })).status).toBe(404);
   expect(c.calls.filter(call => call.startsWith("restore:"))).toEqual([`restore:computer_0011aabb:jit-${"d".repeat(32)}`]);
+});
+
+for (const locale of ["th", "en"] as const) test(`add flow without a management adapter (${locale}): explains why, offers only the adapter step, refuses enrollment`, async () => {
+  const c = computer({ members: members(), defaultStatus: members()[0]!.status }), registered: unknown[] = [];
+  c.port.pool!.registerManager = (_actor, value) => { if (value.kind === "proxmox" && value.baseUrl === "https://bad") throw new AppError("vm_invalid_setup", 400); registered.push(value); c.port.managerId = "new_adapter"; };
+  const f = setup(c), headers = locale === "en" ? en : {}, page = await html(f, "/resources/computer", headers);
+  const add = page.slice(page.indexOf('id="s15-computer-add"'));
+  expect(add).toContain(escaped(T("s15.pool.manager_title", locale))); expect(add).toContain(escaped(T("s15.pool.manager_why", locale)));
+  expect(add).toContain('action="/s15/forms/computer/manager"'); expect(add).toContain('name="token" type="password"'); expect(add).toContain(escaped(T("s15.pool.manager_token_note", locale)));
+  expect(add).not.toContain('action="/s15/forms/computer/begin"');
+  // Enrollment without an adapter is refused with the reason and the next step.
+  const refused = await f.post("/s15/forms/computer/begin", { return: "computer" }, headers);
+  expect(refused.status).toBe(409); const text = await refused.text();
+  expect(text).toContain(escaped(T("s15.code.vm_management_required", locale))); expect(c.calls).not.toContain("begin");
+  // A refused registration never echoes the write-only token.
+  const secret = "PVEAPIToken=jit@pve!work=0123456789abcdef";
+  const bad = await f.post("/s15/forms/computer/manager", { kind: "proxmox", baseUrl: "https://bad", node: "pve", vmid: "105", token: secret, proxyAddress: "10.0.0.2", proxyPort: "3128" }, headers);
+  expect(bad.status).toBe(409); const badText = await bad.text(); expect(badText).not.toContain(secret); expect(badText).toContain(escaped(T("s15.code.vm_invalid_setup", locale)));
+  const good = await f.post("/s15/forms/computer/manager", { kind: "lima", instance: "jit-work-extra" }, headers);
+  expect(good.status).toBe(303); expect(good.headers.get("location")).toBe("/resources/computer?saved=manager#s15-computer-add");
+  expect(registered).toEqual([{ kind: "lima", instance: "jit-work-extra" }]);
+  const after = await html(f, "/resources/computer?saved=manager", headers);
+  expect(after).toContain(escaped(T("s15.pool.manager_saved", locale))); expect(after).toContain('action="/s15/forms/computer/begin"');
+  expect((await f.post("/s15/forms/computer/begin", { return: "computer" }, headers)).status).toBe(303); expect(c.calls).toContain("begin");
 });
 
 test("without a pool port the Resources page keeps the single-computer layout", async () => {

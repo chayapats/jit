@@ -3,6 +3,7 @@ import { dictionaries } from '../src/i18n';
 import { readS15VmPool } from '../src/s15/main';
 import { VmSshTransport } from '../src/s15/vm/transport';
 import type { VmHostCommand, VmManagement, WorkingVmPort } from '../src/s15/vm/types';
+import { vmHostCommand } from '../src/s15/vm/host';
 import { s15StageConfig } from '../ops/evidence/s15-stage';
 import { composedFixture } from './fixtures/s15-composition';
 import { FakeQemuHost } from './fixtures/s15-qemu';
@@ -149,4 +150,40 @@ test('SETUP15-01: without KVM nothing starts, the setup card explains why and of
   const page = await (await f.request('/setup')).text(), th = dictionaries.th as Record<string, string>;
   expect(page).toContain(th['s15.code.vm_kvm_unavailable']!); expect(page).toContain('action="/s15/forms/computer/begin"');
   expect(page).not.toContain('action="/s15/forms/computer/provision"'); expect(f.service.vmStore.db.query('SELECT id FROM vm_managers').all()).toHaveLength(0);
+});
+
+test('POOL15-01: an added computer needs an unused management adapter, then becomes placeable after a proven binding', async () => {
+  // Without an unused adapter (the fixture's only adapter is bound to the default member) enrollment refuses.
+  const plain = await composedFixture(); cleanups.push(() => plain.close());
+  const page = await (await plain.request('/resources/computer')).text(), th = dictionaries.th as Record<string, string>;
+  expect(page).toContain(th['s15.pool.manager_title']!); expect(page).not.toContain('action="/s15/forms/computer/begin"');
+  const refused = await plain.form('/s15/forms/computer/begin', { return: 'computer' });
+  expect(refused.status).toBe(409); expect(await refused.text()).toContain(th['s15.code.vm_management_required']!);
+
+  // With an unused adapter the same owner flow binds the new computer to it and placement can select it.
+  let publicKey = '';
+  const run: VmHostCommand = async (argv, options) => {
+    if (argv[0] === 'ssh-keygen') { const result = await vmHostCommand(argv, options); publicKey = (await Bun.file(`${argv.at(-1)}.pub`).text()).trim().split(' ').slice(0, 2).join(' '); return result; }
+    if (argv[0] === 'ssh-keyscan') return { exitCode: 0, stdout: Buffer.from(`extra.test ${publicKey}\n`) };
+    options.beforeStart?.(); const script = argv.at(-1) ?? '';
+    return { exitCode: 0, stdout: Buffer.from(script.includes('platform.machine') ? JSON.stringify({ architecture: 'x86_64', os: 'ubuntu:26.04', cpuCount: 4, memoryBytes: 8589934592, diskBytes: 68719476736, sudo: true, docker: true, basis: 'guest_reported' })
+      : script.includes('nicMacs') ? JSON.stringify({ nicMacs: ['52:54:00:12:34:56'] }) : script.includes('reachable') ? JSON.stringify({ reachable: [false, false, false, false, false, false] }) : 'jit-vm-ready-v1\n') };
+  };
+  const extra: VmManagement = { async inspect() { return { state: 'running', identity: 'extra', boot: 'boot', cpuCount: 4, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() {}, async snapshot() {}, async restore() {}, async retireSnapshot() {} };
+  const f = await composedFixture('default', false, undefined, o => ({ ...o, vm: { ...o.vm, enrollmentRun: run, managers: new Map([...o.vm.managers, ['extra_adapter', extra]]) } })); cleanups.push(() => f.close());
+  expect(await (await f.request('/resources/computer')).text()).toContain(th['s15.pool.manager_ready']!);
+  expect((await f.form('/s15/forms/computer/begin', { return: 'computer' })).status).toBe(303);
+  const setupId = /name="setupId" value="([a-f0-9]{32})"/.exec(await (await f.request('/resources/computer')).text())![1]!;
+  expect((await f.form('/s15/forms/computer/check', { return: 'computer', setupId, host: 'extra.test' })).status).toBe(303);
+  const checked = await (await f.request('/resources/computer')).text();
+  const checkId = /name="checkId" value="([a-f0-9]{32})"/.exec(checked)![1]!, fingerprint = /name="fingerprint" value="([^"]+)"/.exec(checked)![1]!;
+  expect((await f.form('/s15/forms/computer/use', { return: 'computer', checkId, fingerprint })).status).toBe(303);
+  const added = f.service.vmPool.members().find(m => !m.isDefault)!;
+  expect(added.id).toMatch(/^computer_[a-f0-9]{8}$/);
+  expect(f.service.vmStore.registration(added.id)).toMatchObject({ managerId: 'extra_adapter', state: 'ready', networkIsolated: true, bindingMac: '52:54:00:12:34:56' });
+  // The default member is busy, so new work is placed on the added computer.
+  const held = admit(f, 'busy_default'), session = await f.service.workingVm.openAttempt(held.actor, { vmId: 'vm', workId: held.id, attemptId: `chat_${held.id}` });
+  const fresh = admit(f, 'to_added', 1), placed = await f.service.workingVm.openAttempt(fresh.actor, { vmId: 'vm', workId: fresh.id, attemptId: `chat_${fresh.id}` });
+  expect(f.service.vmPool.holder(fresh.id)).toBe(added.id);
+  await placed.close(); await session.close();
 });

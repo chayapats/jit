@@ -117,7 +117,12 @@ export interface S15WebComputerPool<Actor> {
   drain(actor: Actor, vmId: string, drained: boolean): void;
   /** Composition-chosen id for the next owner-supplied computer; the owner never types one. */
   nextId(actor: Actor): string;
+  /** Write-only registration of the hypervisor adapter an added computer is bound to (`VmManagers.register`). */
+  registerManager?(actor: Actor, input: S15ManagerInput): void;
 }
+/** Owner-typed management adapter for an added computer. The Proxmox token is write-only and never echoed. */
+export type S15ManagerInput = { kind: "lima"; instance: string }
+  | { kind: "proxmox"; baseUrl: string; node: string; vmid: number; token: string; proxy: { address: string; port: number } };
 
 /** Owner-typed finite amount. Currency and period come only from `budgetOptions`. */
 export interface S15BudgetEntry { currency: string; spendMinor: string; periodId: string }

@@ -29,7 +29,22 @@ export function poolList(input: { members: S15PoolMember[]; csrf: string; hyperv
   return `<p class="s-sub">${tr("s15.pool.lead")}</p><ul class="s15-pool" aria-label="${tr("s15.pool.list_label")}">${items}</ul>`;
 }
 
-/** "Add another computer": the existing owner-supplied enrollment flow, for extra compute. */
-export function addComputer(flow: string): string {
-  return `<section class="s-card" id="s15-computer-add" aria-labelledby="s15-computer-add-title"><h2 id="s15-computer-add-title">${tr("s15.pool.add_title")}</h2><p class="s-sub">${tr("s15.pool.add_lead")}</p>${flow}</section>`;
+/**
+ * "Add another computer". An added computer takes work only with a hypervisor binding, so the flow first
+ * registers an unused management adapter (Lima instance or VM-scoped Proxmox token) and explains why; only
+ * then is the existing enrollment flow offered. The token field is write-only: never prefilled or echoed.
+ */
+export function addComputer(input: { flow: string; managed: boolean; canRegister: boolean; csrf: string; refused: string | null; saved: boolean }): string {
+  const head = `<h2 id="s15-computer-add-title">${tr("s15.pool.add_title")}</h2><p class="s-sub">${tr("s15.pool.add_lead")}</p>`;
+  if (input.managed) {
+    const saved = input.saved ? `<div role="status">${banner("ok", tr("s15.pool.manager_saved"))}</div>` : "";
+    return `<section class="s-card" id="s15-computer-add" aria-labelledby="s15-computer-add-title">${head}${saved}<p class="s-note">${tr("s15.pool.manager_ready")}</p>${input.flow}</section>`;
+  }
+  const refused = input.refused ? `<div role="alert">${banner("warn", codeText(input.refused), "", `<p class="s-mono s-meta">${e(input.refused)}</p>`)}</div>` : "";
+  const field = (name: string, label: string, attributes: string) => `<label class="s-field"><span>${e(label)}</span><input name="${name}" ${attributes}></label>`;
+  const forms = input.canRegister ? `<details class="s-more" open><summary>${tr("s15.pool.manager_lima")}</summary><div>${form("/s15/forms/computer/manager", input.csrf, `${hidden("kind", "lima")}${field("instance", tr("s15.pool.manager_lima_instance"), 'required maxlength="63" pattern="jit-work(-[a-z0-9-]+)?" autocomplete="off" spellcheck="false"')}<div><button class="s-btn primary">${tr("s15.pool.manager_save")}</button></div>`, ' class="s-stack"')}</div></details>
+    <details class="s-more"><summary>${tr("s15.pool.manager_proxmox")}</summary><div>${form("/s15/forms/computer/manager", input.csrf, `${hidden("kind", "proxmox")}${field("baseUrl", tr("s15.pool.manager_base_url"), 'required maxlength="253" inputmode="url" autocomplete="off" spellcheck="false"')}${field("node", tr("s15.pool.manager_node"), 'required maxlength="63" autocomplete="off" spellcheck="false"')}${field("vmid", tr("s15.pool.manager_vmid"), 'required inputmode="numeric" pattern="[0-9]{1,9}" autocomplete="off"')}
+      <label class="s-field"><span>${tr("s15.pool.manager_token")}</span><input name="token" type="password" required maxlength="4096" autocomplete="off" spellcheck="false" aria-describedby="s15-manager-token-note"></label><p class="s-note" id="s15-manager-token-note">${tr("s15.pool.manager_token_note")}</p>
+      ${field("proxyAddress", tr("s15.pool.manager_proxy_address"), 'required maxlength="253" autocomplete="off" spellcheck="false"')}${field("proxyPort", tr("s15.pool.manager_proxy_port"), 'required inputmode="numeric" pattern="[0-9]{1,5}" autocomplete="off"')}<div><button class="s-btn primary">${tr("s15.pool.manager_save")}</button></div>`, ' class="s-stack"')}</div></details>` : "";
+  return `<section class="s-card" id="s15-computer-add" aria-labelledby="s15-computer-add-title">${head}${refused}<h3 class="s-section-t">${tr("s15.pool.manager_title")}</h3><p>${tr("s15.pool.manager_why")}</p>${forms}</section>`;
 }

@@ -138,10 +138,12 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
    * (the owner's own `setup --s15` or the protected boot pass), never for a model, guest or conversation.
    * `progress` reports each step as it begins, ending with `checks` (inventory, binding and egress probes).
    */
-  provisionLocal(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void }): Promise<VmStatus> {
-    return this.local(input, () => {});
+  provisionLocal(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void;
+    /** Ownership check of the calling setup job, run before every host side effect and before the enrollment is saved. */
+    guard?: () => void }): Promise<VmStatus> {
+    return this.local(input, input.guard ?? (() => {}));
   }
-  private async local(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void }, check: () => void): Promise<VmStatus> {
+  private async local(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void; guard?: () => void }, check: () => void): Promise<VmStatus> {
     vmId(input.id); vmId(input.managerId); vmInteger(input.maxSessions ?? 2, 16);
     const manager = this.options.managers.get(input.managerId);
     if (!isVmLocalManagement(manager)) vmFail("vm_management_unavailable");
@@ -150,7 +152,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     if (this.#local.has(input.managerId)) vmFail("vm_capacity"); this.#local.add(input.managerId);
     try {
       const lease = this.options.proxyLease;
-      await manager.provision({ ...(lease ? { lease: (sessionId: string, expiresAt: number) => lease(sessionId, expiresAt) } : {}), ...(input.signal ? { signal: input.signal } : {}), ...(input.progress ? { progress: input.progress } : {}) });
+      await manager.provision({ ...(lease ? { lease: (sessionId: string, expiresAt: number) => lease(sessionId, expiresAt) } : {}), ...(input.signal ? { signal: input.signal } : {}), ...(input.progress ? { progress: input.progress } : {}), ...(input.guard ? { guard: input.guard } : {}) });
       check(); input.progress?.("checks");
       return await this.verifyAndSave(check, { id: input.id, endpoint: vmEndpoint(manager.endpoint()), managerId: input.managerId, maxSessions: input.maxSessions ?? 2 });
     } finally { this.#local.delete(input.managerId); }

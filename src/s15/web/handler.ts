@@ -206,7 +206,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         let pending = null; try { pending = team ? teamPending() : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; pending = null; }
         return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf, teamPending: teamPendingCard({ pending, csrf, back: "resources", registered: !!state.registered, refused: state.refused ?? null }) })), status);
       };
-      const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null; vm?: string | null } = { restore: null, restored: false }, notice: { saved?: "drained" | "undrained" | null; vmId?: string | null; refused?: string | null } = {}) => {
+      const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null; vm?: string | null } = { restore: null, restored: false }, notice: { saved?: "drained" | "undrained" | null; vmId?: string | null; refused?: string | null; managerRefused?: string | null; managerSaved?: boolean } = {}) => {
         const status_ = computerStatus(), computer = ports.computer, members = poolMembers();
         const snapshotsOf = (id: string) => status_ !== null || members?.length ? computer?.snapshots && computer.restore ? (() => { try { return computer.snapshots!(actor, id); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null : null;
         const card = { csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" as const };
@@ -216,7 +216,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           const restores = members.map((member, index) => restoreSection({ csrf, status: member.status, snapshots: snapshotsOf(member.id), selected: (restore.vm ?? computer!.vmId) === member.id ? restore.restore : null, hypervisor: computer?.hypervisor ?? null,
             refused: (restore.vm ?? computer!.vmId) === member.id ? restore.refused ?? null : null, restored: restore.restored && (restore.vm ?? computer!.vmId) === member.id, ...(member.id === computer!.vmId ? {} : { member: { id: member.id, name: memberName(member, index) } }) })).join("");
           return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${poolList({ members, csrf, hypervisor: computer?.hypervisor ?? null, saved: notice.saved ?? null, savedId: notice.vmId ?? null, refused: notice.refused ?? null, refusedId: notice.vmId ?? null })}</section>
-          ${pending}${addComputer(enrollmentFlow(card))}${restores}</div>`), status);
+          ${pending}${addComputer({ flow: enrollmentFlow(card), managed: !!computer!.managerId, canRegister: !!computer!.pool?.registerManager, csrf, refused: notice.managerRefused ?? (computer!.managerId ? null : refused), saved: !!notice.managerSaved })}${restores}</div>`), status);
         }
         const snapshots = snapshotsOf(computer?.vmId ?? "");
         return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ ...card, ...(status_ ? {} : (() => { const local = localView(); return local ? { local } : {}; })()) })}</section>
@@ -323,7 +323,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (url.pathname === "/resources/computer") {
           const saved = url.searchParams.get("saved"), vm = url.searchParams.get("vm");
           return computerPage(null, 200, { restore: url.searchParams.get("restore"), restored: url.searchParams.get("restored") === "1", vm: vm && idPattern.test(vm) ? vm : null },
-            { saved: saved === "drained" || saved === "undrained" ? saved : null, vmId: vm && idPattern.test(vm) ? vm : null });
+            { saved: saved === "drained" || saved === "undrained" ? saved : null, vmId: vm && idPattern.test(vm) ? vm : null, managerSaved: saved === "manager" });
         }
         if (url.pathname === "/memory") return memoryPage();
         if (url.pathname === "/models") return render(() => shell(nav("/models"), tr("s15.models.title"), modelsBody(models(), accounts()?.find(row => row.kind === "model" && row.signInHref)?.signInHref ?? null)));
@@ -486,6 +486,23 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         } catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, { restore: fields.snapshotId!, restored: false, refused: codeOf(error), vm: target }); }
         return redirect(vm ? `/resources/computer?restored=1&vm=${vm}#s15-restore-title-${vm}` : "/resources/computer?restored=1#s15-restore-title");
       }
+      if (url.pathname === "/s15/forms/computer/manager") {
+        // Write-only adapter registration for an added computer. The token is passed through once and never kept,
+        // logged or rendered here; a refusal re-renders the empty form with only the stable code.
+        const pool = ports.computer?.pool; if (!pool?.registerManager) throw new AppError("not_found", 404);
+        const refuse = (code: string) => computerPage(null, 409, undefined, { managerRefused: code });
+        let input: import("./types").S15ManagerInput;
+        if (fields.kind === "lima") { only(fields, ["csrf", "requestId", "kind", "instance"]); input = { kind: "lima", instance: fields.instance!.trim() }; }
+        else if (fields.kind === "proxmox") {
+          only(fields, ["csrf", "requestId", "kind", "baseUrl", "node", "vmid", "token", "proxyAddress", "proxyPort"]);
+          const vmid = Number(fields.vmid), port = Number(fields.proxyPort);
+          if (!/^[0-9]{1,9}$/.test(fields.vmid!) || !/^[0-9]{1,5}$/.test(fields.proxyPort!)) return refuse("vm_invalid_setup");
+          input = { kind: "proxmox", baseUrl: fields.baseUrl!.trim(), node: fields.node!.trim(), vmid, token: fields.token!, proxy: { address: fields.proxyAddress!.trim(), port } };
+        } else throw new AppError("invalid_body");
+        try { pool.registerManager(actor, input); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return refuse(codeOf(error)); }
+        return redirect("/resources/computer?saved=manager#s15-computer-add");
+      }
       if (url.pathname === "/s15/forms/computer/drain") {
         only(fields, ["csrf", "requestId", "vmId", "drained"]);
         const pool = ports.computer?.pool; if (!pool || !idPattern.test(fields.vmId!) || !["0", "1"].includes(fields.drained!)) throw new AppError("not_found", 404);
@@ -497,7 +514,10 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         const computer = ports.computer; if (!computer) throw new AppError("not_found", 404);
         const back = (refused: string | null = null, status = 200) => fields.return === "computer" ? computerPage(refused, status) : setupPage({ computer: refused }, status);
         const done = () => redirect(fields.return === "computer" ? "/resources/computer" : "/setup#s15-setup-computer");
+        // POOL15-01: an added computer must be bound to an unused management adapter before enrollment starts.
+        const adding = !!computer.pool && computer.pool.nextId(actor) !== computer.vmId;
         try {
+          if (adding && !computer.managerId && ["/s15/forms/computer/begin", "/s15/forms/computer/check", "/s15/forms/computer/use"].includes(url.pathname)) throw new AppError("vm_management_required", 409);
           if (url.pathname === "/s15/forms/computer/provision") {
             // Owner "Create now", "Continue now" or "Try again" for the one default-computer job; it never asks for a value.
             only(fields, ["csrf", "requestId", "return"]); if (!computer.local) throw new AppError("not_found", 404);

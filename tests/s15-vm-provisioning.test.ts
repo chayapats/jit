@@ -79,7 +79,9 @@ test("progress is recorded per step: the CLI prints each step and the final stat
   const h = harness(), lines: Record<string, unknown>[] = [];
   const final = await setupComputer(h.job, line => lines.push(line), async () => { await h.job.settled(); });
   expect(final).toEqual({ state: "enrolled", vmId: "working" });
-  expect(lines[0]).toEqual({ state: "s15_computer_progress", step: "host" });
+  // One poll after the whole job: every transition is still printed, once and in order.
+  expect(lines).toEqual(["host", "download", "checksum", "disk", "boot", "connect", "checks"].map(step => ({ state: "s15_computer_progress", step })));
+  expect(h.job.view()!.history.map(entry => entry.step)).toEqual(["host", "download", "checksum", "disk", "boot", "connect", "checks", "enrolled"]);
   // Re-running setup with the default computer already enrolled starts nothing.
   const again: Record<string, unknown>[] = [];
   expect(await setupComputer(h.restart(), line => again.push(line))).toEqual({ state: "enrolled", vmId: "working" });
@@ -146,4 +148,47 @@ test("without KVM no job starts; the explicit start records the specific host co
   expect(h.job.ensure()).toBeNull();
   h.job.start(); await h.job.settled();
   expect(h.job.view()).toMatchObject({ state: "failed", failedStep: "host", error: "vm_kvm_unavailable" }); expect(h.counts.managers).toBe(0);
+});
+
+/** Two runners that look like separate controller processes over one journal; every host command is attributed. */
+function racers() {
+  const store = new VmStore(":memory:"); cleanups.push(() => store.close());
+  const commands: string[] = [], gates = new Map<string, PromiseWithResolvers<void>>(), alive = new Map<number, boolean>([[101, true], [102, true]]);
+  const make = (name: string, pid: number) => new LocalVmProvisioning({ store, vmId: "working", pid, now: () => 1_000, heartbeat: () => () => {}, alive: other => alive.get(other) ?? false,
+    host: () => probeLocalVmHost("/protected", probe()), manager: () => { commands.push(`${name}:manager`); return "manager_1"; },
+    async enroll(input) {
+      // Every host side effect is preceded by the job's ownership check, as in the real manager.
+      const effect = (what: string) => { input.guard(); commands.push(`${name}:${what}`); };
+      effect("download"); input.progress("download");
+      await gates.get(name)?.promise;
+      effect("create-disk"); input.progress("boot"); effect("start"); effect("remove-partial");
+      input.guard(); store.save({ id: input.id, generation: 1, endpoint: { host: "127.0.0.1", port: 22122, user: "jit", identityFile: "/k", knownHostsFile: "/h" }, managerId: input.managerId, state: "ready", networkCheckedAt: 1, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "m", boot: "b", bindingMac: "52:54:00:00:00:01" });
+      commands.push(`${name}:enrolled`); return status(input.id);
+    } });
+  const abandoned = () => { store.db.exec("CREATE TABLE IF NOT EXISTS vm_provisioning (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    store.db.query("INSERT INTO vm_provisioning VALUES ('working', ?)").run(JSON.stringify({ contract: "s15-vm-provisioning/v1", vmId: "working", managerId: "manager_1", state: "running", step: "boot", failedStep: null, error: null, attempts: 1, startedAt: 1, stepStartedAt: 1, updatedAt: 1, finishedAt: null, history: [{ step: "host", at: 1 }, { step: "boot", at: 1 }], runner: { pid: 999, token: "crashed" }, heartbeatAt: 1 })); };
+  return { store, commands, gates, alive, make, abandoned };
+}
+
+test("two runners racing an abandoned job: exactly one claims and provisions, the other runs no host command", async () => {
+  const r = racers(); r.abandoned();
+  const a = r.make("a", 101), b = r.make("b", 102); cleanups.push(() => a.close(), () => b.close());
+  a.ensure(); b.ensure(); b.start();
+  await Promise.all([a.settled(), b.settled()]);
+  expect(a.view()).toMatchObject({ state: "enrolled", attempts: 1 });
+  expect(r.commands.every(c => c.startsWith("a:"))).toBe(true); expect(r.commands).toContain("a:enrolled");
+});
+
+test("a runner that lost its claim stops before its next side effect and never touches the machine again", async () => {
+  const r = racers(); r.abandoned(); r.gates.set("a", Promise.withResolvers<void>());
+  const a = r.make("a", 101), b = r.make("b", 102); cleanups.push(() => a.close(), () => b.close());
+  a.ensure(); await Promise.resolve(); await Promise.resolve();
+  expect(r.commands).toEqual(["a:manager", "a:download"]);
+  // Runner a looks gone to b (for example a stale heartbeat), so b takes the job over atomically.
+  r.alive.set(101, false); b.ensure(); await b.settled();
+  expect(b.view()).toMatchObject({ state: "enrolled" });
+  const before = r.commands.length; r.gates.get("a")!.resolve(); await a.settled();
+  // a performed nothing after losing the claim and wrote nothing into b's job.
+  expect(r.commands.slice(before)).toEqual([]); expect(r.commands.filter(c => c.startsWith("a:"))).toEqual(["a:manager", "a:download"]);
+  expect(b.view()).toMatchObject({ state: "enrolled", error: null });
 });
