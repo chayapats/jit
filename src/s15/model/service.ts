@@ -264,8 +264,11 @@ export function openModelService(options: ModelOptions): ModelService {
             const runtime = host;
             const choices = await listChoices(record.route.provider, () => guard(actor, record), Math.min(limits.activeMs, upperBound.activeMs), signal, renewal => runtime.auth!.renew(renewal), renewal => {
               // The pre-listing renewal is part of this step's provider requests even when the step stops here.
-              record.catalogRenewal = { outcome: renewal.outcome, renewalRequests: renewal.renewalRequests, status: renewal.auth.status };
-              record.providerRequests = { initialSends: 0, authRetrySends: 0, renewalRequests: renewal.renewalRequests }; save();
+              // Cumulative across listing attempts in this step: a re-list after `invalid-input` never erases a sent request.
+              const attempts = [...(record.catalogRenewal?.attempts ?? []), { outcome: renewal.outcome, renewalRequests: renewal.renewalRequests, status: renewal.auth.status }];
+              const renewalRequests = attempts.reduce((total, attempt) => total + attempt.renewalRequests, 0);
+              record.catalogRenewal = { outcome: renewal.outcome, renewalRequests, status: renewal.auth.status, attempts };
+              record.providerRequests = { initialSends: 0, authRetrySends: 0, renewalRequests }; save();
             });
             guard(actor, record);
             const choice = choices.find(model => model.id === record.route.modelId); if (!choice) fail('route_unavailable');

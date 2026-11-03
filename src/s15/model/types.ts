@@ -70,9 +70,12 @@ export interface ModelSelectionRecord {
    * refused call). When exact, initial plus auth-retry sends equal the sends Jit admitted and reserved, otherwise
    * the output is withheld (`usage_invalid`). Absent before MODEL15-02. */
   providerRequests?: HostProviderRequests | null;
-  /** The renewal that preceded an uncached catalog listing (`renewalRequests` is also counted in `providerRequests`);
-   * null when the step used cached choices or a scripted model. Absent before MODEL15-03. */
-  catalogRenewal?: { outcome: HostRouteRenewal['outcome']; renewalRequests: 0 | 1; status: HostAuthStatusCode } | null;
+  /** Renewals that preceded this step's uncached catalog listings, in order (`attempts`; a re-list after
+   * `invalid-input` adds one). `outcome`/`status` are the latest; `renewalRequests` is the cumulative token-request
+   * count, also added to `providerRequests`. null when the step used cached choices or a scripted model. Absent
+   * before MODEL15-03. */
+  catalogRenewal?: { outcome: HostRouteRenewal['outcome']; renewalRequests: number; status: HostAuthStatusCode;
+    attempts: { outcome: HostRouteRenewal['outcome']; renewalRequests: 0 | 1; status: HostAuthStatusCode }[] } | null;
   /** Pinned route controls; null for a scripted model. Absent before MODEL15-02. */
   controls?: ModelRouteControls | null;
   output: string | null; session: { id: string; branchId: string } | null;

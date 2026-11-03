@@ -108,3 +108,35 @@ test('a renewal and a run on one shared lifecycle send one token request, counte
   expect(ran.providerRequests!.renewalRequests + listed.providerRequests!.renewalRequests).toBe(1);
   expect(ran.providerRequests!.renewalRequests).toBe(1); expect(listed.catalogRenewal).toMatchObject({ renewalRequests: 0 });
 });
+
+test('a re-list after invalid-input keeps the renewal already sent: counts are cumulative per step', async () => {
+  const t = routeTransport('grok'); t.expire();
+  const lifecycle = createHostCredentialLifecycle({ store: t.store }); cleanups.push(() => lifecycle.close());
+  const { service, source } = setup(t, { routeAuth: { lifecycle, fetch: t.fetch } }); cleanups.push(() => service.close());
+  // While the first listing (after a renewal) is in flight, a logout and a fresh sign-in start a new credential epoch:
+  // Schway then rejects the listed choice as invalid-input and Jit lists once more, this time with a fresh token.
+  t.onCatalog(async () => { await lifecycle.logout('grok'); t.signIn(); });
+  const record = await service.runStep(source.actor!, step());
+  expect(record).toMatchObject({ state: 'completed', code: null });
+  expect(t.log).toEqual(['renewal', 'catalog', 'catalog', 'inference']);
+  expect(record.catalogRenewal).toEqual({ outcome: 'fresh', renewalRequests: 1, status: 'configured-unverified', attempts: [
+    { outcome: 'renewed', renewalRequests: 1, status: 'configured-unverified' }, { outcome: 'fresh', renewalRequests: 0, status: 'configured-unverified' }] });
+  expect(record.providerRequests).toEqual({ initialSends: 1, authRetrySends: 0, renewalRequests: 1 });
+});
+
+test('a held renewal past its deadline is route_renewal_timeout, keeps its request count, and shutdown waits for it', async () => {
+  const sent = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const t = routeTransport('grok', { renewal: async () => { sent.resolve(); await release.promise; } }); t.expire();
+  // A 100 ms step bound makes the renewal deadline expire while the token request is held.
+  const { service, source } = setup(t, { limits: { turns: 4, attempts: 1, activeMs: 100, outputBytes: 10000, contextWindow: 32768, inputChars: 65536 } });
+  const record = await service.runStep(source.actor!, step());
+  await sent.promise;
+  expect(record).toMatchObject({ state: 'failed', code: 'route_renewal_timeout', catalogRenewal: { outcome: 'limit_exceeded', renewalRequests: 1 }, providerRequests: { initialSends: 0, authRetrySends: 0, renewalRequests: 1 } });
+  expect(t.catalogs).toHaveLength(0); expect(t.bodies).toHaveLength(0); expect(t.log).toEqual(['renewal']);
+  // The token request still runs; close() retries the lifecycle's busy close until it settles and stores the rotated token.
+  let closed = false; const closing = service.close().then(() => { closed = true; });
+  await Bun.sleep(120); expect(closed).toBe(false);
+  release.resolve(); await closing;
+  expect(closed).toBe(true); expect(JSON.parse(t.stored()!).refreshToken).toBe('fixture-rotated');
+  expect(t.log).toEqual(['renewal']);
+});

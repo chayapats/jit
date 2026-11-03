@@ -28,7 +28,7 @@ export function routeTransport(route: 'grok' | 'codex', script: { responses?: (4
   renewalResponse?: 'ok' | { status: number } | 'unreachable' } = {}) {
   const values = new Map<string, string>(), bodies: string[] = [], catalogs: string[] = [], renewals: string[] = [], log: ('renewal' | 'catalog' | 'inference')[] = [];
   const responses = [...(script.responses ?? ['ok'])];
-  let levels = script.levels ?? ['low', 'high'], afterCatalogRead: (() => void) | null = null, armed: (() => void) | null = null, readsFail = false;
+  let levels = script.levels ?? ['low', 'high'], afterCatalogRead: (() => void) | null = null, armed: (() => void) | null = null, readsFail = false, beforeCatalog: (() => Promise<void> | void) | null = null;
   const account = credentialReferenceForRoute(route).account;
   const tokens = (access: string, expiresAt = 9_000_000_000_000, refresh = true) => JSON.stringify({ accessToken: access, ...(refresh ? { refreshToken: 'fixture-refresh' } : {}), obtainedAt: 1, expiresAt, ...(route === 'codex' ? { accountId: 'fixture-account' } : {}) });
   values.set(account, tokens('fixture-access'));
@@ -40,7 +40,7 @@ export function routeTransport(route: 'grok' | 'codex', script: { responses?: (4
   const fetch: HostAuthFetch = async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (url.startsWith('https://api.x.ai/v1/models') || url.includes('/backend-api/codex/models')) {
-      catalogs.push(url); log.push('catalog'); armed = afterCatalogRead; afterCatalogRead = null;
+      catalogs.push(url); log.push('catalog'); const hook = beforeCatalog; beforeCatalog = null; await hook?.(); armed = afterCatalogRead; afterCatalogRead = null;
       return Response.json(route === 'grok' ? { data: [{ id: ROUTE_MODEL.grok, supported_reasoning_levels: levels }] }
         : { models: [{ slug: ROUTE_MODEL.codex, visibility: 'list', supported_reasoning_levels: levels.map(effort => ({ effort })) }] });
     }
@@ -72,6 +72,8 @@ export function routeTransport(route: 'grok' | 'codex', script: { responses?: (4
     signIn() { values.set(account, tokens('fixture-signed-in')); },
     /** Every credential read fails, as an unavailable secure store would. */
     set readsFail(value: boolean) { readsFail = value; },
+    /** Run (and await) `hook` while the next catalog request is in flight, before it answers. */
+    onCatalog(hook: () => Promise<void> | void) { beforeCatalog = hook; },
     /** Run `hook` inside the next credential read. */
     onNextRead(hook: () => void) { armed = hook; },
     /** Run `hook` inside the first credential read after the next catalog listing (the adapter's pre-send read). */
