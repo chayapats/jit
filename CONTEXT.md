@@ -26,6 +26,10 @@ S15 target terms below refine product intent. Definitions explicitly marked S14 
 
 **Standing policy:** Authenticated owner configuration of purposes, team resources, action classes, allowed routes/models, finite budgets and human-required gates. It avoids repeated per-task setup without authorizing a different task. A personal exception is explicit configuration, not the product default or a grant embedded in this repository.
 
+**Default standing-policy proposal (S15, POLICY15-02):** The first standing policy Jit offers on an installation with no configured policy. It is derived from what the installation actually has, with the product-default gates and a finite, renewable expiry. It is only a proposal: the owner's one exact press installs it, and a changed resource set produces a new proposal instead of changing installed rules. See ADR 0073.
+
+**GitHub connection (S15, GIT15-04):** The owner's Web-pasted fine-grained token, held only in the protected vault, plus the revisioned list of repositories the owner selected for Jit. Selected repositories become team resources and default-proposal rows. The connection grants no publication; the product-default and personal GitHub profiles decide that.
+
 **Persona:** Owner-authored configuration of address, language and tone. It is trusted configuration, not model-authored memory.
 
 **Bot proposal:** A revisioned draft for creating or changing a permanent Bot. Accepting it does not grant accounts or wider tools.
