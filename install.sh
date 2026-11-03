@@ -135,7 +135,7 @@ else
   printf '%s\n' '  Selected runtime: legacy (--legacy). Installation: jit.'
 fi
 if [ "$uninstall" = true ] && [ "$s15" = true ]; then
-  printf '%s\n' '  Action: uninstall jit-s15 only. Stop/disable jit-s15.service and its Secret Service; stop the working VM; remove the units and journald config.' \
+  printf '%s\n' '  Action: uninstall jit-s15 only. Stop/disable jit-s15.service and its Secret Service; stop the working VM and prove it stopped; then remove the units and journald config.' \
   '  Retain identities (jit-s15, jit-s15-vmm), linger, packages, Bun, releases, launcher, sudoers rule, config, state, working-VM disks and keyring/unlock file.'
 elif [ "$s15" = true ]; then
   printf '%s\n' \
@@ -144,14 +144,15 @@ elif [ "$s15" = true ]; then
   '  Install core dependencies plus sudo, openssh-client, qemu-system, qemu-utils, cloud-image-utils and netcat-openbsd (Debian/Ubuntu).' \
   '  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/jit-s15/bin/bun.' \
   '  Create/verify non-login jit-s15 (controller) and jit-s15-vmm (working-VM QEMU, kvm group) identities and the jit-s15-vm group; jit-s15 leaves the kvm group.' \
+  '  Without a kvm group, install the controller alone (no QEMU identity, launcher or sudo rule); the Web offers enrolling your own VM.' \
   '  Enable linger for both; install the jit-s15 Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
   '  Install /opt/jit-s15/libexec/jit-s15-vmm and a visudo-checked sudoers rule: jit-s15 may run only that launcher, only as jit-s15-vmm.' \
   '  Build/install the sealed release; write a credential-free /etc/jit-s15/s15-runtime.json once (Codex route; no policy, budget or GitHub rule).' \
   '  Initialize only a new state directory (init --s15); existing state is never re-initialized or migrated.' \
   '  Install/enable/start hardened jit-s15.service and a bounded journald namespace; switch /opt/jit-s15/current atomically; the working VM keeps running.' \
   '  Probe local health. A failed upgrade restores the previous release and unit; a failed fresh install removes the new unit and new state.' \
-  '  Follow the automatic working computer (a KVM VM run as jit-s15-vmm) and print its progress.' \
-  '  Deliver the first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link. Print the remaining owner Web steps.'
+  '  Right after health, deliver the 15-minute first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.' \
+  '  Follow the automatic working computer (a KVM VM run as jit-s15-vmm), print its progress and the remaining owner Web steps.'
   if [ -z "$source_dir" ]; then printf '  Download release artifact/checksum from %s.\n' "$release_url"; fi
 elif [ "$uninstall" = true ]; then
   printf '  Action: uninstall %s only. Stop/disable its service and Secret Service; remove their units and journald config.\n' "$name"

@@ -23,14 +23,14 @@ From an extracted release (or a checkout):
 The installer prints its plan, asks once for approval (`--yes` approves non-interactively; the owner link still needs a terminal), then:
 
 1. Installs the packages above and SHA-256-pinned Bun 1.4.2 at `/opt/jit-s15/bin/bun`.
-2. Creates the non-login identities `jit-s15` (the controller) and `jit-s15-vmm` (QEMU for the working computer, member of `kvm`), and the group `jit-s15-vm` that joins them. `jit-s15` is removed from `kvm`; `jit-s15-vmm` is never in `jit-s15`'s group.
+2. Creates the non-login identities `jit-s15` (the controller) and `jit-s15-vmm` (QEMU for the working computer, member of `kvm`), and the group `jit-s15-vm` that joins them. `jit-s15` is removed from `kvm`; `jit-s15-vmm` is never in `jit-s15`'s group. On a host without a `kvm` group (no QEMU/KVM packages or virtualization) only the controller is installed: no QEMU identity, launcher, sudoers rule or proxy socket, and the unit keeps `NoNewPrivileges=true`. The owner then enrolls their own VM in the Web. A later re-run after the QEMU/KVM packages are installed adds the Jit-managed VM in place; local VM support is never removed once installed.
 3. Creates the directories in the layout table, enables linger for both identities, and installs `jit-s15`'s Secret Service (gnome-keyring with a random 0600 boot-unlock file, kept on re-runs) for Schway's credential store.
 4. Installs the working-VM launcher `/opt/jit-s15/libexec/jit-s15-vmm` and the sudoers rule `/etc/sudoers.d/jit-s15-vmm`, which lets `jit-s15` run that launcher, as `jit-s15-vmm`, and nothing else. The rule is checked with `visudo -c` before it is installed, and the installer then proves the sudo path end to end.
 5. Builds and seals the release under `/opt/jit-s15/releases/<artifact id>`.
 6. Writes `/etc/jit-s15/s15-runtime.json` once (see Generated configuration) and runs `init --s15` for a fresh state directory.
 7. Installs `jit-s15.service`, `jit-s15-vm-proxy.socket` and the journald namespace `jit-s15`, switches `/opt/jit-s15/current` to the release atomically, starts the controller and checks its sign-in page on the local listener.
-8. Follows the automatic working computer and prints each step (check the host, download, verify the checksum, create the disk and keys, first boot, connect and finish setup, isolation checks, ready).
-9. Shows the first-owner link on the terminal and prints the owner's remaining steps.
+8. Shows the first-owner link on the terminal as soon as the controller is healthy. The single-use link is valid for 15 minutes, so it is never held back behind the working computer's setup; re-run `install.sh --s15` for a new one if it expired.
+9. Follows the automatic working computer and prints each step (check the host, download, verify the checksum, create the disk and keys, first boot, connect and finish setup, isolation checks, ready), then the owner's remaining steps.
 
 ### Layout
 
@@ -55,10 +55,10 @@ The installer prints its plan, asks once for approval (`--yes` approves non-inte
 - a random `installationId` (`s15_<16 hex>`), `directory` `/var/lib/jit-s15/state`, `origin` `http://127.0.0.1:3002`;
 - the approved Codex subscription route for one device login (`gpt-6.1-sol`, effort `high`, subscription charge). It is `available` once `jit-s15` holds a signed-in Codex credential, which Jit reads from the local credential store every 15 seconds (no network); before sign-in it is unavailable;
 - `policy: null`, no budget, no personal GitHub rule, `github: null`, `google: null`, team concurrency 2 with memory off, and the empty disclosure configuration;
-- `vm: { id: "working", resource: computer, local: true, vmm: { user: "jit-s15-vmm", uid, directory: "/var/lib/jit-s15-vm", launcher } }`;
+- `vm: { id: "working", resource: computer, local: true, vmm: { user: "jit-s15-vmm", uid, directory: "/var/lib/jit-s15-vm", launcher } }`, or `local: false` without `vmm` on a host without a `kvm` group;
 - `browser: null`. The protected S15 browser needs owner-approved public origins and a disclosure route, and Playwright's Chromium download has no pinned hash Jit can verify, so the installer leaves it off and says so.
 
-A re-run preserves the file and refreshes only the installer-owned `vm.vmm` (for example if `jit-s15-vmm` was recreated with a new uid). A file at that path that is not an `s15-runtime/v1` config for `/var/lib/jit-s15/state` (for example a legacy or S14 service config) is refused before any change. An existing HTTPS private-ingress `origin` is preserved; note that S15 then listens on `127.0.0.1:3001`, the same port as a default S14 installation on the same host.
+A re-run preserves the file byte for byte and changes only the installer-owned `vm.local`/`vm.vmm` in place: it refreshes `vmm` (for example if `jit-s15-vmm` was recreated with a new uid) and turns `local` on once the host has a `kvm` group. A file at that path that is not an `s15-runtime/v1` config for `/var/lib/jit-s15/state` (for example a legacy or S14 service config) is refused before any change. An existing HTTPS private-ingress `origin` is preserved; note that S15 then listens on `127.0.0.1:3001`, the same port as a default S14 installation on the same host.
 
 ### Owner steps
 
@@ -72,6 +72,7 @@ All in the Web UI; nothing is typed into a file:
 ### Working computer outcomes
 
 - `Ready`: the computer is enrolled. The installer exits 0.
+- No `kvm` group: the controller was installed alone (see step 2). The installer says so and exits 0; enroll your own VM in **Resources → Computer**.
 - Unavailable on this host (`vm_kvm_unavailable`, `vm_kvm_denied`, `vm_qemu_missing`, `vm_host_too_small`, `vm_disk_insufficient`, `vm_host_unsupported`): the installer prints the reason and the next step and exits 0. **Resources → Computer** offers enrolling your own VM.
 - Failed (for example `vm_image_unavailable` at the download step): the installer prints the step, the reason and the next step and exits 1, but the controller stays installed and healthy, because it is where you press **Try again**.
 - Still running after 90 minutes: setup continues in the background; follow it in **Resources → Computer**.
@@ -104,7 +105,8 @@ Re-running the newer `install.sh --s15` moves forward again.
 | `state-initialize` (fresh) | the state directory this run created is removed | re-run |
 | `service-stop` … `health` (fresh) | the new unit, socket unit, journald file, release link and new state are removed | re-run after fixing the cause |
 | `service-stop` … `health` (upgrade) | the previous release, units and state are active again | inspect `journalctl --namespace=jit-s15 -u jit-s15.service`, fix, re-run |
-| `working-computer` | the controller is installed and healthy | follow the printed reason; **Try again** in **Resources → Computer** |
+| `working-computer` | the controller is installed and healthy; the owner link was already shown | follow the printed reason; **Try again** in **Resources → Computer** |
+| `uninstall` (VM still running) | controller stopped and disabled; no unit file removed | run the printed `systemctl --user stop` as `jit-s15-vmm`, then re-run `--uninstall` |
 
 An interrupted `init --s15` (no `state/runtime/composition.json`) is moved aside to `state.interrupted-<time>`, never deleted, and initialization runs again.
 
@@ -114,7 +116,7 @@ An interrupted `init --s15` (no `state/runtime/composition.json`) is moved aside
 ./install.sh --s15 --uninstall
 ```
 
-It stops and disables `jit-s15.service` (its proxy socket stops with it), stops the working VM units, removes the controller unit, socket unit, journald file and the Secret Service user unit. It keeps the identities, linger, packages, Bun, releases, launcher, sudoers rule, config, state, working-VM disks and snapshots, and the keyring and unlock file, so a later `install.sh --s15` re-attaches to the same state without re-initializing it. Legacy and S14 installations are not touched.
+It stops and disables `jit-s15.service` (its proxy socket stops with it) and stops the working VM units, then proves the stop: the stop command succeeded, `jit-s15-vmm`'s user manager lists no `jit-work-*` unit that is still active, and the kernel lists no `qemu-system-*` process owned by `jit-s15-vmm`. Only then does it remove the controller unit, socket unit, journald file and the Secret Service user unit. If a VM is still running, it fails with the exact stop command and removes nothing; re-run it afterwards. It keeps the identities, linger, packages, Bun, releases, launcher, sudoers rule, config, state, working-VM disks and snapshots, and the keyring and unlock file, so a later `install.sh --s15` re-attaches to the same state without re-initializing it. Legacy and S14 installations are not touched.
 
 ## Security notes
 

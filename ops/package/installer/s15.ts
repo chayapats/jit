@@ -1,12 +1,12 @@
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { buildPackage, validateArtifact } from "../bun-build";
 import { assertRootPath, assertRootTree, freezeInstallerArtifact, giveInstallerStaging } from "./trusted-paths";
 import { installerDefaults, InstallerFailure, type HostFacts, type InstallerDefaults } from "./installer";
 import { captureOwnerPipe, operatorTerminal, prepareS14OwnerLink, type PendingOwnerLink } from "./owner-link";
-import { spawnRunner, type CommandRunner } from "../../../src/ops/supervisor";
+import { spawnRunner, type CommandResult, type CommandRunner } from "../../../src/ops/supervisor";
 import { releaseReadableByService } from "../../../src/ops/service-package";
 import { parseS15RuntimeConfig, readS15RuntimeConfig, type S15RuntimeConfig } from "../../../src/s15/runtime-config";
 import { renderVmmLauncher } from "../../../src/s15/vm/vmm-launcher";
@@ -39,9 +39,10 @@ const ref = (id: string) => ({ id, revision: 1, generation: 1 });
  * fixed S15 directories, a loopback origin (an existing HTTPS private-ingress origin is preserved on re-run),
  * the approved Codex subscription route for the owner's single device login (live availability follows that
  * login), no policy, budget or personal GitHub rule, and the Jit-managed local working computer whose QEMU runs
- * as the separate identity. Browser, GitHub and Google stay off until the owner configures them.
+ * as the separate identity (`vmm: null` on a host without local VM support: the owner enrolls their own VM in
+ * the Web instead). Browser, GitHub and Google stay off until the owner configures them.
  */
-export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions; origin?: string }): S15RuntimeConfig {
+export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions | null; origin?: string }): S15RuntimeConfig {
   const selection = { route: ref("codex_route"), model: ref("codex_model"), effort: "high" };
   const bound = { ...zero(), calls: 1, steps: 1, activeMs: 30000, outputBytes: 32768 };
   return parseS15RuntimeConfig({ contract: "s15-runtime/v1", installationId: input.installationId, directory: s15Installation.state, origin: input.origin ?? s15Installation.origin, policy: null,
@@ -50,7 +51,8 @@ export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmm
     models: [{ selection, provider: "codex", modelId: "gpt-6.1-sol", account: ref("codex_account"), billing: ref("codex_subscription"), recipient: ref("codex_provider"), charge: "subscription", availability: "available", efforts: ["high"], effortEvidence: "requested_only", upperBound: bound, rank: { ordinary: 0, difficult: 0 } }],
     modelLimits: { turns: 6, attempts: 1, activeMs: 300000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 },
     disclosure: { sources: [], approvals: [], githubRecipient: null, googleRecipient: null, browser: [], acquisitions: [], registries: [] },
-    vm: { id: "working", resource: ref("computer"), limaInstance: null, local: true, vmm: input.vmm, upperBound: { ...zero(), calls: 1, reads: 1, outputBytes: 1048576, activeMs: 120000 } },
+    // Without local VM support (no kvm group) the pool's default member is an owner-supplied VM enrolled in the Web.
+    vm: { id: "working", resource: ref("computer"), limaInstance: null, ...(input.vmm ? { local: true, vmm: input.vmm } : { local: false }), upperBound: { ...zero(), calls: 1, reads: 1, outputBytes: 1048576, activeMs: 120000 } },
     team: { maxConcurrentOperations: 2, memory: "off" }, browser: null, google: null, github: null });
 }
 
@@ -58,19 +60,21 @@ export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmm
  * Hardened controller unit. QEMU never runs here: the working VM lives in the separate identity's lingering
  * user manager, so controller restarts and upgrades never kill it. The controller reaches that identity only
  * through sudo and the fixed launcher (VM15-03), so this unit keeps privilege transitions available
- * (no NoNewPrivileges) while the sudoers rule allows nothing but the launcher.
+ * (no NoNewPrivileges) while the sudoers rule allows nothing but the launcher. `vmmUid: null` (no local VM
+ * support) renders the controller alone, with NoNewPrivileges and no QEMU identity, proxy socket or sudo.
  */
-export function renderS15Unit(input: { uid: number; vmmUid: number; memoryMaxBytes: number }): string {
-  for (const id of [input.uid, input.vmmUid]) if (!Number.isSafeInteger(id) || id < 1 || id > 4294967294) throw new Error("invalid_s15_unit");
-  const p = s15Installation, memory = `${Math.max(256, Math.floor(input.memoryMaxBytes / MiB))}M`;
+export function renderS15Unit(input: { uid: number; vmmUid: number | null; memoryMaxBytes: number }): string {
+  for (const id of [input.uid, ...(input.vmmUid === null ? [] : [input.vmmUid])]) if (!Number.isSafeInteger(id) || id < 1 || id > 4294967294) throw new Error("invalid_s15_unit");
+  const p = s15Installation, memory = `${Math.max(256, Math.floor(input.memoryMaxBytes / MiB))}M`, vmm = input.vmmUid;
+  // Without a Jit-managed VM there is no QEMU identity, no sudo and no proxy socket, so privileges stay closed.
+  const ordering = vmm === null ? `After=network-online.target user@${input.uid}.service\nWants=network-online.target user@${input.uid}.service`
+    : `After=network-online.target user@${input.uid}.service user@${vmm}.service ${p.proxySocket}\nWants=network-online.target user@${input.uid}.service user@${vmm}.service\nRequires=${p.proxySocket}`;
   return `# Rendered by install.sh --s15 (ops.installer/v1). Re-run the installer to repair; do not edit.
 [Unit]
 Description=Jit S15 controller
 Documentation=https://github.com/chayapats/jit/blob/main/docs/runbooks/s15-install.md
 After=systemd-journald@${p.journal}.service
-After=network-online.target user@${input.uid}.service user@${input.vmmUid}.service ${p.proxySocket}
-Wants=network-online.target user@${input.uid}.service user@${input.vmmUid}.service
-Requires=${p.proxySocket}
+${ordering}
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -80,8 +84,7 @@ User=${p.user}
 Group=${p.user}
 WorkingDirectory=${p.home}/work
 ExecStart=${p.prefix}/bin/bun ${p.prefix}/current/src/main.ts serve --s15 --config ${p.config}
-Sockets=${p.proxySocket}
-Environment=HOME=${p.home}
+${vmm === null ? "" : `Sockets=${p.proxySocket}\n`}Environment=HOME=${p.home}
 Environment=XDG_RUNTIME_DIR=/run/user/${input.uid}
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${input.uid}/bus
 Restart=on-failure
@@ -93,17 +96,16 @@ KillSignal=SIGTERM
 MemoryMax=${memory}
 TasksMax=512
 LimitNOFILE=8192
-# VM15-03: sudo to ${p.vmmUser} runs only ${p.launcher}; see docs/runbooks/s15-install.md.
+${vmm === null ? "NoNewPrivileges=true" : `# VM15-03: sudo to ${p.vmmUser} runs only ${p.launcher}; see docs/runbooks/s15-install.md.`}
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=tmpfs
 BindPaths=/run/user/${input.uid}
-BindPaths=/run/user/${input.vmmUid}
-ProtectKernelTunables=true
+${vmm === null ? "" : `BindPaths=/run/user/${vmm}\n`}ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
-ReadWritePaths=${p.home} ${p.vmmRoot}
+ReadWritePaths=${p.home}${vmm === null ? "" : ` ${p.vmmRoot}`}
 UMask=0077
 LogNamespace=${p.journal}
 LogRateLimitIntervalSec=30s
@@ -192,15 +194,65 @@ export function readS15ComputerProgress(configPath: string): S15ComputerProgress
   return { state: "running", step: row.step, history: (row.history ?? []).map(entry => entry.step) };
 }
 
+/** PIDs of QEMU processes whose real uid is `uid`, read from the kernel's `/proc` (never from a user manager). */
+export function s15QemuProcesses(uid: number, proc = "/proc"): number[] {
+  const found: number[] = [];
+  let entries: string[] = [];
+  try { entries = readdirSync(proc); } catch { return found; }
+  for (const name of entries) {
+    if (!/^[0-9]+$/.test(name)) continue;
+    try {
+      const owner = /^Uid:\s+([0-9]+)/m.exec(readFileSync(join(proc, name, "status"), "utf8"))?.[1];
+      const argv0 = readFileSync(join(proc, name, "cmdline"), "utf8").split("\0")[0] ?? "";
+      if (Number(owner) === uid && /^\/usr\/bin\/qemu-system-[a-z0-9_]+$/.test(argv0)) found.push(Number(name));
+    } catch { /* The process exited meanwhile. */ }
+  }
+  return found;
+}
+
+/**
+ * Stops every working VM of the QEMU identity and proves it before uninstall may report success: the stop
+ * command succeeded, its user manager lists no `jit-work-*` unit that is still active, and the kernel lists no
+ * QEMU process owned by that identity. A manager that is not running cannot run a unit, but the process check
+ * still applies. Returns what is left; an empty `remaining` with `stopped` is the only success.
+ */
+export async function stopS15WorkingVms(input: { vmmUid: number; call(argv: string[], timeoutMs?: number): Promise<CommandResult>; qemuProcesses?: (uid: number) => number[] }): Promise<{ stopped: boolean; remaining: string[] }> {
+  const p = s15Installation, asVmm = (args: string[]) => ["runuser", "-u", p.vmmUser, "--", "env", `XDG_RUNTIME_DIR=/run/user/${input.vmmUid}`, ...args];
+  const remaining: string[] = [];
+  let commands = true;
+  const manager = (await input.call(["systemctl", "is-active", `user@${input.vmmUid}.service`], 30_000)).stdout.trim();
+  if (["active", "activating", "reloading", "deactivating"].includes(manager)) {
+    const stop = await input.call(asVmm(["systemctl", "--user", "stop", "jit-work-*.service"]), 120_000);
+    if (stop.exitCode !== 0 || stop.timedOut) commands = false;
+    const listed = await input.call(asVmm(["systemctl", "--user", "list-units", "--type=service", "--all", "--plain", "--no-legend", "jit-work-*.service"]), 30_000);
+    if (listed.exitCode !== 0 || listed.timedOut) commands = false;
+    for (const line of listed.stdout.split("\n")) {
+      const [unit, , active] = line.trim().split(/\s+/);
+      if (unit && /^jit-work-[a-f0-9]{12}\.service$/.test(unit) && active && !["inactive", "failed"].includes(active)) remaining.push(unit);
+    }
+  }
+  for (const pid of (input.qemuProcesses ?? s15QemuProcesses)(input.vmmUid)) remaining.push(`QEMU pid ${pid}`);
+  return { stopped: commands && !remaining.length, remaining };
+}
+
 /** Installer options; all writes stay below `root`, and a dry run never runs a host command. */
 export interface S15InstallerOptions {
   root: string; facts: HostFacts; source: string; bunPath: string; uninstall?: boolean; dryRun?: boolean;
   run?: CommandRunner; out?: (line: string) => void;
   /** Deterministic waits for health and working-computer polling. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Dry runs only: prepares the private first-owner link (deterministic tests). Real runs capture it through the
+   * trusted `owner-link --s15` CLI on private fd 3 before the controller starts and show it on `/dev/tty`.
+   */
+  ownerLink?: () => Promise<PendingOwnerLink>;
   /** Fake-root scenarios only; production ignores them. */
   simulation?: {
-    failStep?: string; release?: string; serviceActive?: boolean; kvmGroup?: boolean;
+    failStep?: string; release?: string; serviceActive?: boolean;
+    /** `false`: the host has no `kvm` group, so the controller is installed without a Jit-managed VM. */
+    kvmGroup?: boolean;
+    /** Uninstall read-back: the VM stop's exit code, the identity's `list-units` output and live QEMU pids. */
+    vmStop?: { exitCode: number; listed: string; processes: number[] };
     /** Health results consumed in order (new release first, then a rollback's re-check). */
     health?: boolean[];
     computer?: S15ComputerProgress[];
@@ -222,9 +274,10 @@ const codeCopy = (code: string) => {
 /**
  * Applies the approved S15 plan. Fresh install: dedicated controller and QEMU identities, protected directories,
  * the Secret Service user manager, the argv-fixed VM launcher with its sudoers rule, a frozen release, the generated
- * config, `init --s15`, the hardened unit and the release symlink, start and health, then the automatic working
- * computer (progress printed) and the private first-owner link. Re-runs repair idempotently and preserve config
- * and state. Upgrades stop the controller (the VM keeps running), switch the release atomically and roll back to
+ * config, `init --s15`, the hardened unit and the release symlink, start and health, the private first-owner link
+ * (at once, within its 15-minute lifetime), then the automatic working computer (progress printed). A host without
+ * a `kvm` group gets the controller alone and the owner-supplied VM fallback. Re-runs repair idempotently and
+ * preserve config and state; uninstall removes units only after a proven working-VM stop. Upgrades stop the controller (the VM keeps running), switch the release atomically and roll back to
  * the previous release and unit when the new one fails to start or answer health. A failed fresh install
  * removes the new unit and anything it initialized, leaving a cleanly re-runnable host. Other installations
  * (`jit`, `jit-s14`) are never read or changed.
@@ -318,17 +371,23 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
   try {
     if (options.uninstall) {
       step("uninstall", `stop ${p.service} with systemctl, then re-run install.sh --s15 --uninstall`);
+      if (!dry && existsSync(paths.unit)) {
+        await call(["systemctl", "disable", "--now", p.service]);
+        const state = (await call(["systemctl", "is-active", p.service])).stdout.trim();
+        if (state === "active" || state === "activating" || state === "deactivating") throw new InstallerFailure(currentStep, next);
+      }
+      // Working VMs stop cleanly and the stop is proven before anything is removed; their disks, snapshots and
+      // keys are retained for a later re-install. A host without the QEMU identity has no Jit-managed VM.
+      const simulated = options.simulation?.vmStop;
+      let vmmId: number | null = dry && simulated ? 1002 : null;
+      if (!dry) { const vmm = await call(["getent", "passwd", p.vmmUser]), id = Number(vmm.stdout.split(":")[2]); if (vmm.exitCode === 0 && Number.isSafeInteger(id) && id > 0) vmmId = id; }
+      if (vmmId !== null) {
+        const fake = async (argv: string[]): Promise<CommandResult> => ({ timedOut: false, exitCode: argv.includes("stop") ? simulated!.exitCode : 0,
+          stdout: argv[1] === "is-active" ? "active\n" : argv.includes("list-units") ? simulated!.listed : "" });
+        const vms = await stopS15WorkingVms({ vmmUid: vmmId, call: dry ? fake : call, ...(dry ? { qemuProcesses: () => simulated!.processes } : {}) });
+        if (!vms.stopped) throw new InstallerFailure(currentStep, `${p.service} is stopped and disabled, but a working VM of ${p.vmmUser} is still running (${vms.remaining.join(", ") || "its stop did not finish"}). Stop it with: sudo runuser -u ${p.vmmUser} -- env XDG_RUNTIME_DIR=/run/user/${vmmId} systemctl --user stop 'jit-work-*.service'; confirm that systemctl --user list-units 'jit-work-*' shows none active and no qemu-system process of ${p.vmmUser} remains, then re-run install.sh --s15 --uninstall. No unit file was removed`);
+      }
       if (!dry) {
-        if (existsSync(paths.unit)) {
-          await call(["systemctl", "disable", "--now", p.service]);
-          const state = (await call(["systemctl", "is-active", p.service])).stdout.trim();
-          if (state === "active" || state === "activating" || state === "deactivating") throw new InstallerFailure(currentStep, next);
-        }
-        const vmm = await call(["getent", "passwd", p.vmmUser]);
-        const vmmId = Number(vmm.stdout.split(":")[2]);
-        // Working VMs stop cleanly; their disks, snapshots and keys are retained for a later re-install.
-        if (vmm.exitCode === 0 && Number.isSafeInteger(vmmId) && vmmId > 0)
-          await call(["runuser", "-u", p.vmmUser, "--", "env", `XDG_RUNTIME_DIR=/run/user/${vmmId}`, "systemctl", "--user", "stop", "jit-work-*.service"], 120_000);
         const ctl = await call(["getent", "passwd", p.user]), ctlId = Number(ctl.stdout.split(":")[2]);
         if (ctl.exitCode === 0 && Number.isSafeInteger(ctlId) && ctlId > 0) {
           uid = ctlId;
@@ -347,41 +406,56 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     let preserved: S15RuntimeConfig | null = null;
     if (existing !== null) {
       try { preserved = parseS15RuntimeConfig(JSON.parse(existing)); } catch { throw new InstallerFailure(currentStep, next); }
-      if (preserved.directory !== p.state || preserved.vm.local !== true) throw new InstallerFailure(currentStep, next);
+      if (preserved.directory !== p.state || preserved.vm.local === true && !preserved.vm.vmm) throw new InstallerFailure(currentStep, next);
     }
+    // Local VM support: kept once installed; added when the host gains a kvm group (QEMU/KVM packages).
+    let local = preserved?.vm.local === true;
 
     step("disk-reserve", "free disk space above the displayed reserve plus 512 MiB staging space, then re-run install.sh --s15");
     const disk = dry ? null : statfsSync(existsSync(paths.home) ? paths.home : "/var/lib");
     if ((disk ? disk.bavail * disk.bsize : options.facts.freeBytes) < defaults.diskReserveBytes + 512 * MiB) throw new InstallerFailure(currentStep, next);
 
     step("identity", `provide the non-login ${p.user} and ${p.vmmUser} identities, the ${p.group} group and the kvm group (install qemu-system-* if kvm is missing), then re-run install.sh --s15`);
-    if (dry) { if (options.simulation?.kvmGroup === false) throw new InstallerFailure(currentStep, "install the QEMU/KVM packages so the kvm group exists, then re-run install.sh --s15"); }
+    if (dry) local ||= options.simulation?.kvmGroup !== false;
     else {
       const passwd = async (name: string) => { const r = await call(["getent", "passwd", name]); if (r.exitCode !== 0) return null; const f = r.stdout.trim().split(":"); return { name: f[0], uid: Number(f[2]), gid: Number(f[3]), home: f[5], shell: f[6] ?? "" }; };
       const group = async (name: string) => { const r = await call(["getent", "group", name]); if (r.exitCode !== 0) return null; const f = r.stdout.trim().split(":"); return { name: f[0], gid: Number(f[2]) }; };
       const valid = (id: number) => Number.isSafeInteger(id) && id > 0 && id < 4294967295;
-      if (!await group(p.group)) await must(["groupadd", "--system", p.group]);
-      const shared = await group(p.group);
-      if (!shared || !valid(shared.gid)) throw new InstallerFailure(currentStep, next);
+      const kvm = await group("kvm");
+      if (kvm && !valid(kvm.gid)) throw new InstallerFailure(currentStep, next);
+      // No kvm group (no QEMU/KVM packages or virtualization): install the controller alone; the owner enrolls a VM.
+      local ||= !!kvm;
       if (!await passwd(p.user)) await must(["useradd", "--system", "--create-home", "--home-dir", p.home, "--shell", "/usr/sbin/nologin", "--user-group", p.user]);
-      if (!await passwd(p.vmmUser)) await must(["useradd", "--system", "--create-home", "--home-dir", p.vmmHome, "--shell", "/usr/sbin/nologin", "--gid", p.group, p.vmmUser]);
-      const ctl = await passwd(p.user), vmm = await passwd(p.vmmUser), kvm = await group("kvm");
+      const ctl = await passwd(p.user);
       if (!ctl || ctl.name !== p.user || !valid(ctl.uid) || !valid(ctl.gid) || ctl.home !== p.home || !/\/(nologin|false)$/.test(ctl.shell)) throw new InstallerFailure(currentStep, next);
-      if (!vmm || vmm.name !== p.vmmUser || !valid(vmm.uid) || vmm.gid !== shared.gid || vmm.home !== p.vmmHome || !/\/(nologin|false)$/.test(vmm.shell) || vmm.uid === ctl.uid) throw new InstallerFailure(currentStep, next);
-      if (!kvm || !valid(kvm.gid)) throw new InstallerFailure(currentStep, "install the QEMU/KVM packages so the kvm group exists (qemu-system-x86 or qemu-system-arm), then re-run install.sh --s15");
-      uid = ctl.uid; gid = ctl.gid; vmmUid = vmm.uid; sharedGid = shared.gid; kvmGid = kvm.gid;
+      uid = ctl.uid; gid = ctl.gid;
       const groupsOf = async (name: string) => (await must(["id", "-nG", name])).trim().split(/\s+/);
-      const ctlGroups = await groupsOf(p.user), vmmGroups = await groupsOf(p.vmmUser);
-      if (!vmmGroups.includes("kvm")) await must(["usermod", "-a", "-G", "kvm", p.vmmUser]);
-      if (!ctlGroups.includes(p.group)) await must(["usermod", "-a", "-G", p.group, p.user]);
-      // The controller never needs KVM, and the QEMU identity is never in the controller's own group.
+      const ctlGroups = await groupsOf(p.user);
+      // The controller never needs KVM.
       if (ctlGroups.includes("kvm")) await must(["gpasswd", "-d", p.user, "kvm"]);
-      if (vmmGroups.includes(p.user)) await must(["gpasswd", "-d", p.vmmUser, p.user]);
+      if (local) {
+        if (!await group(p.group)) await must(["groupadd", "--system", p.group]);
+        const shared = await group(p.group);
+        if (!shared || !valid(shared.gid)) throw new InstallerFailure(currentStep, next);
+        if (!await passwd(p.vmmUser)) await must(["useradd", "--system", "--create-home", "--home-dir", p.vmmHome, "--shell", "/usr/sbin/nologin", "--gid", p.group, p.vmmUser]);
+        const vmm = await passwd(p.vmmUser);
+        if (!vmm || vmm.name !== p.vmmUser || !valid(vmm.uid) || vmm.gid !== shared.gid || vmm.home !== p.vmmHome || !/\/(nologin|false)$/.test(vmm.shell) || vmm.uid === ctl.uid) throw new InstallerFailure(currentStep, next);
+        vmmUid = vmm.uid; sharedGid = shared.gid; kvmGid = kvm?.gid ?? -1;
+        const vmmGroups = await groupsOf(p.vmmUser);
+        if (kvm && !vmmGroups.includes("kvm")) await must(["usermod", "-a", "-G", "kvm", p.vmmUser]);
+        if (!ctlGroups.includes(p.group)) await must(["usermod", "-a", "-G", p.group, p.user]);
+        // The QEMU identity is never in the controller's own group.
+        if (vmmGroups.includes(p.user)) await must(["gpasswd", "-d", p.vmmUser, p.user]);
+        if (!kvm) out(`Working computer: this host no longer has a kvm group; ${p.vmmUser} keeps its VMs but cannot start them until the QEMU/KVM packages are reinstalled.`);
+      }
     }
 
     step("directories", "remove unexpected symlinks or repair directory ownership under /var/lib/jit-s15, /var/lib/jit-s15-vm and /opt/jit-s15, then re-run install.sh --s15");
-    own(paths.home, 0o700, uid, gid); own(paths.vmmHome, 0o700, vmmUid, sharedGid);
-    own(paths.vmmRoot, 0o750, 0, sharedGid); own(layout.control, 0o2750, uid, sharedGid); own(layout.images, 0o2750, uid, sharedGid); own(layout.machines, 0o2750, vmmUid, sharedGid);
+    own(paths.home, 0o700, uid, gid);
+    if (local) {
+      own(paths.vmmHome, 0o700, vmmUid, sharedGid);
+      own(paths.vmmRoot, 0o750, 0, sharedGid); own(layout.control, 0o2750, uid, sharedGid); own(layout.images, 0o2750, uid, sharedGid); own(layout.machines, 0o2750, vmmUid, sharedGid);
+    }
     for (const path of [paths.prefix, join(paths.prefix, "bin"), paths.releases, paths.libexec]) own(path, 0o755, 0, 0);
     own(paths.configDir, 0o750, 0, gid);
 
@@ -400,7 +474,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     }
 
     step("vm-identity", `repair ${p.vmmUser}'s lingering user manager, ${p.launcher} and ${p.sudoers} (sudo and visudo are required), then re-run install.sh --s15`);
-    if (!dry) {
+    if (!dry && local) {
       await must(["loginctl", "enable-linger", p.vmmUser]);
       await must(["systemctl", "start", `user@${vmmUid}.service`]);
       // A running user manager keeps the groups it started with. Restart it only when it lacks kvm or the shared
@@ -410,21 +484,23 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
         let status = ""; try { status = readFileSync(`/proc/${managerPid}/status`, "utf8"); } catch { /* Gone: restarted below. */ }
         const groups = (/^Groups:\s*(.*)$/m.exec(status)?.[1] ?? "").trim().split(/\s+/).filter(Boolean).map(Number);
         const primary = Number(/^Gid:\s+([0-9]+)/m.exec(status)?.[1]);
-        if (!groups.includes(kvmGid) || primary !== sharedGid) await must(["systemctl", "restart", `user@${vmmUid}.service`]);
+        if (kvmGid >= 0 && !groups.includes(kvmGid) || primary !== sharedGid) await must(["systemctl", "restart", `user@${vmmUid}.service`]);
       }
     }
-    write(paths.launcher, renderVmmLauncher(vmmOptions()), 0o755, { uid: 0, gid: 0 });
-    // A name containing a dot is ignored by sudo, so the rule is parsed only after visudo accepted it.
-    // Never change an existing system directory's mode; only create a missing one.
-    if (!existsSync(dirname(paths.sudoers))) own(dirname(paths.sudoers), 0o750, 0, 0);
-    if (!dry) { try { assertRootPath(dirname(paths.sudoers)); } catch { throw new InstallerFailure(currentStep, next); } }
-    const sudoersTemp = join(dirname(paths.sudoers), `.jit-s15-vmm.${randomBytes(6).toString("hex")}`);
-    try {
-      safe(sudoersTemp); writeFileSync(sudoersTemp, renderS15Sudoers(), { flag: "wx", mode: 0o440 }); chmodSync(sudoersTemp, 0o440);
-      if (!dry) { chownSync(sudoersTemp, 0, 0); await must(["visudo", "-c", "-q", "-f", sudoersTemp]); }
-      renameSync(sudoersTemp, paths.sudoers);
-    } finally { rmSync(sudoersTemp, { force: true }); }
-    if (!dry) {
+    if (local) {
+      write(paths.launcher, renderVmmLauncher(vmmOptions()), 0o755, { uid: 0, gid: 0 });
+      // A name containing a dot is ignored by sudo, so the rule is parsed only after visudo accepted it.
+      // Never change an existing system directory's mode; only create a missing one.
+      if (!existsSync(dirname(paths.sudoers))) own(dirname(paths.sudoers), 0o750, 0, 0);
+      if (!dry) { try { assertRootPath(dirname(paths.sudoers)); } catch { throw new InstallerFailure(currentStep, next); } }
+      const sudoersTemp = join(dirname(paths.sudoers), `.jit-s15-vmm.${randomBytes(6).toString("hex")}`);
+      try {
+        safe(sudoersTemp); writeFileSync(sudoersTemp, renderS15Sudoers(), { flag: "wx", mode: 0o440 }); chmodSync(sudoersTemp, 0o440);
+        if (!dry) { chownSync(sudoersTemp, 0, 0); await must(["visudo", "-c", "-q", "-f", sudoersTemp]); }
+        renameSync(sudoersTemp, paths.sudoers);
+      } finally { rmSync(sudoersTemp, { force: true }); }
+    }
+    if (!dry && local) {
       const ready = await must(["runuser", "-u", p.user, "--", ...vmmCommand(vmmOptions(), ["check"])]);
       if (ready.trim() !== "jit-vmm-ready-v1") throw new InstallerFailure(currentStep, `make /etc/sudoers include /etc/sudoers.d so ${p.user} can run ${p.launcher} as ${p.vmmUser}, then re-run install.sh --s15`);
       if ((await call(["runuser", "-u", p.user, "--", ...vmmCommand(vmmOptions(), ["kvm"])])).exitCode !== 0)
@@ -463,8 +539,13 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     step("configuration", `repair ${p.config} (root:${p.user} 0640), then re-run install.sh --s15`);
     if (read(paths.config) !== existing) throw new InstallerFailure(currentStep, "another process changed the S15 config during installation; re-run install.sh --s15");
     // The QEMU identity's uid is installer-owned; it is refreshed if the identity was recreated. Everything else is preserved.
-    config = preserved ? parseS15RuntimeConfig({ ...preserved, vm: { ...preserved.vm, vmm: vmmOptions() } })
-      : s15InstallerConfig({ installationId: `s15_${randomBytes(8).toString("hex")}`, vmm: vmmOptions() });
+    if (preserved) {
+      // Only the installer-owned `local`/`vmm` change, in place, so an unchanged config stays byte-identical.
+      const vm: Record<string, unknown> = {}, placeLocal = () => { vm.local = local; if (local) vm.vmm = vmmOptions(); };
+      for (const [key, value] of Object.entries(preserved.vm)) { if (key === "local") placeLocal(); else if (key !== "vmm") vm[key] = value; }
+      if (!("local" in vm)) placeLocal();
+      config = parseS15RuntimeConfig({ ...preserved, vm });
+    } else config = s15InstallerConfig({ installationId: `s15_${randomBytes(8).toString("hex")}`, vmm: local ? vmmOptions() : null });
     const configText = JSON.stringify(config, null, 2) + "\n";
     if (configText !== existing) write(paths.config, configText, 0o640, { uid: 0, gid });
     else if (!dry) { chownSync(paths.config, 0, gid); chmodSync(paths.config, 0o640); }
@@ -501,6 +582,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     }
 
     step("owner-link-prepare", "repair the S15 owner store and the private fd 3 delivery, then re-run install.sh --s15 from the operator terminal; no link is printed before health");
+    if (dry && options.ownerLink) pendingOwner = await options.ownerLink();
     if (!dry) {
       const terminal = ownerTerminal!; ownerTerminal = undefined;
       pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(release!, "src/main.ts"), "owner-link", "--s15", "--config", p.config]),
@@ -509,12 +591,14 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     armed = true;
     step("service-install", `inspect ${p.unit} and the journald namespace, then re-run install.sh --s15`);
-    write(paths.unit, renderS15Unit({ uid, vmmUid, memoryMaxBytes: defaults.memoryMaxBytes }), 0o644, { uid: 0, gid: 0 });
+    write(paths.unit, renderS15Unit({ uid, vmmUid: local ? vmmUid : null, memoryMaxBytes: defaults.memoryMaxBytes }), 0o644, { uid: 0, gid: 0 });
     write(paths.journald, renderS15Journald(defaults.logBytes), 0o644, { uid: 0, gid: 0 });
-    write(paths.socket, renderS15ProxySocket(), 0o644, { uid: 0, gid: 0 });
-    // The socket unit binds the path itself; a socket file left by `init --s15` (or a crash) is removed first.
-    const stale = lstatSync(layout.proxySocket, { throwIfNoEntry: false });
-    if (stale?.isSocket() && (dry || (await call(["systemctl", "is-active", p.proxySocket])).stdout.trim() !== "active")) rmSync(layout.proxySocket, { force: true });
+    if (local) {
+      write(paths.socket, renderS15ProxySocket(), 0o644, { uid: 0, gid: 0 });
+      // The socket unit binds the path itself; a socket file left by `init --s15` (or a crash) is removed first.
+      const stale = lstatSync(layout.proxySocket, { throwIfNoEntry: false });
+      if (stale?.isSocket() && (dry || (await call(["systemctl", "is-active", p.proxySocket])).stdout.trim() !== "active")) rmSync(layout.proxySocket, { force: true });
+    }
     switchCurrent(release!);
     if (!dry) { await must(["systemctl", "daemon-reload"]); await must(["systemctl", "enable", p.service]); }
 
@@ -526,12 +610,17 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     committed = true;
     write(paths.installerState, JSON.stringify({ contract: "ops.installer/v1", runtime: "s15", release: release!.slice(root === "/" ? 0 : root.length), hardware: options.facts, defaults }, null, 2) + "\n", 0o640, { uid: 0, gid });
 
+    // The single-use link lives 15 minutes from preparation, so it is shown as soon as the controller is healthy,
+    // never after the working computer's setup, which can take much longer (image download, first boot, Docker).
+    step("owner-link", "re-run install.sh --s15 from the operator terminal; an existing owner is never reset");
+    pendingOwner?.deliver();
+
     // The controller owns the automatic job (SETUP15-01); the installer only reads its durable progress.
     step("working-computer", "open Resources → Computer in the Web UI for the stated reason; the controller stays installed");
-    let computer: S15ComputerProgress | null = null;
+    let computer: S15ComputerProgress | null = local ? null : { state: "none", host: "vm_kvm_unavailable" };
     // Polls every 2 s: up to 90 s for the controller's boot pass to start the job, then up to 90 minutes overall.
     const printed = new Set<string>();
-    for (let poll = 0; ; poll++) {
+    for (let poll = 0; local; poll++) {
       if (dry) computer = computers.shift() ?? { state: "enrolled" };
       else {
         const result = await call(asUser([options.bunPath, join(release!, "ops/package/installer/main.ts"), "s15-computer", "--config", p.config]), 30_000);
@@ -545,16 +634,15 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     }
     if (computer?.state === "enrolled") out(`Working computer: ${stepCopy("enrolled")}`);
     else if (computer?.state === "failed") out(`Working computer failed at ${computer.step} (${computer.code}). ${codeCopy(computer.code)} The controller is installed and healthy.`);
+    else if (computer?.state === "none" && !local) out("Working computer: this host has no kvm group (no QEMU/KVM packages or virtualization), so S15 was installed without a Jit-managed VM and without its QEMU identity. Enroll your own VM in Resources → Computer in the Web UI. After installing the QEMU/KVM packages, re-run install.sh --s15 to add the Jit-managed VM.");
     else if (computer?.state === "none") out(computer.host === "ready" ? "Working computer: not started yet. Open Resources → Computer in the Web UI and press Start." : `Working computer unavailable on this host (${computer.host}). ${codeCopy(computer.host)}`);
     else out("Working computer: setup continues in the background. Follow it in Resources → Computer in the Web UI.");
 
-    step("owner-link", "re-run install.sh --s15 from the operator terminal; an existing owner is never reset");
-    if (!dry) pendingOwner!.deliver();
     const port = new URL(config.origin).port || "80";
     out(dry ? "Dry run complete. No host commands ran; no setup credential was created." : `S15 controller ready: ${p.service}, release ${release!}.`);
     for (const line of [
       "Owner steps (Web UI only; no file edits):",
-      `  1. Open the link shown above on this host, or from your computer through: ssh -L ${port}:127.0.0.1:${port} <this host>. Set the owner password. An existing owner signs in at ${config.origin}/s14/login.`,
+      `  1. Open the link shown above (single-use, valid for 15 minutes; re-run install.sh --s15 for a new one) on this host, or from your computer through: ssh -L ${port}:127.0.0.1:${port} <this host>. Set the owner password. An existing owner signs in at ${config.origin}/s14/login.`,
       `  2. Settings → Provider (${config.origin}/settings/provider): sign in to Codex with the device code. It is stored for the ${p.user} identity only; the approved Codex route becomes available after this sign-in.`,
       `  3. Manage → Telegram (${config.origin}/resources/telegram): paste the new BotFather token, press Check and save, then bind your account with the one-time code.`,
       "  4. Install your standing rules in the Web UI when you are ready. No policy, budget or personal GitHub rule was installed for you.",

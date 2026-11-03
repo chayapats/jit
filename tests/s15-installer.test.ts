@@ -3,7 +3,7 @@ import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, re
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInstaller, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
-import { readS15ComputerProgress, renderS15ProxySocket, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, type S15InstallerOptions } from "../ops/package/installer/s15";
+import { readS15ComputerProgress, renderS15ProxySocket, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, s15QemuProcesses, stopS15WorkingVms, type S15ComputerProgress, type S15InstallerOptions } from "../ops/package/installer/s15";
 import { assertNoSecretValues } from "../ops/package/service-config";
 import { renderVmmLauncher } from "../src/s15/vm/vmm-launcher";
 import { parseS15RuntimeConfig, readS15RuntimeConfig } from "../src/s15/runtime-config";
@@ -38,7 +38,7 @@ const stateMarker = (f: ReturnType<typeof fixture>) => f.at("var/lib/jit-s15/sta
 
 test("a fresh S15 install creates the separate installation, its QEMU identity boundary and a credential-free config", async () => {
   const f = fixture(), result = await install(f, { release: "release-a" });
-  expect(result.events).toEqual(["preflight", "disk-reserve", "identity", "directories", "keyring", "vm-identity", "artifact", "configuration", "owner-terminal", "state-initialize", "owner-link-prepare", "service-install", "service-start", "health", "working-computer", "owner-link"]);
+  expect(result.events).toEqual(["preflight", "disk-reserve", "identity", "directories", "keyring", "vm-identity", "artifact", "configuration", "owner-terminal", "state-initialize", "owner-link-prepare", "service-install", "service-start", "health", "owner-link", "working-computer"]);
   const config = JSON.parse(readFileSync(f.at(s15Installation.config), "utf8"));
   expect(lstatSync(f.at(s15Installation.config)).mode & 0o777).toBe(0o640);
   expect(config).toMatchObject({ contract: "s15-runtime/v1", directory: "/var/lib/jit-s15/state", origin: "http://127.0.0.1:3002", policy: null, resourceBots: [], browser: null, github: null, google: null,
@@ -116,7 +116,7 @@ test.each(freshSteps)("a fresh install failing at %s leaves no unit, release lin
   for (const path of [s15Installation.unit, s15Installation.journald, s15Installation.proxySocketUnit, "opt/jit-s15/current", "var/lib/jit-s15/state"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
   expect(f.lines.includes("Step: rollback")).toBe(["service-install", "service-start", "health"].includes(failStep));
   const result = await install(f, { release: "release-a" });
-  expect(result.events.at(-1)).toBe("owner-link");
+  expect(result.events.at(-1)).toBe("working-computer");
   expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-a")); expect(existsSync(stateMarker(f))).toBe(true);
 });
 
@@ -257,3 +257,98 @@ test("the generated config initializes a fresh S15 runtime with the separate QEM
   const progress = readS15ComputerProgress(path);
   expect(progress.state).toBe("none"); expect(progress.state === "none" && progress.host).not.toBe("ready");
 }, 30_000);
+
+/** The owner setup link's lifetime in `src/ops/owner-setup.ts`. */
+const ownerLinkLifetimeMs = 15 * 60 * 1000;
+function ownerLinkFixture(f: ReturnType<typeof fixture>) {
+  const clock = { now: 0 }, delivered: { at: number; valid: boolean }[] = [];
+  let issuedAt = -1;
+  const ownerLink = async () => {
+    issuedAt = clock.now;
+    return { deliver() { delivered.push({ at: clock.now, valid: clock.now < issuedAt + ownerLinkLifetimeMs }); f.lines.push("Open http://127.0.0.1:3002/owner/setup?token=<fixture> to finish setup"); }, close() {} };
+  };
+  return { clock, delivered, options: { ownerLink, sleep: async (ms: number) => { clock.now += ms; } } };
+}
+const slowComputer = (minutes: number): S15ComputerProgress[] => Array.from({ length: minutes * 30 }, (_, i) => i < minutes * 20
+  ? { state: "running" as const, step: "download", history: ["host", "download"] } : { state: "running" as const, step: "boot", history: ["host", "download", "checksum", "disk", "boot"] });
+
+test("the first-owner link is shown right after health, so a slow working computer never delivers an expired link", async () => {
+  const f = fixture(), link = ownerLinkFixture(f);
+  // 30 minutes of image download and first boot, polled every 2 s, then ready.
+  const result = await runS15Installer({ ...f.options, ...link.options, simulation: { release: "release-a", computer: [...slowComputer(30), { state: "enrolled" }] } });
+  expect(result.computer).toEqual({ state: "enrolled" });
+  expect(link.clock.now).toBeGreaterThanOrEqual(30 * 60_000);
+  expect(link.delivered).toEqual([{ at: 0, valid: true }]);
+  const shown = f.lines.findIndex(line => line.startsWith("Open ")), progress = f.lines.findIndex(line => line.startsWith("Working computer: "));
+  expect(shown).toBeGreaterThan(-1); expect(shown).toBeLessThan(progress);
+  expect(result.events.indexOf("owner-link")).toBe(result.events.indexOf("health") + 1);
+  // A working computer that fails after a long wait still leaves the owner with the link delivered in time.
+  const g = fixture(), late = ownerLinkFixture(g);
+  await expect(runS15Installer({ ...g.options, ...late.options, simulation: { release: "release-a", computer: [...slowComputer(20), { state: "failed", step: "boot", code: "vm_prerequisite_missing" }] } })).rejects.toThrow("Failed at working-computer.");
+  expect(late.delivered).toEqual([{ at: 0, valid: true }]);
+});
+
+test("a host without a kvm group installs the controller alone, reports the owner-supplied VM fallback and adds the VM later", async () => {
+  const f = fixture(), result = await install(f, { release: "release-a", kvmGroup: false });
+  expect(result.events).toEqual(["preflight", "disk-reserve", "identity", "directories", "keyring", "vm-identity", "artifact", "configuration", "owner-terminal", "state-initialize", "owner-link-prepare", "service-install", "service-start", "health", "owner-link", "working-computer"]);
+  expect(result.computer).toEqual({ state: "none", host: "vm_kvm_unavailable" });
+  expect(f.lines.some(line => line.includes("no kvm group") && line.includes("Enroll your own VM in Resources → Computer"))).toBe(true);
+  const config = JSON.parse(readFileSync(f.at(s15Installation.config), "utf8"));
+  expect(config.vm).toMatchObject({ id: "working", limaInstance: null, local: false }); expect(config.vm.vmm).toBeUndefined();
+  expect(() => parseS15RuntimeConfig(config)).not.toThrow();
+  // No QEMU identity, launcher, sudoers rule, proxy socket or shared VM tree exists; the controller runs alone.
+  for (const path of [s15Installation.sudoers, s15Installation.launcher, s15Installation.proxySocketUnit, "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm"]) expect({ path, exists: existsSync(f.at(path)) }).toEqual({ path, exists: false });
+  const unit = readFileSync(f.at(s15Installation.unit), "utf8");
+  expect(unit).toBe(renderS15Unit({ uid: 1001, vmmUid: null, memoryMaxBytes: Math.floor(facts.ramMb / 3) * 1024 ** 2 }));
+  expect(unit).toContain("NoNewPrivileges=true\n"); expect(unit).toContain("ReadWritePaths=/var/lib/jit-s15\n");
+  for (const absent of ["jit-s15-vm", "1002", "Sockets=", "Requires="]) expect(unit).not.toContain(absent);
+  expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-a")); expect(existsSync(stateMarker(f))).toBe(true);
+  // A re-run without kvm is idempotent; once QEMU/KVM is installed, a re-run adds the Jit-managed VM in place.
+  const bytes = readFileSync(f.at(s15Installation.config));
+  await install(f, { release: "release-a", kvmGroup: false }); expect(readFileSync(f.at(s15Installation.config))).toEqual(bytes);
+  await install(f, { release: "release-a" });
+  const upgraded = JSON.parse(readFileSync(f.at(s15Installation.config), "utf8"));
+  expect(upgraded.installationId).toBe(config.installationId);
+  expect(upgraded.vm).toMatchObject({ local: true, vmm: { user: "jit-s15-vmm", directory: "/var/lib/jit-s15-vm" } });
+  for (const path of [s15Installation.sudoers, s15Installation.launcher, s15Installation.proxySocketUnit]) expect(existsSync(f.at(path))).toBe(true);
+  expect(readFileSync(f.at(s15Installation.unit), "utf8")).not.toContain("NoNewPrivileges");
+  // Local VM support is never removed by a later host change.
+  await install(f, { release: "release-a", kvmGroup: false });
+  expect(JSON.parse(readFileSync(f.at(s15Installation.config), "utf8")).vm.local).toBe(true);
+});
+
+test.each([
+  ["the VM stop command fails", { exitCode: 1, listed: "", processes: [] }],
+  ["a working-VM unit is still active", { exitCode: 0, listed: "jit-work-0123456789ab.service loaded active running jit-work-0123456789ab\n", processes: [] }],
+  ["a QEMU process of the identity remains", { exitCode: 0, listed: "jit-work-0123456789ab.service loaded inactive dead jit-work-0123456789ab\n", processes: [4321] }],
+])("uninstall reports failure with the exact next step and removes nothing when %s", async (_name, vmStop) => {
+  const f = fixture(); await install(f, { release: "release-a" });
+  const before = tree(f, s15Trees);
+  await expect(runS15Installer({ ...f.options, uninstall: true, simulation: { vmStop } }))
+    .rejects.toThrow(/^Failed at uninstall\. Next: jit-s15\.service is stopped and disabled, but a working VM of jit-s15-vmm is still running \(.+\)\. Stop it with: sudo runuser -u jit-s15-vmm -- env XDG_RUNTIME_DIR=\/run\/user\/1002 systemctl --user stop 'jit-work-\*\.service'; .*re-run install\.sh --s15 --uninstall\. No unit file was removed$/);
+  expect(tree(f, s15Trees)).toEqual(before);
+  expect(f.lines.some(line => line.startsWith("Uninstalled"))).toBe(false);
+  // Once the VM is proven stopped, the same uninstall completes.
+  await runS15Installer({ ...f.options, uninstall: true, simulation: { vmStop: { exitCode: 0, listed: "jit-work-0123456789ab.service loaded inactive dead jit-work-0123456789ab\n", processes: [] } } });
+  expect(existsSync(f.at(s15Installation.unit))).toBe(false);
+});
+
+test("the VM stop proof runs as the QEMU identity and reads the kernel's process table", async () => {
+  const calls: string[][] = [];
+  const call = (manager: string, listed: string, exitCode = 0) => async (argv: string[]) => { calls.push(argv); return { exitCode: argv.includes("stop") ? exitCode : 0, timedOut: false, stdout: argv[1] === "is-active" ? `${manager}\n` : argv.includes("list-units") ? listed : "" }; };
+  expect(await stopS15WorkingVms({ vmmUid: 1002, call: call("active", ""), qemuProcesses: () => [] })).toEqual({ stopped: true, remaining: [] });
+  const asVmm = ["runuser", "-u", "jit-s15-vmm", "--", "env", "XDG_RUNTIME_DIR=/run/user/1002"];
+  expect(calls).toEqual([["systemctl", "is-active", "user@1002.service"], [...asVmm, "systemctl", "--user", "stop", "jit-work-*.service"],
+    [...asVmm, "systemctl", "--user", "list-units", "--type=service", "--all", "--plain", "--no-legend", "jit-work-*.service"]]);
+  // A user manager that is not running has no units, but a surviving QEMU process still fails the proof.
+  calls.length = 0;
+  expect(await stopS15WorkingVms({ vmmUid: 1002, call: call("inactive", ""), qemuProcesses: () => [77] })).toEqual({ stopped: false, remaining: ["QEMU pid 77"] });
+  expect(calls).toEqual([["systemctl", "is-active", "user@1002.service"]]);
+  expect(await stopS15WorkingVms({ vmmUid: 1002, call: call("active", "jit-work-0123456789ab.service loaded deactivating stop-sigterm x\n"), qemuProcesses: () => [] })).toEqual({ stopped: false, remaining: ["jit-work-0123456789ab.service"] });
+  expect((await stopS15WorkingVms({ vmmUid: 1002, call: call("active", "", 1), qemuProcesses: () => [] })).stopped).toBe(false);
+  // The default reader matches only QEMU binaries whose real uid is the QEMU identity's.
+  const proc = realpathSync(mkdtempSync(join(tmpdir(), "jit-s15-proc-"))); roots.push(proc);
+  const entry = (pid: number, uid: number, argv0: string) => { mkdirSync(join(proc, String(pid))); writeFileSync(join(proc, String(pid), "status"), `Name:\tx\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`); writeFileSync(join(proc, String(pid), "cmdline"), `${argv0}\0-name\0jit-work-0123456789ab\0`); };
+  entry(100, 1002, "/usr/bin/qemu-system-x86_64"); entry(101, 1002, "/bin/bash"); entry(102, 1003, "/usr/bin/qemu-system-aarch64"); mkdirSync(join(proc, "self"));
+  expect(s15QemuProcesses(1002, proc)).toEqual([100]);
+});
