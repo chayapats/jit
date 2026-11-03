@@ -61,6 +61,8 @@ export function takeoverView(browser: S15BrowserInfo, state: S15BrowserProgress,
 export function limitNotice(code: string | null, conversationId: string, requestId: string, browser: S15BrowserInfo | null, csrf: string): string {
   const reason = code === "upload_unsupported" ? tr("s15.browser.no_upload") : codeText(code);
   const takeover = browser ? form("/s15/forms/browser/takeover", csrf, `${hidden("site", browser.id)}<button class="s-btn">${tr("s15.browser.do_it_myself")}</button>`) : "";
-  return `<div class="s15-limit" role="note">${pill(tr("s15.state.unsupported"), "", "×")}<p class="s15-text">${fill("s15.browser.limit", { reason })}</p><div class="s-strip-acts">${takeover}<a class="s-btn" href="/chats/${e(conversationId)}?skip_step=${e(requestId)}#s15-text">${tr("s15.browser.skip_step")}</a></div>
+  // BROW15-02: an unlisted website is resolved by the owner adding it; an unready browser shows its own status.
+  const website = code === "website_not_approved" ? `<a class="s-btn primary" href="/resources/websites#s15-web-add">${tr("s15.websites.add_from_limit")}</a>` : code?.startsWith("browser_") ? `<a class="s-btn" href="/resources/websites#s15-web-engine">${tr("s15.websites.status_from_limit")}</a>` : "";
+  return `<div class="s15-limit" role="note">${pill(tr("s15.state.unsupported"), "", "×")}<p class="s15-text">${fill("s15.browser.limit", { reason })}</p><div class="s-strip-acts">${website}${takeover}<a class="s-btn" href="/chats/${e(conversationId)}?skip_step=${e(requestId)}#s15-text">${tr("s15.browser.skip_step")}</a></div>
     <details class="s-more"><summary>${tr("s15.browser.details")}</summary><p class="s-mono s-meta">${e(code ?? "")}</p><p class="s-note">${tr("s15.browser.limit_note")}</p></details></div>`;
 }

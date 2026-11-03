@@ -64,7 +64,7 @@ export function accountsBody(input: { team: S15TeamResource[] | null; accounts: 
   const sites = input.browsers.length ? input.browsers.map(({ browser, state }) => loginCard(browser, state, input.csrf)).join("") : `<p class="s-sub">${tr("s15.resources.no_sites")}</p>`;
   return `<div class="s-col"><section class="s-card" aria-labelledby="s15-res-team"><h2 id="s15-res-team">${tr("s15.resources.team_title")}</h2>${input.teamPending ?? ""}${team}</section>
     <section class="s-card" aria-labelledby="s15-res-accounts"><h2 id="s15-res-accounts">${tr("s15.resources.accounts_title")}</h2>${accounts}</section>
-    <section class="s-card" aria-labelledby="s15-res-sites"><h2 id="s15-res-sites">${tr("s15.resources.sites_title")}</h2>${sites}<p class="s-note">${tr("s15.resources.sign_in_note")}</p></section></div>`;
+    <section class="s-card" aria-labelledby="s15-res-sites"><h2 id="s15-res-sites">${tr("s15.resources.sites_title")}</h2>${sites}<p class="s-note">${tr("s15.resources.sign_in_note")}</p><p><a class="s-link-text" href="/resources/websites">${tr("s15.websites.manage_link")}</a></p></section></div>`;
 }
 
 /** F11 restore: lists retained snapshots; the restore slip states its impact and waits for the owner (Q3). */
