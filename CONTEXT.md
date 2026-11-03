@@ -36,6 +36,10 @@ S15 target terms below refine product intent. Definitions explicitly marked S14 
 
 **Responsibility (S15 opt-in):** An authenticated conversational assignment retaining its original purpose, selected subject, completion rule and current policy authority across bounded attempts and durable waits. Waiting holds no VM/native session; interrupted effects reconcile before new attempts. A measured stall pauses this responsibility with evidence and a recommendation while other authorized work continues. See `src/s15/work/` and `docs/contracts/s15-responsibility-v1.md`.
 
+**Stall-reply resume binding (S15 opt-in, WORK15-02):** A durable protected record that an owner's reply to a paused responsibility should resume it once that reply's own CHAT request completes. It is created with the reply, settles at most once in the service drain (after restart, without a page view) and only through WORK's resume checks. It names the responsibility; it is not authority, and model output or quoted text cannot create one. See `src/s15/work/resume.ts`.
+
+**Bound owner channel (S15 opt-in, CHAN15-01):** A companion transport, currently Telegram, bound to the owner's stable numeric account and private chat by a one-time code issued in the authenticated Web UI. Bound messages are ordinary owner conversation requests under the same standing policy; the channel also notifies. It never approves held actions, installs policy or widens scope; approval stays on the exact Web slip. See ADR 0072 and `src/s15/telegram/`.
+
 **Task acceptance:** The owner's decision to retain an obligation. Acceptance alone does not start execution.
 
 **Work command:** An authenticated owner action requesting execution. In S15, ordinary conversation can request work within standing policy without Work mode; inspect/recommend requests still authorize only inspection/recommendation. In S14, typed work.start creates work plus its grant; message.post does not. Models and quoted/retrieved content cannot mint or widen authority in either version.

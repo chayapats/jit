@@ -72,6 +72,7 @@ export function s15StyleSheet(): string {
 .s15-frame img { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--radius-control); }
 .s15-takeover-bar:focus { outline: 2px solid var(--fg); outline-offset: -2px; }
 .s15-list { padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: var(--size-sm); }
+.s15-tg-code { font-size: var(--size-xl); padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); overflow-wrap: anywhere; user-select: all; }
 .s15-rule-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
 .s15-diff .s-diff-old, .s15-diff .s-diff-new { display: block; }
 .s15-strip-form { margin: 0; }

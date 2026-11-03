@@ -27,6 +27,7 @@ import type { BrowserSitePolicy } from './browser';
 import { githubRuntime, type GithubRuntimeConfig } from './github/runtime';
 import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure, type RuntimeDisclosureConfig } from './disclosure/runtime';
+import { createTelegramBotApi } from './telegram';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
@@ -132,6 +133,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
+      // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
+      telegram: { vault, transport: token => createTelegramBotApi(token) },
       vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
@@ -147,6 +150,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
+    service.telegram?.start(() => service!.drain());
     const shutdown = async () => { clearInterval(wake); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
