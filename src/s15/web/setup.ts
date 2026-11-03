@@ -1,17 +1,19 @@
-import { currentLocale, tr } from "../../i18n";
+import { currentLocale, tr, trMaybe } from "../../i18n";
 import type { PolicyProposal, StandingPolicy } from "../policy";
 import type { VmCapability, VmStatus } from "../vm";
 import type { VmMachineFacts } from "../vm/types";
 import { banner, codeText, e, fill, form, hidden, icon, key, notYet, pill, refusal } from "./render";
-import type { S15AccountRow, S15BudgetEntry, S15MachineCheck } from "./types";
+import type { S15AccountRow, S15BudgetEntry, S15LocalHost, S15MachineCheck, S15ProvisioningJob } from "./types";
 
 /** Process-local enrollment progress: only the public line and the observed check, never key material. */
 export interface S15ComputerProgress { setup: { setupId: string; command: string } | null; check: (S15MachineCheck & { host: string }) | null }
+/** SETUP15-01 card input: controller-observed host capability, the durable job projection and the render clock. */
+export interface S15ComputerLocal { host: S15LocalHost | null; job: S15ProvisioningJob | null; now: number }
 /** Working computer card input. `status` null means not yet registered; `unavailable` means VM15 is not composed. */
-export interface S15ComputerCard { csrf: string; unavailable: boolean; status: VmStatus | null; progress: S15ComputerProgress; hypervisor: string | null; refused: string | null; address: string; return: "setup" | "computer" }
+export interface S15ComputerCard { csrf: string; unavailable: boolean; status: VmStatus | null; progress: S15ComputerProgress; hypervisor: string | null; refused: string | null; address: string; return: "setup" | "computer"; local?: S15ComputerLocal }
 
 const gib = (bytes: number) => `${(bytes / 1073741824).toFixed(bytes >= 10737418240 ? 0 : 1)} GiB`;
-function factsList(facts: VmMachineFacts): string {
+export function factsList(facts: VmMachineFacts): string {
   return `<dl class="s-kv"><dt>${tr("s15.computer.fact.architecture")}</dt><dd class="s-mono">${e(facts.architecture)}</dd><dt>${tr("s15.computer.fact.os")}</dt><dd class="s-mono">${e(facts.os)}</dd>
     <dt>${tr("s15.computer.fact.cpu")}</dt><dd>${facts.cpuCount}</dd><dt>${tr("s15.computer.fact.memory")}</dt><dd>${gib(facts.memoryBytes)}</dd><dt>${tr("s15.computer.fact.disk")}</dt><dd>${gib(facts.diskBytes)}</dd>
     <dt>${tr("s15.computer.fact.sudo")}</dt><dd>${tr(facts.sudo ? "s15.computer.yes" : "s15.computer.no")}</dd><dt>${tr("s15.computer.fact.docker")}</dt><dd>${tr(facts.docker ? "s15.computer.yes" : "s15.computer.not_found")}</dd></dl><p class="s-note">${tr("s15.vm.reported")}</p>`;
@@ -37,31 +39,98 @@ export function capabilityRows(status: VmStatus, hypervisor: string | null): str
     return `<li><span class="s-grow">${e(row.label)}${row.note ? `<small>${e(row.note)}</small>` : ""}</span>${pill(tr(key(word)), tone, glyph)}</li>`; }).join("")}</ul><p class="s-note">${tr("s15.computer.caps_note")}</p>`;
 }
 
-const statusTone: Record<VmStatus["state"], [string, string, string]> = { ready: ["s15.computer.state.ready", "ok", "✓"], unproven: ["s15.computer.state.unproven", "warn", "!"], uncertain: ["s15.computer.state.uncertain", "danger", "?"], stopped: ["s15.computer.state.stopped", "warn", "!"] };
-/** F1 step 3 and `/resources/computer`: paste one line, type the address once, check, then register. */
-export function computerCard(card: S15ComputerCard): string {
-  const optionB = `<p class="s15-option-b">${icon("lock")}<span>${tr("s15.vm.option_b")}</span></p>`;
-  if (card.unavailable) return `${notYet("s15.computer.not_composed")}${optionB}`;
-  const back = hidden("return", card.return);
-  if (card.status) {
-    const [word, tone, glyph] = statusTone[card.status.state];
-    return `<div class="s-row">${pill(tr(key(word)), tone, glyph)}<span class="s-meta">${fill("s15.computer.generation", { n: card.status.generation })} · ${fill("s15.computer.sessions", { n: card.status.activeSessions, max: card.status.maxSessions })}</span></div>
-      ${card.status.reason ? `<p class="s-sub">${codeText(card.status.reason)}</p>` : ""}${optionB}${capabilityRows(card.status, card.hypervisor)}${card.status.facts ? `<details class="s-more"><summary>${tr("s15.computer.facts_title")}</summary><div>${factsList(card.status.facts)}</div></details>` : ""}`;
-  }
-  const failure = refusal(card.refused);
+export const statusTone: Record<VmStatus["state"], [string, string, string]> = { ready: ["s15.computer.state.ready", "ok", "✓"], unproven: ["s15.computer.state.unproven", "warn", "!"], uncertain: ["s15.computer.state.uncertain", "danger", "?"], stopped: ["s15.computer.state.stopped", "warn", "!"] };
+/** Shown status of one registered computer: state, generation, sessions, reason, option B, rows and facts. */
+export function computerStatus(status: VmStatus, hypervisor: string | null): string {
+  const [word, tone, glyph] = statusTone[status.state];
+  return `<div class="s-row">${pill(tr(key(word)), tone, glyph)}<span class="s-meta">${fill("s15.computer.generation", { n: status.generation })} · ${fill("s15.computer.sessions", { n: status.activeSessions, max: status.maxSessions })}</span></div>
+      ${status.reason ? `<p class="s-sub">${codeText(status.reason)}</p>` : ""}${optionB()}${capabilityRows(status, hypervisor)}${status.facts ? `<details class="s-more"><summary>${tr("s15.computer.facts_title")}</summary><div>${factsList(status.facts)}</div></details>` : ""}`;
+}
+const optionB = () => `<p class="s15-option-b">${icon("lock")}<span>${tr("s15.vm.option_b")}</span></p>`;
+/** Owner-supplied VM enrollment: paste one public-key line, type the address once, check, then use it. */
+export function enrollmentFlow(card: S15ComputerCard): string {
+  const back = hidden("return", card.return), failure = `${refusal(card.refused)}${optionB()}`;
   if (card.progress.check) {
     const check = card.progress.check;
-    return `${failure}${optionB}<h4 class="s-section-t">${tr("s15.computer.checked_title")}</h4><dl class="s-kv"><dt>${tr("s15.vm.address")}</dt><dd class="s-mono">${e(check.address)}</dd><dt>${tr("s15.computer.fingerprint")}</dt><dd class="s-mono s15-break">${e(check.fingerprint)}</dd></dl>${factsList(check.facts)}
+    return `${failure}<h4 class="s-section-t">${tr("s15.computer.checked_title")}</h4><dl class="s-kv"><dt>${tr("s15.vm.address")}</dt><dd class="s-mono">${e(check.address)}</dd><dt>${tr("s15.computer.fingerprint")}</dt><dd class="s-mono s15-break">${e(check.fingerprint)}</dd></dl>${factsList(check.facts)}
       <p class="s-note">${tr("s15.computer.use_note")}</p><div class="s-row">${form("/s15/forms/computer/use", card.csrf, `${back}${hidden("checkId", check.checkId)}${hidden("fingerprint", check.fingerprint)}<button class="s-btn primary">${tr("s15.vm.use")}</button>`)}${form("/s15/forms/computer/forget-check", card.csrf, `${back}<button class="s-btn">${tr("s15.computer.other_address")}</button>`)}</div>`;
   }
   if (card.progress.setup) {
     const setup = card.progress.setup;
-    return `${failure}${optionB}<ol class="s15-steps"><li><p>${tr("s15.computer.make_vm")}</p><p>${tr("s15.vm.paste_line")}</p><pre class="s-exact" id="s15-paste-line">${e(setup.command)}</pre><p class="s-row"><button class="s-btn" type="button" data-copy="s15-paste-line" data-copied="${tr("s15.computer.copied")}" hidden>${tr("s15.computer.copy")}</button></p><p class="s-note">${tr("s15.computer.line_note")}</p></li>
+    return `${failure}<ol class="s15-steps"><li><p>${tr("s15.computer.make_vm")}</p><p>${tr("s15.vm.paste_line")}</p><pre class="s-exact" id="s15-paste-line">${e(setup.command)}</pre><p class="s-row"><button class="s-btn" type="button" data-copy="s15-paste-line" data-copied="${tr("s15.computer.copied")}" hidden>${tr("s15.computer.copy")}</button></p><p class="s-note">${tr("s15.computer.line_note")}</p></li>
       <li>${form("/s15/forms/computer/check", card.csrf, `${back}${hidden("setupId", setup.setupId)}<label class="s-field"><span>${tr("s15.vm.address")}</span><input name="host" required maxlength="253" autocomplete="off" spellcheck="false" inputmode="url" value="${e(card.address)}" placeholder="${tr("s15.computer.address_placeholder")}"></label>
         <details class="s-more"><summary>${tr("s15.computer.details")}</summary><div><label class="s-field"><span>${tr("s15.computer.port")}</span><input name="port" inputmode="numeric" pattern="[0-9]{1,5}" value="22"></label><label class="s-field"><span>${tr("s15.computer.user")}</span><input name="user" maxlength="32" autocomplete="off" spellcheck="false" value="jit"></label><p class="s-note">${tr("s15.computer.details_note")}</p></div></details>
         <div><button class="s-btn primary">${tr("s15.vm.check")}</button></div>`, ' class="s-stack"')}</li></ol>`;
   }
-  return `${failure}${optionB}<p>${tr("s15.computer.make_vm")}</p>${form("/s15/forms/computer/begin", card.csrf, `${back}<button class="s-btn primary">${tr("s15.computer.begin")}</button>`)}<p class="s-note">${tr("s15.computer.begin_note")}</p>`;
+  return `${failure}<p>${tr("s15.computer.make_vm")}</p>${form("/s15/forms/computer/begin", card.csrf, `${back}<button class="s-btn primary">${tr("s15.computer.begin")}</button>`)}<p class="s-note">${tr("s15.computer.begin_note")}</p>`;
+}
+
+const provisionSteps = ["host", "download", "checksum", "disk", "boot", "connect", "checks"] as const;
+/** Elapsed time as m:ss (or h:mm:ss), from the composed clock; never negative. */
+export function elapsed(milliseconds: number): string {
+  const total = Math.max(0, Math.floor(milliseconds / 1000)), h = Math.floor(total / 3600), m = Math.floor(total % 3600 / 60), sec = String(total % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+const stepName = (step: string) => tr(key(`s15.provision.step.${step}`));
+/** Ordered step list; the current step is marked for assistive technology and carries its own word. */
+function stepList(job: S15ProvisioningJob, mode: "now" | "failed" | "paused"): string {
+  const current = provisionSteps.indexOf((mode === "failed" ? job.failedStep ?? job.step : job.step) as typeof provisionSteps[number]);
+  return `<ol class="s15-provision-steps" aria-label="${tr("s15.provision.steps_label")}">${provisionSteps.map((step, index) => {
+    const state = index < current ? "done" : index === current ? mode : null;
+    const mark = state === "done" ? pill(tr("s15.provision.state.done"), "ok", "✓") : state === "now" ? pill(tr("s15.provision.state.now"), "strong", "") : state === "failed" ? pill(tr("s15.provision.state.failed"), "danger", "×") : state === "paused" ? pill(tr("s15.provision.state.paused"), "warn", "!") : "";
+    return `<li${index === current ? ' aria-current="step"' : ""} data-state="${state ?? "todo"}"><span class="s-grow">${e(stepName(step))}</span>${mark}</li>`;
+  }).join("")}</ol>`;
+}
+/** Next step for one refusal code; every failure names one, falling back to the generic instruction. */
+const nextStep = (code: string | null) => e(trMaybe(`s15.provision.next.${code ?? ""}`) ?? tr("s15.provision.next.generic"));
+/** Host facts line for honest capacity refusals; controller-observed values only. */
+const hostFacts = (host: S15LocalHost | null) => host?.facts ? `<p class="s-meta">${fill("s15.provision.host_facts", { cpus: host.facts.cpus, memory: host.facts.memoryGiB, disk: host.facts.diskFreeGiB })}</p>` : "";
+/**
+ * SETUP15-01 automatic working computer (F1 step 3, `/resources/computer`): the job's progress with the current
+ * step and elapsed time, an honest failure with its step, reason, next step and "Try again", or, when this
+ * host cannot run a nested VM, the specific missing item followed by the owner-supplied VM enrollment.
+ * Nothing here claims the computer is ready; readiness appears only from the registered `VmStatus`.
+ */
+function localComputer(card: S15ComputerCard, local: S15ComputerLocal): string | null {
+  const back = hidden("return", card.return), job = local.job, host = local.host;
+  const anchor = card.return === "setup" ? "/setup#s15-setup-computer" : "/resources/computer";
+  if (job?.state === "running" && job.active) {
+    return `<div class="s15-provision" role="status" data-s15-refresh="5"><p class="s-row"><b>${tr("s15.provision.title_running")}</b>${job.attempts > 1 ? ` <span class="s-meta">${fill("s15.provision.attempt", { n: job.attempts })}</span>` : ""}</p>
+      <p class="s-sub">${tr("s15.provision.lead_running")}</p>${stepList(job, "now")}
+      <p class="s-meta">${fill("s15.provision.elapsed", { time: elapsed(local.now - job.startedAt) })} · ${fill("s15.provision.step_elapsed", { time: elapsed(local.now - job.stepStartedAt) })}</p>
+      <p class="s-row"><a class="s-btn" href="${anchor}">${tr("s15.provision.refresh")}</a></p><p class="s-note">${tr("s15.provision.leave_note")}</p></div>${optionB()}`;
+  }
+  if (job?.state === "running") {
+    return `${refusal(card.refused)}<div role="status">${banner("warn", fill("s15.provision.paused_title", { step: stepName(job.step) }), tr("s15.provision.paused_lead"))}</div>${stepList(job, "paused")}
+      <div class="s-row">${form("/s15/forms/computer/provision", card.csrf, `${back}<button class="s-btn primary">${tr("s15.provision.continue")}</button>`)}</div><p class="s-note">${tr("s15.provision.leave_note")}</p>`;
+  }
+  const hostMissing = host?.state === "missing";
+  if (job?.state === "failed") {
+    const code = job.error;
+    const retry = hostMissing ? "" : `<div class="s-row">${form("/s15/forms/computer/provision", card.csrf, `${back}<button class="s-btn primary">${tr("s15.provision.retry")}</button>`)}</div><p class="s-note">${tr("s15.provision.retry_note")}</p>`;
+    const failure = `${refusal(card.refused)}<div role="alert">${banner("warn", fill("s15.provision.failed_title", { step: stepName(job.failedStep ?? job.step) }), codeText(code), `<p>${nextStep(code)}</p><p class="s-mono s-meta">${e(code ?? "")}</p>`)}</div>${hostFacts(host)}${stepList(job, "failed")}${retry}`;
+    // A host that can no longer run the nested VM offers the owner-supplied enrollment instead of a retry loop.
+    return hostMissing ? `${failure}${fallback(card)}` : failure;
+  }
+  if (hostMissing) {
+    return `<div role="status">${banner("", tr("s15.provision.unavailable_title"), codeText(host.code), `<p>${nextStep(host.code)}</p><p class="s-mono s-meta">${e(host.code ?? "")}</p>`)}</div>${refusal(card.refused)}${hostFacts(host)}${fallback(card)}`;
+  }
+  if (host?.state === "ready" && host.resources) {
+    const r = host.resources;
+    return `${refusal(card.refused)}<p><b>${tr("s15.provision.ready_title")}</b></p><p class="s-sub">${fill("s15.provision.ready_lead", { cpus: r.cpus, memory: Math.round(r.memoryMiB / 1024), disk: r.diskGiB })}</p>
+      <div class="s-row">${form("/s15/forms/computer/provision", card.csrf, `${back}<button class="s-btn primary">${tr("s15.provision.start")}</button>`)}</div>${optionB()}`;
+  }
+  return null;
+}
+const fallback = (card: S15ComputerCard) => `<h4 class="s-section-t">${tr("s15.provision.own_vm_title")}</h4>${enrollmentFlow({ ...card, refused: null })}`;
+
+/** F1 step 3 and `/resources/computer`: automatic creation on KVM hosts, otherwise paste one line and type the address once. */
+export function computerCard(card: S15ComputerCard): string {
+  if (card.unavailable) return `${notYet("s15.computer.not_composed")}${optionB()}`;
+  if (card.status) return computerStatus(card.status, card.hypervisor);
+  const local = card.local ? localComputer(card, card.local) : null;
+  if (local !== null) return local;
+  return enrollmentFlow(card);
 }
 
 const minorDigits = (currency: string) => { try { return new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2; } catch { return 2; } };

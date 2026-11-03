@@ -18,8 +18,12 @@ const writes = new Set(["write", "edit", "bash"]);
  * public core-tool registry, never model hints or unreviewed dynamic tools. Inspection exposes only
  * read/ls/find/grep; shell/edit/write require reversible-write authority. VM15 owns final dispatch,
  * retained response/evidence, cancellation and actual settlement; no host-local fallback exists.
+ * With a working-computer pool (POOL15-01) `vmId` is the pool id: the composed placing port chooses the
+ * member for new work and returns every later attempt of the same work to the member holding its workspace.
+ * Neither the model nor the conversation can name a member, VM id or endpoint.
  */
 export function createConversationVmTools<Worker extends object>(vm: ConversationWorkingVm, configuration: {
+  /** Pool id (or, without a pool, the single VM id); fixed by trusted composition, never by a model. */
   vmId: string; resourceId: string;
 }): ConversationToolPort<ConversationPolicyWork<Worker>> {
   identity(configuration.vmId); identity(configuration.resourceId);

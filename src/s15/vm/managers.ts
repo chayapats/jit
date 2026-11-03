@@ -102,15 +102,33 @@ export class VmManagers extends Map<string, VmManagement> {
       catch (error) { this.options.vault.remove(id); throw error; }
     } else if (input.kind === "qemu") {
       vmRecord(input, ["kind"]);
-      if (!this.options.local) vmFail("vm_management_unavailable", 503);
-      // One Jit-created working VM per controller until pooled placement exists.
-      if ([...this.values()].some(m => m instanceof QemuVmManagement)) vmFail("vm_already_enrolled");
-      const host = this.localHost();
-      if (!host.kvm || !host.qemu || !host.architecture) vmFail("vm_host_unsupported", 422);
-      const resources = defaultLocalVmResources(host), mac = `52:54:00:${[...randomBytes(3)].map(b => b.toString(16).padStart(2, "0")).join(":")}`;
-      const data = { kind: "qemu" as const, name: `jit-work-${randomBytes(6).toString("hex")}`, architecture: host.architecture, mac, sshPort: this.options.local.port?.() ?? pickLoopbackPort(), resources };
-      this.load(id, data); this.options.store.db.query("INSERT INTO vm_managers VALUES (?,?)").run(id, JSON.stringify(data));
+      // One Jit-created working VM per controller: the pool's default member. Extra compute is owner-supplied.
+      if (this.localManagerId()) vmFail("vm_already_enrolled");
+      return { managerId: this.createLocal() };
     } else vmFail("vm_invalid_setup");
     return { managerId: id };
+  }
+  /** Id of this controller's Jit-created local VM manager, if one is registered. */
+  localManagerId(): string | null {
+    for (const [id, manager] of this) if (manager instanceof QemuVmManagement) return id;
+    return null;
+  }
+  /**
+   * Protected setup-job entry point (SETUP15-01): returns this controller's single local VM manager,
+   * registering it with the default sizing rule only when none exists, so a resumed job never creates a
+   * second one. Trusted composition calls it; it is not an owner API and takes no input.
+   */
+  ensureLocal(): string {
+    return this.localManagerId() ?? this.createLocal();
+  }
+  private createLocal(): string {
+    if (!this.options.local) vmFail("vm_management_unavailable", 503);
+    if (this.size >= 64) vmFail("vm_setup_capacity");
+    const host = this.localHost();
+    if (!host.kvm || !host.qemu || !host.architecture) vmFail("vm_host_unsupported", 422);
+    const id = crypto.randomUUID(), resources = defaultLocalVmResources(host), mac = `52:54:00:${[...randomBytes(3)].map(b => b.toString(16).padStart(2, "0")).join(":")}`;
+    const data = { kind: "qemu" as const, name: `jit-work-${randomBytes(6).toString("hex")}`, architecture: host.architecture, mac, sshPort: this.options.local.port?.() ?? pickLoopbackPort(), resources };
+    this.load(id, data); this.options.store.db.query("INSERT INTO vm_managers VALUES (?,?)").run(id, JSON.stringify(data));
+    return id;
   }
 }

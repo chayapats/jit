@@ -33,12 +33,14 @@ export function reconcileVmLeases(team: TeamService, store: VmStore): string[] {
 /** Hold the TEAM workspace coordination fence for an entire real VM session, including background
  * process cleanup. A returned tool/model message cannot release the lock. The lease is durably linked to
  * its VM attempt/session, so unknown cleanup stays fenced until the VM journal holds protected stop proof
- * (guest scope empty, or hypervisor stop from owner recovery), including after restart. */
+ * (guest scope empty, or hypervisor stop from owner recovery), including after restart. The lock is
+ * partitioned by the exact pool member (`input.vmId`), so a session on one working computer never blocks
+ * or fences a sibling member of the same team working-computer resource. */
 export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resourceId: string, store: VmStore): WorkingVmPort {
   return { async openAttempt(actor, input) {
     const context = team.bind(actor as WorkActor);
     if (input.access === 'inspect') { team.resource(context, resourceId, 'read'); return vm.openAttempt(actor, input); }
-    const lease = team.acquire(context, [resourceId], 'write', 3600000);
+    const lease = team.acquire(context, [resourceId], 'write', 3600000, input.vmId);
     const ready = Promise.withResolvers<VmSession>(), closed = Promise.withResolvers<void>();
     const subject: VmSubject = { kind: 'vm_session', vmId: input.vmId, workId: input.workId, attemptId: input.attemptId, sessionId: null };
     const lifecycle = team.dispatch(lease, async () => {

@@ -85,7 +85,11 @@ export interface QemuHostOptions {
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
 export interface QemuVmIdentity { name: string; architecture: "x86_64" | "aarch64"; mac: string; sshPort: number; resources: LocalVmResources }
 /** Options for protected guest provisioning. The lease is a bounded proxy credential, never an account secret. */
-export interface QemuProvisionOptions { lease?: (sessionId: string, expiresAt: number) => VmProxyLease; signal?: AbortSignal }
+export interface QemuProvisionOptions { lease?: (sessionId: string, expiresAt: number) => VmProxyLease; signal?: AbortSignal;
+  /** Protected progress sink for the durable setup job: called as each provisioning step begins. Never guest output. */
+  progress?: (step: QemuProvisionStep) => void }
+/** Provisioning steps a local manager reports, in order. Cached-image re-verification reports only `checksum`. */
+export type QemuProvisionStep = "download" | "checksum" | "disk" | "boot" | "connect";
 /** Optional local management surface used by the protected local enrollment entry point. */
 export interface VmLocalManagement extends VmManagement {
   provision(options?: QemuProvisionOptions): Promise<{ docker: boolean }>;
@@ -370,9 +374,10 @@ export class QemuVmManagement implements VmLocalManagement {
     const host = detectLocalVmHost(this.host.directory, this.host.probe ?? localVmHostProbe);
     if (!host.kvm || !host.qemu || host.architecture !== this.identity.architecture) vmFail("vm_host_unsupported", 422);
     this.secureDirectory(this.host.directory);
-    const base = await ensureLocalVmImage(this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal);
+    const base = await ensureLocalVmImage(this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal, options.progress);
     const fresh = !this.state().provisioned;
     if (fresh) {
+      options.progress?.("disk");
       if (existsSync(this.machineDirectory)) { await this.stop(); rmSync(this.machineDirectory, { recursive: true, force: true }); }
       this.secureDirectory(this.machineDirectory);
       await this.command([localVmTools.img, "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, this.disk, `${this.#resources.diskGiB}G`], 120_000);
@@ -389,7 +394,8 @@ export class QemuVmManagement implements VmLocalManagement {
     const startedHere = (await this.inspect()).state === "stopped";
     const transport = new VmSshTransport(this.endpoint(), this.#run);
     try {
-      if (startedHere) await this.launch(options.signal);
+      if (startedHere) { options.progress?.("boot"); await this.launch(options.signal); }
+      options.progress?.("connect");
       const status = await this.guest(transport, ["sudo", "-n", "python3", "-I", "-c", "import subprocess;r=subprocess.run(['cloud-init','status','--wait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode;print('jit-cloud-init:%d'%r)"], { timeoutMs: 900_000, ...(options.signal ? { signal: options.signal } : {}) });
       if (!["jit-cloud-init:0", "jit-cloud-init:2"].includes(status.trim())) vmFail("vm_prerequisite_missing", 503);
       this.saveState({ provisioned: true });

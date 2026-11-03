@@ -40,12 +40,24 @@ export interface S15RuntimeConfig {
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   disclosure?: RuntimeDisclosureConfig;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
+  /**
+   * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
+   * default member is the Jit-created nested KVM VM that `setup --s15` creates (SETUP15-01). Further members
+   * are enrollment records in the protected VM journal, so no pool list is ever written here. The original
+   * single-VM shape is exactly this shape and reads as a one-member pool.
+   */
   vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector;
-    /** Opt-in Jit-managed nested KVM working VMs on this host (2026-11-03 single-host default; setup wiring is SETUP15-01). */
+    /** Opt-in Jit-managed nested KVM working VM on this host (2026-11-03 single-host default). */
     local?: boolean };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector; ownerUi?: Omit<import('./web').S15WebBrowser<import('./policy').OwnerActor>, 'owner'> };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };
+}
+
+/** Pool-aware reading of `S15RuntimeConfig.vm`: the pool id, its default member and whether Jit creates that member. */
+export function readS15VmPool(vm: S15RuntimeConfig['vm']): { poolId: string; defaultMemberId: string; local: boolean } {
+  if (!vm || typeof vm.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vm.id) || vm.local !== undefined && typeof vm.local !== 'boolean') throw new AppError('invalid_s15_config');
+  return { poolId: vm.id, defaultMemberId: vm.id, local: vm.local === true };
 }
 
 /** Reads a bounded owner-controlled configuration. Embedded credentials are refused by canonical validation. */
@@ -55,6 +67,7 @@ export function readS15RuntimeConfig(path: string): S15RuntimeConfig {
   const value = JSON.parse(readFileSync(path, 'utf8')) as S15RuntimeConfig; canonical(value);
   if (value.contract !== 's15-runtime/v1' || !isAbsolute(value.directory) || !/^[A-Za-z0-9_-]{1,128}$/.test(value.installationId) || new URL(value.origin).origin !== value.origin || !Array.isArray(value.catalog) || !Array.isArray(value.models) || !value.models.length) throw new AppError('invalid_s15_config');
   if (!value.models.some(r => equal(r.selection, value.conversation.selection) && r.modelId === value.conversation.route.model && r.provider === value.conversation.route.provider)) throw new AppError('route_unavailable');
+  readS15VmPool(value.vm);
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }
@@ -100,7 +113,9 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const requireOwner = (proof: unknown) => {
       try { ownerStore.read(tx => ownerApp.requireOwner(tx, proof as import('../s14/types').OwnerActor)); return { id: 'owner', generation: generation(), expiresAt: Date.now() + 1000 }; } catch { return null; }
     };
-    const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: config.vm.id, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => readS15Credential(vault, config.installationId, ref) }) : null;
+    const vmPool = readS15VmPool(config.vm);
+    // GitHub work names the pool; the composed port places each work on a member and keeps it there.
+    const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: vmPool.poolId, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => readS15Credential(vault, config.installationId, ref) }) : null;
     const catalogs: S15CompositionOptions['catalogs'] = {
       current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
@@ -137,20 +152,28 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ]; } } },
       // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
       telegram: { vault, transport: token => createTelegramBotApi(token) },
-      vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(config.vm.local === true ? { local: {} } : {}) },
+      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: {} } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },
         recipients: () => config.google!.recipients, attachment: () => null, bounds: config.google.bounds, now: Date.now } } : {}),
     });
-    if (initialize) { await service.close(); service = undefined; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified' })); return; }
+    if (initialize) {
+      // SETUP15-01: on a KVM controller the owner's `setup --s15` creates, starts and enrolls the default
+      // working computer with no typed value, printing one JSON line per step. Interrupting it is safe: the
+      // durable job resumes at the next `serve`. Without KVM it reports why; the Web offers enrollment instead.
+      const computer = setup && service.provisioning ? await setupComputer(service.provisioning, line => console.log(JSON.stringify(line))) : null;
+      await service.close(); service = undefined; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified', ...(computer ? { computer } : {}) })); return;
+    }
     const binding = personalServiceBinding(config.origin), auth = createS14Handler(ownerApp, config.origin, renderS14, createS14Product(ownerApp), createS14Auth(ownerApp));
     const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
       try { const incoming = binding.proxy ? personalProxyRequest(request, config.origin) : request, url = new URL(incoming.url);
         return url.pathname.startsWith('/s14/') || url.pathname.startsWith('/owner/') || url.pathname.startsWith('/api/s14/sign-in/') || ['/api/s14/providers', '/api/s14/personal', '/settings/provider'].includes(url.pathname) || url.pathname.startsWith('/settings/google') || url.pathname.startsWith('/api/s14/personal/oauth/') || !!lookupS14Asset(url.pathname) ? auth(incoming) : service!.fetch(incoming);
       } catch { return new Response('host_rejected', { status: 403 }); }
     } });
+    // Protected boot pass: resume an interrupted working-computer job, or start the first one on a ready KVM host.
+    try { service.provisioning?.ensure(); } catch { /* The Web card shows the host reason and offers the owner's start. */ }
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
     service.telegram?.start(() => service!.drain());
     const shutdown = async () => { clearInterval(wake); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
@@ -159,4 +182,22 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
   } catch (error) { await service?.close(); ownerStore.close(); throw error; }
   finally { if (initialize || localCommand) ownerStore.close(); }
+}
+
+/**
+ * CLI progress for the automatic working computer: one `s15_computer_progress` line per step as it begins,
+ * then the terminal projection (`enrolled`, `failed` with its step and code, or `fallback` with the host code).
+ */
+export async function setupComputer(provisioning: import('./vm').LocalVmProvisioning, print: (line: Record<string, unknown>) => void, poll: (ms: number) => Promise<void> = ms => Bun.sleep(ms)): Promise<Record<string, unknown>> {
+  const started = provisioning.ensure();
+  if (!started) { const host = provisioning.options.host(); return host.state === 'ready' ? { state: 'enrolled', vmId: provisioning.options.vmId } : { state: 'fallback', code: host.code }; }
+  let last = '';
+  for (;;) {
+    const view = provisioning.view()!;
+    if (view.step !== last && view.state === 'running') { last = view.step; print({ state: 's15_computer_progress', step: view.step }); }
+    if (view.state === 'enrolled') return { state: 'enrolled', vmId: view.vmId };
+    if (view.state === 'failed') return { state: 'failed', step: view.failedStep, code: view.error };
+    if (!view.active) return { state: 'paused', step: view.step };
+    await poll(500);
+  }
 }

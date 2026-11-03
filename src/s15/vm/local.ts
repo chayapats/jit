@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { accessSync, chmodSync, closeSync, constants, createReadStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, rmSync, statfsSync, writeSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, createReadStream, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statfsSync, writeSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { join } from "node:path";
 import { AppError } from "../../errors";
@@ -70,10 +70,15 @@ export function validateLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "
   return { cpus: r.cpus as number, memoryMiB: r.memoryMiB as number, diskGiB: r.diskGiB as number };
 }
 
-/** Host probe seam for deterministic tests. The default reads only controller-local facts. */
-export interface LocalVmHostProbe { arch(): string; kvm(): boolean; executable(path: string): boolean; readable(path: string): boolean; cpus(): number; memoryBytes(): number; disk(path: string): { total: number; free: number } }
+/**
+ * Host probe seam for deterministic tests. The default reads only controller-local facts. `platform` and
+ * `exists` are optional so older probes keep working: an absent `platform` means Linux, an absent `exists`
+ * reports an inaccessible `/dev/kvm` as missing rather than denied.
+ */
+export interface LocalVmHostProbe { arch(): string; kvm(): boolean; executable(path: string): boolean; readable(path: string): boolean; cpus(): number; memoryBytes(): number; disk(path: string): { total: number; free: number };
+  platform?(): string; exists?(path: string): boolean }
 export const localVmHostProbe: LocalVmHostProbe = {
-  arch: () => process.arch,
+  arch: () => process.arch, platform: () => process.platform, exists: path => existsSync(path),
   kvm: () => { if (process.platform !== "linux") return false; try { accessSync("/dev/kvm", constants.R_OK | constants.W_OK); return true; } catch { return false; } },
   executable: path => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } },
   readable: path => { try { accessSync(path, constants.R_OK); return true; } catch { return false; } },
@@ -95,6 +100,32 @@ export function detectLocalVmHost(directory: string, probe: LocalVmHostProbe = l
   const disk = probe.disk(directory);
   const qemu = !!architecture && [localVmTools[architecture], localVmTools.img, localVmTools.seed, localVmTools.nc].every(path => probe.executable(path)) && (architecture !== "aarch64" || probe.readable(localVmTools.aarch64Firmware));
   return { architecture, kvm: probe.kvm(), qemu, cpus: probe.cpus(), memoryBytes: probe.memoryBytes(), diskTotalBytes: disk.total, diskFreeBytes: disk.free };
+}
+
+/** Stable host-capability refusal codes. Each names exactly one missing item and has owner-facing copy. */
+export type LocalVmHostCode = "vm_host_unsupported" | "vm_kvm_unavailable" | "vm_kvm_denied" | "vm_qemu_missing" | "vm_host_too_small" | "vm_disk_insufficient";
+/**
+ * Typed host-capability projection for automatic setup. `ready` carries the default sizing that setup will
+ * use; `missing` names the first missing item in a fixed order (platform/architecture, KVM device, KVM access
+ * for this service user, QEMU tools, CPU/RAM, disk). Facts are controller-side observations only.
+ */
+export type LocalVmHostReadiness =
+  | { state: "ready"; facts: LocalVmHostFacts; resources: LocalVmResources }
+  | { state: "missing"; code: LocalVmHostCode; facts: LocalVmHostFacts | null };
+/**
+ * Protected host-capability probe (SETUP15-01). It observes `/dev/kvm` access for the service identity, the
+ * QEMU/seed tools, CPU, RAM and free disk; it never infers readiness from configuration. A usable `/dev/kvm`
+ * is the CPU-virtualization evidence (on a VM host it also proves nested virtualization is on).
+ */
+export function probeLocalVmHost(directory: string, probe: LocalVmHostProbe = localVmHostProbe): LocalVmHostReadiness {
+  if ((probe.platform?.() ?? "linux") !== "linux") return { state: "missing", code: "vm_host_unsupported", facts: null };
+  let facts: LocalVmHostFacts;
+  try { facts = detectLocalVmHost(directory, probe); } catch { return { state: "missing", code: "vm_host_unsupported", facts: null }; }
+  if (!facts.architecture) return { state: "missing", code: "vm_host_unsupported", facts };
+  if (!facts.kvm) return { state: "missing", code: probe.exists?.("/dev/kvm") ? "vm_kvm_denied" : "vm_kvm_unavailable", facts };
+  if (!facts.qemu) return { state: "missing", code: "vm_qemu_missing", facts };
+  try { return { state: "ready", facts, resources: defaultLocalVmResources(facts) }; }
+  catch (error) { return { state: "missing", code: error instanceof AppError && error.code === "vm_disk_insufficient" ? "vm_disk_insufficient" : "vm_host_too_small", facts }; }
 }
 
 /** One pinned Ubuntu LTS cloud image. The dated release path is immutable; the pinned SHA-256 is the trust root. */
@@ -146,20 +177,25 @@ export function localVmFileHash(file: string): Promise<string> {
  * Returns the read-only verified base image path, downloading it once. A cached or downloaded image whose
  * SHA-256 differs from the pin is deleted and refused with `vm_image_unverified`; there is no fallback.
  */
-export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal): Promise<string> {
+export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(image.sha256)) vmFail("vm_image_unverified");
   const images = join(directory, "images"); mkdirSync(images, { recursive: true, mode: 0o700 });
   const stat = lstatSync(images); if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077) vmFail("vm_key_directory_unsafe");
   const file = join(images, `${image.sha256}.qcow2`);
   const cached = lstatSync(file, { throwIfNoEntry: false });
   if (cached) {
+    progress?.("checksum");
     if (cached.isFile() && !cached.isSymbolicLink() && await localVmFileHash(file) === image.sha256) { chmodSync(file, 0o400); return file; }
     rmSync(file, { force: true });
   }
+  // A partial download left by a controller crash never held verified bytes; only this exact prefix is removed.
+  for (const name of readdirSync(images)) if (/^\.partial-[a-f0-9]{16}$/.test(name) && lstatSync(join(images, name)).isFile()) rmSync(join(images, name), { force: true });
   const partial = join(images, `.partial-${randomBytes(8).toString("hex")}`);
   try {
+    progress?.("download");
     try { await download(image.url, partial, { maxBytes: image.maxBytes, ...(signal ? { signal } : {}) }); }
     catch (error) { if (error instanceof AppError) throw error; vmFail("vm_image_unavailable", 503); }
+    progress?.("checksum");
     if (!existsSync(partial) || await localVmFileHash(partial) !== image.sha256) vmFail("vm_image_unverified");
     chmodSync(partial, 0o400); renameSync(partial, file);
     return file;

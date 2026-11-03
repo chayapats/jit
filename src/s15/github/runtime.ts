@@ -20,7 +20,10 @@ export interface GithubRuntimeConfig {
 }
 /** Compose fixed-origin GitHub, credential-free pinned repository preload and immutable protected artifacts. */
 export function githubRuntime(config: GithubRuntimeConfig, input: {
-  directory: string; vmId: string; route: S15CompositionOptions['conversation']['route'];
+  directory: string;
+  /** Working-computer pool id (POOL15-01). The composed VM port places each GitHub work on one member and every
+   * later attempt of that work returns to the member holding its workspace; this is never a fixed member id. */
+  vmId: string; route: S15CompositionOptions['conversation']['route'];
   modelCallUpperBound: S15CompositionOptions['conversation']['modelCallUpperBound']; credential(ref: string): string;
 }) {
   const artifacts = join(input.directory, 'github-artifacts'); mkdirSync(artifacts, { recursive: true, mode: 0o700 });
