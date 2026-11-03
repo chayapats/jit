@@ -13,6 +13,7 @@ import { browserNeedsYou, takeoverView, type S15BrowserInfo, type S15BrowserProg
 import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
 import { accountsBody, needsBody, recoveryBody, restoreSection, teamPendingCard, type S15NeedItem } from "./resources";
 import { recurringProposalBody, rulesBody } from "./rules";
+import { telegramBody, telegramSaved } from "./telegram";
 import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
 import type { ResponsibilityProjection } from "../work";
@@ -45,22 +46,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
   // Last protected browser observation per site. Owner-typed values are never kept here or anywhere in this handler.
   const browserState = new Map<string, S15BrowserProgress>();
   let githubCapture: S15GithubCapture | null = null;
-  // Owner stall replies awaiting their own CHAT completion before WORK may resume the named responsibility.
-  const resumes = new Map<string, { dutyId: string; conversationId: string }>();
-  const resumeRefusals = new Map<string, string>();
-  /** Resumes a paused responsibility only from the owner's completed reply (WORK checks it arrived after the pause, in scope, authorized). */
-  const settleResumes = (actor: Actor) => {
-    if (!ports.duties) return;
-    for (const [requestId, pending] of [...resumes]) {
-      let row: ConversationOwnerRow | undefined;
-      try { row = ports.conversation.view(actor, pending.conversationId).rows.find(item => item.requestId === requestId); } catch { continue; }
-      if (!row || ["received", "understanding", "inspecting", "working"].includes(row.state)) continue;
-      resumes.delete(requestId);
-      if (row.state !== "done") { resumeRefusals.set(pending.dutyId, "execution_not_authorized"); continue; }
-      try { ports.duties.resume(actor, pending.dutyId, requestId); resumeRefusals.delete(pending.dutyId); }
-      catch (error) { resumeRefusals.set(pending.dutyId, codeOf(error)); }
-    }
-  };
+  /** WORK15-02: durable settlement of owner stall replies whose own CHAT request finished. Holds no state here. */
+  const settleResumes = () => { try { ports.resumes?.settle(); } catch { /* The protected drain retries; a page still renders. */ } };
   const now = options.now ?? Date.now;
   const headers = (type: string, extra: Record<string, string> = {}) => ({ "Content-Type": `${type}; charset=utf-8`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": type === "text/html" ? "same-origin" : "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy, ...extra });
@@ -248,6 +235,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         const t = found.slip.action.transaction, ceiling = state.ceiling ?? (() => { const d = t.amountMinor.padStart(t.minorUnit + 1, "0"); return t.minorUnit ? `${d.slice(0, -t.minorUnit)}.${d.slice(-t.minorUnit)}` : d; })();
         return render(() => shell(nav("/rules"), tr("s15.rules.recurring_title"), recurringProposalBody({ csrf, slip: found.slip, frequencies: ports.recurring!.frequencies(), proposal: state.proposal ?? null, ceiling, frequencyId: state.frequencyId ?? "", refused: state.refused ?? null, fromJit: false })), status);
       };
+      const telegramPage = (refused: string | null = null, status = 200) => render(() => shell(nav("/resources/telegram"), tr("s15.telegram.title"),
+        telegramBody({ status: ports.telegram ? ports.telegram.status(actor) : null, csrf, refused, saved: refused ? null : telegramSaved(url.searchParams.get("saved")), now: now() })), status);
       const memoryPage = (state: Partial<S15MemoryPage> = {}, status = 200) => {
         const claims = memoryClaims(), filter = memoryFilter(url.searchParams.get("filter") ?? state.filter ?? null);
         let forgetting: S15MemoryPage["forgetting"] = null, refused = state.refused ?? null;
@@ -264,7 +253,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       };
 
       if (request.method === "GET") {
-        if (resumes.size) settleResumes(actor);
+        settleResumes();
         if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? "/chats/new" : "/setup");
         if (url.pathname === "/chats/new") return redirect(`/chats/${crypto.randomUUID().replaceAll("-", "")}`);
         const chat = /^\/chats\/([A-Za-z0-9_-]{1,128})(\/events)?$/.exec(url.pathname);
@@ -291,12 +280,13 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (duty) {
           if (!ports.duties) throw new AppError("not_found", 404);
           const projection = ports.duties.project(actor, duty[1]!);
-          const refused = resumeRefusals.get(projection.id);
+          const refused = ports.resumes?.refusal(actor, projection.id) ?? null;
           return render(() => shell(nav("/work"), tr("s15.duty.title"), `<div class="s-col">${refused && projection.state === "paused" ? refusal(refused, tr("s15.duty.resume_refused")) : ""}${dutyCard(projection, csrf, true)}<p><a class="s-link-text" href="/chats/${e(projection.conversationId)}#s15-row-${e(projection.sourceRequestId)}">${tr("s15.duty.open_conversation")}</a></p></div>`));
         }
         if (url.pathname === "/rules") return rulesPage();
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
         if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
+        if (url.pathname === "/resources/telegram") return telegramPage();
         if (url.pathname === "/recovery") {
           const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
           const pending = (dutyList()?.filter(item => item.state === "reconcile_only").length ?? 0) + views().reduce((n, view) => n + view.rows.filter(row => row.state === "unknown" && !row.slips.length).length, 0);
@@ -330,7 +320,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         // A stall reply names its paused responsibility; only one of this conversation can be named.
         const dutyId = fields.duty ?? null;
         if (dutyId !== null) {
-          if (!ports.duties || !idPattern.test(dutyId)) throw new AppError("invalid_body");
+          if (!ports.duties || !ports.resumes || !idPattern.test(dutyId) || fields.answer !== undefined) throw new AppError("invalid_body");
           const named = ports.duties.project(actor, dutyId);
           if (named.conversationId !== conversationId || named.state !== "paused") throw new AppError("stale_revision", 409);
         }
@@ -340,7 +330,9 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         try { before = ports.conversation.view(actor, conversationId).rows.find(row => row.requestId === fields.requestId); } catch { before = undefined; }
         try {
           if (!text.trim()) throw new AppError("message_empty");
-          ports.conversation.submit(actor, { contract: "s15-conversation/v1", requestId: fields.requestId!, conversationId, text, continuation: answer });
+          const command = { contract: "s15-conversation/v1" as const, requestId: fields.requestId!, conversationId, text, continuation: answer };
+          // A stall reply and its durable resume binding commit together; WORK decides only after CHAT completes it.
+          if (dutyId) ports.resumes!.submit(actor, command, dutyId); else ports.conversation.submit(actor, command);
         } catch (error) {
           const code = codeOf(error);
           if (code === "authentication_required") throw error;
@@ -348,8 +340,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           const kept = code === "credential_content_refused" ? "" : text;
           return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer, ...(dutyId ? { duty: dutyId } : {}) } }, statusOf(error) >= 500 ? 503 : 409);
         }
-        if (dutyId) resumes.set(fields.requestId!, { dutyId, conversationId });
-        void ports.conversation.drain().then(() => settleResumes(actor)).catch(() => {});
+        void ports.conversation.drain().then(settleResumes).catch(() => {});
         return redirect(`/chats/${conversationId}${before ? `?dup=${fields.requestId}` : ""}#latest`);
       }
       if (url.pathname === "/s15/forms/stop") {
@@ -496,6 +487,22 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (url.pathname === "/s15/forms/computer/forget-check") { only(fields, ["csrf", "requestId", "return"]); progress.check = null; return done(); }
         } catch (error) { if (codeOf(error) === "authentication_required") throw error; if (codeOf(error) === "vm_setup_expired") { progress.setup = null; progress.check = null; } return back(codeOf(error), 409); }
         throw new AppError("not_found", 404);
+      }
+      if (url.pathname.startsWith("/s15/forms/telegram/")) {
+        // CHAN15-01 owner commands. The token is write-only: never echoed, kept or logged here.
+        const telegram = ports.telegram; if (!telegram) throw new AppError("not_found", 404);
+        const commands: Record<string, [string, () => void | Promise<void>, string]> = {
+          "/s15/forms/telegram/token": ["token", () => telegram.setToken(actor, fields.requestId!, fields.token ?? ""), "token#s15-tg-bot"],
+          "/s15/forms/telegram/remove": ["", () => telegram.removeToken(actor, fields.requestId!), "removed#s15-tg-bot"],
+          "/s15/forms/telegram/bind": ["", () => telegram.startBinding(actor, fields.requestId!), "#s15-tg-binding"],
+          "/s15/forms/telegram/cancel": ["", () => telegram.cancelBinding(actor, fields.requestId!), "cancelled#s15-tg-binding"],
+          "/s15/forms/telegram/revoke": ["", () => telegram.revoke(actor, fields.requestId!), "revoked#s15-tg-binding"],
+          "/s15/forms/telegram/gap": ["", () => telegram.acknowledgeGap(actor, fields.requestId!), "gap#s15-tg-flow"],
+        };
+        const command = commands[url.pathname]; if (!command) throw new AppError("not_found", 404);
+        only(fields, command[0] ? ["csrf", "requestId", command[0]] : ["csrf", "requestId"]);
+        try { await command[1](); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return telegramPage(codeOf(error), 409); }
+        return redirect(`/resources/telegram${command[2].startsWith("#") ? command[2] : `?saved=${command[2]}`}`);
       }
       if (url.pathname === "/s15/forms/team/register") {
         // The owner's one confirmation of the exact list shown; TEAM refuses if that list changed meanwhile.

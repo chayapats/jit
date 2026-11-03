@@ -10,7 +10,8 @@ import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
 import { openModelService, createModelProjectionHandler, type ModelOptions } from './model';
-import { openWorkService, createResponsibilityProjectionHandler, type WorkOptions } from './work';
+import { openWorkService, openResumeBindings, createResponsibilityProjectionHandler, type ResumeOwnerSnapshot, type WorkOptions } from './work';
+import { openTelegramChannel, type TelegramLimits, type TelegramTransport } from './telegram';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
 import { openDisclosureService } from './disclosure';
 import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
@@ -51,6 +52,8 @@ export interface S15CompositionOptions {
   tools?: readonly { resourceId: string; port: ConversationToolPort<ConversationPolicyWork> }[];
   team?: { maxConcurrentOperations: number; retention(work: import('./policy').WorkAuthority): DataScope | null };
   web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'locale' | 'decisions'>;
+  /** CHAN15-01 bound Telegram owner channel. The bot token is written only by the owner's protected Web form into this vault. */
+  telegram?: { vault: import('../exec/connections').ConnectionVault; transport(token: string): TelegramTransport; limits?: Partial<TelegramLimits>; beforeOffsetAdvance?: () => void };
 }
 
 /** Combine the modules' closed read validators. Every request must pass one actual owning handler. */
@@ -101,12 +104,25 @@ export async function composeS15(options: S15CompositionOptions) {
     if (githubStore) cleanup.push(() => githubStore.close());
     let policy!: S15PolicyService;
     let team!: TeamService;
+    // Protected channel principals (WORK15-02 settlement, the bound Telegram owner). Each proof is a process-local
+    // object whose check re-reads its durable binding on every POLICY owner verification; none is serializable,
+    // and a changed owner generation or revoked binding refuses at once.
+    const channelProofs = new WeakMap<object, () => AuthenticatedOwner | null>(), channelActors = new WeakSet<OwnerActor>();
+    let verified: AuthenticatedOwner | null = null;
+    const verifyOwner = (proof: unknown) => { const check = proof !== null && typeof proof === 'object' ? channelProofs.get(proof) : undefined; return verified = check ? check() : options.owner.verifyOwner(proof); };
+    const clockNow = options.clock?.now ?? Date.now;
+    const principalOf = (actor: OwnerActor): ResumeOwnerSnapshot => { verified = null; policy.owner.current(actor); const principal = verified as AuthenticatedOwner | null; if (!principal) throw new AppError('authentication_required', 401); return { ownerId: principal.id, generation: principal.generation }; };
+    const channelOwner = (snapshot: ResumeOwnerSnapshot, current: () => boolean, channel: boolean): OwnerActor | null => {
+      const proof = Object.freeze({});
+      channelProofs.set(proof, () => current() && snapshot.generation === options.owner.generation() ? { id: snapshot.ownerId, generation: snapshot.generation, expiresAt: clockNow() + 60000 } : null);
+      try { const actor = policy.owner.authenticate(proof); if (channel) channelActors.add(actor); return actor; } catch { return null; }
+    };
     const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => (kind === 'resource' ? team?.currentResource(id) : null) ?? options.catalogs.current(kind, id),
       allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
     const baseGithubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
     const githubAdapter = baseGithubAdapter && disclosure && options.disclosure?.githubRoute ? disclosure.protectAdapter(baseGithubAdapter, options.disclosure.githubRoute) : baseGithubAdapter;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
-      ...(options.adoption ? { activityGuard: () => options.adoption!.service.guardActivity() } : {}), ownerGeneration: options.owner.generation, verifyOwner: options.owner.verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
+      ...(options.adoption ? { activityGuard: () => options.adoption!.service.guardActivity() } : {}), ownerGeneration: options.owner.generation, verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
       adapters: [vmIntegration.adapter, ...(disclosure ? [disclosure.adapter] : []), ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? []).map(adapter => disclosure && options.disclosure?.adapterRoutes?.[adapter.id] ? disclosure.protectAdapter(adapter, options.disclosure.adapterRoutes[adapter.id]!) : adapter)],
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
@@ -142,6 +158,11 @@ export async function composeS15(options: S15CompositionOptions) {
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(options.github ? { subjectResourceIds: options.github.repositories.map(r => r.resource.id) } : {}), ownerGeneration: options.owner.generation });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
+    // Defense in depth for ADR 0072: a channel owner can never decide a held action, whatever its text says.
+    for (const name of ['decideAction', 'decidePending'] as const) {
+      const decide = conversationPolicy[name] as ((actor: OwnerActor, input: never) => void) | undefined;
+      if (decide) conversationPolicy[name] = ((actor: OwnerActor, input: never) => { if (channelActors.has(actor)) throw new AppError('approval_web_only', 403); decide.call(conversationPolicy, actor, input); }) as never;
+    }
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
     const work = openWorkService({ runtime: 's15', path: join(root, 'work.sqlite'), create: options.create, installationId: options.installationId, policy,
       conversation: { view: (owner, id) => conversation.view(owner, id) }, remainingCalls: workId => {
@@ -188,6 +209,17 @@ export async function composeS15(options: S15CompositionOptions) {
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
         return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
+    // WORK15-02: the owner's own completed stall reply resumes its named responsibility, after restart too.
+    const resumes = openResumeBindings<OwnerActor>({ store, conversation: { submit: (actor, command) => conversation.submit(actor, command) },
+      work: { project: (actor, id) => work.project(actor, id), resume: (actor, id, source) => { work.resume(actor, id, source); } },
+      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true, false), now: clockNow });
+    const telegram = options.telegram ? openTelegramChannel({ installationId: options.installationId, origin: options.origin, store, vault: options.telegram.vault, transport: options.telegram.transport,
+      conversation: { submit: (actor, command) => conversation.submit(actor, command), publish: (actor, id, consume) => conversation.publish(actor, id, consume), slips: (actor, actions) => conversationPolicy.actionSlips?.(actor, actions) ?? [] },
+      resumes, work: { list: actor => work.list(actor), project: (actor, id) => work.project(actor, id) }, principal: principalOf,
+      owner: binding => channelOwner({ ownerId: binding.ownerId, generation: binding.generation }, binding.current, true),
+      ...(options.web?.locale ? { locale: options.web.locale } : {}), clock: options.clock ?? { now: Date.now, sleep: (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); }) },
+      ...(options.telegram.limits ? { limits: options.telegram.limits } : {}), ...(options.telegram.beforeOffsetAdvance ? { beforeOffsetAdvance: options.telegram.beforeOffsetAdvance } : {}) }) : undefined;
+    if (telegram) cleanup.push(() => telegram.close());
     const githubCatalogActor = (owner: OwnerActor) => {
       const current = policy.owner.current(owner), purpose = options.github?.catalogPurpose;
       if (!current || !purpose || !github) throw new AppError('outside_scope');
@@ -228,7 +260,8 @@ export async function composeS15(options: S15CompositionOptions) {
     const adoptionStatus = (owner: OwnerActor) => { policy.owner.current(owner); return selectedAdoptionStatus?.(owner) ?? null; };
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
       ...(adoptionStatus ? { adoption: adoptionStatus } : {}),
-      actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), team: teamPort,
+      actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), resumes, team: teamPort,
+      ...(telegram ? { telegram } : {}),
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
       ...(github && options.github?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
@@ -251,9 +284,10 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication,
-      /** One protected scheduler wake; waiting records alone hold no VM/native session. */
-      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
+    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication, resumes, telegram,
+      /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
+       * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
+      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } await conversation.drain(); try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {

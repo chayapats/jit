@@ -8,6 +8,7 @@ import { groundConversationIntent } from "../../src/s15/conversation/intent";
 import { ConversationStore } from "../../src/s15/conversation/store";
 import type { ConversationAuthority, ConversationPolicy, ConversationToolPort } from "../../src/s15/conversation/types";
 import { createS15WebHandler, s15ConversationPort, type S15WebPorts } from "../../src/s15/web";
+import { openResumeBindings } from "../../src/s15/work";
 
 /** Deterministic S15 Web fixture: real CHAT15 application, scripted model, fixture policy and VM-named tools. No network. */
 export type WebActor = { ownerId: string };
@@ -53,6 +54,8 @@ export function webFixture(extra: (ports: S15WebPorts<WebActor>) => Partial<S15W
     conversation: s15ConversationPort(app),
   };
   const ports = { ...base, ...extra(base) };
+  // WORK15-02: a composed responsibility port always comes with the durable resume binding over this journal.
+  if (ports.duties && !ports.resumes) { const duties = ports.duties; ports.resumes = openResumeBindings<WebActor>({ store, conversation: { submit: (a, command) => app.submit(a, command) }, work: { project: (a, id) => duties.project(a, id), resume: (a, id, source) => duties.resume(a, id, source) }, principal: a => { policy.requireOwner(a); return { ownerId: "owner", generation: 1 }; }, owner: () => expired ? null : actor, now: () => now }); }
   const handler = createS15WebHandler(ports, { origin, cookieName: "jit_s15", loginPath: "/s14/login" });
   const headers = (more: Record<string, string> = {}) => ({ cookie: "jit_s15=owner-token", host: "jit.test", ...more });
   const get = (path: string, more: Record<string, string> = {}) => handler(new Request(`${origin}${path}`, { headers: headers(more) }));
