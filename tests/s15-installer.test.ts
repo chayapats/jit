@@ -3,10 +3,11 @@ import { chmodSync, chownSync, existsSync, lstatSync, mkdirSync, mkdtempSync, re
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runInstaller, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
-import { readS15ComputerProgress, renderS15ProxySocket, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, s15QemuProcesses, stopS15WorkingVms, type S15ComputerProgress, type S15InstallerOptions } from "../ops/package/installer/s15";
+import { readS15ComputerProgress, renderS15ProxySocket, renderS15Sudoers, renderS15Unit, runS15Installer, s15Installation, s15InstallerConfig, s15OwnerLinkArguments, s15QemuProcesses, stopS15WorkingVms, type S15ComputerProgress, type S15InstallerOptions } from "../ops/package/installer/s15";
 import { assertNoSecretValues } from "../ops/package/service-config";
 import { renderVmmLauncher } from "../src/s15/vm/vmm-launcher";
 import { parseS15RuntimeConfig, readS15RuntimeConfig } from "../src/s15/runtime-config";
+import { selectRuntime } from "../src/runtime-selection";
 
 const roots: string[] = [], source = resolve(import.meta.dir, ".."), GiB = 1024 ** 3;
 const facts: HostFacts = { family: "ubuntu", arch: "x64", ramMb: 19 * 1024, cpus: 10, diskBytes: 195 * GiB, freeBytes: 152 * GiB };
@@ -368,4 +369,18 @@ test("the VM stop proof runs as the QEMU identity and reads the kernel's process
   const entry = (pid: number, uid: number, argv0: string) => { mkdirSync(join(proc, String(pid))); writeFileSync(join(proc, String(pid), "status"), `Name:\tx\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`); writeFileSync(join(proc, String(pid), "cmdline"), `${argv0}\0-name\0jit-work-0123456789ab\0`); };
   entry(100, 1002, "/usr/bin/qemu-system-x86_64"); entry(101, 1002, "/bin/bash"); entry(102, 1003, "/usr/bin/qemu-system-aarch64"); mkdirSync(join(proc, "self"));
   expect(s15QemuProcesses(1002, proc)).toEqual([100]);
+});
+
+test("the installer's S15 owner-link command is the spelling the CLI accepts (private fd 3 pipe)", () => {
+  const argv = s15OwnerLinkArguments(s15Installation.config);
+  expect(selectRuntime(argv, {})).toEqual({ runtime: "s15", args: ["owner-link", "--s15", "--config", s15Installation.config, "--output-fd", "3"] });
+  // Without the pipe flag the CLI refuses, which a real install reports as owner-link-prepare.
+  expect(() => selectRuntime(argv.slice(0, 4), {})).toThrow("explicit_s15_config_required");
+});
+
+test("install.sh never gives a package manager the operator terminal as stdin", () => {
+  // `timeout` puts apt/dnf in their own process group; apt reconfiguring the terminal from there is stopped by SIGTTOU.
+  const calls = readFileSync(join(source, "install.sh"), "utf8").split("\n").filter(line => /\b(apt-get|apt-cache|dnf) (update|install|show)\b/.test(line) && !/^\s*#/.test(line));
+  expect(calls.length).toBeGreaterThanOrEqual(7);
+  for (const line of calls) expect(line).toMatch(/(apt-get|apt-cache|dnf) [^<]*<\/dev\/null /);
 });

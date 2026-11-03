@@ -270,25 +270,27 @@ if [ "$uninstall" = false ]; then
     esac
   elif [ "$s15" = true ] && [ "$manager" = dnf ]; then set -- sudo openssh-clients
   fi
+  # Package managers never see the operator terminal: `timeout` runs them in their own process group, and apt/dpkg
+  # reconfiguring a terminal from outside its foreground group is stopped by SIGTTOU (an endless hang under ssh -t).
   case "$manager" in
     apt-get)
-      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || failed
-      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools "$@" >/dev/null 2>&1 || failed
-      if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi
+      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq </dev/null >/dev/null 2>&1 || failed
+      timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools "$@" </dev/null >/dev/null 2>&1 || failed
+      if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns </dev/null >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi
       if [ "$s15" = true ]; then
         # BROW15-02: system libraries and fonts of the pinned Chromium (Playwright's Debian/Ubuntu list; Thai and emoji
         # fonts for page images). Debian 13 and Ubuntu 24.04+ renamed some of them with a t64 suffix.
         set --
         for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcups2 libglib2.0-0; do
-          if apt-cache show "${lib}t64" >/dev/null 2>&1; then set -- "$@" "${lib}t64"; else set -- "$@" "$lib"; fi
+          if apt-cache show "${lib}t64" </dev/null >/dev/null 2>&1; then set -- "$@" "${lib}t64"; else set -- "$@" "$lib"; fi
         done
-        if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" libcairo2 libdbus-1-3 libdrm2 libgbm1 libnspr4 libnss3 libpango-1.0-0 libwayland-client0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji fonts-tlwg-loma-otf >/dev/null 2>&1; then
+        if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" libcairo2 libdbus-1-3 libdrm2 libgbm1 libnspr4 libnss3 libpango-1.0-0 libwayland-client0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji fonts-tlwg-loma-otf </dev/null >/dev/null 2>&1; then
           printf '%s\n' 'Protected browser libraries could not be installed now; the Web (Manage, Websites Jit may read) names any missing library, and a re-run installs them.'
         fi
       fi ;;
     dnf)
-      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret "$@" >/dev/null 2>&1 || failed
-      if ! timeout 600 dnf install -y podman shadow-utils-subid slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
+      timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret "$@" </dev/null >/dev/null 2>&1 || failed
+      if ! timeout 600 dnf install -y podman shadow-utils-subid slirp4netns </dev/null >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
   esac
   for tool in curl unzip sha256sum tar runuser useradd getent loginctl systemctl busctl gnome-keyring-daemon; do command -v "$tool" >/dev/null || failed; done
   if [ "$s14" = true ]; then
