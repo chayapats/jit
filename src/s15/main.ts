@@ -26,6 +26,7 @@ import type { ApprovedModelRoute, ModelRunLimits } from './model';
 import type { EffectBounds, GoogleEffectAccount } from './effects';
 import type { BrowserSitePolicy } from './browser';
 import { githubRuntime, type GithubRuntimeConfig } from './github/runtime';
+import { readS15Credential, s15CredentialKey } from './credentials';
 import { runtimeDisclosure, type RuntimeDisclosureConfig } from './disclosure/runtime';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
@@ -69,10 +70,15 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
   if (initialize) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
   const state = lstatSync(config.directory);
   if (!state.isDirectory() || state.isSymbolicLink() || state.mode & 0o077) throw new AppError('unprotected_ledger');
-  const ownerPath = join(config.directory, 'owner.sqlite');
+  const ownerDirectory = join(config.directory, 'owner');
+  if (initialize) mkdirSync(ownerDirectory, { mode: 0o700 });
+  const ownerState = lstatSync(ownerDirectory);
+  if (!ownerState.isDirectory() || ownerState.isSymbolicLink() || ownerState.mode & 0o077) throw new AppError('unprotected_ledger');
+  const ownerPath = join(ownerDirectory, 'owner.sqlite');
   if (!initialize && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
   const ownerStore = new S14Store(ownerPath);
-  const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [join(config.directory, 'runtime')] });
+  // Same API and separation as S14: broker secrets are outside state, backups and execution roots.
+  const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [ownerDirectory, join(config.directory, 'runtime'), join(config.directory, 'backups')] });
   const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
   let service: Awaited<ReturnType<typeof composeS15>> | undefined;
   try {
@@ -81,7 +87,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       const key = args[args.indexOf('--key') + 1]; if (!key || !args.includes('--secret-stdin')) throw new AppError('secret_stdin_required');
       const secret = process.stdin.isTTY ? await readHiddenPassword() : (await Bun.stdin.text()).replace(/\r?\n$/, '');
       if (!secret || secret.length > 4096 || /[\r\n\0]/.test(secret)) throw new AppError('invalid_credential');
-      vault.write(key, secret); console.log(JSON.stringify({ state: 'credential_stored' })); return;
+      vault.write(s15CredentialKey(config.installationId, key), secret); readS15Credential(vault, config.installationId, key); console.log(JSON.stringify({ state: 'credential_stored' })); return;
     }
     if (setup) {
       if (!process.stdin.isTTY && !args.includes('--password-stdin')) throw new AppError('password_stdin_flag_required');
@@ -92,7 +98,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const requireOwner = (proof: unknown) => {
       try { ownerStore.read(tx => ownerApp.requireOwner(tx, proof as import('../s14/types').OwnerActor)); return { id: 'owner', generation: generation(), expiresAt: Date.now() + 1000 }; } catch { return null; }
     };
-    const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: config.vm.id, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => vault.read(ref) }) : null;
+    const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: config.vm.id, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => readS15Credential(vault, config.installationId, ref) }) : null;
     const catalogs: S15CompositionOptions['catalogs'] = {
       current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
@@ -101,7 +107,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       },
     };
     if (config.vm.limaInstance && config.vm.remote) throw new AppError('vm_management_scope_denied');
-    const managers = new Map<string, import('./vm').VmManagement>(config.vm.remote ? [['working', new RemoteVmManagement({ origin: config.vm.remote.origin, credential: () => vault.read(config.vm.remote!.credentialRef), allowLoopback: true })]] : config.vm.limaInstance ? [['working', new LimaVmManagement({ instance: config.vm.limaInstance })]] : []);
+    const managers = new Map<string, import('./vm').VmManagement>(config.vm.remote ? [['working', new RemoteVmManagement({ origin: config.vm.remote.origin, credential: () => readS15Credential(vault, config.installationId, config.vm.remote!.credentialRef), allowLoopback: true })]] : config.vm.limaInstance ? [['working', new LimaVmManagement({ instance: config.vm.limaInstance })]] : []);
     const account = (id: string | null): GoogleEffectAccount | null => {
       if (!id || !config.google) return null;
       try {
