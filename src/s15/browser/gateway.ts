@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ActionDraft, ActionRef, AdapterResult, JsonValue, S15PolicyService, WorkActor } from '../policy';
-import { canonical, unknownUsage } from '../policy/validation';
+import { canonical, PolicyError, unknownUsage } from '../policy/validation';
+import { openBrowserEgress, type BrowserEgress, type BrowserRoute } from './egress';
 import type { BrowserEngine, EngineOptions, EngineRequest, EngineInputContext } from './engine';
 import { launchProtectedEngine } from './engine';
 import type { BrokerResponse, BrowserOptions, BrowserRegistration, BrowserRequest, BrowserResult, BrowserWork, LoginState, RequestMeaning } from './types';
@@ -21,13 +22,16 @@ interface Scope {
   input: EngineInputContext; nativeDone: Promise<unknown>; completion: Promise<BrowserResult>;
   cleanup(): void; unlock(): void;
 }
-interface Pending { scope: Scope; wire: EngineRequest; request: BrowserRequest; cookies: string; meaning: Extract<RequestMeaning, { kind: 'effect' }>; draft: ActionDraft; finish: () => void; response: BrokerResponse | null; used: boolean; released: boolean }
+interface Pending { scope: Scope; wire: EngineRequest; request: BrowserRequest; cookies: string; meaning: Extract<RequestMeaning, { kind: 'effect' }>; draft: ActionDraft; finish: () => void; response: BrokerResponse | null; used: boolean; released: boolean; refused: string | null }
 /** Construct only on the protected Jit host. The real policy adapter owns final exact-byte sends.
  * No S14 store/runtime is selected or modified. The injected engine is a trusted test/host dependency.
  */
 export async function registerProtectedBrowser(options: BrowserOptions, factory: (options: EngineOptions) => Promise<BrowserEngine> = launchProtectedEngine, clock: BrowserClock = realClock): Promise<BrowserRegistration> {
   if (options.runtime !== 's15') throw new BrowserError('runtime_required');
   const continuity = browserContinuity(options.continuity.path, options.continuity.create, options.resource.id);
+  // BROW15-03: every broker socket dials one checked public address of its destination, never a second lookup.
+  let egress: BrowserEgress;
+  try { egress = openBrowserEgress(options.egress); } catch (e) { continuity.close(); throw e; }
   let policy: S15PolicyService | null = null, actor: WorkActor | null = null, generation = continuity.advance();
   let login: LoginState = 'not_signed_in', currentUrl = 'about:blank', closed = false;
   let closing: Promise<void> | null = null;
@@ -81,12 +85,22 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
     };
     s.completion = done(); return s.completion;
   };
-  async function exchange(r: BrowserRequest, cookies: string, signal?: AbortSignal): Promise<BrokerResponse> {
-    // Only this protected broker opens outbound sockets. Redirects never follow inside fetch.
+  /** Resolves and checks the destination first; the caller's final guards and the socket then share one synchronous turn. */
+  async function routed(r: BrowserRequest, cookies: string, signal: AbortSignal | undefined, final: () => void): Promise<BrokerResponse> {
+    const route = await egress.route(r.url);
+    try { final(); } catch (e) { route.close(); throw e; }
+    return exchange(route, r, cookies, signal);
+  }
+  /** Sends over the checked route and always closes it once the response is consumed or abandoned. */
+  async function exchange(route: BrowserRoute, r: BrowserRequest, cookies: string, signal?: AbortSignal): Promise<BrokerResponse> {
+    try { return await transfer(route, r, cookies, signal); } finally { route.close(); }
+  }
+  async function transfer(route: BrowserRoute, r: BrowserRequest, cookies: string, signal?: AbortSignal): Promise<BrokerResponse> {
+    // Only this protected broker opens outbound sockets, each to its route's checked address. Redirects never follow inside fetch.
     const headers: Record<string, string> = { 'accept': '*/*', 'user-agent': 'Jit-Protected-Browser/1' };
     if (r.contentType) headers['content-type'] = r.contentType;
     if (cookies) headers.cookie = cookies;
-    const response = await fetch(r.url, { method: r.method, headers, ...(r.bodyBase64 ? { body: Buffer.from(r.bodyBase64, 'base64') } : {}), redirect: 'manual', ...(signal ? { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) } : {}) });
+    const response = await route.fetch(r.url, { method: r.method, headers, ...(r.bodyBase64 ? { body: Buffer.from(r.bodyBase64, 'base64') } : {}), redirect: 'manual', ...(signal ? { signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]) } : {}) });
     if (response.status >= 300 && response.status < 400) { await response.body?.cancel(); throw new BrowserError('redirect_unsupported'); }
     const type = response.headers.get('content-type') ?? '';
     if (!!response.headers.get('content-disposition') && !/^inline(?:\s*;|$)/i.test(response.headers.get('content-disposition')!.trim()) || !/^(text\/(html|plain|css|javascript)|application\/(javascript|json|x-javascript)|image\/(png|jpeg|webp|gif|svg\+xml)|font\/|application\/font|application\/octet-stream)/i.test(type) && response.status !== 204 && !(response.status >= 300 && response.status < 400)) { await response.body?.cancel(); throw new BrowserError('download_unsupported'); }
@@ -114,7 +128,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       if (meaning.kind === 'unsupported') throw new BrowserError(meaning.code);
       if (meaning.kind === 'login') {
         if (!wire.attributable || !s.owner || login !== 'owner_control' || !options.site.loginDocuments.includes(currentUrl)) throw new BrowserError('login_required');
-        guard(s); const response = await exchange(request, wire.cookies, s.abort.signal); guard(s);
+        const response = await routed(request, wire.cookies, s.abort.signal, () => guard(s)); guard(s);
         if (wire.document) currentUrl = request.url;
         await wire.send(response); return;
       }
@@ -127,15 +141,20 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         const p = service();
         const admission = p.work.reserveRead(s.actor, { requestId: id(), resource: options.resource, operation: 'read', exactPayload: requestPayload(request), upperBound: { ...options.upperBound, reads: Math.max(1, options.upperBound.reads) }, fences: options.fences });
         if (admission.state !== 'allow') throw new BrowserError(admission.code);
-        let response: BrokerResponse;
+        let response: BrokerResponse, route: BrowserRoute | null = null, claimed = false;
         try {
-          guard(s); p.work.guardRead(s.actor, admission.claim.id);
+          // The destination is resolved and checked before the final guard (BROW15-03).
+          route = await egress.route(request.url);
+          guard(s); p.work.guardRead(s.actor, admission.claim.id); claimed = true;
           options.disclosure?.guard(p.work.guard(s.actor), request);
           // Final guard and socket creation share this synchronous turn.
-          const promise = exchange(request, meaning.private ? wire.cookies : '', s.abort.signal);
+          const promise = exchange(route, request, meaning.private ? wire.cookies : '', s.abort.signal);
           response = await promise;
           p.control.settleRead(admission.claim.id, { outcome: 'succeeded', basis: 'remote_verified', code: null, actual: unknownUsage(), transportSettled: true }, bytesHash(response.body));
         } catch (e) {
+          route?.close();
+          // A refused destination, or a guard that failed before the claim was consumed, sent nothing.
+          if (!claimed) { p.control.settleRead(admission.claim.id, { outcome: 'not_dispatched', basis: 'local_guard', code: e instanceof BrowserError || e instanceof PolicyError ? e.code : 'request_unavailable', actual: unknownUsage(), transportSettled: true }, null); throw e; }
           const closedResponse = e instanceof BrowserError && ['redirect_unsupported', 'download_unsupported', 'output_limit'].includes(e.code);
           p.control.settleRead(admission.claim.id, { outcome: closedResponse ? 'failed' : 'unknown', basis: closedResponse ? 'remote_verified' : 'uncertain', code: null, actual: unknownUsage(), transportSettled: closedResponse }, null); throw e;
         }
@@ -149,7 +168,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       const token = id(), completion = deferred<void>();
       if (disclosure && meaning.recipients.some(r => !disclosure.recipients.some(actual => canonical(r) === canonical(actual)))) throw new BrowserError('recipient_changed');
       const draft: ActionDraft = { operation: 'browser_request', classes: [...new Set([...meaning.classes, ...(disclosure?.classes ?? [])])], resources: [...new Map([options.resource, ...(disclosure?.disclosure?.sources.map(source => source.resource) ?? [])].map(r => [canonical(r), r])).values()], recipients: disclosure?.recipients ?? meaning.recipients, payload: requestPayload(request), fences: [...new Map([...options.fences, ...(disclosure?.fences ?? [])].map(f => [canonical(f), f])).values()], upperBound: options.upperBound, expiresAt: now() + 30000, transaction: meaning.transaction, github: meaning.github ?? null, impact: meaning.impact, ...(disclosure?.disclosure ? { disclosure: disclosure.disclosure } : {}) };
-      const item: Pending = { scope: s, wire, request, cookies, meaning, draft, finish: () => completion.resolve(), response: null, used: false, released: false };
+      const item: Pending = { scope: s, wire, request, cookies, meaning, draft, finish: () => completion.resolve(), response: null, used: false, released: false, refused: null };
       pending.set(token, item);
       let prepared: ReturnType<S15PolicyService['work']['prepare']>;
       try { prepared = service().work.prepare(s.actor, { slot: token, adapter: 'protected_browser', proposal: { token } }); } catch (e) { pending.delete(token); throw e; }
@@ -166,7 +185,7 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
     }
   }
   let engine: BrowserEngine;
-  try { engine = await factory({ profilePath: options.profilePath, executablePath: options.executablePath, mode: options.mode, request: network }); } catch (e) { continuity.close(); throw e; }
+  try { engine = await factory({ profilePath: options.profilePath, executablePath: options.executablePath, mode: options.mode, request: network }); } catch (e) { egress.close(); continuity.close(); throw e; }
   async function dispatch(action: ActionRef): Promise<BrowserResult> {
     const item = pending.get(action.id); if (!item) return { state: 'unsupported', code: 'request_unavailable' };
     try {
@@ -175,8 +194,10 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       if (decision.state !== 'allow') return decision.state === 'hold' ? { state: 'held', code: decision.code, action } : { state: 'denied', code: decision.code };
       continuity.arm(action);
       const outcome = await service().work.dispatch(item.scope.actor, action);
-      if (outcome.outcome !== 'unknown' && outcome.outcome !== 'succeeded' && !item.scope.failure) continuity.settle(action);
+      // Not dispatched means the send never started, so nothing can need reconciliation, even after cancellation.
+      if (outcome.outcome === 'not_dispatched' || outcome.outcome !== 'unknown' && outcome.outcome !== 'succeeded' && !item.scope.failure) continuity.settle(action);
       if (item.scope.failure) { item.finish(); await item.wire.deny(); pending.delete(action.id); return failure(item.scope); }
+      if (outcome.outcome === 'not_dispatched' && item.refused) { item.finish(); await item.wire.deny(); pending.delete(action.id); return { state: 'denied', code: item.refused }; }
       if (outcome.outcome !== 'succeeded' || !item.response) { item.finish(); await item.wire.deny(); pending.delete(action.id); return { state: 'unknown', code: outcome.code ?? 'reconciliation_required' }; }
       guard(item.scope); service().control.publishable(item.scope.actor, action);
       if (item.wire.document) currentUrl = item.request.url;
@@ -194,13 +215,20 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       async perform(action, context) {
         const item = pending.get(action.id); if (!item || item.used) throw new BrowserError('request_unavailable');
         guard(item.scope); item.used = true;
-        return context.commit(requestPayload(item.request), async (): Promise<AdapterResult> => {
-          guard(item.scope);
-          options.disclosure?.guard(service().work.guard(item.scope.actor), item.request, action.disclosure);
-          item.released = true; item.scope.released = true;
-          item.response = await exchange(item.request, item.cookies);
-          return { outcome: item.scope.failure ? 'unknown' : item.meaning.verifyResponse?.({ status: item.response.status, body: item.response.body }) ?? 'unknown', actual: unknownUsage(), transportSettled: true };
-        });
+        // The destination is checked before commit, so a refused name ends as not dispatched rather than unknown.
+        let route: BrowserRoute;
+        try { route = await egress.route(item.request.url); } catch (e) { item.refused = e instanceof BrowserError ? e.code : 'request_unavailable'; throw e; }
+        // Cancellation, takeover or a stale lease during the lookup ends here, before commit marks the send started.
+        try { guard(item.scope); } catch (e) { route.close(); throw e; }
+        try {
+          return await context.commit(requestPayload(item.request), async (): Promise<AdapterResult> => {
+            guard(item.scope);
+            options.disclosure?.guard(service().work.guard(item.scope.actor), item.request, action.disclosure);
+            item.released = true; item.scope.released = true;
+            item.response = await exchange(route, item.request, item.cookies);
+            return { outcome: item.scope.failure ? 'unknown' : item.meaning.verifyResponse?.({ status: item.response.status, body: item.response.body }) ?? 'unknown', actual: unknownUsage(), transportSettled: true };
+          });
+        } finally { route.close(); }
       },
       async reconcile(action, context) {
         if (!options.site.reconcileEffect) throw new BrowserError('reconciliation_unsupported');
@@ -326,14 +354,15 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           browserUrl(probe.url); const cookie = await engine.cookie(probe.cookie, probe.url); ownerCheck(owner);
           const request: BrowserRequest = { method: 'GET', url: probe.url, contentType: '', bodyBase64: '', navigation: true };
           if (options.site.classify(request, options.mode)?.kind !== 'read') throw new BrowserError('session_unknown');
-          const response = await exchange(request, cookie ?? '', new AbortController().signal);
+          // Owner access, generation and `checking` are rechecked after the lookup, immediately before the cookie is sent.
+          const response = await routed(request, cookie ?? '', new AbortController().signal, () => { ownerCheck(owner); if (expected !== generation || login !== 'checking') throw new BrowserError('stale_input'); });
           ownerCheck(owner); if (expected !== generation || login !== 'checking') throw new BrowserError('stale_input');
           login = cookie && response.status === probe.signedInStatus ? 'signed_in' : response.status === probe.signedOutStatus ? 'not_signed_in' : 'unknown';
         } catch { if (expected === generation && login === 'checking') login = 'unknown'; }
         return login;
       },
     },
-    close() { return closing ??= (async () => { closed = true; generation = continuity.advance(); stop(); await Promise.allSettled([...scopes].map(s => s.completion)); try { await engine.close(); } finally { continuity.close(); } })(); },
+    close() { return closing ??= (async () => { closed = true; generation = continuity.advance(); stop(); await Promise.allSettled([...scopes].map(s => s.completion)); try { await engine.close(); } finally { egress.close(); continuity.close(); } })(); },
   };
   return registration;
 }

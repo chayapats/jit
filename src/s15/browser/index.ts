@@ -3,6 +3,7 @@ export type * from './types';
 export type { BrowserClock } from './gateway';
 export { registerProtectedBrowser } from './gateway';
 export { BrowserError } from './validation';
+export { browserDestination, openBrowserEgress, type BrowserAddress, type BrowserDestination, type BrowserEgress, type BrowserEgressPorts, type BrowserRoute } from './egress';
 export { protectedBrowserTools } from './tools';
 export { ProtectedChromium, protectedChromiumBuilds, provisionedEngineFactory, type ProtectedChromiumBuild, type ProtectedChromiumCode, type ProtectedChromiumPorts, type ProtectedChromiumStatus, type ProtectedChromiumStep } from './chromium';
 export { ApprovedWebsites, approvedWebsiteHistoryLimit, approvedWebsiteLimit, approvedWebsiteOrigin, approvedWebsitePolicy, withApprovedWebsites, type ApprovedWebsite } from './sites';

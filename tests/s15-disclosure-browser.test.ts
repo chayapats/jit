@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { openDisclosureService, type RecipientApproval } from '../src/s15/disclosure';
 import { registerProtectedBrowser, type BrowserOperation, type BrowserRequest } from '../src/s15/browser';
 import type { BrowserEngine, EngineOptions } from '../src/s15/browser/engine';
+import { loopbackFixtureEgress } from './fixtures/s15-browser';
 import { fixture, ref } from './fixtures/s15-policy';
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
@@ -30,7 +31,7 @@ async function setup() {
     read: async generation => ({ id: 'observed', generation, url: currentUrl, text: 'Private derived content', truncated: false, elements: [] }), image: async () => new Uint8Array([1]), cookie: async () => null, ownerInput: async () => {}, close: async () => {} };
   const gateway = await registerProtectedBrowser({ runtime: 's15', mode: 'general', resource: ref('account'), fences: [], continuity: { path: join(dir, 'browser.sqlite'), create: true },
     profilePath: join(dir, 'profile'), executablePath: '/unused', site: { classify: r => new URL(r.url).origin !== origin ? null : r.method === 'GET' ? { kind: 'read', private: new URL(r.url).pathname === '/private' } : { kind: 'effect', classes: ['ordinary_edit'], recipients: [], transaction: null, impact: 'reversible', verifyResponse: () => 'succeeded' }, observable: () => true, loginDocuments: [], session: null },
-    upperBound: { attempts: 0, calls: 1, steps: 1, reads: 1, outputBytes: 10000, activeMs: 100, spendMinor: '0' }, now: () => 1000, disclosure: d.browser('browser') }, async options => { engineOptions = options; return engine; });
+    upperBound: { attempts: 0, calls: 1, steps: 1, reads: 1, outputBytes: 10000, activeMs: 100, spendMinor: '0' }, now: () => 1000, disclosure: d.browser('browser'), egress: loopbackFixtureEgress }, async options => { engineOptions = options; return engine; });
   const f = fixture({ adapters: [gateway.adapter], reads: [gateway.readHandler], catalogs: base => d.catalogs(base) });
   cleanups.push(() => f.cleanup()); cleanups.push(() => gateway.close());
   for (const id of ['private', 'public']) f.add('lineage', ref(id)); f.add('recipient', ref('new_service'));

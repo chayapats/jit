@@ -9,6 +9,7 @@ import { canonical } from '../src/s15/policy/validation';
 import { fixture, actionRef, ref } from './fixtures/s15-policy';
 import { googleFixture, mail, calendar } from './fixtures/s15-effects';
 import { recordEngine, documentRecord, taskRecord, businessRecord } from './fixtures/s15-effect-browser';
+import { loopbackFixtureEgress } from './fixtures/s15-browser';
 
 const cleanups: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -138,7 +139,7 @@ async function setupRecord(record: FixtureRecord) {
     } }],
   });
   const engine = recordEngine(), browser = await registerProtectedBrowser({ runtime: 's15', mode: 'general', resource: ref('account'), fences: [], continuity: { path: join(dir, 'browser.sqlite'), create: true }, profilePath: join(dir, 'profile'), executablePath: '/unused', site: server.site,
-    upperBound: { attempts: 0, steps: 1, calls: 1, reads: 1, outputBytes: 10000, activeMs: 100, spendMinor: '0' }, now: () => 1000, disclosure: disclosure.browser('records') }, engine.factory);
+    upperBound: { attempts: 0, steps: 1, calls: 1, reads: 1, outputBytes: 10000, activeMs: 100, spendMinor: '0' }, now: () => 1000, disclosure: disclosure.browser('records'), egress: loopbackFixtureEgress }, engine.factory);
   const f = fixture({ adapters: [browser.adapter], reads: [browser.readHandler], catalogs: base => disclosure.catalogs(base) });
   cleanups.push(async () => { await browser.close(); f.cleanup(); disclosure.close(); server.close(); rmSync(dir, { recursive: true, force: true }); });
   f.add('lineage', source.ref); f.add('recipient', provider); f.input.recipients.push(provider); f.input.rules[0]!.recipients.push(provider);

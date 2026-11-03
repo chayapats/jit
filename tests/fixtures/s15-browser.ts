@@ -2,11 +2,25 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { registerProtectedBrowser, type BrowserMode, type BrowserSitePolicy } from '../../src/s15/browser';
+import { lookup } from 'node:dns/promises';
+import { connect } from 'node:net';
+import { registerProtectedBrowser, type BrowserEgressPorts, type BrowserMode, type BrowserSitePolicy } from '../../src/s15/browser';
 import type { BrowserClock } from '../../src/s15/browser/gateway';
 import type { BrowserEngine, EngineOptions } from '../../src/s15/browser/engine';
 import { fixture, ref } from './s15-policy';
 
+/** A public-classified stand-in answer for the controlled loopback servers. It is never dialed. */
+export const fixturePublicAddress = '93.184.215.14';
+/**
+ * Fixture DNS/dial seams (BROW15-03). Production refuses the loopback servers these tests use, because an IP
+ * literal answers itself and 127.0.0.1 is not public. Here `127.0.0.1` answers with {@link fixturePublicAddress},
+ * which still passes the real public-address rule, and the dial seam maps exactly that answer back to the loopback
+ * listener on the URL's port. Every other name keeps the system resolver and a direct dial of its checked answer.
+ */
+export const loopbackFixtureEgress: BrowserEgressPorts = {
+  resolve: async host => host === '127.0.0.1' ? [{ address: fixturePublicAddress, family: 4 }] : lookup(host, { all: true, verbatim: true }),
+  connect: (address, port) => connect({ host: address === fixturePublicAddress ? '127.0.0.1' : address, port }),
+};
 /** Controlled real HTTP fixture, with ephemeral credentials never printed, tracked or stored in receipts. */
 export function browserSite(options: { delayMs?: number } = {}) {
   const password = randomBytes(24).toString('hex'), secret = randomBytes(20), session = randomBytes(24).toString('hex'), proof = randomBytes(24).toString('hex');
@@ -68,9 +82,9 @@ export function browserSite(options: { delayMs?: number } = {}) {
   return { origin, site, received, set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
 }
 /** Real policy service and disposable protected profile shared by deterministic and opt-in engine tests. */
-export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>, clock?: BrowserClock) {
+export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>, clock?: BrowserClock, egress: BrowserEgressPorts = loopbackFixtureEgress) {
   const dir = mkdtempSync(join(tmpdir(), 'jit-protected-browser-'));
-  const gateway = await registerProtectedBrowser({ runtime: 's15', continuity: { path: join(dir, 'continuity.sqlite'), create: true }, mode, resource: ref('account'), fences: [{ kind: 'input', ref: ref('input') }], profilePath: join(dir, 'profile'), executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, upperBound: { attempts: 0, steps: 1, calls: 0, reads: 1, outputBytes: 2097152, activeMs: 30000, spendMinor: '0' }, now: () => 1000 }, factory, clock);
+  const gateway = await registerProtectedBrowser({ runtime: 's15', continuity: { path: join(dir, 'continuity.sqlite'), create: true }, mode, resource: ref('account'), fences: [{ kind: 'input', ref: ref('input') }], profilePath: join(dir, 'profile'), executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, upperBound: { attempts: 0, steps: 1, calls: 0, reads: 1, outputBytes: 2097152, activeMs: 30000, spendMinor: '0' }, now: () => 1000, egress }, factory, clock);
   const f = fixture({ adapters: [gateway.adapter], reads: [gateway.readHandler] });
   f.input.budget!.ceiling = { attempts: 1000, steps: 1000, calls: 1000, reads: 1000, outputBytes: 2_000_000_000, activeMs: 30_000_000, spendMinor: '100' };
   f.input.rules[0]!.adapters.push('protected_browser'); f.input.rules[0]!.operations.push('browser_request');
