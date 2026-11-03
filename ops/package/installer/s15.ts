@@ -40,7 +40,8 @@ const ref = (id: string) => ({ id, revision: 1, generation: 1 });
  * the approved Codex subscription route for the owner's single device login (live availability follows that
  * login), no policy, budget or personal GitHub rule, and the Jit-managed local working computer whose QEMU runs
  * as the separate identity (`vmm: null` on a host without local VM support: the owner enrolls their own VM in
- * the Web instead). Browser, GitHub and Google stay off until the owner configures them.
+ * the Web instead). `browser: null` selects the provisioned protected browser (BROW15-02): pinned Chromium that
+ * the controller verifies itself and the owner's approved-website list in the Web. GitHub and Google stay off.
  */
 export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions | null; origin?: string }): S15RuntimeConfig {
   const selection = { route: ref("codex_route"), model: ref("codex_model"), effort: "high" };
@@ -504,7 +505,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       const ready = await must(["runuser", "-u", p.user, "--", ...vmmCommand(vmmOptions(), ["check"])]);
       if (ready.trim() !== "jit-vmm-ready-v1") throw new InstallerFailure(currentStep, `make /etc/sudoers include /etc/sudoers.d so ${p.user} can run ${p.launcher} as ${p.vmmUser}, then re-run install.sh --s15`);
       if ((await call(["runuser", "-u", p.user, "--", ...vmmCommand(vmmOptions(), ["kvm"])])).exitCode !== 0)
-        out(`Working computer: ${p.vmmUser} cannot open /dev/kvm yet. ${codeCopy(existsSync("/dev/kvm") ? "vm_kvm_denied" : "vm_kvm_unavailable")}`);
+        out(`Working computer: ${codeCopy(existsSync("/dev/kvm") ? "vm_kvm_denied" : "vm_kvm_unavailable")}`);
     }
 
     step("artifact", "verify the release archive, Bun pins and registry access, then re-run install.sh --s15");
