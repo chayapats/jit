@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { createHost, credentialReferenceForRoute, describeAuthRoute, HostError, hostCapabilities, isDispatchRefused, listRouteModels, type HostDispatch, type HostOptions, type Model } from "schway/host";
+import { createHost, createHostCredentialLifecycle, credentialReferenceForRoute, describeAuthRoute, HostError, hostCapabilities, isDispatchRefused, listRouteModels, renewAuthRoute, type HostDispatch, type HostOptions, type Model } from "schway/host";
 
 // Packed public consumer for MODEL15-02: only `schway/host` (and Node built-ins) from the installed tarball.
 const { root } = await Bun.stdin.json() as { root: string };
@@ -10,6 +10,7 @@ assert(caps.releaseContract === "schway.host.release/v2", "release");
 assert(caps.dispatchAuthorizationContract === "schway.host.dispatch-authorization/v1", "dispatch capability");
 assert(caps.providerRequestsContract === "schway.host.provider-requests/v1", "provider requests capability");
 assert(caps.effortContract === "schway.host.effort/v1" && caps.outputCapContract === "schway.host.output-cap/v1", "effort and cap capabilities");
+assert(caps.routeRenewalContract === "schway.host.route-renewal/v1", "route renewal capability");
 
 const values = new Map<string, string>(), bodies: string[] = [];
 let renewals = 0, rejectNext = true;
@@ -77,10 +78,22 @@ const codexRuntime = await createHost({ workspaceRoot: `${root}/authorized/works
 try { await codexRuntime.auth!.createModel({ requireOutputCap: true }); } catch (error) { codexCapRefused = error instanceof HostError && error.code === "invalid-input"; }
 await codexRuntime.close();
 
+// MODEL15-03: an expired token renews without inference through a shared lifecycle, then lists.
+const expiredValues = new Map<string, string>([[credentialReferenceForRoute("grok").account, JSON.stringify({ accessToken: "fixture-expired", refreshToken: "fixture-refresh", obtainedAt: 1, expiresAt: 1 })]]);
+const expiredStore = { async get(ref: { account: string }) { return expiredValues.get(ref.account) ?? null; }, async set(ref: { account: string }, value: string) { expiredValues.set(ref.account, value); }, async delete(ref: { account: string }) { return expiredValues.delete(ref.account); } };
+const runRenewals = renewals, lifecycle = createHostCredentialLifecycle({ store: expiredStore }), beforeRenewal = { renewals, bodies: bodies.length };
+const beforeListing = await listRouteModels({ route: "grok", lifecycle, fetch });
+const renewal = await renewAuthRoute({ route: "grok", lifecycle, fetch });
+const again = await renewAuthRoute({ route: "grok", lifecycle, fetch });
+const afterListing = await listRouteModels({ route: "grok", lifecycle, fetch });
+await lifecycle.close();
+
 console.log(JSON.stringify({
+  renewal: { beforeListing: beforeListing.status, outcome: renewal.outcome, requests: renewal.renewalRequests, again: again.outcome, againRequests: again.renewalRequests,
+    afterListing: afterListing.status, tokenRequests: renewals - beforeRenewal.renewals, inference: bodies.length - beforeRenewal.bodies },
   dispatches: dispatches.map((dispatch, index) => ({ route: dispatch.route, provider: dispatch.provider, model: dispatch.model, kind: dispatch.kind, sequence: dispatch.sequence,
     hashMatches: dispatch.bodySha256 === sha(bodies[index]!) && dispatch.bodyBytes === Buffer.byteLength(bodies[index]!), effort: dispatch.effort, outputCap: dispatch.outputCap })),
-  providerRequests: result.usage.providerRequests, attempt: { effort: result.usage.attempts[0]?.effort, outputCap: result.usage.attempts[0]?.outputCap }, renewals,
+  providerRequests: result.usage.providerRequests, attempt: { effort: result.usage.attempts[0]?.effort, outputCap: result.usage.attempts[0]?.outputCap }, renewals: runRenewals,
   choice: { effort: choice.effort, outputCap: choice.outputCap }, codexCap: describeAuthRoute({ route: "codex", model: "gpt-6-luna" }).outputCap, codexCapRefused,
   refusal: { identity: isDispatchRefused(refusal), cause: (refusal as Error | undefined)?.cause === own, copiedWording: isDispatchRefused(new Error((refusal as Error | undefined)?.message)), sent: bodies.length - before },
 }));

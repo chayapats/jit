@@ -389,7 +389,7 @@ snapshots and continues to use its dependency-free API.
 
 ### Schway credential-lock upgrade fence (MODEL15-02, schway#428)
 
-Releases that vendor Schway `0a10abe` (main `4163e60`) save and delete route credentials under an OS-released SQLite lock. Once such a release saves or deletes a credential under a service identity, including a token renewal, every older untagged lock-directory Schway build under that identity fails all credential saves and deletes there, renewal included. That covers every earlier Jit release that vendored `697bf40` and any older Schway CLI.
+Releases that vendor Schway `0a10abe` (main `4163e60`) or later, including `aac2fc0`, save and delete route credentials under an OS-released SQLite lock. Once such a release saves or deletes a credential under a service identity, including a token renewal, every older untagged lock-directory Schway build under that identity fails all credential saves and deletes there, renewal included. That covers every earlier Jit release that vendored `697bf40` and any older Schway CLI.
 
 - On a host where a Jit install shares a service identity with another Jit build or a Schway CLI, stop all of them and upgrade them together. Do not run an old and a new build side by side under one identity.
 - Rolling back to an older Jit release under that identity leaves it unable to renew or save credentials until a fenced-compatible build runs again. Plan the rollback with that limit.
