@@ -18,7 +18,8 @@ import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
 import type { ResponsibilityProjection } from "../work";
 import { codeText, e, fill, refusal, shell, standalonePage, type S15Nav } from "./render";
-import { accountRows, computerCard, rulesCard, setupBody, toMinor, type S15ComputerProgress } from "./setup";
+import { accountRows, computerCard, enrollmentFlow, rulesCard, setupBody, toMinor, type S15ComputerLocal, type S15ComputerProgress } from "./setup";
+import { addComputer, memberName, poolList } from "./computers";
 import type { S15BudgetEntry, S15ForgetImpact, S15GithubCapture, S15MemoryClaim, S15ModelBudgetView, S15WebConversation, S15WebPorts } from "./types";
 
 /** Adapts the real CHAT15-01 application to the Web consumer seam; reading starts no model, tool or queue. */
@@ -117,6 +118,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         return null;
       };
       const computerStatus = (): VmStatus | null => { if (!ports.computer) return null; try { return ports.computer.status(actor, ports.computer.vmId); } catch (error) { if (codeOf(error) === "vm_not_enrolled") return null; throw error; } };
+      const localView = (): S15ComputerLocal | undefined => ports.computer?.local ? { host: ports.computer.local.host(actor), job: ports.computer.local.job(actor), now: now() } : undefined;
+      const poolMembers = () => ports.computer?.pool?.members(actor) ?? null;
       const accounts = () => ports.accounts?.list(actor) ?? null;
       const memoryClaims = (): S15MemoryClaim[] | null => ports.memory ? ports.memory.view(actor).claims : null;
       const models = (workId?: string): S15ModelBudgetView | null => ports.models ? ports.models.project(actor, workId) : null;
@@ -183,12 +186,13 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       // Resources the rules/computer refer to that TEAM has not registered; null when TEAM is not composed.
       const teamPending = () => ports.team?.pending ? ports.team.pending(actor) : null;
       const setupPage = (notices: { computer?: string | null; rules?: string | null; installed?: boolean; team?: string | null; teamRegistered?: boolean } = {}, status = 200) => {
-        const status_ = computerStatus(), current = ports.rules?.current(actor) ?? null, rows = accounts(), pending = teamPending();
+        const status_ = computerStatus(), current = ports.rules?.current(actor) ?? null, rows = accounts(), pending = teamPending(), local = status_ ? undefined : localView();
         let proposal = null;
         if (ports.rules && !current) proposal = ports.rules.propose(actor, reviewed?.budget ?? null);
         return render(() => shell(nav("/setup"), tr("s15.setup.title"), setupBody({
-          computer: computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused: notices.computer ?? null, address: progress.check?.host ?? "", return: "setup" }),
-          computerDone: status_ !== null,
+          computer: computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused: notices.computer ?? null, address: progress.check?.host ?? "", return: "setup", ...(local ? { local } : {}) }),
+          // Done only from a registered computer; a running or failed job, or a host fact, is never "done".
+          computerDone: status_ !== null || !!poolMembers()?.length,
           models: accountRows(rows, "model"), modelsDone: !!rows?.some(row => row.kind === "model" && row.state !== "not_connected"),
           accounts: accountRows(rows, "service"),
           rules: rulesCard({ csrf, unavailable: !ports.rules, current, proposal, options: ports.rules?.budgetOptions(actor) ?? { currencies: [], periods: [] }, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused: notices.rules ?? null, installed: !!notices.installed })
@@ -202,10 +206,20 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         let pending = null; try { pending = team ? teamPending() : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; pending = null; }
         return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf, teamPending: teamPendingCard({ pending, csrf, back: "resources", registered: !!state.registered, refused: state.refused ?? null }) })), status);
       };
-      const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null } = { restore: null, restored: false }) => {
-        const status_ = computerStatus(), computer = ports.computer;
-        const snapshots = status_ && computer?.snapshots && computer.restore ? (() => { try { return computer.snapshots!(actor, computer.vmId); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
-        return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" })}</section>
+      const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null; vm?: string | null } = { restore: null, restored: false }, notice: { saved?: "drained" | "undrained" | null; vmId?: string | null; refused?: string | null; managerRefused?: string | null; managerSaved?: boolean } = {}) => {
+        const status_ = computerStatus(), computer = ports.computer, members = poolMembers();
+        const snapshotsOf = (id: string) => status_ !== null || members?.length ? computer?.snapshots && computer.restore ? (() => { try { return computer.snapshots!(actor, id); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null : null;
+        const card = { csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" as const };
+        if (members?.length) {
+          // POOL15-01: every enrolled computer, a not-yet-created default (job or fallback), and "add another".
+          const pending = status_ ? "" : (() => { const local = localView(); return local?.job && local.job.state !== "enrolled" ? `<section class="s-card" aria-labelledby="s15-computer-main-title"><h2 id="s15-computer-main-title">${tr("s15.pool.main")}</h2>${computerCard({ ...card, refused: null, local })}</section>` : ""; })();
+          const restores = members.map((member, index) => restoreSection({ csrf, status: member.status, snapshots: snapshotsOf(member.id), selected: (restore.vm ?? computer!.vmId) === member.id ? restore.restore : null, hypervisor: computer?.hypervisor ?? null,
+            refused: (restore.vm ?? computer!.vmId) === member.id ? restore.refused ?? null : null, restored: restore.restored && (restore.vm ?? computer!.vmId) === member.id, ...(member.id === computer!.vmId ? {} : { member: { id: member.id, name: memberName(member, index) } }) })).join("");
+          return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${poolList({ members, csrf, hypervisor: computer?.hypervisor ?? null, saved: notice.saved ?? null, savedId: notice.vmId ?? null, refused: notice.refused ?? null, refusedId: notice.vmId ?? null })}</section>
+          ${pending}${addComputer({ flow: enrollmentFlow(card), managed: !!computer!.managerId, canRegister: !!computer!.pool?.registerManager, csrf, refused: notice.managerRefused ?? (computer!.managerId ? null : refused), saved: !!notice.managerSaved })}${restores}</div>`), status);
+        }
+        const snapshots = snapshotsOf(computer?.vmId ?? "");
+        return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ ...card, ...(status_ ? {} : (() => { const local = localView(); return local ? { local } : {}; })()) })}</section>
           ${restoreSection({ csrf, status: status_, snapshots, selected: restore.restore, hypervisor: computer?.hypervisor ?? null, refused: restore.refused ?? null, restored: restore.restored })}</div>`), status);
       };
       const actionPage = (actionId: string, revision: number | null, state: { checked?: boolean; refused?: string | null } = {}, status = 200) => {
@@ -306,7 +320,11 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           return render(() => shell(nav("/needs"), fill("s15.browser.view_title", { site: browser.site }), takeoverView(browsers().find(item => item.browser.id === browser.id)!.browser, state, csrf, url.searchParams.get("refused"))));
         }
         if (url.pathname === "/setup") return setupPage({ teamRegistered: url.searchParams.get("team") === "registered" });
-        if (url.pathname === "/resources/computer") return computerPage(null, 200, { restore: url.searchParams.get("restore"), restored: url.searchParams.get("restored") === "1" });
+        if (url.pathname === "/resources/computer") {
+          const saved = url.searchParams.get("saved"), vm = url.searchParams.get("vm");
+          return computerPage(null, 200, { restore: url.searchParams.get("restore"), restored: url.searchParams.get("restored") === "1", vm: vm && idPattern.test(vm) ? vm : null },
+            { saved: saved === "drained" || saved === "undrained" ? saved : null, vmId: vm && idPattern.test(vm) ? vm : null, managerSaved: saved === "manager" });
+        }
         if (url.pathname === "/memory") return memoryPage();
         if (url.pathname === "/models") return render(() => shell(nav("/models"), tr("s15.models.title"), modelsBody(models(), accounts()?.find(row => row.kind === "model" && row.signInHref)?.signInHref ?? null)));
         throw new AppError("not_found", 404);
@@ -456,19 +474,55 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         throw new AppError("not_found", 404);
       }
       if (url.pathname === "/s15/forms/computer/restore") {
-        only(fields, ["csrf", "requestId", "snapshotId", "generation"]);
+        only(fields, ["csrf", "requestId", "snapshotId", "generation"], ["vmId"]);
         const computer = ports.computer; if (!computer?.restore || !idPattern.test(fields.snapshotId!)) throw new AppError("not_found", 404);
+        // A pool member is named only by a protected id from the rendered list; the default computer needs none.
+        const member = fields.vmId === undefined ? null : computer.pool?.members(actor).find(item => item.id === fields.vmId) ?? null;
+        if (fields.vmId !== undefined && !member) throw new AppError("not_found", 404);
+        const target = member?.id ?? computer.vmId, vm = member && member.id !== computer.vmId ? member.id : null;
         try {
-          if (computerStatus()?.generation !== Number(fields.generation)) throw new AppError("stale_revision", 409);
-          await computer.restore(actor, { vmId: computer.vmId, snapshotId: fields.snapshotId! });
-        } catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, { restore: fields.snapshotId!, restored: false, refused: codeOf(error) }); }
-        return redirect("/resources/computer?restored=1#s15-restore-title");
+          if ((member ? member.status : computerStatus())?.generation !== Number(fields.generation)) throw new AppError("stale_revision", 409);
+          await computer.restore(actor, { vmId: target, snapshotId: fields.snapshotId! });
+        } catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, { restore: fields.snapshotId!, restored: false, refused: codeOf(error), vm: target }); }
+        return redirect(vm ? `/resources/computer?restored=1&vm=${vm}#s15-restore-title-${vm}` : "/resources/computer?restored=1#s15-restore-title");
+      }
+      if (url.pathname === "/s15/forms/computer/manager") {
+        // Write-only adapter registration for an added computer. The token is passed through once and never kept,
+        // logged or rendered here; a refusal re-renders the empty form with only the stable code.
+        const pool = ports.computer?.pool; if (!pool?.registerManager) throw new AppError("not_found", 404);
+        const refuse = (code: string) => computerPage(null, 409, undefined, { managerRefused: code });
+        let input: import("./types").S15ManagerInput;
+        if (fields.kind === "lima") { only(fields, ["csrf", "requestId", "kind", "instance"]); input = { kind: "lima", instance: fields.instance!.trim() }; }
+        else if (fields.kind === "proxmox") {
+          only(fields, ["csrf", "requestId", "kind", "baseUrl", "node", "vmid", "token", "proxyAddress", "proxyPort"]);
+          const vmid = Number(fields.vmid), port = Number(fields.proxyPort);
+          if (!/^[0-9]{1,9}$/.test(fields.vmid!) || !/^[0-9]{1,5}$/.test(fields.proxyPort!)) return refuse("vm_invalid_setup");
+          input = { kind: "proxmox", baseUrl: fields.baseUrl!.trim(), node: fields.node!.trim(), vmid, token: fields.token!, proxy: { address: fields.proxyAddress!.trim(), port } };
+        } else throw new AppError("invalid_body");
+        try { pool.registerManager(actor, input); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return refuse(codeOf(error)); }
+        return redirect("/resources/computer?saved=manager#s15-computer-add");
+      }
+      if (url.pathname === "/s15/forms/computer/drain") {
+        only(fields, ["csrf", "requestId", "vmId", "drained"]);
+        const pool = ports.computer?.pool; if (!pool || !idPattern.test(fields.vmId!) || !["0", "1"].includes(fields.drained!)) throw new AppError("not_found", 404);
+        try { pool.drain(actor, fields.vmId!, fields.drained === "1"); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, undefined, { vmId: fields.vmId!, refused: codeOf(error) }); }
+        return redirect(`/resources/computer?saved=${fields.drained === "1" ? "drained" : "undrained"}&vm=${fields.vmId}#s15-computer-${fields.vmId}-card`);
       }
       if (url.pathname.startsWith("/s15/forms/computer/")) {
         const computer = ports.computer; if (!computer) throw new AppError("not_found", 404);
         const back = (refused: string | null = null, status = 200) => fields.return === "computer" ? computerPage(refused, status) : setupPage({ computer: refused }, status);
         const done = () => redirect(fields.return === "computer" ? "/resources/computer" : "/setup#s15-setup-computer");
+        // POOL15-01: an added computer must be bound to an unused management adapter before enrollment starts.
+        const adding = !!computer.pool && computer.pool.nextId(actor) !== computer.vmId;
         try {
+          if (adding && !computer.managerId && ["/s15/forms/computer/begin", "/s15/forms/computer/check", "/s15/forms/computer/use"].includes(url.pathname)) throw new AppError("vm_management_required", 409);
+          if (url.pathname === "/s15/forms/computer/provision") {
+            // Owner "Create now", "Continue now" or "Try again" for the one default-computer job; it never asks for a value.
+            only(fields, ["csrf", "requestId", "return"]); if (!computer.local) throw new AppError("not_found", 404);
+            computer.local.start(actor); return done();
+          }
           if (url.pathname === "/s15/forms/computer/begin") { only(fields, ["csrf", "requestId", "return"]); const setup = await computer.begin(actor); progress.setup = { setupId: setup.setupId, command: setup.command }; progress.check = null; return done(); }
           if (url.pathname === "/s15/forms/computer/check") {
             only(fields, ["csrf", "requestId", "return", "setupId", "host"], ["port", "user"]);
@@ -481,7 +535,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (url.pathname === "/s15/forms/computer/use") {
             only(fields, ["csrf", "requestId", "return", "checkId", "fingerprint"]);
             if (!progress.check || progress.check.checkId !== fields.checkId || progress.check.fingerprint !== fields.fingerprint) throw new AppError("vm_setup_expired");
-            await computer.useMachine(actor, { id: computer.vmId, checkId: fields.checkId!, fingerprint: fields.fingerprint!, transportProfile: progress.check.transportProfile });
+            await computer.useMachine(actor, { id: computer.pool?.nextId(actor) ?? computer.vmId, checkId: fields.checkId!, fingerprint: fields.fingerprint!, transportProfile: progress.check.transportProfile });
             progress.setup = null; progress.check = null; return done();
           }
           if (url.pathname === "/s15/forms/computer/forget-check") { only(fields, ["csrf", "requestId", "return"]); progress.check = null; return done(); }

@@ -34,6 +34,13 @@ export function s15StyleSheet(): string {
 .s15-option-b { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); font-size: var(--size-sm); }
 .s15-option-b svg { width: 16px; height: 16px; flex: none; margin-top: 3px; }
 .s15-steps { display: flex; flex-direction: column; gap: 14px; padding-left: 20px; }
+.s15-provision-steps, .s15-pool { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.s15-provision-steps li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid var(--line); }
+.s15-provision-steps li[data-state="todo"] { color: var(--fg-3); }
+.s15-provision-steps li[aria-current="step"] { font-weight: 600; }
+.s15-pool { gap: 12px; }
+.s15-computer { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-control); }
+.s15-computer h3 { margin: 0; font-size: var(--size-ui); }
 .s15-caps li, .s15-accounts li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 44px; padding: 8px 0; border-top: 1px solid var(--line); }
 .s15-caps small { display: block; color: var(--fg-3); font-size: var(--size-xs); }
 .s15-break { overflow-wrap: anywhere; }

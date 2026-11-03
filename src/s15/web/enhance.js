@@ -201,3 +201,12 @@ if (frame) {
   let tick = 0;
   setInterval(() => { tick++; frame.setAttribute("src", `${base}&n=${tick}`); }, 3000);
 }
+// SETUP15-01: an in-progress working-computer job reloads its own page, but never over something the owner is
+// typing elsewhere on it (for example the budget); without script, or once edited, the owner presses refresh.
+const provisioning = doc.querySelector("[data-s15-refresh]");
+if (provisioning && globalThis.location) {
+  let edited = false;
+  doc.addEventListener("input", () => { edited = true; });
+  const typing = () => { const active = doc.activeElement; return !!active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName); };
+  setTimeout(function again() { if (edited) return; if (typing()) { setTimeout(again, 2000); return; } globalThis.location.reload(); }, Math.max(2, Number(provisioning.dataset.s15Refresh) || 5) * 1000);
+}

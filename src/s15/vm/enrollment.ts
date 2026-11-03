@@ -11,7 +11,7 @@ import { isIP } from "node:net";
 import { createHash } from "node:crypto";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
 import { vmIdentityMatches } from "./binding";
-import { isVmLocalManagement } from "./qemu";
+import { isVmLocalManagement, type QemuProvisionStep } from "./qemu";
 import type { VmEndpoint } from "./types";
 import type { VmProxyLease } from "./proxy";
 
@@ -119,7 +119,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     const existingKnown = lstatSync(knownHostsFile, { throwIfNoEntry: false });
     if (existingKnown) { if (!existingKnown.isFile() || existingKnown.isSymbolicLink() || readFileSync(knownHostsFile, "utf8") !== knownLine) vmFail("vm_host_key_changed"); }
     else writeFileSync(knownHostsFile, knownLine, { mode: 0o600, flag: "wx" });
-    return this.verifyAndSave(actor, { id: input.id, endpoint, managerId: input.managerId ?? null, maxSessions: input.maxSessions ?? 2 }, () => this.#setups.delete(input.setupId));
+    return this.verifyAndSave(() => this.options.requireOwner(actor), { id: input.id, endpoint, managerId: input.managerId ?? null, maxSessions: input.maxSessions ?? 2 }, () => this.#setups.delete(input.setupId));
   }
   /**
    * Protected local enrollment entry point for a Jit-created nested KVM working VM. It needs no pasted
@@ -128,8 +128,23 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
    * loopback SSH forward) and direct-egress probes produce the ordinary `VmStatus` and capability rows.
    * Snapshot/stop rows stay `unproven` until an observed protected restore/stop.
    */
-  async enrollLocal(actor: object, input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal }): Promise<VmStatus> {
-    this.options.requireOwner(actor); vmId(input.id); vmId(input.managerId); vmInteger(input.maxSessions ?? 2, 16);
+  async enrollLocal(actor: object, input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void }): Promise<VmStatus> {
+    this.options.requireOwner(actor);
+    return this.local(input, () => this.options.requireOwner(actor));
+  }
+  /**
+   * Protected setup-job entry point (SETUP15-01) for the installation's default Jit-created working VM. It
+   * runs the same provisioning and verification as {@link enrollLocal} under trusted composition authority
+   * (the owner's own `setup --s15` or the protected boot pass), never for a model, guest or conversation.
+   * `progress` reports each step as it begins, ending with `checks` (inventory, binding and egress probes).
+   */
+  provisionLocal(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void;
+    /** Ownership check of the calling setup job, run before every host side effect and before the enrollment is saved. */
+    guard?: () => void }): Promise<VmStatus> {
+    return this.local(input, input.guard ?? (() => {}));
+  }
+  private async local(input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal; progress?: (step: QemuProvisionStep | "checks") => void; guard?: () => void }, check: () => void): Promise<VmStatus> {
+    vmId(input.id); vmId(input.managerId); vmInteger(input.maxSessions ?? 2, 16);
     const manager = this.options.managers.get(input.managerId);
     if (!isVmLocalManagement(manager)) vmFail("vm_management_unavailable");
     const enrolled = this.options.store.db.query<{ id: string; data: string }, []>("SELECT id,data FROM vm_registry").all();
@@ -137,13 +152,13 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     if (this.#local.has(input.managerId)) vmFail("vm_capacity"); this.#local.add(input.managerId);
     try {
       const lease = this.options.proxyLease;
-      await manager.provision({ ...(lease ? { lease: (sessionId: string, expiresAt: number) => lease(sessionId, expiresAt) } : {}), ...(input.signal ? { signal: input.signal } : {}) });
-      this.options.requireOwner(actor);
-      return await this.verifyAndSave(actor, { id: input.id, endpoint: vmEndpoint(manager.endpoint()), managerId: input.managerId, maxSessions: input.maxSessions ?? 2 });
+      await manager.provision({ ...(lease ? { lease: (sessionId: string, expiresAt: number) => lease(sessionId, expiresAt) } : {}), ...(input.signal ? { signal: input.signal } : {}), ...(input.progress ? { progress: input.progress } : {}), ...(input.guard ? { guard: input.guard } : {}) });
+      check(); input.progress?.("checks");
+      return await this.verifyAndSave(check, { id: input.id, endpoint: vmEndpoint(manager.endpoint()), managerId: input.managerId, maxSessions: input.maxSessions ?? 2 });
     } finally { this.#local.delete(input.managerId); }
   }
   /** Shared enrollment verification: inventory, sudo/systemd readiness, hypervisor binding and direct-egress refusal. */
-  private async verifyAndSave(actor: object, input: { id: string; endpoint: VmEndpoint; managerId: string | null; maxSessions: number }, saved?: () => void): Promise<VmStatus> {
+  private async verifyAndSave(check: () => void, input: { id: string; endpoint: VmEndpoint; managerId: string | null; maxSessions: number }, saved?: () => void): Promise<VmStatus> {
     const endpoint = input.endpoint;
     const transport = new VmSshTransport(endpoint, this.options.run ?? vmHostCommand);
     const facts = await this.inventory(endpoint);
@@ -153,9 +168,9 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     const machine = manager ? await manager.inspect() : null;
     const bound = !!machine && await vmIdentityMatches(transport, machine, endpoint);
     const directDenied = await probeVmDirectEgress(transport);
-    this.options.requireOwner(actor);
+    check();
     return this.options.store.transaction(() => {
-      this.options.requireOwner(actor);
+      check();
       if (this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(input.id)) vmFail("vm_already_enrolled");
       const networkIsolated = bound && directDenied && !!machine && machine.network !== "unproven";
       const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId : null,

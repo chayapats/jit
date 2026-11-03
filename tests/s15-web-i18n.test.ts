@@ -29,6 +29,9 @@ const families: Record<string, readonly string[]> = {
   "s15.stall.progress": ["unknown", "none", "made"], "s15.resources.kind": ["account", "browser", "workspace", "data"], "s15.resources.op": ["read", "write", "input"], "s15.resources.restriction": ["deny", "purpose", "inactive", "bot_private", "current_standing_policy", "mediated_credentials"],
   "s15.adoption.runtime": ["s14", "legacy", "s15"], "s15.adoption.state": ["preparing", "validated", "activating", "active_fenced", "complete", "rolling_back", "rolled_back", "discarded", "blocked"],
   "s15.rules.saved": ["recurring_installed", "recurring_revoked", "github_installed", "github_revoked"], "s15.rules.frequency": ["hours", "daily", "weekly", "monthly"], "s15.slip.field": ["recipients", "resources", "classes", "transaction", "github", "upperBound", "fences", "impact", "expiresAt"],
+  // SETUP15-01 / POOL15-01 computed families.
+  "s15.provision.step": ["host", "download", "checksum", "disk", "boot", "connect", "checks", "enrolled"],
+  "s15.provision.next": ["generic", "vm_host_unsupported", "vm_kvm_unavailable", "vm_kvm_denied", "vm_qemu_missing", "vm_host_too_small", "vm_disk_insufficient", "vm_image_unavailable", "vm_image_unverified", "vm_management_unavailable"],
   "s15.code": ["stall_no_progress", "stall_attempt_limit", "stall_budget_headroom", "login_required", "stale_input", "input_busy"],
 };
 

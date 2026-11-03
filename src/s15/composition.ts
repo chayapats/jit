@@ -5,7 +5,7 @@ import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels } from './policy';
 import { canonical, equal, unknownUsage } from './policy/validation';
 import { ConversationApplication, ConversationStore, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
-import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmStore, createVmApi, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
+import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool, VmStore, LocalVmProvisioning, createVmApi, isVmLocalManagement, placeWorkingVm, probeLocalVmHost, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
@@ -95,9 +95,12 @@ export async function composeS15(options: S15CompositionOptions) {
   try {
     const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create); cleanup.push(() => store.close());
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
+    // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
+    // enrollment records in the protected VM journal, never a hand-written list.
+    const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
     if (disclosure) cleanup.push(() => disclosure.close());
-    const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (id !== options.vm.id) throw new AppError('outside_scope'); return options.vm.resource; },
+    const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (!pool.has(id)) throw new AppError('outside_scope'); return options.vm.resource; },
       attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination, ...(disclosure && options.disclosure?.acquisitionRoute ? { disclosure: disclosure.acquisition(options.disclosure.acquisitionRoute) } : {}) });
     const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
     if (browser) cleanup.push(() => browser.close());
@@ -147,7 +150,8 @@ export async function composeS15(options: S15CompositionOptions) {
       const reattach = new AbortController(), reattaching = vm.reattach(reattach.signal).catch(() => {});
       cleanup.push(async () => { reattach.abort(); await reattaching; });
     }
-    const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore);
+    // Placement runs before the TEAM lease so the lease, its fence and its stop-proof link name the exact member.
+    const workingVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore), pool);
     // Protected TEAM/VM reconciliation: leases left unknown by a crash or by recovery are released only on
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
@@ -155,6 +159,21 @@ export async function composeS15(options: S15CompositionOptions) {
     const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       ...(localVm ? { proxyLease: (sessionId: string, expiresAt: number) => localVm.lease(sessionId, expiresAt), updateRegistryHosts: (hosts: readonly string[]) => localVm.setHosts(hosts) } : {}) });
+    // SETUP15-01: the durable job that creates the default working computer on a KVM controller. Only the
+    // owner's `setup --s15`, the protected controller boot and the owner's authenticated setup form start it.
+    const provisioning = localVm && managers instanceof VmManagers ? new LocalVmProvisioning({ store: vmStore, vmId: options.vm.id,
+      host: () => probeLocalVmHost(localVm.host.directory, localVm.host.probe), manager: () => managers.ensureLocal(),
+      enroll: input => enrollment.provisionLocal(input), ...(options.clock ? { now: options.clock.now } : {}) }) : null;
+    if (provisioning) cleanup.push(() => provisioning.close());
+    const checkedManagers = new Map<string, string | null>();
+    const unboundAdapter = (id: string) => { const manager = managers.get(id); return !!manager && !isVmLocalManagement(manager) && !enrolledManagers().has(id); };
+    const enrolledManagers = () => new Set(vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_registry').all().map(row => (JSON.parse(row.data) as { managerId: string | null }).managerId));
+    const localHost = (owner: OwnerActor) => {
+      requireOwner(owner); if (!localVm) return null;
+      const host = probeLocalVmHost(localVm.host.directory, localVm.host.probe), facts = host.facts;
+      return { state: host.state, code: host.state === 'missing' ? host.code : null, facts: facts ? { cpus: facts.cpus, memoryGiB: Math.floor(facts.memoryBytes / 1_073_741_824), diskFreeGiB: Math.floor(facts.diskFreeBytes / 1_073_741_824) } : null,
+        resources: host.state === 'ready' ? host.resources : null };
+    };
     const authentication = { authenticate(token: string) { const auth = options.owner.authenticate(token); return { actor: policy.owner.authenticate(auth.proof), csrf: auth.csrf }; }, verifyCsrf: options.owner.verifyCsrf };
     const cookieName = new URL(options.origin).protocol === 'https:' ? '__Host-jit_s14' : 'jit_s14';
     const authenticate = (request: Request): OwnerActor => {
@@ -285,8 +304,29 @@ export async function composeS15(options: S15CompositionOptions) {
         const report = githubStore.get<{ repository: GithubRepository; rows: import('./github').GithubReadiness[] }>('report', reportId);
         return report ? s15ReadinessFromGithub(report.repository.name, report.rows) : null;
       },
-      computer: { vmId: options.vm.id, get managerId() { return managers.keys().next().value ?? null; }, hypervisor: null,
-        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
+      computer: { vmId: options.vm.id,
+        // An owner-supplied VM binds only a configured, still-unbound adapter; never the Jit-created local manager.
+        get managerId() { for (const [id] of managers) if (unboundAdapter(id)) return id; return null; }, hypervisor: null,
+        ...(provisioning ? { local: { host: localHost, job: (owner: OwnerActor) => { requireOwner(owner); return provisioning.view(); }, start: (owner: OwnerActor) => { requireOwner(owner); provisioning.start(); } } } : {}),
+        pool: { members: (owner: OwnerActor) => { requireOwner(owner); return pool.members().map(member => ({ ...member, local: (() => { const row = vmStore.registration(member.id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); })(), status: enrollment.status(owner, member.id) })); },
+          drain: (owner: OwnerActor, id: string, drained: boolean) => { requireOwner(owner); pool.setDrained(id, drained); },
+          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); } } : {}),
+          nextId: (owner: OwnerActor) => { requireOwner(owner); const job = provisioning?.view(); return pool.nextId(!!job && job.state !== 'enrolled'); } },
+        begin: actor => enrollment.begin(actor),
+        // POOL15-01: an added (non-default) computer is enrolled only with an unused, non-local management
+        // adapter, so its hypervisor binding can be proven and placement can select it.
+        async checkMachine(actor, input) {
+          const job = provisioning?.view(), adding = pool.nextId(!!job && job.state !== 'enrolled') !== options.vm.id;
+          if (adding && (!input.managerId || !unboundAdapter(input.managerId))) throw new AppError('vm_management_required', 409);
+          const check = await enrollment.checkMachine(actor, input);
+          checkedManagers.set(check.checkId, input.managerId ?? null); for (const id of [...checkedManagers.keys()].slice(0, Math.max(0, checkedManagers.size - 64))) checkedManagers.delete(id);
+          return check;
+        },
+        async useMachine(actor, input) {
+          if (input.id !== options.vm.id && (!checkedManagers.get(input.checkId) || !unboundAdapter(checkedManagers.get(input.checkId)!))) throw new AppError('vm_management_required', 409);
+          const status = await enrollment.useMachine(actor, input); checkedManagers.delete(input.checkId); return status;
+        },
+        status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
@@ -297,7 +337,7 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, vmManagers: managers, models, work, github, browser, authentication, resumes, telegram,
+    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
        * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } await conversation.drain(); try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },

@@ -17,9 +17,13 @@ export { defaultVmLimits } from "./types";
 export type { WorkingVmPort, VmSession, VmPolicyPort, VmPolicyClaim, VmPolicyOperation, VmEvidence, VmStatus, VmCapability, VmLimits, VmManagement } from "./types";
 
 export { QemuVmManagement, qemuArgv, qemuArgvFacts, qemuGuestNetwork, isVmLocalManagement } from "./qemu";
-export type { QemuHostOptions, QemuVmIdentity, QemuMachineSpec, QemuArgvFacts, QemuProvisionOptions, QemuProc, VmLocalManagement } from "./qemu";
-export { defaultLocalVmResources, validateLocalVmResources, detectLocalVmHost, localVmDiskReserve, localVmImages, localVmControllerReserve, localVmMinimum, localVmDefaultDiskGiB, ensureLocalVmImage } from "./local";
-export type { LocalVmResources, LocalVmHostFacts, LocalVmImage, LocalVmHostProbe, LocalVmDownload } from "./local";
+export type { QemuHostOptions, QemuVmIdentity, QemuMachineSpec, QemuArgvFacts, QemuProvisionOptions, QemuProvisionStep, QemuProc, VmLocalManagement } from "./qemu";
+export { defaultLocalVmResources, validateLocalVmResources, detectLocalVmHost, probeLocalVmHost, localVmDiskReserve, localVmImages, localVmControllerReserve, localVmMinimum, localVmDefaultDiskGiB, ensureLocalVmImage } from "./local";
+export type { LocalVmResources, LocalVmHostFacts, LocalVmImage, LocalVmHostProbe, LocalVmDownload, LocalVmHostCode, LocalVmHostReadiness } from "./local";
+export { LocalVmProvisioning, localVmProvisionSteps } from "./provisioning";
+export type { LocalVmProvisioningOptions, LocalVmProvisioningView, LocalVmProvisionStep } from "./provisioning";
+export { VmPool, placeWorkingVm } from "./pool";
+export type { VmPoolMember, VmPoolOptions } from "./pool";
 export { startLocalVmControl } from "./local-control";
 export type { LocalVmControl, LocalVmControlOptions } from "./local-control";
 export type { LocalVmResourceView } from "./managers";

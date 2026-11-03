@@ -182,14 +182,19 @@ export class TeamService {
       consume(sources);
     });
   }
-  /** Atomic all-or-none physical resource locks. Immutable reads need no exclusive lease. */
-  acquire(context: TeamContext, resourceIds: string[], mode: "write" | "input", lifetimeMs: number): TeamLease {
+  /**
+   * Atomic all-or-none physical resource locks. Immutable reads need no exclusive lease. `partition` names one
+   * physical unit of a pooled resource (a working-computer pool member): the lock and its fence apply to that
+   * unit only, so siblings keep serving; the resource's own authority checks are unchanged.
+   */
+  acquire(context: TeamContext, resourceIds: string[], mode: "write" | "input", lifetimeMs: number, partition?: string): TeamLease {
     ids(resourceIds, 32); integer(lifetimeMs, 1, 3600000);
+    if (partition !== undefined) identity(partition);
     if (!resourceIds.length || !["write", "input"].includes(mode)) throw new AppError("invalid_lease");
     const record = this.store.transaction(() => {
       this.store.capacity(); const work = this.guard(context);
       const resources = resourceIds.map(id => this.resource(context, id, mode));
-      const keys = [...new Set(resources.map(r => r.coordinationKey))].sort();
+      const keys = [...new Set(resources.map(r => partition === undefined ? r.coordinationKey : `${r.coordinationKey}#${partition}`))].sort();
       const count = this.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM leases WHERE state<>'settled'").get()!.n;
       if (count >= this.options.maxConcurrentOperations || keys.some(k => this.store.db.query("SELECT 1 FROM lease_keys WHERE coordination_key=?").get(k))) throw new AppError("resource_busy", 409);
       const record: LeaseRecord = { id: key(), workId: work.id, resources: resourceIds, mode, expiresAt: Math.min(work.expiresAt, this.now() + lifetimeMs), state: "reserved", keys: keys.map(k => {

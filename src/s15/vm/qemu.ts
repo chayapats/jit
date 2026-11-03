@@ -85,7 +85,14 @@ export interface QemuHostOptions {
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
 export interface QemuVmIdentity { name: string; architecture: "x86_64" | "aarch64"; mac: string; sshPort: number; resources: LocalVmResources }
 /** Options for protected guest provisioning. The lease is a bounded proxy credential, never an account secret. */
-export interface QemuProvisionOptions { lease?: (sessionId: string, expiresAt: number) => VmProxyLease; signal?: AbortSignal }
+export interface QemuProvisionOptions { lease?: (sessionId: string, expiresAt: number) => VmProxyLease; signal?: AbortSignal;
+  /** Protected progress sink for the durable setup job: called as each provisioning step begins. Never guest output. */
+  progress?: (step: QemuProvisionStep) => void;
+  /** Ownership check of the calling setup job; throws once another runner holds the job. Called before every
+   * host side effect (image write, disk/key/seed creation, start, stop, removal by exact path, guest setup). */
+  guard?: () => void }
+/** Provisioning steps a local manager reports, in order. Cached-image re-verification reports only `checksum`. */
+export type QemuProvisionStep = "download" | "checksum" | "disk" | "boot" | "connect";
 /** Optional local management surface used by the protected local enrollment entry point. */
 export interface VmLocalManagement extends VmManagement {
   provision(options?: QemuProvisionOptions): Promise<{ docker: boolean }>;
@@ -370,35 +377,43 @@ export class QemuVmManagement implements VmLocalManagement {
     const host = detectLocalVmHost(this.host.directory, this.host.probe ?? localVmHostProbe);
     if (!host.kvm || !host.qemu || host.architecture !== this.identity.architecture) vmFail("vm_host_unsupported", 422);
     this.secureDirectory(this.host.directory);
-    const base = await ensureLocalVmImage(this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal);
+    const guard = options.guard ?? (() => {});
+    guard();
+    const base = await ensureLocalVmImage(this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal, options.progress, guard);
     const fresh = !this.state().provisioned;
     if (fresh) {
-      if (existsSync(this.machineDirectory)) { await this.stop(); rmSync(this.machineDirectory, { recursive: true, force: true }); }
-      this.secureDirectory(this.machineDirectory);
+      options.progress?.("disk");
+      if (existsSync(this.machineDirectory)) { guard(); await this.stop(); guard(); rmSync(this.machineDirectory, { recursive: true, force: true }); }
+      guard(); this.secureDirectory(this.machineDirectory);
       await this.command([localVmTools.img, "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, this.disk, `${this.#resources.diskGiB}G`], 120_000);
       const info = await this.imageInfo(false);
       if (info.format !== "qcow2" || info.backing !== base || info.virtualSize !== this.#resources.diskGiB * GiB) vmFail("vm_image_unverified");
-      this.saveState({ appliedDiskGiB: this.#resources.diskGiB });
+      guard(); this.saveState({ appliedDiskGiB: this.#resources.diskGiB });
       const client = await this.keygen(join(this.machineDirectory, "client"), "jit-working-vm");
       const hostFile = join(this.machineDirectory, "hostkey"), hostPublic = await this.keygen(hostFile, "jit-working-vm-host");
       writeFileSync(join(this.machineDirectory, "known_hosts"), `[127.0.0.1]:${this.identity.sshPort} ${hostPublic.split(" ").slice(0, 2).join(" ")}\n`, { mode: 0o600, flag: "wx" });
-      try { await this.seed(client, hostPublic, readFileSync(hostFile, "utf8")); } finally { rmSync(hostFile, { force: true }); }
+      guard(); try { await this.seed(client, hostPublic, readFileSync(hostFile, "utf8")); } finally { rmSync(hostFile, { force: true }); }
     }
     // A guest this attempt started is stopped again if provisioning fails (host-key refusal, readiness,
     // cancellation), so a failed setup never leaves an unregistered VM consuming the host.
-    const startedHere = (await this.inspect()).state === "stopped";
+    guard(); const startedHere = (await this.inspect()).state === "stopped";
     const transport = new VmSshTransport(this.endpoint(), this.#run);
     try {
-      if (startedHere) await this.launch(options.signal);
+      if (startedHere) { options.progress?.("boot"); guard(); await this.launch(options.signal); }
+      options.progress?.("connect"); guard();
       const status = await this.guest(transport, ["sudo", "-n", "python3", "-I", "-c", "import subprocess;r=subprocess.run(['cloud-init','status','--wait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode;print('jit-cloud-init:%d'%r)"], { timeoutMs: 900_000, ...(options.signal ? { signal: options.signal } : {}) });
       if (!["jit-cloud-init:0", "jit-cloud-init:2"].includes(status.trim())) vmFail("vm_prerequisite_missing", 503);
-      this.saveState({ provisioned: true });
+      guard(); this.saveState({ provisioned: true });
     } catch (error) {
-      if (startedHere) { try { await this.stop(); } catch { vmFail("vm_stop_unconfirmed"); } }
+      // A runner that lost the job never stops the guest: it now belongs to the runner holding the job. A
+      // cancelled runner that still holds it stops the guest it started.
+      let owned = true; try { guard(); } catch (failure) { owned = !(failure instanceof AppError && failure.code === "vm_provisioning_superseded"); }
+      if (startedHere && owned) { try { await this.stop(); } catch { vmFail("vm_stop_unconfirmed"); } }
       throw error;
     }
     let docker = false;
     if (fresh && options.lease) {
+      guard();
       // Lease expiry is judged by the proxy's own wall clock, like work-session leases.
       const lease = options.lease(`provision_${randomBytes(16).toString("hex")}`, Date.now() + 1_800_000);
       try {

@@ -68,21 +68,24 @@ export function accountsBody(input: { team: S15TeamResource[] | null; accounts: 
 }
 
 /** F11 restore: lists retained snapshots; the restore slip states its impact and waits for the owner (Q3). */
-export function restoreSection(input: { csrf: string; status: VmStatus | null; snapshots: { id: string; generation: number }[] | null; selected: string | null; hypervisor: string | null; refused: string | null; restored: boolean }): string {
+export function restoreSection(input: { csrf: string; status: VmStatus | null; snapshots: { id: string; generation: number }[] | null; selected: string | null; hypervisor: string | null; refused: string | null; restored: boolean;
+  /** POOL15-01: an additional pool member; its ids, links and form carry the exact member. Absent: the default computer. */
+  member?: { id: string; name: string } }): string {
   if (!input.status) return "";
-  const title = `<h2 id="s15-restore-title">${tr("s15.vm.restore_title")}</h2>`;
+  const member = input.member, suffix = member ? `-${member.id}` : "", vmQuery = member ? `&amp;vm=${e(member.id)}` : "";
+  const title = `<h2 id="s15-restore-title${e(suffix)}">${member ? fill("s15.pool.restore_title", { name: member.name }) : tr("s15.vm.restore_title")}</h2>`;
   const broken = input.status.state === "uncertain" ? banner("danger", tr("s15.vm.broken"), input.status.reason ? codeText(input.status.reason) : "") : input.status.state === "stopped" ? banner("warn", tr("s15.vm.not_responding")) : "";
-  if (input.snapshots === null || !input.status.recoveryAvailable) return `<section class="s-card" aria-labelledby="s15-restore-title">${title}${broken}<p class="s-sub">${fill("s15.vm.no_snapshot", { hypervisor: input.hypervisor ?? "Proxmox / Lima" })}</p></section>`;
+  if (input.snapshots === null || !input.status.recoveryAvailable) return `<section class="s-card" aria-labelledby="s15-restore-title${e(suffix)}">${title}${broken}<p class="s-sub">${fill("s15.vm.no_snapshot", { hypervisor: input.hypervisor ?? "Proxmox / Lima" })}</p></section>`;
   const done = input.restored ? `<div role="status">${banner("ok", tr("s15.vm.restored"), tr("s15.vm.restored_detail"))}</div>` : "";
   const chosen = input.selected ? input.snapshots.find(s => s.id === input.selected) ?? null : null;
   if (chosen) {
     return `<div class="s-col">${refusal(input.refused)}<article class="s-slip s15-slip" data-state="open" aria-labelledby="s15-slip-title"><div class="s-slip-hd"><div><h2 id="s15-slip-title" tabindex="-1">${tr("s15.hold.asks.restore")}</h2><div class="s15-chips"><span class="s-chip">${tr("s15.class.guest_system_admin")}</span></div></div>${pill(tr("s15.state.needs_you"), "warn", "!")}</div>
       <div class="s-slip-body"><dl class="s-kv"><dt>${tr("s15.vm.snapshot")}</dt><dd class="s-mono">${e(chosen.id)}</dd><dt>${tr("s15.vm.snapshot_generation")}</dt><dd>${fill("s15.computer.generation", { n: chosen.generation })}</dd><dt>${tr("s15.vm.current_generation")}</dt><dd>${fill("s15.computer.generation", { n: input.status.generation })}</dd></dl>
       <h4 class="s-section-t">${tr("s15.vm.restore_loses")}</h4><ul class="s15-list"><li>${tr("s15.vm.lose.files")}</li><li>${tr("s15.vm.lose.programs")}</li><li>${tr("s15.vm.lose.services")}</li></ul><h4 class="s-section-t">${tr("s15.vm.restore_not_affected")}</h4><p>${tr("s15.vm.restore_keeps")}</p><p>${tr("s15.vm.restore_stops_work")}</p><p class="s-note">${tr("s15.vm.restore_owner_only")}</p></div>
-      ${ownerStrip(`${form("/s15/forms/computer/restore", input.csrf, `${hidden("snapshotId", chosen.id)}${hidden("generation", input.status.generation)}<button class="s-btn primary">${tr("s15.vm.restore_once")}</button>`)}<a class="s-btn" href="/resources/computer">${tr("s15.common.cancel")}</a>`, tr("s15.hold.single_use"))}</article></div>`;
+      ${ownerStrip(`${form("/s15/forms/computer/restore", input.csrf, `${member ? hidden("vmId", member.id) : ""}${hidden("snapshotId", chosen.id)}${hidden("generation", input.status.generation)}<button class="s-btn primary">${tr("s15.vm.restore_once")}</button>`)}<a class="s-btn" href="/resources/computer">${tr("s15.common.cancel")}</a>`, tr("s15.hold.single_use"))}</article></div>`;
   }
-  const rows = input.snapshots.length ? `<ul class="s15-facts">${input.snapshots.map((s, index) => `<li><span class="s-mono">${e(s.id)}</span> · ${fill("s15.computer.generation", { n: s.generation })}${index === 0 ? ` · ${tr("s15.vm.latest")}` : ""} <a class="s-link-text" href="/resources/computer?restore=${e(s.id)}#s15-slip-title">${tr("s15.vm.restore_to")}</a></li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.vm.no_snapshots_yet")}</p>`;
-  return `<section class="s-card" aria-labelledby="s15-restore-title">${title}${done}${refusal(input.refused)}${broken}${rows}<p class="s-note">${tr("s15.vm.restore_owner_only")}</p></section>`;
+  const rows = input.snapshots.length ? `<ul class="s15-facts">${input.snapshots.map((s, index) => `<li><span class="s-mono">${e(s.id)}</span> · ${fill("s15.computer.generation", { n: s.generation })}${index === 0 ? ` · ${tr("s15.vm.latest")}` : ""} <a class="s-link-text" href="/resources/computer?restore=${e(s.id)}${vmQuery}#s15-slip-title">${tr("s15.vm.restore_to")}</a></li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.vm.no_snapshots_yet")}</p>`;
+  return `<section class="s-card" aria-labelledby="s15-restore-title${e(suffix)}">${title}${done}${refusal(input.refused)}${broken}${rows}<p class="s-note">${tr("s15.vm.restore_owner_only")}</p></section>`;
 }
 
 /** `/recovery` (F11): what is still open after a restart, unknown actions with read-only checks, and adoption status. */

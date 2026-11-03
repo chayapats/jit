@@ -86,7 +86,43 @@ export interface S15WebComputer<Actor> {
   snapshots?(actor: Actor, id: string): { id: string; generation: number }[];
   /** Owner-authorized stop and restore (`WorkingVmService.recover`). The UI posts only after the exact restore slip. */
   restore?(actor: Actor, input: { vmId: string; snapshotId: string }): Promise<void>;
+  /** SETUP15-01 automatic working computer on this controller. Absent: this installation creates no local VM. */
+  local?: S15WebLocalComputer<Actor>;
+  /** POOL15-01 working-computer pool. Absent: the page shows the single `vmId` computer as before. */
+  pool?: S15WebComputerPool<Actor>;
 }
+/** Controller-observed host capability for automatic setup; never inferred from configuration. */
+export interface S15LocalHost {
+  state: "ready" | "missing"; code: string | null;
+  facts: { cpus: number; memoryGiB: number; diskFreeGiB: number } | null;
+  /** Default sizing setup will use (applies at the next VM start; editable later). */
+  resources: { cpus: number; memoryMiB: number; diskGiB: number } | null;
+}
+/** Owner-safe projection of the durable provisioning job (`LocalVmProvisioningView`). */
+export interface S15ProvisioningJob {
+  state: "running" | "failed" | "enrolled"; step: string; failedStep: string | null; error: string | null;
+  attempts: number; startedAt: number; stepStartedAt: number; updatedAt: number; finishedAt: number | null; active: boolean;
+}
+export interface S15WebLocalComputer<Actor> {
+  host(actor: Actor): S15LocalHost | null;
+  job(actor: Actor): S15ProvisioningJob | null;
+  /** Owner "Create now" / "Try again": starts or re-runs the one job for the default computer. */
+  start(actor: Actor): void;
+}
+/** One pool member: enrollment status plus protected placement facts. */
+export interface S15PoolMember { id: string; isDefault: boolean; local: boolean; drained: boolean; activeSessions: number; capacity: number; works: number; status: VmStatus }
+export interface S15WebComputerPool<Actor> {
+  members(actor: Actor): S15PoolMember[];
+  /** Drain (no new placement; running work finishes) or return a member to service. */
+  drain(actor: Actor, vmId: string, drained: boolean): void;
+  /** Composition-chosen id for the next owner-supplied computer; the owner never types one. */
+  nextId(actor: Actor): string;
+  /** Write-only registration of the hypervisor adapter an added computer is bound to (`VmManagers.register`). */
+  registerManager?(actor: Actor, input: S15ManagerInput): void;
+}
+/** Owner-typed management adapter for an added computer. The Proxmox token is write-only and never echoed. */
+export type S15ManagerInput = { kind: "lima"; instance: string }
+  | { kind: "proxmox"; baseUrl: string; node: string; vmid: number; token: string; proxy: { address: string; port: number } };
 
 /** Owner-typed finite amount. Currency and period come only from `budgetOptions`. */
 export interface S15BudgetEntry { currency: string; spendMinor: string; periodId: string }
