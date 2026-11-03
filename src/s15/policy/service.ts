@@ -335,7 +335,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       { path: 'budget', value: null, status: 'provided' },
       { path: 'subscription.concurrency', value: subscriptionBounds.concurrency, status: 'provided' },
       ...(['calls', 'steps', 'activeMs'] as const).map(key => ({ path: 'subscription.perWork.' + key, value: subscriptionBounds.perWork[key], status: 'provided' as const })),
-      ...(['calls', 'reads', 'outputBytes', 'activeMs'] as const).map(key => ({ path: 'subscription.tools.' + key, value: tools[key], status: 'provided' as const })),
+      ...(['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs'] as const).map(key => ({ path: 'subscription.tools.' + key, value: tools[key], status: 'provided' as const })),
     ] : [];
     const body: Omit<T.PolicyProposal, 'proposalHash'> = {
       contract: 's15-policy-proposal/v1', ownerGeneration: options.ownerGeneration(), expectedRevision: current?.revision ?? 0, policy: clone(input),

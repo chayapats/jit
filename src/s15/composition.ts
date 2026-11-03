@@ -16,6 +16,7 @@ import { openWorkService, openResumeBindings, createResponsibilityProjectionHand
 import { openTelegramChannel, type TelegramLimits, type TelegramTransport } from './telegram';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
 import { GithubConnections, s15GithubRecipient } from './github/connection';
+import { webGithubDisclosure } from './github/disclosure';
 import { s15DefaultPolicy, s15DefaultRefs, s15NeedsBudget, s15SamePolicyScope, s15MeteredBudget, S15_DEFAULT_POLICY_LIFETIME_MS, S15_POLICY_RENEW_WINDOW_MS, s15BudgetPeriods, s15HeldClasses, type DefaultResource, type DefaultSelection } from './policy/defaults';
 import { openDisclosureService } from './disclosure';
 import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
@@ -99,6 +100,9 @@ export async function composeS15(options: S15CompositionOptions) {
   const webGithubEnabled = !options.github && !!options.githubWeb;
   if (!options.disclosure && (options.browser || options.google || options.github || webGithubEnabled)) throw new AppError('classification_unknown');
   if (options.disclosure && (options.browser && !options.disclosure.browserRoute || options.google && !options.disclosure.googleRoute || (options.github || webGithubEnabled) && !options.disclosure.githubRoute)) throw new AppError('route_unknown');
+  // GIT15-04: Web-selected repositories are private DATA15 sources; every consumer below sees the wrapped catalogs.
+  let githubConnections: GithubConnections | undefined;
+  if (webGithubEnabled && options.disclosure) options = { ...options, disclosure: webGithubDisclosure(options.disclosure, { connections: () => githubConnections, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
   const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
@@ -150,7 +154,6 @@ export async function composeS15(options: S15CompositionOptions) {
     // enrollment records in the protected VM journal, never a hand-written list.
     const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     // GIT15-04: the GitHub service recipient is current only while the Web connection exists.
-    let githubConnections: GithubConnections | undefined;
     const disclosureCatalogs = options.disclosure ? { ...options.disclosure.catalogs, recipient: (value: Ref) => { const row = githubConnections?.recipient(value.id); return row ? (equal(row.ref, value) ? row : null) : options.disclosure!.catalogs.recipient(value); } } : undefined;
     const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, catalogs: disclosureCatalogs!, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
     if (disclosure) cleanup.push(() => disclosure.close());
@@ -165,6 +168,8 @@ export async function composeS15(options: S15CompositionOptions) {
     const webGithub = githubConnections ? options.githubWeb!.runtime({ repositories: () => githubConnections!.repositories(), credential: () => githubConnections!.credential(), catalogPurpose: { ...s15DefaultRefs.work }, ...(options.githubWeb!.fetch ? { fetch: options.githubWeb!.fetch } : {}), ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     /** The composed GitHub module: explicit configuration, or the live protected Web connection (GIT15-04). */
     const gh = options.github ?? webGithub?.github;
+    /** Current DATA15 lineage fence of a Web-connected repository's latest source generation. */
+    const githubSourceRow = (id: string) => { const row = githubConnections?.sources().find(s => s.source.ref.id === id); return row ? { ref: structuredClone(row.source.ref), active: true } : null; };
     const githubIds = () => (gh?.repositories ?? []).map(r => r.resource.id);
     let policy!: S15PolicyService;
     let team!: TeamService;
@@ -183,9 +188,13 @@ export async function composeS15(options: S15CompositionOptions) {
     };
     const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => {
         // A Web-connected repository that was unselected or whose connection was removed is inactive whatever TEAM says.
-        const connected = kind === 'resource' ? githubConnections?.resource(id) : kind === 'recipient' ? githubConnections?.recipient(id) : kind === 'lineage' ? webGithub?.current(id) : null;
+        const connected = kind === 'resource' ? githubConnections?.resource(id) : kind === 'recipient' ? githubConnections?.recipient(id) : kind === 'lineage' ? webGithub?.current(id) ?? githubSourceRow(id) : null;
         if (connected && !connected.active) return connected;
-        return (kind === 'resource' ? team?.currentResource(id) : null) ?? connected ?? options.catalogs.current(kind, id);
+        const teamRow = kind === 'resource' ? team?.currentResource(id) : null;
+        // A repository selected again has a newer live identity; its older TEAM row must not shadow it (the TEAM row is
+        // refreshed by the owner's reviewed registration and, until then, TEAM's own check refuses the work).
+        if (connected && teamRow && !equal(teamRow.ref, connected.ref)) return connected;
+        return teamRow ?? connected ?? options.catalogs.current(kind, id);
       },
       allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
     const baseGithubAdapter = gh && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: gh.gateway, limits: gh.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
@@ -353,22 +362,35 @@ export async function composeS15(options: S15CompositionOptions) {
       const extraRecipients = githubConnections ? (active('recipient', s15GithubRecipient) && resources.some(r => r.kind === 'repository') ? [{ ...s15GithubRecipient }] : []) : (options.disclosure?.githubRecipients ?? []).filter(r => gh && active('recipient', r));
       return { selections, resources, extraRecipients, bot: active('bot', options.conversation.bot) ? options.conversation.bot : null };
     };
+    const meteredCurrency = (selections: readonly { charge: string; currency: string | null }[]): { currency: string | null; code: string | null } => {
+      const metered = selections.filter(s => s.charge !== 'subscription'); if (!metered.length) return { currency: null, code: null };
+      const set = new Set(metered.map(s => s.currency));
+      return set.has(null) ? { currency: null, code: 'metered_currency_unknown' } : set.size !== 1 ? { currency: null, code: 'metered_currency_mixed' } : { currency: [...set][0]!, code: null };
+    };
     const defaultPolicyInput = (owner: OwnerActor, entry: import('./web').S15BudgetEntry | null) => {
       if (!options.defaultPolicy || options.proposedPolicy) return null;
       const scope = defaultScope(), now = dayStart(), current = policy.owner.current(owner), lifetimeMs = options.defaultPolicy.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS;
       if (!scope.bot) return null;
-      const budget = s15NeedsBudget(scope.selections) && entry ? s15MeteredBudget({ now, policyExpiresAt: now + lifetimeMs, currency: entry.currency, spendMinor: entry.spendMinor, periodId: entry.periodId, concurrency: options.defaultPolicy.concurrency }) : null;
-      return { scope, input: s15DefaultPolicy({ now, bot: scope.bot, resources: scope.resources, selections: scope.selections, extraRecipients: scope.extraRecipients, budget, carry: current?.rules ?? [], lifetimeMs }), current };
+      // One budget covers every metered route, so they must share one known currency; otherwise nothing is offered.
+      const money = meteredCurrency(scope.selections);
+      const budget = s15NeedsBudget(scope.selections) && entry && money.currency && entry.currency === money.currency ? s15MeteredBudget({ now, policyExpiresAt: now + lifetimeMs, currency: entry.currency, spendMinor: entry.spendMinor, periodId: entry.periodId, concurrency: options.defaultPolicy.concurrency }) : null;
+      const build = (value: import('./policy').OperatingBudget | null) => s15DefaultPolicy({ now, bot: scope.bot!, resources: scope.resources, selections: scope.selections, extraRecipients: scope.extraRecipients, budget: value, carry: current?.rules ?? [], lifetimeMs });
+      // Scope comparison keeps the installed budget unless the owner typed a new one: a metered policy that is
+      // installed and unchanged is current, and a new amount is asked for only to change or renew it.
+      return { scope, money, input: build(budget), scopeInput: build(budget ?? (s15NeedsBudget(scope.selections) ? current?.budget ?? null : null)), current };
     };
     const teamCandidates = (owner: OwnerActor, proposed?: import('./policy').PolicyInput | null): TeamResource[] => {
       const standing = proposed ?? policy.owner.current(owner) ?? options.proposedPolicy ?? defaultPolicyInput(owner, null)?.input ?? null;
       if (!standing) return [];
       const known = composedResources();
-      return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index && !team.currentResource(ref.id)).map(ref => {
+      return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index).flatMap((ref): TeamResource[] => {
+        // A registered row is offered again only to refresh it to a newer owning identity, with every other field unchanged.
+        const registered = team.resourceRecord(ref.id);
+        if (registered) return ref.revision > registered.revision ? [{ ...registered, revision: ref.revision, generation: ref.generation }] : [];
         const rules = standing.rules.filter(rule => rule.mode !== 'deny' && rule.resources.some(r => r.id === ref.id));
         const purposes = [...new Set((rules.length ? rules.flatMap(rule => rule.purposes) : standing.purposes.filter(p => p.id !== standing.interpretationPurpose?.id)).map(p => p.id))];
         const match = known.find(item => item.ref.id === ref.id);
-        return { contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id };
+        return [{ contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id }];
       });
     };
     const teamPort = { ...s15TeamPort<OwnerActor>(team, actor => actor),
@@ -429,11 +451,11 @@ export async function composeS15(options: S15CompositionOptions) {
           if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy);
         },
         install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash),
-        budgetOptions: actor => { const defaults = defaultPolicyInput(actor, null); const metered = defaults?.scope.selections.filter(s => s.charge !== 'subscription') ?? [];
-          return metered.length ? { currencies: [...new Set(metered.flatMap(s => s.currency ? [s.currency] : []))].sort(), periods: s15BudgetPeriods.filter(p => p.days * 86_400_000 <= (options.defaultPolicy?.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS)).map(p => ({ ...p })) } : { currencies: [], periods: [] }; },
+        budgetOptions: actor => { const defaults = defaultPolicyInput(actor, null), currency = defaults?.money.currency ?? null;
+          return currency ? { currencies: [currency], periods: s15BudgetPeriods.filter(p => p.days * 86_400_000 <= (options.defaultPolicy?.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS)).map(p => ({ ...p })) } : { currencies: [], periods: [] }; },
         review: (actor, entry) => {
           const defaults = defaultPolicyInput(actor, entry); if (!defaults) return null;
-          const { scope, input, current } = defaults, needsBudget = s15NeedsBudget(scope.selections);
+          const { scope, input, scopeInput, money, current } = defaults, needsBudget = s15NeedsBudget(scope.selections);
           const rows: import('./web').S15PolicyRow[] = [
             ...(scope.bot ? [{ kind: 'bot' as const, id: scope.bot.id, label: scope.bot.id, detail: null }] : []),
             { kind: 'purpose', id: s15DefaultRefs.work.id, label: s15DefaultRefs.work.id, detail: 'work' }, { kind: 'purpose', id: s15DefaultRefs.interpretation.id, label: s15DefaultRefs.interpretation.id, detail: 'interpretation' },
@@ -443,11 +465,11 @@ export async function composeS15(options: S15CompositionOptions) {
             ...scope.extraRecipients.map(r => ({ kind: 'recipient' as const, id: r.id, label: 'GitHub', detail: 'github' as const })) ];
           const base = { rows, held: [...s15HeldClasses], personalGithub: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'kept' as const : 'off' as const, needsBudget };
           const renewFrom = current ? current.expiresAt - S15_POLICY_RENEW_WINDOW_MS : null;
-          if (current && input && s15SamePolicyScope(current, input) && clockNow() < (renewFrom ?? 0)) return { ...base, change: 'current', proposal: null, expiresAt: current.expiresAt, reason: null, renewFrom, team: null };
+          if (current && scopeInput && s15SamePolicyScope(current, scopeInput) && clockNow() < (renewFrom ?? 0)) return { ...base, change: 'current', proposal: null, expiresAt: current.expiresAt, reason: null, renewFrom, team: null };
           if (!input) return { ...base, change: current ? 'update' : 'new', proposal: null, expiresAt: null, reason: !scope.selections.length ? 'route_unavailable' : 'vm_not_enrolled', renewFrom: null, team: null };
           const proposal = policy.owner.proposePolicy(actor, input);
-          const reason = proposal.installable ? null : !scope.selections.some(s => s.available) ? 'route_unavailable' : needsBudget && !input.budget ? 'finite_budget_required' : 'proposal_incomplete';
-          const items = teamCandidates(actor, input), change = !current ? 'new' : s15SamePolicyScope(current, input) ? 'renew' : 'update';
+          const reason = proposal.installable ? null : !scope.selections.some(s => s.available) ? 'route_unavailable' : needsBudget && money.code ? money.code : needsBudget && !input.budget ? 'finite_budget_required' : 'proposal_incomplete';
+          const items = teamCandidates(actor, input), change = !current ? 'new' : scopeInput && s15SamePolicyScope(current, scopeInput) ? 'renew' : 'update';
           return { ...base, change, proposal, expiresAt: input.expiresAt, reason, renewFrom: null, team: items.length ? { hash: teamCandidatesHash(items), count: items.length } : null };
         } },
       ...(githubConnections ? { githubConnection: {

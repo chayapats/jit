@@ -72,6 +72,26 @@ test('POLICY15-02: a metered route needs the owner\'s finite budget, which becom
   const policy = f.service.policy.owner.current(f.owner())!;
   expect(policy.budget).toMatchObject({ currency: 'USD', ceiling: { spendMinor: '1300' } });
   expect(policy.budget!.expiresAt - policy.budget!.startsAt).toBe(30 * 86_400_000);
+  // F: once installed, the same metered rules read as current; no new amount is asked for until a change or renewal.
+  const rules = await f.page('/rules', 'en');
+  expect(rules.html).toContain('Standing rules in use'); expect(rules.html).not.toContain('Updated standing rules to review'); expect(rules.html).not.toContain('name="proposalHash"');
+  expect((await f.page('/setup', 'en')).html).not.toContain('Updated standing rules to review');
+});
+
+test('POLICY15-02: metered routes in different currencies cannot share one budget and say why', async () => {
+  const f = await fixture();
+  const other = { selection: { route: { id: 'grok_route', revision: 1, generation: 1 }, model: { id: 'grok_model', revision: 1, generation: 1 }, effort: 'high' }, recipient: { id: 'grok_provider', revision: 1, generation: 1 } };
+  for (const [kind, ref] of [['route', other.selection.route], ['model', other.selection.model], ['recipient', other.recipient]] as const) f.config.catalog.push({ kind, ref, active: true });
+  Object.assign(f.routes[0]!, { charge: 'metered', currency: 'USD', upperBound: { ...f.routes[0]!.upperBound!, spendMinor: '5' } });
+  f.routes.push({ ...structuredClone(f.routes[0]!), ...other, provider: 'grok', modelId: 'grok-5', account: { id: 'grok_account', revision: 1, generation: 1 }, currency: 'EUR' });
+  const page = await f.page('/setup', 'en');
+  expect(page.html).toContain('priced in different currencies'); expect(page.html).not.toContain('name="proposalHash"');
+  // Neither currency is offered, and a typed amount in either is refused.
+  for (const currency of ['USD', 'EUR']) expect((await f.form('/s15/forms/rules/review', { amount: '10', currency, periodId: 'days_30', return: 'setup' })).status).toBe(409);
+  expect(hashIn((await f.page('/setup', 'en')).html, 'proposalHash')).toBeUndefined();
+  // A metered route that states no currency cannot be under a money budget either.
+  f.routes.pop(); delete (f.routes[0] as { currency?: string }).currency;
+  expect((await f.page('/setup', 'en')).html).toContain('does not state its currency');
 });
 
 test('POLICY15-02: a subscription route that is not signed in cannot be installed and says why', async () => {
@@ -189,4 +209,80 @@ test('POLICY15-02/GIT15-04: Thai and English pages render the review and the Git
   const en = await f.page('/setup', 'en'); expect(en.html).toContain('Standing rules Jit proposes for this installation');
   const ghTh = await f.page('/resources/github', 'th'); expect(ghTh.html).toContain('ตรวจและเชื่อม'); expect(ghTh.html).toContain('type="password"'); expect(ghTh.html).not.toContain('value="github_pat_');
   const ghEn = await f.page('/resources/github', 'en'); expect(ghEn.html).toContain('Check and connect');
+});
+
+/** Connect the fixture token and select exactly `names` through the Web forms. */
+async function selectRepos(f: Awaited<ReturnType<typeof firstRunFixture>>, names: string[]) {
+  if (f.service.githubConnections!.current()?.state !== 'connected') await f.form('/s15/forms/github-connection/connect', { token: fixtureToken });
+  const page = await f.page('/resources/github', 'en'), fields: Record<string, string> = { revision: /name="revision" value="(\d+)"/.exec(page.html)![1]! };
+  const boxes = [...page.html.matchAll(/name="(repo_\d+)" value="([^"]+)"/g)];
+  for (const name of names) fields[boxes.find(m => m[2] === name)![1]!] = name;
+  expect((await f.form('/s15/forms/github-connection/select', fields)).status).toBe(303);
+}
+const readiness = async (f: Awaited<ReturnType<typeof firstRunFixture>>, id: string) => {
+  f.interpretation = { intent: 'inspect', purposeId: 'owner_requested_work', resourceIds: [id], access: 'read', subject: null };
+  f.script = [{ type: 'tool_call', id: 'ready', name: 'github_readiness', arguments: {} }];
+  return f.chat('Inspect GitHub issues and report readiness only');
+};
+
+test('GIT15-04: a repository selected again after unselecting gets a new identity the owner registers in one reviewed press', async () => {
+  const f = await fixture();
+  await install(f); await selectRepos(f, ['chayapats/jit-s15-sandbox']); await install(f, 'rules');
+  const first = f.service.githubConnections!.repositories()[0]!.resource;
+  expect(f.service.team.currentResource(first.id)?.ref).toEqual(first);
+  await selectRepos(f, []); await selectRepos(f, ['chayapats/jit-s15-sandbox']);
+  const second = f.service.githubConnections!.repositories()[0]!.resource;
+  expect(second).toEqual({ id: first.id, revision: first.revision + 1, generation: first.generation + 1 });
+  // The live identity wins over the older TEAM row; until the owner reviews it, work on the repository is refused.
+  expect(f.service.policy.owner.current(f.owner())!.resources.some(r => r.id === first.id && r.generation === first.generation)).toBe(true);
+  expect((await readiness(f, first.id)).state).not.toBe('completed');
+  const rules = await f.page('/rules', 'en'); expect(rules.html).toContain('Updated standing rules to review'); expect(hashIn(rules.html, 'listHash')).toBeDefined();
+  expect((await install(f, 'rules')).status).toBe(303);
+  expect(f.service.policy.owner.current(f.owner())!.resources.find(r => r.id === first.id)).toEqual(second);
+  const row = f.service.team.resourceRecord(first.id)!; expect({ revision: row.revision, generation: row.generation }).toEqual({ revision: second.revision, generation: second.generation });
+  expect((await readiness(f, first.id)).state).toBe('completed');
+});
+
+test('GIT15-04: a repository bundle between the old 4 MiB charge and the 16 MiB accepted limit settles without stopping later work', async () => {
+  const { s15GithubWebDefaults } = await import('../src/s15/github/runtime');
+  const { createGithubPreload, githubBundleMaxBytes } = await import('../src/s15/github/composition');
+  expect(s15GithubWebDefaults.limits.readUpperBound.outputBytes).toBe(githubBundleMaxBytes);
+  const f = await fixture();
+  await install(f); await selectRepos(f, ['chayapats/jit-s15-sandbox']); await install(f, 'rules');
+  const repository = f.service.githubConnections!.repositories()[0]!;
+  const report = await readiness(f, repository.resource.id); expect(report.state).toBe('completed');
+  const limits: number[] = [], size = 8 * 1024 * 1024;
+  const fetchBundle = (async (_repo: unknown, _secret: unknown, _signal: unknown, allowed: () => void, _transport: unknown, l: { packBytes: number }) => {
+    limits.push(l.packBytes); allowed(); if (size > l.packBytes) throw new Error('coding_preload_size_limit'); return new Uint8Array(size);
+  }) as never;
+  const selection = { id: 'selection_fixture', workId: report.authority!.id, repository, base: 'a'.repeat(40), branch: 'jit/issue-7', requestId: 'r', issue: 7, issueVersion: 'v', createdAt: 0, state: 'implementing', evidence: null } as const;
+  const backend = { workspaceRoot: '/w', async writeFileAtomically() { throw new Error('stop after the read'); } } as never;
+  const preload = (upperBound: typeof s15GithubWebDefaults.limits.readUpperBound) => createGithubPreload({ policy: f.service.policy, repositories: [repository], credential: () => f.service.githubConnections!.credential(), upperBound, fetchBundle });
+  // The old 4 MiB reservation now caps the broker itself, so the larger bundle is refused before it is accepted.
+  await expect(preload({ ...s15GithubWebDefaults.limits.readUpperBound, outputBytes: 4 * 1024 * 1024 })(backend, selection as never, () => {})).rejects.toThrow('coding_preload_size_limit');
+  await expect(preload(s15GithubWebDefaults.limits.readUpperBound)(backend, selection as never, () => {})).rejects.toThrow('stop after the read');
+  expect(limits).toEqual([4 * 1024 * 1024, githubBundleMaxBytes]);
+  expect(f.service.policy.control.reservations(report.authority!.id).some(r => r.actual.outputBytes === size)).toBe(true);
+  // No overrun was recorded: the next charges of the installation still run.
+  expect((await readiness(f, repository.resource.id)).state).toBe('completed');
+});
+
+test('GIT15-04: Web-selected repository content is private lineage, approved only for the provider and GitHub', async () => {
+  const f = await fixture();
+  await install(f); await selectRepos(f, ['chayapats/jit-s15-sandbox']); await install(f, 'rules');
+  const repository = f.service.githubConnections!.repositories()[0]!;
+  const report = await readiness(f, repository.resource.id); expect(report.state).toBe('completed');
+  const work = f.service.policy.work.guard(f.service.policy.control.bindWork(report.authority!.id));
+  const source = f.service.githubConnections!.sources()[0]!.source;
+  expect(source).toMatchObject({ classification: 'private', resource: repository.resource, ownerReleasable: true });
+  const disclosure = f.service.disclosure!, gate = disclosure.catalogs({ current: () => null, allows: () => true });
+  const action = (recipient: string) => ({ recipients: [{ id: recipient, revision: 1, generation: 1 }], payload: { contract: 'fixture' }, classes: ['ordinary_edit'] }) as never;
+  // Repository lineage reaching a recipient with no approval is held; the provider and GitHub are approved.
+  expect(gate.allows(work, action('somewhere_else'))).toBe(false);
+  const model = disclosure.model(() => 'inference_0');
+  expect(model.allows(work, f.routes[0]!)).toBe(true);
+  // Unselecting removes future approvals but never declassifies existing lineage.
+  await selectRepos(f, []);
+  expect(f.service.githubConnections!.source(source.ref)).toMatchObject({ classification: 'private', active: true });
+  expect(model.allows({ ...work, request: { ...work.request } }, f.routes[0]!)).toBe(false);
 });

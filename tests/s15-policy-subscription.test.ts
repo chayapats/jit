@@ -35,6 +35,8 @@ test('POLICY15-02: no budget is installable only for current subscription routes
   const ok = open({ tools }), proposal = ok.service.owner.proposePolicy(ok.owner, ok.policy());
   expect(proposal.installable).toBe(true);
   expect(proposal.fields.find(f => f.path === 'subscription.tools.calls')).toMatchObject({ value: 2, status: 'provided' });
+  // Every enforced tool bound is part of the exact review and its hash.
+  for (const [key, value] of Object.entries(tools)) expect(proposal.fields.find(f => f.path === `subscription.tools.${key}`)).toMatchObject({ value, status: 'provided' });
   expect(ok.service.owner.installProposal(ok.owner, 'install', proposal.proposalHash).budget).toBeNull();
   // A route the registry does not admit (metered, signed out) never installs without the owner's budget.
   const metered = open({ tools }, false); expect(metered.service.owner.proposePolicy(metered.owner, metered.policy()).installable).toBe(false);
