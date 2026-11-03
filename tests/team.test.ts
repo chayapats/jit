@@ -19,6 +19,8 @@ import { ScriptedRunPort, fixtureOutcome, validateRunRequest } from "../src/team
 import { scriptedPreviewWork } from "../src/team/preview";
 import { createWebHandler } from "../src/web";
 import type { ApplicationRunEvent, ApplicationRunRequest, DecisionCommand, RoleRoute, TeamCommand } from "../src/team/types";
+/** Static listed-choice fixture: no account effort evidence and no output cap (the Codex shape). */
+const listedChoice = (id: string, recommended: boolean) => ({ id, recommended, effort: { levels: [], offSendable: false, default: null, evidence: "none" as const }, outputCap: { enforced: false, default: null, maximum: null } });
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
 afterEach(async () => {
@@ -1429,7 +1431,7 @@ test("UX04b every Team route form has the catalog, preserves unlisted models and
   const { markSetupComplete } = await import("./fixtures/setup"); markSetupComplete(f.store);
   const roles = await specialists(f);
   route(f, null, null, { provider: "codex", model: "gpt-owner-unlisted", authRoute: "codex" });
-  f.app.routeCatalogs = async () => ({ codex: { status: null, models: [{ id: "gpt-fixture-best", recommended: true }, { id: "gpt-fixture-other", recommended: false }] }, grok: { status: "quota-exceeded", models: null } });
+  f.app.routeCatalogs = async () => ({ codex: { status: null, models: [listedChoice("gpt-fixture-best", true), listedChoice("gpt-fixture-other", false)] }, grok: { status: "quota-exceeded", models: null } });
   for (const path of ["/settings/team", `/projects/${f.project.id}/team`]) {
     const html = await (await f.web(request(f, path))).text();
     expect(html).toContain("gpt-fixture-best");

@@ -109,6 +109,8 @@ export interface ConversationRequest {
   contextSequence?: number;
   memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
+  /** Usage evidence of the latest interpretation run, kept on failure too. Absent before MODEL15-02. */
+  interpretationUsage?: HostRunUsage;
   actions: ActionRef[];
   /** Owner-only exact decision/dispatch. It cannot resume a model loop or grant another purpose. */
   decision: { action: ActionRef; decision: "approve" | "deny"; expiresAt: number; observation: Observation | null } | null;

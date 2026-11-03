@@ -1,6 +1,7 @@
 name: checks
-# Six shards keep a full run near four minutes; this public repository's runners are free.
-# Cost guard: one run per PR head (no duplicate push+pull_request runs), drafts and
+# Six shards keep a full run near four minutes, and they run on both x64 (ubuntu-latest) and
+# ARM64 (ubuntu-24.04-arm) because Jit targets any 64-bit Linux. Both runner types are free for
+# this public repository. Cost guard: one run per PR head (no duplicate push+pull_request runs), drafts and
 # docs-only changes skip CI, and a newer push cancels the older run. Merges to main are
 # already tested on the PR merge ref; run manually with workflow_dispatch when needed.
 on:
@@ -32,12 +33,14 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
   tests:
+    name: tests (${{ matrix.arch }}, ${{ matrix.shard }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        arch: [x64, arm64]
         shard: [0, 1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
@@ -47,7 +50,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: bun-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       # Fake-runtime parser fixtures use local Pillow/Poppler; no image is built and no Podman is run.
       - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ripgrep python3-pil poppler-utils
@@ -55,6 +58,7 @@ jobs:
       - run: bun test --timeout 30000 $(bun ops/ci/test-shard.ts ${{ matrix.shard }} 6)
         env:
           JIT_TEST_PYTHON: /usr/bin/python3
+  # Fails when typecheck or any shard on either architecture did not succeed.
   deterministic:
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     needs: [typecheck, tests]

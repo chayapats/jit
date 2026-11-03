@@ -32,7 +32,11 @@ bounded on the pinned release (at most two inference sends: one Schway-owned
 401 refresh plus its single replay, no loop) and counted exactly per send
 through the transport wrapper; the bound is enforced fail-closed and the
 confirmed counts surface in the renewal observation ledger and the self
-sample. Exact per-request accounting beyond this bound awaits schway#415.
+sample. The adopted Schway pin (`4163e60`, schway#415, `provider-requests/v1`)
+now reports exact per-run `HostRunUsage.providerRequests` (`initialSends`,
+`authRetrySends`, `renewalRequests`). The probe does not consume those counts:
+its counting transport, 2+2 per-attempt bound and fail-closed ledger remain
+the probe's own authoritative bound, unchanged.
 
 ## Readiness is local; renewal is measured, not claimed
 
@@ -51,9 +55,13 @@ pinned release): post-terminal writes are refused on Schway's own default
 native store, so no key-scheme mirroring or unwrapped path remains.
 Uncertainty is never understated in-process. The terminal compare-and-set
 itself checks admitted-but-unresolved writes, failed cleanups and open
-Schway guard windows, and reports `store-unavailable` for every writer. Cross-process cancel during an unresolved write and
-crash-recovery overlap in the pinned Schway lock (schway#428) remain bounded,
-declared residuals (see the contract).
+Schway guard windows, and reports `store-unavailable` for every writer. The
+adopted Schway pin (`4163e60`, schway#428) replaces the directory lock with an
+OS-released SQLite credential lock, so a crashed holder no longer leaves a
+stale lock that two holders can break into, and a lock refusal fails closed
+with its own next action. Cross-process cancel during an unresolved write
+remains a bounded, declared residual that Jit bounds itself (terminal
+compare-and-set, `store-unavailable`; see the contract).
 
 ## Evidence stays installation-local and bounded
 

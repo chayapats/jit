@@ -68,11 +68,11 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "697bf406a84c8d1deb8d4a6d71876ea1003be5b3";
+export const SCHWAY_PINNED_REVISION = "0a10abedcd72aae7c92371fee277af7d90d4e52c";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-697bf40.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "1c9d83de46edddff58a0163452e7f5ec8357e656c90093990fa28fa606a0f41b";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-0a10abe.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "fe219842340f850015dda54ffebd989b52ef4bf3a9da6badfba48dc6a4efbf94";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */
@@ -253,6 +253,8 @@ export function mapAuthStatus(status: HostAuthStatusCode): RunReason {
     case "rejected":
     case "configured-unverified":
     case "integration-unavailable":
+    // S14 passes no dispatch authorizer, so a refused dispatch is not expected here; it never widens the route.
+    case "dispatch-refused":
       return "route_unavailable";
   }
 }

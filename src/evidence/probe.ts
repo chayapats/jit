@@ -1182,8 +1182,9 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           const ledger = [...(renewal.sends ?? [])];
           // Crash-safe cumulative bound: one ledger entry per transport
           // send, at most four per admitted attempt (two inference plus
-          // two token sends on the pinned release; schway#415 tracks exact
-          // accounting beyond this bound).
+          // two token sends on the pinned release). Schway's exact per-run
+          // providerRequests (schway#415) are not consumed here, so this
+          // ledger remains the probe's own bound.
           if (ledger.length + 1 > 4 * current.attempts) {
             db.exec("ROLLBACK");
             throw new Error("provider_budget_exceeded");

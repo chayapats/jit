@@ -11,9 +11,10 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `697bf406a84c8d1deb8d4a6d71876ea1003be5b3` (Schway main, #416+#418+#420+#424+#426+#430+#437+#438+#440+#441 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2, plus the additive capabilities schway.host.web-tools/v1 (#433/#434), schway.host.device-sign-in/v1 (#435), schway.host.image-input/v1 (#436) and schway.host.model-catalog/v1 (#432); Grok spending-limit 403 maps to quota-exceeded (#431)).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-697bf40.tgz`,
-  SHA-256 `1c9d83de46edddff58a0163452e7f5ec8357e656c90093990fa28fa606a0f41b`.
+  `0a10abedcd72aae7c92371fee277af7d90d4e52c` (Schway PR #453 head, merged into Schway main at `4163e60dc4efab01c82bb4828af8965b7b95dd51` with the identical tree `260631a932c7de8825b8800cdfb69964912f9a38`; closes schway#428/#444/#415/#445/#446). It keeps `schway.host.release/v2` and adds the capabilities schway.host.dispatch-authorization/v1, schway.host.provider-requests/v1, schway.host.effort/v1 and schway.host.output-cap/v1 on top of the previous pin `697bf406a84c8d1deb8d4a6d71876ea1003be5b3` (core-tools, web-tools, device-sign-in, image-input, model-catalog, credential-lifecycle and session-inventory).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-0a10abe.tgz`,
+  SHA-256 `fe219842340f850015dda54ffebd989b52ef4bf3a9da6badfba48dc6a4efbf94`.
+- Credential upgrade fence (schway#428): this build saves and deletes credentials under an OS-released SQLite lock. Once it writes a credential under an account, every older untagged lock-directory build (including the previous `697bf40` pin) fails all credential saves and deletes under that account, token renewal included. Every Jit install and Schway CLI that shares a service identity must upgrade together; recovery is Schway `docs/credentials.md`.
 - Behavior set `schway.host.release/v2` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
   `managed-session-data`, `session-snapshot` and `core-tools`). `release/v2` is
@@ -29,9 +30,9 @@ Pinned artifact (verified, deterministic):
 ```ts
 SCHWAY_RELEASE_CONTRACT: "schway.host.release/v2";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
-SCHWAY_PINNED_REVISION: "697bf40...";
+SCHWAY_PINNED_REVISION: "0a10abe...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "1c9d83de...";
+SCHWAY_PINNED_TARBALL_SHA256: "fe219842...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;
@@ -203,4 +204,4 @@ production specialist evidence while preview stays fixture, reopens after
 restart, and keeps reads working while provider access is blocked.
 `bun test`, `bun run typecheck`. No live accounts, no network, no Pi.
 
-S14 prerequisite pin: this artifact was packed at `697bf406a84c8d1deb8d4a6d71876ea1003be5b3`, merged by Schway PR #443 at `02bca6e`. It adds `schway.host.credential-lifecycle/v1` and `schway.host.session-inventory/v1`. Legacy route concurrency remains unchanged. S14 activation requires its own public packed-consumer conformance and shared process lifecycle integration.
+S14 prerequisite pin: the previous artifact was packed at `697bf406a84c8d1deb8d4a6d71876ea1003be5b3`, merged by Schway PR #443 at `02bca6e`; the current `0a10abe` artifact retains it. It adds `schway.host.credential-lifecycle/v1` and `schway.host.session-inventory/v1`. Legacy route concurrency remains unchanged. S14 activation requires its own public packed-consumer conformance and shared process lifecycle integration.

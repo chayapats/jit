@@ -387,6 +387,14 @@ snapshots and continues to use its dependency-free API.
 - `activation-unhealthy`: health failed after a schema change; the service stays stopped. Return to the prior version only through an OPS02 quarantined restore of `recoveryBackupId`. Never point the symlink back by hand.
 - After switching to a build with a newer schema (for example schema 23 from OPS02), `serve` refuses the installation until the owner `upgrade` has run; `service upgrade` performs that step.
 
+### Schway credential-lock upgrade fence (MODEL15-02, schway#428)
+
+Releases that vendor Schway `0a10abe` (main `4163e60`) save and delete route credentials under an OS-released SQLite lock. Once such a release saves or deletes a credential under a service identity, including a token renewal, every older untagged lock-directory Schway build under that identity fails all credential saves and deletes there, renewal included. That covers every earlier Jit release that vendored `697bf40` and any older Schway CLI.
+
+- On a host where a Jit install shares a service identity with another Jit build or a Schway CLI, stop all of them and upgrade them together. Do not run an old and a new build side by side under one identity.
+- Rolling back to an older Jit release under that identity leaves it unable to renew or save credentials until a fenced-compatible build runs again. Plan the rollback with that limit.
+- Recovery follows Schway's `docs/credentials.md` (shipped in the vendored package).
+
 ## 6. Disable or remove
 
 ```sh
