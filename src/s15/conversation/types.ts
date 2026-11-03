@@ -9,6 +9,14 @@ export interface ConversationCommand {
   text: string;
   continuation: { requestId: string; revision: number } | null;
 }
+/** Exact owner decision posted from a reviewed slip. It names one action revision and hash; it is never model output. */
+export interface ConversationDecisionCommand {
+  contract: "s15-conversation-decision/v1";
+  requestId: string;
+  conversationId: string;
+  action: ActionRef;
+  decision: "approve" | "deny";
+}
 /** Grounded in original owner bytes before any model call; acceptance and proposals confer no work authority. */
 export interface ConversationIntent {
   kind: "answer" | "accept" | "inspect" | "execute" | "ambiguous";

@@ -191,3 +191,14 @@ test('frozen read/reversible-write access cannot be widened by a standing commun
 test('manual approval cannot repair unknown production consequences or missing merge evidence', () => {
   const f = setup(), w = f.admit({ subject: { resource: ref('repo'), issue: 320 } }).actor!; f.draft = { ...draft(), operation: 'merge', classes: ['github_merge'], resources: [ref('repo')], github: { repository: ref('repo'), issue: 320, target: 'main', head: 'a'.repeat(40), evidenceHash: 'b'.repeat(64), checksPassed: true, reviewsPassed: true, acceptancePassed: true, production: 'unknown', deploymentFence: null } }; let p = f.prepare(w); expect(p.decision).toEqual({ state: 'hold', code: 'production_impact_required' }); expect(() => f.approve(p.action)).toThrow('production_impact_required'); f.draft.github!.production = 'none'; f.draft.github!.reviewsPassed = false; p = f.prepare(w); expect(p.decision).toEqual({ state: 'hold', code: 'github_evidence_required' }); expect(() => f.approve(p.action)).toThrow('github_evidence_required');
 });
+
+test('owner denial vetoes a pending revision that cannot be approved, and never dispatches', async () => {
+  const f = setup(); f.draft = { ...draft(), operation: 'send', classes: ['communication'], recipients: [ref('payee')], upperBound: null };
+  const { actor } = f.admit(); const prepared = f.prepare(actor!);
+  expect(prepared.decision).toMatchObject({ state: 'hold', code: 'cost_unknown' });
+  expect(f.service.owner.actionSlip(f.owner, actionRef(prepared.action))).toMatchObject({ state: 'pending', canApprove: false });
+  throws(() => f.approve(prepared.action), 'cost_unknown');
+  f.approve(prepared.action, 'deny');
+  expect(f.service.owner.actionSlip(f.owner, actionRef(prepared.action)).state).toBe('denied');
+  await expect(f.service.work.dispatch(actor!, actionRef(prepared.action))).rejects.toThrow(); expect(f.calls).toBe(0);
+});

@@ -353,7 +353,8 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     decide(actor, input) { tx(() => { v.exact(input, ['requestId', 'action', 'decision', 'expiresAt']); v.id(input.requestId); v.nat(input.expiresAt, true); if (!['approve', 'deny'].includes(input.decision)) v.fail('invalid_shape'); receipt(actor, input.requestId, { kind: 'action.decide', input }, () => {
       const a = loadAction(input.action), w = currentWork(a.workId); checkAction(w, a); if (claimed(a)) v.fail('already_claimed');
       if (input.expiresAt > a.expiresAt || input.expiresAt <= time()) v.fail('expired');
-      const evaluated = evaluate(w, a); if (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'production_impact_required', 'github_evidence_required'].includes(evaluated.code))) v.fail(evaluated.code);
+      // Denial only narrows authority: the owner may veto any unclaimed revision, even one that cannot be approved.
+      const evaluated = input.decision === 'deny' ? null : evaluate(w, a); if (evaluated && (evaluated.state === 'deny' || evaluated.state === 'unsupported' || (evaluated.state === 'hold' && ['policy_match_required', 'snapshot_required', 'cost_unknown', 'finite_budget_required', 'production_impact_required', 'github_evidence_required'].includes(evaluated.code)))) v.fail(evaluated.code);
       const approved = { ...clone(input), id: uid(), ownerGeneration: w.ownerGeneration, policyHash: w.policyHash };
       ledger.run('INSERT INTO approvals VALUES (?,?,?,?)', approved.id, a.id, a.revision, v.canonical(approved)); return { recorded: true };
     }); }); },
@@ -365,6 +366,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       if (scope.kind === 'policy') ledger.put('policyRevoked', true); else { if (!ledger.get('SELECT id FROM works WHERE id=?', scope.id)) v.fail('authority_revoked'); ledger.run('UPDATE works SET revoked=1 WHERE id=?', scope.id); } return { recorded: true };
     }); }); },
     inspect(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); readableAction(a); return { action: clone(a), observation: observationFor(a) }; }); },
+    actionScope(actor, ref) { return tx(() => { ownerAuth(actor); const a = loadAction(ref); readableAction(a); const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId)); if (!w) v.fail('authority_revoked'); return { purpose: clone(w.request.purpose), bot: clone(w.request.bot), selection: clone(w.request.selection) }; }); },
     async reconcile(actor, ref, requestId) {
       const start = tx(() => {
         ownerAuth(actor); v.id(requestId); const a = loadAction(ref); const claim = parse<Claim>(ledger.get('SELECT json FROM claims WHERE action_id=?', a.id)); if (!claim) v.fail('reconciliation_required');

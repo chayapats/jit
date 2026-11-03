@@ -3,3 +3,5 @@ export { createS15WebHandler, s15ConversationPort } from "./handler";
 export type { S15WebOptions } from "./handler";
 export { lookupS15Asset, s15AssetUrl } from "./assets";
 export type * from "./types";
+export { s15ActionsPort, s15DecisionCards, s15DutiesPort, s15GithubPort, s15MemoryPort, s15ReadinessFromGithub, s15RecurringPort, s15TeamPort } from "./ports";
+export type { S15OwnerOf } from "./ports";

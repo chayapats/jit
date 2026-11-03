@@ -1,7 +1,7 @@
 import { DurableJournal } from '../durable-journal';
 import { summarizeReservations } from '../model/usage';
 import { canonical, digest, exact, fail, id, nat, string, usage } from '../policy/validation';
-import type { WorkAuthority } from '../policy';
+import type { OwnerActor, WorkAuthority } from '../policy';
 import type { AttemptHandle, AttemptSettlement, Responsibility, ResponsibilityEvent, ResponsibilityPort, ResponsibilityProjection, StallReport, WorkAttempt, WorkOptions } from './types';
 
 const clone = <T>(v: T): T => JSON.parse(canonical(v)) as T;
@@ -19,7 +19,7 @@ function observation(o: AttemptSettlement): void {
 /** Opens a fresh opt-in protected responsibility journal. Waiting never creates a host/session.
  * Reopening converts only active attempts to unknown; durable waits and settled evidence survive.
  * POLICY and owning transports retain actual effect/VM capacity independently of these projections. */
-export function openWorkService(options: WorkOptions): ResponsibilityPort & { close(): void } {
+export function openWorkService(options: WorkOptions): ResponsibilityPort & { list(owner: OwnerActor): ResponsibilityProjection[]; close(): void } {
   if (options.runtime !== 's15') fail('s15_opt_in_required');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a575135);
   const now = () => { const value = (options.now ?? Date.now)(); nat(value); return value; };
@@ -92,7 +92,7 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
     }
     return save(r);
   }
-  const service: ResponsibilityPort & { close(): void } = {
+  const service: ResponsibilityPort & { list(owner: OwnerActor): ResponsibilityProjection[]; close(): void } = {
     assign(owner, input) { return journal.tx(() => {
       options.policy.owner.current(owner); exact(input, ['requestId', 'sourceRequestId', 'completion', 'triggers', 'stallPolicy']);
       id(input.requestId); id(input.sourceRequestId); string(input.completion); if (!input.completion) fail('completion_required');
@@ -184,6 +184,13 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { cl
       const totals = summarizeReservations(r.workId ? options.policy.control.reservations(r.workId) : []);
       return { ...clone(r), budget: { ...totals, charged: { ...totals.charged, spendMinor: options.policy.owner.current(owner)?.budget ? totals.charged.spendMinor : null } }, stopImpact: { responsibilityIds: [r.id], heldAttempts: r.attempts.filter(a => a.capacityHeld).map(a => a.id), otherResponsibilities: journal.all<Responsibility>().filter(other => other.id !== r.id && !['stopped', 'completed'].includes(other.state)).length } };
     }); },
+    list(owner): ResponsibilityProjection[] {
+      const p = journal.tx(() => options.policy.owner.current(owner));
+      if (!p) fail('authentication_required');
+      // Newest first, bounded; other owner generations are never listed and the read starts nothing.
+      const ids = journal.tx(() => journal.all<Responsibility>().filter(r => r.ownerGeneration === p.ownerGeneration).map(r => r.id)).reverse().slice(0, 64);
+      return ids.map(id => service.project(owner, id));
+    },
     close() { for (const controller of running.values()) controller.abort(); running.clear(); journal.close(); },
   };
   const stop = service.stop;

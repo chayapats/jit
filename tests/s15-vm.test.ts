@@ -364,3 +364,11 @@ test.each([{ unexpected: true }, { path: "/outside" }, { path: 1 }])("every malf
   const backend = createVmBackend({ protocolError() { fenced = true; }, async call() { return response; } }, "/workspace", "/workspace/.tmp", limits);
   await expect(backend.realpath("/workspace")).rejects.toMatchObject({ code: "vm_protocol_invalid" }); expect(fenced).toBe(true);
 });
+test("owner snapshot listing is read-only, newest first, and refuses a non-owner", async () => {
+  const f = fixture();
+  for (let i = 0; i < 2; i++) { const session = await open(f, `admin${i}`, { mode: "system" }); await session.close(); }
+  const before = f.snapshots(), listed = f.service.snapshots(f.actor, "vm1");
+  expect(listed.map(s => s.generation)).toEqual([...listed.map(s => s.generation)].sort((a, b) => b - a)); expect(listed).toHaveLength(2);
+  expect(listed.every(s => /^jit-[a-f0-9]{32}$/.test(s.id))).toBe(true); expect(f.snapshots()).toBe(before);
+  expect(() => f.service.snapshots({}, "vm1")).toThrow("owner required");
+});

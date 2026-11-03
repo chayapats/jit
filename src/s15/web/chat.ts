@@ -3,14 +3,22 @@ import { ownerStrip, untrusted } from "../../s14/web-pages";
 import type { ConversationEvidence, ConversationOwnerRow, ConversationOwnerView } from "../conversation";
 import { banner, clock, clockText, codeText, e, fill, form, hidden, icon, key, pill, statePill, type S15State } from "./render";
 import type { S15MemoryClaim, S15ModelBudgetView, S15ReadinessReport } from "./types";
+import type { ActionSlip } from "../policy";
+import type { ResponsibilityProjection } from "../work";
+import { compactSlip, slipHeading, webDecisionText, type S15SlipDecision } from "./actions";
+import { limitNotice, loginCard, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
+import { dutyCard } from "./duties";
 
 /** Per-row optional data from feature-detected slices; absent data renders nothing rather than a guess. */
 export interface S15RowExtras { readiness: S15ReadinessReport | null; selection: S15ModelBudgetView["selections"][number] | null; pinned: boolean; memory: S15MemoryClaim[] }
 /** Everything the conversation page needs. `draft` is only ever the owner's own refused or prefilled text. */
 export interface S15ChatPage {
   csrf: string; conversationId: string; view: ConversationOwnerView | null; extras: Record<string, S15RowExtras>;
-  draft: { text: string; requestId: string | null; answer: { requestId: string; revision: number } | null } | null;
+  /** `duty` names the paused responsibility a stall reply continues; WORK resumes it only after this message completes. */
+  draft: { text: string; requestId: string | null; answer: { requestId: string; revision: number } | null; duty?: string } | null;
   refused: string | null; duplicate: ConversationOwnerRow | null; memoryAvailable: boolean;
+  /** UX15-02: owner decision rows of this conversation, its responsibilities and its single configured website session. */
+  decisions?: S15SlipDecision[]; duties?: ResponsibilityProjection[]; browser?: { browser: S15BrowserInfo; state: S15BrowserProgress | undefined } | null; canDecide?: boolean;
 }
 
 const active: ReadonlySet<ConversationOwnerRow["state"]> = new Set(["received", "understanding", "inspecting", "working"]);
@@ -101,7 +109,7 @@ export function displayState(row: ConversationOwnerRow): S15State {
 }
 
 /** ResultBlock: status, Jit's answer as untrusted data, gaps and what the owner can unblock. */
-function resultBlock(row: ConversationOwnerRow, extras: S15RowExtras | undefined, conversationId: string): string {
+function resultBlock(row: ConversationOwnerRow, extras: S15RowExtras | undefined, conversationId: string, page?: S15ChatPage): string {
   const parts: string[] = [];
   if (row.result) parts.push(untrusted(`<p class="s15-text">${e(row.result.text)}</p>`, tr("s15.result.answer")));
   if (extras?.readiness) parts.push(readinessTable(extras.readiness, conversationId));
@@ -109,14 +117,38 @@ function resultBlock(row: ConversationOwnerRow, extras: S15RowExtras | undefined
   const work = row.intentLine === "report_only" || row.intentLine === "started_work";
   if (work && (row.result || ["done", "blocked", "stopped", "unknown", "partial"].includes(row.state)) && row.evidence.length === 0) parts.push(`<div class="s15-gaps"><h4 class="s-section-t">${tr("s15.result.gaps")}</h4><p>${tr("s15.result.no_evidence")}</p></div>`);
   if (row.state === "stopped") parts.push(banner("", tr("s15.state.stopped"), tr("s15.work.stopped_detail")));
+  if (page && row.state === "unsupported") { parts.push(limitNotice(row.needsYou?.code ?? null, conversationId, row.requestId, page.browser?.browser ?? null, page.csrf)); return `<div class="s15-result">${parts.join("")}</div>`; }
+  if (page && row.needsYou?.code === "login_required") { parts.push(page.browser ? loginCard(page.browser.browser, page.browser.state, page.csrf, conversationId) : `<p><a class="s-link-text" href="/resources/accounts#s15-res-sites">${tr("s15.browser.open_sites")}</a></p>`); return `<div class="s15-result">${parts.join("")}</div>`; }
   if (["blocked", "unsupported", "unknown", "budget_hold", "needs_you"].includes(row.state) && !row.needsYou?.slip) parts.push(banner(row.state === "unknown" ? "danger" : "warn", tr(key(`s15.state.${row.state}`)), codeText(row.needsYou?.code ?? null), row.needsYou ? `<p><a class="s-link-text" href="/needs#${e(row.needsYou.id)}">${tr("s15.result.needs_you")}</a></p>` : ""));
   return parts.length ? `<div class="s15-result">${parts.join("")}</div>` : "";
 }
 
-/** Compact pointer to a held action; the full slip and its decision belong to the Needs-you page (UX15-02). */
-function heldNotice(row: ConversationOwnerRow): string {
-  const slip = row.needsYou?.slip; if (!slip) return "";
-  return `<div class="s15-held">${pill(tr(slip.state === "unknown" ? "s15.state.unknown" : "s15.state.needs_you"), slip.state === "unknown" ? "danger" : "warn", slip.state === "unknown" ? "?" : "!")}<p class="s-grow">${tr(slip.state === "unknown" ? "s15.held.unknown" : "s15.held.waiting")} · r${slip.action.revision}</p><a class="s-link-text" href="/needs#${e(row.needsYou!.id)}">${tr("s15.held.open")}</a></div>`;
+/** Latest revision of every action this request prepared; older revisions stay reachable from the slip's diff. */
+export const latestSlips = (slips: readonly ActionSlip[]) => [...slips.reduce((map, slip) => { const seen = map.get(slip.action.id); if (!seen || slip.action.revision > seen.action.revision) map.set(slip.action.id, slip); return map; }, new Map<string, ActionSlip>()).values()];
+/** Compact ActionSlips in the thread; the decision happens on the full slip under its complete exact content (F4). */
+function heldNotice(row: ConversationOwnerRow, page: S15ChatPage): string {
+  const slips = latestSlips(row.slips); if (!slips.length) return "";
+  return `<div class="s15-held-list">${slips.map(slip => compactSlip(slip, (page.decisions ?? []).filter(item => item.row.decision?.action.id === slip.action.id))).join("")}</div>`;
+}
+/** Every pending approvable slip in the thread, for the "which one?" reply. */
+const pendingSlips = (page: S15ChatPage) => latestSlips((page.view?.rows ?? []).flatMap(row => row.slips)).filter(slip => slip.state === "pending" && slip.canApprove);
+/** A decision row: the owner's own decision on one exact revision, with a link to that slip, never a work card. */
+function decisionRow(row: ConversationOwnerRow, page: S15ChatPage): string {
+  const decision = row.decision!, slip = (page.view?.rows ?? []).flatMap(item => item.slips).find(item => item.action.id === decision.action.id && item.action.revision === decision.action.revision);
+  const label = fill(decision.decision === "approve" ? "s15.hold.decided_approve" : "s15.hold.decided_deny", { n: decision.action.revision });
+  const message = webDecisionText(row) ? `<p class="s15-decision-line">${icon("lock")}<span>${e(label)}${slip ? ` · ${e(slipHeading(slip))}` : ""}</span></p>` : `<div class="s-owner-msg">${ownerText(row.ownerMessage)}</div>`;
+  const outcome = decision.outcome === "unknown" ? statePill("unknown") : decision.outcome === "succeeded" ? statePill("done") : decision.outcome === "failed" || decision.outcome === "not_dispatched" ? statePill("failed") : decision.decision === "deny" ? statePill("denied") : statePill("working");
+  return `<div class="s15-row" id="s15-row-${e(row.requestId)}" data-region data-sig="${row.revision}-${row.state}-${decision.outcome ?? ""}" data-phase="${e(row.state)}">${message}${receiptLine(row)}<p class="s-row">${outcome}<a class="s-link-text" href="/actions/${e(decision.action.id)}?r=${decision.action.revision}">${tr("s15.slip.open")}</a></p></div>`;
+}
+/** Held text decision that could not bind: several pending items, or the item changed since it was shown. */
+function decisionHold(row: ConversationOwnerRow, page: S15ChatPage): string {
+  const code = row.needsYou?.code;
+  if (code === "approval_reference_required") {
+    const pending = pendingSlips(page);
+    return `<div class="s15-question" role="group" aria-label="${tr("s15.hold.which")}"><p><b>${tr("s15.hold.which")}</b></p>${pending.length ? `<ul class="s15-facts">${pending.map(slip => `<li><a class="s-link-text" href="/actions/${e(slip.action.id)}">${e(slipHeading(slip))} · r${slip.action.revision}</a></li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.hold.none_pending")}</p>`}<p class="s-note">${tr("s15.hold.nothing_ran")}</p></div>`;
+  }
+  if (code === "stale_action") return `<div class="s15-question" role="note"><p><b>${tr("s15.hold.changed_reply")}</b></p><p class="s-note">${tr("s15.hold.nothing_ran")}</p></div>`;
+  return "";
 }
 
 /** QuestionCard: one missing datum; chips prefill the composer and only the sent message resolves the hold. */
@@ -146,14 +178,17 @@ function stopStrip(row: ConversationOwnerRow, csrf: string): string {
 
 /** One owner message and everything grounded from its committed records, in a stable region. */
 export function rowHtml(row: ConversationOwnerRow, page: S15ChatPage): string {
+  if (row.decision) return decisionRow(row, page);
   const extras = page.extras[row.requestId], state = displayState(row);
+  const duties = (page.duties ?? []).filter(duty => duty.sourceRequestId === row.requestId).map(duty => dutyCard(duty, page.csrf)).join("");
+  const held = !row.slips.length && (row.needsYou?.code === "approval_reference_required" || row.needsYou?.code === "stale_action") ? decisionHold(row, page) : "";
   const work = row.intentLine === "report_only" || row.intentLine === "started_work" || (row.scopeLine !== null && row.intentLine !== null);
   const answer = !work && row.result ? `<div class="s-bot-msg"><div>${untrusted(`<p class="s15-text">${e(row.result.text)}</p>`, tr("s15.result.answer"))}</div></div>` : "";
   const card = work ? `<article class="s-workcard s15-work" aria-labelledby="s15-work-${e(row.requestId)}"><div class="s-workcard-hd"><div><h3 id="s15-work-${e(row.requestId)}">${tr(row.intentLine === "report_only" ? "s15.work.title_inspect" : "s15.work.title")}</h3>${row.subject ? `<p class="s-meta s-mono">${e(subjectLabel(row.subject)!)}</p>` : ""}</div>${statePill(state)}</div>
-    ${scopeLine(row)}${progressRegion(row)}${resultBlock(row, extras, page.conversationId)}${heldNotice(row)}${stopStrip(row, page.csrf)}</article>`
-    : `${!answer && row.state !== "done" ? `<p class="s-row">${statePill(state)}</p>` : ""}${answer}${resultBlock({ ...row, result: null }, extras, page.conversationId)}${heldNotice(row)}${row.state === "question" ? "" : stopStrip(row, page.csrf)}`;
-  return `<div class="s15-row" id="s15-row-${e(row.requestId)}" data-region data-sig="${row.revision}-${row.state}-${row.evidence.length}-${row.result ? 1 : 0}"${liveRow(row) ? ' data-active="true"' : ""} data-phase="${e(row.state)}">
-    <div class="s-owner-msg">${ownerText(row.ownerMessage)}</div>${receiptLine(row)}${row.reply === null ? "" : `<div class="s-owner-msg s15-reply">${ownerText(row.reply)}</div>`}${intentLine(row)}${questionCard(row, page.conversationId)}${card}${replyFooter(row, extras, page.memoryAvailable)}</div>`;
+    ${scopeLine(row)}${progressRegion(row)}${resultBlock(row, extras, page.conversationId, page)}${heldNotice(row, page)}${stopStrip(row, page.csrf)}</article>`
+    : `${!answer && row.state !== "done" && !held ? `<p class="s-row">${statePill(state)}</p>` : ""}${answer}${held || resultBlock({ ...row, result: null }, extras, page.conversationId, page)}${heldNotice(row, page)}${row.state === "question" ? "" : stopStrip(row, page.csrf)}`;
+  return `<div class="s15-row" id="s15-row-${e(row.requestId)}" data-region data-sig="${row.revision}-${row.state}-${row.evidence.length}-${row.result ? 1 : 0}-${row.slips.map(slip => `${slip.action.revision}${slip.state}`).join(".")}"${liveRow(row) ? ' data-active="true"' : ""} data-phase="${e(row.state)}">
+    <div class="s-owner-msg">${ownerText(row.ownerMessage)}</div>${receiptLine(row)}${row.reply === null ? "" : `<div class="s-owner-msg s15-reply">${ownerText(row.reply)}</div>`}${intentLine(row)}${questionCard(row, page.conversationId)}${card}${duties}${replyFooter(row, extras, page.memoryAvailable)}</div>`;
 }
 
 /** The latest material clarification hold, which a composer reply may answer as a continuation. */
@@ -163,7 +198,7 @@ export const openQuestion = (view: ConversationOwnerView | null) => { const row 
 export function composer(page: S15ChatPage): string {
   const question = openQuestion(page.view), answer = page.draft?.answer ?? (question ? { requestId: question.requestId, revision: question.revision } : null);
   const reply = answer ? `<label class="s-chip s15-answer"><input type="checkbox" name="answer" value="${e(answer.requestId)}" checked>${hidden("answerRevision", answer.revision)}<span>${tr("s15.question.answering")}</span></label>` : "";
-  return `<form class="s-composer s15-composer" id="s15-composer" data-composer data-region data-conversation="${e(page.conversationId)}" method="post" action="/s15/forms/message" novalidate>${hidden("csrf", page.csrf)}${hidden("requestId", page.draft?.requestId ?? crypto.randomUUID().replaceAll("-", ""))}${hidden("conversationId", page.conversationId)}
+  return `<form class="s-composer s15-composer" id="s15-composer" data-composer data-region data-conversation="${e(page.conversationId)}" method="post" action="/s15/forms/message" novalidate>${hidden("csrf", page.csrf)}${hidden("requestId", page.draft?.requestId ?? crypto.randomUUID().replaceAll("-", ""))}${hidden("conversationId", page.conversationId)}${page.draft?.duty ? `${hidden("duty", page.draft.duty)}<p class="s-chip s15-duty-reply">${tr("s15.duty.replying")}</p>` : ""}
     ${page.refused ? `<div role="alert">${banner("warn", tr("s15.composer.refused_kept"), codeText(page.refused), `<p class="s-mono s-meta">${e(page.refused)}</p>`)}</div>` : ""}
     <label class="sr-only" for="s15-text">${tr("s15.composer.label")}</label><textarea id="s15-text" name="text" rows="2" maxlength="16384" placeholder="${tr("s15.composer.placeholder")}">${e(page.draft?.text ?? "")}</textarea>
     <div class="s-bar"><span class="s-chip"><span aria-hidden="true">${tr("s15.composer.to")}</span><span class="sr-only">${tr("s15.composer.to")} </span> ${tr("s14.jit")}</span>${reply}<span class="s-grow"></span><span class="s15-sending" data-sending hidden role="status">${tr("s15.composer.sending")}</span><button class="s-send" aria-label="${tr("s15.composer.send")}">${icon("arrow")}</button></div>

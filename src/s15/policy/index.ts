@@ -2,3 +2,5 @@
 export type * from './types';
 export { openPolicyService } from './service';
 export { PolicyError } from './validation';
+export { createRecurringRules } from './recurring';
+export type { RecurringFrequency, RecurringRuleOptions, RecurringRuleProposal, RecurringRules } from './recurring';

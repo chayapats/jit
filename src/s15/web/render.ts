@@ -22,9 +22,9 @@ export function codeText(code: string | null): string {
 }
 
 /** §6 vocabulary: one word per state, with tone and glyph supplementary to the word. */
-export type S15State = "received" | "understanding" | "inspecting" | "working" | "waiting_ci" | "waiting_review" | "waiting_login" | "needs_you" | "question" | "stalled" | "budget_hold" | "partial" | "blocked" | "unsupported" | "unknown" | "failed" | "stopping" | "stopped" | "done" | "changed" | "expired" | "denied";
+export type S15State = "received" | "understanding" | "inspecting" | "working" | "waiting_ci" | "waiting_review" | "waiting_schedule" | "waiting_login" | "needs_you" | "question" | "stalled" | "budget_hold" | "partial" | "blocked" | "unsupported" | "unknown" | "failed" | "stopping" | "stopped" | "done" | "changed" | "expired" | "denied";
 const tones: Record<S15State, [string, string]> = {
-  received: ["", ""], understanding: ["", ""], inspecting: ["strong", ""], working: ["strong", ""], waiting_ci: ["", "◷"], waiting_review: ["", "◷"],
+  received: ["", ""], understanding: ["", ""], inspecting: ["strong", ""], working: ["strong", ""], waiting_ci: ["", "◷"], waiting_review: ["", "◷"], waiting_schedule: ["", "◷"],
   waiting_login: ["warn", "!"], needs_you: ["warn", "!"], question: ["warn", "!"], stalled: ["warn", "!"], budget_hold: ["warn", "!"], partial: ["warn", "!"], blocked: ["warn", "!"],
   unsupported: ["", "×"], unknown: ["danger", "?"], failed: ["danger", "×"], stopping: ["", ""], stopped: ["", ""], done: ["ok", "✓"], changed: ["warn", "!"], expired: ["", ""], denied: ["", ""],
 };
@@ -70,10 +70,10 @@ export function shell(nav: S15Nav, title: string, content: string, options: S15S
   const here = (path: string) => nav.current === path ? ' aria-current="page"' : "";
   const needs = `<a class="s-link" href="/needs"${here("/needs")}>${icon(nav.needs ? "alert" : "check")}<span class="s-label">${tr("s15.nav.needs")}</span><span class="s15-needs-count" data-needs-count>${nav.needs ? `<span class="s-nav-number">${nav.needs}</span>` : ""}</span></a>`;
   const chats = nav.conversations.map(item => `<li><a class="s-link s-chat-link" href="/chats/${e(item.conversationId)}#latest"${here(`/chats/${item.conversationId}`)}><span class="s-label">${e(clip(item.firstMessage))}</span></a></li>`).join("");
-  const manage = ([["/memory", "s15.nav.memory"], ["/resources/computer", "s15.nav.computer"], ["/models", "s15.nav.models"], ["/setup", "s15.nav.setup"]] as const)
+  const manage = ([["/memory", "s15.nav.memory"], ["/resources/computer", "s15.nav.computer"], ["/resources/accounts", "s15.nav.accounts"], ["/rules", "s15.nav.rules"], ["/models", "s15.nav.models"], ["/recovery", "s15.nav.recovery"], ["/setup", "s15.nav.setup"]] as const)
     .map(([path, label]) => `<li><a class="s-link" href="${path}"${here(path)}><span class="s-label">${tr(label)}</span></a></li>`).join("");
   const navigation = (mobile: boolean) => `<nav aria-label="${tr("s15.nav.label")}${mobile ? ` · ${tr("s14.plain.mobile")}` : ""}"><a class="s-link s-new-chat" href="/chats/new">${icon("plus")}<span class="s-label">${tr("s15.nav.new")}</span></a>
-    <ul><li>${needs}</li></ul><p class="s-nav-sec">${tr("s15.nav.conversations")}</p><ul class="s-chat-list">${chats || `<li><p class="s-nav-note">${tr("s15.nav.no_conversations")}</p></li>`}</ul>
+    <ul><li>${needs}</li><li><a class="s-link" href="/work"${here("/work")}>${icon("work")}<span class="s-label">${tr("s15.nav.work")}</span></a></li></ul><p class="s-nav-sec">${tr("s15.nav.conversations")}</p><ul class="s-chat-list">${chats || `<li><p class="s-nav-note">${tr("s15.nav.no_conversations")}</p></li>`}</ul>
     <p class="s-nav-sec">${tr("s15.nav.manage")}</p><ul>${manage}</ul></nav>`;
   const side = `<aside class="s-nav" aria-label="${tr("s15.nav.label")}"><a class="s-lockup" href="/" aria-label="${tr("s14.jit")}">${logoLockup({ height: 36, label: "Jit" })}</a>${navigation(false)}</aside>`;
   const mobile = `<details class="s-mobile-nav"><summary aria-label="${tr("s14.plain.navigation")}">${icon("more")}</summary><div class="s-mobile-panel">${navigation(true)}</div></details>`;

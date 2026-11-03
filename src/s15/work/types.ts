@@ -68,6 +68,8 @@ export interface ResponsibilityPort {
   publish(handle: AttemptHandle, consume: (attempt: WorkAttempt) => void): void;
   /** Authenticated read-only JSON projection; reads never start a model, VM, effect or replacement issue. */
   project(owner: OwnerActor, id: string): ResponsibilityProjection;
+  /** Read-only owner list for the Work and Needs-you pages: at most 64 current-generation projections, newest first. */
+  list?(owner: OwnerActor): ResponsibilityProjection[];
 }
 /** UI data for F9/12.3. Unknown components stay explicit, and scope lists only this responsibility. */
 export interface ResponsibilityProjection extends Responsibility {

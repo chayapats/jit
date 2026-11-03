@@ -1,23 +1,7 @@
 import { tr } from "../../i18n";
-import type { ConversationNeedsYou } from "../conversation";
 import { banner, clock, codeText, e, fill, form, hidden, key, notYet, pill, refusal } from "./render";
 import { fromMinor } from "./setup";
 import type { S15ForgetImpact, S15MemoryClaim, S15ModelBudgetView } from "./types";
-
-/** One Needs-you entry with the conversation it belongs to. */
-export interface S15NeedItem { conversationId: string; entry: ConversationNeedsYou }
-/** Only items that truly wait on the owner. Durable CI/review waits never appear here. Decisions on exact slips belong to UX15-02. */
-export function needsBody(items: S15NeedItem[]): string {
-  if (!items.length) return `<div class="s-col"><p class="s-sub">${tr("s15.needs.none")}</p></div>`;
-  const group = (kind: ConversationNeedsYou["kind"]) => {
-    const rows = items.filter(item => item.entry.kind === kind);
-    return rows.length ? `<section class="s-attention-group" aria-labelledby="s15-needs-${kind}"><h2 id="s15-needs-${kind}">${tr(key(`s15.needs.group.${kind}`))}</h2><ul class="s-attention">${rows.map(({ conversationId, entry }) => {
-      const slip = entry.slip, classes = slip ? slip.action.classes.map(name => `<span class="s-chip">${tr(key(`s15.class.${name}`))}</span>`).join("") : "";
-      return `<li id="${e(entry.id)}"><a href="/chats/${e(conversationId)}#s15-row-${e(entry.requestId)}"><span><span>${e(codeText(entry.code))}</span>${slip ? `<small>r${slip.action.revision} · ${tr("s15.needs.expires")} ${clock(slip.expiresAt)}</small>` : ""}</span>${pill(tr(kind === "reconciliation" ? "s15.state.unknown" : kind === "question" ? "s15.state.question" : "s15.state.needs_you"), kind === "reconciliation" ? "danger" : "warn", kind === "reconciliation" ? "?" : "!")}</a>${classes ? `<div class="s15-chips">${classes}</div>` : ""}</li>`;
-    }).join("")}</ul></section>` : "";
-  };
-  return `<div class="s-col s-attention-groups">${group("action")}${group("question")}${group("reconciliation")}<p class="s-note">${tr("s15.needs.slip_note")}</p></div>`;
-}
 
 const filters = ["all", "facts", "inferences", "preferences", "corrected", "forgotten", "s14"] as const;
 export type S15MemoryFilter = typeof filters[number];

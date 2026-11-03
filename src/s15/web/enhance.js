@@ -187,3 +187,17 @@ const initial = doc.getElementById("s15-composer");
 if (initial) wireComposer(initial);
 doc.addEventListener("click", onPrefill); wireCopy(doc);
 if (conversation && doc.querySelector("[data-live]")) schedule(2000);
+
+// UX15-02 (§9): opening a full slip moves focus to its heading, never to a decision button. The takeover view
+// moves focus to its bar, whose first control hands back; Esc deliberately does nothing there.
+const slipHeading = doc.getElementById("s15-slip-title");
+const takeoverBar = doc.getElementById("s15-takeover-bar");
+if (takeoverBar) takeoverBar.focus();
+else if (slipHeading && !(doc.activeElement && doc.activeElement.closest && doc.activeElement.closest("form"))) slipHeading.focus();
+// The protected frame refreshes for the same takeover generation only; a stale generation is refused by the server.
+const frame = doc.querySelector(".s15-frame img");
+if (frame) {
+  const base = frame.getAttribute("src");
+  let tick = 0;
+  setInterval(() => { tick++; frame.setAttribute("src", `${base}&n=${tick}`); }, 3000);
+}

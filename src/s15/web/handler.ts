@@ -1,26 +1,35 @@
 import { AppError } from "../../errors";
 import { negotiateLocale, tr, withLocale, type Locale } from "../../i18n";
 import { s14ContentSecurityPolicy } from "../../s14/web";
-import { conversationList, conversationOwnerView, conversationPendingNeeds, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
+import { conversationAction, conversationList, conversationOwnerView, conversationPendingNeeds, type ConversationApplication, type ConversationOwnerRow, type ConversationOwnerView } from "../conversation";
+import { BrowserError } from "../browser";
 import { PolicyError } from "../policy";
 import type { VmStatus } from "../vm";
 import { lookupS15Asset } from "./assets";
-import { composer, liveRow, openQuestion, threadHtml, type S15ChatPage, type S15RowExtras } from "./chat";
-import { memoryBody, memoryFilter, modelsBody, needsBody, type S15MemoryPage, type S15NeedItem } from "./manage";
-import { codeText, e, refusal, shell, standalonePage, type S15Nav } from "./render";
+import { composer, displayState, liveRow, openQuestion, threadHtml, type S15ChatPage, type S15RowExtras } from "./chat";
+import { memoryBody, memoryFilter, modelsBody, type S15MemoryPage } from "./manage";
+import { fullSlip, slipKind, slipPayload, type S15SlipDecision } from "./actions";
+import { browserNeedsYou, takeoverView, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
+import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
+import { accountsBody, needsBody, recoveryBody, restoreSection, type S15NeedItem } from "./resources";
+import { recurringProposalBody, rulesBody } from "./rules";
+import { parsePaymentAmount } from "../payments";
+import type { ActionSlip } from "../policy";
+import type { ResponsibilityProjection } from "../work";
+import { codeText, e, fill, refusal, shell, standalonePage, type S15Nav } from "./render";
 import { accountRows, computerCard, rulesCard, setupBody, toMinor, type S15ComputerProgress } from "./setup";
-import type { S15BudgetEntry, S15ForgetImpact, S15MemoryClaim, S15ModelBudgetView, S15WebConversation, S15WebPorts } from "./types";
+import type { S15BudgetEntry, S15ForgetImpact, S15GithubCapture, S15MemoryClaim, S15ModelBudgetView, S15WebConversation, S15WebPorts } from "./types";
 
 /** Adapts the real CHAT15-01 application to the Web consumer seam; reading starts no model, tool or queue. */
 export function s15ConversationPort<Actor, Work>(app: ConversationApplication<Actor, Work>): S15WebConversation<Actor> {
   return { view: (actor, id) => conversationOwnerView(app, actor, id), list: actor => conversationList(app, actor), submit: (actor, command) => app.submit(actor, command),
-    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), needs: actor => conversationPendingNeeds(app, actor), drain: () => app.drain() };
+    stop: (actor, id) => app.stop(actor, id), events: (actor, id, after) => app.events(actor, id, after), needs: actor => conversationPendingNeeds(app, actor), action: (actor, id) => conversationAction(app, actor, id), decide: (actor, command) => app.decide(actor, command), drain: () => app.drain() };
 }
 
 /** Explicit opt-in mount options. S14 never mounts this handler; only S15 composition does. */
 export interface S15WebOptions { origin: string; cookieName: string; loginPath: string; now?: () => number }
 const idPattern = /^[A-Za-z0-9_-]{1,128}$/;
-const codeOf = (error: unknown) => error instanceof AppError || error instanceof PolicyError ? error.code : "conversation_unavailable";
+const codeOf = (error: unknown) => error instanceof AppError || error instanceof PolicyError || error instanceof BrowserError ? error.code : "conversation_unavailable";
 const statusOf = (error: unknown) => error instanceof AppError ? error.status : error instanceof PolicyError ? 409 : 503;
 
 /**
@@ -33,6 +42,26 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName) || !/^\/(?!\/)/.test(options.loginPath)) throw new AppError("invalid_configuration");
   const progress: S15ComputerProgress = { setup: null, check: null };
   let reviewed: { entry: { amount: string; currency: string; periodId: string }; budget: S15BudgetEntry } | null = null;
+  // Last protected browser observation per site. Owner-typed values are never kept here or anywhere in this handler.
+  const browserState = new Map<string, S15BrowserProgress>();
+  let githubCapture: S15GithubCapture | null = null;
+  // Owner stall replies awaiting their own CHAT completion before WORK may resume the named responsibility.
+  const resumes = new Map<string, { dutyId: string; conversationId: string }>();
+  const resumeRefusals = new Map<string, string>();
+  /** Resumes a paused responsibility only from the owner's completed reply (WORK checks it arrived after the pause, in scope, authorized). */
+  const settleResumes = (actor: Actor) => {
+    if (!ports.duties) return;
+    for (const [requestId, pending] of [...resumes]) {
+      let row: ConversationOwnerRow | undefined;
+      try { row = ports.conversation.view(actor, pending.conversationId).rows.find(item => item.requestId === requestId); } catch { continue; }
+      if (!row || ["received", "understanding", "inspecting", "working"].includes(row.state)) continue;
+      resumes.delete(requestId);
+      if (row.state !== "done") { resumeRefusals.set(pending.dutyId, "execution_not_authorized"); continue; }
+      try { ports.duties.resume(actor, pending.dutyId, requestId); resumeRefusals.delete(pending.dutyId); }
+      catch (error) { resumeRefusals.set(pending.dutyId, codeOf(error)); }
+    }
+  };
+  const now = options.now ?? Date.now;
   const headers = (type: string, extra: Record<string, string> = {}) => ({ "Content-Type": `${type}; charset=utf-8`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": type === "text/html" ? "same-origin" : "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy, ...extra });
   const html = (body: string, status = 200, locale: Locale = "th") => new Response(body, { status, headers: headers("text/html", { "Content-Language": locale, Vary: "Accept-Language, Cookie" }) });
@@ -76,8 +105,30 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       const render = (body: () => string, status = 200) => html(withLocale(locale, body), status, locale);
 
       // Navigation reads: recent conversations and every item that truly waits on the owner.
-      const needs = (): S15NeedItem[] => ports.conversation.needs(actor);
-      const nav = (current: string): S15Nav => ({ conversations: ports.conversation.list(actor), needs: needs().length, current });
+      // A decision message and its source request both reference the same exact action; list it once.
+      const needs = (): S15NeedItem[] => [...new Map(ports.conversation.needs(actor).map(item => [item.entry.id, item] as const)).values()];
+      const dutyList = (): ResponsibilityProjection[] | null => { if (!ports.duties) return null; try { return ports.duties.list(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } };
+      const browsers = () => (ports.browsers ?? []).map(browser => ({ browser: { id: browser.id, site: browser.site, twoFactor: browser.twoFactor, fields: browser.fields } as S15BrowserInfo, state: browserState.get(browser.id) }));
+      const needsCount = () => needs().length + (dutyList()?.filter(dutyNeedsYou).length ?? 0) + browsers().filter(item => browserNeedsYou(item.state)).length;
+      const nav = (current: string): S15Nav => ({ conversations: ports.conversation.list(actor), needs: needsCount(), current });
+      // Every bounded conversation view the owner can read; decisions and slips are found only through them.
+      let viewCache: ConversationOwnerView[] | null = null;
+      const views = (): ConversationOwnerView[] => viewCache ??= ports.conversation.list(actor).flatMap(item => { try { return [ports.conversation.view(actor, item.conversationId)]; } catch (error) { if (codeOf(error) === "authentication_required") throw error; return []; } });
+      const decisions = (conversationId?: string): S15SlipDecision[] => views().filter(view => !conversationId || view.conversationId === conversationId).flatMap(view => view.rows.filter(row => row.decision).map(row => ({ row, conversationId: view.conversationId })));
+      const findSlip = (actionId: string, revision: number | null): { slip: ActionSlip; conversationId: string; latest: ActionSlip } | null => {
+        if (ports.conversation.action) {
+          const found = ports.conversation.action(actor, actionId); if (!found?.slips.length) return null;
+          const latest = found.slips.reduce((a, b) => b.action.revision > a.action.revision ? b : a);
+          const slip = revision === null ? latest : found.slips.find(item => item.action.revision === revision);
+          return slip ? { slip, conversationId: found.conversationId, latest } : null;
+        }
+        for (const view of views()) for (const row of view.rows) {
+          const matches = row.slips.filter(slip => slip.action.id === actionId); if (!matches.length) continue;
+          const latest = matches.reduce((a, b) => b.action.revision > a.action.revision ? b : a);
+          const slip = revision === null ? latest : matches.find(item => item.action.revision === revision); if (slip) return { slip, conversationId: view.conversationId, latest };
+        }
+        return null;
+      };
       const computerStatus = (): VmStatus | null => { if (!ports.computer) return null; try { return ports.computer.status(actor, ports.computer.vmId); } catch (error) { if (codeOf(error) === "vm_not_enrolled") return null; throw error; } };
       const accounts = () => ports.accounts?.list(actor) ?? null;
       const memoryClaims = (): S15MemoryClaim[] | null => ports.memory ? ports.memory.view(actor).claims : null;
@@ -104,6 +155,27 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
             const ready = Object.values(extras).some(item => item.readiness?.rows.some(entry => entry.issue === Number(start) && entry.state === "ready"));
             if (ready) return { text: withLocale(locale, () => tr("s15.readiness.start_text")).replace("{issue}", start), requestId: null, answer: null };
           }
+          const plain = (name: Parameters<typeof tr>[0], values: Record<string, string> = {}) => ({ text: withLocale(locale, () => tr(name)).replace(/\{([a-z_]+)\}/g, (all, slot: string) => values[slot] ?? all), requestId: null, answer: null });
+          const revise = url.searchParams.get("revise"), again = url.searchParams.get("again");
+          const ownSlip = (id: string | null) => id ? view?.rows.flatMap(row => row.slips).find(slip => slip.action.id === id) ?? null : null;
+          const revised = ownSlip(revise);
+          if (revised) return plain(slipKind(revised) === "email" ? "s15.prefill.revise_email" : "s15.prefill.revise");
+          if (ownSlip(again)) return plain(url.searchParams.get("mode") === "investigate" ? "s15.prefill.investigate" : "s15.prefill.again");
+          const dutyId = url.searchParams.get("duty");
+          if (dutyId && ports.duties && idPattern.test(dutyId)) {
+            let duty: ResponsibilityProjection | null = null; try { duty = ports.duties.project(actor, dutyId); } catch { duty = null; }
+            if (duty && duty.conversationId === conversationId) {
+              const reply = url.searchParams.get("reply"), accept = url.searchParams.get("accept");
+              const subject = duty.subject?.startsWith("issue:") ? `#${duty.subject.slice(6)} · ` : "";
+              if (reply === "recommended" && duty.report && duty.state === "paused") return { text: `${subject}${withLocale(locale, () => tr("s15.prefill.try_recommended"))}${duty.report.recommendation}`, requestId: null, answer: null, duty: duty.id };
+              if (reply === "other" && duty.report && duty.state === "paused") return { text: `${subject}${withLocale(locale, () => tr("s15.prefill.other_way"))}`, requestId: null, answer: null, duty: duty.id };
+              const proposal = accept ? duty.proposals.find(item => item.eventId === accept) : null;
+              if (proposal) return plain("s15.prefill.accept_outside", { ref: proposal.evidenceRefs[0] ?? proposal.eventId });
+            }
+          }
+          const skip = url.searchParams.get("skip"), site = skip ? ports.browsers?.find(item => item.id === skip) : null;
+          if (site) return plain("s15.prefill.skip_site", { site: site.site });
+          if (url.searchParams.get("skip_step") && view?.rows.some(row => row.requestId === url.searchParams.get("skip_step"))) return plain("s15.prefill.skip_step");
           const question = openQuestion(view);
           if (answer && question && question.requestId === answer && pick && /^\d$/.test(pick)) {
             const choice = question.question!.candidates[Number(pick)];
@@ -112,7 +184,11 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           return null;
         })();
         const dupId = url.searchParams.get("dup"), duplicate = dupId ? view?.rows.find(row => row.requestId === dupId) ?? null : null;
-        const page: S15ChatPage = { csrf, conversationId, view, extras, draft: prefill, refused: null, duplicate, memoryAvailable: !!ports.memory, ...extra };
+        const duties = view ? dutyList() ?? [] : [];
+        const sites = browsers();
+        const page: S15ChatPage = { csrf, conversationId, view, extras, draft: prefill, refused: null, duplicate, memoryAvailable: !!ports.memory,
+          decisions: view ? view.rows.filter(row => row.decision).map(row => ({ row, conversationId })) : [], duties: duties.filter(duty => duty.conversationId === conversationId),
+          browser: sites.length === 1 ? sites[0]! : null, canDecide: !!ports.conversation.decide, ...extra };
         const live = !!view?.rows.some(liveRow), cursor = view?.cursor ?? 0;
         return render(() => shell(nav(`/chats/${conversationId}`), tr("s15.chat.title"), threadHtml(page), { dock: `<div class="s-dock">${composer(page)}</div>`, live, conversationId, cursor }), status);
       };
@@ -130,9 +206,38 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           rulesDone: current !== null,
         })), status);
       };
-      const computerPage = (refused: string | null = null, status = 200) => {
-        const status_ = computerStatus();
-        return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" })}</section></div>`), status);
+      const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null } = { restore: null, restored: false }) => {
+        const status_ = computerStatus(), computer = ports.computer;
+        const snapshots = status_ && computer?.snapshots && computer.restore ? (() => { try { return computer.snapshots!(actor, computer.vmId); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
+        return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" })}</section>
+          ${restoreSection({ csrf, status: status_, snapshots, selected: restore.restore, hypervisor: computer?.hypervisor ?? null, refused: restore.refused ?? null, restored: restore.restored })}</div>`), status);
+      };
+      const actionPage = (actionId: string, revision: number | null, state: { checked?: boolean; refused?: string | null } = {}, status = 200) => {
+        const found = findSlip(actionId, revision); if (!found) throw new AppError("not_found", 404);
+        const { slip, conversationId, latest } = found;
+        let card = null; if (ports.decisions && slip.action.classes.includes("major_change")) { try { card = ports.decisions(actor, { id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash }); } catch (error) { if (codeOf(error) === "authentication_required") throw error; card = null; } }
+        const policy = ports.rules?.current(actor) ?? null;
+        return render(() => shell(nav(`/actions/${actionId}`), tr("s15.slip.page_title"), `<div class="s-col"><p><a class="s-link-text" href="/chats/${e(conversationId)}#latest">${tr("s15.slip.back")}</a></p>${fullSlip({ csrf, conversationId, slip, decisions: decisions(conversationId).filter(item => item.row.decision?.action.id === actionId), policy, replacement: slip.state === "changed" && latest !== slip ? latest : null, card, canDecide: !!ports.conversation.decide, canCheck: !!ports.actions, recurring: !!ports.recurring, refused: state.refused ?? null, checked: !!state.checked })}</div>`, { subtitle: `r${slip.action.revision}` }), status);
+      };
+      const attachment = (actionId: string, revision: number | null, index: number) => {
+        const found = findSlip(actionId, revision); if (!found) throw new AppError("not_found", 404);
+        const payload = slipPayload(found.slip) as { contract?: unknown; kind?: unknown; attachments?: { name?: unknown; dataBase64?: unknown }[] } | null;
+        const file = payload?.contract === "s15-google-effect/v1" && payload.kind === "mail" && Array.isArray(payload.attachments) ? payload.attachments[index] : undefined;
+        if (!file || typeof file.dataBase64 !== "string" || typeof file.name !== "string") throw new AppError("not_found", 404);
+        // Exact attachment bytes from the prepared payload, always as a download and never rendered by this origin.
+        return new Response(Buffer.from(file.dataBase64, "base64"), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; sandbox" } });
+      };
+      const rulesPage = (state: { refused?: string | null; saved?: string | null } = {}, status = 200) => {
+        const policy = ports.rules?.current(actor) ?? null;
+        const payments = ports.recurring ? views().flatMap(view => view.rows.flatMap(row => row.slips)).filter(slip => slip.action.transaction && slip.state === "succeeded" && slip.action.classes.every(c => c === "financial")) : [];
+        const unique = [...new Map(payments.map(slip => [`${slip.action.transaction!.payee.id}:${slip.action.transaction!.account.id}:${slip.action.transaction!.currency}`, slip])).values()].slice(0, 16);
+        return render(() => shell(nav("/rules"), tr("s15.rules.title"), rulesBody({ csrf, policy, rulesAvailable: !!ports.rules, recurring: ports.recurring ? { frequencies: ports.recurring.frequencies(), payments: unique.map(slip => ({ slip })) } : null, github: ports.github ? { capture: githubCapture } : null, refused: state.refused ?? null, saved: state.saved ?? url.searchParams.get("saved") })), status);
+      };
+      const recurringPage = (from: string | null, r: string | null, state: { proposal?: import("../policy").RecurringRuleProposal | null; ceiling?: string; frequencyId?: string; refused?: string | null } = {}, status = 200) => {
+        if (!ports.recurring || !from || !idPattern.test(from)) throw new AppError("not_found", 404);
+        const found = findSlip(from, r && /^[1-9]\d{0,8}$/.test(r) ? Number(r) : null); if (!found?.slip.action.transaction) throw new AppError("not_found", 404);
+        const t = found.slip.action.transaction, ceiling = state.ceiling ?? (() => { const d = t.amountMinor.padStart(t.minorUnit + 1, "0"); return t.minorUnit ? `${d.slice(0, -t.minorUnit)}.${d.slice(-t.minorUnit)}` : d; })();
+        return render(() => shell(nav("/rules"), tr("s15.rules.recurring_title"), recurringProposalBody({ csrf, slip: found.slip, frequencies: ports.recurring!.frequencies(), proposal: state.proposal ?? null, ceiling, frequencyId: state.frequencyId ?? "", refused: state.refused ?? null, fromJit: false })), status);
       };
       const memoryPage = (state: Partial<S15MemoryPage> = {}, status = 200) => {
         const claims = memoryClaims(), filter = memoryFilter(url.searchParams.get("filter") ?? state.filter ?? null);
@@ -150,6 +255,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       };
 
       if (request.method === "GET") {
+        if (resumes.size) settleResumes(actor);
         if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? "/chats/new" : "/setup");
         if (url.pathname === "/chats/new") return redirect(`/chats/${crypto.randomUUID().replaceAll("-", "")}`);
         const chat = /^\/chats\/([A-Za-z0-9_-]{1,128})(\/events)?$/.exec(url.pathname);
@@ -159,9 +265,52 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           return json({ ...ports.conversation.events(actor, chat[1]!, Number(after)), needs: needs().length });
         }
         if (chat) return chatPage(chat[1]!);
-        if (url.pathname === "/needs") return render(() => shell(nav("/needs"), tr("s15.needs.title"), needsBody(needs())));
+        if (url.pathname === "/needs") return render(() => shell(nav("/needs"), tr("s15.needs.title"), needsBody({ items: needs(), decisions: decisions(), duties: dutyList() ?? [], browsers: browsers(), csrf })));
+        const action = /^\/actions\/([A-Za-z0-9_-]{1,128})(?:\/attachments\/(\d{1,2}))?$/.exec(url.pathname);
+        if (action) {
+          const r = url.searchParams.get("r"), revision = r && /^[1-9]\d{0,8}$/.test(r) ? Number(r) : null;
+          if (action[2] !== undefined) return attachment(action[1]!, revision, Number(action[2]));
+          return actionPage(action[1]!, revision, { checked: url.searchParams.get("checked") === "1" });
+        }
+        if (url.pathname === "/work") {
+          const rows = views().flatMap(view => view.rows.filter(row => !row.decision).map(row => ({ conversationId: view.conversationId, requestId: row.requestId, ownerMessage: row.ownerMessage, state: displayState(row), at: row.receipt.receivedAt })));
+          const pick = (states: string[]) => rows.filter(row => states.includes(row.state)).sort((a, b) => b.at - a.at).slice(0, 20) as S15WorkRow[];
+          const login = views().flatMap(view => view.rows.filter(row => row.needsYou?.code === "login_required").map(row => ({ conversationId: view.conversationId, requestId: row.requestId, ownerMessage: row.ownerMessage, state: "waiting_login" as const, at: row.receipt.receivedAt })));
+          return render(() => shell(nav("/work"), tr("s15.work.page_title"), workBody({ needs: needsCount(), duties: dutyList(), working: pick(["received", "understanding", "inspecting", "working"]), waiting: login, done: pick(["done", "partial", "stopped"]), csrf })));
+        }
+        const duty = /^\/duties\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
+        if (duty) {
+          if (!ports.duties) throw new AppError("not_found", 404);
+          const projection = ports.duties.project(actor, duty[1]!);
+          const refused = resumeRefusals.get(projection.id);
+          return render(() => shell(nav("/work"), tr("s15.duty.title"), `<div class="s-col">${refused && projection.state === "paused" ? refusal(refused, tr("s15.duty.resume_refused")) : ""}${dutyCard(projection, csrf, true)}<p><a class="s-link-text" href="/chats/${e(projection.conversationId)}#s15-row-${e(projection.sourceRequestId)}">${tr("s15.duty.open_conversation")}</a></p></div>`));
+        }
+        if (url.pathname === "/rules") return rulesPage();
+        if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
+        if (url.pathname === "/resources/accounts") {
+          let team = null; try { team = ports.team ? ports.team.view(actor).resources : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; team = null; }
+          return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf })));
+        }
+        if (url.pathname === "/recovery") {
+          const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
+          const pending = (dutyList()?.filter(item => item.state === "reconcile_only").length ?? 0) + views().reduce((n, view) => n + view.rows.filter(row => row.state === "unknown" && !row.slips.length).length, 0);
+          return render(() => shell(nav("/recovery"), tr("s15.recovery.title"), recoveryBody({ unknown: all.filter(item => item.entry.kind === "reconciliation" && item.entry.slip), decisions: decisions(), pending, adoption, adoptionAvailable: !!ports.adoption })));
+        }
+        const site = /^\/browser\/([A-Za-z0-9_-]{1,128})(\/frame)?$/.exec(url.pathname);
+        if (site) {
+          const browser = ports.browsers?.find(item => item.id === site[1]); if (!browser) throw new AppError("not_found", 404);
+          const state = browserState.get(browser.id);
+          if (site[2]) {
+            const g = url.searchParams.get("g");
+            if (!state || state.login !== "owner_control" || state.generation === null || g !== String(state.generation)) throw new AppError("stale_input", 409);
+            const bytes = await browser.owner.frame(actor, state.generation);
+            return new Response(new Blob([new Uint8Array(bytes)]), { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy } });
+          }
+          if (!state || state.login !== "owner_control" || state.generation === null) return redirect("/needs#s15-needs-login");
+          return render(() => shell(nav("/needs"), fill("s15.browser.view_title", { site: browser.site }), takeoverView(browsers().find(item => item.browser.id === browser.id)!.browser, state, csrf, url.searchParams.get("refused"))));
+        }
         if (url.pathname === "/setup") return setupPage();
-        if (url.pathname === "/resources/computer") return computerPage();
+        if (url.pathname === "/resources/computer") return computerPage(null, 200, { restore: url.searchParams.get("restore"), restored: url.searchParams.get("restored") === "1" });
         if (url.pathname === "/memory") return memoryPage();
         if (url.pathname === "/models") return render(() => shell(nav("/models"), tr("s15.models.title"), modelsBody(models(), accounts()?.find(row => row.kind === "model" && row.signInHref)?.signInHref ?? null)));
         throw new AppError("not_found", 404);
@@ -169,9 +318,16 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
 
       // Authenticated no-script commands. Each one names exactly what the owner pressed.
       if (url.pathname === "/s15/forms/message") {
-        only(fields, ["csrf", "requestId", "conversationId", "text"], ["answer", "answerRevision"]);
+        only(fields, ["csrf", "requestId", "conversationId", "text"], ["answer", "answerRevision", "duty"]);
         const conversationId = fields.conversationId!, text = fields.text!;
         if (!idPattern.test(conversationId)) throw new AppError("invalid_body");
+        // A stall reply names its paused responsibility; only one of this conversation can be named.
+        const dutyId = fields.duty ?? null;
+        if (dutyId !== null) {
+          if (!ports.duties || !idPattern.test(dutyId)) throw new AppError("invalid_body");
+          const named = ports.duties.project(actor, dutyId);
+          if (named.conversationId !== conversationId || named.state !== "paused") throw new AppError("stale_revision", 409);
+        }
         const answer = fields.answer ? { requestId: fields.answer, revision: Number(fields.answerRevision) } : null;
         if (answer && (!idPattern.test(answer.requestId) || !Number.isSafeInteger(answer.revision))) throw new AppError("invalid_body");
         let before: ConversationOwnerRow | undefined;
@@ -184,9 +340,10 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (code === "authentication_required") throw error;
           // Credential-shaped text is never echoed back into a page; everything else stays in the composer.
           const kept = code === "credential_content_refused" ? "" : text;
-          return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer } }, statusOf(error) >= 500 ? 503 : 409);
+          return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer, ...(dutyId ? { duty: dutyId } : {}) } }, statusOf(error) >= 500 ? 503 : 409);
         }
-        void ports.conversation.drain().catch(() => {});
+        if (dutyId) resumes.set(fields.requestId!, { dutyId, conversationId });
+        void ports.conversation.drain().then(() => settleResumes(actor)).catch(() => {});
         return redirect(`/chats/${conversationId}${before ? `?dup=${fields.requestId}` : ""}#latest`);
       }
       if (url.pathname === "/s15/forms/stop") {
@@ -195,6 +352,120 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         const target = ports.conversation.list(actor).find(item => ports.conversation.view(actor, item.conversationId).rows.some(row => row.requestId === fields.target));
         ports.conversation.stop(actor, fields.target!);
         return redirect(target ? `/chats/${target.conversationId}#s15-row-${fields.target}` : "/needs");
+      }
+      if (url.pathname.startsWith("/s15/forms/action/")) {
+        only(fields, ["csrf", "requestId", "conversationId", "actionId", "revision", "actionHash"], ["decision", "outcome"]);
+        const revision = Number(fields.revision), ref = { id: fields.actionId!, revision, actionHash: fields.actionHash! };
+        if (!idPattern.test(fields.conversationId!) || !idPattern.test(ref.id) || !Number.isSafeInteger(revision) || revision < 1 || !/^[a-f0-9]{64}$/.test(ref.actionHash)) throw new AppError("invalid_body");
+        const back = (code: string) => actionPage(ref.id, revision, { refused: code }, 409);
+        try {
+          if (url.pathname === "/s15/forms/action/decide") {
+            if (!ports.conversation.decide || (fields.decision !== "approve" && fields.decision !== "deny") || fields.outcome !== undefined) throw new AppError("not_found", 404);
+            ports.conversation.decide(actor, { contract: "s15-conversation-decision/v1", requestId: fields.requestId!, conversationId: fields.conversationId!, action: ref, decision: fields.decision });
+            void ports.conversation.drain().catch(() => {});
+            return redirect(`/actions/${ref.id}?r=${revision}#s15-slip-title`);
+          }
+          if (!ports.actions || fields.decision !== undefined) throw new AppError("not_found", 404);
+          if (url.pathname === "/s15/forms/action/check") { if (fields.outcome !== undefined) throw new AppError("invalid_body"); await ports.actions.reconcile(actor, ref, fields.requestId!); return redirect(`/actions/${ref.id}?r=${revision}&checked=1#s15-slip-title`); }
+          if (url.pathname === "/s15/forms/action/statement") {
+            if (fields.outcome !== "occurred" && fields.outcome !== "did_not_occur") throw new AppError("invalid_body");
+            ports.actions.statement(actor, ref, fields.requestId!, fields.outcome); return redirect(`/actions/${ref.id}?r=${revision}#s15-slip-title`);
+          }
+        } catch (error) { const code = codeOf(error); if (code === "authentication_required" || code === "not_found" || code === "invalid_body") throw error; return back(code); }
+        throw new AppError("not_found", 404);
+      }
+      if (url.pathname === "/s15/forms/duty/stop") {
+        only(fields, ["csrf", "requestId", "duty"]);
+        if (!ports.duties || !idPattern.test(fields.duty!)) throw new AppError("not_found", 404);
+        ports.duties.stop(actor, fields.duty!, fields.requestId!);
+        return redirect(`/duties/${fields.duty}`);
+      }
+      if (url.pathname.startsWith("/s15/forms/browser/")) {
+        only(fields, ["csrf", "requestId", "site"], ["generation", "field", "value"]);
+        const browser = ports.browsers?.find(item => item.id === fields.site); if (!browser) throw new AppError("not_found", 404);
+        const state = browserState.get(browser.id), generation = fields.generation === undefined ? null : Number(fields.generation);
+        const set = (login: S15BrowserProgress["login"], g: number | null, handBack?: number) => browserState.set(browser.id, { login, generation: g, at: now(), ...(handBack === undefined ? {} : { handBack }) });
+        const current = () => { if (!state || state.login !== "owner_control" || generation === null || state.generation !== generation) throw new AppError("stale_input", 409); return generation; };
+        try {
+          if (url.pathname === "/s15/forms/browser/takeover") { const taken = await browser.owner.takeover(actor); set("owner_control", taken.generation); return redirect(`/browser/${browser.id}#s15-takeover-bar`); }
+          if (url.pathname === "/s15/forms/browser/input") {
+            const g = current(), field = browser.fields.find(item => item.name === fields.field); if (!field) throw new AppError("invalid_body");
+            if (field.kind === "type" ? typeof fields.value !== "string" || !fields.value : fields.value !== undefined) throw new AppError("invalid_body");
+            // The owner's value goes straight to the protected browser; it is never rendered, logged or kept.
+            await browser.owner.input(actor, g, field.kind === "type" ? { kind: "type", field: field.name, value: fields.value! } : { kind: "click", field: field.name });
+            return redirect(`/browser/${browser.id}#s15-takeover-bar`);
+          }
+          if (url.pathname === "/s15/forms/browser/handback" || url.pathname === "/s15/forms/browser/cancel") {
+            const cancel = url.pathname.endsWith("/cancel"), handed = browser.owner.handBack(actor, current(), cancel);
+            set(handed.login, null, handed.generation);
+            if (handed.login === "checking") {
+              // One bounded protected session observation; the hand-back press itself says nothing about the session.
+              const observed = await Promise.race([browser.owner.checkSession(actor), new Promise<"unknown">(resolve => setTimeout(() => resolve("unknown"), 15000))]).catch(() => "unknown" as const);
+              // A newer takeover or hand-back (for example from another tab) owns the state now; this late result is dropped.
+              if (browserState.get(browser.id)?.handBack === handed.generation) set(observed === "checking" ? "unknown" : observed, null, handed.generation);
+            }
+            return redirect("/needs#s15-needs-login");
+          }
+        } catch (error) {
+          const code = codeOf(error); if (code === "authentication_required") throw error;
+          if (url.pathname === "/s15/forms/browser/input" && state?.login === "owner_control") return redirect(`/browser/${browser.id}?refused=${encodeURIComponent(code)}#s15-takeover-bar`);
+          return render(() => shell(nav("/needs"), tr("s15.needs.title"), `<div class="s-col">${refusal(code)}</div>${needsBody({ items: needs(), decisions: decisions(), duties: dutyList() ?? [], browsers: browsers(), csrf })}`), 409);
+        }
+        throw new AppError("not_found", 404);
+      }
+      if (url.pathname.startsWith("/s15/forms/recurring/")) {
+        const recurring = ports.recurring; if (!recurring) throw new AppError("not_found", 404);
+        if (url.pathname === "/s15/forms/recurring/propose") {
+          only(fields, ["csrf", "requestId", "actionId", "revision", "actionHash", "ceiling"], ["frequencyId"]);
+          const found = findSlip(fields.actionId!, Number(fields.revision)), t = found?.slip.action.transaction;
+          if (!found || !t || found.slip.action.actionHash !== fields.actionHash) throw new AppError("not_found", 404);
+          const retry = (code: string) => recurringPage(fields.actionId!, fields.revision!, { ceiling: fields.ceiling!, frequencyId: fields.frequencyId ?? "", refused: code }, 409);
+          let ceiling: string; try { ceiling = parsePaymentAmount(fields.ceiling!.trim(), t.minorUnit); } catch { return retry("invalid_amount"); }
+          try { const proposal = recurring.propose(actor, { action: { id: found.slip.action.id, revision: found.slip.action.revision, actionHash: found.slip.action.actionHash }, amountCeilingMinor: ceiling, frequencyId: fields.frequencyId ?? "" }); return recurringPage(fields.actionId!, fields.revision!, { proposal }); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return retry(codeOf(error)); }
+        }
+        if (url.pathname === "/s15/forms/recurring/install") {
+          only(fields, ["csrf", "requestId", "proposalHash"]);
+          try { recurring.install(actor, fields.requestId!, fields.proposalHash!); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return rulesPage({ refused: codeOf(error) }, 409); }
+          return redirect("/rules?saved=recurring_installed#s15-rules-recurring");
+        }
+        if (url.pathname === "/s15/forms/recurring/revoke") {
+          only(fields, ["csrf", "requestId", "ruleId"]); if (!idPattern.test(fields.ruleId!)) throw new AppError("invalid_body");
+          try { recurring.revoke(actor, fields.requestId!, fields.ruleId!); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return rulesPage({ refused: codeOf(error) }, 409); }
+          return redirect("/rules?saved=recurring_revoked#s15-rules-recurring");
+        }
+        throw new AppError("not_found", 404);
+      }
+      if (url.pathname.startsWith("/s15/forms/github/")) {
+        const github = ports.github; if (!github) throw new AppError("not_found", 404);
+        try {
+          if (url.pathname === "/s15/forms/github/capture") { only(fields, ["csrf", "requestId"]); githubCapture = await github.capture(actor); return redirect("/rules#s15-rules-github"); }
+          if (url.pathname === "/s15/forms/github/install") {
+            const capture = githubCapture; if (!capture || fields.captureId !== capture.captureId) throw new AppError("github_capture_required", 409);
+            const repoFields = Object.keys(fields).filter(name => name.startsWith("repo_"));
+            only(fields, ["csrf", "requestId", "captureId"], ["publication", "merge", ...capture.repositories.map(entry => `repo_${entry.repository.resource.id}`)]);
+            const repositoryIds = repoFields.map(name => name.slice(5));
+            if (!repositoryIds.length || (!fields.publication && !fields.merge)) throw new AppError("github_selection_required", 409);
+            await github.install(actor, { requestId: fields.requestId!, captureId: capture.captureId, repositoryIds, publication: fields.publication === "1", merge: fields.merge === "1" });
+            githubCapture = null; return redirect("/rules?saved=github_installed#s15-rules-github");
+          }
+          if (url.pathname === "/s15/forms/github/revoke") {
+            only(fields, ["csrf", "requestId", "captureId"]);
+            const capture = githubCapture; if (!capture || fields.captureId !== capture.captureId) throw new AppError("github_capture_required", 409);
+            github.revoke(actor, { requestId: fields.requestId!, expectedPolicyRevision: capture.revoke.expectedPolicyRevision, ruleIds: capture.revoke.ruleIds });
+            githubCapture = null; return redirect("/rules?saved=github_revoked#s15-rules-github");
+          }
+        } catch (error) { if (codeOf(error) === "authentication_required") throw error; return rulesPage({ refused: codeOf(error) }, 409); }
+        throw new AppError("not_found", 404);
+      }
+      if (url.pathname === "/s15/forms/computer/restore") {
+        only(fields, ["csrf", "requestId", "snapshotId", "generation"]);
+        const computer = ports.computer; if (!computer?.restore || !idPattern.test(fields.snapshotId!)) throw new AppError("not_found", 404);
+        try {
+          if (computerStatus()?.generation !== Number(fields.generation)) throw new AppError("stale_revision", 409);
+          await computer.restore(actor, { vmId: computer.vmId, snapshotId: fields.snapshotId! });
+        } catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, { restore: fields.snapshotId!, restored: false, refused: codeOf(error) }); }
+        return redirect("/resources/computer?restored=1#s15-restore-title");
       }
       if (url.pathname.startsWith("/s15/forms/computer/")) {
         const computer = ports.computer; if (!computer) throw new AppError("not_found", 404);
