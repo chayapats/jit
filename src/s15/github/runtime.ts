@@ -7,7 +7,7 @@ import type { S15CompositionOptions } from '../composition';
 import { GithubApiGateway } from './github-api';
 import { ProtectedGithubPush } from './push';
 import { createGithubVmWorkspace } from './workspace';
-import { createGithubPreload, githubBundleReadHandler } from './composition';
+import { createGithubPreload, githubBundleMaxBytes, githubBundleReadHandler } from './composition';
 import type { GithubLimits, GithubProduction, GithubRepository, ProtectedGithubGateway } from './types';
 import { canonical } from './validation';
 
@@ -56,7 +56,9 @@ function composeGithubRuntime(config: Omit<GithubRuntimeConfig, 'repositories'>,
  * criteria never pass automatically and every merge keeps its production and evidence gates (ADR 0073). */
 export const s15GithubWebDefaults: Omit<GithubRuntimeConfig, 'repositories' | 'catalogPurpose'> = Object.freeze({
   limits: { snapshotMaxAgeMs: 120_000, waitMs: 60_000, stallMs: 6 * 3_600_000, maxNoProgress: 3, maxAttempts: 6,
-    readUpperBound: { attempts: 0, steps: 0, calls: 1, reads: 1, outputBytes: 4 * 1_048_576, activeMs: 60_000, spendMinor: '0' },
+    // One read is either a bounded snapshot or a repository bundle, which the protected preload accepts up to
+    // `githubBundleMaxBytes`; the reserved bound covers the largest accepted read so a settlement never overruns it.
+    readUpperBound: { attempts: 0, steps: 0, calls: 1, reads: 1, outputBytes: githubBundleMaxBytes, activeMs: 60_000, spendMinor: '0' },
     actionUpperBound: { attempts: 0, steps: 0, calls: 1, reads: 0, outputBytes: 1_048_576, activeMs: 60_000, spendMinor: '0' } },
   // A repository's own test command can't be inferred. The default records only a whitespace sanity check of the
   // reviewable commit; no acceptance criterion is ever satisfied by it, so merges stay held for evidence.

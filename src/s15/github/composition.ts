@@ -16,8 +16,18 @@ export function githubBundleReadHandler(repositories: readonly GithubRepository[
   } };
 }
 
-/** Fetches a pinned credential-free bundle through a charged protected read, then initializes only the admitted VM workspace. */
-export function createGithubPreload(options: { policy: S15PolicyService; repositories: readonly GithubRepository[]; credential(repository: GithubRepository): string; upperBound: GithubLimits['readUpperBound']; beforeRead?(work: import('../policy').WorkAuthority, payload: import('../policy').JsonValue): void; recordRead?(actor: import('../policy').WorkActor): void }) {
+/** Largest repository bundle the protected preload ever accepts (the S14 broker's pack limit). */
+export const githubBundleMaxBytes = 16 * 1024 * 1024;
+
+/** Fetches a pinned credential-free bundle through a charged protected read, then initializes only the admitted VM workspace.
+ * The broker's pack limit is the smaller of `githubBundleMaxBytes` and the reserved read bound, so an accepted bundle never
+ * exceeds the charge it was admitted under (an overrun would stop every later charge of the installation). */
+export function createGithubPreload(options: { policy: S15PolicyService; repositories: readonly GithubRepository[]; credential(repository: GithubRepository): string; upperBound: GithubLimits['readUpperBound']; beforeRead?(work: import('../policy').WorkAuthority, payload: import('../policy').JsonValue): void; recordRead?(actor: import('../policy').WorkActor): void;
+  /** Deterministic test seam for the protected bundle broker; production uses `repositoryBundle`. */
+  fetchBundle?: typeof repositoryBundle }) {
+  const packBytes = Math.min(githubBundleMaxBytes, options.upperBound.outputBytes);
+  if (packBytes < 1) throw new AppError('cost_unknown');
+  const schedule = (expire: () => void, timeoutMs: number) => { const timer = setTimeout(expire, timeoutMs); return () => clearTimeout(timer); };
   return async (backend: ExecutionBackend, selection: GithubSelection, guard: () => void): Promise<string> => {
     const repository = options.repositories.find(r => equal(r, selection.repository)); if (!repository) throw new AppError('outside_scope');
     guard(); const actor = options.policy.control.bindWork(selection.workId), claim = options.policy.work.reserveRead(actor, { requestId: 'bundle_' + crypto.randomUUID().replaceAll('-', ''), resource: repository.resource, operation: 'read', exactPayload: { kind: 'github_bundle', repository: repository.name, base: selection.base }, upperBound: options.upperBound, fences: [] });
@@ -28,9 +38,10 @@ export function createGithubPreload(options: { policy: S15PolicyService; reposit
       // The public broker's guard is called after all credential waits and before each actual request.
       const secret = options.credential(repository);
       let dispatched = false;
-      bytes = await repositoryBundle({ id: repository.resource.id, revision: repository.resource.revision, botId: options.policy.work.guard(actor).request.bot.id, url: `https://github.com/${repository.name}.git`, baseCommit: selection.base, active: true, registry: null }, secret, AbortSignal.timeout(60000), () => {
+      bytes = await (options.fetchBundle ?? repositoryBundle)({ id: repository.resource.id, revision: repository.resource.revision, botId: options.policy.work.guard(actor).request.bot.id, url: `https://github.com/${repository.name}.git`, baseCommit: selection.base, active: true, registry: null }, secret, AbortSignal.timeout(60000), () => {
         guard(); options.beforeRead?.(options.policy.work.guard(actor), { kind: 'github_bundle', repository: repository.name, base: selection.base }); if (!dispatched) { options.policy.work.guardRead(actor, claim.claim.id); sent = true; dispatched = true; } else options.policy.work.guard(actor);
-      });
+      }, fetch, { packBytes, timeoutMs: 60000, schedule });
+      if (bytes.length > packBytes) throw new AppError('coding_preload_size_limit', 413);
       returned = true; options.policy.control.settleRead(claim.claim.id, { outcome: 'succeeded', basis: 'remote_verified', code: null, actual: { ...unknownUsage(), outputBytes: bytes.length }, transportSettled: true }, createHash('sha256').update(bytes).digest('hex')); settled = true;
       guard(); options.recordRead?.(actor); options.policy.control.publishRead(actor, claim.claim.id);
     } catch (error) { if (!settled) options.policy.control.settleRead(claim.claim.id, { outcome: sent ? 'unknown' : 'not_dispatched', basis: sent ? 'uncertain' : 'local_guard', code: 'github_preload_unavailable', actual: unknownUsage(), transportSettled: returned || !sent }, null); throw error; }
