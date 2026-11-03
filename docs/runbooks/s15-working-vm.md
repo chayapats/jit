@@ -1,6 +1,6 @@
 # S15 working VM server integration
 
-This is an opt-in server module for #321; S14 remains the default. Read [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md) and the [contract](../contracts/s15-working-vm-v1.md#implemented-server-contract-2026-11-03). It does not migrate/adopt an existing installation or run an inference loop.
+This is an opt-in server module for #321 and #366; S14 remains the default. Since the owner's 2026-11-03 decision the default topology is one host: the controller creates and manages the working VM as a nested KVM guest (below). Owner-supplied VMs with the JSON setup are the optional path, and the fallback where KVM is absent. Read [ADR 0067](../adr/0067-s15-working-vm-operation-and-settlement.md) and the [contract](../contracts/s15-working-vm-v1.md#implemented-server-contract-2026-11-03). It does not migrate/adopt an existing installation or run an inference loop.
 
 ## Protected composition
 
@@ -16,7 +16,22 @@ Use `WorkingVmPort.openAttempt` from the conversation executor. Pass the real po
 
 `VmSession.evidence()` returns safe metadata, not command output or credentials. Output is guest-reported. `cancel` immediately fences publication, then closes the exact unit; failed cooperative read-back retains capacity and makes the whole shared VM uncertain. Only explicit owner recovery may escalate to hypervisor stop/restore. Strong stop does not turn an unknown historical outcome into success/non-occurrence or refund policy usage.
 
-## Owner JSON setup
+## Jit-managed local working VM (default on KVM hosts)
+
+Host prerequisites (controller host, Linux x86_64 or aarch64):
+
+- KVM: `/dev/kvm` present. If the controller host is itself a VM, nested virtualization must be enabled on its hypervisor (`/sys/module/kvm_intel/parameters/nested` or `kvm_amd` reads `Y`/`1`). Without it Jit reports `vm_host_unsupported` and setup falls back to owner-supplied enrollment.
+- Packages: `qemu-system-x86` (x86_64) or `qemu-system-arm` plus `qemu-efi-aarch64` (aarch64), `qemu-utils`, `cloud-image-utils`, `netcat-openbsd`, `openssh-client` and `dbus-user-session` (user bus for `systemctl --user`). No third-party binary is downloaded; only the pinned Ubuntu cloud image is fetched and its SHA-256 verified.
+- Service user: a non-root user that is a member of `kvm` and has a lingering user manager (`loginctl enable-linger <user>`), so the QEMU unit runs outside the controller's cgroup and survives controller restarts and upgrades. Add the group before enabling linger (a running user manager does not pick up new groups). Never run QEMU as root.
+- Disk: about 0.6 GiB for the read-only base image plus a 60 GiB sparse overlay, which must fit in free space minus the installer reserve. Keep the protected state directory within 64 characters (QMP and proxy Unix socket paths).
+
+Protected composition passes `vm.local: {}` with `managementVault` (`S15RuntimeConfig.vm.local: true` for the explicit runtime). Then `POST /s15/vm/management {"kind":"qemu"}` registers the local manager with default sizing and `VmEnrollment.enrollLocal(owner, {id, managerId})` creates and enrolls it: verified image, overlay, generated client and guest host keys, NoCloud seed, start, pinned SSH, cloud-init completion and Docker through a bounded provisioning proxy lease, then the ordinary inventory/binding/egress checks. Capability rows: network isolation is proven by the hypervisor argv plus the refused egress probe; snapshot/stop stay unproven until an observed protected recovery. `GET/POST /s15/vm/resources` reads and edits CPU/RAM/disk for the next start; nothing is typed into config files. The setup UI and its asynchronous route are SETUP15-01.
+
+Operations: the VM runs as `<name>.service` in the service user's manager (`systemctl --user status jit-work-…`). Do not stop it with `systemctl` by hand while work runs; use owner recovery, which proves the stop. After a controller restart Jit re-attaches and re-verifies a running VM; after a host reboot it starts a previously running VM again and re-verifies it before admitting work. A VM stopped by recovery or restore stays stopped until the owner starts it.
+
+Live evidence: build an exact commit on the controller as a disposable evidence identity, then `JIT_S15_X64_EVIDENCE=1 bun ops/evidence/s15-x64.ts --sha <commit>` (default cases `provision,root,apt,egress,snapshot,restart`; optional `docker`, `concurrency` and `soak` with `--soak-minutes`). It records exact build/config/image hashes under ignored `.local/s15-evidence-x64/`, keeps protected state in a short directory under the identity's home and stops the working VM afterwards. It uses no model inference, owner credential, real recipient or money.
+
+## Owner JSON setup (owner-supplied VMs)
 
 1. `POST /s15/vm/setup {}` returns one public-key bootstrap command. Paste it once in the new VM. It configures only dedicated public-key access, key-file permissions and stable cloud-init SSH host keys. The private key stays protected.
 2. Optionally `POST /s15/vm/management` with either `{kind:'lima',instance}` or `{kind:'proxmox',baseUrl,node,vmid,token,proxy:{address,port}}`. This write-only secret input returns only `managerId`. The Proxmox token is stored in the protected vault and never returned or injected into the guest.
@@ -31,9 +46,9 @@ Enrollment compares the SSH guest's NIC with the independently read hypervisor N
 
 HTTP requests use bounded JSON bodies. Management secrets need the owning ingress's secret-redaction/write-only handling. Public errors/status use English/Thai i18n keys; this module supplies no visual design. The S15 UX handoff owns presentation.
 
-## External network and VM setup
+## External network and VM setup (owner-supplied VMs)
 
-The x64 owner steps are installation-specific and live in ignored `.local/s15-jit-work-owner-steps.md` in the main checkout. The protected controller is `jit-vm`; create a new `jit-work` VM with 4 CPU/8 GiB/60 GiB and passwordless sudo. A VM-scoped Proxmox role gets only VM.Audit, VM.PowerMgmt, VM.Snapshot and VM.Snapshot.Rollback on the new VM; read-only Sys.Audit on `/` and the selected node permits all firewall activation checks. Enable Datacenter/Node/VM firewall and the VM NIC firewall flag. Outbound default is DROP with only TCP to the protected controller proxy port allowed; existing host-initiated SSH replies remain allowed. No guest-facing Jit API, management token, host mount, socket, browser profile or generic tunnel is allowed.
+This optional path applies to owner-supplied VMs for extra compute or hosts without KVM. The earlier x64 owner steps are installation-specific and live in ignored `.local/s15-jit-work-owner-steps.md` in the main checkout. For a Proxmox VM, create a new `jit-work` VM with 4 CPU/8 GiB/60 GiB and passwordless sudo. A VM-scoped Proxmox role gets only VM.Audit, VM.PowerMgmt, VM.Snapshot and VM.Snapshot.Rollback on the new VM; read-only Sys.Audit on `/` and the selected node permits all firewall activation checks. Enable Datacenter/Node/VM firewall and the VM NIC firewall flag. Outbound default is DROP with only TCP to the protected controller proxy port allowed; existing host-initiated SSH replies remain allowed. No guest-facing Jit API, management token, host mount, socket, browser profile or generic tunnel is allowed.
 
 For a new arm64 Lima VM, use QEMU plain mode, empty mounts/networks, no agent forwarding/proxy environment propagation and a fixed SSH port. Install Python/sudo/systemd/Docker in the trusted baseline. `limaRestrictedQemu` supplies a protected QEMU wrapper that injects restricted user networking and one fixed proxy guest-forward. Set the trusted `LimaVmManagement` environment to that wrapper; specify the real QEMU UEFI firmware in the new Lima config because the wrapper changes Lima's firmware search location. Do not modify `jit-arm` or `jit-ac12-*`. Snapshot uses graceful shutdown before capture; an uncooperative guest that cannot quiesce fails rather than claiming a consistent snapshot. Strong emergency recovery may force-stop the guest.
 
@@ -43,4 +58,4 @@ SSH connection starts to the same enrolled endpoint are spaced by 100 ms to avoi
 
 ## Validation
 
-Run `bun test tests/s15-vm*.test.ts`, `bun run typecheck`, the full `bun test` and `git diff --check`. Integration tests use the real POLICY15 service, registered handlers/adapters and its durable ledger with scripted VM transports; lower-level tests also use opaque actor fakes, fake time and disposable local helper stand-ins; they are not VM/root isolation evidence. Real arm64 operations, guest network bypass attempts, cooperative cancellation, protected snapshot/restore and strong stop are opt-in and recorded only in ignored `.local` evidence. x64 live evidence is pending, not failed, until the owner provides `jit-work`. No paid inference, existing Jit deployment, provider/billing change or live website session is needed for these VM tests.
+Run `bun test tests/s15-vm*.test.ts`, `bun run typecheck`, the full `bun test` and `git diff --check`. Integration tests use the real POLICY15 service, registered handlers/adapters and its durable ledger with scripted VM transports; lower-level tests also use opaque actor fakes, fake time and disposable local helper stand-ins; they are not VM/root isolation evidence. Real arm64 operations, guest network bypass attempts, cooperative cancellation, protected snapshot/restore and strong stop are opt-in and recorded only in ignored `.local` evidence. x64 live evidence for the Jit-managed local VM comes from `ops/evidence/s15-x64.ts` on the controller host. `tests/s15-vm-qemu.test.ts` and `tests/s15-vm-local.test.ts` cover the local manager with a fake host-command runner, fake QMP, fake `/proc` and a fake clock. No paid inference, existing Jit deployment, provider/billing change or live website session is needed for these VM tests.
