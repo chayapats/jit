@@ -9,6 +9,8 @@ export interface ComposedDisclosure extends Omit<DisclosureOptions, 'runtime' | 
   browserRoute?: string;
   googleRoute?: string;
   githubRoute?: string;
+  /** Fixed service destinations covered by an explicit personal GitHub profile; DATA still checks each exact action. */
+  githubRecipients?: readonly Ref[];
   acquisitionRoute?: string;
   adapterRoutes?: Readonly<Record<string, string>>;
 }

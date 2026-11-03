@@ -38,6 +38,7 @@ export class GithubService {
     runtime: "s15"; store: GithubStore; policy: S15PolicyService; repositories: readonly GithubRepository[];
     gateway: ProtectedGithubGateway; workspace: GithubWorkspace; responsibilities: ResponsibilityPort;
     limits: GithubLimits; now?: () => number;
+    publicationRecipients?: readonly import('../policy').Ref[];
     disclosure?: { beforeRead(work: WorkAuthority, payload: import('../policy').JsonValue): void; recordRead(actor: WorkActor, repository: GithubRepository, snapshot: GithubSnapshot): void };
   }) {
     if (options.runtime !== "s15") fail("s15_opt_in_required");
@@ -208,6 +209,8 @@ export class GithubService {
     if (typeof input.publication !== "boolean" || typeof input.merge !== "boolean" || !input.repositoryIds.length || new Set(input.repositoryIds).size !== input.repositoryIds.length || !input.publication && !input.merge) fail("github_profile_invalid");
     const captured = this.options.store.get<GithubPersonalCapture>("capture", input.captureId); if (!captured) fail("github_capture_required");
     const p = this.options.policy.owner.current(owner); if (!p || p.revision !== captured.expectedPolicyRevision) fail("github_rule_changed");
+    const publicationRecipients = [...(this.options.publicationRecipients ?? [])];
+    if (publicationRecipients.some(recipient => !p.recipients.some(current => canonical(current) === canonical(recipient)))) fail('outside_scope');
     const added: Rule[] = [];
     for (const id of input.repositoryIds) {
       const entry = captured.repositories.find(e => e.repository.resource.id === id); if (!entry || !p.resources.some(r => canonical(r) === canonical(entry.repository.resource))) fail("outside_scope");
@@ -217,7 +220,7 @@ export class GithubService {
       for (const mode of ["personal_github_publish", "personal_github_merge"] as const) {
         if (mode === "personal_github_publish" ? !input.publication : !input.merge) continue;
         const merge = mode === "personal_github_merge";
-        added.push({ id: `github_${merge ? "merge" : "publish"}_${digest(entry.repository.name).slice(0, 16)}`, mode, purposes: p.purposes, bots: p.bots, resources: [entry.repository.resource], recipients: [], selections: p.selections, adapters: ["s15_github"], operations: merge ? ["merge"] : ["push", "pr_create", "pr_update", "review_reply"], classes: merge ? ["github_merge"] : ["github_publish", "communication"], expiresAt: p.expiresAt, recurrence: null,
+        added.push({ id: `github_${merge ? "merge" : "publish"}_${digest(entry.repository.name).slice(0, 16)}`, mode, purposes: p.purposes, bots: p.bots, resources: [entry.repository.resource], recipients: publicationRecipients, selections: p.selections, adapters: ["s15_github"], operations: merge ? ["merge"] : ["push", "pr_create", "pr_update", "review_reply"], classes: merge ? ["github_merge"] : ["github_publish", "communication"], expiresAt: p.expiresAt, recurrence: null,
           github: { repository: entry.repository.resource, target: entry.repository.target, ...(merge ? { requiredChecks: entry.protection.requiredChecks, requiredApprovals: entry.protection.requiredApprovals, requireCodeOwners: entry.protection.requireCodeOwners } : {}) } });
       }
     }

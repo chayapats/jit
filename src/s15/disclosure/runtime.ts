@@ -45,7 +45,7 @@ export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: reado
     ],
     modelRoute(candidate) { const index = models.findIndex(r => equal(r, candidate)); if (index < 0) throw new AppError('route_unknown'); return `inference_${index}`; },
     workSources: work => config.sources.filter(s => work.request.resources.some(r => equal(r, s.resource))).map(s => s.ref),
-    ...(config.githubRecipient ? { githubRoute: 'github' } : {}), ...(config.googleRecipient ? { googleRoute: 'google' } : {}),
+    ...(config.githubRecipient ? { githubRoute: 'github', githubRecipients: [config.githubRecipient] } : {}), ...(config.googleRecipient ? { googleRoute: 'google' } : {}),
     browserRoute: 'browser', acquisitionRoute: 'acquisition',
     browserSource: (_work, url) => config.browser.find(r => r.origin === new URL(url).origin)?.source ?? null,
     registryRecipient: destination => config.registries.find(r => r.hostname === destination)?.recipient ?? null,

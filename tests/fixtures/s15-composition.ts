@@ -1,7 +1,9 @@
+import { AppError } from '../../src/errors';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Model } from 'schway/host';
+import { createConversationPolicyTools } from '../../src/s15/conversation';
 import { composeS15, type S15CompositionOptions } from '../../src/s15/composition';
 import { VmSshTransport } from '../../src/s15/vm/transport';
 import type { VmManagement } from '../../src/s15/vm/types';
@@ -40,7 +42,8 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   let uploads = 0;
   const recipientApprovals = [...['provider', 'github_service', 'google_service', 'browser_service'].map(id => ({ recipient: ref(id), purpose: ref('purpose'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 })), { recipient: ref('provider'), purpose: ref('interpret'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 }];
   const files = new Map<string, Uint8Array>(), vmCalls: string[] = []; let liveVm = 0, implementations = 0, snapshots = 0;
-  const manager: VmManagement = { async inspect() { return { state: 'running', identity: 'fixture', boot: 'boot', cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() {}, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
+  let managementState: 'running' | 'stopped' = 'running';
+  const manager: VmManagement = { async inspect() { return { state: managementState, identity: 'fixture', boot: 'boot', cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() { managementState = 'stopped'; }, async start() { managementState = 'running'; }, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
   const endpoint = { host: 'fixture.invalid', port: 22, user: 'jit', identityFile: '/protected/key', knownHostsFile: '/protected/known' };
   class Transport extends VmSshTransport {
     override async control(argv: readonly string[]) { return argv.some(a => a.includes('nicMacs')) ? '{"nicMacs":["52:54:00:12:34:56"]}' : '{"reachable":[false,false,false,false,false,false]}'; }
@@ -66,7 +69,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   } };
   const interpreter: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) { interpreterPrompts.push(JSON.stringify(request)); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
   const options = (create: boolean): S15CompositionOptions => ({ runtime: 's15', directory, create, installationId: 'fixture', origin: 'http://localhost:3099',
-    owner: { authenticate(token) { if (token !== secretSession) throw Error('unauthorized'); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation, expiresAt: 900000 } : null, generation: () => generation, verifyCsrf(expected, supplied) { if (expected !== supplied) throw Error('csrf_rejected'); } },
+    owner: { authenticate(token) { if (token !== secretSession) throw new AppError('authentication_required', 401); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation, expiresAt: 900000 } : null, generation: () => generation, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError('csrf_rejected', 403); } },
     disclosure: { catalogs: { source: value => dataSources.find(s => equal(s.ref, value)) ?? null, recipient: value => records.get('recipient:' + value.id) ?? null, approvals: () => recipientApprovals },
       routes: [
         { id: 'inference', kind: 'model', resolve: () => [ref('provider')] },
@@ -75,16 +78,19 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
         { id: 'browser', kind: 'browser', resolve: (_work, value) => { const meaning = recordService.site.classify(value as unknown as import('../../src/s15/browser').BrowserRequest, 'general'); return meaning ? [ref('browser_service'), ...(meaning.kind === 'effect' ? meaning.recipients : [])] : null; } },
         { id: 'payment', kind: 'adapter', resolve: () => [ref('payee')] },
         { id: 'fixture_upload', kind: 'adapter', resolve: () => [ref('new_recipient')], classify: () => ({ classes: ['ordinary_edit'], transaction: null, github: null, impact: 'reversible' }), async send() { uploads++; return { outcome: 'succeeded', transportSettled: true, actual: { attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null } }; } },
-      ], modelRoute: () => 'inference', workSources: work => dataSources.filter(s => work.request.resources.some(r => equal(r, s.resource))).map(s => s.ref), browserRoute: 'browser', googleRoute: 'google', githubRoute: 'github', adapterRoutes: { fixture_payment: 'payment' }, browserSource: () => ref('data_account') },
+      ], modelRoute: () => 'inference', workSources: work => dataSources.filter(s => work.request.resources.some(r => equal(r, s.resource))).map(s => s.ref), browserRoute: 'browser', googleRoute: 'google', githubRoute: 'github', githubRecipients: [ref('github_service')], adapterRoutes: { fixture_payment: 'payment' }, browserSource: () => ref('data_account') },
+    recurring: { frequencies: [{ id: 'daily', minIntervalMs: 10000 }], maxPayments: 2, ruleLifetimeMs: 800000 },
+    web: { decisions: (owner, action) => recordService.decisionCard(owner, service.policy, action) },
     catalogs: { current: (kind, id) => records.get(`${kind}:${id}`) ?? null, allows: () => sourceLive }, proposedPolicy: policy,
     conversation: { ownerId: 'owner', bot: ref('bot'), selection: choice, route: { provider: 'codex', model: 'fixture-model' }, limits: { modelCalls: 5, toolCalls: 10, outputBytes: 32768, activeMs: 30000 }, modelCallUpperBound: bound() },
     team: { maxConcurrentOperations: 8, retention: () => ({ kind: 'team' }) },
     model: { limits: { turns: 5, attempts: 1, activeMs: 30000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 }, registry: { list: () => [route], current: selection => equal(selection, choice) ? route : null, pins: () => ({ route: null, model: null, effort: null }) }, scripted: () => model }, interpreter,
     clock: { now: () => now, monotonicNow: () => now, sleep: (_ms, signal) => new Promise((_, reject) => { signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); }) },
     vm: { id: 'vm', resource: ref('computer'), managers: new Map([['manager', manager]]), transport: () => new Transport(endpoint), upperBound: op => ({ ...zero(), calls: 1, reads: ['setup', 'read'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }), destination: () => null },
-    github: { repositories: [repo], gateway: protocol.gateway, limits: { snapshotMaxAgeMs: 20000, waitMs: 10, stallMs: 10000, maxNoProgress: 2, maxAttempts: 4, readUpperBound: { ...zero(), calls: 1, reads: 1 }, actionUpperBound: { ...zero(), calls: 1 } }, workspace: () => ({ async implement() { implementations++; return coding(); } }) },
+    github: { repositories: [repo], catalogPurpose: ref('purpose'), gateway: protocol.gateway, limits: { snapshotMaxAgeMs: 20000, waitMs: 10, stallMs: 10000, maxNoProgress: 2, maxAttempts: 4, readUpperBound: { ...zero(), calls: 1, reads: 1 }, actionUpperBound: { ...zero(), calls: 1 } }, workspace: () => ({ async implement() { implementations++; return coding(); } }) },
     google: google.options,
-    browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: '/fixture/chromium', site: recordService.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 65536, activeMs: 30000 }, factory: engine.factory, now: () => now },
+    browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: '/fixture/chromium', site: recordService.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 65536, activeMs: 30000 }, factory: engine.factory, now: () => now, ownerUi: { id: 'fixture_browser', site: 'Controlled fixture', fields: [], twoFactor: false } },
+    tools: [{ resourceId: 'account', port: { open(work, input) { return createConversationPolicyTools(service.policy, [{ name: 'pay_fixture_invoice', description: 'Pay the protected controlled fixture invoice', inputSchema: { type: 'object', properties: { quoteId: { type: 'string' }, quoteVersion: { type: 'string' } }, required: ['quoteId', 'quoteVersion'], additionalProperties: false }, access: 'effect', adapter: 'fixture_payment', proposal: value => value }]).open(work, input); } } }],
     adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
   });
   const route: import('../../src/s15/model').ApprovedModelRoute = { selection: choice, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: bound(), rank: { ordinary: 0, difficult: 0 } };
@@ -98,6 +104,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     get now() { return now; }, advance(ms: number) { now += ms; }, set generation(v: number) { generation = v; }, set sourceLive(v: boolean) { sourceLive = v; },
     set interpretation(value: typeof interpretation) { interpretation = value; }, set script(value: typeof script) { script = value; },
     async request(path: string, method = 'GET', value?: unknown, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method, headers: { ...headers, ...supplied }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) })); },
+    async form(path: string, fields: Record<string, string>, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded', ...supplied }, body: new URLSearchParams({ csrf, requestId: uid(), ...fields }) })); },
     async chat(text: string, commandId = uid()) { const command = { contract: 's15-conversation/v1' as const, requestId: commandId, conversationId: 'conversation', text, continuation: null }; const response = await this.request('/api/s15/conversations/conversation/messages', 'POST', command); if (response.status !== 202) throw Error(await response.text()); await service.conversation.drain(); return service.conversation.view(owner, commandId); },
     async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(proof); },
     async close() { await service.close(); protocol.close(); google.f.cleanup(); recordService.close(); rmSync(parent, { recursive: true, force: true }); },

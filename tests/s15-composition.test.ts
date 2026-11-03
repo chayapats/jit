@@ -138,6 +138,10 @@ test('S15-AC15: distinct failed approaches pause the original responsibility bef
   f.service.work.observeEvent(work.id, { eventId: 'next_diagnostic', kind: 'schedule', key: 'diagnostic', purposeId: 'purpose', resourceIds: ['computer'], subject: null, evidenceRefs: ['failure'] });
   const paused = settle(f.service.work.beginAttempt(work.id, { eventId: 'next_diagnostic', approach: 'second_diagnostic' }));
   expect(paused.state).toBe('paused'); expect(paused.report?.attempts).toHaveLength(2); expect(paused.report?.recommendation).toContain('original scope'); expect(f.service.policy.control.usage().charged.calls).toBeLessThan(10000);
+  f.advance(1);
+  expect((await f.form('/s15/forms/message', { requestId: 'scoped_stall_reply', conversationId: 'conversation', text: 'Run the next diagnostic within the same scope', duty: work.id })).status).toBe(303);
+  await f.service.conversation.drain(); await f.request('/duties/' + work.id);
+  expect(f.service.work.project(f.owner, work.id)).toMatchObject({ state: 'ready', sourceRequestId: source.receipt.rootRequestId, readyEventId: 'scoped_stall_reply' });
 });
 
 test('S15-AC08: explicitly approved recurring payment rule enforces amount and frequency on the composed ledger', async () => {
@@ -264,4 +268,62 @@ test('S15-AC11: source withdrawal after approval fences the unchanged exact emit
   f.dataSources[0]!.active = false;
   await expect(f.service.disclosure!.dispatch(actor, action)).rejects.toThrow(); expect(f.uploads).toBe(0);
   expect(f.service.conversation.view(f.owner, source.receipt.rootRequestId).result).toBeNull();
+});
+
+test('S15 UX composition mounts protected resources, readiness, browser handoff and snapshot restore', async () => {
+  const f = await fixture();
+  for (const path of ['/work', '/rules', '/resources/accounts', '/resources/computer', '/models', '/memory', '/recovery', '/needs']) expect((await f.request(path)).status).toBe(200);
+  f.interpretation = { intent: 'inspect', purposeId: 'purpose', resourceIds: ['repo'], access: 'read', subject: null };
+  f.script = [{ type: 'tool_call', id: 'readiness', name: 'github_readiness', arguments: {} }]; await f.chat('Inspect GitHub issues and report readiness only');
+  const report = await (await f.request('/chats/conversation')).text(); expect(report).toContain('s15-readiness'); expect(report).toContain('?start=42');
+  expect((await f.form('/s15/forms/browser/takeover', { site: 'fixture_browser' })).status).toBe(303);
+  const takeover = await (await f.request('/browser/fixture_browser')).text(), generation = /name="generation" value="(\d+)"/.exec(takeover)![1]!;
+  expect((await f.request('/browser/fixture_browser/frame?g=' + generation)).headers.get('cache-control')).toContain('no-store');
+  expect((await f.form('/s15/forms/browser/handback', { site: 'fixture_browser', generation })).status).toBe(303);
+  f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['computer'], access: 'reversible_write', subject: null };
+  f.script = [{ type: 'tool_call', id: 'vm', name: 'bash', arguments: { command: 'printf composed' } }]; const row = await f.chat('Run the requested command');
+  const actor = f.service.policy.control.bindWork(row.authority!.id), session = await f.service.vm.openAttempt(actor, { vmId: 'vm', workId: row.authority!.id, attemptId: `chat_${row.authority!.id}`, mode: 'system' }); await session.close();
+  const snapshot = f.service.vm.snapshots(f.owner, 'vm')[0]!, generationBeforeRestore = f.service.vmStore.registration('vm').generation;
+  expect((await f.form('/s15/forms/computer/restore', { snapshotId: snapshot.id, generation: String(generationBeforeRestore) })).status).toBe(303);
+  expect(f.service.vmStore.registration('vm').generation).toBe(generationBeforeRestore + 1);
+});
+
+test('S15-AC07 UX exact decision uses the composed owner session, CSRF and one send', async () => {
+  const f = await fixture(); f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['account'], access: 'effect', subject: null };
+  f.script = [{ type: 'tool_call', id: 'email', name: 'gmail_prepare_send', arguments: { ...(await import('./fixtures/s15-effects')).mail() } }];
+  const row = await f.chat('Send the prepared email'), slip = row.slips[0]!;
+  expect((await f.request('/actions/' + slip.action.id)).status).toBe(200);
+  const fields = { conversationId: 'conversation', actionId: slip.action.id, revision: String(slip.action.revision), actionHash: slip.action.actionHash, decision: 'approve' };
+  expect((await f.form('/s15/forms/action/decide', { ...fields, csrf: '' })).status).toBe(403); expect(f.google.sent.size).toBe(0);
+  expect((await f.form('/s15/forms/action/decide', fields)).status).toBe(303); await f.service.conversation.drain(); expect(f.google.sent.size).toBe(1);
+  await f.form('/s15/forms/action/decide', fields); await f.service.conversation.drain(); expect(f.google.sent.size).toBe(1);
+});
+
+test('S15-AC08 UX recurring rule comes from the exact composed payment history and installs no default amount', async () => {
+  const f = await fixture(); f.recipientApprovals.push({ ...f.recipientApprovals[0]!, recipient: { id: 'payee', revision: 1, generation: 1 } });
+  f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['account'], access: 'effect', subject: null };
+  f.script = [{ type: 'tool_call', id: 'invoice', name: 'pay_fixture_invoice', arguments: { quoteId: 'invoice', quoteVersion: 'v1' } }];
+  const row = await f.chat('Pay the controlled invoice'), action = row.slips[0]!.action;
+  expect(f.payment.mutationCalls).toBe(0);
+  const proposed = await f.form('/s15/forms/recurring/propose', { actionId: action.id, revision: String(action.revision), actionHash: action.actionHash, ceiling: '5.00', frequencyId: 'daily' });
+  expect(proposed.status).toBe(200); const html = await proposed.text(), hash = /name="proposalHash" value="([a-f0-9]{64})"/.exec(html)![1]!;
+  expect(f.service.policy.owner.current(f.owner)!.rules.some(r => r.mode === 'recurring_payment')).toBe(false);
+  expect((await f.form('/s15/forms/recurring/install', { proposalHash: hash })).status).toBe(303);
+  expect(f.service.policy.owner.current(f.owner)!.rules.find(r => r.mode === 'recurring_payment')?.recurrence?.amountCeilingMinor).toBe('500'); expect(f.payment.mutationCalls).toBe(0);
+});
+
+test('S15-AC10 UX personal opt-in captures real protection and retains DATA service recipient scope', async () => {
+  const f = await fixture(); expect((await f.form('/s15/forms/github/capture', {})).status).toBe(303);
+  const html = await (await f.request('/rules')).text(), captureId = /name="captureId" value="([A-Za-z0-9_]+)"/.exec(html)![1]!;
+  expect((await f.form('/s15/forms/github/install', { captureId, repo_repo: '1', publication: '1', merge: '1' })).status).toBe(303);
+  expect(f.service.policy.owner.current(f.owner)!.rules.filter(r => r.mode.startsWith('personal_github')).every(r => r.recipients.some(recipient => recipient.id === 'github_service'))).toBe(true);
+  const { actor, selection } = await selected(f), push = await f.service.github!.prepare(actor, selection.id, { kind: 'push', branch: selection.branch, previous: null });
+  expect(push.decision.state).toBe('allow');
+});
+
+test('S15-AC12 UX responsibilities project and stop through the composed owner form', async () => {
+  const f = await fixture(), source = await f.chat('Run the first diagnostic');
+  const duty = f.service.work.assign(f.owner, { requestId: 'ui_duty', sourceRequestId: source.receipt.rootRequestId, completion: 'Observe only this diagnostic', triggers: ['schedule'], stallPolicy: { noProgressApproaches: 2, reserveCalls: 2, maxAttempts: 4 } });
+  expect((await f.request('/duties/' + duty.id)).status).toBe(200);
+  expect((await f.form('/s15/forms/duty/stop', { duty: duty.id })).status).toBe(303); expect(f.service.work.project(f.owner, duty.id).state).toBe('stopped');
 });

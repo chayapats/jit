@@ -38,8 +38,9 @@ export interface S15RuntimeConfig {
   conversation: S15CompositionOptions['conversation']; models: ApprovedModelRoute[]; modelLimits: ModelRunLimits;
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   disclosure?: RuntimeDisclosureConfig;
+  recurring?: import('./policy/recurring').RecurringRuleOptions;
   vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector };
-  browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector };
+  browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector; ownerUi?: Omit<import('./web').S15WebBrowser<import('./policy').OwnerActor>, 'owner'> };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };
 }
@@ -115,6 +116,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
       ...(config.disclosure ? { disclosure: runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? []) } : {}),
+      ...(config.recurring ? { recurring: config.recurring } : {}),
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
       model: { limits: config.modelLimits, registry: { list: () => config.models, current: selection => config.models.find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) } },
@@ -125,7 +127,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
       vm: { id: config.vm.id, resource: config.vm.resource, managers, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
-      ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound } } : {}),
+      ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => { const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_connections WHERE json_extract(record_json,'$.account')=? AND json_extract(record_json,'$.revision')=?", binding.account, binding.resource.revision); if (!row) throw new AppError('personal_connection_unavailable'); const value = JSON.parse(row.record_json) as PersonalConnection; if (!value.scopes.includes(scope)) throw new AppError('personal_consent_required'); return ownerApp.personal.connection(tx, value.id, value.revision); });
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },

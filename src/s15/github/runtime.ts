@@ -12,6 +12,7 @@ import type { GithubLimits, GithubProduction, GithubRepository } from './types';
 
 /** Protected per-repository coding/production profile; unknown acceptance or deployment semantics never auto-merge. */
 export interface GithubRuntimeConfig {
+  catalogPurpose?: Ref;
   repositories: { repository: GithubRepository; credentialRef: string; production: GithubProduction }[];
   limits: GithubLimits; tests: { command: string; timeoutMs: number }[];
   criteria: { id: string; text: string; commands: string[] }[];
@@ -28,7 +29,7 @@ export function githubRuntime(config: GithubRuntimeConfig, input: {
   const repositories = config.repositories.map(r => r.repository);
   const credential = (repo: GithubRepository) => { const r = config.repositories.find(r => r.repository.resource.id === repo.resource.id); if (!r) throw new AppError('outside_scope'); return input.credential(r.credentialRef); };
   const gateway = new GithubApiGateway({ repositories, credential, production: repo => config.repositories.find(r => r.repository.resource.id === repo.resource.id)?.production ?? { consequence: 'unknown', fence: null, evidence: [] }, push: new ProtectedGithubPush({ bundle }) });
-  const github: NonNullable<S15CompositionOptions['github']> = { repositories, gateway, limits: config.limits,
+  const github: NonNullable<S15CompositionOptions['github']> = { repositories, gateway, limits: config.limits, ...(config.catalogPurpose ? { catalogPurpose: config.catalogPurpose } : {}),
     workspace: ({ policy, vm, disclosure, guardModel, beforeRead, recordRead }) => createGithubVmWorkspace({ vm, vmId: input.vmId, policy, nativeDirectory: join(input.directory, 'native-github'), route: input.route,
       modelCallUpperBound: input.modelCallUpperBound, maxTurns: config.maxTurns, activeMs: config.activeMs, maxBundleBytes: config.maxBundleBytes, tests: config.tests,
       preload: createGithubPreload({ policy, repositories, credential, upperBound: config.limits.readUpperBound, ...(beforeRead ? { beforeRead } : {}), ...(recordRead ? { recordRead } : {}) }),

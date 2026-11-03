@@ -13,11 +13,12 @@ import { openModelService, createModelProjectionHandler, type ModelOptions } fro
 import { openWorkService, createResponsibilityProjectionHandler, type WorkOptions } from './work';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
 import { openDisclosureService } from './disclosure';
+import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
 import type { ComposedDisclosure } from './disclosure/composition';
 import { TeamService, type DataScope, type TeamOptions } from './team';
 import { coordinateWorkingVm } from './team/vm';
 import { MemoryService, createConversationMemory } from './memory';
-import { createS15WebHandler, s15ConversationPort, type S15WebPorts } from './web';
+import { createS15WebHandler, s15ConversationPort, s15ActionsPort, s15DutiesPort, s15RecurringPort, s15TeamPort, s15ReadinessFromGithub, type S15WebPorts } from './web';
 
 /** Existing protected owner service. Proofs are process-local actors, never JSON/VM bearer credentials. */
 export interface S15OwnerAuthentication {
@@ -33,19 +34,20 @@ export interface S15CompositionOptions {
   conversation: Omit<Parameters<typeof createConversationPolicy>[1], 'ownerGeneration'>;
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
+  recurring?: RecurringRuleOptions;
   interpreter?: Model; clock?: HostClock; subscriptionModels?: SubscriptionModels;
   /** A proposal is displayed for authenticated installation; constructing a service never installs it. */
   proposedPolicy: PolicyInput | null;
   vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'] };
-  browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine> };
+  browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'> };
   google?: GoogleEffectsOptions;
-  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
+  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
   adapters?: readonly ActionAdapter[];
   reads?: readonly ReadHandler[];
   tools?: readonly { resourceId: string; port: ConversationToolPort<ConversationPolicyWork> }[];
   team?: { maxConcurrentOperations: number; retention(work: import('./policy').WorkAuthority): DataScope | null };
-  web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'locale'>;
+  web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'locale' | 'decisions'>;
 }
 
 /** Combine the modules' closed read validators. Every request must pass one actual owning handler. */
@@ -141,7 +143,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
-    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, workspace: options.github.workspace({ policy, vm: workingVm, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: options.github.workspace({ policy, vm: workingVm, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
       ...(options.github && github ? options.github.repositories.map(r => ({ resourceId: r.resource.id, port: createGithubConversationTools(github, r.resource.id) })) : []), ...(options.tools ?? [])];
     conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
@@ -177,11 +179,35 @@ export async function composeS15(options: S15CompositionOptions) {
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
         return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
+    const githubCatalogActor = (owner: OwnerActor) => {
+      const current = policy.owner.current(owner), purpose = options.github?.catalogPurpose;
+      if (!current || !purpose || !github) throw new AppError('outside_scope');
+      // An explicit owner profile form admits only protected repository inspection, never issue execution.
+      const admitted = policy.owner.admit(owner, { requestId: 'profile_' + crypto.randomUUID().replaceAll('-', ''), intent: 'inspect', access: 'read', purpose, bot: options.conversation.bot,
+        resources: options.github!.repositories.map(r => r.resource), recipients: current.recipients, selection: options.conversation.selection, selectionPin: options.conversation.selection,
+        expiresAt: current.expiresAt, readLimit: Math.min(256, current.budget?.ceiling.reads ?? 0) });
+      if (!admitted.work) throw new AppError('outside_scope');
+      const actor = policy.control.bindWork(admitted.work.id);
+      if (disclosure && options.disclosure) for (const source of options.disclosure.workSources(admitted.work)) disclosure.read(actor, source);
+      return actor;
+    };
+    const recurring = options.recurring ? createRecurringRules(policy, { ...options.recurring, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
+      actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), team: s15TeamPort<OwnerActor>(team, actor => actor),
+      ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
+      ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
+      ...(github && options.github?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
+      readiness(owner, requestId) {
+        const row = conversation.view(owner, requestId); if (!row.result || row.intent.kind !== 'inspect' || !githubStore) return null;
+        const item = row.evidence.find(e => e.tool === 'github_readiness'); if (!item) return null;
+        const reportId = JSON.parse(item.content).id; if (typeof reportId !== 'string' || !/^report_[a-f0-9]{64}$/.test(reportId)) return null;
+        const report = githubStore.get<{ repository: GithubRepository; rows: import('./github').GithubReadiness[] }>('report', reportId);
+        return report ? s15ReadinessFromGithub(report.repository.name, report.rows) : null;
+      },
       computer: { vmId: options.vm.id, managerId: options.vm.managers.keys().next().value ?? null, hypervisor: null,
-        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id) },
+        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: (actor, input) => vm.recover(actor, input) },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
-      { origin: options.origin, cookieName, loginPath: '/s14/login' });
+      { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
