@@ -22,7 +22,9 @@ import { RemoteVmManagement } from './vm/remote';
 import { equal } from './policy/validation';
 import type { GoogleEffectAccount } from './effects';
 import { openProvisionedBrowser, type BrowserSitePolicy, type ProvisionedBrowser } from './browser';
-import { githubRuntime } from './github/runtime';
+import { githubConnectionRuntime, githubRuntime } from './github/runtime';
+import { s15GithubRecipient } from './github/connection';
+import { s15DefaultCatalog, s15SubscriptionModels } from './policy/defaults';
 import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure } from './disclosure/runtime';
 import { createTelegramBotApi } from './telegram';
@@ -40,7 +42,7 @@ export { parseS15RuntimeConfig, readS15RuntimeConfig, readS15VmPool, type S15Run
 export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.env, protectedPorts: Pick<S15CompositionOptions, 'adoption'> = {}): Promise<void> {
   const index = args.indexOf('--config'), path = args[index + 1];
   if (!['setup', 'init', 'serve', 'owner-link', 'credential'].includes(args[0] ?? '') || !args.includes('--s15') || index < 0 || !path) throw new AppError('explicit_s15_config_required');
-  const config = readS15RuntimeConfig(path), setup = args[0] === 'setup', initialize = setup || args[0] === 'init', localCommand = ['owner-link', 'credential'].includes(args[0]!);
+  const config = withModelAttempts(readS15RuntimeConfig(path)), setup = args[0] === 'setup', initialize = setup || args[0] === 'init', localCommand = ['owner-link', 'credential'].includes(args[0]!);
   if (args[0] === 'owner-link') requireS14OwnerLinkPipe(3);
   if (initialize) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
   const state = lstatSync(config.directory);
@@ -90,8 +92,10 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     // BROW15-02: without an explicit `browser` config, an S15 installation gets the protected browser with the
     // pinned Chromium and the owner's approved-website list (empty until the owner adds a website in the Web).
     if (!config.browser && config.disclosure) provisioned = openProvisionedBrowser({ directory: config.directory, installationId: config.installationId });
+    // POLICY15-02: the runtime registers the default purposes and the approved routes' provider recipients; explicit rows win.
+    const defaultCatalog = s15DefaultCatalog(config.models);
     const catalogs: S15CompositionOptions['catalogs'] = {
-      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? null,
+      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
         const resources = action?.resources ?? work.request.resources;
         return resources.every(resource => { const restriction = config.resourceBots.find(r => r.resourceId === resource.id); return !restriction || restriction.botIds.includes(work.request.bot.id); });
@@ -113,7 +117,12 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       ...protectedPorts,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
-      ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [])) } : {}),
+      ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [], config.github ? undefined : { ...s15GithubRecipient })) } : {}),
+      // POLICY15-02: approved subscription routes need no owner budget; the registry bounds each work. Without a configured
+      // policy the owner reviews a default proposal; GIT15-04: without a configured GitHub the owner connects it in the Web.
+      subscriptionModels: s15SubscriptionModels(models, config.team?.maxConcurrentOperations ?? 2),
+      ...(config.policy ? {} : { defaultPolicy: { concurrency: config.team?.maxConcurrentOperations ?? 2 } }),
+      ...(!config.github && config.disclosure ? { githubWeb: { vault, runtime: input => githubConnectionRuntime({ directory: config.directory, vmId: vmPool.poolId, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, ...input }) } } : {}),
       ...(config.recurring ? { recurring: config.recurring } : {}),
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
@@ -158,6 +167,16 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
   } catch (error) { await service?.close(); await provisioned?.close(); ownerStore.close(); throw error; }
   finally { if (initialize || localCommand) ownerStore.close(); }
+}
+
+/**
+ * POLICY15-02: every settled model call reports one attempt, so a route or conversation bound with `attempts: 0`
+ * (written by installers before this release and preserved on upgrade) would record a permanent overrun on the
+ * first call. Such bounds are read as one attempt per call; no other value changes.
+ */
+export function withModelAttempts(config: import('./runtime-config').S15RuntimeConfig): import('./runtime-config').S15RuntimeConfig {
+  const fix = <T extends { attempts: number } | null>(bound: T): T => bound && bound.attempts === 0 ? { ...bound, attempts: 1 } : bound;
+  return { ...config, conversation: { ...config.conversation, modelCallUpperBound: fix(config.conversation.modelCallUpperBound) }, models: config.models.map(route => ({ ...route, upperBound: fix(route.upperBound) })) };
 }
 
 /**

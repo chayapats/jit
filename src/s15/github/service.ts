@@ -31,18 +31,22 @@ export function githubReadHandler(repositories: readonly GithubRepository[]): Re
  * credential setup, branch protection or production environment is changed by construction.
  */
 export class GithubService {
-  private readonly repos: readonly GithubRepository[];
+  private readonly fixed: readonly GithubRepository[];
   private readonly now: () => number;
+  /** Configured repositories, or the protected Web connection's current selection (GIT15-04), validated on every read. */
+  private get repos(): readonly GithubRepository[] { if (!this.options.currentRepositories) return this.fixed; const live = this.options.currentRepositories(); live.forEach(repository); return live; }
   private readonly active = new Set<string>();
   constructor(private readonly options: {
     runtime: "s15"; store: GithubStore; policy: S15PolicyService; repositories: readonly GithubRepository[];
     gateway: ProtectedGithubGateway; workspace: GithubWorkspace; responsibilities: ResponsibilityPort;
     limits: GithubLimits; now?: () => number;
+    /** GIT15-04: the live owner selection of a Web-connected GitHub account. When set, `repositories` is ignored. */
+    currentRepositories?: () => readonly GithubRepository[];
     publicationRecipients?: readonly import('../policy').Ref[];
     disclosure?: { beforeRead(work: WorkAuthority, payload: import('../policy').JsonValue): void; recordRead(actor: WorkActor, repository: GithubRepository, snapshot: GithubSnapshot): void };
   }) {
     if (options.runtime !== "s15") fail("s15_opt_in_required");
-    this.repos = structuredClone(options.repositories); this.repos.forEach(repository); this.now = options.now ?? Date.now;
+    this.fixed = options.currentRepositories ? [] : structuredClone(options.repositories); this.fixed.forEach(repository); this.now = options.now ?? Date.now;
     for (const [key, value] of Object.entries(options.limits)) if (key !== "readUpperBound" && key !== "actionUpperBound") integer(value, 1);
     if (options.limits.maxNoProgress < 2 || options.limits.maxNoProgress > options.limits.maxAttempts || options.limits.maxAttempts > 64) fail("github_limits_invalid");
   }
