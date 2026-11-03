@@ -31,6 +31,9 @@ declare const contextBrand: unique symbol, leaseBrand: unique symbol;
 export interface TeamContext { readonly [contextBrand]: true }
 /** Single original lease identity; copying its metadata never creates dispatch authority. */
 export interface TeamLease { readonly [leaseBrand]: true }
+/** Protected subject whose own settlement proof releases a linked lease. `sessionId` is null until the
+ * working VM returns the opened session; the attempt scope then covers every session of that attempt. */
+export type TeamLeaseSubject = { kind: "vm_session"; vmId: string; workId: string; attemptId: string; sessionId: string | null };
 /** Protected composition only. The policy service authenticates and guards every actual work actor. */
 export interface TeamOptions {
   runtime: "s15"; path: string; create: boolean; installationId: string;

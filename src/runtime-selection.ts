@@ -1,7 +1,7 @@
 import { readServiceConfigFile } from "../ops/package/service-config";
 
 /** Resolved CLI dispatch; args contain only the selected runtime's supported spelling. */
-export interface RuntimeSelection { runtime: "s14" | "legacy" | "service" | "adoption"; args: string[] }
+export interface RuntimeSelection { runtime: "s14" | "s15" | "legacy" | "service" | "adoption"; args: string[] }
 
 /** Safe bootstrap refusal; selection never opens application databases, locks, hosts or credentials. */
 export class RuntimeSelectionError extends Error {}
@@ -28,7 +28,12 @@ export function selectRuntime(args: string[], env: NodeJS.ProcessEnv = process.e
     if (selectors[0] !== "--s15" || literal.length || optionRest.length !== 3 || optionRest[0] !== "--report" || optionRest[1] !== "--config" || !optionRest[2] || optionRest[2].startsWith("--")) refuse("explicit_s15_adoption_report_required");
     return { runtime: "adoption", args: [command, "--s15", ...optionRest] };
   }
-  if (selectors[0] === "--s15") refuse("s15_requires_explicit_adoption");
+  if (selectors[0] === "--s15") {
+    const tail = optionRest.slice(2);
+    const valid = ["serve", "init"].includes(command) ? tail.length === 0 : command === "setup" ? tail.length === 0 || tail.join() === "--password-stdin" : command === "owner-link" ? tail.join() === "--output-fd,3" : command === "credential" ? tail.length === 3 && tail[0] === "--key" && /^[A-Za-z0-9_-]{1,128}$/.test(tail[1] ?? "") && tail[2] === "--secret-stdin" : false;
+    if (!valid || literal.length || optionRest[0] !== "--config" || !optionRest[1] || optionRest[1].startsWith("--")) refuse("explicit_s15_config_required");
+    return { runtime: "s15", args: [command, "--s15", ...optionRest] };
+  }
   const explicit = selectors[0] === "--s14" ? "s14" : selectors[0] === "--legacy" ? "legacy" : undefined;
   if (command === "service") {
     // Operator selection remains explicit/config-selected, including its historical /etc/jit default.

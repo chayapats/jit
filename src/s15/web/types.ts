@@ -199,7 +199,18 @@ export interface S15TeamResource {
   scope: { kind: "team" } | { kind: "bot"; botId: string; origin: "s15" | "s14" };
   operations: ("read" | "write" | "input")[]; active: boolean; whoCanUse: "enabled_team" | string[]; restrictions: string[];
 }
-export interface S15WebTeam<Actor> { view(actor: Actor): { contract: "s15-team-resources-view/v1"; resources: S15TeamResource[] } }
+/** One not-yet-registered resource exactly as it would be registered for the team. */
+export interface S15TeamCandidate {
+  id: string; revision: number; label: string; kind: S15TeamResource["kind"]; scope: S15TeamResource["scope"];
+  purposes: string[]; operations: S15TeamResource["operations"]; allowedBots: string[] | null;
+}
+export interface S15WebTeam<Actor> {
+  view(actor: Actor): { contract: "s15-team-resources-view/v1"; resources: S15TeamResource[] };
+  /** Resources the installed/proposed policy and composed connections reference that TEAM has not registered, with the digest of exactly these rows. Read-only. */
+  pending?(actor: Actor): { items: S15TeamCandidate[]; hash: string };
+  /** The owner's single confirmation of the reviewed list; refused (`team_resources_changed`) if the list differs. */
+  register?(actor: Actor, requestId: string, hash: string): void;
+}
 /** Structural subset of MIG15 `AdoptionStatus`; the adoption command itself is out of this UI's scope. */
 export interface S15AdoptionStatus {
   contract: "s15-adoption-status/v1"; state: "preparing" | "validated" | "activating" | "active_fenced" | "complete" | "rolling_back" | "rolled_back" | "discarded" | "blocked";

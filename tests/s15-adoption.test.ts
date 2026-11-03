@@ -245,7 +245,7 @@ test('omitted-runtime old service configuration remains legacy; explicit S15 rep
   expect(selectRuntime(['serve', '--service-config', legacyPath], {}).runtime).toBe('legacy');
   expect(selectRuntime(['serve'], {}).runtime).toBe('s14');
   expect(selectRuntime(['adoption', '--s15', '--report', '--config', f.configPath], {}).runtime).toBe('adoption');
-  expect(() => selectRuntime(['serve', '--s15'], {})).toThrow('s15_requires_explicit_adoption');
+  expect(() => selectRuntime(['serve', '--s15'], {})).toThrow('explicit_s15_config_required');
   expect(() => selectRuntime(['adoption', '--report', '--config', f.configPath], {})).toThrow('explicit_s15_adoption_report_required');
   const source = { ...f.options.source, runtime: 'legacy' as const, database: join(f.root, 'state/app.sqlite'), configPath: legacyPath, argv: ['serve', '--service-config', legacyPath] };
   const before = preservedBytes(f);

@@ -2,11 +2,13 @@ import { AppError } from "../../errors";
 import { digest } from "../conversation/validation";
 import { ProtectedDataStore, TEAM_SCHEMA_V1 } from "./store";
 import { canonical, content, exact, identity, ids, inScope, integer, origin, reference, resource, scope } from "./validation";
-import type { OwnerActor, Ref, TeamActor, TeamContext, TeamLease, TeamOptions, TeamResource, TeamResourcesView, TeamResult, TeamSource, WorkAuthority } from "./types";
+import type { OwnerActor, Ref, TeamActor, TeamContext, TeamLease, TeamLeaseSubject, TeamOptions, TeamResource, TeamResourcesView, TeamResult, TeamSource, WorkAuthority } from "./types";
 
 interface Context { actor: TeamActor; authority: WorkAuthority }
-interface LeaseRecord { id: string; workId: string; resources: string[]; keys: { key: string; fence: number }[]; mode: "write" | "input"; expiresAt: number; state: "reserved" | "in_flight" | "unknown" | "settled" }
+interface LeaseRecord { id: string; workId: string; resources: string[]; keys: { key: string; fence: number }[]; mode: "write" | "input"; expiresAt: number; state: "reserved" | "in_flight" | "unknown" | "settled"; subject?: TeamLeaseSubject }
 const key = () => crypto.randomUUID().replaceAll("-", "");
+/** Digest of the exact registration rows shown to the owner; any change refuses the confirmation. */
+export const teamCandidatesHash = (items: readonly TeamResource[]): string => digest(canonical({ contract: "s15-team-registration/v1", items }));
 const same = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision && a.generation === b.generation;
 
 /**
@@ -36,13 +38,39 @@ export class TeamService {
       const hash = digest(canonical({ expectedRevision, value }));
       const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(requestId);
       if (prior) { if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamResource; }
-      const existing = this.findResource(value.id);
-      if ((existing?.revision ?? 0) !== expectedRevision || value.revision !== expectedRevision + 1 || existing && value.generation < existing.generation) throw new AppError("stale_revision", 409);
-      if (existing && existing.coordinationKey !== value.coordinationKey) throw new AppError("coordination_identity_changed", 409);
-      if (existing?.scope.kind === "bot" && existing.scope.origin === "s14" && canonical(existing.scope) !== canonical(value.scope)) throw new AppError("private_promotion_requires_migration", 409);
-      this.store.db.query("INSERT INTO resources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(value.id, canonical(value));
+      this.put(value, expectedRevision);
       this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(requestId, hash, canonical(value));
       return structuredClone(value);
+    });
+  }
+  /** Compare-and-set write inside the caller's transaction. Revisions only increase, so a first
+   * registration can adopt the owning catalog's current revision; private S14 scope never widens here. */
+  private put(value: TeamResource, expectedRevision: number): void {
+    const existing = this.findResource(value.id);
+    if ((existing?.revision ?? 0) !== expectedRevision || value.revision <= expectedRevision || existing && value.generation < existing.generation) throw new AppError("stale_revision", 409);
+    if (existing && existing.coordinationKey !== value.coordinationKey) throw new AppError("coordination_identity_changed", 409);
+    if (existing?.scope.kind === "bot" && existing.scope.origin === "s14" && canonical(existing.scope) !== canonical(value.scope)) throw new AppError("private_promotion_requires_migration", 409);
+    this.store.db.query("INSERT INTO resources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(value.id, canonical(value));
+  }
+  /**
+   * One authenticated owner confirmation of an exact reviewed list of new registrations. `candidates`
+   * is recomputed from protected state inside the transaction; if its digest differs from what the owner
+   * saw, nothing is registered. All items register atomically; a repeated request returns its result.
+   */
+  registerReviewed(actor: OwnerActor, requestId: string, reviewedHash: string, candidates: () => readonly TeamResource[]): string[] {
+    this.owner(actor); identity(requestId);
+    if (!/^[a-f0-9]{64}$/.test(reviewedHash)) throw new AppError("invalid_body");
+    return this.store.transaction(() => {
+      this.owner(actor); this.store.capacity();
+      const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(requestId);
+      if (prior) { if (prior.payload_hash !== reviewedHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as string[]; }
+      const items = candidates().map(item => structuredClone(item));
+      items.forEach(resource);
+      if (!items.length || items.length > 64 || teamCandidatesHash(items) !== reviewedHash) throw new AppError("team_resources_changed", 409);
+      for (const item of items) { if (this.findResource(item.id)) throw new AppError("team_resources_changed", 409); this.put(item, 0); }
+      const ids = items.map(item => item.id);
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(requestId, reviewedHash, canonical(ids));
+      return ids;
     });
   }
   /** Read-only owner projection. A team default is still bounded by current enabled Bot/work policy. */
@@ -59,6 +87,17 @@ export class TeamService {
   private findResource(id: string): TeamResource | null {
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM resources WHERE id=?").get(id);
     return row ? JSON.parse(row.record_json) as TeamResource : null;
+  }
+  /** Host-only current catalog projection; this supplies a fence, never an actor or resource grant. */
+  currentResource(id: string): { ref: Ref; active: boolean } | null {
+    const resource = this.findResource(id); return resource ? { ref: { id: resource.id, revision: resource.revision, generation: resource.generation }, active: resource.active } : null;
+  }
+  /** Pure current resource ceiling for POLICY's catalog intersection. It cannot call POLICY recursively or authenticate a serialized work object. */
+  allowsWork(work: WorkAuthority): boolean {
+    return work.request.resources.every(ref => {
+      const item = this.findResource(ref.id), bot = work.request.bot.id;
+      return !!item && item.active && same(ref, item) && item.purposes.includes(work.request.purpose.id) && inScope(item.scope, bot) && (item.allowedBots === null || item.allowedBots.includes(bot)) && !item.deniedBots.includes(bot);
+    });
   }
   /** Binds a real POLICY actor to independent process-local context, never to another Bot's native session. */
   bind(actor: TeamActor): TeamContext {
@@ -223,6 +262,33 @@ export class TeamService {
       if (!verify(structuredClone(record))) throw new AppError("settlement_pending", 409);
       this.settle(id);
     });
+  }
+  /**
+   * Durably binds a dispatched lease to the protected subject whose own settlement proof can later release
+   * it (for example one working-VM session). Linking grants nothing; it only names what must be proven.
+   */
+  link(handle: TeamLease, subject: TeamLeaseSubject): void {
+    const saved = this.#leases.get(handle); if (!saved) throw new AppError("stale_lease", 409);
+    this.store.transaction(() => {
+      const row = this.store.db.query<{ state: LeaseRecord["state"]; record_json: string }, [string]>("SELECT state,record_json FROM leases WHERE id=?").get(saved.id);
+      if (!row || row.state !== "in_flight") throw new AppError("stale_lease", 409);
+      this.store.db.query("UPDATE leases SET record_json=? WHERE id=?").run(canonical({ ...JSON.parse(row.record_json) as LeaseRecord, subject: structuredClone(subject) }), saved.id);
+    });
+  }
+  /**
+   * Protected reconciliation pass, including after restart: every unknown lease linked to a subject of
+   * `kind` is released only when the owning service's `proven` callback observes real stop/settlement
+   * proof for that exact subject. Unlinked or unproven leases stay fenced. Returns the released lease ids.
+   */
+  reconcileSubjects<K extends TeamLeaseSubject["kind"]>(kind: K, proven: (subject: Extract<TeamLeaseSubject, { kind: K }>) => boolean): string[] {
+    const released: string[] = [];
+    for (const row of this.store.db.query<{ id: string; record_json: string }, []>("SELECT id,record_json FROM leases WHERE state='unknown'").all()) {
+      const subject = (JSON.parse(row.record_json) as LeaseRecord).subject;
+      if (subject?.kind !== kind) continue;
+      try { this.reconcileSettled(row.id, lease => lease.state === "unknown" && !!lease.subject && canonical(lease.subject) === canonical(subject) && proven(structuredClone(subject) as Extract<TeamLeaseSubject, { kind: K }>)); released.push(row.id); }
+      catch (error) { if (!(error instanceof AppError) || error.code !== "settlement_pending") throw error; }
+    }
+    return released;
   }
   /** Retains independent valid siblings and reports precise gaps; model completion never proves completeness. */
   result(context: TeamContext, expected: { botId: string; sourceId: string | null }[]): TeamResult {

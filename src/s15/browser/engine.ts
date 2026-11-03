@@ -155,7 +155,7 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
     }, value); input.guard();
   };
   return {
-    async navigate(url, input) { targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard(); await checked(page.goto(url, { waitUntil: 'networkidle' }), input); },
+    async navigate(url, input) { targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard(); await checked(page.goto(url, { waitUntil: 'domcontentloaded' }), input); },
     async read(generation) {
       targets.clear(); const n = ++serial;
       // Fixed protected capture code, never agent-provided JS. Input values, hidden DOM and scripts are absent.

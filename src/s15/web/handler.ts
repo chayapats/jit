@@ -11,7 +11,7 @@ import { memoryBody, memoryFilter, modelsBody, type S15MemoryPage } from "./mana
 import { fullSlip, slipKind, slipPayload, type S15SlipDecision } from "./actions";
 import { browserNeedsYou, takeoverView, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
 import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
-import { accountsBody, needsBody, recoveryBody, restoreSection, type S15NeedItem } from "./resources";
+import { accountsBody, needsBody, recoveryBody, restoreSection, teamPendingCard, type S15NeedItem } from "./resources";
 import { recurringProposalBody, rulesBody } from "./rules";
 import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
@@ -193,8 +193,10 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         return render(() => shell(nav(`/chats/${conversationId}`), tr("s15.chat.title"), threadHtml(page), { dock: `<div class="s-dock">${composer(page)}</div>`, live, conversationId, cursor }), status);
       };
 
-      const setupPage = (notices: { computer?: string | null; rules?: string | null; installed?: boolean } = {}, status = 200) => {
-        const status_ = computerStatus(), current = ports.rules?.current(actor) ?? null, rows = accounts();
+      // Resources the rules/computer refer to that TEAM has not registered; null when TEAM is not composed.
+      const teamPending = () => ports.team?.pending ? ports.team.pending(actor) : null;
+      const setupPage = (notices: { computer?: string | null; rules?: string | null; installed?: boolean; team?: string | null; teamRegistered?: boolean } = {}, status = 200) => {
+        const status_ = computerStatus(), current = ports.rules?.current(actor) ?? null, rows = accounts(), pending = teamPending();
         let proposal = null;
         if (ports.rules && !current) proposal = ports.rules.propose(actor, reviewed?.budget ?? null);
         return render(() => shell(nav("/setup"), tr("s15.setup.title"), setupBody({
@@ -202,9 +204,16 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           computerDone: status_ !== null,
           models: accountRows(rows, "model"), modelsDone: !!rows?.some(row => row.kind === "model" && row.state !== "not_connected"),
           accounts: accountRows(rows, "service"),
-          rules: rulesCard({ csrf, unavailable: !ports.rules, current, proposal, options: ports.rules?.budgetOptions(actor) ?? { currencies: [], periods: [] }, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused: notices.rules ?? null, installed: !!notices.installed }),
-          rulesDone: current !== null,
+          rules: rulesCard({ csrf, unavailable: !ports.rules, current, proposal, options: ports.rules?.budgetOptions(actor) ?? { currencies: [], periods: [] }, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused: notices.rules ?? null, installed: !!notices.installed })
+            + teamPendingCard({ pending, csrf, back: "setup", registered: !!notices.teamRegistered, refused: notices.team ?? null }),
+          // Work cannot use a resource TEAM has not registered, so setup is unfinished until the owner confirms them.
+          rulesDone: current !== null && !pending?.items.length,
         })), status);
+      };
+      const accountsPage = (state: { registered?: boolean; refused?: string | null } = {}, status = 200) => {
+        let team = null; try { team = ports.team ? ports.team.view(actor).resources : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; team = null; }
+        let pending = null; try { pending = team ? teamPending() : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; pending = null; }
+        return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf, teamPending: teamPendingCard({ pending, csrf, back: "resources", registered: !!state.registered, refused: state.refused ?? null }) })), status);
       };
       const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null } = { restore: null, restored: false }) => {
         const status_ = computerStatus(), computer = ports.computer;
@@ -287,10 +296,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         }
         if (url.pathname === "/rules") return rulesPage();
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
-        if (url.pathname === "/resources/accounts") {
-          let team = null; try { team = ports.team ? ports.team.view(actor).resources : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; team = null; }
-          return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf })));
-        }
+        if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
         if (url.pathname === "/recovery") {
           const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
           const pending = (dutyList()?.filter(item => item.state === "reconcile_only").length ?? 0) + views().reduce((n, view) => n + view.rows.filter(row => row.state === "unknown" && !row.slips.length).length, 0);
@@ -309,7 +315,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (!state || state.login !== "owner_control" || state.generation === null) return redirect("/needs#s15-needs-login");
           return render(() => shell(nav("/needs"), fill("s15.browser.view_title", { site: browser.site }), takeoverView(browsers().find(item => item.browser.id === browser.id)!.browser, state, csrf, url.searchParams.get("refused"))));
         }
-        if (url.pathname === "/setup") return setupPage();
+        if (url.pathname === "/setup") return setupPage({ teamRegistered: url.searchParams.get("team") === "registered" });
         if (url.pathname === "/resources/computer") return computerPage(null, 200, { restore: url.searchParams.get("restore"), restored: url.searchParams.get("restored") === "1" });
         if (url.pathname === "/memory") return memoryPage();
         if (url.pathname === "/models") return render(() => shell(nav("/models"), tr("s15.models.title"), modelsBody(models(), accounts()?.find(row => row.kind === "model" && row.signInHref)?.signInHref ?? null)));
@@ -490,6 +496,15 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (url.pathname === "/s15/forms/computer/forget-check") { only(fields, ["csrf", "requestId", "return"]); progress.check = null; return done(); }
         } catch (error) { if (codeOf(error) === "authentication_required") throw error; if (codeOf(error) === "vm_setup_expired") { progress.setup = null; progress.check = null; } return back(codeOf(error), 409); }
         throw new AppError("not_found", 404);
+      }
+      if (url.pathname === "/s15/forms/team/register") {
+        // The owner's one confirmation of the exact list shown; TEAM refuses if that list changed meanwhile.
+        only(fields, ["csrf", "requestId", "listHash", "return"]);
+        const team = ports.team; if (!team?.register || !["setup", "resources"].includes(fields.return!)) throw new AppError("not_found", 404);
+        if (!/^[a-f0-9]{64}$/.test(fields.listHash!)) throw new AppError("invalid_body");
+        try { team.register(actor, fields.requestId!, fields.listHash!); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return fields.return === "setup" ? setupPage({ team: codeOf(error) }, 409) : accountsPage({ refused: codeOf(error) }, 409); }
+        return redirect(fields.return === "setup" ? "/setup?team=registered#s15-setup-rules" : "/resources/accounts?team=registered#s15-res-team");
       }
       if (url.pathname.startsWith("/s15/forms/rules/")) {
         const rules = ports.rules; if (!rules) throw new AppError("not_found", 404);
