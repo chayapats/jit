@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { connect, createServer, isIP, type Socket } from "node:net";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
 import { redactCredentials } from '../../security/credentials';
@@ -19,6 +20,10 @@ export interface VmProxyLease { environment: Readonly<Record<string, string>>; c
 /** Protected proxy settings and deterministic DNS/connect seams. No upstream credential injection exists. */
 export interface VmRegistryProxyOptions {
   hostname: string; port: number; guestHostname: string; hosts?: readonly string[];
+  /** Listen on this protected Unix socket instead of `hostname:port` (Jit-managed local VMs reach it by guest-forward). */
+  socketPath?: string;
+  /** Port the guest uses in its lease URL when it differs from the listener (fixed guest-forward port). */
+  guestPort?: number;
   bytesPerSession?: number; maxConnections?: number; connectionMs?: number;
   log: (entry: VmProxyLog) => void;
   resolve?: (host: string) => Promise<readonly { address: string; family: number }[]>;
@@ -42,7 +47,8 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
 }> {
   const hosts = new Set(options.hosts ?? defaultVmRegistryHosts);
   if (!hosts.size || hosts.size > 128 || [...hosts].some(h => !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h))) vmFail("vm_invalid_setup");
-  vmInteger(options.port, 65535, 0);
+  vmInteger(options.port, 65535, 0); if (options.guestPort !== undefined) vmInteger(options.guestPort, 65535);
+  if (options.socketPath !== undefined && (!options.socketPath.startsWith("/") || Buffer.byteLength(options.socketPath) > 100 || options.guestPort === undefined)) vmFail("vm_invalid_setup");
   const maxBytes = options.bytesPerSession ?? 536870912, maxConnections = options.maxConnections ?? 32, connectionMs = options.connectionMs ?? 300000;
   vmInteger(maxBytes, 1073741824); vmInteger(maxConnections, 128); vmInteger(connectionMs, 600000);
   const sessions = new Map<string, { auth: string; expiresAt: number; bytes: number; sockets: Set<Socket>; authorize?: (host: string) => void }>(), sockets = new Set<Socket>();
@@ -109,15 +115,23 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
     };
     const onData = (chunk: Buffer) => { void handle(chunk).catch(() => client.destroy()); }; client.on("data", onData);
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(options.port, options.hostname, resolve); });
-  const address = server.address(); if (!address || typeof address === "string") vmFail("vm_proxy_unavailable");
-  return { port: address.port,
+  if (options.socketPath) {
+    // A stale socket from an earlier controller process is replaced; any other file type is refused.
+    const stale = lstatSync(options.socketPath, { throwIfNoEntry: false });
+    if (stale && !stale.isSocket()) vmFail("vm_proxy_unavailable"); if (stale) unlinkSync(options.socketPath);
+  }
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); if (options.socketPath) server.listen(options.socketPath, resolve); else server.listen(options.port, options.hostname, resolve); });
+  const address = server.address();
+  if (options.socketPath) { if (address !== options.socketPath) vmFail("vm_proxy_unavailable"); chmodSync(options.socketPath, 0o600); }
+  else if (!address || typeof address === "string") vmFail("vm_proxy_unavailable");
+  const listenerPort = typeof address === "object" && address ? address.port : 0, guestPort = options.guestPort ?? listenerPort;
+  return { port: listenerPort,
     lease(sessionId, expiresAt, authorize) {
       vmId(sessionId); if (sessions.has(sessionId) || sessions.size >= 64 || expiresAt <= Date.now()) vmFail("vm_proxy_unavailable");
       const password = randomBytes(24).toString("hex"), auth = `Basic ${Buffer.from(`${sessionId}:${password}`).toString("base64")}`;
       registerSecretFingerprint(password); registerSecretFingerprint(auth);
       const session = { auth, expiresAt, bytes: 0, sockets: new Set<Socket>(), ...(authorize ? { authorize } : {}) }; sessions.set(sessionId, session);
-      const url = `http://${sessionId}:${password}@${options.guestHostname}:${address.port}`;
+      const url = `http://${sessionId}:${password}@${options.guestHostname}:${guestPort}`;
       return { environment: Object.freeze(Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map(k => [k, url]))),
         close() { sessions.delete(sessionId); for (const s of session.sockets) s.destroy(); } };
     },

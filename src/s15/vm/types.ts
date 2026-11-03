@@ -32,7 +32,7 @@ export interface VmMachineState {
   network: "isolated" | "proxy-only" | "unproven";
   /** NIC identity read from protected hypervisor configuration, never from a guest report. */
   nicMac?: string;
-  /** Lima's protected host-forward binds its loopback SSH endpoint as well as the NIC. */
+  /** Lima/local QEMU protected host-forward binds the loopback SSH endpoint as well as the NIC. */
   sshEndpoint?: { host: string; port: number };
 }
 /** Protected, VM-scoped management. Credentials remain in this implementation, outside the guest. */
@@ -45,6 +45,12 @@ export interface VmManagement {
   restore(name: string): Promise<void>;
   /** Deletes only an exact protected recovery tag, after the service checks active fences. */
   retireSnapshot(name: string): Promise<void>;
+  /**
+   * Optional controller-boot re-attachment for Jit-managed local VMs: starts the VM again only if it was
+   * running before a host restart, and returns whether a new boot began. Owner-stopped or restored VMs stay
+   * stopped. The caller re-verifies identity and egress before admitting work.
+   */
+  resume?(signal?: AbortSignal): Promise<boolean>;
 }
 /** Immutable operation supplied to the policy consumer; the payload is credential-free exact runner input. */
 export interface VmPolicyOperation {

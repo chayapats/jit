@@ -5,7 +5,7 @@ import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels } from './policy';
 import { canonical, equal, unknownUsage } from './policy/validation';
 import { ConversationApplication, ConversationStore, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
-import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmStore, createVmApi, type WorkingVmOptions } from './vm';
+import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmStore, createVmApi, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
@@ -42,7 +42,9 @@ export interface S15CompositionOptions {
   interpreter?: Model; clock?: HostClock; subscriptionModels?: SubscriptionModels;
   /** A proposal is displayed for authenticated installation; constructing a service never installs it. */
   proposedPolicy: PolicyInput | null;
-  vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; managementVault?: import('../exec/connections').ConnectionVault; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'] };
+  vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; managementVault?: import('../exec/connections').ConnectionVault; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'];
+    /** Jit-managed nested KVM working VMs on this host (requires `managementVault`); state defaults to `<directory>/vm-local` and must stay within 64 characters. */
+    local?: Omit<LocalVmControlOptions, 'directory'> & { directory?: string } };
   browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'> };
   google?: GoogleEffectsOptions;
   github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
@@ -131,17 +133,28 @@ export async function composeS15(options: S15CompositionOptions) {
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
-    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner }) : new Map(options.vm.managers);
+    if (options.vm.local && !options.vm.managementVault) throw new AppError('vm_management_unavailable', 503);
+    // Local working VMs: protected registry proxy on a controller-only socket, reached only by the QEMU guest-forward.
+    const localVm = options.vm.local ? await startLocalVmControl(vmStore, { directory: join(root, 'vm-local'), ...options.vm.local }) : null;
+    if (localVm) cleanup.push(() => localVm.close());
+    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}),
-      ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
+      ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}),
+      ...(localVm ? { proxyLease: localVm.lease } : {}) });
+    if (localVm) {
+      // A local VM survives controller restarts; re-attach and re-verify it (or restart it after a host reboot) in the background.
+      const reattach = new AbortController(), reattaching = vm.reattach(reattach.signal).catch(() => {});
+      cleanup.push(async () => { reattach.abort(); await reattaching; });
+    }
     const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore);
     // Protected TEAM/VM reconciliation: leases left unknown by a crash or by recovery are released only on
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
     reconcileVm();
     const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
-      ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
+      ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}),
+      ...(localVm ? { proxyLease: (sessionId: string, expiresAt: number) => localVm.lease(sessionId, expiresAt), updateRegistryHosts: (hosts: readonly string[]) => localVm.setHosts(hosts) } : {}) });
     const authentication = { authenticate(token: string) { const auth = options.owner.authenticate(token); return { actor: policy.owner.authenticate(auth.proof), csrf: auth.csrf }; }, verifyCsrf: options.owner.verifyCsrf };
     const cookieName = new URL(options.origin).protocol === 'https:' ? '__Host-jit_s14' : 'jit_s14';
     const authenticate = (request: Request): OwnerActor => {
@@ -284,7 +297,7 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication, resumes, telegram,
+    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, vmManagers: managers, models, work, github, browser, authentication, resumes, telegram,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
        * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } await conversation.drain(); try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },

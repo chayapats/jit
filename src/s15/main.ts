@@ -40,7 +40,9 @@ export interface S15RuntimeConfig {
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   disclosure?: RuntimeDisclosureConfig;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
-  vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector };
+  vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector;
+    /** Opt-in Jit-managed nested KVM working VMs on this host (2026-11-03 single-host default; setup wiring is SETUP15-01). */
+    local?: boolean };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector; ownerUi?: Omit<import('./web').S15WebBrowser<import('./policy').OwnerActor>, 'owner'> };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };
@@ -135,7 +137,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ]; } } },
       // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
       telegram: { vault, transport: token => createTelegramBotApi(token) },
-      vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null },
+      vm: { id: config.vm.id, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(config.vm.local === true ? { local: {} } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
