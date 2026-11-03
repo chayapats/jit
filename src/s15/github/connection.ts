@@ -27,7 +27,8 @@ export interface GithubConnectionRecord {
   contract: "s15-github-connection/v1"; revision: number; state: "connected" | "removed";
   login: string | null; tokenFingerprint: string | null; tokenExpiresAt: number | null; verifiedAt: number | null;
   accessible: GithubAccessibleRepository[]; truncated: boolean; selected: GithubSelectedRepository[];
-  /** Resource generation per repository name; a repository selected again after removal gets a new generation. */
+  /** Resource revision and generation per repository name; selecting a repository again after it was unselected or
+   * disconnected advances both, so stale policies and TEAM rows over the earlier identity stop matching. */
   generations: Record<string, number>; changedAt: number;
 }
 
@@ -44,14 +45,22 @@ const parseExpiry = (header: string | null): number | null => {
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 };
 
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
+/** Protected DATA15 source identity of one repository generation; its resource is that generation's repository ref. */
+export function githubSourceId(name: string): string { return githubResourceId(name).replace(/^gh_/, "ghs_"); }
+
 /** Connection store and verifier. All commands are owner-only; composition checks the owner before calling. */
 export class GithubConnections {
   private readonly key: string;
   private readonly now: () => number;
+  /** Connect commands are serialized: the vault value and the committed fingerprint always change together. */
+  private connecting: Promise<unknown> = Promise.resolve();
   constructor(private readonly options: { store: GithubStore; vault: ConnectionVault; installationId: string; now?: () => number; fetch?: typeof fetch; maxRepositories?: number }) {
     this.key = s15CredentialKey(options.installationId, s15GithubConnectionAlias); this.now = options.now ?? Date.now;
-    // Screen echoes of an already stored token from boot on.
-    if (this.current()?.state === "connected") try { registerSecretFingerprint(options.vault.read(this.key)); } catch { /* Reported as github_credential_unavailable on use. */ }
+    // Screen echoes of an already stored token from boot on; a disconnect interrupted after its commit finishes here.
+    const c = this.current();
+    if (c?.state === "connected") try { registerSecretFingerprint(options.vault.read(this.key)); } catch { /* Reported as github_credential_unavailable on use. */ }
+    if (c?.state === "removed") try { options.vault.remove(this.key); } catch { /* Retried at the next boot; credential() refuses meanwhile. */ }
   }
   /** Current record, or null before the first connection. */
   current(): GithubConnectionRecord | null { return this.options.store.get<GithubConnectionRecord>("connection", "current"); }
@@ -63,7 +72,23 @@ export class GithubConnections {
     const live = c.state === "connected" ? c.selected.find(s => s.repository.resource.id === id) : undefined;
     if (live) return { ref: structuredClone(live.repository.resource), active: true };
     const name = Object.keys(c.generations).find(n => githubResourceId(n) === id);
-    return name ? { ref: { id, revision: 1, generation: c.generations[name]! }, active: false } : null;
+    return name ? { ref: { id, revision: c.generations[name]!, generation: c.generations[name]! }, active: false } : null;
+  }
+  /**
+   * DATA15 private source of one repository generation (H, ADR 0073). Every generation ever selected stays resolvable
+   * and private, so existing lineage is never declassified; only a currently selected generation gets approvals.
+   */
+  source(ref: Ref): import("../disclosure").DisclosureSource | null {
+    const c = this.current(); if (!c) return null;
+    const name = Object.keys(c.generations).find(n => githubSourceId(n) === ref.id), latest = name ? c.generations[name]! : 0;
+    if (!name || ref.revision !== 1 || !Number.isSafeInteger(ref.generation) || ref.generation < 1 || ref.generation > latest) return null;
+    return { ref: { id: ref.id, revision: 1, generation: ref.generation }, resource: { id: githubResourceId(name), revision: ref.generation, generation: ref.generation }, classification: "private", active: true, ownerReleasable: true };
+  }
+  /** The latest source per repository, and whether that generation is currently selected on a live connection. */
+  sources(): { source: import("../disclosure").DisclosureSource; selected: boolean }[] {
+    const c = this.current(); if (!c) return [];
+    return Object.entries(c.generations).map(([name, generation]) => ({ source: this.source({ id: githubSourceId(name), revision: 1, generation })!,
+      selected: c.state === "connected" && c.selected.some(s => s.repository.name === name && s.repository.resource.generation === generation) }));
   }
   /** Protected catalog row for the GitHub service recipient. */
   recipient(id: string): { ref: Ref; active: boolean } | null {
@@ -74,15 +99,22 @@ export class GithubConnections {
   credential(): string {
     if (this.current()?.state !== "connected") throw new AppError("github_not_connected", 409);
     let secret: string; try { secret = this.options.vault.read(this.key); } catch { throw new AppError("github_credential_unavailable", 409); }
-    registerSecretFingerprint(secret); return secret;
+    registerSecretFingerprint(secret);
+    // Fail closed unless the vault holds exactly the token the committed record was verified with.
+    if (sha256(secret) !== this.current()?.tokenFingerprint) throw new AppError("github_credential_unavailable", 409);
+    return secret;
+  }
+  private receiptOf(requestId: string, command: unknown): { id: string; hash: string; prior: GithubConnectionRecord | null } {
+    const id = `gc_${requestId}`, hash = sha256(canonical(command));
+    return { id, hash, prior: this.options.store.receipt<GithubConnectionRecord>(id, hash) };
   }
   private commit(requestId: string, command: unknown, next: () => GithubConnectionRecord): GithubConnectionRecord {
-    const hash = createHash("sha256").update(canonical(command)).digest("hex");
-    const prior = this.options.store.receipt<GithubConnectionRecord>(`gc_${requestId}`, hash); if (prior) return prior;
+    const { id, hash, prior } = this.receiptOf(requestId, command); if (prior) return prior;
     return this.options.store.tx(() => {
+      if (this.options.store.receipt(id, hash)) throw new AppError("request_id_conflict", 409);
       const record = next();
       this.options.store.put("connection", "current", record); this.options.store.put("connection_history", `r${String(record.revision).padStart(9, "0")}`, record);
-      this.options.store.commitReceipt(`gc_${requestId}`, hash, record); return record;
+      this.options.store.commitReceipt(id, hash, record); return record;
     });
   }
   private async api(token: string, path: string): Promise<{ status: number; value: unknown; headers: Headers }> {
@@ -99,12 +131,20 @@ export class GithubConnections {
    * connected is replaced; the owner's previous selection is kept for repositories the new token can still access.
    */
   async connect(requestId: string, token: string): Promise<GithubConnectionRecord> {
+    const run = this.connecting.then(() => this.connectOnce(requestId, token), () => this.connectOnce(requestId, token));
+    this.connecting = run.catch(() => undefined); return run;
+  }
+  private async connectOnce(requestId: string, token: string): Promise<GithubConnectionRecord> {
     const secret = token.trim();
     if (!secret) throw new AppError("github_token_required", 409);
     // The owner steps ask for a fine-grained token scoped to chosen repositories; a classic token is broader.
     if (/^gh[pousr]_/.test(secret)) throw new AppError("github_token_fine_grained_required", 409);
     if (!/^github_pat_[A-Za-z0-9_]{20,250}$/.test(secret)) throw new AppError("github_token_invalid", 409);
     registerSecretFingerprint(secret);
+    // A replayed request returns its own committed record and never touches the vault; a reused request id with a
+    // different token conflicts before any verification or vault write.
+    const fingerprint = sha256(secret), command = { kind: "connect", fingerprint };
+    const replay = this.receiptOf(requestId, command); if (replay.prior) return replay.prior;
     const user = await this.api(secret, "/user");
     if (user.status === 401) throw new AppError("github_token_invalid", 409);
     if (user.status === 403) throw new AppError("github_token_forbidden", 409);
@@ -123,14 +163,29 @@ export class GithubConnections {
       if (accessible.length >= max) break;
     }
     const truncated = /rel="next"/.test(listed.headers.get("link") ?? "") || (listed.value as unknown[]).length > accessible.length;
-    const fingerprint = createHash("sha256").update(secret).digest("hex").slice(0, 12), expiresAt = parseExpiry(user.headers.get("github-authentication-token-expiration"));
-    const at = this.now();
-    // Vault first: a record never says connected while its token is missing. A crash between the two leaves an unused value.
+    const expiresAt = parseExpiry(user.headers.get("github-authentication-token-expiration")), at = this.now();
+    if (this.receiptOf(requestId, command).prior) return this.receiptOf(requestId, command).prior!;
+    // Vault first, so a committed record never names a token that is missing; a failed journal write restores the
+    // previous value. A crash between the two leaves a value whose fingerprint no record names: credential() refuses it.
+    let previous: string | null = null; try { previous = this.options.vault.read(this.key); } catch { previous = null; }
     this.options.vault.write(this.key, secret);
-    return this.commit(requestId, { kind: "connect", fingerprint }, () => {
+    try { return this.commitConnect(requestId, command, () => {
       const prior = this.current();
       const kept = (prior?.selected ?? []).filter(s => accessible.some(a => a.name === s.repository.name && a.target === s.repository.target));
       return { contract: "s15-github-connection/v1", revision: (prior?.revision ?? 0) + 1, state: "connected", login, tokenFingerprint: fingerprint, tokenExpiresAt: expiresAt, verifiedAt: at, accessible, truncated, selected: prior?.state === "connected" ? kept : [], generations: { ...(prior?.generations ?? {}) }, changedAt: at };
+    }); } catch (error) {
+      try { if (previous === null) this.options.vault.remove(this.key); else this.options.vault.write(this.key, previous); } catch { /* credential() refuses a value no record names. */ }
+      throw error;
+    }
+  }
+  /** Commit a connect record; a receipt that appeared meanwhile is a conflict, so the caller restores the vault. */
+  private commitConnect(requestId: string, command: unknown, next: () => GithubConnectionRecord): GithubConnectionRecord {
+    const { id, hash } = this.receiptOf(requestId, command);
+    return this.options.store.tx(() => {
+      if (this.options.store.receipt(id, hash)) throw new AppError("request_id_conflict", 409);
+      const record = next();
+      this.options.store.put("connection", "current", record); this.options.store.put("connection_history", `r${String(record.revision).padStart(9, "0")}`, record);
+      this.options.store.commitReceipt(id, hash, record); return record;
     });
   }
   /** Replace the selection with exactly these accessible repositories. Unlisted ones stop admitting new work. */
@@ -144,18 +199,21 @@ export class GithubConnections {
         const accessible = c.accessible.find(a => a.name === name); if (!accessible) throw new AppError("github_repository_denied", 409);
         const existing = c.selected.find(s => s.repository.name === name); if (existing) return existing;
         generations[name] = (generations[name] ?? 0) + 1;
-        return { repository: { resource: { id: githubResourceId(name), revision: 1, generation: generations[name]! }, name, target: accessible.target }, private: accessible.private, selectedAt: at };
+        return { repository: { resource: { id: githubResourceId(name), revision: generations[name]!, generation: generations[name]! }, name, target: accessible.target }, private: accessible.private, selectedAt: at };
       }).sort((a, b) => a.repository.name.localeCompare(b.repository.name));
       return { ...c, revision: c.revision + 1, selected, generations, changedAt: at };
     });
   }
   /** Remove the token from the vault and stop new GitHub work. History rows stay; in-flight effects stay fenced. */
   remove(requestId: string, expectedRevision: number): GithubConnectionRecord {
-    return this.commit(requestId, { kind: "remove", expectedRevision }, () => {
+    // Commit first: once the record says removed, credential() refuses at once; the vault value is then deleted
+    // (and again at the next boot if this process stops in between).
+    const record = this.commit(requestId, { kind: "remove", expectedRevision }, () => {
       const c = this.current(); if (!c || c.state !== "connected") throw new AppError("github_not_connected", 409);
       if (c.revision !== expectedRevision) throw new AppError("stale_revision", 409);
-      this.options.vault.remove(this.key);
       return { ...c, revision: c.revision + 1, state: "removed", tokenFingerprint: null, tokenExpiresAt: null, selected: [], changedAt: this.now() };
     });
+    if (this.current()?.state === "removed") this.options.vault.remove(this.key);
+    return record;
   }
 }
