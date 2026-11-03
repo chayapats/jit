@@ -1,4 +1,4 @@
-import type { HostAttemptEffort, HostAuthFetch, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
+import type { HostAttemptEffort, HostAuthFetch, HostAuthStatusCode, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, HostRouteRenewal, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
 import type { BudgetVector, Ref, Selection, S15PolicyService, Usage, WorkActor } from '../policy';
 
 /** Protected approved route binding. Account/billing/recipient identities are exact refs, never labels
@@ -65,10 +65,14 @@ export interface ModelSelectionRecord {
    * refused sends (marked `refusal`), in decision order. null: a scripted host-supplied model whose sends Schway
    * cannot observe or authorize. */
   physicalDispatches: ModelDispatchRecord[] | null;
-  /** Exact Schway provider-request counts for the step's run; null when unobservable (scripted model or a
+  /** Exact provider requests this step started: the run's Schway counts plus any pre-listing renewal; null when the
+   * run was unobservable (scripted model or a
    * refused call). When exact, initial plus auth-retry sends equal the sends Jit admitted and reserved, otherwise
    * the output is withheld (`usage_invalid`). Absent before MODEL15-02. */
   providerRequests?: HostProviderRequests | null;
+  /** The renewal that preceded an uncached catalog listing (`renewalRequests` is also counted in `providerRequests`);
+   * null when the step used cached choices or a scripted model. Absent before MODEL15-03. */
+  catalogRenewal?: { outcome: HostRouteRenewal['outcome']; renewalRequests: 0 | 1; status: HostAuthStatusCode } | null;
   /** Pinned route controls; null for a scripted model. Absent before MODEL15-02. */
   controls?: ModelRouteControls | null;
   output: string | null; session: { id: string; branchId: string } | null;
@@ -116,7 +120,9 @@ export interface ModelService {
   publish(actor: WorkActor, stepId: string, consume: (text: string) => void): void;
   project(owner: import('../policy').OwnerActor, workId?: string): ModelBudgetView;
   /** Drop cached catalog evidence for one route (or all) after an observed sign-in, logout or account change;
-   * the next step lists afresh. No credential is read or written. */
+   * the next step renews and lists afresh. No credential is read or written. */
   forgetRouteCatalog(route?: ApprovedModelRoute['provider']): void;
-  close(): void;
+  /** Refuses synchronously while a step runs; otherwise closes the journal and resolves once a service-owned
+   * credential lifecycle has closed (retrying `busy` while an abandoned renewal stores its token, bounded). */
+  close(): Promise<void>;
 }
