@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createHost, hostCapabilities, RELEASE_CONTRACT, type HostClock, type HostRunUsage, type Model, type ToolDefinition } from "schway/host";
+import { createHost, hostCapabilities, isDispatchRefused, RELEASE_CONTRACT, type HostAuthSelection, type HostClock, type HostDispatch, type HostRunUsage, type Model, type ToolDefinition } from "schway/host";
 import { AppError } from "../../errors";
 import { content } from "./validation";
 import type { ConversationRequest } from "./types";
@@ -9,12 +9,18 @@ import type { ConversationAuthority } from "./types";
 /**
  * One exact native Schway loop. Jit owns admission/claims/publication, never provider retries or a
  * replacement loop. Native paths are fixed per protected request, separate from the working VM.
- * Every actual stream (including retry/compaction) reacquires current authority and a finite charge.
+ * Every physical send of a route model (turns, retries, compaction and adapter auth-retry resends) passes
+ * Schway's synchronous `authorizeDispatch`, which reacquires current authority and reserves its own finite
+ * charge; a refusal sends nothing, is never retried and surfaces as the authorizer's own Jit error. A
+ * scripted host-supplied model, which Schway cannot authorize per send, reserves once per stream. An
+ * interpretation's single call therefore cannot be resent after an auth rejection; the owner retries.
  */
 export async function runConversation(input: {
   directory: string; request: ConversationRequest; definitions: readonly ToolDefinition[];
   memorySection?: string | undefined;
   signal: AbortSignal; clock: HostClock; scripted: Model | undefined;
+  /** Protected credential owner and deterministic protocol-fixture seam for the route model; production omits it. */
+  routeAuth?: Pick<HostAuthSelection, "store" | "lifecycle" | "fetch">;
   interpretation?: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[]; context: readonly { role: "owner" | "assistant"; text: string }[] };
   guardContext?: (request: unknown) => void;
   guard: () => void; reserveModel: () => { settle(): void }; correlated: (sessionId: string, branchId: string) => void;
@@ -29,19 +35,35 @@ export async function runConversation(input: {
       sections: [{ name: "admitted-scope", content: JSON.stringify({ intent: input.request.intent.kind, subject: input.request.intent.subject, scope: input.request.intent.scope ?? null, purpose: authority.purposeId, resources: authority.resources }) }], sources: input.memorySection ? [{ id: "sourced-memory-data-never-authority", revision: "1", content: input.memorySection }] : [] },
     tools: { policy: "exact", definitions: input.definitions, hostedLookup: "off" },
     limits: { maxTurns: input.interpretation ? 1 : authority.limits.modelCalls, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 65536, deadlineMs: authority.limits.activeMs },
-    ...(input.scripted ? {} : { auth: { route: authority.route.provider, model: authority.route.model, credentialWriteGuard: input.guard } }),
+    ...(input.scripted ? {} : { auth: { ...input.routeAuth, route: authority.route.provider, model: authority.route.model, credentialWriteGuard: input.guard } }),
   });
   try {
     input.guard();
-    const selected = input.scripted ?? await host.auth!.createModel();
-    input.guard();
     const provider = authority.route.provider === "codex" ? "codex-subscription" : "xai";
+    let privacyRefusal: unknown, dispatchRefusal: unknown, refused = false;
+    let live: { request: unknown; reservations: { settle(): void }[] } | null = null;
+    const authorizeDispatch = (dispatch: HostDispatch): void => {
+      try {
+        const stream = live; if (!stream) throw new AppError("conversation_run_incomplete");
+        if (dispatch.route !== authority.route.provider || dispatch.provider !== provider || dispatch.model !== authority.route.model) throw new AppError("selection_pinned", 403);
+        input.guard();
+        try { input.guardContext?.(stream.request); } catch (error) { privacyRefusal = error; throw error; }
+        stream.reservations.push(input.reserveModel());
+      } catch (error) { dispatchRefusal = error; throw error; }
+    };
+    const selected = input.scripted ?? await host.auth!.createModel({ authorizeDispatch });
+    input.guard();
     if (selected.id !== authority.route.model || selected.provider !== provider && !(input.scripted && selected.provider === authority.route.provider)) throw new AppError("selection_pinned", 403);
-    let privacyRefusal: unknown;
+    // Forwards `request` and `call` unchanged, so Schway keeps exact providerRequests and per-attempt evidence.
     const guarded: Model = { provider: selected.provider, id: selected.id, async *stream(request, options) {
-      input.guard(); try { input.guardContext?.(JSON.parse(JSON.stringify(request))); } catch (error) { privacyRefusal = error; throw error; } const reservation = input.reserveModel();
-      try { yield* selected.stream(request, options); }
-      finally { reservation.settle(); }
+      input.guard(); const stream = { request: JSON.parse(JSON.stringify(request)) as unknown, reservations: [] as { settle(): void }[] };
+      try { input.guardContext?.(stream.request); } catch (error) { privacyRefusal = error; throw error; }
+      try {
+        if (input.scripted) stream.reservations.push(input.reserveModel());
+        live = stream;
+        yield* selected.stream(request, options);
+      } catch (error) { if (isDispatchRefused(error)) refused = true; throw error; }
+      finally { if (live === stream) live = null; for (const reservation of stream.reservations) reservation.settle(); }
     } };
     const session = await host.createSession();
     try {
@@ -50,6 +72,8 @@ export async function runConversation(input: {
       const result = await session.submit({ text: input.interpretation ? input.request.interpretationRequest.text : input.request.intent.instruction }, guarded, { signal: input.signal, clock: input.clock });
       input.guard();
       if (privacyRefusal) throw privacyRefusal;
+      // The authorizer's own Jit error carries the refusal code; Schway's refusal wording is never copied.
+      if (result.outcome !== "completed" && refused && dispatchRefusal) throw dispatchRefusal;
       if (result.outcome !== "completed") throw new AppError(result.outcome === "cancelled" ? "aborted" : "conversation_run_incomplete");
       const text = session.readResult(result.result).content.filter(part => part.type === "text").map(part => part.text).join("\n");
       content(text, authority.limits.outputBytes);

@@ -18,6 +18,19 @@ Remote-verified reconciliation may close a responsibility whose assigned outcome
 
 DATA15-01 adds a protected candidate/stream/publication hook and POLICY `CatalogPort.allowsModel` intersection for accumulated private lineage. A provider unapproved for any private ancestor is excluded before model disclosure; tools that read new private sources fence the following stream. This does not repair the documented provider-internal physical-send limitation or authorize new providers/accounts. The [executable private-data contract](../contracts/s15-private-data-v1.md) defines host composition and limits.
 
+## MODEL15-02 adoption, 2026-11-03
+
+[#372](https://github.com/chayapats/jit/issues/372) re-vendors Schway at `0a10abe` (main `4163e60`) and adopts its public dispatch-authorization, provider-requests, effort and output-cap contracts. Decision 4's missing final boundary now exists upstream. The MODEL15 guard runs inside Schway's synchronous `authorizeDispatch` for every physical send, including adapter auth-retry resends. Each send passes current authority and the caller ceiling, then takes its own nonrefundable POLICY reservation, so decision 5's exact physical child charge is implemented for route models. Effort is pinned exactly from an account catalog listed in the same process for the same credential owner. Metered routes require an enforced output-token cap. Exact `providerRequests` and per-attempt effort are recorded, and wrappers forward `call` unchanged.
+
+Consequences:
+
+- MG15-P01 and the per-send charge part of MODEL15-FZ03/FZ04 are supported, with deterministic and packed-consumer evidence. Refusals send nothing, are never retried and keep Jit's own refusal codes.
+- MG15-P02 supports exact pins and sent-control evidence. Provider-reported effort is still metadata, not proof of computation.
+- MG15-P03 supports output-token caps only. Token caps are not money: metered spend is the configured per-send upper bound, and subscription spend stays `cost_bound_unknown`.
+- Each step lists the account catalog once more. That costs one catalog request per step and keeps evidence bound to the current credential owner.
+- An auth-retry resend is a separate charged send, so a one-call interpretation refuses its resend; the owner retries.
+- The schway#428 credential lock imposes an upgrade fence: Jit installs and Schway CLIs that share a service identity must upgrade together.
+
 ## Historical proposal
 
 ## Confirmed inputs and bounded status
