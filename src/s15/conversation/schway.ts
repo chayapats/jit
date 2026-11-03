@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHost, hostCapabilities, isDispatchRefused, RELEASE_CONTRACT, type HostAuthSelection, type HostClock, type HostDispatch, type HostRunUsage, type Model, type ToolDefinition } from "schway/host";
 import { AppError } from "../../errors";
+import { routeCredentialGuard } from "../model/credentials";
 import { content } from "./validation";
 import type { ConversationRequest } from "./types";
 import type { ConversationAuthority } from "./types";
@@ -42,7 +43,7 @@ export async function runConversation(input: {
       sections: [{ name: "admitted-scope", content: JSON.stringify({ intent: input.request.intent.kind, subject: input.request.intent.subject, scope: input.request.intent.scope ?? null, purpose: authority.purposeId, resources: authority.resources }) }], sources: input.memorySection ? [{ id: "sourced-memory-data-never-authority", revision: "1", content: input.memorySection }] : [] },
     tools: { policy: "exact", definitions: input.definitions, hostedLookup: "off" },
     limits: { maxTurns: input.interpretation ? 1 : authority.limits.modelCalls, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 65536, deadlineMs: authority.limits.activeMs },
-    ...(input.scripted ? {} : { auth: { ...input.routeAuth, route: authority.route.provider, model: authority.route.model, credentialWriteGuard: input.guard } }),
+    ...(input.scripted ? {} : { auth: { ...input.routeAuth, route: authority.route.provider, model: authority.route.model, credentialWriteGuard: routeCredentialGuard(authority.route.provider) } }),
   });
   try {
     input.guard();

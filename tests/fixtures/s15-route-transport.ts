@@ -21,14 +21,18 @@ export function responsesStream(text = 'Completed the selected step.', reported?
  * Scripted provider transport and in-memory credential store for Schway's public route seam
  * (`HostAuthSelection.store`/`fetch`). No network, account or credential leaves the process. Inference
  * requests answer from `responses` in order (`401` = auth rejection, `ok` = completed stream, `{ status, message }` =
- * provider error). `reported` makes completed streams state an applied effort.
+ * provider error). `reported` makes completed streams state an applied effort. `renewalResponse` scripts the token
+ * endpoint (`ok`, an HTTP status, or `unreachable`); `log` records request kinds in order. With `rotating`, the token
+ * endpoint behaves like a real rotating grant: only the latest refresh token is accepted, and each renewal replaces it.
  */
-export function routeTransport(route: 'grok' | 'codex', script: { responses?: (401 | 'ok' | { status: number; message: string })[]; levels?: string[]; renewal?: () => Promise<void>; reported?: string } = {}) {
-  const values = new Map<string, string>(), bodies: string[] = [], catalogs: string[] = [], renewals: string[] = [];
+export function routeTransport(route: 'grok' | 'codex', script: { responses?: (401 | 'ok' | { status: number; message: string })[]; levels?: string[]; renewal?: () => Promise<void>; reported?: string;
+  renewalResponse?: 'ok' | { status: number } | 'unreachable'; rotating?: boolean } = {}) {
+  const values = new Map<string, string>(), bodies: string[] = [], catalogs: string[] = [], renewals: string[] = [], log: ('renewal' | 'catalog' | 'inference')[] = [];
   const responses = [...(script.responses ?? ['ok'])];
-  let levels = script.levels ?? ['low', 'high'], afterCatalogRead: (() => void) | null = null, armed: (() => void) | null = null, readsFail = false;
+  let levels = script.levels ?? ['low', 'high'], afterCatalogRead: (() => void) | null = null, armed: (() => void) | null = null, readsFail = false, beforeCatalog: (() => Promise<void> | void) | null = null;
   const account = credentialReferenceForRoute(route).account;
-  const tokens = (access: string, expiresAt = 9_000_000_000_000) => JSON.stringify({ accessToken: access, refreshToken: 'fixture-refresh', obtainedAt: 1, expiresAt, ...(route === 'codex' ? { accountId: 'fixture-account' } : {}) });
+  let validRefresh = 'fixture-refresh', rotations = 0;
+  const tokens = (access: string, expiresAt = 9_000_000_000_000, refresh: string | null = 'fixture-refresh') => JSON.stringify({ accessToken: access, ...(refresh ? { refreshToken: refresh } : {}), obtainedAt: 1, expiresAt, ...(route === 'codex' ? { accountId: 'fixture-account' } : {}) });
   values.set(account, tokens('fixture-access'));
   const store: HostCredentialStore = {
     async get(ref) { if (readsFail) throw new Error('fixture store unavailable'); const hook = armed; armed = null; hook?.(); return values.get(ref.account) ?? null; },
@@ -38,16 +42,25 @@ export function routeTransport(route: 'grok' | 'codex', script: { responses?: (4
   const fetch: HostAuthFetch = async (input, init) => {
     const url = input instanceof Request ? input.url : String(input);
     if (url.startsWith('https://api.x.ai/v1/models') || url.includes('/backend-api/codex/models')) {
-      catalogs.push(url); armed = afterCatalogRead; afterCatalogRead = null;
+      catalogs.push(url); log.push('catalog'); const hook = beforeCatalog; beforeCatalog = null; await hook?.(); armed = afterCatalogRead; afterCatalogRead = null;
       return Response.json(route === 'grok' ? { data: [{ id: ROUTE_MODEL.grok, supported_reasoning_levels: levels }] }
         : { models: [{ slug: ROUTE_MODEL.codex, visibility: 'list', supported_reasoning_levels: levels.map(effort => ({ effort })) }] });
     }
     if (url.startsWith('https://auth.x.ai/') || url.startsWith('https://auth.openai.com/')) {
-      renewals.push(url); await script.renewal?.();
+      renewals.push(url); log.push('renewal'); await script.renewal?.();
+      const outcome = script.renewalResponse ?? 'ok';
+      if (outcome === 'unreachable') throw new TypeError('fixture token endpoint unreachable');
+      if (outcome !== 'ok') return Response.json({ error: 'fixture_refusal' }, { status: outcome.status });
+      if (script.rotating) {
+        // A rotating grant: a stale refresh token is refused, and a successful renewal invalidates the one it used.
+        if (new URLSearchParams(String(init?.body ?? '')).get('refresh_token') !== validRefresh) return Response.json({ error: 'invalid_grant' }, { status: 400 });
+        validRefresh = `fixture-rotated-${++rotations}`;
+        return Response.json({ access_token: `fixture-renewed-${rotations}`, refresh_token: validRefresh, expires_in: 3600, id_token: 'fixture.id.token' });
+      }
       return Response.json({ access_token: 'fixture-renewed', refresh_token: 'fixture-rotated', expires_in: 3600, id_token: 'fixture.id.token' });
     }
     if (url === 'https://api.x.ai/v1/responses' || url.includes('/backend-api/codex/responses')) {
-      bodies.push(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body as Uint8Array));
+      bodies.push(typeof init?.body === 'string' ? init.body : new TextDecoder().decode(init?.body as Uint8Array)); log.push('inference');
       const next = responses.shift() ?? 'ok';
       if (next === 401) return Response.json({ error: { message: 'fixture token expired', type: 'invalid_request_error' } }, { status: 401 });
       if (next !== 'ok') return Response.json({ error: { message: next.message, type: 'server_error' } }, { status: next.status });
@@ -56,15 +69,19 @@ export function routeTransport(route: 'grok' | 'codex', script: { responses?: (4
     throw new Error(`unexpected fixture request ${url}`);
   };
   return {
-    store, fetch, bodies, catalogs, renewals,
+    store, fetch, bodies, catalogs, renewals, log,
+    /** The stored credential value (tests assert a rotated refresh token was kept, never its secrecy). */
+    stored() { return values.get(account) ?? null; },
     /** Account change: later listings advertise these effort levels. */
     set levels(value: string[]) { levels = value; },
     /** The stored access token is now past its expiry (Schway renews it before an inference send). */
-    expire() { values.set(account, tokens(JSON.parse(values.get(account)!).accessToken, 1)); },
+    expire(options: { refresh?: boolean } = {}) { const stored = JSON.parse(values.get(account)!) as { accessToken: string; refreshToken?: string }; values.set(account, tokens(stored.accessToken, 1, options.refresh === false ? null : stored.refreshToken ?? null)); },
     /** A fresh sign-in stores new credentials, for example after a lifecycle logout deleted them. */
     signIn() { values.set(account, tokens('fixture-signed-in')); },
     /** Every credential read fails, as an unavailable secure store would. */
     set readsFail(value: boolean) { readsFail = value; },
+    /** Run (and await) `hook` while the next catalog request is in flight, before it answers. */
+    onCatalog(hook: () => Promise<void> | void) { beforeCatalog = hook; },
     /** Run `hook` inside the next credential read. */
     onNextRead(hook: () => void) { armed = hook; },
     /** Run `hook` inside the first credential read after the next catalog listing (the adapter's pre-send read). */

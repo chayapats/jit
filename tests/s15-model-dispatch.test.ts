@@ -257,15 +257,6 @@ test('B1 expiry: a cached choice completes through renewal after the access toke
   expect(t.catalogs).toHaveLength(1); expect(t.renewals).toHaveLength(1); expect(t.bodies).toHaveLength(2);
 });
 
-test('B1 expiry: a fresh process with an expired token reports route_needs_login without renewal or inference', async () => {
-  const t = routeTransport('grok'); t.expire();
-  const { f, source, service } = setup('grok', 'subscription', t);
-  const record = await service.runStep(source.actor!, step());
-  // Listing never renews; schway#455 will let a fresh process renew before listing.
-  expect(record).toMatchObject({ state: 'failed', code: 'route_needs_login', reservations: [], physicalDispatches: [] });
-  expect(t.renewals).toHaveLength(0); expect(t.bodies).toHaveLength(0); expect(f.policy.control.reservations()).toEqual([]);
-});
-
 test('B1 status: an unavailable secure store surfaces route_store_unavailable, not route_unavailable', async () => {
   const t = routeTransport('grok'); t.readsFail = true;
   const { source, service } = setup('grok', 'subscription', t);

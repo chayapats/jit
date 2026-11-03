@@ -33,7 +33,7 @@ export function githubRuntime(config: GithubRuntimeConfig, input: {
   const credential = (repo: GithubRepository) => { const r = config.repositories.find(r => r.repository.resource.id === repo.resource.id); if (!r) throw new AppError('outside_scope'); return input.credential(r.credentialRef); };
   const gateway = new GithubApiGateway({ repositories, credential, production: repo => config.repositories.find(r => r.repository.resource.id === repo.resource.id)?.production ?? { consequence: 'unknown', fence: null, evidence: [] }, push: new ProtectedGithubPush({ bundle }) });
   const github: NonNullable<S15CompositionOptions['github']> = { repositories, gateway, limits: config.limits, ...(config.catalogPurpose ? { catalogPurpose: config.catalogPurpose } : {}),
-    workspace: ({ policy, vm, disclosure, guardModel, beforeRead, recordRead }) => createGithubVmWorkspace({ vm, vmId: input.vmId, policy, nativeDirectory: join(input.directory, 'native-github'), route: input.route,
+    workspace: ({ policy, vm, disclosure, guardModel, beforeRead, recordRead, routeAuth }) => createGithubVmWorkspace({ vm, vmId: input.vmId, policy, ...(routeAuth ? { routeAuth } : {}), nativeDirectory: join(input.directory, 'native-github'), route: input.route,
       modelCallUpperBound: input.modelCallUpperBound, maxTurns: config.maxTurns, activeMs: config.activeMs, maxBundleBytes: config.maxBundleBytes, tests: config.tests,
       preload: createGithubPreload({ policy, repositories, credential, upperBound: config.limits.readUpperBound, ...(beforeRead ? { beforeRead } : {}), ...(recordRead ? { recordRead } : {}) }),
       ...(guardModel ? { guardModel } : {}), ...(disclosure ? { recordArtifact: (actor, artifact) => disclosure.derive(actor, artifact, 'artifact') } : {}),

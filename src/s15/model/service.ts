@@ -1,10 +1,11 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { classifyAuthError, createHost, HostError, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostAuthStatusCode, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
+import { classifyAuthError, createHost, createHostCredentialLifecycle, HostError, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostAuthStatusCode, type HostCredentialLifecycle, type HostRouteRenewal, type HostRouteRenewalOptions, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
 import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
 import { add, canonical, digest, equal, exact, fail, id, nat, ref, selection, string, unknownUsage, vector, zero } from '../policy/validation';
+import { closeCredentialLifecycle, routeCredentialGuard } from './credentials';
 import { summarizeReservations } from './usage';
 import type { ApprovedModelRoute, ModelBudgetView, ModelDispatchRecord, ModelOptions, ModelPins, ModelRouteAuth, ModelRouteControls, ModelSelectionRecord, ModelService, ModelStepInput } from './types';
 
@@ -67,26 +68,41 @@ export function openModelService(options: ModelOptions): ModelService {
   if (options.runtime !== 's15') fail('s15_opt_in_required');
   if (!isAbsolute(options.nativeDirectory)) fail('protected_native_path_required');
   const limits = clone(options.limits); Object.values(limits).forEach(value => nat(value, true));
-  const routeAuth = options.routeAuth ?? {}; exact(routeAuth, [], ['store', 'lifecycle', 'fetch']);
+  const auth: unknown = options.routeAuth ?? {}; exact(auth, [], ['store', 'lifecycle', 'fetch']); const routeAuth = auth as ModelRouteAuth;
   if (routeAuth.store && routeAuth.lifecycle) fail('invalid_shape');
-  /** Listed account choices per route for this process and this service's credential owner (`routeAuth`).
-   * Schway binds a choice to the process and owner that listed it, so the cache never crosses either. A cached
-   * choice lets a step complete after access-token expiry (Schway renews before sending), whereas a listing
-   * never renews. It is dropped after an observed sign-in/logout (`forgetRouteCatalog`), a `createModel`
-   * `invalid-input` (new credential epoch) or a provider rejection. */
+  /** One credential lifecycle shared by this service's route hosts, renewals and listings, so a renewal and a run
+   * share one single-flight token request and listed choices stay bound to one credential owner. A caller-supplied
+   * `routeAuth.lifecycle` stays caller-owned; otherwise the service creates one (over `routeAuth.store` or the OS
+   * store) on first route use and closes it in `close()`. */
+  let lifecycle = routeAuth.lifecycle, ownedLifecycle: HostCredentialLifecycle | undefined;
+  const credentials = () => {
+    if (!lifecycle) lifecycle = ownedLifecycle = createHostCredentialLifecycle(routeAuth.store ? { store: routeAuth.store } : {});
+    return { lifecycle, ...(routeAuth.fetch ? { fetch: routeAuth.fetch } : {}) };
+  };
+  /** Listed account choices per route for this process and this service's credential owner. Schway binds a
+   * choice to the process and owner that listed it, so the cache never crosses either. A cached choice needs no
+   * renewal here: Schway renews before each send. It is dropped after an observed sign-in/logout
+   * (`forgetRouteCatalog`), a `createModel` `invalid-input` (new credential epoch) or a provider rejection. */
   const catalogs = new Map<ApprovedModelRoute['provider'], readonly HostModelChoice[]>();
-  /** The only fresh listing. A fresh process after token expiry reports `route_needs_login` until schway#455
-   * provides an inference-free renewal that can run here before listing. */
-  async function listChoices(route: ApprovedModelRoute['provider'], credentialWriteGuard: () => void, deadlineMs: number, signal?: AbortSignal): Promise<readonly HostModelChoice[]> {
-    const cached = catalogs.get(route); if (cached) return cached;
+  /** The only fresh listing. A listing never renews, so it first renews the route credential without inference
+   * (`host.auth.renew`, schway#455): at most one token request, only when the stored access is expired or inside
+   * the refresh skew, shared with runs on the same lifecycle. A stopped or failed renewal sends no catalog request. */
+  async function listChoices(route: ApprovedModelRoute['provider'], deadlineMs: number, signal: AbortSignal | undefined,
+    renew: (options: HostRouteRenewalOptions) => Promise<HostRouteRenewal>, observe: (renewal: HostRouteRenewal) => void): Promise<{ choices: readonly HostModelChoice[]; cached: boolean }> {
+    const cached = catalogs.get(route); if (cached) return { choices: cached, cached: true };
+    const renewal = await renew({ deadlineMs, ...(signal ? { signal } : {}) }); observe(renewal);
+    // Decide on the outcome, not the auth status, when a renewal stops.
+    if (renewal.outcome === 'cancelled') fail('cancelled');
+    if (renewal.outcome === 'limit_exceeded') fail('route_renewal_timeout');
+    if (renewal.outcome === 'failed') fail(ROUTE_STATUS_CODES[renewal.auth.status] ?? 'route_unavailable');
     // The catalog fetch is aborted when the step is cancelled or times out, never left in flight.
-    const catalogAbort = new AbortController(), base: HostAuthFetch = (routeAuth as ModelRouteAuth).fetch ?? ((input, init) => fetch(input, init));
+    const owner = credentials(), catalogAbort = new AbortController(), base: HostAuthFetch = owner.fetch ?? ((input, init) => fetch(input, init));
     const catalogFetch: HostAuthFetch = (input, init) => base(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, catalogAbort.signal]) : catalogAbort.signal });
     let listing: Awaited<ReturnType<typeof listRouteModels>>;
-    try { listing = await bounded(listRouteModels({ ...routeAuth, fetch: catalogFetch, route, credentialWriteGuard }), clock, deadlineMs, signal); }
+    try { listing = await bounded(listRouteModels({ lifecycle: owner.lifecycle, fetch: catalogFetch, route, credentialWriteGuard: routeCredentialGuard(route) }), clock, deadlineMs, signal); }
     finally { catalogAbort.abort(); }
     if (listing.status !== 'listed') fail(ROUTE_STATUS_CODES[listing.status] ?? 'route_unavailable');
-    catalogs.set(route, listing.models); return listing.models;
+    catalogs.set(route, listing.models); return { choices: listing.models, cached: false };
   }
   if (limits.turns > 64 || limits.attempts > 8 || limits.activeMs > 3600000 || limits.outputBytes > 32768) fail('invalid_limits');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a4d5135), clock = options.clock ?? defaultClock;
@@ -140,7 +156,7 @@ export function openModelService(options: ModelOptions): ModelService {
       const record: ModelSelectionRecord = { contract: 's15-model-selection/v1', id: stepKey, workId: work.id, stepId: input.stepId, inputHash,
         route: chosen, pins: pin, reason: work.request.selectionPin || pin.route || pin.model || pin.effort ? 'owner_pin' : baseline.availability !== 'available' && !equal(baseline.selection, chosen.selection) ? 'approved_alternative' : input.difficulty,
         state: 'selected', code: null, createdAt: time(), reservations: [], usage: unknownUsage(), tokens: null, tokenSamples: [],
-        effort: { requested: chosen.selection.effort, evidence: chosen.effortEvidence, providerConfirmed: false }, physicalDispatches: options.scripted ? null : [], providerRequests: null, controls: null, output: null, session: null };
+        effort: { requested: chosen.selection.effort, evidence: chosen.effortEvidence, providerConfirmed: false }, physicalDispatches: options.scripted ? null : [], providerRequests: null, catalogRenewal: null, controls: null, output: null, session: null };
       journal.put(record.id, record); return record;
     });
   }
@@ -165,7 +181,7 @@ export function openModelService(options: ModelOptions): ModelService {
             guard(actor, record); return output;
           } })), hostedLookup: 'off' },
           limits: { maxTurns: limits.turns, maxAttempts: limits.attempts, maxConcurrentTools: 1, deadlineMs: Math.min(limits.activeMs, upperBound.activeMs), contextWindow: limits.contextWindow, maxInputChars: limits.inputChars },
-          ...(options.scripted ? {} : { auth: { ...routeAuth, route: record.route.provider, model: record.route.modelId, credentialWriteGuard: () => guard(actor, record) } }),
+          ...(options.scripted ? {} : { auth: { ...credentials(), route: record.route.provider, model: record.route.modelId, credentialWriteGuard: routeCredentialGuard(record.route.provider) } }),
         });
         guard(actor, record);
         let ordinal = 0, admitted = 0, streamCode: string | null = null, live: LiveStream | null = null;
@@ -230,10 +246,19 @@ export function openModelService(options: ModelOptions): ModelService {
         };
         if (options.scripted) selected = options.scripted(clone(record.route));
         else {
-          // Cached per process and credential owner; a choice Schway rejects as `invalid-input` (for example after a
-          // lifecycle logout started a new credential epoch) is dropped and listed once more.
-          for (let fresh = false; ; fresh = true) {
-            const choices = await listChoices(record.route.provider, () => guard(actor, record), Math.min(limits.activeMs, upperBound.activeMs), signal);
+          // Cached per process and credential owner. A cached choice Schway rejects as `invalid-input` (for example after
+          // a lifecycle logout started a new credential epoch) is dropped and listed once more; a choice listed in this
+          // same step that Schway rejects is an honest `route_choice_refused`, never a loop.
+          for (;;) {
+            const runtime = host;
+            const { choices, cached } = await listChoices(record.route.provider, Math.min(limits.activeMs, upperBound.activeMs), signal, renewal => runtime.auth!.renew(renewal), renewal => {
+              // The pre-listing renewal is part of this step's provider requests even when the step stops here.
+              // Cumulative across listing attempts in this step: a re-list after `invalid-input` never erases a sent request.
+              const attempts = [...(record.catalogRenewal?.attempts ?? []), { outcome: renewal.outcome, renewalRequests: renewal.renewalRequests, status: renewal.auth.status }];
+              const renewalRequests = attempts.reduce((total, attempt) => total + attempt.renewalRequests, 0);
+              record.catalogRenewal = { outcome: renewal.outcome, renewalRequests, status: renewal.auth.status, attempts };
+              record.providerRequests = { initialSends: 0, authRetrySends: 0, renewalRequests }; save();
+            });
             guard(actor, record);
             const choice = choices.find(model => model.id === record.route.modelId); if (!choice) fail('route_unavailable');
             const pinned = controls = routeControls(record.route, choice); record.controls = pinned; save();
@@ -242,8 +267,9 @@ export function openModelService(options: ModelOptions): ModelService {
                 ...(pinned.maxOutputTokens === null ? {} : { maxOutputTokens: pinned.maxOutputTokens, requireOutputCap: true }) });
               break;
             } catch (error) {
-              if (fresh || !(error instanceof HostError && error.code === 'invalid-input')) throw error;
+              if (!(error instanceof HostError && error.code === 'invalid-input')) throw error;
               catalogs.delete(record.route.provider);
+              if (!cached) fail('route_choice_refused');
             }
           }
         }
@@ -290,7 +316,8 @@ export function openModelService(options: ModelOptions): ModelService {
           record.session = { id: session.reference.id, branchId: session.reference.branchId }; save(); guard(actor, record);
           const result = await session.submit({ text: input.text }, guarded, { ...(signal ? { signal } : {}), clock });
           // Usage evidence is retained even when authority has since changed; it never grants publication.
-          record.providerRequests = result.usage.providerRequests; record.effort = { ...record.effort, attempts: result.usage.attempts.map(attempt => attempt.effort) }; save();
+          const run = result.usage.providerRequests, renewed = record.catalogRenewal?.renewalRequests ?? 0;
+          record.providerRequests = run && { ...run, renewalRequests: run.renewalRequests + renewed }; record.effort = { ...record.effort, attempts: result.usage.attempts.map(attempt => attempt.effort) }; save();
           guard(actor, record);
           if ('model' in result && (result.model.id !== selected.id || result.model.provider !== selected.provider)) fail('wrong_model');
           if (result.outcome !== 'completed') {
@@ -344,7 +371,11 @@ export function openModelService(options: ModelOptions): ModelService {
         }), selections: records.map(({ output, ...safe }) => safe), unsettled: reservations.filter(r => !r.transportSettled).length };
     },
     forgetRouteCatalog(route) { if (route === undefined) catalogs.clear(); else catalogs.delete(route); },
-    close() { if (active.size) fail('capacity_busy'); journal.close(); },
+    close() {
+      if (active.size) fail('capacity_busy'); journal.close();
+      const owned = ownedLifecycle; ownedLifecycle = undefined; lifecycle = routeAuth.lifecycle;
+      return owned ? closeCredentialLifecycle(owned).then(() => undefined) : Promise.resolve();
+    },
   };
 }
 

@@ -13,7 +13,8 @@ const defaultCheck: RouteReadinessCheck = route => checkAuthReadiness({ route: r
  * The owner's Web device login therefore makes the route usable without any configuration edit, and a logout
  * withdraws it again. A route configured `unavailable` or `quota` stays exactly as configured (an explicit hold),
  * and metered routes are unchanged. Before the first check completes every live route is `unavailable`.
- * Dispatch still lists the account catalog afresh, so readiness alone never proves live access.
+ * Dispatch still renews the credential and lists the account catalog before its first step (cached per process),
+ * so readiness alone never proves live access.
  */
 export function liveRouteAvailability(check: RouteReadinessCheck = defaultCheck) {
   const live = new Map<ApprovedModelRoute['provider'], ApprovedModelRoute['availability']>();
