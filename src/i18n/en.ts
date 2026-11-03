@@ -5453,7 +5453,7 @@ export const en: Record<MessageKey, string> = {
   // SETUP15-01 automatic working computer and POOL15-01 working-computer pool.
   "s15.code.vm_host_unsupported": "This machine can’t create a working computer itself. It needs 64-bit Linux (x86_64 or arm64).",
   "s15.code.vm_kvm_unavailable": "This machine has no KVM (/dev/kvm), so it can’t run a VM inside itself.",
-  "s15.code.vm_kvm_denied": "KVM is present, but Jit’s service isn’t allowed to use /dev/kvm.",
+  "s15.code.vm_kvm_denied": "KVM is present, but the identity that runs Jit’s working computer isn’t allowed to use /dev/kvm.",
   "s15.code.vm_qemu_missing": "The QEMU programs Jit needs aren’t installed.",
   "s15.code.vm_host_too_small": "This machine doesn’t have enough CPU or memory for both Jit and a working computer.",
   "s15.code.vm_disk_insufficient": "There isn’t enough free disk space for the working computer (about 60 GiB is needed).",
@@ -5500,7 +5500,7 @@ export const en: Record<MessageKey, string> = {
   "s15.provision.state.paused": "Paused",
   "s15.provision.next.vm_host_unsupported": "Use your own VM below instead.",
   "s15.provision.next.vm_kvm_unavailable": "If this machine is itself a VM, turn on nested virtualization in its hypervisor, then reload this page. Or use your own VM below.",
-  "s15.provision.next.vm_kvm_denied": "Add Jit’s service user to the kvm group and restart the service, or use your own VM below.",
+  "s15.provision.next.vm_kvm_denied": "Run install.sh --s15 again to repair that identity’s kvm access, or use your own VM below.",
   "s15.provision.next.vm_qemu_missing": "Install the qemu-system, qemu-utils and cloud-image-utils packages, then reload this page. Or use your own VM below.",
   "s15.provision.next.vm_host_too_small": "Use your own VM on another machine below instead.",
   "s15.provision.next.vm_disk_insufficient": "Free up disk space and reload this page, or use your own VM below.",

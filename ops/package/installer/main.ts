@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { installerDefaults, installerOwnerLink, installerSchemaVersion, installerS14Schema, inspectInstallerS14Database, prepareInstallerHome, runInstaller, InstallerFailure, type HostFacts } from "./installer";
 import { parseServiceConfig, serviceDatabasePath } from "../service-config";
 import { readInstallerAdoptionReport } from "./adoption";
+import { readS15ComputerProgress, runS15Installer, s15Installation } from "./s15";
 
 const args = process.argv.slice(2), command = args.shift();
 try {
@@ -20,6 +21,13 @@ try {
     const config = parseServiceConfig(JSON.parse(readFileSync(flags.get("--config")!, "utf8")));
     if (config.runtime !== "s14") throw new Error("invalid-installer-arguments");
     console.log(inspectInstallerS14Database(serviceDatabasePath(config), true) ?? "none");
+  } else if (command === "prepare-home" && flags.has("--s15")) {
+    // S15 home: Secret Service, Schway and work directories only; S15 state is created by `init --s15`.
+    if (flags.size !== 2 || flags.get("--s15") !== "true" || flags.get("--home") !== s15Installation.home) throw new Error("invalid-installer-arguments");
+    prepareInstallerHome(flags.get("--home")!, "s15");
+  } else if (command === "s15-computer") {
+    if (flags.size !== 1 || flags.get("--config") !== s15Installation.config) throw new Error("invalid-installer-arguments");
+    console.log(JSON.stringify(readS15ComputerProgress(flags.get("--config")!)));
   } else if (command === "prepare-home" || command === "schema-version") {
     const s14 = flags.get("--s14") === "true";
     if (flags.size !== (flags.has("--s14") ? 2 : 1) || flags.get("--home") !== (s14 ? "/var/lib/jit-s14" : "/var/lib/jit")) throw new Error("invalid-installer-arguments");
@@ -30,16 +38,20 @@ try {
     const link = installerOwnerLink(parseServiceConfig(JSON.parse(readFileSync(flags.get("--config")!, "utf8"))), command === "owner-link");
     if (link) process.stdout.write(link + "\n"); // Captured by installer; never sent to journald or another log.
   } else if (command === "apply" || command === "plan") {
-    const allowed = ["--dry-run", "--root", "--source", "--uninstall", "--s14", "--computer-slots", "--family", "--arch", "--ram-mb", "--cpus", "--disk-total", "--disk-free"];
-    if ([...flags].some(([key, value]) => !allowed.includes(key) || ["--s14", "--dry-run", "--uninstall"].includes(key) && !["true", "false"].includes(value))) throw new Error("invalid-installer-arguments");
-    const s14 = flags.get("--s14") !== "false";
+    const allowed = ["--dry-run", "--root", "--source", "--uninstall", "--s14", "--s15", "--computer-slots", "--family", "--arch", "--ram-mb", "--cpus", "--disk-total", "--disk-free"];
+    if ([...flags].some(([key, value]) => !allowed.includes(key) || ["--s14", "--s15", "--dry-run", "--uninstall"].includes(key) && !["true", "false"].includes(value))) throw new Error("invalid-installer-arguments");
+    // S15 is explicit only; it never combines with an S14 selection or S14 disk slots.
+    const s15 = flags.get("--s15") === "true";
+    if (flags.has("--s15") && !s15 || s15 && (flags.has("--s14") || flags.has("--computer-slots"))) throw new Error("invalid-installer-arguments");
+    const s14 = !s15 && flags.get("--s14") !== "false";
     const dry = flags.get("--dry-run") === "true", root = flags.get("--root") ?? "/";
     const facts = dry ? JSON.parse(readFileSync(resolve(root, "host.json"), "utf8")) as HostFacts : {
       family: flags.get("--family")!, arch: flags.get("--arch")!, ramMb: Number(flags.get("--ram-mb")), cpus: Number(flags.get("--cpus")),
       diskBytes: Number(flags.get("--disk-total")), freeBytes: Number(flags.get("--disk-free")),
     };
     const defaults = installerDefaults(facts);
-    if (command === "plan") console.log(JSON.stringify({ contract: "ops.installer/v1", runtime: s14 ? "s14" : "legacy", facts, defaults }));
+    if (command === "plan") console.log(JSON.stringify({ contract: "ops.installer/v1", runtime: s15 ? "s15" : s14 ? "s14" : "legacy", facts, defaults }));
+    else if (s15) await runS15Installer({ root, dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
     else await runInstaller({ root, s14, computerSlots: flags.has("--computer-slots") ? Number(flags.get("--computer-slots")) : undefined, dryRun: dry, facts, source: flags.get("--source")!, bunPath: process.execPath, uninstall: flags.get("--uninstall") === "true", out: line => console.log(line) });
   } else throw new Error("invalid-installer-command");
 } catch (error) {

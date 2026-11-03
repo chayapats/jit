@@ -64,6 +64,7 @@ describe('the argv-fixed launcher', () => {
       const result = await run(args);
       expect({ args, code: result.code, recorded: result.recorded }).toEqual({ args, code: 0, recorded: expected });
     }
+    expect(await run(['check'])).toEqual({ code: 0, stdout: 'jit-vmm-ready-v1\n', recorded: null });
     // `create` prepared the VM's own directory, group-readable and setgid for the shared group.
     expect(lstatSync(dir).isDirectory()).toBe(true); expect(lstatSync(dir).mode & 0o777).toBe(0o750);
   });
@@ -99,7 +100,7 @@ describe('the argv-fixed launcher', () => {
       ['create', n, 'AB'.repeat(32), '60'], ['create', n, sha], ['create', n, `${sha}/../x`, '60'], ['snapshot', n, 'create', 'other'], ['snapshot', n, 'revert', tag],
       ['start', n, 'riscv64', '1', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '0', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '1000', '2048', identity.mac, '22022'],
       ['start', n, 'x86_64', '1', '2048', 'aa:bb:cc:dd:ee:ff', '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac, '80'], ['start', n, 'x86_64', '1', '2048', identity.mac, '70000'],
-      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['kvm', n], ['remove', n, '/']];
+      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['kvm', n], ['check', n], ['remove', n, '/']];
     for (const args of refused) {
       const result = await run(args);
       expect({ args, code: result.code, recorded: result.recorded }).toEqual({ args, code: 64, recorded: null });

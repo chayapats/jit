@@ -33,7 +33,7 @@ function qemuWords(vmm: QemuVmmOptions, architecture: "x86_64" | "aarch64"): str
  * Renders the root-owned launcher (`QemuVmmOptions.launcher`) that the installer installs mode 0755 and the
  * sudoers rule names. It runs only as the QEMU identity, sets that identity's own user-manager runtime directory,
  * refuses any unknown operation or argument (exit 64, nothing run), and runs one fixed command per operation:
- * `kvm` (device access probe), `show|stop|kill <vm>` (its transient unit), `info <vm> shared|exclusive`,
+ * `check` (prints `jit-vmm-ready-v1`; the installer's end-to-end sudo probe), `kvm` (device access probe), `show|stop|kill <vm>` (its transient unit), `info <vm> shared|exclusive`,
  * `resize <vm> <GiB>`, `create <vm> <base sha256> <GiB>`, `snapshot <vm> create|apply|delete <tag>`,
  * `seed <vm>` (the NoCloud seed from stdin, at most 16 MiB), `remove <vm>` (that VM's machine directory) and
  * `start <vm> <arch> <cpus> <MiB> <mac> <ssh port>` (QEMU in a transient user unit, UMask 0007 so only the
@@ -63,6 +63,11 @@ nat() { case "$1" in ''|0*|*[!0-9]*) return 1 ;; esac; [ "\${#1}" -le "$2" ]; }
 [ "$#" -ge 1 ] || refuse
 op=$1
 shift
+if [ "$op" = check ]; then
+  [ "$#" -eq 0 ] || refuse
+  printf '%s\n' 'jit-vmm-ready-v1'
+  exit 0
+fi
 if [ "$op" = kvm ]; then
   [ "$#" -eq 0 ] || refuse
   [ -r /dev/kvm ] && [ -w /dev/kvm ]

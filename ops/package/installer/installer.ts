@@ -39,7 +39,9 @@ export async function repairPodmanNamespace(
   return "failed";
 }
 
-function homeDirectories(home: string, s14 = false): string[] {
+function homeDirectories(home: string, s14: boolean | "s15" = false): string[] {
+  // S15 state is created only by `init --s15` (a fresh directory); its vault lives inside that state.
+  if (s14 === "s15") return ["work", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway"].map(path => join(home, path));
   return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway", ...(s14 ? ["vault"] : [])].map(path => join(home, path));
 }
 
@@ -47,8 +49,11 @@ function keyringUnit(home: string): string {
   return `[Unit]\nDescription=Jit service Secret Service (boot unlock)\nRequires=dbus.socket\nAfter=dbus.socket\n[Service]\nType=dbus\nBusName=org.freedesktop.secrets\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=secrets --unlock\nStandardInput=file:${join(home, "keyring-unlock")}\nStandardOutput=null\nStandardError=null\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=default.target\n`;
 }
 
-/** Runs only as the service identity: all writes below its mutable home, including boot unlock and ledger seed. */
-export function prepareInstallerHome(home: string, s14 = false): void {
+/**
+ * Runs only as the service identity: all writes below its mutable home, including boot unlock and ledger seed.
+ * `"s15"` prepares only the Secret Service, Schway and work directories; S15 state is created by `init --s15`.
+ */
+export function prepareInstallerHome(home: string, s14: boolean | "s15" = false): void {
   if (process.getuid?.() === 0) throw new Error("service-identity-required");
   for (const path of homeDirectories(home, s14)) {
     mkdirSync(path, { recursive: true, mode: 0o700 });
