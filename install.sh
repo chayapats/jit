@@ -152,6 +152,7 @@ elif [ "$s15" = true ]; then
   '  Probe local health. A failed upgrade restores the previous release and unit; a failed fresh install removes the new unit and new state.' \
   '  Follow the automatic working computer (a KVM VM run as jit-s15-vmm) and print its progress.' \
   '  Deliver the first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link. Print the remaining owner Web steps.'
+  if [ -z "$source_dir" ]; then printf '  Download release artifact/checksum from %s.\n' "$release_url"; fi
 elif [ "$uninstall" = true ]; then
   printf '  Action: uninstall %s only. Stop/disable its service and Secret Service; remove their units and journald config.\n' "$name"
   printf '%s\n' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
