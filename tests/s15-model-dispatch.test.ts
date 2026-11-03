@@ -15,8 +15,8 @@ const GROK_DEFAULT_CAP = 16384;
 /** Fresh public host directories under a fixture root. */
 const dirs = (root: string) => { for (const part of ['w', 'h', 's']) mkdirSync(`${root}/${part}`, { recursive: true }); return { workspaceRoot: `${root}/w`, homeDirectory: `${root}/h`, sessionDirectory: `${root}/s` }; };
 
-function setup(route: 'grok' | 'codex', charge: ApprovedModelRoute['charge'], transport: ReturnType<typeof routeTransport> | null, extra: Partial<ModelOptions> = {}) {
-  const f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+function setup(route: 'grok' | 'codex', charge: ApprovedModelRoute['charge'], transport: ReturnType<typeof routeTransport> | null, extra: Partial<ModelOptions> = {}, fixture: Parameters<typeof modelWorkFixture>[0] = {}) {
+  const f = modelWorkFixture(fixture); cleanups.push(() => f.cleanup());
   for (const row of f.routes) { row.provider = route; row.charge = charge; }
   f.routes[0]!.modelId = ROUTE_MODEL[route];
   const source = f.source('source');
@@ -54,6 +54,31 @@ test('HostDispatch and providerRequests: initial send and Grok 401 auth-retry ea
   const reservations = f.policy.control.reservations(source.authority!.id);
   expect(reservations.map(r => [r.transportSettled, r.actual.calls, r.actual.attempts])).toEqual([[true, 1, 1], [true, 1, 1]]);
   expect(record.usage.calls).toBe(2);
+});
+
+test('with one capacity slot a Grok 401 auth-retry still resends: the rejected send settles before the resend reserves', async () => {
+  const t = routeTransport('grok', { responses: [401, 'ok'] }), { f, source, service } = setup('grok', 'metered', t, {}, { concurrency: 1 });
+  const record = await service.runStep(source.actor!, step());
+  expect(record).toMatchObject({ state: 'completed', code: null });
+  expect(t.bodies).toHaveLength(2); expect(record.physicalDispatches!.map(d => d.kind)).toEqual(['initial', 'auth-retry']);
+  // Both charges stay nonrefundable: two settled reservations, one call each.
+  expect(f.policy.control.reservations(source.authority!.id).map(r => [r.transportSettled, r.actual.calls])).toEqual([[true, 1], [true, 1]]);
+});
+
+test('a cancelled step aborts its held catalog request instead of leaving it in flight', async () => {
+  const t = routeTransport('grok'); let catalogSignal: AbortSignal | null = null;
+  const held: typeof t.fetch = async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (!url.startsWith('https://api.x.ai/v1/models')) return t.fetch(input, init);
+    catalogSignal = init?.signal ?? null;
+    return new Promise<Response>((_, reject) => { init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }); });
+  };
+  const { source, service } = setup('grok', 'metered', { ...t, fetch: held } as unknown as ReturnType<typeof routeTransport>);
+  const controller = new AbortController(), running = service.runStep(source.actor!, step(), controller.signal);
+  for (let i = 0; i < 50 && !catalogSignal; i++) await Bun.sleep(5);
+  expect(catalogSignal).not.toBeNull(); controller.abort();
+  const record = await running;
+  expect(record.code).toBe('cancelled'); expect(catalogSignal!.aborted).toBe(true); expect(t.bodies).toHaveLength(0);
 });
 
 test('an exhausted call allowance at the auth-retry refuses the resend: one inference request, no retry, Jit code', async () => {

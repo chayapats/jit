@@ -1,12 +1,12 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { createHost, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
+import { createHost, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
 import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
 import { add, canonical, digest, equal, exact, fail, id, nat, ref, selection, string, unknownUsage, vector, zero } from '../policy/validation';
 import { summarizeReservations } from './usage';
-import type { ApprovedModelRoute, ModelBudgetView, ModelDispatchRecord, ModelOptions, ModelPins, ModelRouteControls, ModelSelectionRecord, ModelService, ModelStepInput } from './types';
+import type { ApprovedModelRoute, ModelBudgetView, ModelDispatchRecord, ModelOptions, ModelPins, ModelRouteAuth, ModelRouteControls, ModelSelectionRecord, ModelService, ModelStepInput } from './types';
 
 const clone = <T>(value: T): T => JSON.parse(canonical(value)) as T;
 const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
@@ -45,7 +45,7 @@ async function bounded<T>(work: Promise<T>, clock: HostClock, ms: number, signal
   finally { signal?.removeEventListener('abort', abort); stop.abort(); }
 }
 /** One live model stream: its frozen request projection and the POLICY-reserved physical sends it made. */
-interface LiveStream { request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number }[] }
+interface LiveStream { request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number; settled?: boolean }[] }
 function pins(value: ModelPins): void { exact(value, ['route', 'model', 'effort']); if (value.route !== null) ref(value.route); if (value.model !== null) ref(value.model); if (value.effort !== null && !levels.includes(value.effort)) fail('selection_pinned'); }
 function matches(s: Selection, p: ModelPins): boolean { return (!p.route || equal(s.route, p.route)) && (!p.model || equal(s.model, p.model)) && (!p.effort || s.effort === p.effort); }
 const defaultClock: HostClock = { now: Date.now, monotonicNow: () => performance.now(), sleep: (ms, signal) => new Promise((resolve, reject) => {
@@ -156,6 +156,13 @@ export function openModelService(options: ModelOptions): ModelService {
          * reservation and its single-use dispatch guard. Route models run this inside Schway's authorizer. */
         const admit = (stream: LiveStream, dispatch: Omit<ModelDispatchRecord, 'reservationId' | 'authorizedAt'> | null): void => {
           if (ordinal >= 64) fail('budget_exhausted');
+          // An auth-retry resend means the rejected send has ended: settle it (nonrefundable, one call) before the
+          // resend reserves, so it never holds a capacity slot the resend needs.
+          const rejected = dispatch?.kind === 'auth-retry' ? stream.sends.at(-1) : undefined;
+          if (rejected && !rejected.settled) {
+            options.policy.control.settleReservation(rejected.reservationId, { ...unknownUsage(), calls: 1, attempts: 1, activeMs: Math.max(0, Math.ceil(elapsed() - rejected.started)), outputBytes: null }, true);
+            rejected.settled = true; measure(); save();
+          }
           guard(actor, record); if (signal?.aborted) fail('cancelled');
           hooks?.beforeCall();
           const reservation = options.policy.work.reserveModelCall(actor, { requestId: 'mc_' + digest('s15.model.call.v1', { step: record.id, ordinal: ordinal++ }), selection: record.route.selection, upperBound });
@@ -171,6 +178,7 @@ export function openModelService(options: ModelOptions): ModelService {
         const settle = (stream: LiveStream, complete: boolean, outputBytes: number) => {
           const end = elapsed();
           stream.sends.forEach((send, index) => {
+            if (send.settled) return;
             const next = stream.sends[index + 1];
             options.policy.control.settleReservation(send.reservationId, { ...unknownUsage(), calls: 1, attempts: 1, activeMs: Math.max(0, Math.ceil((next?.started ?? end) - send.started)), outputBytes: !next && complete ? outputBytes : null }, true);
           });
@@ -181,7 +189,12 @@ export function openModelService(options: ModelOptions): ModelService {
         else {
           // A listed choice is bound to this process and credential owner, so each step lists afresh: a choice
           // never outlives a sign-in, logout or account change. Listing reads the catalog without inference.
-          const listing = await bounded(listRouteModels({ ...routeAuth, route: record.route.provider, credentialWriteGuard: () => guard(actor, record) }), clock, Math.min(limits.activeMs, upperBound.activeMs), signal);
+          // The catalog fetch is aborted when the step is cancelled or times out, never left in flight.
+          const catalogAbort = new AbortController(), base: HostAuthFetch = (routeAuth as ModelRouteAuth).fetch ?? ((input, init) => fetch(input, init));
+          const catalogFetch: HostAuthFetch = (input, init) => base(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, catalogAbort.signal]) : catalogAbort.signal });
+          let listing: Awaited<ReturnType<typeof listRouteModels>>;
+          try { listing = await bounded(listRouteModels({ ...routeAuth, fetch: catalogFetch, route: record.route.provider, credentialWriteGuard: () => guard(actor, record) }), clock, Math.min(limits.activeMs, upperBound.activeMs), signal); }
+          finally { catalogAbort.abort(); }
           guard(actor, record);
           if (listing.status !== 'listed') fail(listing.status === 'quota-exceeded' ? 'quota_exceeded' : 'route_unavailable');
           const choice = listing.models.find(model => model.id === record.route.modelId); if (!choice) fail('route_unavailable');

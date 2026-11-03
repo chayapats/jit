@@ -13,7 +13,7 @@ export const difficult: Selection = { route: ref('route'), model: ref('difficult
 export const modelBound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, outputBytes: 32768, activeMs: 10000, spendMinor: '0' });
 export const observed = (extra: Partial<AttemptSettlement> = {}): AttemptSettlement => ({ transportSettled: true, executionSettled: true, effects: 'known', basis: 'remote_verified', progress: 'none', evidenceRefs: ['evidence'], recommendation: 'Inspect the failing check before choosing another approach.', usage: { ...unknownUsage(), attempts: 1, calls: 1 }, ...extra });
 
-export function modelWorkFixture(input: { budget?: boolean; subscription?: boolean; root?: string; create?: boolean; adapters?: ActionAdapter[]; selections?: Selection[] } = {}) {
+export function modelWorkFixture(input: { budget?: boolean; subscription?: boolean; root?: string; create?: boolean; adapters?: ActionAdapter[]; selections?: Selection[]; concurrency?: number } = {}) {
   const root = input.root ?? mkdtempSync(join(tmpdir(), 'jit-s15-model-work-')), create = input.create ?? true;
   let now = 1000, generation = 1, allow = true;
   const catalog = new Map<string, { ref: ReturnType<typeof ref>; active: boolean }>();
@@ -29,7 +29,7 @@ export function modelWorkFixture(input: { budget?: boolean; subscription?: boole
   });
   let policy = open(create), owner = policy.owner.authenticate('fixture_owner');
   const configuration: PolicyInput = { purposes: [ref('purpose')], bots: [ref('bot')], resources: [ref('repo')], recipients: [ref('provider')], selections: input.selections ?? [ordinary, difficult], rules: [], expiresAt: 900000,
-    budget: input.budget === false ? null : { currency: 'USD', startsAt: 0, expiresAt: 900000, ceiling: { attempts: 20, steps: 20, calls: 20, reads: 20, outputBytes: 1000000, activeMs: 500000, spendMinor: '100' }, concurrency: 5 } };
+    budget: input.budget === false ? null : { currency: 'USD', startsAt: 0, expiresAt: 900000, ceiling: { attempts: 20, steps: 20, calls: 20, reads: 20, outputBytes: 1000000, activeMs: 500000, spendMinor: '100' }, concurrency: input.concurrency ?? 5 } };
   if (create) policy.owner.install(owner, 'install', 0, configuration);
   const sources = new Map<string, ConversationRequest>();
   function source(sourceId: string, extra: Partial<WorkRequest> = {}) {
