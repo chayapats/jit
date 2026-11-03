@@ -155,9 +155,10 @@ export interface S15RulesCard {
 }
 const doesAlone = ["research", "computer", "edits", "accounts", "models"] as const;
 const alwaysAsks = ["messages", "github", "merge", "production", "payments", "recipients", "major", "new_accounts"] as const;
-function ruleLists(): string {
+/** The two plain F1 lists (does alone / always asks first) and the quiet personal-GitHub line. */
+export function ruleLists(personalNote = true): string {
   return `<div class="s15-rule-lists"><section><h4 class="s-section-t">${tr("s15.setup.does_alone")}</h4><ul>${doesAlone.map(item => `<li>${tr(key(`s15.setup.alone.${item}`))}</li>`).join("")}</ul></section>
-    <section><h4 class="s-section-t">${tr("s15.setup.always_asks")}</h4><ul>${alwaysAsks.map(item => `<li>${tr(key(`s15.setup.asks.${item}`))}</li>`).join("")}</ul></section></div><p class="s-note">${tr("s15.setup.personal_off")}</p>`;
+    <section><h4 class="s-section-t">${tr("s15.setup.always_asks")}</h4><ul>${alwaysAsks.map(item => `<li>${tr(key(`s15.setup.asks.${item}`))}</li>`).join("")}</ul></section></div>${personalNote ? `<p class="s-note">${tr("s15.setup.personal_off")}</p>` : ""}`;
 }
 const fieldLabels: Record<string, string> = { "budget.currency": "s15.budget.field.currency", "budget.startsAt": "s15.budget.field.starts", "budget.expiresAt": "s15.budget.field.expires", "budget.ceiling.spendMinor": "s15.budget.field.spend",
   "budget.ceiling.attempts": "s15.budget.field.attempts", "budget.ceiling.steps": "s15.budget.field.steps", "budget.ceiling.calls": "s15.budget.field.calls", "budget.ceiling.reads": "s15.budget.field.reads",

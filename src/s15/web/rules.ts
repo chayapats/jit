@@ -22,6 +22,8 @@ export interface S15RulesPage {
   recurring: { frequencies: RecurringFrequency[]; payments: { slip: ActionSlip }[] } | null;
   github: { capture: S15GithubCapture | null } | null;
   refused: string | null; saved: string | null;
+  /** POLICY15-02 pre-rendered default-proposal review (update or renewal), or empty. */
+  review?: string;
 }
 
 function recurringRow(rule: Rule, page: S15RulesPage): string {
@@ -59,7 +61,8 @@ export function rulesBody(page: S15RulesPage): string {
   const recurringRules = policy?.rules.filter(r => r.mode === "recurring_payment" && r.recurrence) ?? [];
   const add = page.recurring ? (page.recurring.payments.length ? `<h3>${tr("s15.rules.recurring_add")}</h3><p class="s-sub">${tr("s15.rules.recurring_add_lead")}</p><ul class="s15-facts">${page.recurring.payments.map(({ slip }) => { const t = slip.action.transaction!; return `<li><a class="s-link-text" href="/rules/recurring?from=${e(slip.action.id)}&amp;r=${slip.action.revision}">${mono(t.payee.id)} · ${e(exactAmount(t.amountMinor, t.minorUnit, t.currency))}</a></li>`; }).join("")}</ul>` : `<p class="s-sub">${tr("s15.rules.recurring_no_payees")}</p>`) : notYet("s15.rules.recurring_not_composed");
   const recurring = `<section class="s-card" id="s15-rules-recurring" aria-labelledby="s15-rules-recurring-t"><h2 id="s15-rules-recurring-t">${tr("s15.rules.recurring_title")}</h2>${recurringRules.length ? `<ul class="s15-rule-list">${recurringRules.map(r => recurringRow(r, page)).join("")}</ul>` : `<p class="s-sub">${tr("s15.rules.recurring_none")}</p>`}${add}</section>`;
-  return `<div class="s-col">${saved}${refusal(page.refused)}${summary}${githubSection(page)}${recurring}</div>`;
+  const review = page.review ? `<section class="s-card" aria-label="${tr("s15.policy.review_label")}">${page.review}</section>` : "";
+  return `<div class="s-col">${saved}${refusal(page.refused)}${summary}${review}${githubSection(page)}${recurring}</div>`;
 }
 
 /** F13 RuleProposal: step one picks a ceiling and a supported frequency from an exact payment; step two shows the exact rule. */
