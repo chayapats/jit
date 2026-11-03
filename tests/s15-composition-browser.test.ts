@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { Database } from 'bun:sqlite';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openProvisionedBrowser, provisionedBrowserResource, type ProvisionedBrowser } from '../src/s15/browser';
 import type { S15CompositionOptions } from '../src/s15/composition';
@@ -21,14 +22,12 @@ async function setup() {
   };
   const f = await composedFixture('default', false, undefined, tune); cleanup.push(() => f.close());
   const manifest = () => JSON.parse(readFileSync(join(f.directory, 'composition.json'), 'utf8')) as { stores: string[] };
-  return { f, manifest, provision() { provisioned = openProvisionedBrowser({ directory: join(f.parent, 'state'), installationId: 'fixture', ports }); cleanup.push(() => provisioned?.close()); return provisioned; }, set explicit(value: boolean) { explicit = value; } };
+  return { f, manifest, provision() { provisioned ??= openProvisionedBrowser({ directory: join(f.parent, 'state'), installationId: 'fixture', ports }); const opened = provisioned; cleanup.push(() => opened.close()); return opened; }, unprovision() { const closing = provisioned; provisioned = null; void closing?.close(); }, set explicit(value: boolean) { explicit = value; } };
 }
 
 test('an installation composed without a browser gains the provisioned browser store once, and serves the owner websites port', async () => {
   const s = await setup(), f = s.f;
   expect(s.manifest().stores).not.toContain('browser.sqlite'); expect(f.service.browser).toBeUndefined();
-  // A crash-interrupted upgrade boot can leave an unlisted generation-1 store; it is replaced, never trusted.
-  writeFileSync(join(f.directory, 'browser.sqlite'), 'leftover', { mode: 0o600 });
   const p = s.provision(); await f.reopen();
   expect(s.manifest().stores).toContain('browser.sqlite'); expect(existsSync(join(f.directory, 'browser.sqlite'))).toBe(true); expect(f.service.browser).toBeDefined();
   await f.reopen(); expect(s.manifest().stores).toContain('browser.sqlite');
@@ -69,4 +68,33 @@ test('other manifest differences and an explicit browser still refuse on reopen'
   await expect(composeS15(f.options(false))).rejects.toMatchObject({ code: 'continuity_unavailable' });
   expect(existsSync(join(f.directory, 'browser.sqlite'))).toBe(false);
   s.explicit = false; await f.reopen(); expect(JSON.parse(readFileSync(join(f.directory, 'composition.json'), 'utf8')).stores).toContain('browser.sqlite');
+});
+
+const generation = (directory: string) => { const db = new Database(join(directory, 'browser.sqlite'), { readonly: true }); try { return (db.query('SELECT generation FROM browser_state').get() as { generation: number }).generation; } finally { db.close(); } };
+
+test('upgrade, failed health check, rollback: the previous release boots with the restored manifest, and a re-upgrade adopts the browser store', async () => {
+  const s = await setup(), f = s.f, manifestPath = join(f.directory, 'composition.json');
+  // The installer keeps the stopped release's manifest before the new release starts (ops/package/installer/s15.ts).
+  const before = readFileSync(manifestPath);
+  s.provision(); await f.reopen();
+  expect(s.manifest().stores).toContain('browser.sqlite'); const used = generation(f.directory);
+  // Health check fails: the installer stops the new release and restores the earlier manifest byte for byte.
+  await f.service.close(); writeFileSync(manifestPath, before);
+  // The previous release composes without a browser; it checks only the stores its manifest lists.
+  s.unprovision(); await f.reopen();
+  expect(f.service.browser).toBeUndefined(); expect(readFileSync(manifestPath)).toEqual(before); expect(existsSync(join(f.directory, 'browser.sqlite'))).toBe(true);
+  // A later upgrade adopts the existing store instead of resetting its generation and effect fence.
+  s.provision(); await f.reopen();
+  expect(s.manifest().stores).toContain('browser.sqlite'); expect(generation(f.directory)).toBeGreaterThan(used);
+});
+
+test('an unlisted browser store that is not a complete continuity store refuses and is kept for inspection', async () => {
+  const s = await setup(), f = s.f;
+  writeFileSync(join(f.directory, 'browser.sqlite'), 'not a store', { mode: 0o600 });
+  s.provision(); await f.service.close();
+  const { composeS15 } = await import('../src/s15/composition');
+  await expect(composeS15(f.options(false))).rejects.toMatchObject({ code: 'continuity_unavailable' });
+  expect(readFileSync(join(f.directory, 'browser.sqlite'), 'utf8')).toBe('not a store'); expect(s.manifest().stores).not.toContain('browser.sqlite');
+  // Without that file the same boot creates a fresh store atomically and lists it.
+  rmSync(join(f.directory, 'browser.sqlite')); await f.reopen(); expect(s.manifest().stores).toContain('browser.sqlite'); expect(generation(f.directory)).toBe(2);
 });

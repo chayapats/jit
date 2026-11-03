@@ -94,6 +94,23 @@ test("a re-run repairs idempotently: config, installation id and state are prese
   expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-a"));
 });
 
+test("BROW15-02: a failed upgrade restores the previous release's composition manifest; a per-release copy serves rollback by hand", async () => {
+  const f = fixture(); await install(f, { release: "release-a" }); await install(f, { release: "release-b" });
+  const before = readFileSync(stateMarker(f), "utf8"), copy = f.at("etc/jit-s15/composition.release-b.json");
+  // The new release lists a store the previous release does not know, then fails its health check.
+  const started = () => { writeFileSync(stateMarker(f), JSON.stringify({ contract: "s15-composition/v1", stores: ["browser.sqlite"] })); writeFileSync(f.at("var/lib/jit-s15/state/runtime/browser.sqlite"), "store of the new release", { mode: 0o600 }); };
+  await expect(install(f, { release: "release-c", health: [false, true], started })).rejects.toThrow(/The previous release \/opt\/jit-s15\/releases\/release-b is active again and healthy\./);
+  expect(readlinkSync(f.at("opt/jit-s15/current"))).toBe(f.at("opt/jit-s15/releases/release-b"));
+  expect(readFileSync(stateMarker(f), "utf8")).toBe(before); expect(lstatSync(stateMarker(f)).mode & 0o777).toBe(0o600);
+  // The added store stays on disk, unlisted: an earlier release checks only the stores its manifest lists.
+  expect(readFileSync(f.at("var/lib/jit-s15/state/runtime/browser.sqlite"), "utf8")).toBe("store of the new release");
+  expect(readFileSync(copy, "utf8")).toBe(before); expect(lstatSync(copy).mode & 0o777).toBe(0o640);
+  // A healthy upgrade keeps the manifest the new release wrote and refreshes the copy of the release it left.
+  await install(f, { release: "release-c", started });
+  expect(JSON.parse(readFileSync(stateMarker(f), "utf8")).stores).toEqual(["browser.sqlite"]); expect(readFileSync(copy, "utf8")).toBe(before);
+  await install(f, { release: "release-d" }); expect(JSON.parse(readFileSync(f.at("etc/jit-s15/composition.release-c.json"), "utf8")).stores).toEqual(["browser.sqlite"]);
+});
+
 test("an upgrade switches the release atomically; a failed health check restores the previous release and unit", async () => {
   const f = fixture(); await install(f, { release: "release-a" });
   await install(f, { release: "release-b" });

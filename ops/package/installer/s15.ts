@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
 import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { buildPackage, validateArtifact } from "../bun-build";
 import { assertRootPath, assertRootTree, freezeInstallerArtifact, giveInstallerStaging } from "./trusted-paths";
 import { installerDefaults, InstallerFailure, type HostFacts, type InstallerDefaults } from "./installer";
@@ -256,6 +256,8 @@ export interface S15InstallerOptions {
     vmStop?: { exitCode: number; listed: string; processes: number[] };
     /** Health results consumed in order (new release first, then a rollback's re-check). */
     health?: boolean[];
+    /** Runs where a real controller would start (after the release switch), e.g. to change state as a new release would. */
+    started?: () => void;
     computer?: S15ComputerProgress[];
   };
 }
@@ -347,7 +349,8 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
   const vmmOptions = () => ({ user: p.vmmUser, uid: vmmUid, directory: p.vmmRoot, launcher: p.launcher });
   let ownedStaging: string | null = null, frozenContainer: string | null = null, ownerTerminal: ReturnType<typeof operatorTerminal> | undefined, pendingOwner: PendingOwnerLink | undefined;
   let release: string | null = null, config: S15RuntimeConfig | null = null, createdState = false, armed = false, committed = false;
-  let previous: { release: string | null; unit: string | null; journald: string | null; socket: string | null; active: boolean } | null = null;
+  let previous: { release: string | null; unit: string | null; journald: string | null; socket: string | null; active: boolean; manifest: string | null } | null = null;
+  const manifestPath = join(paths.state, "runtime/composition.json");
   const currentTarget = () => { try { return lstatSync(paths.current).isSymbolicLink() ? resolve(dirname(paths.current), readlinkSync(paths.current)) : null; } catch { return null; } };
   // The active-release link is the one symlink the installer manages; its parent must not be a link.
   const link = (path: string) => { safe(dirname(path)); const stat = lstatSync(path, { throwIfNoEntry: false }); if (stat && !stat.isSymbolicLink()) throw new InstallerFailure("paths", `move the non-link ${path.slice(root === "/" ? 0 : root.length)} aside, then re-run install.sh --s15`); };
@@ -558,16 +561,22 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     if (existsSync(paths.unit)) {
       step("service-stop", `inspect journalctl --namespace=${p.journal} -u ${p.service}, then re-run install.sh --s15; the working VM keeps running`);
       const active = dry ? options.simulation?.serviceActive !== false : ["active", "activating", "reloading"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim());
-      previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), socket: read(paths.socket), active };
+      previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), socket: read(paths.socket), active, manifest: null };
       armed = true;
       if (!dry && active) {
         await must(["systemctl", "stop", p.service], 120_000);
         if (["active", "activating", "deactivating"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim())) throw new InstallerFailure(currentStep, next);
       }
+      // A newer release may add a store to the runtime's composition manifest (BROW15-02 `browser.sqlite`), and an
+      // earlier release refuses a manifest it does not know. Keep the stopped release's manifest so a rollback here
+      // restores it, and a copy per release for the documented rollback by hand (s15-install.md).
+      previous.manifest = read(manifestPath);
+      const releaseId = previous.release ? basename(previous.release) : null;
+      if (previous.manifest !== null && releaseId && /^[A-Za-z0-9._-]{1,128}$/.test(releaseId)) write(join(paths.configDir, `composition.${releaseId}.json`), previous.manifest, 0o640, { uid: 0, gid });
     }
 
     step("state-initialize", `repair ${p.state} ownership and re-run install.sh --s15; existing state is never re-initialized`);
-    const marker = join(paths.state, "runtime/composition.json");
+    const marker = manifestPath;
     if (existsSync(paths.state) && !existsSync(marker)) {
       // An initialization interrupted before it finished has no owner and no work; keep it aside, never delete it.
       const aside = `${paths.state}.interrupted-${Date.now()}`; safe(aside); renameSync(paths.state, aside);
@@ -605,6 +614,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     step("service-start", `inspect journalctl --namespace=${p.journal} -u ${p.service}, fix the named gate and re-run install.sh --s15`);
     if (!dry) await must(["systemctl", "start", p.service], 180_000);
+    else options.simulation?.started?.();
 
     step("health", `inspect journalctl --namespace=${p.journal} -u ${p.service}; the login page did not answer on ${config.origin}`);
     if (!await healthy()) throw new InstallerFailure(currentStep, next);
@@ -658,6 +668,8 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
         if (!dry) await call(["systemctl", "stop", p.service], 120_000);
         if (previous?.release) {
           switchCurrent(previous.release);
+          // The stopped release's own manifest, byte for byte; stores a newer release added stay on disk unlisted.
+          if (previous.manifest !== null && read(manifestPath) !== previous.manifest) write(manifestPath, previous.manifest, 0o600, { uid, gid });
           if (previous.unit !== null) write(paths.unit, previous.unit, 0o644, { uid: 0, gid: 0 });
           if (previous.journald !== null) write(paths.journald, previous.journald, 0o644, { uid: 0, gid: 0 });
           if (previous.socket !== null) write(paths.socket, previous.socket, 0o644, { uid: 0, gid: 0 });

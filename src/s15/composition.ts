@@ -97,12 +97,13 @@ export async function composeS15(options: S15CompositionOptions) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
     mkdirSync(root, { mode: 0o700 });
   }
-  // BROW15-02: an installation composed before the provisioned browser existed gains exactly one fresh store,
-  // `browser.sqlite`, when its manifest is otherwise identical. Any other difference still refuses before a
-  // ledger opens. The manifest is replaced only after every store opened, before any work can run, so an
-  // unlisted `browser.sqlite` can only be the generation-1 leftover of an interrupted upgrade boot (never an
-  // armed effect); it is replaced, not trusted.
-  let addBrowserStore = false;
+  // BROW15-02: an installation whose manifest predates the provisioned browser gains exactly one store,
+  // `browser.sqlite`, when its manifest is otherwise identical; any other difference still refuses before a
+  // ledger opens. An existing unlisted `browser.sqlite` is adopted, never replaced: it is either the store of a
+  // release that was rolled back (the installer restores the earlier manifest, which an earlier release needs
+  // to start) and may hold an armed effect, or a complete fresh store (creation is atomic). Only a store this
+  // boot created is removed if the boot fails.
+  let addBrowserStore = false, createdBrowserStore = false;
   if (!options.create) {
     const directory = lstatSync(root);
     if (!directory.isDirectory() || directory.isSymbolicLink() || directory.mode & 0o077) throw new AppError('unprotected_ledger');
@@ -110,14 +111,15 @@ export async function composeS15(options: S15CompositionOptions) {
     if (!equal(stored, manifest)) {
       const withoutBrowser = { ...manifest, stores: storeNames.filter(name => name !== 'browser.sqlite') };
       if (!options.browser?.approved || !equal(stored, withoutBrowser)) throw new AppError('continuity_unavailable');
-      for (const suffix of ['', '-wal', '-shm']) { const path = join(root, `browser.sqlite${suffix}`), leftover = lstatSync(path, { throwIfNoEntry: false }); if (leftover) { if (!leftover.isFile() || leftover.isSymbolicLink()) throw new AppError('continuity_unavailable'); rmSync(path); } }
-      addBrowserStore = true;
+      const existing = lstatSync(join(root, 'browser.sqlite'), { throwIfNoEntry: false });
+      if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.mode & 0o077)) throw new AppError('continuity_unavailable');
+      addBrowserStore = true; createdBrowserStore = !existing;
     }
     for (const name of storeNames) { if (addBrowserStore && name === 'browser.sqlite') continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
   }
   const cleanup: (() => void | Promise<void>)[] = [];
-  // A failed additive boot removes the browser store it created, so the next boot sees the same old manifest.
-  if (addBrowserStore) cleanup.push(() => { if (!addBrowserStore) return; for (const suffix of ['', '-wal', '-shm']) rmSync(join(root, `browser.sqlite${suffix}`), { force: true }); });
+  // A failed additive boot removes only a browser store it created itself, so the next boot sees the same state.
+  if (createdBrowserStore) cleanup.push(() => { if (!addBrowserStore) return; for (const suffix of ['', '-wal', '-shm']) rmSync(join(root, `browser.sqlite${suffix}`), { force: true }); });
   let closing = false;
   let draining: Promise<void> | null = null;
   try {
@@ -135,7 +137,7 @@ export async function composeS15(options: S15CompositionOptions) {
     if (disclosure) cleanup.push(() => disclosure.close());
     const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (!pool.has(id)) throw new AppError('outside_scope'); return options.vm.resource; },
       attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination, ...(disclosure && options.disclosure?.acquisitionRoute ? { disclosure: disclosure.acquisition(options.disclosure.acquisitionRoute) } : {}) });
-    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create || addBrowserStore }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
+    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create || createdBrowserStore }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
     if (browser) cleanup.push(() => browser.close());
     const google = options.google ? registerGoogleEffects({ ...options.google, ...(disclosure && options.disclosure?.googleRoute ? { disclosure: { protectAdapter: adapter => disclosure.protectAdapter(adapter, options.disclosure!.googleRoute!), beforeRead: (work, payload) => disclosure.guardRead(work, options.disclosure!.googleRoute!, payload), recordRead: actor => { const work = policy.work.guard(actor); for (const source of options.disclosure!.workSources(work)) disclosure.read(actor, source); } } } : {}) }) : undefined;
     const githubStore = options.github ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create) : undefined;

@@ -39,6 +39,7 @@ The installer prints its plan, asks once for approval (`--yes` approves non-inte
 | `/opt/jit-s15/{bin/bun,releases/,current,libexec/jit-s15-vmm}` | root, 0755 | Bun, immutable releases, active-release link, launcher |
 | `/etc/jit-s15/s15-runtime.json` | root:jit-s15 0640 | generated config (credential-free) |
 | `/etc/jit-s15/installer-state.json` | root:jit-s15 0640 | last installed release and host facts |
+| `/etc/jit-s15/composition.<artifact id>.json` | root:jit-s15 0640 | the runtime manifest each upgraded-from release ran with, for rollback by hand |
 | `/var/lib/jit-s15` | jit-s15 0700 | controller home: Secret Service, Schway lock, `work/`, `state/` |
 | `/var/lib/jit-s15/state` | jit-s15 0700 | S15 state from `init --s15`, including the connection vault, VM keys, the approved-website list (`browser-sites.sqlite`) and the verified Chromium (`browser-engine/`) |
 | `/var/lib/jit-s15-vm` | root:jit-s15-vm 0750 | shared working-VM root |
@@ -80,20 +81,22 @@ All in the Web UI; nothing is typed into a file:
 
 ## Upgrade
 
-Run the new release's `install.sh --s15`. The installer seals the new release beside the old ones, stops `jit-s15.service` (the working VM keeps running in `jit-s15-vmm`'s user manager), switches `/opt/jit-s15/current`, rewrites the units, starts and health-checks the controller. Existing state is never re-initialized or migrated; the only addition is the protected browser's fresh `runtime/browser.sqlite` on an installation that predates it ([s15-browser.md](s15-browser.md#upgrades-and-state)). If the new controller does not start or its sign-in page does not answer within 30 seconds, the installer restores the previous release link, unit, socket unit and journald file, starts the previous controller again, checks it and reports `The previous release … is active again and healthy`.
+Run the new release's `install.sh --s15`. The installer seals the new release beside the old ones, stops `jit-s15.service` (the working VM keeps running in `jit-s15-vmm`'s user manager), switches `/opt/jit-s15/current`, rewrites the units, starts and health-checks the controller. Existing state is never re-initialized or migrated; the only addition is the protected browser's `runtime/browser.sqlite` on an installation that predates it ([s15-browser.md](s15-browser.md#upgrades-and-state)). Before the new release starts, the installer keeps the stopped release's composition manifest; if the new controller fails to start or answer, the rollback restores that manifest byte for byte with the previous release, units and socket, so the previous release starts again. If the new controller does not start or its sign-in page does not answer within 30 seconds, the installer restores the previous release link, unit, socket unit and journald file, starts the previous controller again, checks it and reports `The previous release … is active again and healthy`.
 
 ## Rollback by hand
 
-Releases are retained. To return to an earlier one:
+Releases are retained. A newer release may add a store to the runtime's composition manifest (`/var/lib/jit-s15/state/runtime/composition.json`; BROW15-02 adds `browser.sqlite`), and an earlier release refuses a manifest it does not know (`continuity_unavailable`). Each upgrade therefore keeps the manifest of the release it stopped as `/etc/jit-s15/composition.<artifact id>.json`. To return to an earlier one:
 
 ```sh
 ls /opt/jit-s15/releases
 sudo systemctl stop jit-s15.service
 sudo ln -sfn /opt/jit-s15/releases/<artifact id> /opt/jit-s15/current.next && sudo mv -T /opt/jit-s15/current.next /opt/jit-s15/current
+# If this file exists, restore that release's manifest; the stores it does not list stay on disk untouched.
+sudo install -o jit-s15 -g jit-s15 -m 0600 /etc/jit-s15/composition.<artifact id>.json /var/lib/jit-s15/state/runtime/composition.json
 sudo systemctl start jit-s15.service
 ```
 
-Re-running the newer `install.sh --s15` moves forward again.
+Re-running the newer `install.sh --s15` moves forward again; the newer release adopts the stores it added earlier (for example `browser.sqlite` with its effect fence) instead of recreating them.
 
 ## Failure and recovery
 

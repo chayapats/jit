@@ -23,6 +23,7 @@ In **Manage → Websites Jit may read**:
 
 - **Add** a website: paste any link to it or type its name. Jit keeps only the HTTPS origin (for example `https://example.com`) and applies it to the next request, with no restart. `http:`, IP addresses, `localhost` and internal names (`.local`, `.internal`, `.lan`, `.home.arpa`, single-label names and similar) are refused with the reason.
 - **Remove** a website: Jit stops opening it at once. Pages already read keep their public lineage.
+- Limits: 200 approved at once (`website_list_full`: remove one first), and 500 different websites over the list's lifetime (`website_history_full`). Removed websites still count toward the second limit, because their records keep earlier approvals and lineage resolvable; websites approved before can always be added back. To start a fresh list, stop `jit-s15.service`, delete `/var/lib/jit-s15/state/browser-sites.sqlite` and start it again (this only narrows what Jit may read).
 - What an approval allows: credential-free GET navigations without a query or body to that origin, reading and page images. It does not allow links with `?`, forms, sign-in, sending or paying. If a task holds private data, every navigation still waits for the owner's approval as a new-recipient disclosure.
 
 When a task needs a website that is not on the list, the agent receives `website_not_approved` and the conversation shows **Add this website to Jit's list**.
@@ -44,7 +45,8 @@ When a task needs a website that is not on the list, the agent receives `website
 
 ## Upgrades and state
 
-- An installation that ran S15 before this browser existed gains a fresh `runtime/browser.sqlite` (the browser's generation and effect-uncertainty record) at the first start of the new release. Its manifest changes only by that store; any other difference still stops the controller with `continuity_unavailable`.
+- An installation that ran S15 before this browser existed gains `runtime/browser.sqlite` (the browser's generation and effect-uncertainty record) at the first start of the new release. Its manifest changes only by that store; any other difference still stops the controller with `continuity_unavailable`.
+- Rollback: the installer (and the documented rollback by hand in [s15-install.md](s15-install.md#rollback-by-hand)) restores the earlier release's manifest, which does not list `browser.sqlite`; the earlier release checks only the stores it lists and starts. The file stays, and the next upgrade adopts it with its generation and any armed effect instead of recreating it. The store is created atomically, so an unlisted `browser.sqlite` that is not a complete store stops the controller with `continuity_unavailable` and is kept for inspection; move it aside only if no website effect was in flight.
 - `/var/lib/jit-s15/state/browser-sites.sqlite` holds the approved websites with revisions. Deleting it while the controller is stopped empties the list, which only narrows what Jit may read.
 - Deleting `/var/lib/jit-s15/state/browser-engine` while the controller is stopped makes the next start download and verify Chromium again.
 
