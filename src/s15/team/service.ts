@@ -2,10 +2,10 @@ import { AppError } from "../../errors";
 import { digest } from "../conversation/validation";
 import { ProtectedDataStore, TEAM_SCHEMA_V1 } from "./store";
 import { canonical, content, exact, identity, ids, inScope, integer, origin, reference, resource, scope } from "./validation";
-import type { OwnerActor, Ref, TeamActor, TeamContext, TeamLease, TeamOptions, TeamResource, TeamResourcesView, TeamResult, TeamSource, WorkAuthority } from "./types";
+import type { OwnerActor, Ref, TeamActor, TeamContext, TeamLease, TeamLeaseSubject, TeamOptions, TeamResource, TeamResourcesView, TeamResult, TeamSource, WorkAuthority } from "./types";
 
 interface Context { actor: TeamActor; authority: WorkAuthority }
-interface LeaseRecord { id: string; workId: string; resources: string[]; keys: { key: string; fence: number }[]; mode: "write" | "input"; expiresAt: number; state: "reserved" | "in_flight" | "unknown" | "settled" }
+interface LeaseRecord { id: string; workId: string; resources: string[]; keys: { key: string; fence: number }[]; mode: "write" | "input"; expiresAt: number; state: "reserved" | "in_flight" | "unknown" | "settled"; subject?: TeamLeaseSubject }
 const key = () => crypto.randomUUID().replaceAll("-", "");
 const same = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision && a.generation === b.generation;
 
@@ -234,6 +234,33 @@ export class TeamService {
       if (!verify(structuredClone(record))) throw new AppError("settlement_pending", 409);
       this.settle(id);
     });
+  }
+  /**
+   * Durably binds a dispatched lease to the protected subject whose own settlement proof can later release
+   * it (for example one working-VM session). Linking grants nothing; it only names what must be proven.
+   */
+  link(handle: TeamLease, subject: TeamLeaseSubject): void {
+    const saved = this.#leases.get(handle); if (!saved) throw new AppError("stale_lease", 409);
+    this.store.transaction(() => {
+      const row = this.store.db.query<{ state: LeaseRecord["state"]; record_json: string }, [string]>("SELECT state,record_json FROM leases WHERE id=?").get(saved.id);
+      if (!row || row.state !== "in_flight") throw new AppError("stale_lease", 409);
+      this.store.db.query("UPDATE leases SET record_json=? WHERE id=?").run(canonical({ ...JSON.parse(row.record_json) as LeaseRecord, subject: structuredClone(subject) }), saved.id);
+    });
+  }
+  /**
+   * Protected reconciliation pass, including after restart: every unknown lease linked to a subject of
+   * `kind` is released only when the owning service's `proven` callback observes real stop/settlement
+   * proof for that exact subject. Unlinked or unproven leases stay fenced. Returns the released lease ids.
+   */
+  reconcileSubjects<K extends TeamLeaseSubject["kind"]>(kind: K, proven: (subject: Extract<TeamLeaseSubject, { kind: K }>) => boolean): string[] {
+    const released: string[] = [];
+    for (const row of this.store.db.query<{ id: string; record_json: string }, []>("SELECT id,record_json FROM leases WHERE state='unknown'").all()) {
+      const subject = (JSON.parse(row.record_json) as LeaseRecord).subject;
+      if (subject?.kind !== kind) continue;
+      try { this.reconcileSettled(row.id, lease => lease.state === "unknown" && !!lease.subject && canonical(lease.subject) === canonical(subject) && proven(structuredClone(subject) as Extract<TeamLeaseSubject, { kind: K }>)); released.push(row.id); }
+      catch (error) { if (!(error instanceof AppError) || error.code !== "settlement_pending") throw error; }
+    }
+    return released;
   }
   /** Retains independent valid siblings and reports precise gaps; model completion never proves completeness. */
   result(context: TeamContext, expected: { botId: string; sourceId: string | null }[]): TeamResult {

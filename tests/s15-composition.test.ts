@@ -365,3 +365,27 @@ test('composed MODEL work enforces the conversation model-call ceiling before ev
   expect(row.state).toBe('held'); expect(row.code).toBe('budget_exhausted'); expect(f.modelPrompts).toHaveLength(1);
   expect(f.service.policy.control.usage().unsettled).toBe(0);
 });
+
+test('TEAM VM lease left by unproven cleanup is released only by protected VM stop proof, across restart', async () => {
+  const f = await fixture(), leases = () => f.service.team.store.db.query<{ state: string }, []>('SELECT state FROM leases').all().map(r => r.state);
+  f.cleanupConfirmed = false;
+  await f.chat('Run the requested command in the working computer');
+  expect(leases()).toEqual(['unknown']);
+  // Restart and an ordinary drain are not proof: the computer stays fenced.
+  await f.reopen(); await f.service.drain(); expect(leases()).toEqual(['unknown']);
+  // Protected hypervisor recovery records vm_stopped; the same process then releases the linked lease.
+  expect((await f.request('/s15/vm/recover', 'POST', { vmId: 'vm' })).status).toBe(200);
+  expect(f.service.vmStore.db.query<{ state: string }, []>('SELECT state FROM vm_sessions').all().every(r => r.state === 'closed')).toBe(true);
+  expect(leases()).toEqual(['settled']);
+  f.cleanupConfirmed = true; await f.service.vm.start(f.owner, 'vm');
+  const next = await f.chat('Run the requested command in the working computer again');
+  expect(next.state).toBe('completed'); expect(leases()).toEqual(['settled', 'settled']);
+});
+
+test('TEAM VM lease is released at boot when recovery proof was recorded before restart', async () => {
+  const f = await fixture(), leases = () => f.service.team.store.db.query<{ state: string }, []>('SELECT state FROM leases').all().map(r => r.state);
+  f.cleanupConfirmed = false; await f.chat('Run the requested command in the working computer');
+  // Recovery through the VM service alone (no composed hook) leaves the TEAM journal untouched until reconciliation.
+  await f.service.vm.recover(f.owner, { vmId: 'vm' }); expect(leases()).toEqual(['unknown']);
+  await f.reopen(); expect(leases()).toEqual(['settled']);
+});

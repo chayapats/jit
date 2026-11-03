@@ -16,7 +16,7 @@ import { openDisclosureService } from './disclosure';
 import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
 import type { ComposedDisclosure } from './disclosure/composition';
 import { TeamService, type DataScope, type TeamOptions } from './team';
-import { coordinateWorkingVm } from './team/vm';
+import { coordinateWorkingVm, reconcileVmLeases } from './team/vm';
 import { MemoryService, createConversationMemory } from './memory';
 import { createS15WebHandler, s15ConversationPort, s15ActionsPort, s15DutiesPort, s15RecurringPort, s15TeamPort, s15ReadinessFromGithub, s15AdoptionPort, type S15WebPorts } from './web';
 
@@ -119,7 +119,11 @@ export async function composeS15(options: S15CompositionOptions) {
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
-    const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id);
+    const workingVm = coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore);
+    // Protected TEAM/VM reconciliation: leases left unknown by a crash or by recovery are released only on
+    // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
+    const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
+    reconcileVm();
     const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
     const authentication = { authenticate(token: string) { const auth = options.owner.authenticate(token); return { actor: policy.owner.authenticate(auth.proof), csrf: auth.csrf }; }, verifyCsrf: options.owner.verifyCsrf };
@@ -213,7 +217,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return report ? s15ReadinessFromGithub(report.repository.name, report.rows) : null;
       },
       computer: { vmId: options.vm.id, get managerId() { return managers.keys().next().value ?? null; }, hypervisor: null,
-        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: (actor, input) => vm.recover(actor, input) },
+        begin: actor => enrollment.begin(actor), checkMachine: (actor, input) => enrollment.checkMachine(actor, input), useMachine: (actor, input) => enrollment.useMachine(actor, input), status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
       rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
@@ -226,7 +230,7 @@ export async function composeS15(options: S15CompositionOptions) {
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
     return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, models, work, github, browser, authentication,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. */
-      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
+      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); await conversation.drain(); await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {
@@ -244,7 +248,7 @@ export async function composeS15(options: S15CompositionOptions) {
             return Response.json(team.register(owner, body.requestId, body.expectedRevision, body.resource));
           }
           if (path.startsWith('/api/s15/')) return chatHandler(request);
-          if (path.startsWith('/s15/vm/')) { authenticate(request); return vmHandler(request); }
+          if (path.startsWith('/s15/vm/')) { authenticate(request); try { return await vmHandler(request); } finally { if (request.method === 'POST') reconcileVm(); } }
           if (path === '/s15/models') { authenticate(request); return modelHandler(request); }
           if (path.startsWith('/s15/responsibilities/')) { authenticate(request); return workHandler(request); }
           if (path.startsWith('/s15/github/') && githubHandler) return githubHandler(request);
