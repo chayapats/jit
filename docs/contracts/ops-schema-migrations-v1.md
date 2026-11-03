@@ -149,7 +149,10 @@ held by another id, and upgrade recovery never releases a restore's fence, so
 the two operations exclude each other.
 
 `<db>.upgrade-fence` is created after preflight passes and held through
-activation or rollback; an unreadable fence still fences. While present:
+activation or rollback; an unreadable fence still fences. Acquisition and
+owner-scoped release serialize through the OS-released SQLite lock
+`<db>.upgrade-fence.lock` (see ops-quarantined-restore-v1.md, Residuals), so a
+stale release never removes a newer claim. While present:
 `Application.execute` refuses every non-upgrade command with
 `upgrade_in_progress` (after authenticating), `JobQueue.available` is false and
 `pump` admits nothing (automatic contexts, memory extraction, PR monitoring

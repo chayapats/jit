@@ -76,7 +76,8 @@ registry:
 
 Then: the shared fence `<db>.upgrade-fence` is acquired exclusively (the
 claim is hard-linked into place, failing if any fence exists; it is cleared
-only by the id it names) with `holder: "restore"` (`upgradeId` = restore id);
+only by the id it names, under the OS-released fence lock described in
+Residuals) with `holder: "restore"` (`upgradeId` = restore id);
 losing the race fails the attempt (`restore_in_progress`/`upgrade_in_progress`). the service is quiesced
 (`job_admission`, `model_runs`, `memory_extraction`, `context_assembly`,
 `pr_monitoring`, `schedules`, `delivery` disabled; unsettled work fails with
@@ -255,13 +256,20 @@ restored from snapshots; Telegram/provider copies are outside Jit),
 
 ## Residuals and follow-ups
 
-- Declared residual (fence release): `clearUpgradeFence(path, ownerId)` reads
-  the claim and then unlinks it. If two clearers of the same stale owner run
-  concurrently and a new acquirer creates its claim between one clearer's
-  read and unlink, that new fence could be removed. It requires two
-  concurrent clearers of the same stale owner plus an interleaving new
-  acquisition; same class as schway#428. A proper fix needs an OS-released
-  lock primitive (no such primitive is used here).
+- Fence release is atomic (OPS15-01, #375). Acquisition's check-and-link and
+  `clearUpgradeFence(path, ownerId)`'s read-compare-unlink both run under an
+  OS-released lock: a SQLite `BEGIN IMMEDIATE` transaction with a write probe
+  on the always-empty `<db>.upgrade-fence.lock`, held on one referenced
+  connection for the critical section and never committed (Schway's
+  credential-store lock pattern from schway#428). The operating system drops
+  the lock when its holder exits for any reason, so a killed holder never
+  leaves it stuck, and no descriptor other than SQLite's ever opens the lock
+  path. A stale clearer therefore can never remove a fence that a different id
+  acquired after its read. A holder that outlasts the 5 s bound is refused
+  with `upgrade_in_progress`; an unusable lock path (unwritable, or anything
+  other than an empty regular file) with `upgrade_storage_unavailable`.
+  Readers are unchanged: the fence file's presence fences and an unreadable
+  fence still fences.
 
 - Before activation (quarantine) the live installation is untouched current
   data, so reads stay available; only writes are fenced.
