@@ -36,6 +36,8 @@ export interface S15WebPorts<Actor extends object> {
   telegram?: S15WebTelegram<Actor>;
   /** BROW15 protected browser registrations, one per website session. Absent until composed. */
   browsers?: S15WebBrowser<Actor>[];
+  /** BROW15-02 provisioned browser status and the owner's approved-website list. Absent: not composed here. */
+  websites?: S15WebWebsites<Actor>;
   /** F13 recurring-payment rules over POLICY (`createRecurringRules`). Absent until composed. */
   recurring?: S15WebRecurring<Actor>;
   /** GIT15-02 personal GitHub profile capture/install/revoke. Feature-detected until that slice is composed. */
@@ -216,6 +218,24 @@ export interface S15WebTelegram<Actor> {
   cancelBinding(actor: Actor, requestId: string): void;
   revoke(actor: Actor, requestId: string): void;
   acknowledgeGap(actor: Actor, requestId: string): void;
+}
+/** Pinned Chromium state for Resources → Websites; `library` is a validated shared-object name. */
+export type S15WebsiteEngine = import("../browser/chromium").ProtectedChromiumStatus;
+/** One owner-approved website; `revision` binds a removal to the approval the owner saw. */
+export interface S15ApprovedWebsite { origin: string; revision: number; addedAt: number }
+/**
+ * BROW15-02 owner seam over the protected approved-website journal. Composition verifies the owner on every
+ * call. Changes apply to the next browser request without a restart; nothing here grants sending, sign-in
+ * or private disclosure, which keep their own gates.
+ */
+export interface S15WebWebsites<Actor> {
+  status(actor: Actor): S15WebsiteEngine;
+  list(actor: Actor): S15ApprovedWebsite[];
+  /** Normalizes a pasted link or name to its HTTPS origin; refuses `website_*` codes. */
+  add(actor: Actor, requestId: string, input: string): S15ApprovedWebsite;
+  remove(actor: Actor, requestId: string, origin: string, revision: number): void;
+  /** Re-runs a failed Chromium provisioning; verified files are re-checked, not downloaded again. */
+  retry(actor: Actor): void;
 }
 /** One trusted owner-input field of a website's sign-in documents, from protected registration. */
 export interface S15BrowserField { name: string; kind: "type" | "click"; secret: boolean; label: string }

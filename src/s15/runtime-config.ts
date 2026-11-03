@@ -35,6 +35,11 @@ export interface S15RuntimeConfig {
      * Only valid with `local`. Absent, QEMU runs as the controller identity (developer and evidence hosts).
      */
     vmm?: QemuVmmOptions };
+  /**
+   * Explicit protected browser (fixtures/staging): a fixed executable and static public origins. `null` selects
+   * the provisioned browser when `disclosure` is present (BROW15-02): pinned, checksum-verified Chromium under the
+   * state directory and the owner's approved-website journal, managed only in the Web.
+   */
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector; ownerUi?: Omit<import('./web').S15WebBrowser<import('./policy').OwnerActor>, 'owner'> };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };

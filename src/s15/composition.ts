@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type HostCredentialStore, type Model } from 'schway/host';
 import { AppError } from '../errors';
@@ -8,6 +8,8 @@ import { ConversationApplication, ConversationStore, createConversationHandler, 
 import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool, VmStore, LocalVmProvisioning, createVmApi, isVmLocalManagement, placeWorkingVm, probeLocalVmHost, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
+import type { ApprovedWebsites } from './browser/sites';
+import type { ProtectedChromium } from './browser/chromium';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
 import { closeCredentialLifecycle, openModelService, createModelProjectionHandler, type ModelOptions } from './model';
 import { openWorkService, openResumeBindings, createResponsibilityProjectionHandler, type ResumeOwnerSnapshot, type WorkOptions } from './work';
@@ -48,7 +50,15 @@ export interface S15CompositionOptions {
   vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; managementVault?: import('../exec/connections').ConnectionVault; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'];
     /** Jit-managed nested KVM working VMs on this host (requires `managementVault`); state defaults to `<directory>/vm-local` and must stay within 64 characters. */
     local?: Omit<LocalVmControlOptions, 'directory'> & { directory?: string } };
-  browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'> };
+  browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'>;
+    /** TEAM resource label; defaults to the sign-in site label or the resource id. */
+    label?: string;
+    /**
+     * BROW15-02 provisioned browser: the owner's protected approved-website list and the pinned Chromium
+     * status, exposed only through the owner-verified Resources → Websites port. An installation composed
+     * before its browser existed gains a fresh `browser.sqlite` once, with no other store change.
+     */
+    approved?: { sites: Pick<ApprovedWebsites, 'list' | 'add' | 'remove'>; engine: Pick<ProtectedChromium, 'status' | 'retry'> } };
   google?: GoogleEffectsOptions;
   github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void; routeAuth?: { lifecycle: import('schway/host').HostCredentialLifecycle; fetch?: HostAuthFetch } }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
@@ -86,13 +96,30 @@ export async function composeS15(options: S15CompositionOptions) {
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
     mkdirSync(root, { mode: 0o700 });
-  } else {
+  }
+  // BROW15-02: an installation whose manifest predates the provisioned browser gains exactly one store,
+  // `browser.sqlite`, when its manifest is otherwise identical; any other difference still refuses before a
+  // ledger opens. An existing unlisted `browser.sqlite` is adopted, never replaced: it is either the store of a
+  // release that was rolled back (the installer restores the earlier manifest, which an earlier release needs
+  // to start) and may hold an armed effect, or a complete fresh store (creation is atomic). Only a store this
+  // boot created is removed if the boot fails.
+  let addBrowserStore = false, createdBrowserStore = false;
+  if (!options.create) {
     const directory = lstatSync(root);
     if (!directory.isDirectory() || directory.isSymbolicLink() || directory.mode & 0o077) throw new AppError('unprotected_ledger');
-    if (!equal(JSON.parse(readFileSync(manifestPath, 'utf8')), manifest)) throw new AppError('continuity_unavailable');
-    for (const name of storeNames) { const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
+    const stored: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (!equal(stored, manifest)) {
+      const withoutBrowser = { ...manifest, stores: storeNames.filter(name => name !== 'browser.sqlite') };
+      if (!options.browser?.approved || !equal(stored, withoutBrowser)) throw new AppError('continuity_unavailable');
+      const existing = lstatSync(join(root, 'browser.sqlite'), { throwIfNoEntry: false });
+      if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.mode & 0o077)) throw new AppError('continuity_unavailable');
+      addBrowserStore = true; createdBrowserStore = !existing;
+    }
+    for (const name of storeNames) { if (addBrowserStore && name === 'browser.sqlite') continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
   }
   const cleanup: (() => void | Promise<void>)[] = [];
+  // A failed additive boot removes only a browser store it created itself, so the next boot sees the same state.
+  if (createdBrowserStore) cleanup.push(() => { if (!addBrowserStore) return; for (const suffix of ['', '-wal', '-shm']) rmSync(join(root, `browser.sqlite${suffix}`), { force: true }); });
   let closing = false;
   let draining: Promise<void> | null = null;
   try {
@@ -110,7 +137,7 @@ export async function composeS15(options: S15CompositionOptions) {
     if (disclosure) cleanup.push(() => disclosure.close());
     const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (!pool.has(id)) throw new AppError('outside_scope'); return options.vm.resource; },
       attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination, ...(disclosure && options.disclosure?.acquisitionRoute ? { disclosure: disclosure.acquisition(options.disclosure.acquisitionRoute) } : {}) });
-    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
+    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create || createdBrowserStore }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
     if (browser) cleanup.push(() => browser.close());
     const google = options.google ? registerGoogleEffects({ ...options.google, ...(disclosure && options.disclosure?.googleRoute ? { disclosure: { protectAdapter: adapter => disclosure.protectAdapter(adapter, options.disclosure!.googleRoute!), beforeRead: (work, payload) => disclosure.guardRead(work, options.disclosure!.googleRoute!, payload), recordRead: actor => { const work = policy.work.guard(actor); for (const source of options.disclosure!.workSources(work)) disclosure.read(actor, source); } } } : {}) }) : undefined;
     const githubStore = options.github ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create) : undefined;
@@ -276,7 +303,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // work resource must be registered; nothing is registered until the owner confirms this exact list.
     const composedResources = (): { ref: Ref; kind: TeamResource['kind']; label: string }[] => {
       const known: { ref: Ref; kind: TeamResource['kind']; label: string }[] = [{ ref: options.vm.resource, kind: 'workspace', label: options.vm.id }];
-      if (options.browser) known.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.ownerUi?.site ?? options.browser.resource.id });
+      if (options.browser) known.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.label ?? options.browser.ownerUi?.site ?? options.browser.resource.id });
       for (const r of options.github?.repositories ?? []) known.push({ ref: r.resource, kind: 'data', label: r.name });
       for (const account of [options.google?.mailAccount, options.google?.calendarAccount]) { try { const a = account?.(); if (a) known.push({ ref: a.resource, kind: 'account', label: a.account }); } catch { /* Unavailable connection: not offered. */ } }
       return known;
@@ -304,6 +331,14 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(telegram ? { telegram } : {}),
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
+      // BROW15-02 Resources → Websites: every read and command re-verifies the owner through POLICY first.
+      ...(browser && options.browser?.approved ? { websites: (approved => ({
+        status: (actor: OwnerActor) => { policy.owner.current(actor); return approved.engine.status(); },
+        list: (actor: OwnerActor) => { policy.owner.current(actor); return approved.sites.list(); },
+        add: (actor: OwnerActor, _requestId: string, input: string) => { policy.owner.current(actor); return approved.sites.add(input); },
+        remove: (actor: OwnerActor, _requestId: string, origin: string, revision: number) => { policy.owner.current(actor); approved.sites.remove(origin, revision); },
+        retry: (actor: OwnerActor) => { policy.owner.current(actor); void approved.engine.retry().catch(() => {}); },
+      }))(options.browser.approved) } : {}),
       ...(github && options.github?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
       readiness(owner, requestId) {
         const row = conversation.view(owner, requestId); if (!row.result || row.intent.kind !== 'inspect' || !githubStore) return null;
@@ -345,6 +380,15 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
+    if (addBrowserStore) {
+      // Atomic replacement after every store opened and before the service is returned to run any work.
+      const next = join(root, `.composition.next-${crypto.randomUUID()}`);
+      writeFileSync(next, canonical(manifest), { mode: 0o600, flag: 'wx' });
+      const fd = openSync(next, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
+      renameSync(next, manifestPath);
+      const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
+      addBrowserStore = false;
+    }
     return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
        * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */

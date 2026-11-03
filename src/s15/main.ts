@@ -21,7 +21,7 @@ import { LimaVmManagement } from './vm';
 import { RemoteVmManagement } from './vm/remote';
 import { equal } from './policy/validation';
 import type { GoogleEffectAccount } from './effects';
-import type { BrowserSitePolicy } from './browser';
+import { openProvisionedBrowser, type BrowserSitePolicy, type ProvisionedBrowser } from './browser';
 import { githubRuntime } from './github/runtime';
 import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure } from './disclosure/runtime';
@@ -56,6 +56,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
   const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [ownerDirectory, join(config.directory, 'runtime'), join(config.directory, 'backups')] });
   const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
   let service: Awaited<ReturnType<typeof composeS15>> | undefined;
+  let provisioned: ProvisionedBrowser | null = null;
   try {
     if (args[0] === 'owner-link') { writeS14OwnerSetupLink(ownerStore, config.origin, 3); return; }
     if (args[0] === 'credential') {
@@ -86,8 +87,11 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     const models = () => config.models.map(route => availability.apply(route));
     // GitHub work names the pool; the composed port places each work on a member and keeps it there.
     const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: vmPool.poolId, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => readS15Credential(vault, config.installationId, ref) }) : null;
+    // BROW15-02: without an explicit `browser` config, an S15 installation gets the protected browser with the
+    // pinned Chromium and the owner's approved-website list (empty until the owner adds a website in the Web).
+    if (!config.browser && config.disclosure) provisioned = openProvisionedBrowser({ directory: config.directory, installationId: config.installationId });
     const catalogs: S15CompositionOptions['catalogs'] = {
-      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
+      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? null,
       allows: (work, action) => {
         const resources = action?.resources ?? work.request.resources;
         return resources.every(resource => { const restriction = config.resourceBots.find(r => r.resourceId === resource.id); return !restriction || restriction.botIds.includes(work.request.bot.id); });
@@ -109,7 +113,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       ...protectedPorts,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
-      ...(config.disclosure ? { disclosure: runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? []) } : {}),
+      ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [])) } : {}),
       ...(config.recurring ? { recurring: config.recurring } : {}),
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
@@ -123,7 +127,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
       telegram: { vault, transport: token => createTelegramBotApi(token) },
       vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm, ...(proxySocketFd !== null ? { proxySocketFd } : {}) } : {} } : {}) },
-      ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
+      ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : provisioned ? { browser: provisioned.options() } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },
@@ -134,7 +138,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       // working computer with no typed value, printing one JSON line per step. Interrupting it is safe: the
       // durable job resumes at the next `serve`. Without KVM it reports why; the Web offers enrollment instead.
       const computer = setup && service.provisioning ? await setupComputer(service.provisioning, line => console.log(JSON.stringify(line))) : null;
-      await service.close(); service = undefined; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified', ...(computer ? { computer } : {}) })); return;
+      await service.close(); service = undefined; await provisioned?.close(); provisioned = null; console.log(JSON.stringify({ state: 's15_initialized', policy: 'not_installed', readiness: 'configured_unverified', ...(computer ? { computer } : {}) })); return;
     }
     const binding = personalServiceBinding(config.origin), auth = createS14Handler(ownerApp, config.origin, renderS14, createS14Product(ownerApp), createS14Auth(ownerApp));
     const server = Bun.serve({ hostname: binding.hostname, port: binding.port, async fetch(request) {
@@ -144,13 +148,15 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     } });
     // Protected boot pass: resume an interrupted working-computer job, or start the first one on a ready KVM host.
     try { service.provisioning?.ensure(); } catch { /* The Web card shows the host reason and offers the owner's start. */ }
+    // BROW15-02: verify (or download once) the pinned Chromium in the background; Resources → Websites shows each step.
+    void provisioned?.chromium.start();
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
     service.telegram?.start(() => service!.drain());
-    const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
+    const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await provisioned?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
-  } catch (error) { await service?.close(); ownerStore.close(); throw error; }
+  } catch (error) { await service?.close(); await provisioned?.close(); ownerStore.close(); throw error; }
   finally { if (initialize || localCommand) ownerStore.close(); }
 }
 

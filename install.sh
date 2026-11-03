@@ -142,6 +142,7 @@ elif [ "$s15" = true ]; then
   '  Action: install, repair or upgrade jit-s15; preserve existing config and state.' \
   '  S15 layout: /opt/jit-s15 release/Bun, /etc/jit-s15/s15-runtime.json, /var/lib/jit-s15 state, /var/lib/jit-s15-vm working VM; default loopback 127.0.0.1:3002.' \
   '  Install core dependencies plus sudo, openssh-client, qemu-system, qemu-utils, cloud-image-utils and netcat-openbsd (Debian/Ubuntu).' \
+  '  Install Chromium system libraries and fonts for the protected browser (Debian/Ubuntu); the controller downloads SHA-256-pinned Chromium itself.' \
   '  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/jit-s15/bin/bun.' \
   '  Create/verify non-login jit-s15 (controller) and jit-s15-vmm (working-VM QEMU, kvm group) identities and the jit-s15-vm group; jit-s15 leaves the kvm group.' \
   '  Without a kvm group, install the controller alone (no QEMU identity, launcher or sudo rule); the Web offers enrolling your own VM.' \
@@ -273,7 +274,18 @@ if [ "$uninstall" = false ]; then
     apt-get)
       timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || failed
       timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl unzip util-linux passwd dbus-user-session gnome-keyring libsecret-tools "$@" >/dev/null 2>&1 || failed
-      if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;
+      if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq podman uidmap slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi
+      if [ "$s15" = true ]; then
+        # BROW15-02: system libraries and fonts of the pinned Chromium (Playwright's Debian/Ubuntu list; Thai and emoji
+        # fonts for page images). Debian 13 and Ubuntu 24.04+ renamed some of them with a t64 suffix.
+        set --
+        for lib in libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcups2 libglib2.0-0; do
+          if apt-cache show "${lib}t64" >/dev/null 2>&1; then set -- "$@" "${lib}t64"; else set -- "$@" "$lib"; fi
+        done
+        if ! timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@" libcairo2 libdbus-1-3 libdrm2 libgbm1 libnspr4 libnss3 libpango-1.0-0 libwayland-client0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 libfontconfig1 libfreetype6 fonts-liberation fonts-noto-color-emoji fonts-tlwg-loma-otf >/dev/null 2>&1; then
+          printf '%s\n' 'Protected browser libraries could not be installed now; the Web (Manage, Websites Jit may read) names any missing library, and a re-run installs them.'
+        fi
+      fi ;;
     dnf)
       timeout 600 dnf install -y ca-certificates curl unzip util-linux shadow-utils dbus-daemon gnome-keyring libsecret "$@" >/dev/null 2>&1 || failed
       if ! timeout 600 dnf install -y podman shadow-utils-subid slirp4netns >/dev/null 2>&1; then printf '%s\n' 'Optional Podman install unavailable; continuing chat-only if Podman is absent.'; fi ;;

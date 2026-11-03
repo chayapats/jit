@@ -88,6 +88,8 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Browser profile:** Website session state in a protected browser component. S15 permits mediated team use of approved accounts; raw cookies/tokens remain outside working shell/MCP/prompts/exports. S14 profiles remain Bot-private. Website login is not permission to bypass action approval.
 
+**Approved website (S15):** An exact public HTTPS origin the owner added in the Web (Resources → Websites). The protected browser may read it with credential-free GET navigations; unlisted origins are refused. It is not a sign-in, a send/payment approval or consent to disclose private data, which keep their own gates.
+
 **Runner:** The agent-free execution process behind Jit's computer backend. Schway core tools use the supported ExecutionBackend; no host-shell fallback is implied.
 
 **Input lease:** A generation-bound exclusive right to send input to one browser/desktop. Reads/screenshots do not imply input ownership.

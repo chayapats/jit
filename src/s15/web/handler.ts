@@ -12,6 +12,7 @@ import { fullSlip, slipKind, slipPayload, type S15SlipDecision } from "./actions
 import { browserNeedsYou, takeoverView, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
 import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
 import { accountsBody, needsBody, recoveryBody, restoreSection, teamPendingCard, type S15NeedItem } from "./resources";
+import { websitesBody, type S15WebsitesSaved } from "./websites";
 import { recurringProposalBody, rulesBody } from "./rules";
 import { telegramBody, telegramSaved } from "./telegram";
 import { parsePaymentAmount } from "../payments";
@@ -206,6 +207,13 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         let pending = null; try { pending = team ? teamPending() : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; pending = null; }
         return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf, teamPending: teamPendingCard({ pending, csrf, back: "resources", registered: !!state.registered, refused: state.refused ?? null }) })), status);
       };
+      // BROW15-02: a saved notice is shown only when the current list agrees with it.
+      const websitesPage = (state: { refused?: { code: string; at: "add" | "list" }; entry?: string } = {}, status = 200) => {
+        const websites = ports.websites, sites = websites ? websites.list(actor) : null, engine = websites ? websites.status(actor) : null;
+        const added = url.searchParams.get("added"), removed = url.searchParams.get("removed");
+        const saved: S15WebsitesSaved = state.refused ? null : added && sites?.some(site => site.origin === added) ? { kind: "added", origin: added } : removed && sites && !sites.some(site => site.origin === removed) && /^https:\/\/[a-z0-9.:-]{1,300}$/.test(removed) ? { kind: "removed", origin: removed } : url.searchParams.get("retried") === "1" ? { kind: "retried" } : null;
+        return render(() => shell(nav("/resources/websites"), tr("s15.websites.title"), websitesBody({ engine, sites, browsers: browsers(), csrf, saved, refused: state.refused ?? null, entry: state.entry ?? "" })), status);
+      };
       const computerPage = (refused: string | null = null, status = 200, restore: { restore: string | null; restored: boolean; refused?: string | null; vm?: string | null } = { restore: null, restored: false }, notice: { saved?: "drained" | "undrained" | null; vmId?: string | null; refused?: string | null; managerRefused?: string | null; managerSaved?: boolean } = {}) => {
         const status_ = computerStatus(), computer = ports.computer, members = poolMembers();
         const snapshotsOf = (id: string) => status_ !== null || members?.length ? computer?.snapshots && computer.restore ? (() => { try { return computer.snapshots!(actor, id); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null : null;
@@ -301,6 +309,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
         if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
         if (url.pathname === "/resources/telegram") return telegramPage();
+        if (url.pathname === "/resources/websites") return websitesPage();
         if (url.pathname === "/recovery") {
           const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
           const pending = (dutyList()?.filter(item => item.state === "reconcile_only").length ?? 0) + views().reduce((n, view) => n + view.rows.filter(row => row.state === "unknown" && !row.slips.length).length, 0);
@@ -557,6 +566,32 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         only(fields, command[0] ? ["csrf", "requestId", command[0]] : ["csrf", "requestId"]);
         try { await command[1](); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return telegramPage(codeOf(error), 409); }
         return redirect(`/resources/telegram${command[2].startsWith("#") ? command[2] : `?saved=${command[2]}`}`);
+      }
+      if (url.pathname.startsWith("/s15/forms/websites/")) {
+        // BROW15-02 owner commands over the protected approved-website list and the pinned Chromium.
+        const websites = ports.websites; if (!websites) throw new AppError("not_found", 404);
+        if (url.pathname === "/s15/forms/websites/add") {
+          only(fields, ["csrf", "requestId", "website"]);
+          let added: { origin: string };
+          try { added = websites.add(actor, fields.requestId!, fields.website!); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "add" }, entry: fields.website!.slice(0, 2048) }, 409); }
+          return redirect(`/resources/websites?added=${encodeURIComponent(added.origin)}#s15-web-list`);
+        }
+        if (url.pathname === "/s15/forms/websites/remove") {
+          only(fields, ["csrf", "requestId", "origin", "revision"]);
+          const revision = Number(fields.revision);
+          if (!/^[1-9]\d{0,8}$/.test(fields.revision!)) throw new AppError("invalid_body");
+          try { websites.remove(actor, fields.requestId!, fields.origin!, revision); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
+          return redirect(`/resources/websites?removed=${encodeURIComponent(fields.origin!)}#s15-web-list`);
+        }
+        if (url.pathname === "/s15/forms/websites/retry") {
+          only(fields, ["csrf", "requestId"]);
+          try { websites.retry(actor); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
+          return redirect("/resources/websites?retried=1#s15-web-engine");
+        }
+        throw new AppError("not_found", 404);
       }
       if (url.pathname === "/s15/forms/team/register") {
         // The owner's one confirmation of the exact list shown; TEAM refuses if that list changed meanwhile.
