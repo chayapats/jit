@@ -9,7 +9,8 @@ import { vmFail, vmId, vmInteger } from "./validation";
 /** Editable exact destinations for anonymous dependency acquisition; GitHub publication APIs are absent. */
 export const defaultVmRegistryHosts: readonly string[] = Object.freeze([
   "archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com", "deb.debian.org", "security.debian.org",
-  "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com",
+  // Docker Hub serves blobs from either CDN; live x64 evidence (2026-11-03) saw `production.cloudfront.docker.com`.
+  "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", "production.cloudfront.docker.com",
   "ghcr.io", "pkg-containers.githubusercontent.com", "crates.io", "index.crates.io", "static.crates.io", "proxy.golang.org", "sum.golang.org",
   "objects.githubusercontent.com", "codeload.github.com",
 ]);
