@@ -12,7 +12,8 @@ Delivered by [MODEL15-03 #381](https://github.com/chayapats/jit/issues/381). Pin
   - A stopped or failed renewal sends no catalog or inference request.
 - **Counting.** `catalogRenewal` records the renewal's outcome, `renewalRequests` and route status. Its `renewalRequests` is added to the step's `providerRequests.renewalRequests`, also when the step stops at the renewal. A renewal that joins a run's in-flight renewal counts 0, because the run counts it, so summed steps never double-count.
 - **Shutdown.** `ModelService.close()` still refuses synchronously while a step runs. It resolves once a service-owned lifecycle has closed. While a renewal whose caller stopped waiting is still storing a possibly rotated token, the lifecycle reports `busy`. `close()` retries for up to 45 seconds, which covers Schway's 30-second refresher timeout plus the store write, so the rotated token is kept. It never rejects, so composition shutdown continues.
-- **Limits.** CHAT `runConversation` and the GitHub VM coding runner do not list catalogs, so they need no pre-listing renewal; their hosts renew before each send. They share the MODEL15 lifecycle only if the composition passes one lifecycle to them. The S15 composition still has no observable sign-in event, so `forgetRouteCatalog` has no caller yet.
+- **One lifecycle per process.** `composeS15` creates one credential lifecycle per composed installation, which is one per process in production. It passes that lifecycle as the caller-owned `routeAuth.lifecycle` to MODEL15, to CHAT `runConversation` (`ConversationOptions.routeAuth`) and to the GitHub VM coding runner (workspace factory `routeAuth`). Two renewals in one process therefore cannot race on a rotating refresh token. The lifecycle closes last on shutdown, with the same bounded `busy` retry. `S15CompositionOptions.credentials` (`store`, `fetch`) is the deterministic seam; production omits it and uses the OS secure store.
+- **Limits.** CHAT and the GitHub runner do not list catalogs, so they need no pre-listing renewal; their hosts renew before each send. The S14 owner application in the same process keeps its own S14 lifecycle. Route availability (`checkAuthReadiness`) only reads the store. The S15 composition still has no observable sign-in event, so `forgetRouteCatalog` has no caller yet.
 
 Evidence:
 
@@ -22,6 +23,7 @@ Evidence:
   - needs-login, rejected, rate-limited and unreachable renewals, each with a distinct code and no catalog or inference;
   - cancellation before and after the token request, with `close()` waiting for the rotated token;
   - a renewal and a run on one lifecycle sharing one token request, counted once.
+- `tests/s15-composition-credentials.test.ts` boots the composition with a CHAT interpretation and a MODEL15 step that both need renewal concurrently, and shows they share one token request.
 - The packed consumer `tests/s15-model-packed-consumer.test.ts` proves that `renewAuthRoute` renews an expired token without inference and that listing then succeeds.
 
 ## MODEL15-02 adoption of Schway `4163e60` (2026-11-03)

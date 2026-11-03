@@ -296,7 +296,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       });
       timer = setTimeout(() => abort.abort(), request.interpretation!.authority.limits.activeMs);
       const interpretationContext = this.interpretationContext(request);
-      const interpreted = await runConversation({ directory: this.options.nativeDirectory, request, definitions: [], signal: abort.signal, clock: this.clock, scripted: this.options.interpreterModel ?? this.options.model,
+      const interpreted = await runConversation({ directory: this.options.nativeDirectory, request, definitions: [], signal: abort.signal, clock: this.clock, scripted: this.options.interpreterModel ?? this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         interpretation: { ...request.interpretation!, context: interpretationContext }, guard: () => guard("model"),
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.interpretationUsage = usage; this.store.save(current); }),
         ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => this.options.guardInterpretation!(work!, payload) } : {}),
@@ -405,7 +405,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (current.modelCalls >= current.authority!.limits.modelCalls) throw new AppError("budget_exhausted");
         current.modelCalls++; this.store.save(current);
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model,
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         guard: () => guard("model"),
         // Usage evidence is kept on a failed run too; publication below still requires completion.
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),

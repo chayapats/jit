@@ -1,6 +1,6 @@
 import { lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import type { HostClock, Model } from 'schway/host';
+import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type HostCredentialStore, type Model } from 'schway/host';
 import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels } from './policy';
 import { canonical, equal, unknownUsage } from './policy/validation';
@@ -9,7 +9,7 @@ import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
-import { openModelService, createModelProjectionHandler, type ModelOptions } from './model';
+import { closeCredentialLifecycle, openModelService, createModelProjectionHandler, type ModelOptions } from './model';
 import { openWorkService, openResumeBindings, createResponsibilityProjectionHandler, type ResumeOwnerSnapshot, type WorkOptions } from './work';
 import { openTelegramChannel, type TelegramLimits, type TelegramTransport } from './telegram';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
@@ -40,6 +40,9 @@ export interface S15CompositionOptions {
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
   interpreter?: Model; clock?: HostClock; subscriptionModels?: SubscriptionModels;
+  /** Deterministic credential-store and transport seam for every composed route host; production omits it
+   * (OS secure store, global fetch). Composition owns the one credential lifecycle built over it. */
+  credentials?: { store?: HostCredentialStore; fetch?: HostAuthFetch };
   /** A proposal is displayed for authenticated installation; constructing a service never installs it. */
   proposedPolicy: PolicyInput | null;
   vm: { id: string; resource: Ref; managers: WorkingVmOptions['managers']; managementVault?: import('../exec/connections').ConnectionVault; upperBound: VmPolicyIntegration['options']['upperBound']; destination: VmPolicyIntegration['options']['destination']; transport?: WorkingVmOptions['transport']; limits?: WorkingVmOptions['limits']; enrollmentRun?: ConstructorParameters<typeof VmEnrollment>[0]['run'];
@@ -47,7 +50,7 @@ export interface S15CompositionOptions {
     local?: Omit<LocalVmControlOptions, 'directory'> & { directory?: string } };
   browser?: Omit<BrowserOptions, 'runtime' | 'continuity' | 'profilePath'> & { factory?: (input: EngineOptions) => Promise<BrowserEngine>; ownerUi?: Omit<import('./web').S15WebBrowser<OwnerActor>, 'owner'> };
   google?: GoogleEffectsOptions;
-  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void }): GithubWorkspace };
+  github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void; routeAuth?: { lifecycle: import('schway/host').HostCredentialLifecycle; fetch?: HostAuthFetch } }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
   adapters?: readonly ActionAdapter[];
   reads?: readonly ReadHandler[];
@@ -93,6 +96,11 @@ export async function composeS15(options: S15CompositionOptions) {
   let closing = false;
   let draining: Promise<void> | null = null;
   try {
+    // One credential lifecycle per composed installation (one per process in production) for CHAT, MODEL15 and the
+    // GitHub runner, so two renewals on the same store can never race on a rotating refresh token. It closes last.
+    const credentials = createHostCredentialLifecycle(options.credentials?.store ? { store: options.credentials.store } : {});
+    cleanup.push(() => closeCredentialLifecycle(credentials));
+    const routeAuth = { lifecycle: credentials, ...(options.credentials?.fetch ? { fetch: options.credentials.fetch } : {}) };
     const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create); cleanup.push(() => store.close());
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
     // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
@@ -202,13 +210,13 @@ export async function composeS15(options: S15CompositionOptions) {
         return current.budget ? Math.max(0, current.budget.ceiling.calls - policy.control.usage().charged.calls) : options.subscriptionModels ? Math.max(0, options.subscriptionModels.perWork.calls - used) : null;
       }, ...(options.clock ? { now: options.clock.now } : {}) } satisfies WorkOptions); cleanup.push(() => work.close());
     const modelDisclosure = disclosure && options.disclosure ? disclosure.model(options.disclosure.modelRoute) : undefined;
-    const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
+    const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, routeAuth, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
-    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: options.github.workspace({ policy, vm: workingVm, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: options.github.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
       ...(options.github && github ? options.github.repositories.map(r => ({ resourceId: r.resource.id, port: createGithubConversationTools(github, r.resource.id) })) : []), ...(options.tools ?? [])];
-    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
         const standing = policy.control.policyForWork(current.authority.id);

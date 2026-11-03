@@ -47,10 +47,10 @@ async function bounded<T>(work: Promise<T>, clock: HostClock, ms: number, signal
 /** Owner-visible codes for a route's listing or provider status; anything else is `route_unavailable`. */
 const ROUTE_STATUS_CODES: Partial<Record<HostAuthStatusCode, string>> = { 'needs-login': 'route_needs_login', 'store-unavailable': 'route_store_unavailable', 'invalid-store': 'route_store_invalid',
   rejected: 'route_rejected', 'quota-exceeded': 'quota_exceeded', 'integration-unavailable': 'route_integration_unavailable' };
-/** Close a credential lifecycle this service created. `busy` means a renewal whose caller stopped waiting is still
+/** Close a credential lifecycle its creator owns. `busy` means a renewal whose caller stopped waiting is still
  * storing a possibly rotated token (bounded by Schway's 30-second refresher timeout and the store write), so the
  * close is retried until it settles instead of abandoning that token. Never rejects, so shutdown continues. */
-async function closeLifecycle(lifecycle: HostCredentialLifecycle, boundMs = 45_000): Promise<void> {
+export async function closeCredentialLifecycle(lifecycle: HostCredentialLifecycle, boundMs = 45_000): Promise<void> {
   const started = performance.now();
   for (let wait = 25; ; wait = Math.min(wait * 2, 1000)) {
     try { await lifecycle.close(); return; }
@@ -381,7 +381,7 @@ export function openModelService(options: ModelOptions): ModelService {
     close() {
       if (active.size) fail('capacity_busy'); journal.close();
       const owned = ownedLifecycle; ownedLifecycle = undefined; lifecycle = routeAuth.lifecycle;
-      return owned ? closeLifecycle(owned) : Promise.resolve();
+      return owned ? closeCredentialLifecycle(owned) : Promise.resolve();
     },
   };
 }

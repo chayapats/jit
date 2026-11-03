@@ -134,6 +134,9 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   model?: Model;
   /** Optional separate scripted interpreter; production uses the preapproved public host auth route. */
   interpreterModel?: Model;
+  /** Credential owner for CHAT's route hosts: the composition passes its one process credential lifecycle, so CHAT
+   * and MODEL15 renewals on the same store share one single-flight token request. */
+  routeAuth?: Pick<import("schway/host").HostAuthSelection, "store" | "lifecycle" | "fetch">;
   /** Privacy-only check before the public interpreter stream; it grants no tools or execution scope. */
   guardInterpretation?: (work: WorkContext, request: unknown) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
