@@ -31,10 +31,10 @@ export class VmSshTransport {
     if (!response.result || typeof response.result !== "object" || Array.isArray(response.result)) vmFail("vm_protocol_invalid");
     return vmRecord(response.result, Object.keys(response.result));
   }
-  /** Fixed lifecycle/health commands are trusted infrastructure, not a model-accessible management shell. */
-  async control(argv: readonly string[], options: { timeoutMs?: number; maxBytes?: number; beforeStart?: () => void; signal?: AbortSignal } = {}): Promise<string> {
+  /** Fixed lifecycle/health commands are trusted infrastructure, not a model-accessible management shell. Optional stdin carries protected setup data off the host argv. */
+  async control(argv: readonly string[], options: { timeoutMs?: number; maxBytes?: number; beforeStart?: () => void; signal?: AbortSignal; input?: Uint8Array } = {}): Promise<string> {
     const result = await this.execute([...vmSshArgs(this.endpoint), argv.map(vmQuote).join(" ")], { timeoutMs: options.timeoutMs ?? 15000,
-      maxBytes: options.maxBytes ?? 16384, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(options.signal ? { signal: options.signal } : {}) });
+      maxBytes: options.maxBytes ?? 16384, ...(options.input ? { input: options.input } : {}), ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(options.signal ? { signal: options.signal } : {}) });
     if (result.exitCode !== 0) vmFail("vm_connection_failed", 503);
     return Buffer.from(result.stdout).toString("utf8");
   }

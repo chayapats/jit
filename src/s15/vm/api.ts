@@ -11,11 +11,16 @@ export function createVmApi(enrollment: VmEnrollment, authenticate: (request: Re
       const actor = await authenticate(request), url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/s15/vm/registries") return Response.json({ hosts: enrollment.registryHosts(actor) });
       if (request.method === "GET" && url.pathname === "/s15/vm/status") return Response.json(enrollment.status(actor, url.searchParams.get("id") ?? ""));
+      if (request.method === "GET" && url.pathname === "/s15/vm/resources" && options.managers) return Response.json(options.managers.resources(actor, url.searchParams.get("managerId") ?? ""), { headers: { "Cache-Control": "no-store" } });
       if (request.method !== "POST" || !request.headers.get("content-type")?.startsWith("application/json")) return Response.json({ error: "vm_invalid_setup" }, { status: 400 });
       const reader = request.body?.getReader(); let body = Buffer.alloc(0);
       if (reader) try { for (;;) { const { value, done } = await reader.read(); if (done) break; if (body.length + value.length > 16384) throw new AppError("vm_invalid_setup", 413); body = Buffer.concat([body, value]); } } finally { await reader.cancel(); }
       let data: unknown; try { data = JSON.parse(body.toString("utf8")); } catch { throw new AppError("vm_invalid_setup", 400); }
       if (url.pathname === "/s15/vm/management" && options.managers) return Response.json(options.managers.register(actor, data as VmManagerInput));
+      if (url.pathname === "/s15/vm/resources" && options.managers) {
+        const input = vmRecord(data, ["managerId", "cpus", "memoryMiB", "diskGiB"]), { managerId, ...resources } = input;
+        return Response.json(options.managers.setResources(actor, managerId as string, resources));
+      }
       if (url.pathname === "/s15/vm/start" && options.service) { const input = vmRecord(data, ["vmId"]); await options.service.start(actor, input.vmId as string); return Response.json({ state: "ready" }); }
       if (url.pathname === "/s15/vm/recover" && options.service) {
         vmRecord(data, ["vmId"], ["snapshotId"]); await options.service.recover(actor, data as Parameters<WorkingVmService["recover"]>[1]); return Response.json({ state: "stopped" });

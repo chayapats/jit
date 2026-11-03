@@ -37,6 +37,7 @@ export class WorkingVmService implements WorkingVmPort {
   readonly #sessions = new Map<string, LiveSession>();
   readonly #health = new Map<string, Promise<void>>();
   readonly #managementBusy = new Set<string>();
+  #reattaching: Promise<void> | null = null;
   constructor(readonly options: WorkingVmOptions) {
     this.#limits = vmLimits(options.limits ?? { ...defaultVmLimits }); this.#now = options.now ?? Date.now; this.#clock = options.monotonic ?? (() => performance.now());
     vmInteger(options.snapshotRetention ?? 3, 8);
@@ -321,6 +322,50 @@ export class WorkingVmService implements WorkingVmPort {
     if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
     this.options.store.transaction(() => { requireOwner(actor); row.boot = machine.boot; row.state = "ready"; row.reason = null; row.networkIsolated = true; row.networkCheckedAt = this.#now(); this.options.store.save(row); });
     } finally { this.#managementBusy.delete(vm); }
+  }
+  /**
+   * Protected controller-boot re-attachment; no owner actor, session or command is resumed. Only `ready`
+   * VMs whose manager supports `resume` take part. A VM that survived the controller restart is re-verified
+   * by the forced health check (hypervisor identity, boot, NIC, pinned SSH guest, direct egress). A VM that
+   * was running before a host restart is started again under a new generation and admitted only after the
+   * same re-verification. Failures fence the VM as uncertain; non-ready VMs stay as the owner left them.
+   * Concurrent calls share one pass.
+   */
+  reattach(signal?: AbortSignal): Promise<void> {
+    return this.#reattaching ??= (async () => {
+      try {
+        for (const { id } of this.options.store.db.query<{ id: string }, []>("SELECT id FROM vm_registry ORDER BY id").all()) {
+          if (signal?.aborted) return;
+          const row = this.options.store.registration(id), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
+          if (!manager?.resume || row.state !== "ready" || !row.bindingMac || this.#managementBusy.has(id)) continue;
+          this.#managementBusy.add(id);
+          try { await this.reattachOne(row, manager, signal); } catch { /* reattachOne fenced the VM; others still re-attach. */ }
+          finally { this.#managementBusy.delete(id); }
+        }
+      } finally { this.#reattaching = null; }
+    })();
+  }
+  private async reattachOne(row: VmRegistration, manager: VmManagement, signal?: AbortSignal): Promise<void> {
+    const fence = (error: unknown, generation = row.generation) => { this.uncertain(row.id, error instanceof AppError ? error.code : "vm_management_unavailable", generation); throw error; };
+    const machine = await manager.inspect().catch(error => fence(error));
+    if (machine.state === "running") { await this.health(row, true); return; }
+    this.options.store.transaction(() => {
+      const current = this.options.store.registration(row.id);
+      if (current.generation !== row.generation || current.state !== "ready") vmFail("vm_fenced");
+      current.generation++; current.state = "uncertain"; current.reason = "vm_recovery_in_progress"; this.options.store.save(current);
+      row.generation = current.generation; row.state = current.state; row.reason = current.reason;
+    });
+    this.#checked.delete(row.id);
+    try {
+      if (!await manager.resume!(signal)) vmFail("vm_reconciliation_required");
+      const started = await manager.inspect();
+      if (started.state !== "running" || started.identity !== row.machineIdentity || started.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), started, row.endpoint)) vmFail("vm_identity_unproven");
+      if (started.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
+      this.options.store.transaction(() => {
+        const current = this.options.store.registration(row.id); if (current.generation !== row.generation) vmFail("vm_fenced");
+        current.boot = started.boot; current.state = "ready"; current.reason = null; current.networkIsolated = true; current.networkCheckedAt = this.#now(); this.options.store.save(current);
+      });
+    } catch (error) { fence(error); }
   }
   /** Owner-authorized strong settlement/restore. The caller supplies a real owner verifier; no guest actor can invoke it. */
   async recover(actor: object, input: { vmId: string; snapshotId?: string }): Promise<void> {

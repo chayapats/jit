@@ -11,6 +11,9 @@ import { isIP } from "node:net";
 import { createHash } from "node:crypto";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
 import { vmIdentityMatches } from "./binding";
+import { isVmLocalManagement } from "./qemu";
+import type { VmEndpoint } from "./types";
+import type { VmProxyLease } from "./proxy";
 
 /** One setup form; all transport settings persist atomically with the registered VM, without later config editing. */
 export interface VmEnrollmentInput {
@@ -21,8 +24,11 @@ export interface VmEnrollmentInput {
 export class VmEnrollment {
   readonly #setups = new Set<string>();
   readonly #checks = new Map<string, { input: Omit<VmEnrollmentInput, "id">; fingerprint: string; expiresAt: number }>();
+  readonly #local = new Set<string>();
   constructor(readonly options: { store: VmStore; keyDirectory: string; requireOwner: (actor: object) => void;
-    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number }) {
+    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number;
+    /** Bounded provisioning proxy lease for a Jit-created local VM (Docker install); never an account credential. */
+    proxyLease?: (sessionId: string, expiresAt: number) => VmProxyLease }) {
     if (!options.keyDirectory.startsWith("/") || resolve(options.keyDirectory) !== options.keyDirectory) vmFail("vm_invalid_setup");
     mkdirSync(options.keyDirectory, { recursive: true, mode: 0o700 });
     const stat = lstatSync(options.keyDirectory); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
@@ -113,6 +119,32 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     const existingKnown = lstatSync(knownHostsFile, { throwIfNoEntry: false });
     if (existingKnown) { if (!existingKnown.isFile() || existingKnown.isSymbolicLink() || readFileSync(knownHostsFile, "utf8") !== knownLine) vmFail("vm_host_key_changed"); }
     else writeFileSync(knownHostsFile, knownLine, { mode: 0o600, flag: "wx" });
+    return this.verifyAndSave(actor, { id: input.id, endpoint, managerId: input.managerId ?? null, maxSessions: input.maxSessions ?? 2 }, () => this.#setups.delete(input.setupId));
+  }
+  /**
+   * Protected local enrollment entry point for a Jit-created nested KVM working VM. It needs no pasted
+   * bootstrap line: the manager provisions the guest from the verified image with its generated client key
+   * and pinned host key, then the same inventory, readiness, `vmIdentityMatches` (controller-chosen MAC and
+   * loopback SSH forward) and direct-egress probes produce the ordinary `VmStatus` and capability rows.
+   * Snapshot/stop rows stay `unproven` until an observed protected restore/stop.
+   */
+  async enrollLocal(actor: object, input: { id: string; managerId: string; maxSessions?: number; signal?: AbortSignal }): Promise<VmStatus> {
+    this.options.requireOwner(actor); vmId(input.id); vmId(input.managerId); vmInteger(input.maxSessions ?? 2, 16);
+    const manager = this.options.managers.get(input.managerId);
+    if (!isVmLocalManagement(manager)) vmFail("vm_management_unavailable");
+    const enrolled = this.options.store.db.query<{ id: string; data: string }, []>("SELECT id,data FROM vm_registry").all();
+    if (enrolled.some(r => r.id === input.id || JSON.parse(r.data).managerId === input.managerId)) vmFail("vm_already_enrolled");
+    if (this.#local.has(input.managerId)) vmFail("vm_capacity"); this.#local.add(input.managerId);
+    try {
+      const lease = this.options.proxyLease;
+      await manager.provision({ ...(lease ? { lease: (sessionId: string, expiresAt: number) => lease(sessionId, expiresAt) } : {}), ...(input.signal ? { signal: input.signal } : {}) });
+      this.options.requireOwner(actor);
+      return await this.verifyAndSave(actor, { id: input.id, endpoint: vmEndpoint(manager.endpoint()), managerId: input.managerId, maxSessions: input.maxSessions ?? 2 });
+    } finally { this.#local.delete(input.managerId); }
+  }
+  /** Shared enrollment verification: inventory, sudo/systemd readiness, hypervisor binding and direct-egress refusal. */
+  private async verifyAndSave(actor: object, input: { id: string; endpoint: VmEndpoint; managerId: string | null; maxSessions: number }, saved?: () => void): Promise<VmStatus> {
+    const endpoint = input.endpoint;
     const transport = new VmSshTransport(endpoint, this.options.run ?? vmHostCommand);
     const facts = await this.inventory(endpoint);
     const ready = await transport.control(["sudo", "-n", "python3", "-I", "-c", "import os,subprocess;assert os.getuid()==0;subprocess.run(['systemctl','--version'],check=True,stdout=subprocess.DEVNULL);print('jit-vm-ready-v1')"]);
@@ -126,11 +158,11 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
       this.options.requireOwner(actor);
       if (this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(input.id)) vmFail("vm_already_enrolled");
       const networkIsolated = bound && directDenied && !!machine && machine.network !== "unproven";
-      const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId ?? null : null,
+      const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId : null,
         state: networkIsolated ? "ready" : "unproven", networkCheckedAt: (this.options.now ?? Date.now)(), networkIsolated, facts,
         ...(bound ? { bindingMac: machine!.nicMac } : {}),
-        maxSessions: input.maxSessions ?? 2, reason: networkIsolated ? null : machine && !bound ? "vm_identity_unproven" : "vm_network_unproven", machineIdentity: bound ? machine!.identity : null, boot: bound ? machine!.boot : null };
-      this.options.store.save(row); this.#setups.delete(input.setupId);
+        maxSessions: input.maxSessions, reason: networkIsolated ? null : machine && !bound ? "vm_identity_unproven" : "vm_network_unproven", machineIdentity: bound ? machine!.identity : null, boot: bound ? machine!.boot : null };
+      this.options.store.save(row); saved?.();
       return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
     });
   }

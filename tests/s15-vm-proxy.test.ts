@@ -13,7 +13,7 @@ const auth = (url: string) => { const u = new URL(url); return `Basic ${Buffer.f
 const input = (target: string, authorization: string, method = "CONNECT") => `${method} ${target} HTTP/1.1\r\nHost: registry.test\r\nProxy-Authorization: ${authorization}\r\n\r\n`;
 
 test("default registry set excludes publication targets and includes ordinary package ecosystems", () => {
-  for (const h of ["registry.npmjs.org", "pypi.org", "registry-1.docker.io", "ports.ubuntu.com", "proxy.golang.org", "crates.io", "ghcr.io"]) expect(defaultVmRegistryHosts).toContain(h);
+  for (const h of ["registry.npmjs.org", "pypi.org", "registry-1.docker.io", "production.cloudfront.docker.com", "ports.ubuntu.com", "proxy.golang.org", "crates.io", "ghcr.io"]) expect(defaultVmRegistryHosts).toContain(h);
   for (const h of ["github.com", "api.github.com", "smtp.gmail.com"]) expect(defaultVmRegistryHosts).not.toContain(h);
 });
 test.each(["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.5.2", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::ffff:127.0.0.1", "fe80::1", "2001:db8::1", "2002:7f00:1::"])("DNS guard rejects private/metadata/special address %s", address => { expect(vmPublicAddress(address)).toBe(false); });
