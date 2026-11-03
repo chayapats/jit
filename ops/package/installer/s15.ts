@@ -162,6 +162,14 @@ export function renderS15Sudoers(): string {
   return `# Managed by install.sh --s15 (VM15-03). The S15 controller may run only the fixed working-VM launcher as its QEMU identity.\n${p.user} ALL=(${p.vmmUser}) NOPASSWD: ${p.launcher}\n`;
 }
 
+/**
+ * CLI arguments (after `src/main.ts`) that issue the first-owner link over the private fd 3 pipe.
+ * They must satisfy `selectRuntime`'s S15 `owner-link` spelling, which requires `--output-fd 3`.
+ */
+export function s15OwnerLinkArguments(configPath: string): string[] {
+  return ["owner-link", "--s15", "--config", configPath, "--output-fd", "3"];
+}
+
 /** Durable-job projection the installer prints. `fallback` means this host cannot create the computer itself. */
 export type S15ComputerProgress =
   | { state: "running"; step: string; history: string[] }
@@ -596,7 +604,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     if (dry && options.ownerLink) pendingOwner = await options.ownerLink();
     if (!dry) {
       const terminal = ownerTerminal!; ownerTerminal = undefined;
-      pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(release!, "src/main.ts"), "owner-link", "--s15", "--config", p.config]),
+      pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(release!, "src/main.ts"), ...s15OwnerLinkArguments(p.config)]),
         { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, config.origin, { capture: captureOwnerPipe, terminal: () => terminal });
     }
 
