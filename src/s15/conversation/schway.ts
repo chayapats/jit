@@ -13,7 +13,12 @@ import type { ConversationAuthority } from "./types";
  * Schway's synchronous `authorizeDispatch`, which reacquires current authority and reserves its own finite
  * charge; a refusal sends nothing, is never retried and surfaces as the authorizer's own Jit error. A
  * scripted host-supplied model, which Schway cannot authorize per send, reserves once per stream. An
- * interpretation's single call therefore cannot be resent after an auth rejection; the owner retries.
+ * interpretation's single call therefore cannot be resent after an auth rejection: that refusal surfaces as
+ * `auth_retry_refused` (the authorizer's error chained as `cause`) and the owner retries. Only the last model
+ * call's refusal decides a failed run, so a survived compaction refusal never hides a later failure.
+ *
+ * Unlike MODEL15 `runStep`, this runtime pins no effort and requires no output cap (Grok sends Schway's default
+ * cap) and does not reconcile `providerRequests`; it returns the run's `HostRunUsage` through `onUsage`.
  */
 export async function runConversation(input: {
   directory: string; request: ConversationRequest; definitions: readonly ToolDefinition[];
@@ -21,6 +26,8 @@ export async function runConversation(input: {
   signal: AbortSignal; clock: HostClock; scripted: Model | undefined;
   /** Protected credential owner and deterministic protocol-fixture seam for the route model; production omits it. */
   routeAuth?: Pick<HostAuthSelection, "store" | "lifecycle" | "fetch">;
+  /** Receives the run's usage evidence (exact `providerRequests` included) whether or not the run completed. */
+  onUsage?: (usage: HostRunUsage) => void;
   interpretation?: { authority: ConversationAuthority; purposes: readonly string[]; resources: readonly string[]; context: readonly { role: "owner" | "assistant"; text: string }[] };
   guardContext?: (request: unknown) => void;
   guard: () => void; reserveModel: () => { settle(): void }; correlated: (sessionId: string, branchId: string) => void;
@@ -40,7 +47,10 @@ export async function runConversation(input: {
   try {
     input.guard();
     const provider = authority.route.provider === "codex" ? "codex-subscription" : "xai";
-    let privacyRefusal: unknown, dispatchRefusal: unknown, refused = false;
+    // Privacy refusals stay sticky; dispatch refusals describe only the last model call.
+    let privacyRefusal: unknown;
+    type Refusal = { error: unknown; kind: HostDispatch["kind"]; recognized: boolean };
+    const call: { refusal: Refusal | null } = { refusal: null };
     let live: { request: unknown; reservations: { settle(): void }[] } | null = null;
     const authorizeDispatch = (dispatch: HostDispatch): void => {
       try {
@@ -49,20 +59,20 @@ export async function runConversation(input: {
         input.guard();
         try { input.guardContext?.(stream.request); } catch (error) { privacyRefusal = error; throw error; }
         stream.reservations.push(input.reserveModel());
-      } catch (error) { dispatchRefusal = error; throw error; }
+      } catch (error) { call.refusal = { error, kind: dispatch.kind, recognized: false }; throw error; }
     };
     const selected = input.scripted ?? await host.auth!.createModel({ authorizeDispatch });
     input.guard();
     if (selected.id !== authority.route.model || selected.provider !== provider && !(input.scripted && selected.provider === authority.route.provider)) throw new AppError("selection_pinned", 403);
     // Forwards `request` and `call` unchanged, so Schway keeps exact providerRequests and per-attempt evidence.
     const guarded: Model = { provider: selected.provider, id: selected.id, async *stream(request, options) {
-      input.guard(); const stream = { request: JSON.parse(JSON.stringify(request)) as unknown, reservations: [] as { settle(): void }[] };
+      call.refusal = null; input.guard(); const stream = { request: JSON.parse(JSON.stringify(request)) as unknown, reservations: [] as { settle(): void }[] };
       try { input.guardContext?.(stream.request); } catch (error) { privacyRefusal = error; throw error; }
       try {
         if (input.scripted) stream.reservations.push(input.reserveModel());
         live = stream;
         yield* selected.stream(request, options);
-      } catch (error) { if (isDispatchRefused(error)) refused = true; throw error; }
+      } catch (error) { const refusal = call.refusal as Refusal | null; if (refusal && isDispatchRefused(error)) refusal.recognized = true; throw error; }
       finally { if (live === stream) live = null; for (const reservation of stream.reservations) reservation.settle(); }
     } };
     const session = await host.createSession();
@@ -70,10 +80,13 @@ export async function runConversation(input: {
       input.correlated(session.reference.id, session.reference.branchId);
       input.guard();
       const result = await session.submit({ text: input.interpretation ? input.request.interpretationRequest.text : input.request.intent.instruction }, guarded, { signal: input.signal, clock: input.clock });
+      input.onUsage?.(result.usage);
       input.guard();
       if (privacyRefusal) throw privacyRefusal;
       // The authorizer's own Jit error carries the refusal code; Schway's refusal wording is never copied.
-      if (result.outcome !== "completed" && refused && dispatchRefusal) throw dispatchRefusal;
+      const refusal = result.outcome !== "completed" && call.refusal?.recognized ? call.refusal : null;
+      if (refusal?.kind === "auth-retry") throw Object.assign(new AppError("auth_retry_refused"), { cause: refusal.error });
+      if (refusal) throw refusal.error;
       if (result.outcome !== "completed") throw new AppError(result.outcome === "cancelled" ? "aborted" : "conversation_run_incomplete");
       const text = session.readResult(result.result).content.filter(part => part.type === "text").map(part => part.text).join("\n");
       content(text, authority.limits.outputBytes);

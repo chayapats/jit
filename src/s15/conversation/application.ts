@@ -9,7 +9,10 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
 
-const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease"]);
+const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
+  // MODEL15-02: honest route status and per-send dispatch outcomes.
+  "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "quota_exceeded", "auth_retry_refused",
+  "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid"]);
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
@@ -295,6 +298,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       const interpretationContext = this.interpretationContext(request);
       const interpreted = await runConversation({ directory: this.options.nativeDirectory, request, definitions: [], signal: abort.signal, clock: this.clock, scripted: this.options.interpreterModel ?? this.options.model,
         interpretation: { ...request.interpretation!, context: interpretationContext }, guard: () => guard("model"),
+        onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.interpretationUsage = usage; this.store.save(current); }),
         ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => this.options.guardInterpretation!(work!, payload) } : {}),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);
@@ -403,6 +407,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       });
       const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model,
         guard: () => guard("model"),
+        // Usage evidence is kept on a failed run too; publication below still requires completion.
+        onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);
           if (current.modelCalls >= current.authority!.limits.modelCalls) throw new AppError("budget_exhausted");
