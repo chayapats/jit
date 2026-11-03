@@ -176,16 +176,22 @@ export function localVmFileHash(file: string): Promise<string> {
 /**
  * Returns the read-only verified base image path, downloading it once. A cached or downloaded image whose
  * SHA-256 differs from the pin is deleted and refused with `vm_image_unverified`; there is no fallback.
+ * `access: "group"` (VM15-03) keeps the controller-owned image directory and file group-readable (setgid
+ * 2750, file 0440) inside the shared hypervisor `control/` directory, so only the separate QEMU identity can
+ * read the base image beside the controller; nobody but the controller can write either.
  */
-export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void, guard: () => void = () => {}): Promise<string> {
+export async function ensureLocalVmImage(directory: string, image: LocalVmImage, download: LocalVmDownload = localVmDownload, signal?: AbortSignal, progress?: (step: "download" | "checksum") => void, guard: () => void = () => {}, access: "private" | "group" = "private"): Promise<string> {
   if (!/^[a-f0-9]{64}$/.test(image.sha256)) vmFail("vm_image_unverified");
-  const images = join(directory, "images"); mkdirSync(images, { recursive: true, mode: 0o700 });
-  const stat = lstatSync(images); if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077) vmFail("vm_key_directory_unsafe");
+  const group = access === "group", images = join(directory, "images"); mkdirSync(images, { recursive: true, mode: group ? 0o750 : 0o700 });
+  const stat = lstatSync(images); if (!stat.isDirectory() || stat.isSymbolicLink() || (group ? stat.mode & 0o027 || stat.uid !== process.getuid?.() : stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
+  // The controller's UMask strips group bits from new directories; restore group traversal (keeping setgid).
+  if (group) chmodSync(images, 0o2750);
+  const fileMode = group ? 0o440 : 0o400;
   const file = join(images, `${image.sha256}.qcow2`);
   const cached = lstatSync(file, { throwIfNoEntry: false });
   if (cached) {
     progress?.("checksum");
-    if (cached.isFile() && !cached.isSymbolicLink() && await localVmFileHash(file) === image.sha256) { chmodSync(file, 0o400); return file; }
+    if (cached.isFile() && !cached.isSymbolicLink() && await localVmFileHash(file) === image.sha256) { chmodSync(file, fileMode); return file; }
     guard(); rmSync(file, { force: true });
   }
   // A partial download left by a controller crash never held verified bytes; only this exact prefix is removed.
@@ -198,7 +204,7 @@ export async function ensureLocalVmImage(directory: string, image: LocalVmImage,
     catch (error) { if (error instanceof AppError) throw error; vmFail("vm_image_unavailable", 503); }
     progress?.("checksum");
     if (!existsSync(partial) || await localVmFileHash(partial) !== image.sha256) vmFail("vm_image_unverified");
-    guard(); chmodSync(partial, 0o400); renameSync(partial, file);
+    guard(); chmodSync(partial, fileMode); renameSync(partial, file);
     return file;
   } finally { rmSync(partial, { force: true }); }
 }

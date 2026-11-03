@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { vmHostCommand } from '../../src/s15/vm/host';
 import { localVmImages, type LocalVmHostProbe, type LocalVmImage } from '../../src/s15/vm/local';
 import type { QemuHostOptions, QemuProc } from '../../src/s15/vm/qemu';
@@ -114,7 +114,9 @@ export class FakeQemuHost {
     for (const [, unit] of this.units) {
       const argv = this.processes.get(unit.pid)?.argv; if (!argv?.join(' ').includes(`127.0.0.1:${port}-:22`)) continue;
       const directory = /file=([^,]+)\/disk\.qcow2,/.exec(argv.join(' '))![1]!;
-      return readFileSync(join(directory, 'hostkey.pub'), 'utf8').trim().split(' ').slice(0, 2).join(' ');
+      // Under VM15-03 the overlay lives in the QEMU identity's directory; the pinned key stays controller-private.
+      const pinned = existsSync(join(directory, 'hostkey.pub')) ? join(directory, 'hostkey.pub') : join(this.directory, 'machines', basename(directory), 'hostkey.pub');
+      return readFileSync(pinned, 'utf8').trim().split(' ').slice(0, 2).join(' ');
     }
     return null;
   }

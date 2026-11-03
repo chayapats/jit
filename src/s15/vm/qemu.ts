@@ -10,6 +10,7 @@ import { qmpExchange, type QmpCommand, type QmpExchange } from "./qmp";
 import { VmSshTransport } from "./transport";
 import type { VmEndpoint, VmHostCommand, VmMachineState, VmManagement } from "./types";
 import { vmFail, vmInteger } from "./validation";
+import { validateVmm, vmmCommand, vmmLayout, type QemuVmmOptions } from "./vmm";
 
 const GiB = 1_073_741_824;
 const snapshotTag = /^jit-[a-f0-9]{32}$/;
@@ -64,9 +65,13 @@ export function qemuArgvFacts(argv: readonly string[], expected: Pick<QemuMachin
   return facts;
 }
 
-/** Controller-side process observation seam; the default reads `/proc` of the protected host. */
-export interface QemuProc { cmdline(pid: number): string[] | null; startTicks(pid: number): string | null }
+/**
+ * Controller-side process observation seam; the default reads `/proc` of the protected host. `uid` (the real
+ * and effective uid, which must agree) is required only when QEMU runs as a separate identity.
+ */
+export interface QemuProc { cmdline(pid: number): string[] | null; startTicks(pid: number): string | null; uid?(pid: number): number | null }
 export const qemuProc: QemuProc = {
+  uid(pid) { try { const line = /^Uid:\s+([0-9]+)\s+([0-9]+)/m.exec(readFileSync(`/proc/${pid}/status`, "utf8")); return line && line[1] === line[2] ? Number(line[1]) : null; } catch { return null; } },
   cmdline(pid) { try { const raw = readFileSync(`/proc/${pid}/cmdline`); if (!raw.length) return null; return raw.toString("utf8").replace(/\0$/, "").split("\0"); } catch { return null; } },
   startTicks(pid) { try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"), fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); return /^[0-9]+$/.test(fields[19] ?? "") ? fields[19]! : null; } catch { return null; } },
 };
@@ -81,6 +86,12 @@ export interface QemuHostOptions {
   now?: () => number; sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   /** Service user's id for its lingering user manager (`XDG_RUNTIME_DIR`). */
   uid?: number;
+  /**
+   * VM15-03: run QEMU, its guest-forward helper and `qemu-img` as this separate unprivileged identity through
+   * its fixed launcher. `proxySocket` must then be the shared layout's proxy socket and images are verified
+   * into the shared, controller-owned image directory. Absent, QEMU runs as the controller identity.
+   */
+  vmm?: QemuVmmOptions;
 }
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
 export interface QemuVmIdentity { name: string; architecture: "x86_64" | "aarch64"; mac: string; sshPort: number; resources: LocalVmResources }
@@ -131,19 +142,25 @@ export class QemuVmManagement implements VmLocalManagement {
     if (!safePath(host.directory) || !safePath(host.proxySocket)) vmFail("vm_invalid_setup");
     // Unix socket paths (QMP, proxy) are limited to 108 bytes; the per-VM QMP path adds 39 bytes.
     if (host.directory.length > qemuStateDirectoryMax || host.proxySocket.length > 100) vmFail("vm_state_path_too_long");
+    if (host.vmm && (validateVmm(host.vmm), host.proxySocket !== vmmLayout(host.vmm.directory).proxySocket)) vmFail("vm_invalid_setup");
     for (const value of [identity.resources.cpus, identity.resources.memoryMiB, identity.resources.diskGiB]) vmInteger(value, 4_194_304);
     this.#resources = { ...identity.resources };
     this.#run = host.run ?? vmHostCommand; this.#qmp = host.qmp ?? qmpExchange; this.#proc = host.proc ?? qemuProc;
     this.#now = host.now ?? Date.now; this.#sleep = host.sleep ?? wait;
   }
-  /** Protected per-VM directory (overlay, seed, keys, QMP socket); never mounted into the guest. */
+  /**
+   * Protected per-VM controller directory (state, SSH client key, known_hosts, pinned host key); never mounted
+   * into the guest. Without a separate QEMU identity it also holds the overlay, seed and QMP socket.
+   */
   get machineDirectory(): string { return join(this.host.directory, "machines", this.identity.name); }
+  /** Directory of the overlay, seed and QMP socket: the QEMU identity's own machine directory under VM15-03. */
+  get hypervisorDirectory(): string { return this.host.vmm ? join(vmmLayout(this.host.vmm.directory).machines, this.identity.name) : this.machineDirectory; }
   private get unit() { return `${this.identity.name}.service`; }
-  private get disk() { return join(this.machineDirectory, "disk.qcow2"); }
+  private get disk() { return join(this.hypervisorDirectory, "disk.qcow2"); }
   private get stateFile() { return join(this.machineDirectory, "state.json"); }
   private get image(): LocalVmImage { return (this.host.images ?? localVmImages)[this.identity.architecture]; }
   private spec(resources: LocalVmResources = this.#resources): QemuMachineSpec {
-    return { name: this.identity.name, architecture: this.identity.architecture, machineDirectory: this.machineDirectory, cpus: resources.cpus, memoryMiB: resources.memoryMiB, mac: this.identity.mac, sshPort: this.identity.sshPort, proxySocket: this.host.proxySocket };
+    return { name: this.identity.name, architecture: this.identity.architecture, machineDirectory: this.hypervisorDirectory, cpus: resources.cpus, memoryMiB: resources.memoryMiB, mac: this.identity.mac, sshPort: this.identity.sshPort, proxySocket: this.host.proxySocket };
   }
   /** Resource values for the next start. Editing them never changes a running guest. */
   get resources(): LocalVmResources { return { ...this.#resources }; }
@@ -169,10 +186,34 @@ export class QemuVmManagement implements VmLocalManagement {
     if (result.exitCode !== 0) vmFail("vm_management_unavailable", 503);
     return Buffer.from(result.stdout).toString("utf8");
   }
-  private qmp(commands: readonly QmpCommand[], timeoutMs = 30_000): Promise<unknown[]> { return this.#qmp(join(this.machineDirectory, "qmp.sock"), commands, { timeoutMs }); }
-  /** Unit state from the service user's own systemd manager (controller side). */
+  /**
+   * The exact argv of one hypervisor-side operation. Without a separate QEMU identity it is the original direct
+   * command in the controller's own user manager; with one it is the fixed `sudo -n -u <vmm> -- <launcher>`
+   * operation, which rebuilds the same command (and the same QEMU argv) as that identity.
+   */
+  private hypervisor(operation: ["show" | "stop" | "kill"] | ["info", boolean] | ["resize", number] | ["create", string, number] | ["snapshot", "create" | "apply" | "delete", string] | ["start", LocalVmResources]): string[] {
+    const vmm = this.host.vmm, name = this.identity.name, [op] = operation;
+    if (vmm) {
+      if (op === "info") return vmmCommand(vmm, ["info", name, operation[1] ? "shared" : "exclusive"]);
+      if (op === "resize") return vmmCommand(vmm, ["resize", name, String(operation[1])]);
+      if (op === "create") { const sha = /\/([a-f0-9]{64})\.qcow2$/.exec(operation[1])?.[1]; if (!sha || operation[1] !== join(vmmLayout(vmm.directory).images, `${sha}.qcow2`)) vmFail("vm_image_unverified"); return vmmCommand(vmm, ["create", name, sha, String(operation[2])]); }
+      if (op === "snapshot") return vmmCommand(vmm, ["snapshot", name, operation[1], operation[2]]);
+      if (op === "start") { const r = operation[1]; return vmmCommand(vmm, ["start", name, this.identity.architecture, String(r.cpus), String(r.memoryMiB), this.identity.mac, String(this.identity.sshPort)]); }
+      return vmmCommand(vmm, [op, name]);
+    }
+    if (op === "show") return ["systemctl", "--user", "show", this.unit, "--property=LoadState", "--property=ActiveState", "--property=MainPID"];
+    if (op === "stop") return ["systemctl", "--user", "stop", this.unit];
+    if (op === "kill") return ["systemctl", "--user", "kill", "--signal=SIGKILL", this.unit];
+    if (op === "info") return [localVmTools.img, "info", ...(operation[1] ? ["--force-share"] : []), "--output=json", this.disk];
+    if (op === "resize") return [localVmTools.img, "resize", this.disk, `${operation[1]}G`];
+    if (op === "create") return [localVmTools.img, "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", operation[1], this.disk, `${operation[2]}G`];
+    if (op === "snapshot") return [localVmTools.img, "snapshot", operation[1] === "create" ? "-c" : operation[1] === "apply" ? "-a" : "-d", operation[2], this.disk];
+    return ["systemd-run", "--user", "--quiet", "--collect", `--unit=${this.unit}`, "--property=Type=exec", "--property=TimeoutStopSec=15", "--", ...qemuArgv(this.spec(operation[1]))];
+  }
+  private qmp(commands: readonly QmpCommand[], timeoutMs = 30_000): Promise<unknown[]> { return this.#qmp(join(this.hypervisorDirectory, "qmp.sock"), commands, { timeoutMs }); }
+  /** Unit state from the QEMU identity's own systemd user manager (the controller's, without VM15-03). */
   private async unitState(): Promise<{ active: boolean; pid: number }> {
-    const out = await this.command(["systemctl", "--user", "show", this.unit, "--property=LoadState", "--property=ActiveState", "--property=MainPID"], 15_000, 4096);
+    const out = await this.command(this.hypervisor(["show"]), 15_000, 4096);
     const lines = new Map(out.trim().split("\n").map(l => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)] as const));
     const active = lines.get("ActiveState"), pid = Number(lines.get("MainPID") ?? "0");
     if (!active || !Number.isSafeInteger(pid) || pid < 0) vmFail("vm_management_unavailable");
@@ -183,10 +224,12 @@ export class QemuVmManagement implements VmLocalManagement {
     if (!pid) return null;
     const argv = this.#proc.cmdline(pid), ticks = this.#proc.startTicks(pid);
     if (!argv || !ticks || startTicks && ticks !== startTicks) return null;
+    // Under VM15-03 a QEMU running as any other identity (the controller included) is never this VM.
+    if (this.host.vmm && (this.#proc.uid?.(pid) ?? null) !== this.host.vmm.uid) return null;
     return argv[0] === localVmTools[this.identity.architecture] && argv.includes(this.identity.name) && argv.some(a => a.includes(`file=${this.disk},`)) ? argv : null;
   }
   private async imageInfo(share = true): Promise<{ virtualSize: number; snapshots: string[]; backing: string | null; format: string }> {
-    const info = JSON.parse(await this.command([localVmTools.img, "info", ...(share ? ["--force-share"] : []), "--output=json", this.disk], 60_000, 1_048_576));
+    const info = JSON.parse(await this.command(this.hypervisor(["info", share]), 60_000, 1_048_576));
     if (!info || typeof info !== "object" || !Number.isSafeInteger(info["virtual-size"])) vmFail("vm_management_unavailable");
     return { virtualSize: info["virtual-size"], format: String(info.format), backing: typeof info["backing-filename"] === "string" ? info["backing-filename"] : null,
       snapshots: Array.isArray(info.snapshots) ? info.snapshots.map((s: { name?: unknown }) => String(s?.name)) : [] };
@@ -221,15 +264,16 @@ export class QemuVmManagement implements VmLocalManagement {
   /** Explicit protected start of this exact VM with the current resource settings; no command is replayed. */
   async start(signal?: AbortSignal): Promise<void> {
     if ((await this.inspect()).state !== "stopped") vmFail("vm_fenced");
-    const recorded = this.state(); if (!recorded.provisioned && !existsSync(join(this.machineDirectory, "seed.img"))) vmFail("vm_management_unavailable");
+    const recorded = this.state(); if (!recorded.provisioned && !existsSync(join(this.hypervisorDirectory, "seed.img"))) vmFail("vm_management_unavailable");
     await this.launch(signal);
   }
   private async launch(signal?: AbortSignal): Promise<void> {
     const resources = this.#resources, info = await this.imageInfo(false);
-    if (info.virtualSize < resources.diskGiB * GiB) await this.command([localVmTools.img, "resize", this.disk, `${resources.diskGiB}G`], 120_000);
-    rmSync(join(this.machineDirectory, "qmp.sock"), { force: true });
+    if (info.virtualSize < resources.diskGiB * GiB) await this.command(this.hypervisor(["resize", resources.diskGiB]), 120_000);
+    // The separate QEMU identity's launcher removes its own stale QMP socket before starting.
+    if (!this.host.vmm) rmSync(join(this.machineDirectory, "qmp.sock"), { force: true });
     this.saveState({ desired: "running", pid: null, startTicks: null, appliedDiskGiB: Math.max(resources.diskGiB, Math.floor(info.virtualSize / GiB)) });
-    await this.command(["systemd-run", "--user", "--quiet", "--collect", `--unit=${this.unit}`, "--property=Type=exec", "--property=TimeoutStopSec=15", "--", ...qemuArgv(this.spec(resources))], 30_000, 65_536);
+    await this.command(this.hypervisor(["start", resources]), 30_000, 65_536);
     let pid = 0;
     const running = await this.until(async () => {
       const unit = await this.unitState(); if (!unit.active) vmFail("vm_management_unavailable");
@@ -267,9 +311,9 @@ export class QemuVmManagement implements VmLocalManagement {
     if (await gone() && await this.unlocked()) return;
     try { await this.qmp([{ execute: "quit" }], 10_000); } catch { /* Fall through to the unit stop. */ }
     if (!await this.until(gone, 10_000, 250)) {
-      try { await this.command(["systemctl", "--user", "stop", this.unit], 60_000, 4096); } catch { /* Read-back decides. */ }
+      try { await this.command(this.hypervisor(["stop"]), 60_000, 4096); } catch { /* Read-back decides. */ }
       if (!await this.until(gone, 5000, 250)) {
-        try { await this.command(["systemctl", "--user", "kill", "--signal=SIGKILL", this.unit], 15_000, 4096); } catch { /* Read-back decides. */ }
+        try { await this.command(this.hypervisor(["kill"]), 15_000, 4096); } catch { /* Read-back decides. */ }
         await this.until(gone, 5000, 250);
       }
     }
@@ -294,7 +338,7 @@ export class QemuVmManagement implements VmLocalManagement {
       try { await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "sync"], { timeoutMs: 60_000 }); } catch { /* Crash-consistent without it. */ }
       await this.qmp([{ execute: "blockdev-snapshot-internal-sync", arguments: { device: "disk0", name } }], 300_000);
     }
-    else await this.command([localVmTools.img, "snapshot", "-c", name, this.disk], 300_000);
+    else await this.command(this.hypervisor(["snapshot", "create", name]), 300_000);
     if (!(await this.snapshots()).includes(name)) vmFail("vm_management_unavailable");
   }
   /** Restores only an exact existing tag after a proven stop. The VM stays stopped until the owner starts it. */
@@ -302,13 +346,13 @@ export class QemuVmManagement implements VmLocalManagement {
     if (!snapshotTag.test(name)) vmFail("vm_invalid_setup");
     if (!(await this.snapshots()).includes(name)) vmFail("vm_snapshot_unknown");
     await this.stop();
-    await this.command([localVmTools.img, "snapshot", "-a", name, this.disk], 300_000);
+    await this.command(this.hypervisor(["snapshot", "apply", name]), 300_000);
   }
   /** Deletes only the service-selected exact tag. */
   async retireSnapshot(name: string): Promise<void> {
     if (!snapshotTag.test(name)) vmFail("vm_invalid_setup");
     if ((await this.inspect()).state === "running") await this.qmp([{ execute: "blockdev-snapshot-delete-internal-sync", arguments: { device: "disk0", name } }], 120_000);
-    else await this.command([localVmTools.img, "snapshot", "-d", name, this.disk], 120_000);
+    else await this.command(this.hypervisor(["snapshot", "delete", name]), 120_000);
     if ((await this.snapshots()).includes(name)) vmFail("vm_management_unavailable");
   }
   /**
@@ -351,10 +395,16 @@ export class QemuVmManagement implements VmLocalManagement {
     writeFileSync(join(directory, "user-data"), `#cloud-config\n${JSON.stringify(userData)}\n`, { mode: 0o600 });
     writeFileSync(join(directory, "meta-data"), `instance-id: ${this.identity.name}\nlocal-hostname: ${this.identity.name}\n`, { mode: 0o600 });
     writeFileSync(join(directory, "network-config"), `${JSON.stringify(network)}\n`, { mode: 0o600 });
+    const seed = join(this.machineDirectory, "seed.img");
     try {
-      await this.command([localVmTools.seed, `--network-config=${join(directory, "network-config")}`, join(this.machineDirectory, "seed.img"), join(directory, "user-data"), join(directory, "meta-data")], 60_000, 65_536);
-      chmodSync(join(this.machineDirectory, "seed.img"), 0o600);
-    } finally { rmSync(directory, { recursive: true, force: true }); }
+      await this.command([localVmTools.seed, `--network-config=${join(directory, "network-config")}`, seed, join(directory, "user-data"), join(directory, "meta-data")], 60_000, 65_536);
+      chmodSync(seed, 0o600);
+      if (this.host.vmm) {
+        // Hand the seed to the QEMU identity through its launcher's stdin; the controller keeps no copy.
+        const result = await this.#run(vmmCommand(this.host.vmm, ["seed", this.identity.name]), { timeoutMs: 60_000, maxBytes: 4096, input: readFileSync(seed) });
+        if (result.exitCode !== 0) vmFail("vm_management_unavailable", 503);
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); if (this.host.vmm) rmSync(seed, { force: true }); }
   }
   /** Runs one fixed protected readiness program in the guest, tolerating only connection failures until the deadline. */
   private async guest(transport: VmSshTransport, argv: readonly string[], options: { timeoutMs: number; input?: Uint8Array; signal?: AbortSignal }): Promise<string> {
@@ -379,13 +429,17 @@ export class QemuVmManagement implements VmLocalManagement {
     this.secureDirectory(this.host.directory);
     const guard = options.guard ?? (() => {});
     guard();
-    const base = await ensureLocalVmImage(this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal, options.progress, guard);
+    const vmm = this.host.vmm;
+    const base = await ensureLocalVmImage(vmm ? vmmLayout(vmm.directory).control : this.host.directory, this.image, this.host.download ?? localVmDownload, options.signal, options.progress, guard, vmm ? "group" : "private");
     const fresh = !this.state().provisioned;
     if (fresh) {
       options.progress?.("disk");
-      if (existsSync(this.machineDirectory)) { guard(); await this.stop(); guard(); rmSync(this.machineDirectory, { recursive: true, force: true }); }
+      if (existsSync(this.machineDirectory) || vmm && existsSync(this.hypervisorDirectory)) {
+        guard(); await this.stop(); guard(); rmSync(this.machineDirectory, { recursive: true, force: true });
+        if (vmm) await this.command(vmmCommand(vmm, ["remove", this.identity.name]), 60_000, 4096);
+      }
       guard(); this.secureDirectory(this.machineDirectory);
-      await this.command([localVmTools.img, "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, this.disk, `${this.#resources.diskGiB}G`], 120_000);
+      await this.command(this.hypervisor(["create", base, this.#resources.diskGiB]), 120_000);
       const info = await this.imageInfo(false);
       if (info.format !== "qcow2" || info.backing !== base || info.virtualSize !== this.#resources.diskGiB * GiB) vmFail("vm_image_unverified");
       guard(); this.saveState({ appliedDiskGiB: this.#resources.diskGiB });

@@ -23,6 +23,11 @@ export interface VmRegistryProxyOptions {
   hostname: string; port: number; guestHostname: string; hosts?: readonly string[];
   /** Listen on this protected Unix socket instead of `hostname:port` (Jit-managed local VMs reach it by guest-forward). */
   socketPath?: string;
+  /**
+   * Mode of `socketPath` after listening (default 0600). A separate QEMU identity (VM15-03) connects through the
+   * shared group, so that layout uses 0660 inside a setgid directory owned by the controller.
+   */
+  socketMode?: 0o600 | 0o660;
   /** Port the guest uses in its lease URL when it differs from the listener (fixed guest-forward port). */
   guestPort?: number;
   bytesPerSession?: number; maxConnections?: number; connectionMs?: number;
@@ -123,7 +128,7 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
   }
   await new Promise<void>((resolve, reject) => { server.once("error", reject); if (options.socketPath) server.listen(options.socketPath, resolve); else server.listen(options.port, options.hostname, resolve); });
   const address = server.address();
-  if (options.socketPath) { if (address !== options.socketPath) vmFail("vm_proxy_unavailable"); chmodSync(options.socketPath, 0o600); }
+  if (options.socketPath) { if (address !== options.socketPath) vmFail("vm_proxy_unavailable"); chmodSync(options.socketPath, options.socketMode ?? 0o600); }
   else if (!address || typeof address === "string") vmFail("vm_proxy_unavailable");
   const listenerPort = typeof address === "object" && address ? address.port : 0, guestPort = options.guestPort ?? listenerPort;
   return { port: listenerPort,

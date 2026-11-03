@@ -28,6 +28,8 @@ import { githubRuntime, type GithubRuntimeConfig } from './github/runtime';
 import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure, type RuntimeDisclosureConfig } from './disclosure/runtime';
 import { createTelegramBotApi } from './telegram';
+import { liveRouteAvailability } from './model/availability';
+import { validateVmm, type QemuVmmOptions } from './vm/vmm';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
@@ -48,7 +50,12 @@ export interface S15RuntimeConfig {
    */
   vm: { id: string; resource: Ref; limaInstance: string | null; remote?: { origin: string; credentialRef: string }; upperBound: import('./policy').BudgetVector;
     /** Opt-in Jit-managed nested KVM working VM on this host (2026-11-03 single-host default). */
-    local?: boolean };
+    local?: boolean;
+    /**
+     * VM15-03: the separate unprivileged identity that runs the local VM's QEMU, written by `install.sh --s15`.
+     * Only valid with `local`. Absent, QEMU runs as the controller identity (developer and evidence hosts).
+     */
+    vmm?: QemuVmmOptions };
   browser: null | { resource: Ref; executablePath: string; publicOrigins: string[]; upperBound: import('./policy').BudgetVector; ownerUi?: Omit<import('./web').S15WebBrowser<import('./policy').OwnerActor>, 'owner'> };
   github: GithubRuntimeConfig | null;
   google: null | { mailConnectionId: string | null; calendarConnectionId: string | null; bounds: EffectBounds; resources: { connectionId: string; resource: Ref }[]; recipients: { ref: Ref; address: string }[] };
@@ -57,13 +64,18 @@ export interface S15RuntimeConfig {
 /** Pool-aware reading of `S15RuntimeConfig.vm`: the pool id, its default member and whether Jit creates that member. */
 export function readS15VmPool(vm: S15RuntimeConfig['vm']): { poolId: string; defaultMemberId: string; local: boolean } {
   if (!vm || typeof vm.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(vm.id) || vm.local !== undefined && typeof vm.local !== 'boolean') throw new AppError('invalid_s15_config');
+  if (vm.vmm !== undefined) { if (vm.local !== true) throw new AppError('invalid_s15_config'); try { validateVmm(vm.vmm); } catch { throw new AppError('invalid_s15_config'); } }
   return { poolId: vm.id, defaultMemberId: vm.id, local: vm.local === true };
 }
 
-/** Reads a bounded owner-controlled configuration. Embedded credentials are refused by canonical validation. */
+/**
+ * Reads a bounded owner-controlled configuration. Embedded credentials are refused by canonical validation.
+ * The file is private to its owner (no group/other access), or, as `install.sh --s15` writes it, root-owned
+ * and readable only by the service group (0640 or narrower), so the service can read but never rewrite it.
+ */
 export function readS15RuntimeConfig(path: string): S15RuntimeConfig {
   const s = lstatSync(path);
-  if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077 || s.size > 65536) throw new AppError('unsafe_s15_config');
+  if (!s.isFile() || s.isSymbolicLink() || (s.uid === 0 ? s.mode & 0o037 : s.mode & 0o077) || s.size > 65536) throw new AppError('unsafe_s15_config');
   const value = JSON.parse(readFileSync(path, 'utf8')) as S15RuntimeConfig; canonical(value);
   if (value.contract !== 's15-runtime/v1' || !isAbsolute(value.directory) || !/^[A-Za-z0-9_-]{1,128}$/.test(value.installationId) || new URL(value.origin).origin !== value.origin || !Array.isArray(value.catalog) || !Array.isArray(value.models) || !value.models.length) throw new AppError('invalid_s15_config');
   if (!value.models.some(r => equal(r.selection, value.conversation.selection) && r.modelId === value.conversation.route.model && r.provider === value.conversation.route.provider)) throw new AppError('route_unavailable');
@@ -114,6 +126,14 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       try { ownerStore.read(tx => ownerApp.requireOwner(tx, proof as import('../s14/types').OwnerActor)); return { id: 'owner', generation: generation(), expiresAt: Date.now() + 1000 }; } catch { return null; }
     };
     const vmPool = readS15VmPool(config.vm);
+    // Approved subscription routes become available once this identity's Web device login stores a credential.
+    const availability = liveRouteAvailability();
+    let availabilityTimer: ReturnType<typeof setInterval> | undefined;
+    if (!initialize && !localCommand) {
+      await availability.refresh(config.models);
+      availabilityTimer = setInterval(() => { void availability.refresh(config.models).catch(() => {}); }, 15_000); availabilityTimer.unref?.();
+    }
+    const models = () => config.models.map(route => availability.apply(route));
     // GitHub work names the pool; the composed port places each work on a member and keeps it there.
     const git = config.github ? githubRuntime(config.github, { directory: config.directory, vmId: vmPool.poolId, route: config.conversation.route, modelCallUpperBound: config.conversation.modelCallUpperBound, credential: ref => readS15Credential(vault, config.installationId, ref) }) : null;
     const catalogs: S15CompositionOptions['catalogs'] = {
@@ -143,16 +163,16 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.recurring ? { recurring: config.recurring } : {}),
       ...(config.team ? { team: { maxConcurrentOperations: config.team.maxConcurrentOperations, retention: work => config.team!.memory === 'off' ? null : config.team!.memory === 'team' ? { kind: 'team' as const } : { kind: 'bot' as const, botId: work.request.bot.id, origin: 's15' as const } } } : {}),
       conversation: config.conversation, proposedPolicy: config.policy,
-      model: { limits: config.modelLimits, registry: { list: () => config.models, current: selection => config.models.find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) } },
+      model: { limits: config.modelLimits, registry: { list: models, current: selection => models().find(r => equal(r.selection, selection)) ?? null, pins: () => ({ route: null, model: null, effort: null }) } },
       ...(git ? { github: git.github, reads: [git.readHandler] } : {}),
       web: { accounts: { list(actor) { service!.policy.owner.current(actor); return [
-        ...config.models.map(model => ({ id: model.account.id, kind: 'model' as const, label: model.provider, state: model.availability === 'available' ? 'configured' as const : 'unavailable' as const, uses: ['model' as const], signInHref: '/settings/provider' })),
+        ...models().map(model => ({ id: model.account.id, kind: 'model' as const, label: model.provider, state: model.availability === 'available' ? 'configured' as const : 'unavailable' as const, uses: ['model' as const], signInHref: '/settings/provider' })),
         ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
       // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
       telegram: { vault, transport: token => createTelegramBotApi(token) },
-      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: {} } : {}) },
+      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm } : {} } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
@@ -176,7 +196,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     try { service.provisioning?.ensure(); } catch { /* The Web card shows the host reason and offers the owner's start. */ }
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
     service.telegram?.start(() => service!.drain());
-    const shutdown = async () => { clearInterval(wake); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
+    const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));

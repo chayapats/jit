@@ -44,7 +44,8 @@ export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: reado
       { id: 'browser', kind: 'browser', resolve: (_work, payload) => { const binding = config.browser.find(r => r.origin === origin(payload)); return binding ? [binding.recipient] : null; } },
       { id: 'acquisition', kind: 'artifact', resolve: (_work, payload) => { const binding = config.acquisitions.find(r => r.origin === origin(payload, true)); return binding ? [binding.recipient] : null; } },
     ],
-    modelRoute(candidate) { const index = models.findIndex(r => equal(r, candidate)); if (index < 0) throw new AppError('route_unknown'); return `inference_${index}`; },
+    // Availability is live credential state, not part of a route's disclosure identity.
+    modelRoute(candidate) { const index = models.findIndex(r => equal({ ...r, availability: candidate.availability }, candidate)); if (index < 0) throw new AppError('route_unknown'); return `inference_${index}`; },
     workSources: work => config.sources.filter(s => work.request.resources.some(r => equal(r, s.resource))).map(s => s.ref),
     ...(config.githubRecipient ? { githubRoute: 'github', githubRecipients: [config.githubRecipient] } : {}), ...(config.googleRecipient ? { googleRoute: 'google' } : {}),
     browserRoute: 'browser', acquisitionRoute: 'acquisition',
