@@ -35,7 +35,9 @@ export function createConversationPolicy(host: S15PolicyService, input: {
   const current = (actor: OwnerActor) => invoke(() => { const policy = host.owner.current(actor); if (!policy) throw new AppError("policy_match_required"); return policy; });
   const snapshot = (work: WorkAuthority, interpretation = false): ConversationAuthority => ({ id: work.id, purposeId: work.request.purpose.id, policyRevision: work.policyRevision, resources: work.request.resources.map(resource => resource.id), route: { ...config.route }, limits: { ...config.limits, ...(interpretation ? { modelCalls: 1, toolCalls: 0, activeMs: Math.min(config.limits.activeMs, 30000) } : {}) } });
   return {
-    requireOwner(actor) { current(actor); const generation = input.ownerGeneration(); integer(generation, 1); return { id: config.ownerId, generation }; },
+    // Reading the owner's own conversations needs an authenticated owner, not a standing policy: a fresh install
+    // with no policy yet must still render its pages (POLICY15-02). Admission keeps requiring the policy.
+    requireOwner(actor) { invoke(() => host.owner.current(actor)); const generation = input.ownerGeneration(); integer(generation, 1); return { id: config.ownerId, generation }; },
     prepareInterpretation(actor, request) {
       try {
         // The standing expiry is stable across an interrupted local ingress commit; local phase deadlines stay finite.
@@ -52,7 +54,7 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         if (!purpose) return { state: "proposed", code: "outside_scope" };
         const subjects = input.subjectResourceIds ? resources.filter(r => input.subjectResourceIds!.includes(r.id)) : resources;
         if (intent.subject && subjects.length !== 1) return { state: "held", code: "material_ambiguity" };
-        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
+        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? host.control.subscriptionLimits()?.tools?.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
         if (!admitted.work) throw new AppError("outside_scope");
         return { state: "admitted", authority: snapshot(admitted.work) };
       } catch (error) { const code = mapped(error).code; return { state: code === "outside_scope" ? "proposed" : "held", code }; }

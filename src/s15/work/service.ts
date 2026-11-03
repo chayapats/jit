@@ -185,8 +185,9 @@ export function openWorkService(options: WorkOptions): ResponsibilityPort & { li
       return { ...clone(r), budget: { ...totals, charged: { ...totals.charged, spendMinor: options.policy.owner.current(owner)?.budget ? totals.charged.spendMinor : null } }, stopImpact: { responsibilityIds: [r.id], heldAttempts: r.attempts.filter(a => a.capacityHeld).map(a => a.id), otherResponsibilities: journal.all<Responsibility>().filter(other => other.id !== r.id && !['stopped', 'completed'].includes(other.state)).length } };
     }); },
     list(owner): ResponsibilityProjection[] {
+      // current() authenticates the owner; with no standing policy yet there is no responsibility to list.
       const p = journal.tx(() => options.policy.owner.current(owner));
-      if (!p) fail('authentication_required');
+      if (!p) return [];
       // Newest first, bounded; other owner generations are never listed and the read starts nothing.
       const ids = journal.tx(() => journal.all<Responsibility>().filter(r => r.ownerGeneration === p.ownerGeneration).map(r => r.id)).reverse().slice(0, 64);
       return ids.map(id => service.project(owner, id));

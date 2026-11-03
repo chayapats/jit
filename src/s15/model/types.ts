@@ -13,6 +13,9 @@ export interface ApprovedModelRoute {
    * requires Schway to enforce it, never above the listed route maximum (a larger value narrows to it); absent
    * uses the listed route default. It bounds output tokens, never money. Subscription routes send no Jit cap. */
   maxOutputTokens?: number;
+  /** ISO 4217 currency of a metered route's `upperBound.spendMinor`. It lets the owner type a finite budget in that
+   * currency (POLICY15-02); absent, a metered route offers no budget choice and stays uninstallable. */
+  currency?: string;
 }
 /** Owner pins resolved from current protected owner decisions; omitted fields do not widen policy. */
 export interface ModelPins { route: Ref | null; model: Ref | null; effort: ThinkingLevel | null }

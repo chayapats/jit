@@ -19,8 +19,13 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   v.id(options.installationId); v.nat(options.ownerGeneration(), true);
   const now = options.now ?? Date.now;
   const subscription = options.subscriptionModels;
-  if (subscription) { v.exact(subscription, ['current', 'concurrency', 'perWork']); if (typeof subscription.current !== 'function') v.fail('invalid_shape'); v.nat(subscription.concurrency, true); v.exact(subscription.perWork, ['calls', 'steps', 'activeMs']); for (const value of Object.values(subscription.perWork)) v.nat(value, true); }
-  const subscriptionBounds = subscription ? clone({ concurrency: subscription.concurrency, perWork: subscription.perWork }) : null;
+  if (subscription) {
+    v.exact(subscription, ['current', 'concurrency', 'perWork'], ['tools']); if (typeof subscription.current !== 'function') v.fail('invalid_shape'); v.nat(subscription.concurrency, true); v.exact(subscription.perWork, ['calls', 'steps', 'activeMs']); for (const value of Object.values(subscription.perWork)) v.nat(value, true);
+    if (subscription.tools !== undefined) { v.exact(subscription.tools, ['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs']); for (const value of Object.values(subscription.tools)) v.nat(value); }
+  }
+  const subscriptionBounds = subscription ? clone({ concurrency: subscription.concurrency, perWork: subscription.perWork, ...(subscription.tools ? { tools: subscription.tools } : {}) }) : null;
+  /** POLICY15-02: the per-work read ceiling. A monetary budget supplies it; otherwise only the zero-spend tool bound does. */
+  const readCeiling = (p: T.StandingPolicy): number => p.budget ? p.budget.ceiling.reads : subscriptionBounds?.tools?.reads ?? 0;
   const ledger = new PolicyLedger(options.path, options.create, options.installationId);
   try {
     if (options.initialReservations) {
@@ -75,7 +80,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
     currentRef('purpose', r.purpose); currentRef('bot', r.bot); currentRef('route', r.selection.route); currentRef('model', r.selection.model);
     r.resources.forEach(x => currentRef('resource', x)); r.recipients.forEach(x => currentRef('recipient', x)); r.fences?.forEach(x => currentRef(x.kind, x.ref));
-    if (r.readLimit !== undefined && r.readLimit > (p.budget?.ceiling.reads ?? 0)) v.fail('outside_scope');
+    if (r.readLimit !== undefined && r.readLimit > readCeiling(p)) v.fail('outside_scope');
     if (r.selectionPin && !v.equal(r.selectionPin, r.selection)) v.fail('selection_pinned');
   }
   function currentWork(workId: string): T.WorkAuthority {
@@ -127,12 +132,26 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
   }
   const unsettled = (): number => ledger.all<{ json: string }>('SELECT json FROM reservations').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
   const ordinaryUnsettled = (): number => ledger.all<{ json: string }>('SELECT r.json FROM reservations r WHERE NOT EXISTS (SELECT 1 FROM recovery_reads recovery WHERE recovery.reservation_id=r.id)').filter(r => !(JSON.parse(r.json) as T.Reservation).transportSettled).length;
-  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean, recovery = false, model?: { workId: string; selection: T.Selection }): void {
+  // Per-work sums of one reservation family: model reservations carry their selection, tool/read/effect ones do not.
+  const workUsed = (workId: string, models: boolean): T.BudgetVector => ledger.all<{ json: string }>(`SELECT json FROM reservations WHERE json_extract(json,'$.workId')=? AND json_extract(json,'$.selection') IS ${models ? 'NOT ' : ''}NULL`, workId).reduce((total, row) => v.add(total, (JSON.parse(row.json) as T.Reservation).upperBound), v.zero());
+  function budgetCheck(bound: T.BudgetVector | null, continuation: boolean, recovery = false, model?: { workId: string; selection: T.Selection }, work?: T.WorkAuthority): void {
     const budget = policyCurrent().budget;
+    if (!budget && !model) {
+      // POLICY15-02 (ADR 0073): with no monetary budget, a zero-spend tool/read/effect charge of a work whose own
+      // selection is a current subscription route uses the registry's finite per-work tool bounds. It never spends money.
+      const tools = subscriptionBounds?.tools;
+      if (!tools || !subscription || !work || !subscription.current(clone(work.request.selection))) v.fail('finite_budget_required');
+      if (!bound || bound.spendMinor !== '0') v.fail('cost_unknown');
+      const used = workUsed(work.id, false), next = continuation ? used : v.add(used, bound);
+      if (ledger.meta('budgetOverrun') || (['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs'] as const).some(k => next[k] > tools[k])) v.fail('budget_exhausted');
+      if (!continuation && !recovery && ordinaryUnsettled() >= subscriptionBounds!.concurrency) v.fail('capacity_busy');
+      if (!continuation && recovery && ledger.get('SELECT reservation_id FROM recovery_reads WHERE active=1')) v.fail('recovery_busy');
+      return;
+    }
     if (!budget) {
       if (!model || !subscription || !subscriptionBounds || !subscription.current(clone(model.selection))) v.fail('finite_budget_required');
       if (!bound || bound.spendMinor !== '0' || bound.calls < 1 || bound.steps < 1 || bound.activeMs < 1 || bound.reads !== 0) v.fail('cost_unknown');
-      const used = ledger.all<{ json: string }>('SELECT json FROM reservations WHERE json_extract(json,\'$.workId\')=?', model.workId).reduce((total, row) => v.add(total, (JSON.parse(row.json) as T.Reservation).upperBound), v.zero());
+      const used = workUsed(model.workId, true);
       const next = continuation ? used : v.add(used, bound);
       if (ledger.meta('budgetOverrun') || next.calls > subscriptionBounds.perWork.calls || next.steps > subscriptionBounds.perWork.steps || next.activeMs > subscriptionBounds.perWork.activeMs) v.fail('budget_exhausted');
       if (!continuation && ordinaryUnsettled() >= subscriptionBounds.concurrency) v.fail('capacity_busy');
@@ -163,7 +182,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       if (approvals.some(x => x.decision === 'deny')) v.fail('action_denied');
       const rules = policyCurrent().rules.filter(r => matching(r, w, a));
       if (rules.some(r => r.mode === 'deny')) v.fail('rule_denied');
-      budgetCheck(a.upperBound, continuation);
+      budgetCheck(a.upperBound, continuation, false, undefined, w);
       if (!rules.length) return { state: 'hold', code: 'policy_match_required' };
       if (a.impact === 'unknown') return { state: 'hold', code: 'owner_direction_required' };
       if (a.github?.production === 'unknown') return { state: 'hold', code: 'production_impact_required' };
@@ -206,7 +225,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     const key = w.id + ':' + requestId, hash = v.digest('s15.reservation.v1', payload);
     const old = ledger.get<{ hash: string; json: string }>('SELECT hash,json FROM reservations WHERE dedupe=?', key);
     if (old) { if (old.hash !== hash) v.fail('request_id_conflict'); v.fail('reservation_already_claimed'); }
-    budgetCheck(bound, false, recovery, modelSelection ? { workId: w.id, selection: modelSelection } : undefined);
+    budgetCheck(bound, false, recovery, modelSelection ? { workId: w.id, selection: modelSelection } : undefined, w);
     const result: T.Reservation = { id: uid(), workId: w.id, requestId, upperBound: clone(bound), actual: v.unknownUsage(), transportSettled: false, createdAt: time() };
     ledger.put('charged', v.add(ledger.meta<T.BudgetVector>('charged')!, bound));
     ledger.run('INSERT INTO reservations VALUES (?,?,?,?)', result.id, key, hash, v.canonical(result)); return result;
@@ -308,6 +327,16 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     const current = getPolicy();
     if (!current && input?.rules.some(r => r.mode.startsWith('personal_github'))) v.fail('personal_profile_separate');
     const budget = input?.budget;
+    // POLICY15-02: no monetary budget is installable only when every selection is a current protected subscription
+    // route and the registry supplies finite tool bounds; a metered selection always needs the owner's finite budget.
+    const tools = subscriptionBounds?.tools;
+    const subscriptionOnly = !!input && !budget && !!subscription && !!subscriptionBounds && !!tools && input.selections.every(s => subscription.current(clone(s)));
+    const technical: T.PolicyProposal['fields'] = subscriptionOnly && subscriptionBounds && tools ? [
+      { path: 'budget', value: null, status: 'provided' },
+      { path: 'subscription.concurrency', value: subscriptionBounds.concurrency, status: 'provided' },
+      ...(['calls', 'steps', 'activeMs'] as const).map(key => ({ path: 'subscription.perWork.' + key, value: subscriptionBounds.perWork[key], status: 'provided' as const })),
+      ...(['calls', 'reads', 'outputBytes', 'activeMs'] as const).map(key => ({ path: 'subscription.tools.' + key, value: tools[key], status: 'provided' as const })),
+    ] : [];
     const body: Omit<T.PolicyProposal, 'proposalHash'> = {
       contract: 's15-policy-proposal/v1', ownerGeneration: options.ownerGeneration(), expectedRevision: current?.revision ?? 0, policy: clone(input),
       rows: [
@@ -315,12 +344,12 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         { id: 'held', text: 'Communications, publication, payments, production, new private-data recipients and major changes require exact approval unless an eligible standing rule applies.', mode: 'approval_required' },
         { id: 'github_personal', text: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'Personal GitHub exceptions are explicitly configured in the exact rules below.' : 'Personal GitHub publication and merge exceptions are configured separately and start disabled.', mode: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'ordinary' : 'off' },
       ],
-      fields: [
+      fields: subscriptionOnly ? technical : [
         ...(['currency', 'startsAt', 'expiresAt'] as const).map(key => ({ path: 'budget.' + key, value: budget?.[key] ?? null, status: budget ? 'provided' as const : 'owner_required' as const })),
         ...(['attempts', 'steps', 'calls', 'reads', 'outputBytes', 'activeMs', 'spendMinor'] as const).map(key => ({ path: 'budget.ceiling.' + key, value: budget?.ceiling[key] ?? null, status: budget ? 'provided' as const : key === 'spendMinor' ? 'owner_required' as const : 'profile_required' as const })),
         { path: 'budget.concurrency', value: budget?.concurrency ?? null, status: budget ? 'provided' : 'profile_required' },
       ],
-      installable: !!input && !!budget && time() < input.expiresAt && time() < budget.expiresAt && !input.rules.some(r => r.mode === 'recurring_payment' && !current?.rules.some(x => v.equal(x, r))),
+      installable: !!input && (budget ? time() < budget.expiresAt : subscriptionOnly) && time() < input.expiresAt && !input.rules.some(r => r.mode === 'recurring_payment' && !current?.rules.some(x => v.equal(x, r))),
     };
     return { ...body, proposalHash: v.digest('s15.policy.proposal.v1', body) };
   }
@@ -370,7 +399,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       const p = policyCurrent(); checkRequest(p, request); if (p.interpretationPurpose && v.equal(p.interpretationPurpose, request.purpose)) v.fail('outside_scope');
       if (time() >= request.expiresAt || request.expiresAt > p.expiresAt || (p.budget && request.expiresAt > p.budget.expiresAt)) v.fail('expired');
       if (request.intent === 'accept_obligation') return { work: null, receiptId: request.requestId };
-      const w: T.WorkAuthority = { id: uid(), mode: 'work', readLimit: request.readLimit ?? p.budget?.ceiling.reads ?? 0, ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
+      const w: T.WorkAuthority = { id: uid(), mode: 'work', readLimit: request.readLimit ?? readCeiling(p), ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request: clone(request), createdAt: time(), expiresAt: request.expiresAt };
       if (!options.catalogs.allows(clone(w), null)) v.fail('outside_scope');
       ledger.run('INSERT INTO works(id,json) VALUES (?,?)', w.id, v.canonical(w)); return { work: w, receiptId: request.requestId };
     }); }); },
@@ -421,7 +450,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           current.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
           current.fences.forEach(f => currentRef(f.kind, f.ref));
           if (!options.catalogs.allows(clone(work), clone(current))) v.fail('outside_scope');
-          budgetCheck(start.reservation!.upperBound, true, true);
+          budgetCheck(start.reservation!.upperBound, true, true, undefined, work);
           if (readCalls >= Math.min(start.reservation!.upperBound.calls, start.reservation!.upperBound.reads)) v.fail('read_bound_exhausted');
           readCalls++;
         }); } });
@@ -459,7 +488,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (time() >= c.expiresAt) v.fail('expired'); checkRead(w, c.input);
     if (consume) {
       if (row.dispatched || row.observation) v.fail('already_claimed');
-      budgetCheck(c.input.upperBound, true);
+      budgetCheck(c.input.upperBound, true, false, undefined, w);
       const reservation = parse<T.Reservation>(ledger.get('SELECT json FROM reservations WHERE id=?', c.reservationId));
       if (!reservation || reservation.transportSettled || !v.equal(reservation.upperBound, c.input.upperBound)) v.fail('reservation_not_found');
       ledger.run('UPDATE read_claims SET dispatched=1 WHERE id=?', id);
