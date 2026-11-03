@@ -28,6 +28,8 @@ In **Manage → Websites Jit may read**:
 
 When a task needs a website that is not on the list, the agent receives `website_not_approved` and the conversation shows **Add this website to Jit's list**.
 
+On every request the controller also resolves the website's name once and connects only to the address it checked ([BROW15-03 #386](https://github.com/chayapats/jit/issues/386)). If any address of an approved name is on this machine or a private network (loopback, `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, link-local and cloud metadata such as `169.254.169.254`, IPv6 local and mapped addresses), the request is refused with `website_address_not_public` before anything is sent; a name that cannot be resolved gives `request_unavailable`. There is no setting to allow private addresses. Proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`) do not apply to these requests.
+
 ## Failures
 
 | Code | Meaning | Next step |
@@ -56,4 +58,4 @@ When a task needs a website that is not on the list, the agent receives `website
 2. Add a public website, then ask Jit in a conversation to read one of its pages; the reply uses that page's content.
 3. Ask Jit to read a page of a website that is not on the list; it reports that the website is not approved and the conversation offers adding it.
 
-Deterministic coverage: `bun test tests/s15-browser-provisioning.test.ts tests/s15-browser-sites.test.ts tests/s15-composition-browser.test.ts tests/s15-web-websites.test.ts tests/s15-installer-browser.test.ts`.
+Deterministic coverage: `bun test tests/s15-browser-provisioning.test.ts tests/s15-browser-sites.test.ts tests/s15-browser-egress.test.ts tests/s15-composition-browser.test.ts tests/s15-web-websites.test.ts tests/s15-installer-browser.test.ts`.
