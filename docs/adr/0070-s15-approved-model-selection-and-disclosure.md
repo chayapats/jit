@@ -27,8 +27,8 @@ Consequences:
 - MG15-P01 and the per-send charge part of MODEL15-FZ03/FZ04 are supported, with deterministic and packed-consumer evidence. Refusals send nothing, are never retried and keep Jit's own refusal codes.
 - MG15-P02 supports exact pins and sent-control evidence. Provider-reported effort is still metadata, not proof of computation.
 - MG15-P03 supports output-token caps only. Token caps are not money: metered spend is the configured per-send upper bound, and subscription spend stays `cost_bound_unknown`.
-- Each step lists the account catalog once more. That costs one catalog request per step and keeps evidence bound to the current credential owner.
-- An auth-retry resend is a separate charged send, so a one-call interpretation refuses its resend; the owner retries.
+- Listed catalog choices are cached per process and credential owner, so a step completes after token expiry through Schway's renewal. The cache is dropped after an observed sign-in or logout, a Schway `invalid-input` for a stale choice, or a provider rejection. Listing failures surface their real status (for example `route_needs_login`). A fresh process after expiry needs schway#455's inference-free renewal before it can list. The S15 composition has no sign-in event yet, so an account switch Jit cannot observe is caught only by Schway's owner binding or a provider rejection.
+- An auth-retry resend is a separate charged send, so a one-call interpretation refuses its resend with `auth_retry_refused` and keeps usage evidence; the owner retries. The CHAT and GitHub VM coding runtimes authorize each send but pin no effort or output cap; MODEL15 `runStep` is the governed path for those controls.
 - The schway#428 credential lock imposes an upgrade fence: Jit installs and Schway CLIs that share a service identity must upgrade together.
 
 ## Historical proposal
