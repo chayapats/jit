@@ -23,16 +23,20 @@ export interface ModelRunLimits { turns: number; attempts: number; activeMs: num
 /** Each step preserves original decisions and source labels in strict context. Tools are trusted scoped
  * closures whose owning services guard actual effects; selection confers no tool/effect permission. */
 export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string }
-/** One physical provider send that Schway presented to Jit's synchronous `authorizeDispatch` and Jit
- * authorized, with its own nonrefundable POLICY reservation. Credential-free: the body hash and length prove
- * which bytes were authorized, not that the provider received or billed them. */
+/** One physical provider send that Schway presented to Jit's synchronous `authorizeDispatch`. An authorized
+ * send holds its own nonrefundable POLICY reservation; a refused one carries `refusal` (Jit's code), never left
+ * the process and holds no reservation unless it was refused after reserving. Credential-free: the body hash
+ * and length prove which bytes were presented, not that the provider received or billed them. */
 export interface ModelDispatchRecord {
-  reservationId: string; kind: 'initial' | 'auth-retry'; sequence: number; bodySha256: string; bodyBytes: number;
+  reservationId: string | null; kind: 'initial' | 'auth-retry'; sequence: number; bodySha256: string; bodyBytes: number;
   /** Requested level after the pin and the exact `reasoning.effort` wire value the body carries. */
   effort: { requested: ThinkingLevel | null; sent: string | null };
   /** Exact `max_output_tokens` the body carries; null when it carries none (Codex). */
   outputCap: { sent: number | null };
+  /** Time Jit decided (authorized or refused) this send. */
   authorizedAt: number;
+  /** Jit refusal code when the send was refused; absent when authorized. */
+  refusal?: string;
 }
 /** Exact Schway route-model controls pinned for one step from a choice listed in the same process for the
  * same credential owner. Schway refuses before I/O any send whose body cannot carry them. */
@@ -57,11 +61,13 @@ export interface ModelSelectionRecord {
   /** `attempts` holds Schway's per-attempt requested/sent/reported effort (null when an attempt sent nothing
    * observable); `reported` is provider metadata, never proof of internal computation. Absent before MODEL15-02. */
   effort: { requested: string; evidence: ApprovedModelRoute['effortEvidence']; providerConfirmed: false; attempts?: (HostAttemptEffort | null)[] };
-  /** Every physical send of a route model, including adapter auth-retry resends, in authorization order.
-   * null: a scripted host-supplied model whose sends Schway cannot observe or authorize. */
+  /** Every physical send of a route model presented to the authorizer, including adapter auth-retry resends and
+   * refused sends (marked `refusal`), in decision order. null: a scripted host-supplied model whose sends Schway
+   * cannot observe or authorize. */
   physicalDispatches: ModelDispatchRecord[] | null;
   /** Exact Schway provider-request counts for the step's run; null when unobservable (scripted model or a
-   * refused call). When exact, initial plus auth-retry sends equal `physicalDispatches.length`. Absent before MODEL15-02. */
+   * refused call). When exact, initial plus auth-retry sends equal the sends Jit admitted and reserved, otherwise
+   * the output is withheld (`usage_invalid`). Absent before MODEL15-02. */
   providerRequests?: HostProviderRequests | null;
   /** Pinned route controls; null for a scripted model. Absent before MODEL15-02. */
   controls?: ModelRouteControls | null;
@@ -109,5 +115,8 @@ export interface ModelService {
   reconcile(owner: import('../policy').OwnerActor, recordId: string): ModelSelectionRecord;
   publish(actor: WorkActor, stepId: string, consume: (text: string) => void): void;
   project(owner: import('../policy').OwnerActor, workId?: string): ModelBudgetView;
+  /** Drop cached catalog evidence for one route (or all) after an observed sign-in, logout or account change;
+   * the next step lists afresh. No credential is read or written. */
+  forgetRouteCatalog(route?: ApprovedModelRoute['provider']): void;
   close(): void;
 }

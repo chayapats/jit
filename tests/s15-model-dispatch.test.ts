@@ -81,14 +81,17 @@ test('a cancelled step aborts its held catalog request instead of leaving it in 
   expect(record.code).toBe('cancelled'); expect(catalogSignal!.aborted).toBe(true); expect(t.bodies).toHaveLength(0);
 });
 
-test('an exhausted call allowance at the auth-retry refuses the resend: one inference request, no retry, Jit code', async () => {
+test('an exhausted call allowance at the auth-retry refuses the resend: auth_retry_refused, refused evidence, no retry', async () => {
   let calls = 0; const hooks: ModelStepHooks = { beforeCall() { if (++calls > 1) throw new AppError('budget_exhausted'); } };
   const t = routeTransport('grok', { responses: [401, 'ok', 'ok'] }), { f, source, service } = setup('grok', 'metered', t, { limits: { turns: 4, attempts: 3, activeMs: 10000, outputBytes: 10000, contextWindow: 32768, inputChars: 65536 } });
   const record = await service.runStep(source.actor!, step(), undefined, hooks);
   // The renewal happened, but the refused resend never left the process and Schway did not retry it.
   expect(t.bodies).toHaveLength(1); expect(t.renewals).toHaveLength(1); expect(calls).toBe(2);
-  expect(record).toMatchObject({ state: 'reconcile_only', code: 'budget_exhausted', output: null });
-  expect(record.physicalDispatches!.map(d => d.kind)).toEqual(['initial']);
+  // Distinct from a real exhausted allowance: the refused resend is recorded with its own cause and no reservation.
+  expect(record).toMatchObject({ state: 'reconcile_only', code: 'auth_retry_refused', output: null });
+  expect(record.physicalDispatches!.map(d => [d.kind, d.sequence, d.reservationId === null, d.refusal ?? null]))
+    .toEqual([['initial', 1, false, null], ['auth-retry', 2, true, 'budget_exhausted']]);
+  expect(record.physicalDispatches![1]!.bodySha256).toBe(sha256(t.bodies[0]!));
   expect(record.providerRequests).toEqual({ initialSends: 1, authRetrySends: 0, renewalRequests: 1 });
   expect(f.policy.control.reservations(source.authority!.id)).toHaveLength(1);
 });
@@ -100,7 +103,8 @@ test('a claim revoked between plan and dispatch is refused inside authorizeDispa
   t.onFirstReadAfterCatalog(() => { f.policy.owner.revoke(f.owner, 'revoke_dispatch', { kind: 'work', id: source.authority!.id }); revoked = true; });
   const record = await service.runStep(source.actor!, step());
   expect(revoked).toBe(true); expect(t.bodies).toHaveLength(0);
-  expect(record.session).not.toBeNull(); expect(record.physicalDispatches).toEqual([]); expect(record.reservations).toEqual([]);
+  expect(record.session).not.toBeNull(); expect(record.reservations).toEqual([]);
+  expect(record.physicalDispatches).toEqual([expect.objectContaining({ kind: 'initial', sequence: 1, reservationId: null, refusal: 'authority_revoked' })]);
   // The route model saw the call (counts are exact, not null) and nothing was sent or counted.
   expect(record.providerRequests).toEqual({ initialSends: 0, authRetrySends: 0, renewalRequests: 0 });
   expect(record).toMatchObject({ state: 'failed', code: 'authority_revoked', output: null });
@@ -115,15 +119,17 @@ test('effort: a listed level is pinned exactly; an unlisted level is refused bef
   expect(f.policy.control.reservations()).toEqual([]);
 });
 
-test('catalogModel: each step re-lists, so an account change after sign-in is honored, and the pin is exact', async () => {
+test('catalogModel: choices are cached per process and owner, and an observed sign-in re-lists', async () => {
   const t = routeTransport('grok'), { source, service } = setup('grok', 'subscription', t);
   const first = await service.runStep(source.actor!, step('one'));
   expect(first).toMatchObject({ state: 'completed', controls: { effort: { level: 'low', sent: 'low', evidence: 'account-catalog' }, maxOutputTokens: null, cost: 'cost_bound_unknown' } });
   expect(first.physicalDispatches!.map(d => d.effort)).toEqual([{ requested: 'low', sent: 'low' }]);
-  t.levels = ['high'];
-  const second = await service.runStep(source.actor!, step('two'));
-  expect(second).toMatchObject({ state: 'failed', code: 'effort_unsupported' });
-  expect(t.catalogs).toHaveLength(2); expect(t.bodies).toHaveLength(1);
+  expect(await service.runStep(source.actor!, step('two'))).toMatchObject({ state: 'completed' });
+  expect(t.catalogs).toHaveLength(1);
+  // An observed sign-in to an account with other levels drops the cache; the next step lists that account.
+  t.levels = ['high']; service.forgetRouteCatalog('grok');
+  expect(await service.runStep(source.actor!, step('three'))).toMatchObject({ state: 'failed', code: 'effort_unsupported' });
+  expect(t.catalogs).toHaveLength(2); expect(t.bodies).toHaveLength(2);
 });
 
 test('public contract: catalogModel must come from the same credential owner; no catalogModel plus thinking is refused before I/O', async () => {
@@ -185,10 +191,11 @@ test('providerRequests: concurrent steps sharing a credential lifecycle count on
   const a = f.source('a'), b = f.source('b');
   const service = openModelService({ ...f.modelOptions(), clock: { ...f.clock, async sleep(ms, signal) { if (ms >= 10000) return f.clock.sleep(ms, signal); f.advance(ms); } }, routeAuth: { lifecycle, fetch: t.fetch } });
   cleanups.push(() => service.close());
-  // A's initial send is rejected and A starts the lifecycle's renewal; B then reads credentials while it is in flight.
+  // A's initial send is rejected and A starts the lifecycle's renewal; B (reusing A's cached catalog choice)
+  // then reads credentials while that renewal is in flight.
   const first = service.runStep(a.actor!, step('a'));
   await renewing.promise;
-  t.onFirstReadAfterCatalog(() => joined.resolve());
+  t.onNextRead(() => joined.resolve());
   const second = service.runStep(b.actor!, step('b'));
   await joined.promise; release.resolve();
   const [one, two] = await Promise.all([first, second]);
@@ -198,6 +205,7 @@ test('providerRequests: concurrent steps sharing a credential lifecycle count on
   expect(one.providerRequests).toEqual({ initialSends: 1, authRetrySends: 1, renewalRequests: 1 });
   expect(two.providerRequests).toEqual({ initialSends: 1, authRetrySends: 0, renewalRequests: 0 });
   expect(one.physicalDispatches!.map(d => d.kind)).toEqual(['initial', 'auth-retry']); expect(two.physicalDispatches!.map(d => d.kind)).toEqual(['initial']);
+  expect(t.catalogs).toHaveLength(1);
   await lifecycle.close();
 });
 
@@ -238,4 +246,109 @@ test('refusal identity: a thrown authorizer error is chained as cause, recognize
     expect(isDispatchRefused(caught)).toBe(true); expect((caught as Error).cause).toBe(own); expect(t.bodies).toHaveLength(0);
     expect(isDispatchRefused(new Error((caught as Error).message))).toBe(false); expect(isDispatchRefused(new Error('wrapped', { cause: caught }))).toBe(false);
   } finally { await host.close(); }
+});
+
+test('B1 expiry: a cached choice completes through renewal after the access token expires', async () => {
+  const t = routeTransport('grok'), { source, service } = setup('grok', 'subscription', t);
+  expect(await service.runStep(source.actor!, step('one'))).toMatchObject({ state: 'completed' });
+  t.expire();
+  const record = await service.runStep(source.actor!, step('two'));
+  expect(record).toMatchObject({ state: 'completed', code: null, providerRequests: { initialSends: 1, authRetrySends: 0, renewalRequests: 1 } });
+  expect(t.catalogs).toHaveLength(1); expect(t.renewals).toHaveLength(1); expect(t.bodies).toHaveLength(2);
+});
+
+test('B1 expiry: a fresh process with an expired token reports route_needs_login without renewal or inference', async () => {
+  const t = routeTransport('grok'); t.expire();
+  const { f, source, service } = setup('grok', 'subscription', t);
+  const record = await service.runStep(source.actor!, step());
+  // Listing never renews; schway#455 will let a fresh process renew before listing.
+  expect(record).toMatchObject({ state: 'failed', code: 'route_needs_login', reservations: [], physicalDispatches: [] });
+  expect(t.renewals).toHaveLength(0); expect(t.bodies).toHaveLength(0); expect(f.policy.control.reservations()).toEqual([]);
+});
+
+test('B1 status: an unavailable secure store surfaces route_store_unavailable, not route_unavailable', async () => {
+  const t = routeTransport('grok'); t.readsFail = true;
+  const { source, service } = setup('grok', 'subscription', t);
+  expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'failed', code: 'route_store_unavailable' });
+  expect(t.bodies).toHaveLength(0);
+});
+
+test('B1 provider rejection: a rejected resend surfaces the route status and drops the cached catalog', async () => {
+  const t = routeTransport('grok', { responses: [401, 401, 'ok'] }), { f, source, service } = setup('grok', 'subscription', t);
+  const rejected = await service.runStep(source.actor!, step('one'));
+  expect(rejected.state).toBe('reconcile_only'); expect(['route_rejected', 'route_needs_login']).toContain(rejected.code!);
+  expect(rejected.physicalDispatches!.map(d => d.kind)).toEqual(['initial', 'auth-retry']);
+  service.reconcile(f.owner, rejected.id);
+  expect(await service.runStep(source.actor!, step('two'))).toMatchObject({ state: 'completed' });
+  expect(t.catalogs).toHaveLength(2);
+});
+
+test('B1 owner binding: after a lifecycle logout and sign-in the cached choice is refused by Schway and listed once more', async () => {
+  const t = routeTransport('grok'), lifecycle = createHostCredentialLifecycle({ store: t.store });
+  const { source, service } = setup('grok', 'subscription', null, { routeAuth: { lifecycle, fetch: t.fetch } });
+  expect(await service.runStep(source.actor!, step('one'))).toMatchObject({ state: 'completed' });
+  await lifecycle.logout('grok'); t.signIn();
+  // The choice belongs to the previous credential epoch (a foreign owner now): createModel rejects it, Jit re-lists.
+  const record = await service.runStep(source.actor!, step('two'));
+  expect(record).toMatchObject({ state: 'completed', code: null });
+  expect(t.catalogs).toHaveLength(2); expect(t.bodies).toHaveLength(2);
+  await lifecycle.close();
+});
+
+/** A route model from a separate host, injected through Jit's scripted seam: Jit cannot authorize its sends. */
+async function unauthorizedRouteModel(transport: ReturnType<typeof routeTransport>, root: string, options: { effort?: 'low' | 'high'; authorize?: (dispatch: HostDispatch) => void } = {}) {
+  const listing = await listRouteModels({ route: 'grok', store: transport.store, fetch: transport.fetch });
+  if (listing.status !== 'listed') throw new Error('fixture listing failed');
+  const host = await createHost({ ...dirs(root), context: { policy: 'strict', systemPrompt: 'fixture', sections: [] }, tools: { policy: 'exact', definitions: [], hostedLookup: 'off' },
+    limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 4096, maxInputChars: 1024 }, auth: { route: 'grok', model: ROUTE_MODEL.grok, store: transport.store, fetch: transport.fetch } });
+  cleanups.push(() => { void host.close(); });
+  return host.auth!.createModel({ catalogModel: listing.models.find(m => m.id === ROUTE_MODEL.grok)!, effort: { level: options.effort ?? 'low', mode: 'exact' }, ...(options.authorize ? { authorizeDispatch: options.authorize } : {}) });
+}
+
+test('B3 usage_invalid: exact Schway counts that exceed the sends Jit admitted withhold the output', async () => {
+  const t = routeTransport('grok', { responses: [401, 'ok'] }), f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+  const inner = await unauthorizedRouteModel(t, `${f.root}/inner`);
+  const { source, service } = setup('grok', 'subscription', null, { scripted: () => inner });
+  const record = await service.runStep(source.actor!, step());
+  // Jit admitted one send per stream; Schway counted an initial send and its auth-retry resend.
+  expect(record.providerRequests).toEqual({ initialSends: 1, authRetrySends: 1, renewalRequests: 1 });
+  expect(record).toMatchObject({ state: 'reconcile_only', code: 'usage_invalid', output: null, reservations: [expect.any(String)] });
+});
+
+test('B3 route_control_refused: a body that cannot carry the pinned effort is refused by identity before I/O', async () => {
+  const t = routeTransport('grok'), f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+  const inner = await unauthorizedRouteModel(t, `${f.root}/inner`, { effort: 'high' });
+  const { source, service } = setup('grok', 'subscription', null, { scripted: () => inner });
+  expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'reconcile_only', code: 'route_control_refused', output: null });
+  expect(t.bodies).toHaveLength(0);
+});
+
+test('B3 dispatch_refused: a refusal that carries no Jit code is still recognized by identity', async () => {
+  const t = routeTransport('grok'), f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+  const inner = await unauthorizedRouteModel(t, `${f.root}/inner`, { authorize: () => { throw new Error('outside refusal'); } });
+  const { source, service } = setup('grok', 'subscription', null, { scripted: () => inner });
+  expect(await service.runStep(source.actor!, step())).toMatchObject({ state: 'reconcile_only', code: 'dispatch_refused', output: null });
+  expect(t.bodies).toHaveLength(0);
+});
+
+test('B3 effort_unproven: a provider-reported applied effort that contradicts the exact pin withholds the output', async () => {
+  const t = routeTransport('grok', { reported: 'high' }), { source, service } = setup('grok', 'subscription', t);
+  const record = await service.runStep(source.actor!, step());
+  expect(record.effort.attempts).toEqual([{ requested: 'low', sent: 'low', reported: 'high' }]);
+  expect(record).toMatchObject({ state: 'reconcile_only', code: 'effort_unproven', output: null });
+  const agreeing = routeTransport('grok', { reported: 'low' }), ok = setup('grok', 'subscription', agreeing);
+  expect(await ok.service.runStep(ok.source.actor!, step())).toMatchObject({ state: 'completed', effort: { attempts: [{ requested: 'low', sent: 'low', reported: 'low' }] } });
+});
+
+test('B3 refusal identity through Jit: provider text that copies the refusal wording is never treated as a refusal', async () => {
+  const probe = routeTransport('grok'), f = modelWorkFixture(); cleanups.push(() => f.cleanup());
+  const refusing = await unauthorizedRouteModel(probe, `${f.root}/probe`, { authorize: () => { throw new Error('probe'); } });
+  let wording = '';
+  try { for await (const _event of refusing.stream({ systemPrompt: 'fixture', context: [], items: [{ type: 'user', id: 'u', content: [{ type: 'text', text: 'hi' }] }], thinking: 'low' })) { /* drain */ } }
+  catch (error) { wording = (error as Error).message; }
+  expect(wording.length).toBeGreaterThan(0);
+  const t = routeTransport('grok', { responses: [{ status: 400, message: wording }] }), { source, service } = setup('grok', 'subscription', t);
+  const record = await service.runStep(source.actor!, step());
+  expect(record.code).not.toBe('dispatch_refused'); expect(record.state).toBe('reconcile_only');
+  expect(record.physicalDispatches!.map(d => d.refusal ?? null)).toEqual([null]); expect(t.bodies).toHaveLength(1);
 });

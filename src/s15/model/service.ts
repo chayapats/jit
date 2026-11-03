@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { createHost, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
+import { classifyAuthError, createHost, HostError, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostAuthStatusCode, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
 import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
@@ -44,6 +44,9 @@ async function bounded<T>(work: Promise<T>, clock: HostClock, ms: number, signal
   try { return await Promise.race([work, clock.sleep(ms, stop.signal).then(() => fail('route_unavailable'), () => fail(signal?.aborted ? 'cancelled' : 'route_unavailable'))]); }
   finally { signal?.removeEventListener('abort', abort); stop.abort(); }
 }
+/** Owner-visible codes for a route's listing or provider status; anything else is `route_unavailable`. */
+const ROUTE_STATUS_CODES: Partial<Record<HostAuthStatusCode, string>> = { 'needs-login': 'route_needs_login', 'store-unavailable': 'route_store_unavailable', 'invalid-store': 'route_store_invalid',
+  rejected: 'route_rejected', 'quota-exceeded': 'quota_exceeded', 'integration-unavailable': 'route_integration_unavailable' };
 /** One live model stream: its frozen request projection and the POLICY-reserved physical sends it made. */
 interface LiveStream { request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number; settled?: boolean }[] }
 function pins(value: ModelPins): void { exact(value, ['route', 'model', 'effort']); if (value.route !== null) ref(value.route); if (value.model !== null) ref(value.model); if (value.effort !== null && !levels.includes(value.effort)) fail('selection_pinned'); }
@@ -66,6 +69,25 @@ export function openModelService(options: ModelOptions): ModelService {
   const limits = clone(options.limits); Object.values(limits).forEach(value => nat(value, true));
   const routeAuth = options.routeAuth ?? {}; exact(routeAuth, [], ['store', 'lifecycle', 'fetch']);
   if (routeAuth.store && routeAuth.lifecycle) fail('invalid_shape');
+  /** Listed account choices per route for this process and this service's credential owner (`routeAuth`).
+   * Schway binds a choice to the process and owner that listed it, so the cache never crosses either. A cached
+   * choice lets a step complete after access-token expiry (Schway renews before sending), whereas a listing
+   * never renews. It is dropped after an observed sign-in/logout (`forgetRouteCatalog`), a `createModel`
+   * `invalid-input` (new credential epoch) or a provider rejection. */
+  const catalogs = new Map<ApprovedModelRoute['provider'], readonly HostModelChoice[]>();
+  /** The only fresh listing. A fresh process after token expiry reports `route_needs_login` until schway#455
+   * provides an inference-free renewal that can run here before listing. */
+  async function listChoices(route: ApprovedModelRoute['provider'], credentialWriteGuard: () => void, deadlineMs: number, signal?: AbortSignal): Promise<readonly HostModelChoice[]> {
+    const cached = catalogs.get(route); if (cached) return cached;
+    // The catalog fetch is aborted when the step is cancelled or times out, never left in flight.
+    const catalogAbort = new AbortController(), base: HostAuthFetch = (routeAuth as ModelRouteAuth).fetch ?? ((input, init) => fetch(input, init));
+    const catalogFetch: HostAuthFetch = (input, init) => base(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, catalogAbort.signal]) : catalogAbort.signal });
+    let listing: Awaited<ReturnType<typeof listRouteModels>>;
+    try { listing = await bounded(listRouteModels({ ...routeAuth, fetch: catalogFetch, route, credentialWriteGuard }), clock, deadlineMs, signal); }
+    finally { catalogAbort.abort(); }
+    if (listing.status !== 'listed') fail(ROUTE_STATUS_CODES[listing.status] ?? 'route_unavailable');
+    catalogs.set(route, listing.models); return listing.models;
+  }
   if (limits.turns > 64 || limits.attempts > 8 || limits.activeMs > 3600000 || limits.outputBytes > 32768) fail('invalid_limits');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a4d5135), clock = options.clock ?? defaultClock;
   const active = new Set<string>();
@@ -146,7 +168,7 @@ export function openModelService(options: ModelOptions): ModelService {
           ...(options.scripted ? {} : { auth: { ...routeAuth, route: record.route.provider, model: record.route.modelId, credentialWriteGuard: () => guard(actor, record) } }),
         });
         guard(actor, record);
-        let ordinal = 0, streamCode: string | null = null, live: LiveStream | null = null;
+        let ordinal = 0, admitted = 0, streamCode: string | null = null, live: LiveStream | null = null;
         const coded = (error: unknown) => { if (error instanceof PolicyError || error instanceof AppError) streamCode = error.code; };
         const measure = () => {
           record.usage = summarizeReservations(options.policy.control.reservations(record.workId).filter(r => record.reservations.includes(r.id))).measured;
@@ -154,7 +176,7 @@ export function openModelService(options: ModelOptions): ModelService {
         };
         /** One physical send, synchronously: current authority, the caller's ceiling, a nonrefundable POLICY
          * reservation and its single-use dispatch guard. Route models run this inside Schway's authorizer. */
-        const admit = (stream: LiveStream, dispatch: Omit<ModelDispatchRecord, 'reservationId' | 'authorizedAt'> | null): void => {
+        const admit = (stream: LiveStream, dispatch: Omit<ModelDispatchRecord, 'reservationId' | 'authorizedAt' | 'refusal'> | null, reserved?: (id: string) => void): void => {
           if (ordinal >= 64) fail('budget_exhausted');
           // An auth-retry resend means the rejected send has ended: settle it (nonrefundable, one call) before the
           // resend reserves, so it never holds a capacity slot the resend needs.
@@ -166,11 +188,11 @@ export function openModelService(options: ModelOptions): ModelService {
           guard(actor, record); if (signal?.aborted) fail('cancelled');
           hooks?.beforeCall();
           const reservation = options.policy.work.reserveModelCall(actor, { requestId: 'mc_' + digest('s15.model.call.v1', { step: record.id, ordinal: ordinal++ }), selection: record.route.selection, upperBound });
-          const sample = { reservationId: reservation.id, usage: null as ModelUsage | null };
+          const sample = { reservationId: reservation.id, usage: null as ModelUsage | null }; reserved?.(reservation.id);
           record.reservations.push(reservation.id); record.tokenSamples.push(sample); save();
           try { guard(actor, record); options.disclosure?.guard(options.policy.work.guard(actor), record.route, stream.request); options.policy.work.guardReservation(actor, reservation.id); }
           catch (error) { options.policy.control.settleReservation(reservation.id, { ...unknownUsage(), calls: 0, attempts: 0, activeMs: 0 }, true); measure(); save(); throw error; }
-          stream.sends.push({ reservationId: reservation.id, sample, started: elapsed() });
+          stream.sends.push({ reservationId: reservation.id, sample, started: elapsed() }); admitted++;
           if (dispatch) record.physicalDispatches!.push({ reservationId: reservation.id, ...dispatch, authorizedAt: time() });
           save();
         };
@@ -184,34 +206,46 @@ export function openModelService(options: ModelOptions): ModelService {
           });
           measure(); save();
         };
-        let selected: Model;
+        let selected: Model, controls: ModelRouteControls | null = null;
+        const routeSelection = { route: record.route.provider, model: record.route.modelId };
+        const authorizeDispatch = (dispatch: HostDispatch): void => {
+          let reservationId: string | null = null;
+          const evidence = { kind: dispatch.kind, sequence: dispatch.sequence, bodySha256: dispatch.bodySha256, bodyBytes: dispatch.bodyBytes, effort: { requested: dispatch.effort.requested, sent: dispatch.effort.sent }, outputCap: { sent: dispatch.outputCap.sent } };
+          try {
+            const stream = live, pinned = controls; if (!stream || !pinned) fail('reconciliation_required');
+            if (dispatch.route !== record.route.provider || dispatch.provider !== provider || dispatch.model !== record.route.modelId) fail('wrong_model');
+            if (!['initial', 'auth-retry'].includes(dispatch.kind) || (dispatch.kind === 'initial') !== (stream.sends.length === 0) || dispatch.sequence !== stream.sends.length + 1) fail('invalid_shape');
+            if (!/^[0-9a-f]{64}$/.test(dispatch.bodySha256) || !Number.isSafeInteger(dispatch.bodyBytes) || dispatch.bodyBytes < 1) fail('invalid_shape');
+            if (dispatch.effort.requested !== pinned.effort.level || dispatch.effort.sent !== pinned.effort.sent) fail('effort_unproven');
+            if (pinned.maxOutputTokens !== null && dispatch.outputCap.sent !== pinned.maxOutputTokens) fail('cost_bound_unknown');
+            admit(stream, evidence, id => { reservationId = id; });
+          } catch (error) {
+            coded(error);
+            // The refused send never left the process; its evidence is kept, marked with Jit's own code.
+            record.physicalDispatches?.push({ reservationId, ...evidence, authorizedAt: time(), refusal: error instanceof PolicyError || error instanceof AppError ? error.code : 'dispatch_refused' }); save();
+            // A refused resend after an auth rejection is distinct from a refused first send or an exhausted allowance.
+            if (dispatch.kind === 'auth-retry') streamCode = 'auth_retry_refused';
+            throw error;
+          }
+        };
         if (options.scripted) selected = options.scripted(clone(record.route));
         else {
-          // A listed choice is bound to this process and credential owner, so each step lists afresh: a choice
-          // never outlives a sign-in, logout or account change. Listing reads the catalog without inference.
-          // The catalog fetch is aborted when the step is cancelled or times out, never left in flight.
-          const catalogAbort = new AbortController(), base: HostAuthFetch = (routeAuth as ModelRouteAuth).fetch ?? ((input, init) => fetch(input, init));
-          const catalogFetch: HostAuthFetch = (input, init) => base(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, catalogAbort.signal]) : catalogAbort.signal });
-          let listing: Awaited<ReturnType<typeof listRouteModels>>;
-          try { listing = await bounded(listRouteModels({ ...routeAuth, fetch: catalogFetch, route: record.route.provider, credentialWriteGuard: () => guard(actor, record) }), clock, Math.min(limits.activeMs, upperBound.activeMs), signal); }
-          finally { catalogAbort.abort(); }
-          guard(actor, record);
-          if (listing.status !== 'listed') fail(listing.status === 'quota-exceeded' ? 'quota_exceeded' : 'route_unavailable');
-          const choice = listing.models.find(model => model.id === record.route.modelId); if (!choice) fail('route_unavailable');
-          const controls = routeControls(record.route, choice); record.controls = controls; save();
-          const authorizeDispatch = (dispatch: HostDispatch): void => {
+          // Cached per process and credential owner; a choice Schway rejects as `invalid-input` (for example after a
+          // lifecycle logout started a new credential epoch) is dropped and listed once more.
+          for (let fresh = false; ; fresh = true) {
+            const choices = await listChoices(record.route.provider, () => guard(actor, record), Math.min(limits.activeMs, upperBound.activeMs), signal);
+            guard(actor, record);
+            const choice = choices.find(model => model.id === record.route.modelId); if (!choice) fail('route_unavailable');
+            const pinned = controls = routeControls(record.route, choice); record.controls = pinned; save();
             try {
-              const stream = live; if (!stream) fail('reconciliation_required');
-              if (dispatch.route !== record.route.provider || dispatch.provider !== provider || dispatch.model !== record.route.modelId) fail('wrong_model');
-              if (!['initial', 'auth-retry'].includes(dispatch.kind) || (dispatch.kind === 'initial') !== (stream.sends.length === 0) || dispatch.sequence !== stream.sends.length + 1) fail('invalid_shape');
-              if (!/^[0-9a-f]{64}$/.test(dispatch.bodySha256) || !Number.isSafeInteger(dispatch.bodyBytes) || dispatch.bodyBytes < 1) fail('invalid_shape');
-              if (dispatch.effort.requested !== controls.effort.level || dispatch.effort.sent !== controls.effort.sent) fail('effort_unproven');
-              if (controls.maxOutputTokens !== null && dispatch.outputCap.sent !== controls.maxOutputTokens) fail('cost_bound_unknown');
-              admit(stream, { kind: dispatch.kind, sequence: dispatch.sequence, bodySha256: dispatch.bodySha256, bodyBytes: dispatch.bodyBytes, effort: { requested: dispatch.effort.requested, sent: dispatch.effort.sent }, outputCap: { sent: dispatch.outputCap.sent } });
-            } catch (error) { coded(error); throw error; }
-          };
-          selected = await host.auth!.createModel({ authorizeDispatch, catalogModel: choice, effort: { level: controls.effort.level, mode: 'exact' },
-            ...(controls.maxOutputTokens === null ? {} : { maxOutputTokens: controls.maxOutputTokens, requireOutputCap: true }) });
+              selected = await host.auth!.createModel({ authorizeDispatch, catalogModel: choice, effort: { level: pinned.effort.level, mode: 'exact' },
+                ...(pinned.maxOutputTokens === null ? {} : { maxOutputTokens: pinned.maxOutputTokens, requireOutputCap: true }) });
+              break;
+            } catch (error) {
+              if (fresh || !(error instanceof HostError && error.code === 'invalid-input')) throw error;
+              catalogs.delete(record.route.provider);
+            }
+          }
         }
         guard(actor, record);
         if (selected.id !== record.route.modelId || selected.provider !== provider) fail('wrong_model');
@@ -242,6 +276,12 @@ export function openModelService(options: ModelOptions): ModelService {
             // Refusals are rethrown unchanged (identity preserved); their wording is never copied.
             if (isRouteControlRefused(error)) streamCode = 'route_control_refused';
             else if (isDispatchRefused(error)) streamCode ??= 'dispatch_refused';
+            else if (!options.scripted && !streamCode && !signal?.aborted) {
+              // A provider rejection drops the cached catalog evidence and surfaces the route's own status.
+              const status = classifyAuthError(error, routeSelection).status;
+              if (['rejected', 'needs-login', 'model-unavailable'].includes(status)) catalogs.delete(record.route.provider);
+              streamCode = ROUTE_STATUS_CODES[status] ?? null;
+            }
             throw error;
           } finally { if (live === stream) live = null; settle(stream, complete, outputBytes); }
         } };
@@ -258,9 +298,12 @@ export function openModelService(options: ModelOptions): ModelService {
             record.state = record.reservations.length ? 'reconcile_only' : ['finite_budget_required', 'budget_exhausted', 'capacity_busy', 'cost_unknown'].includes(record.code) ? 'held' : 'failed';
           }
           else {
-            // Exact Schway counts must equal the sends Jit authorized and reserved; otherwise withhold the output.
+            // Exact Schway counts must equal the sends Jit admitted and reserved; otherwise withhold the output.
             const requests = record.providerRequests;
-            if (record.physicalDispatches && requests && requests.initialSends + requests.authRetrySends !== record.physicalDispatches.length) fail('usage_invalid');
+            if (requests && requests.initialSends + requests.authRetrySends !== admitted) fail('usage_invalid');
+            // Schway's per-attempt evidence and any provider-reported applied effort must match the exact pin.
+            const pinned = controls;
+            if (pinned && result.usage.attempts.some(({ effort }) => effort && (effort.requested !== pinned.effort.level || effort.sent !== pinned.effort.sent || (effort.reported !== null && effort.reported !== pinned.effort.sent)))) fail('effort_unproven');
             const output = session.readResult(result.result).content.filter(p => p.type === 'text').map(p => p.text).join('\n'); string(output, limits.outputBytes); canonical(output);
             record.output = output; record.state = 'completed'; record.code = null;
           }
@@ -300,6 +343,7 @@ export function openModelService(options: ModelOptions): ModelService {
           return { workId, pins: pin };
         }), selections: records.map(({ output, ...safe }) => safe), unsettled: reservations.filter(r => !r.transportSettled).length };
     },
+    forgetRouteCatalog(route) { if (route === undefined) catalogs.clear(); else catalogs.delete(route); },
     close() { if (active.size) fail('capacity_busy'); journal.close(); },
   };
 }
