@@ -95,7 +95,7 @@ export interface VmLocalManagement extends VmManagement {
 export function isVmLocalManagement(manager: VmManagement | undefined): manager is VmLocalManagement {
   return !!manager && typeof (manager as Partial<VmLocalManagement>).provision === "function" && typeof (manager as Partial<VmLocalManagement>).endpoint === "function";
 }
-interface QemuState { provisioned: boolean; desired: "running" | "stopped"; pid: number | null; startTicks: string | null }
+interface QemuState { provisioned: boolean; desired: "running" | "stopped"; pid: number | null; startTicks: string | null; appliedDiskGiB: number | null }
 const wait = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((done, fail) => {
   const timer = setTimeout(done, milliseconds);
   signal?.addEventListener("abort", () => { clearTimeout(timer); fail(new DOMException("Aborted", "AbortError")); }, { once: true });
@@ -140,15 +140,17 @@ export class QemuVmManagement implements VmLocalManagement {
   }
   /** Resource values for the next start. Editing them never changes a running guest. */
   get resources(): LocalVmResources { return { ...this.#resources }; }
+  /** Disk size (GiB) the image actually has after the last protected create/resize; 0 before provisioning. */
+  get appliedDiskGiB(): number { return this.state().appliedDiskGiB ?? 0; }
   set resources(value: LocalVmResources) { for (const v of [value.cpus, value.memoryMiB, value.diskGiB]) vmInteger(v, 4_194_304); this.#resources = { ...value }; }
   /** Pinned SSH endpoint: the loopback host-forward, generated client key and pre-generated guest host key. */
   endpoint(): VmEndpoint {
     return { host: "127.0.0.1", port: this.identity.sshPort, user: "jit", identityFile: join(this.machineDirectory, "client"), knownHostsFile: join(this.machineDirectory, "known_hosts") };
   }
   private state(): QemuState {
-    try { const value = JSON.parse(readFileSync(this.stateFile, "utf8")); if (value && typeof value === "object") return { provisioned: value.provisioned === true, desired: value.desired === "running" ? "running" : "stopped", pid: Number.isSafeInteger(value.pid) ? value.pid : null, startTicks: typeof value.startTicks === "string" ? value.startTicks : null }; }
+    try { const value = JSON.parse(readFileSync(this.stateFile, "utf8")); if (value && typeof value === "object") return { provisioned: value.provisioned === true, desired: value.desired === "running" ? "running" : "stopped", pid: Number.isSafeInteger(value.pid) ? value.pid : null, startTicks: typeof value.startTicks === "string" ? value.startTicks : null, appliedDiskGiB: Number.isSafeInteger(value.appliedDiskGiB) && value.appliedDiskGiB > 0 ? value.appliedDiskGiB : null }; }
     catch { /* No state means a never-provisioned, stopped VM. */ }
-    return { provisioned: false, desired: "stopped", pid: null, startTicks: null };
+    return { provisioned: false, desired: "stopped", pid: null, startTicks: null, appliedDiskGiB: null };
   }
   private saveState(update: Partial<QemuState>): void {
     const next = { ...this.state(), ...update }, temporary = `${this.stateFile}.${randomBytes(6).toString("hex")}`;
@@ -219,7 +221,7 @@ export class QemuVmManagement implements VmLocalManagement {
     const resources = this.#resources, info = await this.imageInfo(false);
     if (info.virtualSize < resources.diskGiB * GiB) await this.command([localVmTools.img, "resize", this.disk, `${resources.diskGiB}G`], 120_000);
     rmSync(join(this.machineDirectory, "qmp.sock"), { force: true });
-    this.saveState({ desired: "running", pid: null, startTicks: null });
+    this.saveState({ desired: "running", pid: null, startTicks: null, appliedDiskGiB: Math.max(resources.diskGiB, Math.floor(info.virtualSize / GiB)) });
     await this.command(["systemd-run", "--user", "--quiet", "--collect", `--unit=${this.unit}`, "--property=Type=exec", "--property=TimeoutStopSec=15", "--", ...qemuArgv(this.spec(resources))], 30_000, 65_536);
     let pid = 0;
     const running = await this.until(async () => {
@@ -376,16 +378,25 @@ export class QemuVmManagement implements VmLocalManagement {
       await this.command([localVmTools.img, "create", "-q", "-f", "qcow2", "-F", "qcow2", "-b", base, this.disk, `${this.#resources.diskGiB}G`], 120_000);
       const info = await this.imageInfo(false);
       if (info.format !== "qcow2" || info.backing !== base || info.virtualSize !== this.#resources.diskGiB * GiB) vmFail("vm_image_unverified");
+      this.saveState({ appliedDiskGiB: this.#resources.diskGiB });
       const client = await this.keygen(join(this.machineDirectory, "client"), "jit-working-vm");
       const hostFile = join(this.machineDirectory, "hostkey"), hostPublic = await this.keygen(hostFile, "jit-working-vm-host");
       writeFileSync(join(this.machineDirectory, "known_hosts"), `[127.0.0.1]:${this.identity.sshPort} ${hostPublic.split(" ").slice(0, 2).join(" ")}\n`, { mode: 0o600, flag: "wx" });
       try { await this.seed(client, hostPublic, readFileSync(hostFile, "utf8")); } finally { rmSync(hostFile, { force: true }); }
     }
-    if ((await this.inspect()).state === "stopped") await this.launch(options.signal);
+    // A guest this attempt started is stopped again if provisioning fails (host-key refusal, readiness,
+    // cancellation), so a failed setup never leaves an unregistered VM consuming the host.
+    const startedHere = (await this.inspect()).state === "stopped";
     const transport = new VmSshTransport(this.endpoint(), this.#run);
-    const status = await this.guest(transport, ["sudo", "-n", "python3", "-I", "-c", "import subprocess;r=subprocess.run(['cloud-init','status','--wait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode;print('jit-cloud-init:%d'%r)"], { timeoutMs: 900_000, ...(options.signal ? { signal: options.signal } : {}) });
-    if (!["jit-cloud-init:0", "jit-cloud-init:2"].includes(status.trim())) vmFail("vm_prerequisite_missing", 503);
-    this.saveState({ provisioned: true });
+    try {
+      if (startedHere) await this.launch(options.signal);
+      const status = await this.guest(transport, ["sudo", "-n", "python3", "-I", "-c", "import subprocess;r=subprocess.run(['cloud-init','status','--wait'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode;print('jit-cloud-init:%d'%r)"], { timeoutMs: 900_000, ...(options.signal ? { signal: options.signal } : {}) });
+      if (!["jit-cloud-init:0", "jit-cloud-init:2"].includes(status.trim())) vmFail("vm_prerequisite_missing", 503);
+      this.saveState({ provisioned: true });
+    } catch (error) {
+      if (startedHere) { try { await this.stop(); } catch { vmFail("vm_stop_unconfirmed"); } }
+      throw error;
+    }
     let docker = false;
     if (fresh && options.lease) {
       // Lease expiry is judged by the proxy's own wall clock, like work-session leases.

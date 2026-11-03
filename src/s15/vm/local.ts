@@ -53,15 +53,19 @@ export function defaultLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "m
 /**
  * Validates an owner edit. CPUs stay within the host count, memory leaves at least 2 GiB to the controller
  * (multiples of 256 MiB), and disks only grow, within 2 TiB and the free space left after the installer reserve.
+ * `appliedDiskGiB` is the size the image actually has; all outstanding growth beyond it must fit.
  */
-export function validateLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "memoryBytes" | "diskTotalBytes" | "diskFreeBytes">, value: unknown, current?: LocalVmResources): LocalVmResources {
+export function validateLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "memoryBytes" | "diskTotalBytes" | "diskFreeBytes">, value: unknown, current?: LocalVmResources, appliedDiskGiB?: number): LocalVmResources {
   if (!value || typeof value !== "object" || Array.isArray(value)) vmFail("vm_limit_invalid", 400);
   const r = value as Record<string, unknown>;
   if (Object.keys(r).sort().join() !== "cpus,diskGiB,memoryMiB") vmFail("vm_limit_invalid", 400);
   vmInteger(r.cpus, host.cpus); vmInteger(r.memoryMiB, Math.floor(host.memoryBytes / MiB) - 2048, localVmMinimum.memoryMiB);
   vmInteger(r.diskGiB, 2048, Math.max(localVmMinimum.diskGiB, current?.diskGiB ?? 0));
   if ((r.memoryMiB as number) % 256) vmFail("vm_limit_invalid", 400);
-  const growth = ((r.diskGiB as number) - (current?.diskGiB ?? 0)) * GiB;
+  // Growth is measured from the disk size actually applied to the image, so earlier pending (not yet applied)
+  // edits cannot be stacked past the free space left after the reserve.
+  const applied = appliedDiskGiB ?? current?.diskGiB ?? 0;
+  const growth = ((r.diskGiB as number) - applied) * GiB;
   if (growth > 0 && host.diskFreeBytes - localVmDiskReserve(host.diskTotalBytes) < growth) vmFail("vm_disk_insufficient", 422);
   return { cpus: r.cpus as number, memoryMiB: r.memoryMiB as number, diskGiB: r.diskGiB as number };
 }

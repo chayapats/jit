@@ -183,6 +183,9 @@ export async function runS15X64Evidence(argv = process.argv.slice(2)): Promise<v
     if (vm && report.status !== 'passed') try { writeFileSync(join(output, 'console.json'), JSON.stringify(await qmpExchange(join(vm.machineDirectory, 'qmp.sock'), [{ execute: 'ringbuf-read', arguments: { device: 'console', size: 1048576, format: 'utf8' } }], { timeoutMs: 5000 })), { mode: 0o600 }); } catch { /* No running console. */ }
     try { if (managerId) { await local().stop(); report.finalVmState = (await local().inspect()).state; } }
     catch (error) { report.finalVmState = 'stop_failed'; report.stopError = error instanceof Error ? error.message : 'unknown'; }
+    // A failed case or a guest left running (failed cleanup) fails both the report and the exit code.
+    if (report.finalVmState === 'stop_failed' || (managerId && report.finalVmState !== 'stopped')) report.status = 'failed';
+    if (report.status !== 'passed') process.exitCode = 1;
     await service.close().catch(() => {});
     report.proxyDestinations = [...new Set(proxyLog.map(e => `${e.host}:${e.state}`))];
     report.finishedAt = new Date().toISOString();

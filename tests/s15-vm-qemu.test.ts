@@ -82,6 +82,13 @@ describe('verified image, keys and pinned host key', () => {
   test('a changed guest host key fails closed with vm_host_key_changed', async () => {
     const { h, m } = manager(); h.keyscanOverride = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherGuestHostKeyThatIsNotThePinnedOne0000000';
     await expect(m.provision()).rejects.toMatchObject({ code: 'vm_host_key_changed' });
+    // The guest this failed attempt started is stopped again: nothing unregistered keeps consuming the host.
+    expect([...h.units.values()].every(unit => !unit.active)).toBe(true);
+    expect((await m.inspect()).state).toBe('stopped');
+  });
+  test('a failed provisioning whose guest cannot be stopped surfaces vm_stop_unconfirmed instead of hiding it', async () => {
+    const { h, m } = manager(); h.keyscanOverride = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherGuestHostKeyThatIsNotThePinnedOne0000000'; h.stuck = true;
+    await expect(m.provision()).rejects.toMatchObject({ code: 'vm_stop_unconfirmed' });
   });
   test('Docker installs through one bounded provisioning proxy lease that is closed afterwards', async () => {
     const { h, m } = manager(); let closed = 0;
@@ -168,6 +175,10 @@ describe('default sizing', () => {
     expect(validateLocalVmResources(h, { cpus: 8, memoryMiB: 12288, diskGiB: 100 }, current)).toEqual({ cpus: 8, memoryMiB: 12288, diskGiB: 100 });
     for (const bad of [{ cpus: 11, memoryMiB: 9216, diskGiB: 60 }, { cpus: 5, memoryMiB: 19456, diskGiB: 60 }, { cpus: 5, memoryMiB: 9000, diskGiB: 60 }, { cpus: 5, memoryMiB: 9216, diskGiB: 40 }, { cpus: 5, memoryMiB: 9216, diskGiB: 60, extra: 1 }]) expect(() => validateLocalVmResources(h, bad, current)).toThrow();
     expect(() => validateLocalVmResources(h, { cpus: 5, memoryMiB: 9216, diskGiB: 200 }, current)).toThrow('vm_disk_insufficient');
+    // Pending edits cannot be stacked: growth is measured from the disk size actually applied (60 GiB here).
+    const pending = { cpus: 5, memoryMiB: 9216, diskGiB: 150 };
+    expect(validateLocalVmResources(h, { cpus: 5, memoryMiB: 9216, diskGiB: 156 }, pending, 60)).toEqual({ cpus: 5, memoryMiB: 9216, diskGiB: 156 });
+    expect(() => validateLocalVmResources(h, { cpus: 5, memoryMiB: 9216, diskGiB: 157 }, pending, 60)).toThrow('vm_disk_insufficient');
   });
   test('without KVM the host is reported unsupported so setup can fall back to owner-supplied enrollment', () => {
     const h = host(); h.facts.kvm = false; expect(detectLocalVmHost(h.root, h.probe).kvm).toBe(false);

@@ -72,7 +72,7 @@ export class VmManagers extends Map<string, VmManagement> {
   /** Owner edit of CPU/RAM/disk for the next protected start. Disks only grow; a running guest is unchanged. */
   setResources(actor: object, managerId: string, value: unknown): LocalVmResourceView {
     this.options.requireOwner(actor); const manager = this.local(managerId);
-    const resources = validateLocalVmResources(this.localHost(), value, manager.resources);
+    const resources = validateLocalVmResources(this.localHost(), value, manager.resources, manager.appliedDiskGiB);
     this.options.store.transaction(() => {
       this.options.requireOwner(actor);
       const row = this.options.store.db.query<{ data: string }, [string]>("SELECT data FROM vm_managers WHERE id=?").get(managerId);
