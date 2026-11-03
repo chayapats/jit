@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { s15MemoryPort, s15TeamPort } from "../src/s15/web";
+import { teamCandidatesHash, type TeamResource } from "../src/s15/team";
 import { teamMemoryFixture } from "./fixtures/s15-team-memory";
 import { webFixture, type WebFixture } from "./fixtures/s15-web";
 
@@ -40,4 +41,34 @@ test("memory page reads MemoryService claims and corrects and forgets the exact 
   expect(page).toContain("สิ่งที่โมเดลเคยเห็นไปแล้วเรียกคืนไม่ได้");
   expect((await web.post("/s15/forms/memory/forget", { claimId: current.id, claimRevision: String(current.revision), filter: "all" })).status).toBe(303);
   expect(tm.memory.view(tm.f.owner).claims.find(claim => claim.id === current.id)?.lifecycle).toBe("forgotten");
+});
+
+test("F12 registration lists exactly the unregistered resources and registers them only on the owner's confirmation", async () => {
+  const tm = teamMemoryFixture(); cleanups.push(() => tm.cleanup());
+  const owner = () => tm.f.owner;
+  // Candidates as a host would derive them; the label is untrusted text and must be escaped.
+  let candidates: TeamResource[] = [tm.registration("computer_new", { label: "<b>VM</b> & co", revision: 3, purposes: ["purpose"] })];
+  const port = { ...s15TeamPort(tm.team, owner), pending: () => ({ items: candidates, hash: teamCandidatesHash(candidates) }), register: (_actor: unknown, requestId: string, hash: string) => { tm.team.registerReviewed(owner(), requestId, hash, () => candidates); } };
+  const web: WebFixture = webFixture(() => ({ team: port })); cleanups.push(() => web.cleanup());
+  const page = await (await web.get("/resources/accounts", { "accept-language": "en" })).text();
+  expect(page).toContain('<section class="s-stack s15-team-pending" aria-labelledby="s15-team-pending-resources"><h3 class="s-section-t" id="s15-team-pending-resources">Not available to the team yet</h3>');
+  expect(page).toContain("&lt;b&gt;VM&lt;/b&gt; &amp; co"); expect(page).not.toContain("<b><b>VM</b>");
+  expect(page).toContain("Revision 3"); expect(page).toContain('aria-describedby="s15-team-pending-resources-note">Make these 1 available to the team</button>');
+  const listHash = /name="listHash" value="([a-f0-9]{64})"/.exec(page)![1]!;
+  // The list changes between viewing and confirming: nothing is registered and the refusal is announced.
+  const viewed = candidates; candidates = [...viewed, tm.registration("extra")];
+  const refused = await web.post("/s15/forms/team/register", { listHash, return: "resources" }, { "accept-language": "en" });
+  expect(refused.status).toBe(409); const refusedHtml = await refused.text();
+  expect(refusedHtml).toContain('role="alert"'); expect(refusedHtml).toContain("The list changed while you were looking. Nothing was registered.");
+  expect(tm.team.currentResource("computer_new")).toBeNull(); expect(tm.team.currentResource("extra")).toBeNull();
+  candidates = viewed;
+  const ok = await web.post("/s15/forms/team/register", { listHash, return: "resources" });
+  expect(ok.status).toBe(303); expect(ok.headers.get("location")).toBe("/resources/accounts?team=registered#s15-res-team");
+  expect(tm.team.currentResource("computer_new")).toEqual({ ref: { id: "computer_new", revision: 3, generation: 1 }, active: true });
+  candidates = [];
+  const after = await (await web.get("/resources/accounts?team=registered")).text();
+  expect(after).toContain('<div role="status">'); expect(after).toContain("ทีมใช้รายการที่คุณยืนยันได้แล้ว"); expect(after).not.toContain('name="listHash"');
+  // Unknown return targets and malformed digests are refused before TEAM is called.
+  expect((await web.post("/s15/forms/team/register", { listHash, return: "elsewhere" })).status).toBe(404);
+  expect((await web.post("/s15/forms/team/register", { listHash: "x", return: "resources" })).status).toBe(400);
 });

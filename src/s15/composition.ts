@@ -15,7 +15,7 @@ import { GithubService, GithubStore, createGithubActionAdapter, createGithubConv
 import { openDisclosureService } from './disclosure';
 import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
 import type { ComposedDisclosure } from './disclosure/composition';
-import { TeamService, type DataScope, type TeamOptions } from './team';
+import { TeamService, teamCandidatesHash, type DataScope, type TeamOptions, type TeamResource } from './team';
 import { coordinateWorkingVm, reconcileVmLeases } from './team/vm';
 import { MemoryService, createConversationMemory } from './memory';
 import { createS15WebHandler, s15ConversationPort, s15ActionsPort, s15DutiesPort, s15RecurringPort, s15TeamPort, s15ReadinessFromGithub, s15AdoptionPort, type S15WebPorts } from './web';
@@ -200,12 +200,35 @@ export async function composeS15(options: S15CompositionOptions) {
       if (disclosure && options.disclosure) for (const source of options.disclosure.workSources(admitted.work)) disclosure.read(actor, source);
       return actor;
     };
+    // Explicit owner registration of TEAM resources (F1/F12). A fresh installation has none, but every
+    // work resource must be registered; nothing is registered until the owner confirms this exact list.
+    const composedResources = (): { ref: Ref; kind: TeamResource['kind']; label: string }[] => {
+      const known: { ref: Ref; kind: TeamResource['kind']; label: string }[] = [{ ref: options.vm.resource, kind: 'workspace', label: options.vm.id }];
+      if (options.browser) known.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.ownerUi?.site ?? options.browser.resource.id });
+      for (const r of options.github?.repositories ?? []) known.push({ ref: r.resource, kind: 'data', label: r.name });
+      for (const account of [options.google?.mailAccount, options.google?.calendarAccount]) { try { const a = account?.(); if (a) known.push({ ref: a.resource, kind: 'account', label: a.account }); } catch { /* Unavailable connection: not offered. */ } }
+      return known;
+    };
+    const teamCandidates = (owner: OwnerActor): TeamResource[] => {
+      const standing = policy.owner.current(owner) ?? options.proposedPolicy;
+      if (!standing) return [];
+      const known = composedResources();
+      return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index && !team.currentResource(ref.id)).map(ref => {
+        const rules = standing.rules.filter(rule => rule.mode !== 'deny' && rule.resources.some(r => r.id === ref.id));
+        const purposes = [...new Set((rules.length ? rules.flatMap(rule => rule.purposes) : standing.purposes.filter(p => p.id !== standing.interpretationPurpose?.id)).map(p => p.id))];
+        const match = known.find(item => item.ref.id === ref.id);
+        return { contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id };
+      });
+    };
+    const teamPort = { ...s15TeamPort<OwnerActor>(team, actor => actor),
+      pending(owner: OwnerActor) { const items = teamCandidates(owner); return { items, hash: teamCandidatesHash(items) }; },
+      register(owner: OwnerActor, requestId: string, hash: string) { team.registerReviewed(owner, requestId, hash, () => teamCandidates(owner)); } };
     const recurring = options.recurring ? createRecurringRules(policy, { ...options.recurring, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const selectedAdoptionStatus = options.adoption ? s15AdoptionPort<OwnerActor>(options.adoption.service, owner => { policy.owner.current(owner); return options.adoption!.authenticate(owner); }) : undefined;
     const adoptionStatus = (owner: OwnerActor) => { policy.owner.current(owner); return selectedAdoptionStatus?.(owner) ?? null; };
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
       ...(adoptionStatus ? { adoption: adoptionStatus } : {}),
-      actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), team: s15TeamPort<OwnerActor>(team, actor => actor),
+      actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), team: teamPort,
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
       ...(github && options.github?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),

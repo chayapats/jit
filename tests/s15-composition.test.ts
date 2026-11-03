@@ -389,3 +389,32 @@ test('TEAM VM lease is released at boot when recovery proof was recorded before 
   await f.service.vm.recover(f.owner, { vmId: 'vm' }); expect(leases()).toEqual(['unknown']);
   await f.reopen(); expect(leases()).toEqual(['settled']);
 });
+
+test('F1/F12: a fresh installation registers referenced TEAM resources only after the owner confirms the exact list', async () => {
+  const f = await composedFixture('default', false, undefined, undefined, false); fixtures.push(f);
+  const blocked = await f.chat('Run the requested command in the working computer');
+  expect(blocked.state).not.toBe('completed'); expect(f.vmCalls).toHaveLength(0); expect(f.service.team.resources(f.owner).resources).toHaveLength(0);
+  const setup = await (await f.request('/setup')).text();
+  expect(setup).toContain('ยังไม่ได้ให้ทีมใช้'); expect(setup).toContain('ให้ทีมใช้ 3 รายการนี้'); expect(setup).not.toContain('s15-setup-complete');
+  for (const label of ['<b>vm</b>', '<b>fixture/sandbox</b>', '<b>Controlled fixture</b>']) expect(setup).toContain(label);
+  const listHash = /name="listHash" value="([a-f0-9]{64})"/.exec(setup)![1]!;
+  // Section 5 stays unfinished while referenced resources are unregistered, even with rules installed.
+  expect(setup).toContain('<a href="#s15-setup-rules">5. กฎประจำและงบ</a> <span class="s-pill ">ยังไม่เสร็จ</span>');
+  // Mounted on the team page as well; nothing is registered by viewing, a forged list or a missing CSRF token.
+  expect(await (await f.request('/resources/accounts')).text()).toContain(listHash);
+  expect((await f.form('/s15/forms/team/register', { listHash, return: 'setup', csrf: '' })).status).toBe(403);
+  const forged = await f.form('/s15/forms/team/register', { listHash: '0'.repeat(64), return: 'resources' });
+  expect(forged.status).toBe(409); expect(await forged.text()).toContain('team_resources_changed');
+  expect(f.service.team.resources(f.owner).resources).toHaveLength(0);
+  const requestId = 'register_team_resources', confirmed = await f.form('/s15/forms/team/register', { listHash, return: 'setup', requestId });
+  expect(confirmed.status).toBe(303); expect(confirmed.headers.get('location')).toBe('/setup?team=registered#s15-setup-rules');
+  // A double submit of the same confirmation is idempotent.
+  expect((await f.form('/s15/forms/team/register', { listHash, return: 'setup', requestId })).status).toBe(303);
+  const registered = f.service.team.resources(f.owner).resources;
+  expect(registered.map(r => [r.id, r.revision, r.kind, r.scope.kind, r.allowedBots, r.purposes])).toEqual([['account', 1, 'browser', 'team', null, ['purpose']], ['computer', 1, 'workspace', 'team', null, ['purpose']], ['repo', 1, 'data', 'team', null, ['purpose']]]);
+  const after = await (await f.request('/setup?team=registered')).text();
+  expect(after).not.toContain('name="listHash"'); expect(after).toContain('ทีมใช้รายการที่คุณยืนยันได้แล้ว');
+  expect(after).toContain('<a href="#s15-setup-rules">5. กฎประจำและงบ</a> <span class="s-pill ok">');
+  const row = await f.chat('Run the requested command in the working computer');
+  expect(row.state).toBe('completed'); expect(f.vmCalls).toContain('spawn');
+});

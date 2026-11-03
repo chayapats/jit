@@ -7,7 +7,7 @@ import { compactSlip, type S15SlipDecision } from "./actions";
 import { browserNeedsYou, loginCard, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
 import { dutyCard } from "./duties";
 import { banner, clock, codeText, e, fill, form, hidden, key, notYet, pill, refusal } from "./render";
-import type { S15AccountRow, S15AdoptionStatus, S15TeamResource } from "./types";
+import type { S15AccountRow, S15AdoptionStatus, S15TeamCandidate, S15TeamResource } from "./types";
 
 /** One Needs-you entry with the conversation it belongs to. */
 export interface S15NeedItem { conversationId: string; entry: ConversationNeedsYou }
@@ -40,13 +40,29 @@ function restriction(code: string): string {
   if (code === "s14_private") return "";
   return e(trMaybe(`s15.resources.restriction.${code}`) ?? code);
 }
+/**
+ * F1 section 5 and F12: resources the rules and working computer refer to that the team cannot use yet.
+ * Every row is shown exactly as it would be registered; one owner confirmation registers that list and
+ * nothing else. Registration grants no sending, paying or publishing; standing rules still gate effects.
+ */
+export function teamPendingCard(input: { pending: { items: S15TeamCandidate[]; hash: string } | null; csrf: string; back: "setup" | "resources"; registered: boolean; refused: string | null }): string {
+  const done = input.registered ? `<div role="status">${banner("ok", tr("s15.team_register.done"))}</div>` : "";
+  const items = input.pending?.items ?? [];
+  if (!items.length) return `${done}${refusal(input.refused)}`;
+  const id = `s15-team-pending-${input.back}`;
+  const who = (item: S15TeamCandidate) => item.scope.kind === "bot" ? fill("s15.resources.only", { bots: item.scope.botId }) : item.allowedBots === null ? tr("s15.resources.team") : fill("s15.resources.only", { bots: item.allowedBots.join(", ") });
+  const rows = items.map(item => `<li><div class="s-grow"><p><b>${e(item.label)}</b> <span class="s-meta">${tr(key(`s15.resources.kind.${item.kind}`))}</span></p><p class="s-meta">${item.operations.map(op => tr(key(`s15.resources.op.${op}`))).join(" · ")} · ${e(who(item))} · ${fill("s15.team_register.revision", { n: item.revision })}</p>${item.purposes.length ? `<p class="s-sub">${item.purposes.map(purpose => fill("s15.resources.restriction.purpose", { purpose })).join(" · ")}</p>` : ""}</div>${pill(tr("s15.team_register.pending"), "warn", "!")}</li>`).join("");
+  const confirm = form("/s15/forms/team/register", input.csrf, `${hidden("listHash", input.pending!.hash)}${hidden("return", input.back)}<button class="s-btn primary" aria-describedby="${id}-note">${fill("s15.team_register.confirm", { n: items.length })}</button>`);
+  return `${done}${refusal(input.refused)}<section class="s-stack s15-team-pending" aria-labelledby="${id}"><h3 class="s-section-t" id="${id}">${tr("s15.team_register.title")}</h3><p>${tr("s15.team_register.lead")}</p><ul class="s15-accounts">${rows}</ul><p class="s-note" id="${id}-note">${tr("s15.team_register.note")}</p><div class="s-row">${confirm}</div></section>`;
+}
+
 /** `/resources/accounts` (F12): team resources with who may use them, S14-private labels, and website sign-ins. */
-export function accountsBody(input: { team: S15TeamResource[] | null; accounts: S15AccountRow[] | null; browsers: { browser: S15BrowserInfo; state: S15BrowserProgress | undefined }[]; csrf: string }): string {
+export function accountsBody(input: { team: S15TeamResource[] | null; accounts: S15AccountRow[] | null; browsers: { browser: S15BrowserInfo; state: S15BrowserProgress | undefined }[]; csrf: string; teamPending?: string }): string {
   const who = (r: S15TeamResource) => r.scope.kind === "bot" && r.scope.origin === "s14" ? fill("s15.memory.s14_private", { bot: r.scope.botId }) : r.whoCanUse === "enabled_team" ? tr("s15.resources.team") : fill("s15.resources.only", { bots: r.whoCanUse.join(", ") });
   const team = input.team === null ? notYet("s15.resources.not_composed") : input.team.length ? `<ul class="s15-accounts">${input.team.map(r => `<li><div class="s-grow"><p><b>${e(r.label)}</b> <span class="s-meta">${tr(key(`s15.resources.kind.${r.kind}`))}</span></p><p class="s-meta">${r.operations.map(op => tr(key(`s15.resources.op.${op}`))).join(" · ")} · ${e(who(r))}</p>${r.restrictions.length ? `<p class="s-sub">${r.restrictions.map(restriction).filter(Boolean).join(" · ")}</p>` : ""}${r.scope.kind === "bot" && r.scope.origin === "s14" ? `<p class="s-note">${tr("s15.resources.no_broad_share")}</p>` : ""}</div>${pill(tr(r.active ? "s15.resources.active" : "s15.resources.inactive"), r.active ? "ok" : "", r.active ? "✓" : "")}</li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.resources.none")}</p>`;
   const accounts = input.accounts?.length ? `<ul class="s15-accounts">${input.accounts.map(a => `<li><div class="s-grow"><p><b>${e(a.label)}</b></p><p class="s-meta">${a.uses.map(use => tr(key(`s15.accounts.use.${use}`))).join(" · ")}</p></div>${pill(tr(key(`s15.accounts.state.${a.state}`)))}</li>`).join("")}</ul>` : `<p class="s-sub">${tr("s15.resources.no_accounts")}</p>`;
   const sites = input.browsers.length ? input.browsers.map(({ browser, state }) => loginCard(browser, state, input.csrf)).join("") : `<p class="s-sub">${tr("s15.resources.no_sites")}</p>`;
-  return `<div class="s-col"><section class="s-card" aria-labelledby="s15-res-team"><h2 id="s15-res-team">${tr("s15.resources.team_title")}</h2>${team}</section>
+  return `<div class="s-col"><section class="s-card" aria-labelledby="s15-res-team"><h2 id="s15-res-team">${tr("s15.resources.team_title")}</h2>${input.teamPending ?? ""}${team}</section>
     <section class="s-card" aria-labelledby="s15-res-accounts"><h2 id="s15-res-accounts">${tr("s15.resources.accounts_title")}</h2>${accounts}</section>
     <section class="s-card" aria-labelledby="s15-res-sites"><h2 id="s15-res-sites">${tr("s15.resources.sites_title")}</h2>${sites}<p class="s-note">${tr("s15.resources.sign_in_note")}</p></section></div>`;
 }
