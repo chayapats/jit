@@ -45,7 +45,8 @@ const ref = (id: string) => ({ id, revision: 1, generation: 1 });
  */
 export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions | null; origin?: string }): S15RuntimeConfig {
   const selection = { route: ref("codex_route"), model: ref("codex_model"), effort: "high" };
-  const bound = { ...zero(), calls: 1, steps: 1, activeMs: 30000, outputBytes: 32768 };
+  // One model call is one attempt; a zero attempt bound would record an overrun on the first settled call.
+  const bound = { ...zero(), attempts: 1, calls: 1, steps: 1, activeMs: 30000, outputBytes: 32768 };
   return parseS15RuntimeConfig({ contract: "s15-runtime/v1", installationId: input.installationId, directory: s15Installation.state, origin: input.origin ?? s15Installation.origin, policy: null,
     catalog: [{ kind: "bot", ref: ref("jit"), active: true }, { kind: "resource", ref: ref("computer"), active: true }, { kind: "route", ref: selection.route, active: true }, { kind: "model", ref: selection.model, active: true }], resourceBots: [],
     conversation: { ownerId: "owner", bot: ref("jit"), selection, route: { provider: "codex", model: "gpt-6.1-sol" }, limits: { modelCalls: 6, toolCalls: 16, outputBytes: 32768, activeMs: 300000 }, modelCallUpperBound: bound },

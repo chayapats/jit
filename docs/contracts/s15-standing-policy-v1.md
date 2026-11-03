@@ -1,5 +1,11 @@
 # s15-standing-policy/v1
 
+## POLICY15-02 first standing policy — 2026-11-03
+
+[ADR 0073](../adr/0073-s15-first-standing-policy-and-web-github-connection.md) adds the runtime default catalog (`owner_requested_work` and `conversation_interpretation` purposes, plus approved routes' provider recipients) and a default proposal. Composition derives the proposal from the active catalog and composed resources: the Bot, the computer pool, the composed browser, selected Web-connected GitHub repositories, approved routes and their recipients. It has one `ordinary` rule over every class, so POLICY's per-class gates hold each human-required action for exact approval, with a finite 180-day expiry that the owner can renew. It never adds a personal GitHub exception, recurring payment, amount, recipient or resource the installation does not have.
+
+`proposePolicy` now accepts `budget: null` as installable only when every selection is admitted by the protected `subscriptionModels` registry and that registry declares the new optional `tools` per-work bounds. Under no monetary budget, a zero-spend tool, read, effect or recovery charge of a work whose selection is a current subscription route is admitted within `tools` and installation concurrency. Any spend holds as `cost_unknown`. Without `tools`, behavior is unchanged. The per-work read ceiling is `tools.reads`. Subscription-only proposals list the registry bounds as provided fields. A metered selection needs the owner's typed finite budget, which is part of the proposal hash. Tests: `tests/s15-policy-subscription.test.ts` and `tests/s15-first-run.test.ts`.
+
 ## Implemented policy-only refinement — 2026-11-03
 
 GIT15-01/02/03 adds optional captured `requiredChecks`, `requiredApprovals` and `requireCodeOwners` fields to a personal rule's `github` binding, plus host-only `control.policyForWork(workId)`. The [GitHub implementation contract](s15-github-v1.md) defines strict server-enforced protection and exact merge `sha`, protected Git object/publication custody, separate production authority, durable responsibility and pending live credential evidence. These additive fields install no profile and change no S14 behavior.

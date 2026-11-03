@@ -2,7 +2,7 @@ import type { Locale } from "../../i18n";
 import type { LoginState, OwnerBrowserInput } from "../browser";
 import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
 import type { ModelBudgetView } from "../model";
-import type { ActionRef, ActionSlip, Observation, PolicyProposal, Ref, Rule, StandingPolicy } from "../policy";
+import type { ActionClass, ActionRef, ActionSlip, Observation, PolicyProposal, Ref, Rule, StandingPolicy } from "../policy";
 import type { RecurringFrequency, RecurringRuleProposal } from "../policy/recurring";
 import type { ResponsibilityProjection } from "../work";
 import type { VmStatus } from "../vm";
@@ -40,6 +40,8 @@ export interface S15WebPorts<Actor extends object> {
   websites?: S15WebWebsites<Actor>;
   /** F13 recurring-payment rules over POLICY (`createRecurringRules`). Absent until composed. */
   recurring?: S15WebRecurring<Actor>;
+  /** GIT15-04 Web GitHub connection (token, repository selection, removal). Absent: configured or not composed. */
+  githubConnection?: S15WebGithubConnection<Actor>;
   /** GIT15-02 personal GitHub profile capture/install/revoke. Feature-detected until that slice is composed. */
   github?: S15WebGithub<Actor>;
   /** BIZ15 owner-only DecisionCard projection for a major change. Feature-detected until composed. */
@@ -135,6 +137,33 @@ export interface S15WebRules<Actor> {
   install(actor: Actor, requestId: string, proposalHash: string): StandingPolicy;
   /** Choices readable from the selected billing route catalog. Empty lists preselect and offer nothing. */
   budgetOptions(actor: Actor): { currencies: string[]; periods: { id: string; days: number }[] };
+  /** POLICY15-02 default proposal review (new, update or renewal). Absent or null: the configured-policy card. */
+  review?(actor: Actor, budget: S15BudgetEntry | null): S15PolicyReview | null;
+}
+
+/** One exact row of the reviewed proposal. Labels are trusted composition names, never model text. */
+export interface S15PolicyRow { kind: "bot" | "purpose" | "computer" | "browser" | "repository" | "model" | "recipient"; id: string; label: string; detail: "subscription" | "metered" | "provider" | "github" | "work" | "interpretation" | null }
+/**
+ * POLICY15-02 (ADR 0073) review of the default standing policy derived from what this installation actually has.
+ * `change`: `new` (nothing installed), `update` (the catalog or resources changed), `renew` (same scope, expiring or
+ * expired) or `current` (installed and not yet renewable). The owner installs only `proposal.proposalHash`.
+ */
+export interface S15PolicyReview {
+  change: "new" | "update" | "renew" | "current";
+  proposal: PolicyProposal | null;
+  rows: S15PolicyRow[];
+  held: ActionClass[];
+  /** Personal GitHub exceptions are never proposed; `kept` means one the owner installed separately carries over. */
+  personalGithub: "off" | "kept";
+  expiresAt: number | null;
+  /** True when a selected route is metered, so the owner must type a finite budget. */
+  needsBudget: boolean;
+  /** Stable code explaining why installing is not possible right now, or null. */
+  reason: string | null;
+  /** For `current`: when renewal opens. */
+  renewFrom: number | null;
+  /** The same click registers these TEAM resources; the hash binds the exact list shown. */
+  team: { hash: string; count: number } | null;
 }
 
 /** Tools an account lends to the team, as trusted dictionary labels. */
@@ -309,3 +338,19 @@ export interface S15AdoptionStatus {
   historyPreserved: true; privateScopePreserved: true;
 }
 export type { Rule };
+
+/** GIT15-04 owner view of the protected GitHub connection. It never contains the token or its hash. */
+export interface S15GithubConnectionView {
+  state: "not_connected" | "connected" | "removed"; revision: number; login: string | null;
+  tokenExpiresAt: number | null; verifiedAt: number | null; truncated: boolean;
+  accessible: { name: string; target: string; private: boolean; push: boolean }[];
+  /** Selected repository full names. */
+  selected: string[];
+}
+/** GIT15-04 owner commands. `connect` receives the pasted token once and keeps nothing in the Web layer. */
+export interface S15WebGithubConnection<Actor> {
+  view(actor: Actor): S15GithubConnectionView;
+  connect(actor: Actor, requestId: string, token: string): Promise<void>;
+  select(actor: Actor, requestId: string, expectedRevision: number, names: string[]): void;
+  remove(actor: Actor, requestId: string, expectedRevision: number): void;
+}

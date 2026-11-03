@@ -15,6 +15,9 @@ import { closeCredentialLifecycle, openModelService, createModelProjectionHandle
 import { openWorkService, openResumeBindings, createResponsibilityProjectionHandler, type ResumeOwnerSnapshot, type WorkOptions } from './work';
 import { openTelegramChannel, type TelegramLimits, type TelegramTransport } from './telegram';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
+import { GithubConnections, s15GithubRecipient } from './github/connection';
+import { webGithubDisclosure } from './github/disclosure';
+import { s15DefaultPolicy, s15DefaultRefs, s15NeedsBudget, s15SamePolicyScope, s15MeteredBudget, S15_DEFAULT_POLICY_LIFETIME_MS, S15_POLICY_RENEW_WINDOW_MS, s15BudgetPeriods, s15HeldClasses, type DefaultResource, type DefaultSelection } from './policy/defaults';
 import { openDisclosureService } from './disclosure';
 import { createRecurringRules, type RecurringRuleOptions } from './policy/recurring';
 import type { ComposedDisclosure } from './disclosure/composition';
@@ -67,6 +70,12 @@ export interface S15CompositionOptions {
   tools?: readonly { resourceId: string; port: ConversationToolPort<ConversationPolicyWork> }[];
   team?: { maxConcurrentOperations: number; retention(work: import('./policy').WorkAuthority): DataScope | null };
   web?: Pick<S15WebPorts<OwnerActor>, 'accounts' | 'locale' | 'decisions'>;
+  /** POLICY15-02: with no configured `proposedPolicy`, the owner reviews a default proposal derived from the active
+   * catalog and the composed resources (ADR 0073). `concurrency` bounds a metered budget's parallel charges. */
+  defaultPolicy?: { lifetimeMs?: number; concurrency: number };
+  /** GIT15-04: the owner connects GitHub from the Web; the token lives only in `vault`. Ignored with an explicit `github`. */
+  githubWeb?: { vault: import('../exec/connections').ConnectionVault; fetch?: typeof fetch;
+    runtime(input: { repositories(): readonly GithubRepository[]; credential(): string; catalogPurpose: Ref; fetch?: typeof fetch; now?: () => number }): { github: NonNullable<S15CompositionOptions['github']>; readHandler: ReadHandler; current(id: string): { ref: Ref; active: boolean } | null } };
   /** CHAN15-01 bound Telegram owner channel. The bot token is written only by the owner's protected Web form into this vault. */
   telegram?: { vault: import('../exec/connections').ConnectionVault; transport(token: string): TelegramTransport; limits?: Partial<TelegramLimits>; beforeOffsetAdvance?: () => void };
 }
@@ -88,38 +97,49 @@ export function composeS15ReadHandlers(handlers: readonly ReadHandler[]): ReadHa
  */
 export async function composeS15(options: S15CompositionOptions) {
   if (options.runtime !== 's15' || !isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError('s15_opt_in_required');
-  if (!options.disclosure && (options.browser || options.google || options.github)) throw new AppError('classification_unknown');
-  if (options.disclosure && (options.browser && !options.disclosure.browserRoute || options.google && !options.disclosure.googleRoute || options.github && !options.disclosure.githubRoute)) throw new AppError('route_unknown');
+  const webGithubEnabled = !options.github && !!options.githubWeb;
+  if (!options.disclosure && (options.browser || options.google || options.github || webGithubEnabled)) throw new AppError('classification_unknown');
+  if (options.disclosure && (options.browser && !options.disclosure.browserRoute || options.google && !options.disclosure.googleRoute || (options.github || webGithubEnabled) && !options.disclosure.githubRoute)) throw new AppError('route_unknown');
+  // GIT15-04: Web-selected repositories are private DATA15 sources; every consumer below sees the wrapped catalogs.
+  let githubConnections: GithubConnections | undefined;
+  if (webGithubEnabled && options.disclosure) options = { ...options, disclosure: webGithubDisclosure(options.disclosure, { connections: () => githubConnections, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github ? ['github.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
     mkdirSync(root, { mode: 0o700 });
   }
-  // BROW15-02: an installation whose manifest predates the provisioned browser gains exactly one store,
-  // `browser.sqlite`, when its manifest is otherwise identical; any other difference still refuses before a
-  // ledger opens. An existing unlisted `browser.sqlite` is adopted, never replaced: it is either the store of a
-  // release that was rolled back (the installer restores the earlier manifest, which an earlier release needs
-  // to start) and may hold an armed effect, or a complete fresh store (creation is atomic). Only a store this
-  // boot created is removed if the boot fails.
-  let addBrowserStore = false, createdBrowserStore = false;
+  // BROW15-02 / GIT15-04: an installation whose manifest predates the provisioned browser or the Web GitHub
+  // connection gains exactly those stores (`browser.sqlite`, `github.sqlite`), when its manifest is otherwise
+  // identical; any other difference still refuses before a ledger opens. An existing unlisted additive store is
+  // adopted, never replaced: it is either the store of a release that was rolled back (the installer restores the
+  // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
+  // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
+  // already lists must still exist; a missing listed ledger always refuses.
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : [])];
+  let added: string[] = [];
+  const created: string[] = [];
   if (!options.create) {
     const directory = lstatSync(root);
     if (!directory.isDirectory() || directory.isSymbolicLink() || directory.mode & 0o077) throw new AppError('unprotected_ledger');
     const stored: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
     if (!equal(stored, manifest)) {
-      const withoutBrowser = { ...manifest, stores: storeNames.filter(name => name !== 'browser.sqlite') };
-      if (!options.browser?.approved || !equal(stored, withoutBrowser)) throw new AppError('continuity_unavailable');
-      const existing = lstatSync(join(root, 'browser.sqlite'), { throwIfNoEntry: false });
-      if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.mode & 0o077)) throw new AppError('continuity_unavailable');
-      addBrowserStore = true; createdBrowserStore = !existing;
+      // Exactly a nonempty subset of the additive stores may be missing from an otherwise identical manifest.
+      const listed = Array.isArray((stored as { stores?: unknown } | null)?.stores) ? (stored as { stores: unknown[] }).stores : [];
+      const missing = storeNames.filter(name => !listed.includes(name));
+      if (!missing.length || missing.some(name => !additive.includes(name)) || !equal(stored, { ...manifest, stores: storeNames.filter(name => !missing.includes(name)) })) throw new AppError('continuity_unavailable');
+      for (const name of missing) {
+        const existing = lstatSync(join(root, name), { throwIfNoEntry: false });
+        if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.mode & 0o077)) throw new AppError('continuity_unavailable');
+        added.push(name); if (!existing) created.push(name);
+      }
     }
-    for (const name of storeNames) { if (addBrowserStore && name === 'browser.sqlite') continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
+    for (const name of storeNames) { if (added.includes(name)) continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
   }
   const cleanup: (() => void | Promise<void>)[] = [];
-  // A failed additive boot removes only a browser store it created itself, so the next boot sees the same state.
-  if (createdBrowserStore) cleanup.push(() => { if (!addBrowserStore) return; for (const suffix of ['', '-wal', '-shm']) rmSync(join(root, `browser.sqlite${suffix}`), { force: true }); });
+  // A failed additive boot removes only stores it created itself, so the next boot sees the same state.
+  if (created.length) cleanup.push(() => { if (!added.length) return; for (const name of created) for (const suffix of ['', '-wal', '-shm', '.runtime-lock.sqlite']) rmSync(join(root, `${name}${suffix}`), { force: true }); });
   let closing = false;
   let draining: Promise<void> | null = null;
   try {
@@ -133,15 +153,24 @@ export async function composeS15(options: S15CompositionOptions) {
     // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
     // enrollment records in the protected VM journal, never a hand-written list.
     const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
-    const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
+    // GIT15-04: the GitHub service recipient is current only while the Web connection exists.
+    const disclosureCatalogs = options.disclosure ? { ...options.disclosure.catalogs, recipient: (value: Ref) => { const row = githubConnections?.recipient(value.id); return row ? (equal(row.ref, value) ? row : null) : options.disclosure!.catalogs.recipient(value); } } : undefined;
+    const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, catalogs: disclosureCatalogs!, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
     if (disclosure) cleanup.push(() => disclosure.close());
     const vmIntegration = new VmPolicyIntegration({ store: vmStore, resource: id => { if (!pool.has(id)) throw new AppError('outside_scope'); return options.vm.resource; },
       attemptCurrent: (work, attemptId) => attemptId === `chat_${work.id}` || /^github_[a-f0-9]{32}$/.test(attemptId), upperBound: options.vm.upperBound, destination: options.vm.destination, ...(disclosure && options.disclosure?.acquisitionRoute ? { disclosure: disclosure.acquisition(options.disclosure.acquisitionRoute) } : {}) });
-    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create || createdBrowserStore }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
+    const browser: BrowserRegistration | undefined = options.browser ? await registerProtectedBrowser({ ...options.browser, runtime: 's15', continuity: { path: join(root, 'browser.sqlite'), create: options.create || created.includes('browser.sqlite') }, profilePath: join(root, 'profiles'), ...(disclosure && options.disclosure?.browserRoute ? { disclosure: disclosure.browser(options.disclosure.browserRoute, options.browser.resource) } : {}) }, options.browser.factory) : undefined;
     if (browser) cleanup.push(() => browser.close());
     const google = options.google ? registerGoogleEffects({ ...options.google, ...(disclosure && options.disclosure?.googleRoute ? { disclosure: { protectAdapter: adapter => disclosure.protectAdapter(adapter, options.disclosure!.googleRoute!), beforeRead: (work, payload) => disclosure.guardRead(work, options.disclosure!.googleRoute!, payload), recordRead: actor => { const work = policy.work.guard(actor); for (const source of options.disclosure!.workSources(work)) disclosure.read(actor, source); } } } : {}) }) : undefined;
-    const githubStore = options.github ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create) : undefined;
+    const githubStore = options.github || webGithubEnabled ? new GithubStore(join(root, 'github.sqlite'), options.installationId, options.create || created.includes('github.sqlite')) : undefined;
     if (githubStore) cleanup.push(() => githubStore.close());
+    if (webGithubEnabled && githubStore) githubConnections = new GithubConnections({ store: githubStore, vault: options.githubWeb!.vault, installationId: options.installationId, ...(options.clock ? { now: options.clock.now } : {}), ...(options.githubWeb!.fetch ? { fetch: options.githubWeb!.fetch } : {}) });
+    const webGithub = githubConnections ? options.githubWeb!.runtime({ repositories: () => githubConnections!.repositories(), credential: () => githubConnections!.credential(), catalogPurpose: { ...s15DefaultRefs.work }, ...(options.githubWeb!.fetch ? { fetch: options.githubWeb!.fetch } : {}), ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    /** The composed GitHub module: explicit configuration, or the live protected Web connection (GIT15-04). */
+    const gh = options.github ?? webGithub?.github;
+    /** Current DATA15 lineage fence of a Web-connected repository's latest source generation. */
+    const githubSourceRow = (id: string) => { const row = githubConnections?.sources().find(s => s.source.ref.id === id); return row ? { ref: structuredClone(row.source.ref), active: true } : null; };
+    const githubIds = () => (gh?.repositories ?? []).map(r => r.resource.id);
     let policy!: S15PolicyService;
     let team!: TeamService;
     // Protected channel principals (WORK15-02 settlement, the bound Telegram owner). Each proof is a process-local
@@ -157,14 +186,23 @@ export async function composeS15(options: S15CompositionOptions) {
       channelProofs.set(proof, () => current() && snapshot.generation === options.owner.generation() ? { id: snapshot.ownerId, generation: snapshot.generation, expiresAt: clockNow() + 60000 } : null);
       try { const actor = policy.owner.authenticate(proof); if (channel) channelActors.add(actor); return actor; } catch { return null; }
     };
-    const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => (kind === 'resource' ? team?.currentResource(id) : null) ?? options.catalogs.current(kind, id),
+    const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => {
+        // A Web-connected repository that was unselected or whose connection was removed is inactive whatever TEAM says.
+        const connected = kind === 'resource' ? githubConnections?.resource(id) : kind === 'recipient' ? githubConnections?.recipient(id) : kind === 'lineage' ? webGithub?.current(id) ?? githubSourceRow(id) : null;
+        if (connected && !connected.active) return connected;
+        const teamRow = kind === 'resource' ? team?.currentResource(id) : null;
+        // A repository selected again has a newer live identity; its older TEAM row must not shadow it (the TEAM row is
+        // refreshed by the owner's reviewed registration and, until then, TEAM's own check refuses the work).
+        if (connected && teamRow && !equal(teamRow.ref, connected.ref)) return connected;
+        return teamRow ?? connected ?? options.catalogs.current(kind, id);
+      },
       allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
-    const baseGithubAdapter = options.github && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: options.github.gateway, limits: options.github.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
+    const baseGithubAdapter = gh && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: gh.gateway, limits: gh.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
     const githubAdapter = baseGithubAdapter && disclosure && options.disclosure?.githubRoute ? disclosure.protectAdapter(baseGithubAdapter, options.disclosure.githubRoute) : baseGithubAdapter;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
       ...(options.adoption ? { activityGuard: () => options.adoption!.service.guardActivity() } : {}), ownerGeneration: options.owner.generation, verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
       adapters: [vmIntegration.adapter, ...(disclosure ? [disclosure.adapter] : []), ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(options.adapters ?? []).map(adapter => disclosure && options.disclosure?.adapterRoutes?.[adapter.id] ? disclosure.protectAdapter(adapter, options.disclosure.adapterRoutes[adapter.id]!) : adapter)],
-      reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(options.reads ?? [])]),
+      reads: composeS15ReadHandlers([...vmIntegration.reads, ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(webGithub ? [{ operation: 'read' as const, validate: (payload: import('./policy').JsonValue, context: { work: import('./policy').WorkAuthority; resource: Ref }) => githubReadHandler(githubConnections!.repositories()).validate(payload, context) }, webGithub.readHandler] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
     cleanup.push(() => policy.control.close()); disclosure?.attach(policy); browser?.attach(policy); google?.attach(policy);
     team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
@@ -222,7 +260,8 @@ export async function composeS15(options: S15CompositionOptions) {
       if (request.method === 'POST') authentication.verifyCsrf(auth.csrf, request.headers.get('x-csrf-token'));
       return auth.actor;
     };
-    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(options.github ? { subjectResourceIds: options.github.repositories.map(r => r.resource.id) } : {}), ownerGeneration: options.owner.generation });
+    const subjectIds = new Proxy([] as string[], { get: (_target, key) => { const ids = githubIds(), value = Reflect.get(ids, key); return typeof value === 'function' ? value.bind(ids) : value; } });
+    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
     // Defense in depth for ADR 0072: a channel owner can never decide a held action, whatever its text says.
@@ -240,9 +279,11 @@ export async function composeS15(options: S15CompositionOptions) {
     const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, routeAuth, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
-    const github = options.github && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...options.github, ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: options.github.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
-    const ports = [{ resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) },
-      ...(options.github && github ? options.github.repositories.map(r => ({ resourceId: r.resource.id, port: createGithubConversationTools(github, r.resource.id) })) : []), ...(options.tools ?? [])];
+    const github = gh && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...gh, ...(githubConnections ? { currentRepositories: () => githubConnections!.repositories() } : {}), ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: gh.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
+    const vmPort = { resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) };
+    const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
+    // Repository ports follow the live selection; each stays scoped to its one repository resource.
+    const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []), ...(options.tools ?? [])];
     conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
@@ -260,7 +301,7 @@ export async function composeS15(options: S15CompositionOptions) {
         scopedGuard();
         const opened = [] as Awaited<ReturnType<ConversationToolPort<ConversationPolicyWork>['open']>>[];
         try {
-          for (const registration of ports) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, { ...input, guard: scopedGuard }));
+          for (const registration of ports()) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, { ...input, guard: scopedGuard }));
           if (google || browser) opened.push(await effects.tools.open(current, { ...input, guard: scopedGuard }));
           return { tools: opened.flatMap(p => p.tools).map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
@@ -288,12 +329,12 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(options.telegram.limits ? { limits: options.telegram.limits } : {}), ...(options.telegram.beforeOffsetAdvance ? { beforeOffsetAdvance: options.telegram.beforeOffsetAdvance } : {}) }) : undefined;
     if (telegram) cleanup.push(() => telegram.close());
     const githubCatalogActor = (owner: OwnerActor) => {
-      const current = policy.owner.current(owner), purpose = options.github?.catalogPurpose;
+      const current = policy.owner.current(owner), purpose = gh?.catalogPurpose;
       if (!current || !purpose || !github) throw new AppError('outside_scope');
       // An explicit owner profile form admits only protected repository inspection, never issue execution.
       const admitted = policy.owner.admit(owner, { requestId: 'profile_' + crypto.randomUUID().replaceAll('-', ''), intent: 'inspect', access: 'read', purpose, bot: options.conversation.bot,
-        resources: options.github!.repositories.map(r => r.resource), recipients: current.recipients, selection: options.conversation.selection, selectionPin: options.conversation.selection,
-        expiresAt: current.expiresAt, readLimit: Math.min(256, current.budget?.ceiling.reads ?? 0) });
+        resources: gh!.repositories.map(r => r.resource), recipients: current.recipients, selection: options.conversation.selection, selectionPin: options.conversation.selection,
+        expiresAt: current.expiresAt, readLimit: Math.min(256, current.budget?.ceiling.reads ?? policy.control.subscriptionLimits()?.tools?.reads ?? 0) });
       if (!admitted.work) throw new AppError('outside_scope');
       const actor = policy.control.bindWork(admitted.work.id);
       if (disclosure && options.disclosure) for (const source of options.disclosure.workSources(admitted.work)) disclosure.read(actor, source);
@@ -304,19 +345,52 @@ export async function composeS15(options: S15CompositionOptions) {
     const composedResources = (): { ref: Ref; kind: TeamResource['kind']; label: string }[] => {
       const known: { ref: Ref; kind: TeamResource['kind']; label: string }[] = [{ ref: options.vm.resource, kind: 'workspace', label: options.vm.id }];
       if (options.browser) known.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.label ?? options.browser.ownerUi?.site ?? options.browser.resource.id });
-      for (const r of options.github?.repositories ?? []) known.push({ ref: r.resource, kind: 'data', label: r.name });
+      for (const r of gh?.repositories ?? []) known.push({ ref: r.resource, kind: 'data', label: r.name });
       for (const account of [options.google?.mailAccount, options.google?.calendarAccount]) { try { const a = account?.(); if (a) known.push({ ref: a.resource, kind: 'account', label: a.account }); } catch { /* Unavailable connection: not offered. */ } }
       return known;
     };
-    const teamCandidates = (owner: OwnerActor): TeamResource[] => {
-      const standing = policy.owner.current(owner) ?? options.proposedPolicy;
+    // POLICY15-02: the default standing-policy proposal, derived from the active catalog and composed resources.
+    const active = (kind: import('./policy').CatalogKind, ref: Ref) => { const row = currentCatalogs.current(kind, ref.id); return !!row && row.active && equal(row.ref, ref); };
+    const dayStart = () => { const t = clockNow(); return t - t % 86_400_000; };
+    const defaultScope = () => {
+      const routes = options.model.registry.list().filter(r => active('route', r.selection.route) && active('model', r.selection.model) && active('recipient', r.recipient));
+      const selections: (DefaultSelection & { available: boolean; currency: string | null })[] = routes.map(r => ({ selection: r.selection, recipient: r.recipient, charge: r.charge, label: `${r.provider} · ${r.modelId}`, available: r.availability === 'available', currency: r.currency ?? null }));
+      const resources: DefaultResource[] = [];
+      if (active('resource', options.vm.resource)) resources.push({ ref: options.vm.resource, kind: 'computer', label: options.vm.id, adapters: [{ id: vmIntegration.adapter.id, operations: ['vm_write', 'vm_shell', 'vm_system_admin', 'vm_snapshot', 'vm_acquire'] }, ...(disclosure ? [{ id: disclosure.adapter.id, operations: ['disclose'] }] : [])] });
+      if (browser && options.browser && active('resource', options.browser.resource)) resources.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.label ?? options.browser.ownerUi?.site ?? options.browser.resource.id, adapters: [{ id: browser.adapter.id, operations: ['browser_request'] }] });
+      for (const r of gh?.repositories ?? []) if (active('resource', r.resource)) resources.push({ ref: r.resource, kind: 'repository', label: r.name, adapters: [{ id: 's15_github', operations: ['push', 'pr_create', 'pr_update', 'review_reply', 'merge'] }] });
+      const extraRecipients = githubConnections ? (active('recipient', s15GithubRecipient) && resources.some(r => r.kind === 'repository') ? [{ ...s15GithubRecipient }] : []) : (options.disclosure?.githubRecipients ?? []).filter(r => gh && active('recipient', r));
+      return { selections, resources, extraRecipients, bot: active('bot', options.conversation.bot) ? options.conversation.bot : null };
+    };
+    const meteredCurrency = (selections: readonly { charge: string; currency: string | null }[]): { currency: string | null; code: string | null } => {
+      const metered = selections.filter(s => s.charge !== 'subscription'); if (!metered.length) return { currency: null, code: null };
+      const set = new Set(metered.map(s => s.currency));
+      return set.has(null) ? { currency: null, code: 'metered_currency_unknown' } : set.size !== 1 ? { currency: null, code: 'metered_currency_mixed' } : { currency: [...set][0]!, code: null };
+    };
+    const defaultPolicyInput = (owner: OwnerActor, entry: import('./web').S15BudgetEntry | null) => {
+      if (!options.defaultPolicy || options.proposedPolicy) return null;
+      const scope = defaultScope(), now = dayStart(), current = policy.owner.current(owner), lifetimeMs = options.defaultPolicy.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS;
+      if (!scope.bot) return null;
+      // One budget covers every metered route, so they must share one known currency; otherwise nothing is offered.
+      const money = meteredCurrency(scope.selections);
+      const budget = s15NeedsBudget(scope.selections) && entry && money.currency && entry.currency === money.currency ? s15MeteredBudget({ now, policyExpiresAt: now + lifetimeMs, currency: entry.currency, spendMinor: entry.spendMinor, periodId: entry.periodId, concurrency: options.defaultPolicy.concurrency }) : null;
+      const build = (value: import('./policy').OperatingBudget | null) => s15DefaultPolicy({ now, bot: scope.bot!, resources: scope.resources, selections: scope.selections, extraRecipients: scope.extraRecipients, budget: value, carry: current?.rules ?? [], lifetimeMs });
+      // Scope comparison keeps the installed budget unless the owner typed a new one: a metered policy that is
+      // installed and unchanged is current, and a new amount is asked for only to change or renew it.
+      return { scope, money, input: build(budget), scopeInput: build(budget ?? (s15NeedsBudget(scope.selections) ? current?.budget ?? null : null)), current };
+    };
+    const teamCandidates = (owner: OwnerActor, proposed?: import('./policy').PolicyInput | null): TeamResource[] => {
+      const standing = proposed ?? policy.owner.current(owner) ?? options.proposedPolicy ?? defaultPolicyInput(owner, null)?.input ?? null;
       if (!standing) return [];
       const known = composedResources();
-      return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index && !team.currentResource(ref.id)).map(ref => {
+      return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index).flatMap((ref): TeamResource[] => {
+        // A registered row is offered again only to refresh it to a newer owning identity, with every other field unchanged.
+        const registered = team.resourceRecord(ref.id);
+        if (registered) return ref.revision > registered.revision ? [{ ...registered, revision: ref.revision, generation: ref.generation }] : [];
         const rules = standing.rules.filter(rule => rule.mode !== 'deny' && rule.resources.some(r => r.id === ref.id));
         const purposes = [...new Set((rules.length ? rules.flatMap(rule => rule.purposes) : standing.purposes.filter(p => p.id !== standing.interpretationPurpose?.id)).map(p => p.id))];
         const match = known.find(item => item.ref.id === ref.id);
-        return { contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id };
+        return [{ contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id }];
       });
     };
     const teamPort = { ...s15TeamPort<OwnerActor>(team, actor => actor),
@@ -339,7 +413,7 @@ export async function composeS15(options: S15CompositionOptions) {
         remove: (actor: OwnerActor, _requestId: string, origin: string, revision: number) => { policy.owner.current(actor); approved.sites.remove(origin, revision); },
         retry: (actor: OwnerActor) => { policy.owner.current(actor); void approved.engine.retry().catch(() => {}); },
       }))(options.browser.approved) } : {}),
-      ...(github && options.github?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
+      ...(github && gh?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
       readiness(owner, requestId) {
         const row = conversation.view(owner, requestId); if (!row.result || row.intent.kind !== 'inspect' || !githubStore) return null;
         const item = row.evidence.find(e => e.tool === 'github_readiness'); if (!item) return null;
@@ -370,7 +444,47 @@ export async function composeS15(options: S15CompositionOptions) {
           const status = await enrollment.useMachine(actor, input); checkedManagers.delete(input.checkId); return status;
         },
         status: (actor, id) => enrollment.status(actor, id), snapshots: (actor, id) => vm.snapshots(actor, id), restore: async (actor, input) => { try { await vm.recover(actor, input); } finally { reconcileVm(); } } },
-      rules: { current: actor => policy.owner.current(actor), propose: (actor, budget) => { if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy); }, install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash), budgetOptions: () => ({ currencies: [], periods: [] }) }, ...options.web },
+      rules: { current: actor => policy.owner.current(actor),
+        propose: (actor, budget) => {
+          const defaults = defaultPolicyInput(actor, budget);
+          if (defaults) return policy.owner.proposePolicy(actor, defaults.input);
+          if (budget) throw new AppError('configured_budget_required'); return policy.owner.proposePolicy(actor, options.proposedPolicy);
+        },
+        install: (actor, id, hash) => policy.owner.installProposal(actor, id, hash),
+        budgetOptions: actor => { const defaults = defaultPolicyInput(actor, null), currency = defaults?.money.currency ?? null;
+          return currency ? { currencies: [currency], periods: s15BudgetPeriods.filter(p => p.days * 86_400_000 <= (options.defaultPolicy?.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS)).map(p => ({ ...p })) } : { currencies: [], periods: [] }; },
+        review: (actor, entry) => {
+          const defaults = defaultPolicyInput(actor, entry); if (!defaults) return null;
+          const { scope, input, scopeInput, money, current } = defaults, needsBudget = s15NeedsBudget(scope.selections);
+          const rows: import('./web').S15PolicyRow[] = [
+            ...(scope.bot ? [{ kind: 'bot' as const, id: scope.bot.id, label: scope.bot.id, detail: null }] : []),
+            { kind: 'purpose', id: s15DefaultRefs.work.id, label: s15DefaultRefs.work.id, detail: 'work' }, { kind: 'purpose', id: s15DefaultRefs.interpretation.id, label: s15DefaultRefs.interpretation.id, detail: 'interpretation' },
+            ...scope.resources.map(r => ({ kind: r.kind === 'account' ? 'computer' as const : r.kind, id: r.ref.id, label: r.label, detail: null })),
+            ...scope.selections.map(s => ({ kind: 'model' as const, id: s.selection.model.id, label: s.label, detail: s.charge })),
+            ...scope.selections.filter((s, i, all) => all.findIndex(o => o.recipient.id === s.recipient.id) === i).map(s => ({ kind: 'recipient' as const, id: s.recipient.id, label: s.label.split(' · ')[0]!, detail: 'provider' as const })),
+            ...scope.extraRecipients.map(r => ({ kind: 'recipient' as const, id: r.id, label: 'GitHub', detail: 'github' as const })) ];
+          const base = { rows, held: [...s15HeldClasses], personalGithub: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'kept' as const : 'off' as const, needsBudget };
+          const renewFrom = current ? current.expiresAt - S15_POLICY_RENEW_WINDOW_MS : null;
+          if (current && scopeInput && s15SamePolicyScope(current, scopeInput) && clockNow() < (renewFrom ?? 0)) return { ...base, change: 'current', proposal: null, expiresAt: current.expiresAt, reason: null, renewFrom, team: null };
+          if (!input) return { ...base, change: current ? 'update' : 'new', proposal: null, expiresAt: null, reason: !scope.selections.length ? 'route_unavailable' : 'vm_not_enrolled', renewFrom: null, team: null };
+          const proposal = policy.owner.proposePolicy(actor, input);
+          const reason = proposal.installable ? null : !scope.selections.some(s => s.available) ? 'route_unavailable' : needsBudget && money.code ? money.code : needsBudget && !input.budget ? 'finite_budget_required' : 'proposal_incomplete';
+          const items = teamCandidates(actor, input), change = !current ? 'new' : scopeInput && s15SamePolicyScope(current, scopeInput) ? 'renew' : 'update';
+          return { ...base, change, proposal, expiresAt: input.expiresAt, reason, renewFrom: null, team: items.length ? { hash: teamCandidatesHash(items), count: items.length } : null };
+        } },
+      ...(githubConnections ? { githubConnection: {
+        view: (owner: OwnerActor): import('./web').S15GithubConnectionView => {
+          requireOwner(owner); const c = githubConnections!.current();
+          return c ? { state: c.state, revision: c.revision, login: c.login, tokenExpiresAt: c.tokenExpiresAt, verifiedAt: c.verifiedAt, truncated: c.truncated, accessible: c.state === 'connected' ? c.accessible.map(a => ({ name: a.name, target: a.target, private: a.private, push: a.push })) : [], selected: c.selected.map(s => s.repository.name) }
+            : { state: 'not_connected', revision: 0, login: null, tokenExpiresAt: null, verifiedAt: null, truncated: false, accessible: [], selected: [] };
+        },
+        connect: async (owner: OwnerActor, requestId: string, token: string) => { requireOwner(owner); await githubConnections!.connect(requestId, token); requireOwner(owner); },
+        select: (owner: OwnerActor, requestId: string, expectedRevision: number, names: string[]) => { requireOwner(owner); githubConnections!.select(requestId, expectedRevision, names); },
+        remove: (owner: OwnerActor, requestId: string, expectedRevision: number) => { requireOwner(owner); githubConnections!.remove(requestId, expectedRevision); },
+      } } : {}),
+      ...options.web,
+      ...(githubConnections ? { accounts: { list: (owner: OwnerActor) => [...(options.web?.accounts?.list(owner) ?? []).filter(row => row.id !== 'github'),
+        { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
@@ -380,16 +494,16 @@ export async function composeS15(options: S15CompositionOptions) {
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
-    if (addBrowserStore) {
+    if (added.length) {
       // Atomic replacement after every store opened and before the service is returned to run any work.
       const next = join(root, `.composition.next-${crypto.randomUUID()}`);
       writeFileSync(next, canonical(manifest), { mode: 0o600, flag: 'wx' });
       const fd = openSync(next, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); }
       renameSync(next, manifestPath);
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
-      addBrowserStore = false;
+      added = [];
     }
-    return { policy, conversation, team, memory, disclosure, adoptionStatus, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram,
+    return { policy, conversation, team, memory, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
        * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } await conversation.drain(); try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },

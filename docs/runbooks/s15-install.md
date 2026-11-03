@@ -54,8 +54,8 @@ The installer prints its plan, asks once for approval (`--yes` approves non-inte
 `s15-runtime/v1` with no owner input and no credential:
 
 - a random `installationId` (`s15_<16 hex>`), `directory` `/var/lib/jit-s15/state`, `origin` `http://127.0.0.1:3002`;
-- the approved Codex subscription route for one device login (`gpt-6.1-sol`, effort `high`, subscription charge). It is `available` once `jit-s15` holds a signed-in Codex credential, which Jit reads from the local credential store every 15 seconds (no network); before sign-in it is unavailable;
-- `policy: null`, no budget, no personal GitHub rule, `github: null`, `google: null`, team concurrency 2 with memory off, and the empty disclosure configuration;
+- the approved Codex subscription route for one device login (`gpt-6.1-sol`, effort `high`, subscription charge, one attempt per model call). It is `available` once `jit-s15` holds a signed-in Codex credential, which Jit reads from the local credential store every 15 seconds (no network); before sign-in it is unavailable;
+- `policy: null`, no budget, no personal GitHub rule, `github: null`, `google: null`, team concurrency 2 with memory off, and the empty disclosure configuration. The runtime adds the default purposes and the Codex provider recipient to the catalog ([ADR 0073](../adr/0073-s15-first-standing-policy-and-web-github-connection.md)); the file does not list them;
 - `vm: { id: "working", resource: computer, local: true, vmm: { user: "jit-s15-vmm", uid, directory: "/var/lib/jit-s15-vm", launcher } }`, or `local: false` without `vmm` on a host without a `kvm` group;
 - `browser: null`, which selects the provisioned protected browser ([s15-browser.md](s15-browser.md)): the controller downloads and verifies the SHA-256-pinned Chromium itself at its first start, and the websites Jit may read are the owner's list in the Web, empty until the owner adds one. Nothing about the browser is written to this file.
 
@@ -69,7 +69,8 @@ All in the Web UI; nothing is typed into a file:
 2. **Settings → Provider** (`/settings/provider`): sign in to Codex with the device code. The credential is stored for the `jit-s15` identity only, and the approved Codex route becomes available within 15 seconds.
 3. **Manage → Telegram** (`/resources/telegram`): paste the new BotFather token, press **Check and save**, then bind your account with the one-time code ([s15-telegram.md](s15-telegram.md)).
 4. **Manage → Websites Jit may read** (`/resources/websites`): check that the protected browser shows **Ready**, then add the websites Jit may read ([s15-browser.md](s15-browser.md)).
-5. Install your standing rules when you are ready. The installer installs no policy, budget or personal GitHub rule.
+5. **First-time setup → Rules and budget** (`/setup#s15-setup-rules`): read the standing rules Jit proposes. They are built from what this installation actually has: Jit, work you ask for, the working computers, the protected browser, the Codex route and its provider, and any GitHub repositories you connected. Communications, publication, merges, production, payments, new private-data recipients and major changes always wait for your exact approval, and there is no personal GitHub exception. The Codex subscription needs no money budget; each piece of work has fixed limits instead. A pay-per-use route would ask you to type a finite amount. Press **Use these rules** once. That press also makes the listed resources team resources. The rules expire after 180 days; renew them on **Standing rules** (`/rules`), which offers renewal from 30 days before expiry. After expiry, new work waits until you renew. The installer itself installs no policy, budget or personal GitHub rule.
+6. Optional: **Manage → GitHub** (`/resources/github`): paste a fine-grained token, tick the repositories Jit may work on, then install the updated standing rules on `/rules` ([s15-github.md](s15-github.md)). No terminal `credential --s15` command or configuration edit is needed.
 
 ### Working computer outcomes
 

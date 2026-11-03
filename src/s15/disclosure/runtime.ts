@@ -20,7 +20,9 @@ export interface RuntimeDisclosureConfig {
 
 /** Bind serialized configuration to protected owning-service resolvers. Actual Google recipients,
  * browser URL origins and acquisition URLs are resolved before I/O; model text supplies no labels. */
-export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: readonly ApprovedModelRoute[], catalogs: CatalogPort, googleRecipients: readonly { ref: Ref; address: string }[]): ComposedDisclosure {
+export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: readonly ApprovedModelRoute[], catalogs: CatalogPort, googleRecipients: readonly { ref: Ref; address: string }[], webGithubRecipient?: Ref): ComposedDisclosure {
+  // GIT15-04: a Web-connected GitHub account uses its protected service recipient when no GitHub recipient is configured.
+  if (!config.githubRecipient && webGithubRecipient) config = { ...config, githubRecipient: webGithubRecipient };
   const origins = [...config.browser, ...config.acquisitions];
   if (origins.some(r => new URL(r.origin).origin !== r.origin) || config.registries.some(r => !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(r.hostname))) throw new AppError('route_unknown');
   const origin = (payload: JsonValue, acquisition = false): string | null => {

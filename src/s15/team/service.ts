@@ -67,7 +67,13 @@ export class TeamService {
       const items = candidates().map(item => structuredClone(item));
       items.forEach(resource);
       if (!items.length || items.length > 64 || teamCandidatesHash(items) !== reviewedHash) throw new AppError("team_resources_changed", 409);
-      for (const item of items) { if (this.findResource(item.id)) throw new AppError("team_resources_changed", 409); this.put(item, 0); }
+      for (const item of items) {
+        // GIT15-04: an existing row may only be refreshed to its owning catalog's newer identity (a repository selected
+        // again); every other field, including scope, purposes and Bot restrictions, must stay exactly as registered.
+        const existing = this.findResource(item.id);
+        if (existing && (item.revision <= existing.revision || canonical({ ...existing, revision: 0, generation: 0 }) !== canonical({ ...item, revision: 0, generation: 0 }))) throw new AppError("team_resources_changed", 409);
+        this.put(item, existing?.revision ?? 0);
+      }
       const ids = items.map(item => item.id);
       this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(requestId, reviewedHash, canonical(ids));
       return ids;
@@ -88,6 +94,8 @@ export class TeamService {
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM resources WHERE id=?").get(id);
     return row ? JSON.parse(row.record_json) as TeamResource : null;
   }
+  /** Host-only exact registered record, for composing a reviewed identity refresh; it grants nothing. */
+  resourceRecord(id: string): TeamResource | null { const r = this.findResource(id); return r ? structuredClone(r) : null; }
   /** Host-only current catalog projection; this supplies a fence, never an actor or resource grant. */
   currentResource(id: string): { ref: Ref; active: boolean } | null {
     const resource = this.findResource(id); return resource ? { ref: { id: resource.id, revision: resource.revision, generation: resource.generation }, active: resource.active } : null;

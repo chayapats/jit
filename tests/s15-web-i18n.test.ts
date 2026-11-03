@@ -28,16 +28,22 @@ const families: Record<string, readonly string[]> = {
   "s15.slip.data_class": ["public", "private", "personal", "business"], "s15.duty.trigger": ["ci", "review", "owner", "schedule", "assigned"], "s15.duty.attempt": ["active", "settled", "unknown"],
   "s15.stall.progress": ["unknown", "none", "made"], "s15.resources.kind": ["account", "browser", "workspace", "data"], "s15.resources.op": ["read", "write", "input"], "s15.resources.restriction": ["deny", "purpose", "inactive", "bot_private", "current_standing_policy", "mediated_credentials"],
   "s15.adoption.runtime": ["s14", "legacy", "s15"], "s15.adoption.state": ["preparing", "validated", "activating", "active_fenced", "complete", "rolling_back", "rolled_back", "discarded", "blocked"],
-  "s15.rules.saved": ["recurring_installed", "recurring_revoked", "github_installed", "github_revoked"], "s15.rules.frequency": ["hours", "daily", "weekly", "monthly"], "s15.slip.field": ["recipients", "resources", "classes", "transaction", "github", "upperBound", "fences", "impact", "expiresAt"],
+  "s15.rules.saved": ["recurring_installed", "recurring_revoked", "github_installed", "github_revoked", "policy_installed"], "s15.rules.frequency": ["hours", "daily", "weekly", "monthly"], "s15.slip.field": ["recipients", "resources", "classes", "transaction", "github", "upperBound", "fences", "impact", "expiresAt"],
   // SETUP15-01 / POOL15-01 computed families.
   "s15.provision.step": ["host", "download", "checksum", "disk", "boot", "connect", "checks", "enrolled"],
   "s15.provision.next": ["generic", "vm_host_unsupported", "vm_kvm_unavailable", "vm_kvm_denied", "vm_qemu_missing", "vm_host_too_small", "vm_disk_insufficient", "vm_image_unavailable", "vm_image_unverified", "vm_management_unavailable"],
   "s15.code": ["stall_no_progress", "stall_attempt_limit", "stall_budget_headroom", "login_required", "stale_input", "input_busy",
     // BROW15-02 provisioned browser and approved-website refusals.
     "website_not_approved", "website_invalid", "website_https_required", "website_not_public", "website_list_full", "website_history_full", "website_changed", "engine_unavailable", "browser_provisioning",
-    "browser_host_unsupported", "browser_directory_unsafe", "browser_disk_insufficient", "browser_download_unavailable", "browser_checksum_mismatch", "browser_extract_failed", "browser_libraries_missing", "browser_engine_unavailable"],
+    "browser_host_unsupported", "browser_directory_unsafe", "browser_disk_insufficient", "browser_download_unavailable", "browser_checksum_mismatch", "browser_extract_failed", "browser_libraries_missing", "browser_engine_unavailable",
+    // POLICY15-02 / GIT15-04 refusal codes the review and GitHub pages can show.
+    "route_unavailable", "policy_required", "expired", "finite_budget_required", "proposal_incomplete", "vm_not_enrolled", "github_token_required", "github_token_fine_grained_required", "github_token_invalid", "github_token_forbidden", "github_unreachable", "github_verify_failed", "github_not_connected", "github_repository_denied", "github_credential_unavailable", "stale_revision", "metered_currency_mixed", "metered_currency_unknown"],
   "s15.websites.step": ["verify", "download", "checksum", "extract", "libraries"], "s15.websites.limit": ["read", "no_forms", "private", "public"],
   "s15.websites.next": ["generic", "browser_host_unsupported", "browser_directory_unsafe", "browser_disk_insufficient", "browser_download_unavailable", "browser_checksum_mismatch", "browser_extract_failed", "browser_libraries_missing", "browser_engine_unavailable"],
+  // POLICY15-02 / GIT15-04 computed families.
+  "s15.policy.purpose": ["work", "interpretation"], "s15.policy.charge": ["subscription", "metered"], "s15.policy.group": ["bot", "purpose", "resources", "models", "recipients"],
+  "s15.policy.title": ["new", "update", "renew", "expired", "current"], "s15.policy.lead": ["new", "update", "renew", "expired"], "s15.policy.install": ["renew", "update"],
+  "s15.ghc.perm": ["contents", "issues", "pulls", "checks", "statuses", "administration", "metadata"], "s15.ghc.saved": ["connected", "selected", "removed"],
 };
 
 test("every S15 Web key, literal or computed, exists in both Thai and English with plain text", () => {

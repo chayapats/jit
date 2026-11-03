@@ -19,7 +19,9 @@ import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
 import type { ResponsibilityProjection } from "../work";
 import { codeText, e, fill, refusal, shell, standalonePage, type S15Nav } from "./render";
-import { accountRows, computerCard, enrollmentFlow, rulesCard, setupBody, toMinor, type S15ComputerLocal, type S15ComputerProgress } from "./setup";
+import { accountRows, computerCard, enrollmentFlow, ruleLists, rulesCard, setupBody, toMinor, type S15ComputerLocal, type S15ComputerProgress } from "./setup";
+import { policyReviewCard } from "./policy-review";
+import { githubConnectionBody } from "./github-connection";
 import { addComputer, memberName, poolList } from "./computers";
 import type { S15BudgetEntry, S15ForgetImpact, S15GithubCapture, S15MemoryClaim, S15ModelBudgetView, S15WebConversation, S15WebPorts } from "./types";
 
@@ -186,20 +188,34 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
 
       // Resources the rules/computer refer to that TEAM has not registered; null when TEAM is not composed.
       const teamPending = () => ports.team?.pending ? ports.team.pending(actor) : null;
+      // POLICY15-02: the protected default proposal (new, update or renewal), rendered as one exact review card.
+      const policyReview = (back: "setup" | "rules", refused: string | null) => {
+        const review = ports.rules?.review?.(actor, reviewed?.budget ?? null) ?? null; if (!review) return null;
+        const current = ports.rules!.current(actor);
+        const options = ports.rules!.budgetOptions(actor);
+        // Rendered later inside the owner's locale.
+        return { review, html: () => policyReviewCard({ csrf, review, back, options, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused, currentExpiresAt: current?.expiresAt ?? null, now: now() }) };
+      };
       const setupPage = (notices: { computer?: string | null; rules?: string | null; installed?: boolean; team?: string | null; teamRegistered?: boolean } = {}, status = 200) => {
         const status_ = computerStatus(), current = ports.rules?.current(actor) ?? null, rows = accounts(), pending = teamPending(), local = status_ ? undefined : localView();
+        const review = policyReview("setup", notices.rules ?? null);
         let proposal = null;
-        if (ports.rules && !current) proposal = ports.rules.propose(actor, reviewed?.budget ?? null);
+        if (ports.rules && !current && !review) proposal = ports.rules.propose(actor, reviewed?.budget ?? null);
+        const options = ports.rules?.budgetOptions(actor) ?? { currencies: [], periods: [] };
+        const rulesHtml = () => review ? `${current ? rulesCard({ csrf, unavailable: false, current, proposal: null, options: { currencies: [], periods: [] }, entry: null, budget: null, refused: null, installed: !!notices.installed }) : ruleLists(false)}${review.review.change === "current" && current ? "" : review.html()}`
+          : rulesCard({ csrf, unavailable: !ports.rules, current, proposal, options, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused: notices.rules ?? null, installed: !!notices.installed });
+        // The review's own install press registers the same TEAM list, so its separate card would ask twice.
+        const teamCard = review?.review.team && !current ? "" : null;
         return render(() => shell(nav("/setup"), tr("s15.setup.title"), setupBody({
           computer: computerCard({ csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused: notices.computer ?? null, address: progress.check?.host ?? "", return: "setup", ...(local ? { local } : {}) }),
           // Done only from a registered computer; a running or failed job, or a host fact, is never "done".
           computerDone: status_ !== null || !!poolMembers()?.length,
           models: accountRows(rows, "model"), modelsDone: !!rows?.some(row => row.kind === "model" && row.state !== "not_connected"),
           accounts: accountRows(rows, "service"),
-          rules: rulesCard({ csrf, unavailable: !ports.rules, current, proposal, options: ports.rules?.budgetOptions(actor) ?? { currencies: [], periods: [] }, entry: reviewed?.entry ?? null, budget: reviewed?.budget ?? null, refused: notices.rules ?? null, installed: !!notices.installed })
-            + teamPendingCard({ pending, csrf, back: "setup", registered: !!notices.teamRegistered, refused: notices.team ?? null }),
+          rules: rulesHtml()
+            + (teamCard ?? teamPendingCard({ pending, csrf, back: "setup", registered: !!notices.teamRegistered, refused: notices.team ?? null })),
           // Work cannot use a resource TEAM has not registered, so setup is unfinished until the owner confirms them.
-          rulesDone: current !== null && !pending?.items.length,
+          rulesDone: current !== null && current.expiresAt > now() && !pending?.items.length,
         })), status);
       };
       const accountsPage = (state: { registered?: boolean; refused?: string | null } = {}, status = 200) => {
@@ -245,11 +261,15 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         // Exact attachment bytes from the prepared payload, always as a download and never rendered by this origin.
         return new Response(Buffer.from(file.dataBase64, "base64"), { headers: { "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; sandbox" } });
       };
-      const rulesPage = (state: { refused?: string | null; saved?: string | null } = {}, status = 200) => {
-        const policy = ports.rules?.current(actor) ?? null;
+      const rulesPage = (state: { refused?: string | null; saved?: string | null; review?: string | null } = {}, status = 200) => {
+        const policy = ports.rules?.current(actor) ?? null, review = policyReview("rules", state.review ?? null);
         const payments = ports.recurring ? views().flatMap(view => view.rows.flatMap(row => row.slips)).filter(slip => slip.action.transaction && slip.state === "succeeded" && slip.action.classes.every(c => c === "financial")) : [];
         const unique = [...new Map(payments.map(slip => [`${slip.action.transaction!.payee.id}:${slip.action.transaction!.account.id}:${slip.action.transaction!.currency}`, slip])).values()].slice(0, 16);
-        return render(() => shell(nav("/rules"), tr("s15.rules.title"), rulesBody({ csrf, policy, rulesAvailable: !!ports.rules, recurring: ports.recurring ? { frequencies: ports.recurring.frequencies(), payments: unique.map(slip => ({ slip })) } : null, github: ports.github ? { capture: githubCapture } : null, refused: state.refused ?? null, saved: state.saved ?? url.searchParams.get("saved") })), status);
+        return render(() => shell(nav("/rules"), tr("s15.rules.title"), rulesBody({ csrf, policy, rulesAvailable: !!ports.rules, recurring: ports.recurring ? { frequencies: ports.recurring.frequencies(), payments: unique.map(slip => ({ slip })) } : null, github: ports.github ? { capture: githubCapture } : null, refused: state.refused ?? null, saved: state.saved ?? url.searchParams.get("saved"), review: review ? review.html() : "" })), status);
+      };
+      const githubPage = (refused: string | null = null, status = 200) => {
+        const saved = url.searchParams.get("saved");
+        return render(() => shell(nav("/resources/github"), tr("s15.ghc.title"), githubConnectionBody({ csrf, view: ports.githubConnection ? ports.githubConnection.view(actor) : null, refused, saved: saved === "connected" || saved === "selected" || saved === "removed" ? saved : null, now: now() })), status);
       };
       const recurringPage = (from: string | null, r: string | null, state: { proposal?: import("../policy").RecurringRuleProposal | null; ceiling?: string; frequencyId?: string; refused?: string | null } = {}, status = 200) => {
         if (!ports.recurring || !from || !idPattern.test(from)) throw new AppError("not_found", 404);
@@ -310,6 +330,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
         if (url.pathname === "/resources/telegram") return telegramPage();
         if (url.pathname === "/resources/websites") return websitesPage();
+        if (url.pathname === "/resources/github") return githubPage();
         if (url.pathname === "/recovery") {
           const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
           const pending = (dutyList()?.filter(item => item.state === "reconcile_only").length ?? 0) + views().reduce((n, view) => n + view.rows.filter(row => row.state === "unknown" && !row.slips.length).length, 0);
@@ -593,6 +614,23 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         }
         throw new AppError("not_found", 404);
       }
+      if (url.pathname.startsWith("/s15/forms/github-connection/")) {
+        // GIT15-04 owner commands. The token is write-only: never echoed, kept or logged here; a refusal re-renders
+        // the page with only the stable code and an empty token field.
+        const connection = ports.githubConnection; if (!connection) throw new AppError("not_found", 404);
+        try {
+          if (url.pathname === "/s15/forms/github-connection/connect") { only(fields, ["csrf", "requestId", "token"]); await connection.connect(actor, fields.requestId!, fields.token!); return redirect("/resources/github?saved=connected#s15-ghc-repos"); }
+          const revision = Number(fields.revision);
+          if (!/^[1-9]\d{0,8}$/.test(fields.revision ?? "")) throw new AppError("invalid_body");
+          if (url.pathname === "/s15/forms/github-connection/select") {
+            const names = Object.keys(fields).filter(name => /^repo_\d{1,3}$/.test(name));
+            only(fields, ["csrf", "requestId", "revision"], names);
+            connection.select(actor, fields.requestId!, revision, names.map(name => fields[name]!)); return redirect("/resources/github?saved=selected#s15-ghc-repos");
+          }
+          if (url.pathname === "/s15/forms/github-connection/remove") { only(fields, ["csrf", "requestId", "revision"]); connection.remove(actor, fields.requestId!, revision); return redirect("/resources/github?saved=removed#s15-ghc"); }
+        } catch (error) { const code = codeOf(error); if (code === "authentication_required" || code === "invalid_body") throw error; return githubPage(code, 409); }
+        throw new AppError("not_found", 404);
+      }
       if (url.pathname === "/s15/forms/team/register") {
         // The owner's one confirmation of the exact list shown; TEAM refuses if that list changed meanwhile.
         only(fields, ["csrf", "requestId", "listHash", "return"]);
@@ -604,19 +642,29 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       }
       if (url.pathname.startsWith("/s15/forms/rules/")) {
         const rules = ports.rules; if (!rules) throw new AppError("not_found", 404);
+        const toRules = fields.return === "rules";
+        if (fields.return !== undefined && fields.return !== "rules" && fields.return !== "setup") throw new AppError("invalid_body");
         if (url.pathname === "/s15/forms/rules/review") {
-          only(fields, ["csrf", "requestId", "amount"], ["currency", "periodId"]);
+          only(fields, ["csrf", "requestId", "amount"], ["currency", "periodId", "return"]);
           const choices = rules.budgetOptions(actor), entry = { amount: fields.amount!.trim(), currency: fields.currency ?? "", periodId: fields.periodId ?? "" };
           const minor = choices.currencies.includes(entry.currency) ? toMinor(entry.amount, entry.currency) : null;
-          if (!minor || !choices.periods.some(period => period.id === entry.periodId)) { reviewed = null; return setupPage({ rules: "finite_budget_required" }, 409); }
+          if (!minor || !choices.periods.some(period => period.id === entry.periodId)) { reviewed = null; return toRules ? rulesPage({ review: "finite_budget_required" }, 409) : setupPage({ rules: "finite_budget_required" }, 409); }
           reviewed = { entry, budget: { currency: entry.currency, spendMinor: minor, periodId: entry.periodId } };
-          return redirect("/setup#s15-setup-rules");
+          return redirect(toRules ? "/rules#s15-policy-review" : "/setup#s15-setup-rules");
         }
         if (url.pathname === "/s15/forms/rules/install") {
-          only(fields, ["csrf", "requestId", "proposalHash"]);
+          only(fields, ["csrf", "requestId", "proposalHash"], ["listHash", "return"]);
+          if (fields.listHash !== undefined && !/^[a-f0-9]{64}$/.test(fields.listHash)) throw new AppError("invalid_body");
+          if (!/^[a-f0-9]{64}$/.test(fields.proposalHash!)) throw new AppError("invalid_body");
           try { rules.install(actor, fields.requestId!, fields.proposalHash!); }
-          catch (error) { if (codeOf(error) === "authentication_required") throw error; return setupPage({ rules: codeOf(error) }, 409); }
-          reviewed = null; return setupPage({ installed: true });
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return toRules ? rulesPage({ review: codeOf(error) }, 409) : setupPage({ rules: codeOf(error) }, 409); }
+          reviewed = null;
+          // The same press registers the exact TEAM list shown with the proposal; TEAM refuses if that list changed.
+          if (fields.listHash && ports.team?.register) {
+            try { ports.team.register(actor, `${fields.requestId!.slice(0, 120)}_team`, fields.listHash); }
+            catch (error) { if (codeOf(error) === "authentication_required") throw error; return toRules ? rulesPage({ saved: "policy_installed", refused: codeOf(error) }, 409) : setupPage({ installed: true, team: codeOf(error) }, 409); }
+          }
+          return toRules ? redirect("/rules?saved=policy_installed#s15-rules-summary") : setupPage({ installed: true, teamRegistered: !!fields.listHash });
         }
         throw new AppError("not_found", 404);
       }

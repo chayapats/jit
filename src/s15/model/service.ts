@@ -18,8 +18,9 @@ function toolSchema(tool: ToolDefinition): Record<string, unknown> {
   canonical(schema); return schema;
 }
 function route(value: ApprovedModelRoute): void {
-  canonical(value); exact(value, ['selection', 'provider', 'modelId', 'account', 'billing', 'recipient', 'charge', 'availability', 'efforts', 'effortEvidence', 'upperBound', 'rank'], ['maxOutputTokens']);
+  canonical(value); exact(value, ['selection', 'provider', 'modelId', 'account', 'billing', 'recipient', 'charge', 'availability', 'efforts', 'effortEvidence', 'upperBound', 'rank'], ['maxOutputTokens', 'currency']);
   if (value.maxOutputTokens !== undefined) nat(value.maxOutputTokens, true);
+  if (value.currency !== undefined && (typeof value.currency !== 'string' || !/^[A-Z]{3}$/.test(value.currency) || value.charge !== 'metered')) fail('route_unavailable');
   selection(value.selection); string(value.modelId, 128); if (!value.modelId) fail('route_unavailable'); [value.account, value.billing, value.recipient].forEach(ref);
   if (!['codex', 'grok'].includes(value.provider) || !['subscription', 'metered'].includes(value.charge) || !['available', 'unavailable', 'quota'].includes(value.availability) || !['requested_only', 'adapter_mapped'].includes(value.effortEvidence)) fail('route_unavailable');
   if (!Array.isArray(value.efforts) || value.efforts.some(level => !levels.includes(level)) || !value.efforts.includes(value.selection.effort as ThinkingLevel)) fail('effort_unsupported');
@@ -356,7 +357,8 @@ export function openModelService(options: ModelOptions): ModelService {
       if (record.state !== 'completed' || record.output === null) fail('result_unavailable'); consume(record.output);
     },
     project(owner, workId): ModelBudgetView {
-      const p = options.policy.owner.current(owner); if (!p) fail('policy_required'); if (workId !== undefined) id(workId);
+      // A fresh installation has no standing policy yet; the authenticated owner still reads routes and limits (POLICY15-02).
+      const p: { budget: import('../policy').OperatingBudget | null } = options.policy.owner.current(owner) ?? { budget: null }; if (workId !== undefined) id(workId);
       // Installation ceilings always show installation charges; filtering selections cannot hide siblings' spend.
       const reservations = options.policy.control.reservations(), totals = summarizeReservations(reservations), records = journal.all<ModelSelectionRecord>().filter(row => workId === undefined || row.workId === workId);
       const workIds = workId ? [workId] : [...new Set(records.map(row => row.workId))];

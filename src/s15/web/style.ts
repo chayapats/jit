@@ -83,6 +83,10 @@ export function s15StyleSheet(): string {
 .s15-rule-list { list-style: none; display: flex; flex-direction: column; gap: 10px; }
 .s15-diff .s-diff-old, .s15-diff .s-diff-new { display: block; }
 .s15-strip-form { margin: 0; }
+.s15-policy-rows dd ul { margin: 0; }
+.s15-policy-budget { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); }
+.s15-ghc-perms { margin-top: 6px; font-size: var(--size-sm); }
+.s15-ghc-replace summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .s-strip-acts .s-btn, .s15-chips .s-btn { min-height: 44px; }
 @media (max-width: 399px) { .s-strip-acts { flex-direction: column; align-items: stretch; } }
 `;
