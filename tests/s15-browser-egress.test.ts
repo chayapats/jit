@@ -83,8 +83,24 @@ test('proxy environment variables, including NO_PROXY, cannot move a broker requ
   expect(site.received).toEqual(['/env', '/env']);
 });
 
+/** Public-answer DNS whose lookups can be held open, so a test can act while the broker waits for DNS. */
+function gatedSeams() {
+  let gate: Promise<void> | null = null, open: (() => void) | null = null;
+  const lookups: string[] = [], dials: number[] = [];
+  const ports: BrowserEgressPorts = {
+    async resolve(host) { lookups.push(host); if (gate) await gate; return answers(fixturePublicAddress); },
+    connect(address, port): Socket { dials.push(port); if (address !== fixturePublicAddress) throw new Error('unexpected_dial'); return connect({ host: '127.0.0.1', port }); },
+  };
+  return { ports, lookups, dials, hold() { gate = new Promise<void>(resolve => { open = resolve; }); }, release() { gate = null; open?.(); } };
+}
+/** Yields event-loop turns (no wall-clock wait) until the condition holds, then asserts it. */
+async function until(condition: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 500 && !condition(); turn++) await new Promise(resolve => setImmediate(resolve));
+  expect(condition()).toBe(true);
+}
+
 /** Fake engine that sends real broker requests for navigations and for one scripted native submission. */
-function engine() {
+function engine(cookie: string | null = null) {
   let options!: EngineOptions, url = 'about:blank', next: BrowserRequest | null = null;
   const request = (r: BrowserRequest) => options.request({ request: r, cookies: '', main: true, document: true, attributable: true, async send() { url = r.url; }, async deny() {} });
   const fake: BrowserEngine = {
@@ -92,7 +108,7 @@ function engine() {
     async read(generation) { return { id: 'observation', generation, url, text: 'Observed', truncated: false, elements: [{ id: 'e1_1', tag: 'button', name: 'Save', type: 'submit' }] }; },
     async image() { return new Uint8Array([1]); },
     async interact(_kind, _target, _value, _generation, input) { input.guard(); if (next) { const r = next; next = null; await request(r); } },
-    async ownerInput() {}, async cookie() { return null; }, async close() {},
+    async ownerInput() {}, async cookie() { return cookie; }, async close() {},
   };
   return { factory: async (o: EngineOptions) => { options = o; return fake; }, set next(r: BrowserRequest) { next = r; } };
 }
@@ -132,6 +148,41 @@ test('rebinding on the gateway: a public first answer is read, a private later a
   expect(await nav('/clean-task')).toEqual({ state: 'unsupported', code: 'website_address_not_public' });
   expect(fixture.received.map(r => r.path)).toEqual(['/clean-task', '/clean-task']); expect(dns.dials).toHaveLength(2);
   expect(f.service.control.usage().unsettled).toBe(0);
+});
+
+test('an effect cancelled while its destination lookup is pending is not dispatched, leaves nothing to reconcile, and the browser accepts the next action', async () => {
+  const fixture = browserSite(); cleanup.push(() => fixture.close());
+  const dns = gatedSeams(), fake = engine(), f = await browserFixture('static', fixture.site, fake.factory, undefined, dns.ports); cleanup.push(() => f.cleanup());
+  const nav = (path: string) => f.work.execute({ kind: 'navigate', url: fixture.origin + path, generation: f.work.state().generation });
+  expect(await nav('/clean-task')).toMatchObject({ state: 'ok' });
+  fake.next = { method: 'POST', url: fixture.origin + '/message', contentType: 'application/x-www-form-urlencoded', bodyBase64: Buffer.from('recipient=team&message=Exact').toString('base64'), navigation: true };
+  const held = await f.work.execute({ kind: 'click', target: 'e1_1', generation: f.work.state().generation }); if (held.state !== 'held') throw Error(JSON.stringify(held));
+  f.approve(held.action);
+  dns.hold(); const cancel = new AbortController(), resumed = f.work.resume(held.action, cancel.signal);
+  await until(() => dns.lookups.length === 2);
+  cancel.abort(); expect(await resumed).toEqual({ state: 'denied', code: 'cancelled' });
+  dns.release();
+  // A claimed action reads as unknown until its dispatch records a result; before the fix that result stayed unknown.
+  await until(() => f.service.owner.inspect(f.owner, held.action).observation?.outcome !== 'unknown');
+  expect(f.service.owner.inspect(f.owner, held.action).observation).toMatchObject({ outcome: 'not_dispatched', basis: 'local_guard', transportSettled: true });
+  expect(f.work.state().reconciliation).toBeNull(); expect(f.service.control.usage().unsettled).toBe(0);
+  expect(fixture.received.some(r => r.path === '/message')).toBe(false); expect(dns.dials).toHaveLength(1);
+  expect(await nav('/clean-task')).toMatchObject({ state: 'ok' }); expect(fixture.received.map(r => r.path)).toEqual(['/clean-task', '/clean-task']);
+});
+
+test('a session check whose lookup is pending sends nothing once the owner takes over again or the browser closes', async () => {
+  for (const interruption of ['takeover', 'close'] as const) {
+    const fixture = browserSite(); cleanup.push(() => fixture.close());
+    const dns = gatedSeams(), f = await browserFixture('static', fixture.site, engine('jit_session=saved').factory, undefined, dns.ports); cleanup.push(() => f.cleanup());
+    expect(await f.work.execute({ kind: 'navigate', url: fixture.origin + '/clean-task', generation: f.work.state().generation })).toMatchObject({ state: 'ok' });
+    const owner = await f.gateway.owner.takeover(f.owner); expect(f.gateway.owner.handBack(f.owner, owner.generation).login).toBe('checking');
+    dns.hold(); const checking = f.gateway.owner.checkSession(f.owner);
+    await until(() => dns.lookups.length === 2);
+    const interrupted = interruption === 'takeover' ? f.gateway.owner.takeover(f.owner) : f.gateway.close();
+    dns.release(); await interrupted;
+    expect([interruption, await checking.catch((e: Error) => e.message)]).toEqual([interruption, interruption === 'takeover' ? 'owner_control' : 'checking']);
+    expect([interruption, fixture.received.map(r => r.path), dns.dials.length]).toEqual([interruption, ['/clean-task'], 1]);
+  }
 });
 
 test('Chromium keeps the deny-only proxy as its only path: QUIC, DNS, DNS-over-HTTPS and non-proxied WebRTC are off, with no proxy bypass', () => {

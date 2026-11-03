@@ -194,7 +194,8 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
       if (decision.state !== 'allow') return decision.state === 'hold' ? { state: 'held', code: decision.code, action } : { state: 'denied', code: decision.code };
       continuity.arm(action);
       const outcome = await service().work.dispatch(item.scope.actor, action);
-      if (outcome.outcome !== 'unknown' && outcome.outcome !== 'succeeded' && !item.scope.failure) continuity.settle(action);
+      // Not dispatched means the send never started, so nothing can need reconciliation, even after cancellation.
+      if (outcome.outcome === 'not_dispatched' || outcome.outcome !== 'unknown' && outcome.outcome !== 'succeeded' && !item.scope.failure) continuity.settle(action);
       if (item.scope.failure) { item.finish(); await item.wire.deny(); pending.delete(action.id); return failure(item.scope); }
       if (outcome.outcome === 'not_dispatched' && item.refused) { item.finish(); await item.wire.deny(); pending.delete(action.id); return { state: 'denied', code: item.refused }; }
       if (outcome.outcome !== 'succeeded' || !item.response) { item.finish(); await item.wire.deny(); pending.delete(action.id); return { state: 'unknown', code: outcome.code ?? 'reconciliation_required' }; }
@@ -217,6 +218,8 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         // The destination is checked before commit, so a refused name ends as not dispatched rather than unknown.
         let route: BrowserRoute;
         try { route = await egress.route(item.request.url); } catch (e) { item.refused = e instanceof BrowserError ? e.code : 'request_unavailable'; throw e; }
+        // Cancellation, takeover or a stale lease during the lookup ends here, before commit marks the send started.
+        try { guard(item.scope); } catch (e) { route.close(); throw e; }
         try {
           return await context.commit(requestPayload(item.request), async (): Promise<AdapterResult> => {
             guard(item.scope);
@@ -351,7 +354,8 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
           browserUrl(probe.url); const cookie = await engine.cookie(probe.cookie, probe.url); ownerCheck(owner);
           const request: BrowserRequest = { method: 'GET', url: probe.url, contentType: '', bodyBase64: '', navigation: true };
           if (options.site.classify(request, options.mode)?.kind !== 'read') throw new BrowserError('session_unknown');
-          const response = await routed(request, cookie ?? '', new AbortController().signal, () => {});
+          // Owner access, generation and `checking` are rechecked after the lookup, immediately before the cookie is sent.
+          const response = await routed(request, cookie ?? '', new AbortController().signal, () => { ownerCheck(owner); if (expected !== generation || login !== 'checking') throw new BrowserError('stale_input'); });
           ownerCheck(owner); if (expected !== generation || login !== 'checking') throw new BrowserError('stale_input');
           login = cookie && response.status === probe.signedInStatus ? 'signed_in' : response.status === probe.signedOutStatus ? 'not_signed_in' : 'unknown';
         } catch { if (expected === generation && login === 'checking') login = 'unknown'; }
