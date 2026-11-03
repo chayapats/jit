@@ -34,7 +34,7 @@ const families: Record<string, readonly string[]> = {
   "s15.provision.next": ["generic", "vm_host_unsupported", "vm_kvm_unavailable", "vm_kvm_denied", "vm_qemu_missing", "vm_host_too_small", "vm_disk_insufficient", "vm_image_unavailable", "vm_image_unverified", "vm_management_unavailable"],
   "s15.code": ["stall_no_progress", "stall_attempt_limit", "stall_budget_headroom", "login_required", "stale_input", "input_busy",
     // BROW15-02 provisioned browser and approved-website refusals.
-    "website_not_approved", "website_invalid", "website_https_required", "website_not_public", "website_list_full", "website_changed", "engine_unavailable", "browser_provisioning",
+    "website_not_approved", "website_invalid", "website_https_required", "website_not_public", "website_list_full", "website_history_full", "website_changed", "engine_unavailable", "browser_provisioning",
     "browser_host_unsupported", "browser_directory_unsafe", "browser_disk_insufficient", "browser_download_unavailable", "browser_checksum_mismatch", "browser_extract_failed", "browser_libraries_missing", "browser_engine_unavailable"],
   "s15.websites.step": ["verify", "download", "checksum", "extract", "libraries"], "s15.websites.limit": ["read", "no_forms", "private", "public"],
   "s15.websites.next": ["generic", "browser_host_unsupported", "browser_directory_unsafe", "browser_disk_insufficient", "browser_download_unavailable", "browser_checksum_mismatch", "browser_extract_failed", "browser_libraries_missing", "browser_engine_unavailable"],

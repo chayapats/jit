@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ApprovedWebsites, BrowserError, approvedWebsiteLimit, approvedWebsiteOrigin, approvedWebsitePolicy, withApprovedWebsites, type BrowserOperation, type BrowserRequest } from '../src/s15/browser';
+import { ApprovedWebsites, BrowserError, approvedWebsiteHistoryLimit, approvedWebsiteLimit, approvedWebsiteOrigin, approvedWebsitePolicy, withApprovedWebsites, type BrowserOperation, type BrowserRequest } from '../src/s15/browser';
 import type { BrowserEngine, EngineOptions } from '../src/s15/browser/engine';
 import { runtimeDisclosure } from '../src/s15/disclosure/runtime';
 import type { WorkAuthority } from '../src/s15/policy';
@@ -62,11 +62,22 @@ test('catalog identities: recipients follow approval, website sources stay publi
   expect(sites.catalog('recipient', recipient.id)).toEqual({ ref: { ...recipient, revision: 2 }, active: true });
 });
 
-test('the approved list is bounded', () => {
+test('at most 200 websites are approved at once; removing one frees a place', () => {
   const sites = open(directory());
   for (let i = 0; i < approvedWebsiteLimit; i++) sites.add(`https://site${i}.example.org`);
   expect(code(() => sites.add('https://one-more.example.org'))).toBe('website_list_full');
   sites.remove('https://site0.example.org', 1); expect(sites.add('https://one-more.example.org').revision).toBe(1);
+});
+
+test('the lifetime limit has its own code: removing cannot free it, re-adding an earlier website still works', () => {
+  const sites = open(directory());
+  expect(approvedWebsiteHistoryLimit).toBeGreaterThan(approvedWebsiteLimit);
+  for (let i = 0; i < approvedWebsiteHistoryLimit; i++) { sites.add(`https://site${i}.example.org`); if (i >= 100) sites.remove(`https://site${i}.example.org`, 1); }
+  expect(sites.list()).toHaveLength(100);
+  // Plenty of room in the active list, yet a new origin needs a new record: a specific refusal, not "remove one".
+  expect(code(() => sites.add('https://new.example.org'))).toBe('website_history_full');
+  sites.remove('https://site0.example.org', 1); expect(code(() => sites.add('https://new.example.org'))).toBe('website_history_full');
+  expect(sites.add('https://site300.example.org')).toMatchObject({ revision: 2 }); expect(sites.add('https://site0.example.org')).toMatchObject({ revision: 2 });
 });
 
 test('request semantics: only GET navigations without query or body to a currently approved origin are reads', () => {

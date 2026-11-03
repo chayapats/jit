@@ -5,5 +5,5 @@ export { registerProtectedBrowser } from './gateway';
 export { BrowserError } from './validation';
 export { protectedBrowserTools } from './tools';
 export { ProtectedChromium, protectedChromiumBuilds, provisionedEngineFactory, type ProtectedChromiumBuild, type ProtectedChromiumCode, type ProtectedChromiumPorts, type ProtectedChromiumStatus, type ProtectedChromiumStep } from './chromium';
-export { ApprovedWebsites, approvedWebsiteLimit, approvedWebsiteOrigin, approvedWebsitePolicy, withApprovedWebsites, type ApprovedWebsite } from './sites';
+export { ApprovedWebsites, approvedWebsiteHistoryLimit, approvedWebsiteLimit, approvedWebsiteOrigin, approvedWebsitePolicy, withApprovedWebsites, type ApprovedWebsite } from './sites';
 export { openProvisionedBrowser, provisionedBrowserResource, provisionedBrowserUpperBound, type ProvisionedBrowser } from './provisioned';

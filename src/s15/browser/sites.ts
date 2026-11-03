@@ -8,8 +8,14 @@ import { PolicyError } from '../policy';
 import type { BrowserSitePolicy } from './types';
 import { BrowserError } from './validation';
 
-/** At most this many websites are approved at once; the journal also bounds every origin ever approved. */
+/** At most this many websites are approved at once (`website_list_full`; removing one frees a place). */
 export const approvedWebsiteLimit = 200;
+/**
+ * At most this many different origins are ever approved in one journal (`website_history_full`). A removed
+ * website keeps its record, because its recipient revision and lineage source must stay resolvable, so
+ * removing does not free a place here; re-adding a website approved before needs no new place.
+ */
+export const approvedWebsiteHistoryLimit = 500;
 /** One owner-approved HTTPS origin the protected browser may read. `revision` advances on every re-approval. */
 export interface ApprovedWebsite { origin: string; revision: number; addedAt: number }
 
@@ -81,6 +87,7 @@ export class ApprovedWebsites {
     const record = this.#write(() => {
       const old = this.#cache.get(origin); if (old?.active) return old;
       if ([...this.#cache.values()].filter(r => r.active).length >= approvedWebsiteLimit) throw new BrowserError('website_list_full');
+      if (!old && this.#cache.size >= approvedWebsiteHistoryLimit) throw new BrowserError('website_history_full');
       const now = this.#now(), next: SiteRecord = { kind: 'site', origin, revision: (old?.revision ?? 0) + 1, active: true, addedAt: now, changedAt: now };
       this.#journal.put(this.#key(origin), next); return next;
     });
@@ -124,7 +131,8 @@ export class ApprovedWebsites {
   #write(change: () => SiteRecord): SiteRecord {
     let record: SiteRecord;
     try { record = this.#journal.tx(change); }
-    catch (error) { if (error instanceof PolicyError && error.code === 'continuity_capacity') throw new BrowserError('website_list_full'); throw error; }
+    // The journal's own record bound is the same lifetime limit, never something a removal could fix.
+    catch (error) { if (error instanceof PolicyError && error.code === 'continuity_capacity') throw new BrowserError('website_history_full'); throw error; }
     this.#cache.set(record.origin, record); return record;
   }
 }

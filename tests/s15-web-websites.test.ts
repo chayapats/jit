@@ -17,7 +17,7 @@ function setup(state: { engine: S15WebsiteEngine; sites: S15ApprovedWebsite[] } 
   const port: S15WebWebsites<WebActor> = {
     status: () => state!.engine,
     list: () => state!.sites,
-    add(_a, _id, input) { calls.push(`add:${input}`); if (input.startsWith("http://")) throw new BrowserError("website_https_required"); const site = { origin: "https://example.com", revision: 1, addedAt: at }; state!.sites = [...state!.sites, site]; return site; },
+    add(_a, _id, input) { calls.push(`add:${input}`); if (input.startsWith("http://")) throw new BrowserError("website_https_required"); if (input === "full.example") throw new BrowserError("website_list_full"); if (input === "history.example") throw new BrowserError("website_history_full"); const site = { origin: "https://example.com", revision: 1, addedAt: at }; state!.sites = [...state!.sites, site]; return site; },
     remove(_a, _id, origin, revision) { calls.push(`remove:${origin}:${revision}`); if (revision !== 1) throw new BrowserError("website_changed"); state!.sites = state!.sites.filter(site => site.origin !== origin); },
     retry() { calls.push("retry"); state!.engine = { state: "provisioning", step: "verify", version: "156.0.8078.4" }; },
   };
@@ -107,4 +107,15 @@ test("a refused browser step points to the websites page; the accounts page link
     expect(limitNotice("upload_unsupported", "c1", "r1", null, "csrf")).not.toContain("/resources/websites");
     expect(accountsBody({ team: [], accounts: [], browsers: [], csrf: "csrf" })).toContain(`<a class="s-link-text" href="/resources/websites">${escaped(T("s15.websites.manage_link", locale))}</a>`);
   });
+});
+
+for (const locale of ["th", "en"] as const) test(`the two list limits refuse with different, accurate next steps (${locale})`, async () => {
+  const f = setup({ engine: ready, sites: [] });
+  const full = await (await f.post("/s15/forms/websites/add", { website: "full.example" }, { "accept-language": locale })).text();
+  const history = await (await f.post("/s15/forms/websites/add", { website: "history.example" }, { "accept-language": locale })).text();
+  expect(full).toContain(escaped(T("s15.code.website_list_full", locale))); expect(full).toContain(">website_list_full<");
+  expect(history).toContain(escaped(T("s15.code.website_history_full", locale))); expect(history).toContain(">website_history_full<");
+  expect(history).not.toContain(escaped(T("s15.code.website_list_full", locale)));
+  // The lifetime refusal names the real way forward instead of "remove a website".
+  expect(T("s15.code.website_history_full", locale)).toContain("/var/lib/jit-s15/state/browser-sites.sqlite");
 });
