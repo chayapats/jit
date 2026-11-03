@@ -5457,7 +5457,7 @@ export const th = {
   // SETUP15-01 automatic working computer and POOL15-01 working-computer pool.
   "s15.code.vm_host_unsupported": "เครื่องนี้สร้างเครื่องทำงานเองไม่ได้ ต้องเป็น Linux 64 บิต (x86_64 หรือ arm64)",
   "s15.code.vm_kvm_unavailable": "เครื่องนี้ไม่มี KVM (/dev/kvm) จึงเปิด VM ซ้อนในเครื่องไม่ได้",
-  "s15.code.vm_kvm_denied": "เครื่องนี้มี KVM แต่บริการของจิตยังไม่มีสิทธิ์ใช้ /dev/kvm",
+  "s15.code.vm_kvm_denied": "เครื่องนี้มี KVM แต่ผู้ใช้ที่รันเครื่องทำงานของจิตยังไม่มีสิทธิ์ใช้ /dev/kvm",
   "s15.code.vm_qemu_missing": "ยังไม่ได้ติดตั้งโปรแกรม QEMU ที่จิตต้องใช้",
   "s15.code.vm_host_too_small": "เครื่องนี้มี CPU หรือหน่วยความจำไม่พอสำหรับทั้งจิตและเครื่องทำงาน",
   "s15.code.vm_disk_insufficient": "พื้นที่ดิสก์ว่างไม่พอสำหรับเครื่องทำงาน (ต้องการประมาณ 60 GiB)",
@@ -5504,7 +5504,7 @@ export const th = {
   "s15.provision.state.paused": "ค้างอยู่",
   "s15.provision.next.vm_host_unsupported": "ใช้ VM ของคุณเองด้านล่างแทน",
   "s15.provision.next.vm_kvm_unavailable": "ถ้าเครื่องนี้เป็น VM ให้เปิด nested virtualization ที่ hypervisor แล้วโหลดหน้านี้ใหม่ หรือใช้ VM ของคุณเองด้านล่าง",
-  "s15.provision.next.vm_kvm_denied": "เพิ่มผู้ใช้ของบริการจิตเข้ากลุ่ม kvm แล้วเริ่มบริการใหม่ หรือใช้ VM ของคุณเองด้านล่าง",
+  "s15.provision.next.vm_kvm_denied": "รัน install.sh --s15 อีกครั้งเพื่อซ่อมสิทธิ์ kvm ของผู้ใช้นั้น หรือใช้ VM ของคุณเองด้านล่าง",
   "s15.provision.next.vm_qemu_missing": "ติดตั้งแพ็กเกจ qemu-system, qemu-utils และ cloud-image-utils แล้วโหลดหน้านี้ใหม่ หรือใช้ VM ของคุณเองด้านล่าง",
   "s15.provision.next.vm_host_too_small": "ใช้ VM ของคุณเองบนเครื่องอื่นด้านล่างแทน",
   "s15.provision.next.vm_disk_insufficient": "ทำให้มีพื้นที่ว่างเพิ่มแล้วโหลดหน้านี้ใหม่ หรือใช้ VM ของคุณเองด้านล่าง",

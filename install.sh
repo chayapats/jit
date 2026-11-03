@@ -5,7 +5,7 @@ set +x
 umask 077
 
 step=arguments
-next='use install.sh [--yes] [--s14 | --legacy] [--computer-slots N] [--uninstall] [--dry-run --root /absolute/disposable/root]'
+next='use install.sh [--yes] [--s14 | --s15 | --legacy] [--computer-slots N (S14 only)] [--uninstall] [--dry-run --root /absolute/disposable/root]'
 scratch=
 reported=false
 # Invoked by the EXIT trap through finish.
@@ -25,7 +25,9 @@ trap 'failed' HUP INT TERM
 yes=false
 uninstall=false
 s14=true
+s15=false
 runtime_selected=false
+slots_given=false
 computer_slots=8
 dry=false
 root=/
@@ -34,11 +36,11 @@ release_url=https://github.com/chayapats/jit/releases/latest/download
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --yes) yes=true ;;
-    --s14|--legacy)
+    --s14|--s15|--legacy)
       [ "$runtime_selected" = false ] || failed
       runtime_selected=true
-      if [ "$1" = --s14 ]; then s14=true; else s14=false; fi ;;
-    --computer-slots) shift; [ "$#" -gt 0 ] || failed; computer_slots=$1 ;;
+      case "$1" in --s14) s14=true ;; --s15) s14=false; s15=true ;; *) s14=false ;; esac ;;
+    --computer-slots) shift; [ "$#" -gt 0 ] || failed; computer_slots=$1; slots_given=true ;;
     --uninstall) uninstall=true ;;
     --dry-run) dry=true ;;
     --root) shift; [ "$#" -gt 0 ] || failed; root=$1 ;;
@@ -47,7 +49,10 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
-if [ "$s14" = true ]; then name=jit-s14; else name=jit; fi
+if [ "$s15" = true ]; then name=jit-s15; elif [ "$s14" = true ]; then name=jit-s14; else name=jit; fi
+# S15 is a separate installation with its own working computer; S14 disk slots never apply to it.
+[ "$s15" = false ] || [ "$slots_given" = false ] || failed
+if [ "$s15" = true ]; then selector=--s15; selected=true; else selector=--s14; selected=$s14; fi
 case "$computer_slots" in *[!0-9]*|'') failed ;; esac
 [ "$computer_slots" -ge 8 ] && [ "$computer_slots" -le 1024 ] || failed
 case "$root" in /*) ;; *) failed ;; esac
@@ -87,7 +92,7 @@ next='use 64-bit Linux x64/arm64 with systemd; install core dependencies manuall
 if [ "$dry" = true ]; then
   [ -n "$source_dir" ] && [ -f "$root/host.json" ] || failed
   bun=$(command -v bun) || failed
-  "$bun" "$source_dir/ops/package/installer/main.ts" plan --root "$root" --dry-run true --s14 "$s14" || failed
+  "$bun" "$source_dir/ops/package/installer/main.ts" plan --root "$root" --dry-run true "$selector" "$selected" || failed
 else
   [ "$(uname -s)" = Linux ] && [ "$(getconf LONG_BIT)" = 64 ] && [ -d /run/systemd/system ] || failed
   case "$(uname -m)" in x86_64) arch=x64 ;; aarch64|arm64) arch=arm64 ;; *) failed ;; esac
@@ -122,12 +127,34 @@ else
 fi
 
 printf '%s\n' 'Plan (ops.installer/v1):'
-if [ "$s14" = true ]; then
+if [ "$s15" = true ]; then
+  printf '%s\n' '  Selected runtime: S15 (--s15). Installation: jit-s15, separate; legacy and S14 installations are never read or changed.'
+elif [ "$s14" = true ]; then
   printf '%s\n' '  Selected runtime: S14 (default; --s14 is also supported). Installation: jit-s14.'
 else
   printf '%s\n' '  Selected runtime: legacy (--legacy). Installation: jit.'
 fi
-if [ "$uninstall" = true ]; then
+if [ "$uninstall" = true ] && [ "$s15" = true ]; then
+  printf '%s\n' '  Action: uninstall jit-s15 only. Stop/disable jit-s15.service and its Secret Service; stop the working VM and prove it stopped; then remove the units and journald config.' \
+  '  Retain identities (jit-s15, jit-s15-vmm), linger, packages, Bun, releases, launcher, sudoers rule, config, state, working-VM disks and keyring/unlock file.'
+elif [ "$s15" = true ]; then
+  printf '%s\n' \
+  '  Action: install, repair or upgrade jit-s15; preserve existing config and state.' \
+  '  S15 layout: /opt/jit-s15 release/Bun, /etc/jit-s15/s15-runtime.json, /var/lib/jit-s15 state, /var/lib/jit-s15-vm working VM; default loopback 127.0.0.1:3002.' \
+  '  Install core dependencies plus sudo, openssh-client, qemu-system, qemu-utils, cloud-image-utils and netcat-openbsd (Debian/Ubuntu).' \
+  '  Download SHA-256-pinned Bun 1.4.2 for this architecture to /opt/jit-s15/bin/bun.' \
+  '  Create/verify non-login jit-s15 (controller) and jit-s15-vmm (working-VM QEMU, kvm group) identities and the jit-s15-vm group; jit-s15 leaves the kvm group.' \
+  '  Without a kvm group, install the controller alone (no QEMU identity, launcher or sudo rule); the Web offers enrolling your own VM.' \
+  '  Enable linger for both; install the jit-s15 Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
+  '  Install /opt/jit-s15/libexec/jit-s15-vmm and a visudo-checked sudoers rule: jit-s15 may run only that launcher, only as jit-s15-vmm.' \
+  '  Build/install the sealed release; write a credential-free /etc/jit-s15/s15-runtime.json once (Codex route; no policy, budget or GitHub rule).' \
+  '  Initialize only a new state directory (init --s15); existing state is never re-initialized or migrated.' \
+  '  Install/enable/start hardened jit-s15.service and a bounded journald namespace; switch /opt/jit-s15/current atomically; the working VM keeps running.' \
+  '  Probe local health. A failed upgrade restores the previous release and unit; a failed fresh install removes the new unit and new state.' \
+  '  Right after health, deliver the 15-minute first-owner link only through private fd 3 to /dev/tty; unattended logs receive no link.' \
+  '  Follow the automatic working computer (a KVM VM run as jit-s15-vmm), print its progress and the remaining owner Web steps.'
+  if [ -z "$source_dir" ]; then printf '  Download release artifact/checksum from %s.\n' "$release_url"; fi
+elif [ "$uninstall" = true ]; then
   printf '  Action: uninstall %s only. Stop/disable its service and Secret Service; remove their units and journald config.\n' "$name"
   printf '%s\n' '  Retain identity, linger, packages, Bun, releases, config, data, backups, attachments and keyring/unlock file.'
   if [ "$s14" = true ]; then printf '%s\n' '  Retain Bot disk images and mount units. Legacy installation data and services are preserved.'; fi
@@ -167,7 +194,9 @@ if [ "$yes" != true ]; then
 fi
 
 if [ "$dry" = true ]; then
-  if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --computer-slots "$computer_slots"; then exit 0; fi
+  set -- apply --root "$root" --dry-run true --source "$source_dir" --uninstall "$uninstall" "$selector" "$selected"
+  if [ "$s15" = false ]; then set -- "$@" --computer-slots "$computer_slots"; fi
+  if "$bun" "$source_dir/ops/package/installer/main.ts" "$@"; then exit 0; fi
   reported=true; exit 1
 fi
 
@@ -183,7 +212,8 @@ if [ "$(id -u)" != 0 ]; then
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
   fi
   set -- --yes
-  if [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"
+  if [ "${s15:-false}" = true ]; then set -- "$@" --s15
+  elif [ "$s14" = true ]; then set -- "$@" --s14 --computer-slots "$computer_slots"
   else set -- "$@" --legacy
   fi
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
@@ -220,15 +250,25 @@ root_path() {
 step=trusted-paths
 next='use root-owned non-symlink installation paths, Bun and system/config parents without group/other write; do not reuse service-owned code'
 for protected in /opt/$name/bin/bun /opt/$name/releases /etc/$name/service-config.json /etc/systemd/system/$name.service /etc/systemd/journald@$name.conf; do root_path "$protected"; done
+if [ "$s15" = true ]; then for protected in /etc/jit-s15/s15-runtime.json /opt/jit-s15/libexec/jit-s15-vmm /etc/sudoers.d/jit-s15-vmm /var/lib/jit-s15-vm; do root_path "$protected"; done; fi
 install -d -m 755 /opt/$name /opt/$name/bin /opt/$name/releases
 scratch=$(mktemp -d /opt/$name/.install.XXXXXXXX)
 # Bun must not discover cwd-local .env/bunfig/preloads from the invoking account.
 cd /
 step=dependencies
 next='restore package registry access, or install curl, unzip, CA certificates, util-linux, useradd, dbus user sessions and gnome-keyring; re-run'
+if [ "$s15" = true ]; then next='restore package registry access, or install curl, unzip, CA certificates, util-linux, useradd, dbus user sessions, gnome-keyring, sudo, openssh-client, qemu-system, qemu-utils, cloud-image-utils and netcat-openbsd; re-run install.sh --s15'; fi
 if [ "$uninstall" = false ]; then
   set --
   if [ "$s14" = true ]; then set -- git e2fsprogs; fi
+  # S15: the controller's SSH client and sudo, plus the nested working VM's QEMU, image, seed and guest-forward tools.
+  if [ "$s15" = true ] && [ "$manager" = apt-get ]; then
+    case "$arch" in
+      x64) set -- sudo openssh-client qemu-system-x86 qemu-utils cloud-image-utils netcat-openbsd ;;
+      arm64) set -- sudo openssh-client qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils netcat-openbsd ;;
+    esac
+  elif [ "$s15" = true ] && [ "$manager" = dnf ]; then set -- sudo openssh-clients
+  fi
   case "$manager" in
     apt-get)
       timeout 600 env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || failed
@@ -241,6 +281,17 @@ if [ "$uninstall" = false ]; then
   for tool in curl unzip sha256sum tar runuser useradd getent loginctl systemctl busctl gnome-keyring-daemon; do command -v "$tool" >/dev/null || failed; done
   if [ "$s14" = true ]; then
     for tool in git prlimit mkfs.ext4 losetup findmnt blkid; do command -v "$tool" >/dev/null || failed; done
+  fi
+  if [ "$s15" = true ]; then
+    for tool in sudo visudo ssh ssh-keygen ssh-keyscan systemd-run usermod gpasswd groupadd id; do command -v "$tool" >/dev/null || failed; done
+    case "$arch" in x64) qemu='qemu-system-x86_64' ;; arm64) qemu='qemu-system-aarch64' ;; esac
+    vm_tools=true
+    for tool in "$qemu" qemu-img cloud-localds nc; do command -v "$tool" >/dev/null || vm_tools=false; done
+    if [ "$arch" = arm64 ] && [ ! -r /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ]; then vm_tools=false; fi
+    if [ "$vm_tools" = false ]; then
+      [ "$manager" != apt-get ] || failed
+      printf '%s\n' 'Working-computer packages are provided for Debian/Ubuntu only; on this distribution the Web offers enrolling your own VM instead.'
+    fi
   fi
 fi
 step='bun-runtime'
@@ -310,5 +361,7 @@ unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -ui
 [ -z "$unsafe" ] || failed
 source_dir=$scratch/source
 chmod 755 "$scratch"
-if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --s14 "$s14" --computer-slots "$computer_slots" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
+set -- apply --root / --source "$source_dir" --uninstall "$uninstall" "$selector" "$selected"
+if [ "$s15" = false ]; then set -- "$@" --computer-slots "$computer_slots"; fi
+if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" "$@" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
 reported=true; exit 1
