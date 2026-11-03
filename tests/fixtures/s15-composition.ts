@@ -20,7 +20,7 @@ export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 export const bound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 32768, activeMs: 10000 });
 /** Boots the production composition in-process. Every model and VM transport is scripted; no inference or live account is used. */
-export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption']) {
+export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption'], tune?: (options: S15CompositionOptions) => S15CompositionOptions) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'jit-composed-'))), directory = join(parent, 'protected');
   let now = 1000, generation = 1, sourceLive = true, service!: Awaited<ReturnType<typeof composeS15>>, turn = 0;
   const google = googleFixture(), engine = recordEngine();
@@ -69,7 +69,8 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: parts } };
   } };
   const interpreter: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) { interpreterPrompts.push(JSON.stringify(request)); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
-  const options = (create: boolean): S15CompositionOptions => ({ runtime: 's15', directory, create, installationId: 'fixture', origin: 'http://localhost:3099',
+  const options = (create: boolean): S15CompositionOptions => tune ? tune(baseOptions(create)) : baseOptions(create);
+  const baseOptions = (create: boolean): S15CompositionOptions => ({ runtime: 's15', directory, create, installationId: 'fixture', origin: 'http://localhost:3099',
     ...(adoption ? { adoption } : {}),
     owner: { authenticate(token) { if (token !== secretSession) throw new AppError('authentication_required', 401); return { proof, csrf }; }, verifyOwner: p => p === proof ? { id: 'owner', generation, expiresAt: 900000 } : null, generation: () => generation, verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError('csrf_rejected', 403); } },
     disclosure: { catalogs: { source: value => dataSources.find(s => equal(s.ref, value)) ?? null, recipient: value => records.get('recipient:' + value.id) ?? null, approvals: () => recipientApprovals },

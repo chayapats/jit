@@ -357,3 +357,11 @@ test('protected VM manager registration is owner/CSRF checked and persists only 
   const rows = f.service.vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_managers').all(); expect(rows).toHaveLength(1); expect(rows[0]!.data).not.toContain(token);
   await f.reopen(); expect(f.service.vmStore.db.query('SELECT id FROM vm_managers').all()).toHaveLength(1); expect(f.vmCalls).toHaveLength(0);
 });
+
+test('composed MODEL work enforces the conversation model-call ceiling before every stream', async () => {
+  const f = await composedFixture('default', false, undefined, o => ({ ...o, conversation: { ...o.conversation, limits: { ...o.conversation.limits, modelCalls: 1 } } })); fixtures.push(f);
+  const row = await f.chat('Run the requested command in the working computer');
+  // The scripted run needs a second stream after the tool call; the one-call conversation ceiling refuses it.
+  expect(row.state).toBe('held'); expect(row.code).toBe('budget_exhausted'); expect(f.modelPrompts).toHaveLength(1);
+  expect(f.service.policy.control.usage().unsettled).toBe(0);
+});

@@ -178,7 +178,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
         try { const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction,
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal);
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');

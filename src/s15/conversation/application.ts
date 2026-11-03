@@ -395,7 +395,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
             }
           } };
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model") }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model,
+      // The conversation's own durable per-call ceiling applies on every path; MODEL/POLICY limits are separate and also apply.
+      const countModelCall = () => this.store.transaction(() => {
+        guard("model"); const current = this.store.request(id);
+        if (current.modelCalls >= current.authority!.limits.modelCalls) throw new AppError("budget_exhausted");
+        current.modelCalls++; this.store.save(current);
+      });
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model,
         guard: () => guard("model"),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);

@@ -135,7 +135,8 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   /** Privacy-only check before the public interpreter stream; it grants no tools or execution scope. */
   guardInterpretation?: (work: WorkContext, request: unknown) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
-  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }

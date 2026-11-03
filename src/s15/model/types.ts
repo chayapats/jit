@@ -52,9 +52,13 @@ export interface ModelBudgetView {
   selections: Omit<ModelSelectionRecord, 'output'>[];
   unsettled: number;
 }
+/** Trusted caller hooks for one step. They can only refuse a call, never widen MODEL/POLICY limits. */
+export interface ModelStepHooks { beforeCall(): void }
 /** Host-only step execution; Schway owns the loop/retries/compaction and Jit never refreshes credentials. */
 export interface ModelService {
-  runStep(actor: WorkActor, input: ModelStepInput, signal?: AbortSignal): Promise<ModelSelectionRecord>;
+  /** `hooks.beforeCall` is the caller's own durable per-model-call ceiling (for example CHAT's
+   * `limits.modelCalls`), run before every stream's POLICY reservation; the stricter limit always applies. */
+  runStep(actor: WorkActor, input: ModelStepInput, signal?: AbortSignal, hooks?: ModelStepHooks): Promise<ModelSelectionRecord>;
   /** Read-only reconciliation from already recorded POLICY transport facts. It never recreates a native
    * invocation or result. Unknown effect outcomes remain the responsibility/owning adapter's concern. */
   reconcile(owner: import('../policy').OwnerActor, recordId: string): ModelSelectionRecord;

@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { createHost, type HostClock, type Model, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
+import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
 import { add, canonical, digest, equal, exact, fail, id, nat, ref, selection, string, unknownUsage, vector, zero } from '../policy/validation';
@@ -96,7 +97,7 @@ export function openModelService(options: ModelOptions): ModelService {
     });
   }
   return {
-    async runStep(actor, input, signal) {
+    async runStep(actor, input, signal, hooks) {
       if (signal?.aborted) fail('cancelled'); const record = prepare(actor, input); active.add(record.id);
       let host: Awaited<ReturnType<typeof createHost>> | undefined;
       const save = () => journal.tx(() => journal.put(record.id, record));
@@ -125,8 +126,9 @@ export function openModelService(options: ModelOptions): ModelService {
             try {
               if (ordinal >= 64) fail('budget_exhausted');
               guard(actor, record); if (signal?.aborted) fail('cancelled');
+              hooks?.beforeCall();
               return options.policy.work.reserveModelCall(actor, { requestId: 'mc_' + digest('s15.model.call.v1', { step: record.id, ordinal: ordinal++ }), selection: record.route.selection, upperBound: record.route.upperBound! });
-            } catch (error) { if (error instanceof PolicyError) streamCode = error.code; throw error; }
+            } catch (error) { if (error instanceof PolicyError || error instanceof AppError) streamCode = error.code; throw error; }
           })();
           record.reservations.push(reservation.id); const sample = { reservationId: reservation.id, usage: null as ModelUsage | null }; record.tokenSamples.push(sample); save();
           let dispatched = false, complete = false, outputBytes = 0; const started = (clock.monotonicNow ?? clock.now)();
