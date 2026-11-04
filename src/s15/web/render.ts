@@ -1,11 +1,15 @@
 import { currentLocale, tr, trMaybe, type MessageKey } from "../../i18n";
 import { banner, e, icon, pill } from "../../s14/web-pages";
 import { s14AssetUrl } from "../../s14/web-assets";
-import { logoLockup } from "../../web-logo";
+import { logoLockup, logoMark } from "../../web-logo";
 import type { ConversationListEntry } from "../conversation";
 import { s15AssetUrl } from "./assets";
 
 export { banner, e, icon, pill };
+/** Existing monochrome identity and line-icon geometry for the approved S15 conversation surface. */
+export const jitMark = () => logoMark({ size: 26 });
+/** Decorative line icons; labels and authority always come from the server-rendered control. */
+export const experienceIcon = (name: "search" | "file" | "attach") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${name === "search" ? "m16 16 4 4M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0" : name === "file" ? "M5 2h9l5 5v15H5V2Zm9 0v6h5M8 12h8m-8 4h8" : "m9 17 8-8a3 3 0 0 0-4-4l-9 9a5 5 0 0 0 7 7l9-9"}"/></svg>`;
 /** Typed key lookup for computed `s15.*` names; unknown names fall back through {@link trMaybe}. */
 export const key = (name: string) => name as MessageKey;
 
@@ -65,20 +69,37 @@ export const standalonePage = (title: string, content: string) => documentPage(t
 export interface S15Nav { conversations: ConversationListEntry[]; needs: number; current: string }
 export interface S15ShellOptions { subtitle?: string; dock?: string; live?: boolean; conversationId?: string; cursor?: number; banner?: string }
 
+const destinations = [["/memory", "s15.nav.memory"], ["/library", "s15.nav.library"], ["/resources/computer", "s15.nav.computer"], ["/resources/accounts", "s15.nav.accounts"], ["/resources/websites", "s15.nav.websites"], ["/resources/github", "s15.nav.github"], ["/resources/telegram", "s15.nav.telegram"], ["/rules", "s15.nav.rules"], ["/models", "s15.nav.models"], ["/recovery", "s15.nav.recovery"], ["/setup", "s15.nav.setup"]] as const;
+
+/** Search only the freshly authorized navigation and conversation titles; it grants no additional access. */
+export function searchBody(nav: S15Nav, query = "", prefix = "s15-search"): string {
+  const items = [["/chats/new", tr("s15.nav.new")], ["/needs", tr("s15.nav.needs")], ["/work", tr("s15.nav.work")], ...destinations.map(([path, label]) => [path, tr(label)]), ...nav.conversations.map(item => [`/chats/${item.conversationId}`, clip(item.firstMessage, 70)])];
+  const text = [...query].slice(0, 200).join("");
+  const matches = items.filter(([, label]) => label!.toLocaleLowerCase().includes(text.trim().toLocaleLowerCase()));
+  return `<form class="s15-search-form" method="get" action="/search"><label class="sr-only" for="${prefix}-input">${tr("s15.search.label")}</label><input class="s15-search-field" id="${prefix}-input" name="q" type="search" maxlength="200" value="${e(text)}" placeholder="${tr("s15.search.placeholder")}" autocomplete="off"><button class="s-btn">${tr("s15.search.open")}</button></form><nav class="s15-search-results" aria-label="${tr("s15.search.results")}">${matches.map(([href, label]) => `<a class="s-link" href="${e(href!)}">${e(label!)}</a>`).join("")}</nav><p class="s-note" id="${prefix}-empty"${matches.length ? " hidden" : ""}>${tr("s15.search.empty")}</p>`;
+}
+
 /** S15 Plain shell: the S14 sidebar layout without Work mode, grants or per-Bot computers. */
 export function shell(nav: S15Nav, title: string, content: string, options: S15ShellOptions = {}): string {
   const here = (path: string) => nav.current === path ? ' aria-current="page"' : "";
   const needs = `<a class="s-link" href="/needs"${here("/needs")}>${icon(nav.needs ? "alert" : "check")}<span class="s-label">${tr("s15.nav.needs")}</span><span class="s15-needs-count" data-needs-count>${nav.needs ? `<span class="s-nav-number">${nav.needs}</span>` : ""}</span></a>`;
   const chats = nav.conversations.map(item => `<li><a class="s-link s-chat-link" href="/chats/${e(item.conversationId)}#latest"${here(`/chats/${item.conversationId}`)}><span class="s-label">${e(clip(item.firstMessage))}</span></a></li>`).join("");
-  const manage = ([["/memory", "s15.nav.memory"], ["/resources/computer", "s15.nav.computer"], ["/resources/accounts", "s15.nav.accounts"], ["/resources/websites", "s15.nav.websites"], ["/resources/github", "s15.nav.github"], ["/resources/telegram", "s15.nav.telegram"], ["/rules", "s15.nav.rules"], ["/models", "s15.nav.models"], ["/recovery", "s15.nav.recovery"], ["/setup", "s15.nav.setup"]] as const)
-    .map(([path, label]) => `<li><a class="s-link" href="${path}"${here(path)}><span class="s-label">${tr(label)}</span></a></li>`).join("");
-  const navigation = (mobile: boolean) => `<nav aria-label="${tr("s15.nav.label")}${mobile ? ` · ${tr("s14.plain.mobile")}` : ""}"><a class="s-link s-new-chat" href="/chats/new">${icon("plus")}<span class="s-label">${tr("s15.nav.new")}</span></a>
+  const link = ([path, label]: typeof destinations[number]) => `<li><a class="s-link" href="${path}"${here(path)}><span class="s-label">${tr(label)}</span></a></li>`;
+  const groups = [
+    { title: "s15.nav.resources", glyph: "team", rows: destinations.slice(2, 7) },
+    { title: "s15.nav.preferences", glyph: "lock", rows: destinations.slice(7, 9) },
+    { title: "s15.nav.installation", glyph: "info", rows: destinations.slice(9) },
+  ] as const;
+  const manage = destinations.slice(0, 2).map(link).join("") + groups.map(group => `<li><details class="s15-nav-group"${group.rows.some(([path]) => path === nav.current) ? " open" : ""}><summary>${icon(group.glyph)}${tr(key(group.title))}</summary><ul>${group.rows.map(link).join("")}</ul></details></li>`).join("");
+  const navigation = (mobile: boolean) => `<nav aria-label="${tr("s15.nav.label")}${mobile ? ` · ${tr("s14.plain.mobile")}` : ""}"><a class="s-link s-new-chat" href="/chats/new">${icon("plus")}<span class="s-label">${tr("s15.nav.new")}</span></a><a class="s-link" href="/search" data-s15-search>${experienceIcon("search")}<span class="s-label">${tr("s15.search.open")}</span></a>
     <ul><li>${needs}</li><li><a class="s-link" href="/work"${here("/work")}>${icon("work")}<span class="s-label">${tr("s15.nav.work")}</span></a></li></ul><p class="s-nav-sec">${tr("s15.nav.conversations")}</p><ul class="s-chat-list">${chats || `<li><p class="s-nav-note">${tr("s15.nav.no_conversations")}</p></li>`}</ul>
-    <p class="s-nav-sec">${tr("s15.nav.manage")}</p><ul>${manage}</ul></nav>`;
+    <p class="s-nav-sec">${tr("s15.nav.manage")}</p><ul>${manage}</ul><p class="s15-nav-foot">${tr("s15.nav.local")}</p></nav>`;
   const side = `<aside class="s-nav" aria-label="${tr("s15.nav.label")}"><a class="s-lockup" href="/" aria-label="${tr("s14.jit")}">${logoLockup({ height: 36, label: "Jit" })}</a>${navigation(false)}</aside>`;
   const mobile = `<details class="s-mobile-nav"><summary aria-label="${tr("s14.plain.navigation")}">${icon("more")}</summary><div class="s-mobile-panel">${navigation(true)}</div></details>`;
   const count = `<a class="s-needs" href="/needs">${icon(nav.needs ? "alert" : "check")}<span>${tr("s15.nav.needs")}${nav.needs ? ` ${nav.needs}` : ""}</span></a>`;
-  return documentPage(title, `<div class="s-app s15-app"${options.conversationId ? ` data-conversation="${e(options.conversationId)}" data-cursor="${options.cursor ?? 0}"` : ""}>${side}<main class="s-main" id="main-content"><div class="s-chatcol"><header class="s-hdr">${mobile}<div class="s-hdr-t"><h1>${e(title)}</h1>${options.subtitle ? `<small>${e(options.subtitle)}</small>` : ""}</div>${count}</header>
+  const search = `<dialog class="s15-dialog" id="s15-search" aria-labelledby="s15-search-title"><div class="s15-dialog-head"><h2 id="s15-search-title">${tr("s15.search.open")}</h2><button type="button" data-s15-close aria-label="${tr("s15.common.close")}">${icon("close")}</button></div><div class="s15-dialog-body">${searchBody(nav)}</div></dialog>`;
+  const detail = `<dialog class="s15-dialog s15-detail" id="s15-detail" aria-labelledby="s15-detail-title"><div class="s15-dialog-head"><button type="button" data-s15-detail-back hidden aria-label="${tr("s15.common.back")}">${icon("back")}</button><h2 id="s15-detail-title" tabindex="-1"></h2><a class="s-link-text" data-s15-detail-page href="/work">${tr("s15.detail.full_page")}</a><button type="button" data-s15-close aria-label="${tr("s15.common.close")}">${icon("close")}</button></div><div class="s15-dialog-body" data-s15-detail-body></div></dialog>`;
+  return documentPage(title, `<div class="s-app s15-app" data-shell-version="premium-v1"${options.conversationId ? ` data-conversation="${e(options.conversationId)}" data-cursor="${options.cursor ?? 0}"` : ""}>${side}<main class="s-main" id="main-content"><div class="s-chatcol"><header class="s-hdr">${mobile}<div class="s-hdr-t"><h1>${e(title)}</h1>${options.subtitle ? `<small>${e(options.subtitle)}</small>` : ""}</div><a class="s15-hdr-search" href="/search" data-s15-search aria-label="${tr("s15.search.open")}">${experienceIcon("search")}</a>${count}</header>
     <div id="s15-banner" data-region>${options.banner ?? ""}</div><div class="s-scroll"${options.live ? ' data-live="true"' : ""}>${content}</div>${options.dock ?? ""}</div></main>
-    <p class="sr-only" role="status" aria-live="polite" id="s15-phase" data-working="${tr("s15.live.working")}" data-needs="${tr("s15.live.needs_one")}" data-done="${tr("s15.live.done")}" data-reconnected="${tr("s15.recovery.reconnected")}" data-reset="${tr("s15.recovery.reset")}"></p><p class="sr-only" aria-live="polite" id="s15-needs-live">${nav.needs ? fill("s15.live.needs", { n: nav.needs }) : ""}</p></div>`);
+    ${search}${detail}<p class="sr-only" role="status" aria-live="polite" id="s15-phase" data-working="${tr("s15.live.working")}" data-needs="${tr("s15.live.needs_one")}" data-done="${tr("s15.live.done")}" data-reconnected="${tr("s15.recovery.reconnected")}" data-reset="${tr("s15.recovery.reset")}"></p><p class="sr-only" aria-live="polite" id="s15-needs-live">${nav.needs ? fill("s15.live.needs", { n: nav.needs }) : ""}</p></div>`);
 }

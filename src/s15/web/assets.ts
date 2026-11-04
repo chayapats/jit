@@ -15,7 +15,7 @@ function asset(name: S15AssetName, contentType: string, source: string): StaticA
 const own: ReadonlyMap<S15AssetName, StaticAsset> = new Map<S15AssetName, StaticAsset>([
   ["s15.css", asset("s15.css", "text/css; charset=utf-8", s15StyleSheet())],
   // Only public detector shapes enter the browser, so a credential-shaped draft is never kept locally.
-  ["s15.js", asset("s15.js", "text/javascript; charset=utf-8", `const s15CredentialPatterns = ${JSON.stringify(CREDENTIAL_PATTERNS.map(({ pattern }) => [pattern.source, pattern.flags.replace("g", "")]))}.map(([source, flags]) => new RegExp(source, flags));\n` + readFileSync(join(import.meta.dir, "enhance.js"), "utf8"))],
+  ["s15.js", asset("s15.js", "text/javascript; charset=utf-8", `const s15CredentialPatterns = ${JSON.stringify(CREDENTIAL_PATTERNS.map(({ pattern }) => [pattern.source, pattern.flags.replace("g", "")]))}.map(([source, flags]) => new RegExp(source, flags));\n` + readFileSync(join(import.meta.dir, "motion.js"), "utf8") + "\n" + readFileSync(join(import.meta.dir, "enhance.js"), "utf8"))],
 ]);
 const byPath = new Map([...own.values()].map(item => [item.path, item]));
 /** Content-hashed URL of one S15 asset. */

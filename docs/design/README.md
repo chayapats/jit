@@ -224,6 +224,10 @@ COMM01, COMM02 and COMM04 (S12-D05, D06, D08) keep the conversation to one short
 - **Quiet team.** When Jit calls specialists, its reply is one line saying whom it is asking. The team card stays collapsed to one summary line: "กำลังถาม เทคโนโลยี, ออกแบบ" while the team works, "ทีมตอบแล้ว: เทคโนโลยี, ออกแบบ" after the team answer, and "ถาม … แล้ว" when the team stopped without one. The status pill keeps the counts in words. The card opens by itself only when something waits on the owner (a route wait, a blocked result, a hold or a failed team answer). Notifications default to "Only what needs me" ([dispatch allowance](../contracts/dispatch-allowance-v1.md#quiet-team-work-s12-d06)).
 - **Reply chips.** Under Jit's newest answer, 1–3 suggested replies sit as quiet outlined pills (the `.choice` look: `--line-strong` border, pill radius, `--size-sm`). Long Thai text wraps inside the pill and never scrolls the page sideways. A tap sends exactly that text as the owner's message. Chips never appear beside a proposal, task, MCP, dispatch or approval card, or while any reply is live ([reply chips](../contracts/jit-reply-v1.md#s12-comm04-reply-chips)). With script, the chips appear in place when the streamed answer is saved.
 
+## S15 premium Web follow-up
+
+The [S15 premium Web follow-up](S15-premium-web.md) records the owner-approved presentation and motion implementation in the opt-in S15 shell, its current service bindings, research source IDs and verification boundaries. S14 remains the implemented default; owner-host activation is separate.
+
 ## S14 design proposal
 
 The [S14 experience](S14-bot-first-experience.md) and [standalone interactive prototype](s14-bot-first-prototype.html) are authored by Claude Opus 5.5 with orchestrator effort high. They propose the bot-first replacement for the project-centric layouts documented above. See the [approved product spec](../specs/S14-bot-first-local-assistant.md) and [parent contract/factual resolutions](../contracts/s14-authority-and-design-resolutions.md). The prototype is fixture-only and is not the shipped product.
