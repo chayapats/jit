@@ -5760,6 +5760,7 @@ export const th = {
   "s15.detail.full_page": "เปิดเต็มหน้า",
   "s15.common.back": "กลับ",
   "s15.composer.quote": "ถามต่อจากคำตอบนี้",
+  "s15.composer.quote_full": "เพิ่มคำอ้างอิงไม่ได้ เพราะข้อความจะยาวเกินขีดจำกัด ร่างของคุณยังอยู่ครบ",
   "s15.composer.attach": "ไฟล์แนบ",
   "s15.composer.attach_unavailable": "S15 ยังไม่รองรับการแนบไฟล์ในบทสนทนานี้ คุณวางข้อความที่ต้องการให้อ่านได้",
   "s15.composer.keyboard_hint": "Enter ส่ง · Shift+Enter ขึ้นบรรทัดใหม่",

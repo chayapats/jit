@@ -34,6 +34,7 @@ const s15Motion = (() => {
           if (current === transition) { region.style.removeProperty("view-transition-name"); nextRegion?.style.removeProperty("view-transition-name"); current = null; }
           else if (!region.isConnected) region.style.removeProperty("view-transition-name");
         });
+        return transition.updateCallbackDone;
       } catch { commit(); region.style.removeProperty("view-transition-name"); }
     },
     enter(element, back = false) {

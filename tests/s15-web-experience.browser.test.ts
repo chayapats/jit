@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { actionsFixture, conversationId } from "./fixtures/s15-web-actions";
 import { newId, origin, webFixture } from "./fixtures/s15-web";
 import { th } from "../src/i18n/th";
+import { ref } from "./fixtures/s15-policy";
 
 // Opt-in real-browser checks over the production handler. All HTTP is intercepted in process; no server,
 // provider, account, external website, credential store or installed host is contacted.
@@ -214,4 +215,102 @@ browserTest("mobile reduced-motion and no-script surfaces retain real links and 
     } finally { await clean(ui.context); }
   }
   fixture.cleanup();
+}, 30000);
+
+browserTest("polling during an unfocused pending send keeps its form and the next message gets a fresh request id", async () => {
+  let keepLive = true, holdPost = true, release!: () => void, admitted!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; }), accepted = new Promise<void>(resolve => { admitted = resolve; });
+  const fixture = webFixture(ports => ({ conversation: { ...ports.conversation, view(actor, id) {
+    const view = ports.conversation.view(actor, id);
+    return keepLive ? { ...view, rows: view.rows.map(row => ({ ...row, progress: { ...row.progress, active: true } })) } : view;
+  } } })), conversation = newId();
+  await fixture.send(conversation, "Create hello.txt containing hello."); await fixture.app.drain();
+  const ui = await surface(async request => {
+    const response = await fixture.handler(request);
+    if (request.method === "POST" && holdPost) { holdPost = false; await fixture.app.drain(); admitted(); await blocked; }
+    return response;
+  }, () => fixture.app.drain());
+  try {
+    await ui.page.goto(`${origin}/chats/${conversation}`); await ready(ui.page);
+    const cursor = await ui.page.locator(".s15-app").getAttribute("data-cursor");
+    const submittedId = await ui.page.locator('#s15-composer input[name="requestId"]').inputValue();
+    await ui.page.locator("#s15-text").fill("Create second.txt containing hello."); await ui.page.locator(".s-send").click(); await accepted;
+    await ui.page.locator(".s-hdr h1").click();
+    await ui.page.waitForFunction(before => Number(document.querySelector<HTMLElement>(".s15-app")?.dataset.cursor) > Number(before), cursor);
+    expect(await ui.page.locator("#s15-composer").getAttribute("data-busy")).toBe("true");
+    expect(await ui.page.locator("#s15-text").evaluate((area: HTMLTextAreaElement) => area.readOnly)).toBe(true);
+    expect(await ui.page.locator('#s15-composer input[name="requestId"]').inputValue()).toBe(submittedId);
+    release(); await ui.page.waitForFunction(() => (document.querySelector("#s15-text") as HTMLTextAreaElement)?.value === "");
+    expect(await ui.page.locator('#s15-composer input[name="requestId"]').inputValue()).not.toBe(submittedId);
+    keepLive = false;
+    const next = ui.page.waitForResponse(response => new URL(response.url()).pathname === "/s15/forms/message");
+    await ui.page.locator("#s15-text").fill("Create third.txt containing hello."); await ui.page.locator(".s-send").click();
+    expect((await next).status()).toBe(200);
+    await ui.page.waitForFunction(() => (document.querySelector("#s15-text") as HTMLTextAreaElement)?.value === "");
+    expect(fixture.ports.conversation.view(fixture.actor, conversation).rows).toHaveLength(3); expect(fixture.counts().calls).toBe(3);
+    expect(ui.mutations).toEqual(["/s15/forms/message", "/s15/forms/message"]); expect(ui.errors).toEqual([]);
+  } finally { release(); await clean(ui.context); fixture.cleanup(); }
+}, 30000);
+
+browserTest("Back restores an action's conversation underlay before reopening its current revision", async () => {
+  const fixture = actionsFixture();
+  const github = { repository: ref("repo"), issue: 42, target: "main", head: "a".repeat(40), evidenceHash: "e".repeat(64), checksPassed: true, reviewsPassed: false, acceptancePassed: true, production: "would_deploy" as const, deploymentFence: null };
+  await fixture.hold({ operation: "merge", classes: ["github_merge", "production"], resources: [ref("repo")], recipients: [], payload: { contract: "s15-github-effect/v1", key: "k", repository: "chayapats/sandbox", target: "main", issue: 42, head: github.head, base: "b".repeat(16), branch: "jit/42", evidenceHash: github.evidenceHash, snapshotVersion: "1", operation: { kind: "merge", pull: 7 }, bundle: { ...ref("bundle") }, diffHash: "d".repeat(64), mergeRequirements: null }, github }, "Merge PR 7");
+  const ui = await surface(fixture.handler, () => fixture.app.drain());
+  try {
+    await ui.page.goto(`${origin}/chats/${conversationId}#latest`); await ready(ui.page);
+    await ui.page.locator('.s15-slip-compact a[href^="/actions/"]').first().click(); await ui.page.waitForFunction(() => document.querySelector("#s15-detail[open]"));
+    await ui.page.locator('#s15-detail a[href^="/rules"]').first().click(); await ui.page.waitForURL(url => url.pathname === "/rules");
+    fixture.revise({ payload: { to: "fixture-recipient", body: "Current content after visiting rules" } });
+    await ui.page.goBack();
+    await ui.page.waitForFunction(id => document.querySelector<HTMLElement>(".s15-app")?.dataset.conversation === id && document.querySelector('#s15-detail[open] input[name=revision]')?.getAttribute("value") === "2", conversationId);
+    expect(new URL(ui.page.url()).pathname).toBe(`/chats/${conversationId}`); expect(new URL(ui.page.url()).hash).toBe("#latest");
+    expect(await ui.page.locator("#s15-thread").count()).toBe(1);
+    expect(await ui.page.locator("#s15-detail").textContent()).toContain("Current content after visiting rules");
+    await ui.page.locator("#s15-detail [data-s15-close]").click(); await ui.page.waitForFunction(() => !document.querySelector("#s15-detail[open]"));
+    expect(new URL(ui.page.url()).pathname).toBe(`/chats/${conversationId}`);
+    await ui.page.locator('.s15-slip-compact a[href^="/actions/"]').first().click(); await ui.page.waitForFunction(() => document.querySelector("#s15-detail[open]"));
+    expect(new URL(ui.page.url()).pathname).toBe(`/chats/${conversationId}`);
+    expect(ui.mutations).toEqual([]); expect(fixture.f.calls).toBe(0); expect(ui.errors).toEqual([]);
+  } finally { await clean(ui.context); fixture.cleanup(); }
+}, 30000);
+
+browserTest("quoting into a nearly full composer keeps every draft byte and its saved copy", async () => {
+  const fixture = webFixture(), conversation = newId(); await fixture.send(conversation, "Create hello.txt containing hello."); await fixture.app.drain();
+  const ui = await surface(fixture.handler, () => fixture.app.drain());
+  try {
+    await ui.page.goto(`${origin}/chats/${conversation}`); await ready(ui.page);
+    const draft = `${"a".repeat(16370)}TAIL`;
+    await ui.page.locator("#s15-text").fill(draft); await ui.page.locator("[data-s15-quote]").first().click();
+    expect(await ui.page.locator("#s15-text").inputValue()).toBe(draft);
+    expect(await ui.page.evaluate(id => JSON.parse(localStorage.getItem(`s15-draft:${id}`)!).text, conversation)).toBe(draft);
+    expect(await ui.page.locator("[data-quote-limit]:visible").textContent()).toBe(th["s15.composer.quote_full"]);
+    await ui.page.locator("#s15-text").fill("Short draft"); expect(await ui.page.locator("[data-quote-limit]:visible").count()).toBe(0);
+    await ui.page.locator("[data-s15-quote]").first().click();
+    expect(await ui.page.locator("#s15-text").inputValue()).toStartWith("> Finished;"); expect(await ui.page.locator("#s15-text").inputValue()).toEndWith("Short draft");
+    expect(ui.mutations).toEqual([]); expect(ui.errors).toEqual([]);
+  } finally { await clean(ui.context); fixture.cleanup(); }
+}, 30000);
+
+browserTest("tablet navigation overlays the page without moving its header or composer, including without script", async () => {
+  const fixture = webFixture(), conversation = newId();
+  try {
+    for (const script of [true, false]) {
+      const ui = await surface(fixture.handler, () => fixture.app.drain(), { script });
+      try {
+        await ui.page.goto(`${origin}/chats/${conversation}`); if (script) await ready(ui.page);
+        for (const width of [800, 900, 1023]) {
+          await ui.page.setViewportSize({ width, height: 900 });
+          const header = (await ui.page.locator(".s-hdr").boundingBox())!, composer = (await ui.page.locator("#s15-composer").boundingBox())!;
+          await ui.page.locator(".s-mobile-nav > summary").click();
+          const opened = (await ui.page.locator(".s-hdr").boundingBox())!, afterComposer = (await ui.page.locator("#s15-composer").boundingBox())!, panel = (await ui.page.locator(".s-mobile-panel").boundingBox())!;
+          expect(Math.abs(opened.height - header.height)).toBeLessThan(1); expect(Math.abs(afterComposer.y - composer.y)).toBeLessThan(1);
+          expect(panel.height).toBeLessThanOrEqual(631); expect(panel.x).toBeGreaterThanOrEqual(12); expect(panel.x + panel.width).toBeLessThanOrEqual(width - 12);
+          expect(await ui.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+          await ui.page.locator(".s-mobile-nav > summary").click();
+        }
+        expect(ui.mutations).toEqual([]); expect(ui.errors).toEqual([]);
+      } finally { await clean(ui.context); }
+    }
+  } finally { fixture.cleanup(); }
 }, 30000);

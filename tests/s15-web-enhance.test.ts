@@ -150,15 +150,27 @@ test("live refresh replaces changed rows except the focused one, and reconnect r
 });
 
 /** Live poll fixture: one events page, then the fresh render produced by `fresh`. */
-async function livePoll(dom: ReturnType<typeof composerDom>, fresh: { getElementById(id: string): unknown; querySelector(selector: string): unknown }, events: { events: unknown[]; cursor: number; needs: number }) {
+async function livePoll(dom: ReturnType<typeof composerDom>, fresh: { getElementById(id: string): unknown; querySelector(selector: string): unknown }, events: { events: unknown[]; cursor: number; needs: number }, post?: () => Promise<unknown>) {
   const scroll = new FakeElement(), timers: (() => Promise<void>)[] = [], urls: string[] = [];
   let live = true;
   dom.document.querySelector = (selector: string) => selector === ".s15-app" ? dom.app : selector === "[data-live]" ? live ? scroll : null : selector === ".s-scroll" ? scroll : null;
-  const ctx = context(dom, async url => { urls.push(String(url)); return String(url).includes("/events") ? { ok: true, status: 200, json: async () => events } : { ok: true, status: 200, text: async () => "fresh" }; }, timers);
+  const ctx = context(dom, async (url, init) => { urls.push(String(url)); if ((init as { method?: string } | undefined)?.method === "POST" && post) return post(); return String(url).includes("/events") ? { ok: true, status: 200, json: async () => events } : { ok: true, status: 200, text: async () => "fresh" }; }, timers);
   ctx.DOMParser = class { parseFromString() { return fresh; } } as never;
   runInNewContext(source, ctx);
   return { timers, urls, scroll, setLive: (value: boolean) => { live = value; } };
 }
+
+test("an unfocused pending composer survives a poll and rotates its request id only after the receipt", async () => {
+  const dom = composerDom(), next = makeComposer("req-fresh"); dom.area.value = "Create hello.txt";
+  let release!: (value: unknown) => void;
+  const pending = new Promise(resolve => { release = resolve; });
+  const run = await livePoll(dom, { getElementById: id => id === "s15-composer" ? next.form : null, querySelector: () => null }, { events: [{ sequence: 5 }], cursor: 5, needs: 0 }, () => pending);
+  const sent = dom.form.fire("submit");
+  await run.timers.shift()!();
+  expect(dom.elements.get("s15-composer")).toBe(dom.form); expect(dom.area.readOnly).toBe(true); expect(dom.requestId.value).toBe("req-original");
+  release({ ok: true, status: 200, text: async () => "fresh" }); await sent;
+  expect(dom.elements.get("s15-composer")).toBe(next.form); expect(next.area.value).toBe(""); expect(next.requestId.value).toBe("req-fresh");
+});
 
 test("a live refresh keeps an unchecked answer choice and its exact question reference with the draft", async () => {
   const dom = composerDom("conv1", { value: "question-r3", revision: "3", checked: false });

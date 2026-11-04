@@ -59,7 +59,7 @@ function swapRegions(fresh, keepComposer) {
     if (empty && next.querySelector(".s15-row")) empty.remove();
   }
   const composer = doc.getElementById("s15-composer"), fresher = fresh.getElementById("s15-composer");
-  if (composer && fresher && !composer.contains(doc.activeElement)) {
+  if (composer && fresher && !composer.contains(doc.activeElement) && pendingComposers.get(composer.dataset.conversation || conversation) !== composer) {
     const copy = doc.importNode(fresher, true);
     if (keepComposer) {
       // A live refresh keeps what the owner typed and the request id a resend must reuse.
@@ -110,7 +110,7 @@ function wireComposer(form) {
   if (area) {
     let beforeInput = null;
     area.addEventListener("beforeinput", () => { beforeInput = form.getBoundingClientRect?.() || null; });
-    area.addEventListener("input", () => { saveDraft(form); s15Motion.layout(form, beforeInput); beforeInput = null; });
+    area.addEventListener("input", () => { const limit = form.querySelector("[data-quote-limit]"); if (limit) limit.hidden = true; saveDraft(form); s15Motion.layout(form, beforeInput); beforeInput = null; });
     area.addEventListener("keydown", event => {
       // Enter sends; Shift+Enter is a newline; an IME composition Enter never sends.
       if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
@@ -118,7 +118,7 @@ function wireComposer(form) {
     });
   }
   const clear = form.querySelector("[data-draft-clear]");
-  if (clear) clear.addEventListener("click", () => { if (area) area.value = ""; clearDraft(form); if (area) area.focus(); });
+  if (clear) clear.addEventListener("click", () => { if (area) area.value = ""; const limit = form.querySelector("[data-quote-limit]"); if (limit) limit.hidden = true; clearDraft(form); if (area) area.focus(); });
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (form.dataset.busy) return;
@@ -178,7 +178,10 @@ function onQuote(event) {
   event.preventDefault();
   const form = doc.getElementById("s15-composer"), before = form?.getBoundingClientRect?.();
   const quoted = [...(answer.textContent || "")].slice(0, 2000).join("").split("\n").map(line => `> ${line}`).join("\n");
-  area.value = `${quoted}\n\n${area.value}`.slice(0, 16384); area.focus();
+  const prefix = `${quoted}\n\n`, limit = form?.querySelector("[data-quote-limit]");
+  if (prefix.length + area.value.length > (area.maxLength > 0 ? area.maxLength : 16384)) { if (limit) limit.hidden = false; area.focus(); return; }
+  if (limit) limit.hidden = true;
+  area.value = `${prefix}${area.value}`; area.focus();
   if (form) { saveDraft(form); s15Motion.layout(form, before); }
 }
 function wireCopy(root) {
@@ -274,6 +277,7 @@ if (provisioning && globalThis.location) {
     const next = fresh.querySelector('.s15-app[data-shell-version="premium-v1"]');
     if (!next || fresh.querySelector('script[type="module"][src]')?.getAttribute("src") !== asset || fresh.querySelector('input[type="password"], #s15-takeover-bar, [data-s15-refresh]')) throw new Error("navigation_requires_document");
     const resolved = new URL(response.headers.get("content-location") || response.url || url.href, url.href);
+    if (!resolved.hash && url.hash) resolved.hash = url.hash;
     if (!allowed(resolved)) throw new Error("navigation_requires_document");
     return { document: fresh, url: resolved };
   };
@@ -303,7 +307,7 @@ if (provisioning && globalThis.location) {
       if (sensitiveView()) { location.assign(url.href); return; }
       closeSurface(false); search.close();
       const previousConversation = conversation, previousText = currentComposer()?.querySelector("textarea")?.value || "";
-      s15Motion.run(() => {
+      await s15Motion.run(() => {
         if (ticket !== navigation) return;
         if (timer !== null) { clearTimeout(timer); timer = null; }
         const nextApp = fresh.querySelector(".s15-app");
@@ -325,6 +329,7 @@ if (provisioning && globalThis.location) {
         if (push) history.pushState({ s15: true }, "", url.href);
         focusPage(url); if (conversation && doc.querySelector("[data-live]")) schedule(400);
       });
+      return ticket === navigation;
     } catch (error) { if (error.name !== "AbortError" && ticket === navigation) location.assign(url.href); }
   }
   async function openDetail(url, push = true, depth = 1) {
@@ -393,9 +398,19 @@ if (provisioning && globalThis.location) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && !detail.open && !sensitiveView()) { event.preventDefault(); if (search.open) search.close(); else { search.showModal(); search.querySelector("input").focus(); } }
   });
   detail.addEventListener("cancel", event => { event.preventDefault(); closeDetails(); });
-  globalThis.addEventListener("popstate", () => {
+  globalThis.addEventListener("popstate", async () => {
     remember();
-    if (history.state?.detail) { const url = new URL(history.state.detail, location.href); if (allowed(url)) { openDetail(url, false, history.state.depth || 1); return; } }
+    const entry = history.state, base = new URL(location.href);
+    if (entry?.detail) {
+      const url = new URL(entry.detail, base);
+      if (allowed(url)) {
+        if (base.href !== currentPageUrl) {
+          if (!await navigatePage(base, false)) return;
+          if (location.href !== base.href || history.state?.detail !== entry.detail || history.state?.depth !== entry.depth) return;
+        }
+        openDetail(url, false, entry.depth || 1); return;
+      }
+    }
     if (location.href === currentPageUrl) { begin(); closeSurface(); return; }
     navigatePage(new URL(location.href), false);
   });

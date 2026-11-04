@@ -59,4 +59,6 @@ The opt-in browser suite uses the production handler, hashed assets, real CHAT a
 
 Coverage includes exact current revision/hash on detail return, one native approval dispatch, cancellation while reopening, latest-navigation wins, draft/caret recovery, blocked storage, missing View Transitions, live reduced motion, mobile width and typography, no-script search and quoting, current result access and no unsolicited commands or external requests. Existing tests retain policy, unknown outcomes, privacy, account and production-gate checks.
 
+Review regression coverage also exercises polling after a pending sender loses focus, a second message receiving a fresh request identity, returning from rules through an action to its original conversation, full-draft preservation when a quote will not fit, and bounded navigation at 800, 900 and 1023 pixels with and without script. Restoring a detail's underlying page awaits the fresh DOM update before reading that detail again.
+
 Live owner-host activation, Safari/iOS hardware keyboard behavior, paid model calls, real uploads, account connections and production effects are not certified by these local tests. No runtime selection, service composition, deployment, credentials or protected control-plane behavior is changed by this follow-up.

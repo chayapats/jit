@@ -5756,6 +5756,7 @@ export const en: Record<MessageKey, string> = {
   "s15.detail.full_page": "Open full page",
   "s15.common.back": "Back",
   "s15.composer.quote": "Ask about this answer",
+  "s15.composer.quote_full": "There is not enough room for this quote. Your draft is unchanged.",
   "s15.composer.attach": "Attachments",
   "s15.composer.attach_unavailable": "File attachments are not supported in this S15 conversation yet. You can paste text to read.",
   "s15.composer.keyboard_hint": "Enter to send · Shift+Enter for a new line",
