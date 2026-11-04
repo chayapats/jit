@@ -1,3 +1,5 @@
+import { s15ExperienceStyle } from "./experience-style";
+
 /**
  * S15 conversational additions (UX15-01), layered after the S14 Plain stylesheet. No new token: every value is an
  * existing S14/shared token or a structural length (ui.token_lint/v1, handoff §8). Classes are `s15-` prefixed.
@@ -89,5 +91,5 @@ export function s15StyleSheet(): string {
 .s15-ghc-replace summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .s-strip-acts .s-btn, .s15-chips .s-btn { min-height: 44px; }
 @media (max-width: 399px) { .s-strip-acts { flex-direction: column; align-items: stretch; } }
-`;
+${s15ExperienceStyle()}`;
 }

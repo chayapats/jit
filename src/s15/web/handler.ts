@@ -18,10 +18,11 @@ import { telegramBody, telegramSaved } from "./telegram";
 import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
 import type { ResponsibilityProjection } from "../work";
-import { codeText, e, fill, refusal, shell, standalonePage, type S15Nav } from "./render";
+import { codeText, e, fill, refusal, searchBody, shell, standalonePage, type S15Nav } from "./render";
 import { accountRows, computerCard, enrollmentFlow, ruleLists, rulesCard, setupBody, toMinor, type S15ComputerLocal, type S15ComputerProgress } from "./setup";
 import { policyReviewCard } from "./policy-review";
 import { githubConnectionBody } from "./github-connection";
+import { libraryBody } from "./library";
 import { addComputer, memberName, poolList } from "./computers";
 import type { S15BudgetEntry, S15ForgetImpact, S15GithubCapture, S15MemoryClaim, S15ModelBudgetView, S15WebConversation, S15WebPorts } from "./types";
 
@@ -55,7 +56,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
   const now = options.now ?? Date.now;
   const headers = (type: string, extra: Record<string, string> = {}) => ({ "Content-Type": `${type}; charset=utf-8`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": type === "text/html" ? "same-origin" : "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy, ...extra });
-  const html = (body: string, status = 200, locale: Locale = "th") => new Response(body, { status, headers: headers("text/html", { "Content-Language": locale, Vary: "Accept-Language, Cookie" }) });
+  const html = (body: string, status = 200, locale: Locale = "th") => new Response(body, { status, headers: headers("text/html", { "Content-Language": locale, Vary: "Accept-Language, Cookie, X-Jit-Enhanced" }) });
   const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: headers("application/json") });
   const redirect = (location: string) => new Response("", { status: 303, headers: headers("text/html", { Location: location }) });
   const readForm = async (request: Request): Promise<Record<string, string>> => {
@@ -90,6 +91,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         throw new AppError("authentication_required", 401);
       }
       const { actor, csrf } = ports.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1));
+      const enhanced = request.headers.get("x-jit-enhanced") === "1";
+      const located = (response: Response, path: string) => { response.headers.set("Content-Location", path); return response; };
       locale = ports.locale?.(actor) ?? locale;
       const fields = request.method === "POST" ? await readForm(request) : {};
       if (request.method === "POST") { ports.authentication.verifyCsrf(csrf, fields.csrf); if (!idPattern.test(fields.requestId ?? "")) throw new AppError("invalid_body"); }
@@ -143,6 +146,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         }
         const prefill = (() => {
           if (extra.draft) return extra.draft;
+          const quote = url.searchParams.get("quote"), quoted = quote ? view?.rows.find(row => row.requestId === quote)?.result?.text : null;
+          if (quoted) return { text: `${[...quoted].slice(0, 2000).join("").split("\n").map(line => `> ${line}`).join("\n")}\n\n`, requestId: null, answer: null };
           const start = url.searchParams.get("start"), answer = url.searchParams.get("answer"), pick = url.searchParams.get("pick");
           if (start && /^\d{1,9}$/.test(start)) {
             const ready = Object.values(extras).some(item => item.readiness?.rows.some(entry => entry.issue === Number(start) && entry.state === "ready"));
@@ -297,7 +302,11 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       if (request.method === "GET") {
         settleResumes();
         if (url.pathname === "/") return redirect(ports.rules && ports.rules.current(actor) ? "/chats/new" : "/setup");
-        if (url.pathname === "/chats/new") return redirect(`/chats/${crypto.randomUUID().replaceAll("-", "")}`);
+        if (url.pathname === "/chats/new") {
+          const conversationId = crypto.randomUUID().replaceAll("-", ""), path = `/chats/${conversationId}`;
+          // Presentation negotiation only: a new empty conversation creates no journal, task or authority.
+          return enhanced ? located(chatPage(conversationId), path) : redirect(path);
+        }
         const chat = /^\/chats\/([A-Za-z0-9_-]{1,128})(\/events)?$/.exec(url.pathname);
         if (chat?.[2]) {
           const after = url.searchParams.get("after") ?? "0";
@@ -305,6 +314,14 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           return json({ ...ports.conversation.events(actor, chat[1]!, Number(after)), needs: needs().length });
         }
         if (chat) return chatPage(chat[1]!);
+        if (url.pathname === "/search") { const navigation = nav("/search"); return render(() => shell(navigation, tr("s15.search.open"), `<div class="s-col">${searchBody(navigation, url.searchParams.get("q") ?? "", "s15-page-search")}</div>`)); }
+        if (url.pathname === "/library") {
+          const conversationId = url.searchParams.get("conversation"), requestId = url.searchParams.get("request");
+          const items = views().flatMap(view => view.rows.filter(row => !row.decision && (row.result || row.evidence.length)).map(row => ({ conversationId: view.conversationId, row }))).sort((a, b) => b.row.receipt.receivedAt - a.row.receipt.receivedAt);
+          const selected = requestId ? items.find(item => item.conversationId === conversationId && item.row.requestId === requestId) ?? null : null;
+          if (requestId && !selected) throw new AppError("not_found", 404);
+          return render(() => shell(nav("/library"), tr("s15.library.title"), libraryBody(items.slice(0, 100), selected)));
+        }
         if (url.pathname === "/needs") return render(() => shell(nav("/needs"), tr("s15.needs.title"), needsBody({ items: needs(), decisions: decisions(), duties: dutyList() ?? [], browsers: browsers(), csrf })));
         const action = /^\/actions\/([A-Za-z0-9_-]{1,128})(?:\/attachments\/(\d{1,2}))?$/.exec(url.pathname);
         if (action) {
@@ -389,7 +406,8 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           return chatPage(conversationId, { refused: code, draft: { text: kept, requestId: code === "request_id_conflict" ? null : fields.requestId!, answer, ...(dutyId ? { duty: dutyId } : {}) } }, statusOf(error) >= 500 ? 503 : 409);
         }
         void ports.conversation.drain().then(settleResumes).catch(() => {});
-        return redirect(`/chats/${conversationId}${before ? `?dup=${fields.requestId}` : ""}#latest`);
+        const destination = `/chats/${conversationId}${before ? `?dup=${fields.requestId}` : ""}#latest`;
+        return enhanced ? located(chatPage(conversationId, { duplicate: before ?? null }), destination) : redirect(destination);
       }
       if (url.pathname === "/s15/forms/stop") {
         only(fields, ["csrf", "requestId", "target"]);
