@@ -23,11 +23,19 @@ export function parseMemoryQuery(params: URLSearchParams): ClientMemoryQuery {
 }
 
 const stateOf = (claim: MemoryClaimView): ClientMemoryState => claim.lifecycle !== "active" ? claim.lifecycle : claim.sourceState === "withdrawn" ? "withdrawn" : "active";
-/** A Bot may retrieve a claim only when its own and every transitive dependency's scope admits that Bot. */
-function visibleTo(byId: Map<string, MemoryClaimView>, claim: MemoryClaimView, botId: string, seen = new Set<string>()): boolean {
-  if (seen.has(claim.id)) return false; seen.add(claim.id);
-  const scope = claim.provenance.scope; if (scope.kind === "bot" && scope.botId !== botId) return false;
-  return claim.dependencies.every(parent => { const value = byId.get(parent); return !!value && visibleTo(byId, value, botId, seen); });
+/**
+ * A Bot may retrieve a claim only when its own and every transitive dependency's scope admits that Bot.
+ * `path` detects real cycles; `memo` lets shared ancestors (diamonds) be checked once without being
+ * mistaken for a cycle.
+ */
+function visibleTo(byId: Map<string, MemoryClaimView>, claim: MemoryClaimView, botId: string, memo: Map<string, boolean>, path = new Set<string>()): boolean {
+  const known = memo.get(claim.id); if (known !== undefined) return known;
+  if (path.has(claim.id)) return false; path.add(claim.id);
+  try {
+    const scope = claim.provenance.scope;
+    const allowed = (scope.kind !== "bot" || scope.botId === botId) && claim.dependencies.every(parent => { const value = byId.get(parent); return !!value && visibleTo(byId, value, botId, memo, path); });
+    memo.set(claim.id, allowed); return allowed;
+  } finally { path.delete(claim.id); }
 }
 function item(index: MemoryOwnerIndex, claim: MemoryClaimView): ClientMemoryItem {
   const state = stateOf(claim), text = state === "active" ? claim.text : "", chars = Array.from(text), scope = claim.provenance.scope;
@@ -35,7 +43,7 @@ function item(index: MemoryOwnerIndex, claim: MemoryClaimView): ClientMemoryItem
     snippet: chars.length > snippetLength ? chars.slice(0, snippetLength - 1).join("") + "…" : text,
     scope: scope.kind === "team" ? { kind: "team" } : { kind: "bot", botId: scope.botId },
     source: { kind: claim.provenance.origin.kind, conversationId: claim.provenance.origin.conversationId, at: claim.provenance.origin.at, files: index.files[claim.id]?.length ?? 0 },
-    supersedes: claim.supersedes, correction: claim.correction, createdAt: claim.createdAt, lastUsedAt: index.usage[claim.id]?.lastUsedAt ?? null };
+    supersedes: claim.supersedes, correction: claim.correction, createdAt: claim.createdAt, lastUsedAt: index.usage[claim.id]?.lastUsedAt ?? null, contexts: index.usage[claim.id]?.contexts ?? 0 };
 }
 
 /**
@@ -44,13 +52,13 @@ function item(index: MemoryOwnerIndex, claim: MemoryClaimView): ClientMemoryItem
  * Withdrawn or erased text never matches a query.
  */
 export function searchMemory(index: MemoryOwnerIndex, query: ClientMemoryQuery): ClientMemoryList {
-  const byId = new Map(index.claims.map(claim => [claim.id, claim]));
+  const byId = new Map(index.claims.map(claim => [claim.id, claim])), memo = new Map<string, boolean>();
   const bots = [...new Set(index.claims.flatMap(claim => claim.provenance.scope.kind === "bot" ? [claim.provenance.scope.botId] : []))].sort();
   const eligible = index.claims.filter(claim => {
     const state = stateOf(claim);
     if (query.state === "active" && state !== "active" || query.state === "inactive" && state === "active") return false;
     if (query.kind !== "all" && claim.kind !== query.kind || query.category !== "all" && claim.category !== query.category) return false;
-    return query.bot === null || visibleTo(byId, claim, query.bot);
+    return query.bot === null || visibleTo(byId, claim, query.bot, memo);
   });
   const needle = normalize(query.q), terms = needle ? lexicalTerms(needle) : null;
   const ranked = eligible.flatMap(claim => {

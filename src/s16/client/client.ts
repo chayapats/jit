@@ -11,6 +11,8 @@ export interface JitClientOptions { origin: string; fetch?: (request: Request) =
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : "client_unavailable";
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const invalid = (): never => { throw new JitClientError("client_protocol_invalid", null, "response"); };
 const id = (value: string) => { if (!identifier(value)) throw new JitClientError("invalid_identity", null, "not_sent"); return value; };
 
@@ -144,14 +146,18 @@ export class JitClient {
     if (query.q) params.set("q", query.q); if (query.kind !== "all") params.set("kind", query.kind); if (query.category !== "all") params.set("category", query.category);
     if (query.state !== "active") params.set("state", query.state); if (query.bot !== null) params.set("bot", id(query.bot)); if (query.offset) params.set("offset", String(query.offset));
     const data = await this.call(`/memory${params.size ? "?" + params : ""}`, "GET", undefined, signal);
-    if (!record(data) || data.contract !== "s16-client-memory/v1" || !record(data.query) || !Number.isSafeInteger(data.total) || data.limit !== 50 || !Array.isArray(data.items) || data.items.length > 50 || !Array.isArray(data.bots) || data.bots.some(bot => !identifier(bot))) return invalid();
+    const echo = record(data) ? data.query : null;
+    if (!record(data) || data.contract !== "s16-client-memory/v1" || !record(echo) || typeof echo.q !== "string" || !["all", "fact", "inference"].includes(echo.kind as string) || !["all", "fact", "preference", "working_knowledge"].includes(echo.category as string) || !["active", "inactive", "all"].includes(echo.state as string) || echo.bot !== null && !identifier(echo.bot) || !count(echo.offset) || !count(data.total) || data.limit !== 50 || !Array.isArray(data.items) || data.items.length > 50 || !Array.isArray(data.bots) || data.bots.some(bot => !identifier(bot))) return invalid();
     for (const entry of data.items) if (!this.memoryItem(entry)) return invalid();
     return data as unknown as ClientMemoryList;
   }
   /** Fresh owner detail for one item, including file-source state and correction chain labels. */
   async memoryDetail(claimId: string, signal?: AbortSignal): Promise<ClientMemoryDetail> {
     const data = await this.call(`/memory/${id(claimId)}`, "GET", undefined, signal);
-    if (!record(data) || data.contract !== "s16-client-memory-detail/v1" || !this.memoryItem(data.item) || data.item.id !== claimId || typeof data.item.text !== "string" || typeof data.item.quote !== "string" || !Array.isArray(data.files) || !Array.isArray(data.chain) || data.chain.some(entry => !this.memoryItem(entry)) || !record(data.uses)) return invalid();
+    const uses = record(data) ? data.uses : null;
+    if (!record(data) || data.contract !== "s16-client-memory-detail/v1" || !this.memoryItem(data.item) || data.item.id !== claimId || typeof data.item.text !== "string" || typeof data.item.quote !== "string" || data.item.text.length > 2048 || data.item.quote.length > 2048
+      || !Array.isArray(data.files) || data.files.length > 128 || data.files.some(file => !record(file) || !identifier(file.sourceId) || !sha256(file.sha256) || file.representationSha256 !== null && !sha256(file.representationSha256) || typeof file.current !== "boolean")
+      || !Array.isArray(data.chain) || data.chain.length > 64 || data.chain.some(entry => !this.memoryItem(entry)) || !record(uses) || !["contexts", "summaries", "artifacts", "workItems"].every(key => count(uses[key]))) return invalid();
     return data as unknown as ClientMemoryDetail;
   }
   /**
@@ -163,13 +169,21 @@ export class JitClient {
     if (input.contract !== "s15-memory-command/v1" || !Number.isSafeInteger(input.claim.revision) || input.claim.revision < 1 || input.kind === "memory.correct" && (typeof input.text !== "string" || !input.text.trim() || input.text.length > 2048)) throw new JitClientError("invalid_memory_command", null, "not_sent", input.requestId);
     const data = await this.call("/memory/commands", "POST", input, signal, input.requestId);
     const unknown = () => new JitClientError("client_protocol_invalid", null, input.kind === "memory.impact" ? "response" : "unknown", input.requestId);
-    if (!record(data) || !record(data.impact) || !record(data.claim) && data.claim !== null) throw unknown();
-    if (input.kind === "memory.impact") { if (data.contract !== "s15-memory-impact/v1" || !record(data.claim) || data.claim.id !== input.claim.id) throw unknown(); }
+    const impact = record(data) ? data.impact : null;
+    if (!record(data) || !record(impact) || !["claims", "sources", "summaries", "artifacts", "contexts", "nativeSessions", "workItems"].every(key => count(impact[key])) || !record(data.claim) && data.claim !== null || record(data.claim) && (!identifier(data.claim.id) || !Number.isSafeInteger(data.claim.revision) || (data.claim.revision as number) < 1)) throw unknown();
+    if (input.kind === "memory.impact") { if (data.contract !== "s15-memory-impact/v1" || !record(data.claim) || data.claim.id !== input.claim.id || data.claim.revision !== input.claim.revision) throw unknown(); }
     else if (data.contract !== "s15-memory-receipt/v1" || data.requestId !== input.requestId || data.kind !== input.kind || input.kind === "memory.correct" && (!record(data.claim) || !identifier(data.claim.id))) throw unknown();
     return data as unknown as ClientMemoryResult;
   }
+  /** Complete item shape check, so malformed data fails as `client_protocol_invalid` instead of rendering. */
   private memoryItem(value: unknown): value is Record<string, unknown> {
-    return record(value) && identifier(value.id) && Number.isSafeInteger(value.revision) && ["fact", "inference"].includes(value.kind as string) && ["active", "superseded", "forgotten", "withdrawn"].includes(value.state as string) && typeof value.snippet === "string" && value.snippet.length <= 560 && record(value.scope) && record(value.source) && Number.isSafeInteger(value.createdAt);
+    if (!record(value) || !identifier(value.id) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 1) return false;
+    const scope = value.scope, source = value.source, link = (entry: unknown) => entry === null || identifier(entry);
+    return ["fact", "inference"].includes(value.kind as string) && ["fact", "preference", "working_knowledge"].includes(value.category as string) && ["owner_stated", "observed", "unconfirmed"].includes(value.confirmation as string)
+      && ["active", "superseded", "forgotten", "withdrawn"].includes(value.state as string) && typeof value.snippet === "string" && Array.from(value.snippet).length <= 280
+      && record(scope) && (scope.kind === "team" && Object.keys(scope).length === 1 || scope.kind === "bot" && identifier(scope.botId))
+      && record(source) && ["owner_message", "work", "historical"].includes(source.kind as string) && (source.conversationId === null || identifier(source.conversationId)) && count(source.at) && count(source.files)
+      && link(value.supersedes) && link(value.correction) && count(value.createdAt) && (value.lastUsedAt === null || count(value.lastUsedAt)) && count(value.contexts);
   }
   /** Drop authority material when a native session signs out; callers also discard private projections. */
   clear(): void { this.#csrf = null; this.#sessionGeneration++; }

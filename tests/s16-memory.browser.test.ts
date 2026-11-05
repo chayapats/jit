@@ -89,3 +89,53 @@ browserTest.each([1440, 390])("actual S16 memory search, inspect, correct, forge
     expect(await noOverflow()).toBe(true); expect(errors).toEqual([]); expect(external).toEqual([]);
   } finally { await context.close(); await f.close(); }
 }, 60000);
+
+browserTest.each([1440, 390])("memory deep links leave chat drafts usable, Chats leaves memory, and an unknown change survives selection at width %i", async width => {
+  const model: Model = { provider: "codex-subscription", id: "fixture-model", async *stream() { yield { type: "message_complete", message: { type: "assistant", id: crypto.randomUUID(), content: [{ type: "text", text: "Noted." }] } }; } };
+  const f = await composedFixture("default", false, undefined, options => ({ ...options, model: { ...options.model, scripted: () => model } }));
+  f.interpretation = { intent: "answer", purposeId: "purpose", resourceIds: ["computer"], access: "read", subject: null };
+  for (const [id, text] of [["pref", "I prefer concise replies."], ["zone", "My timezone is Asia/Bangkok."]] as const) {
+    expect((await f.request(`/api/s16/client/conversations/${id}/messages`, "POST", { contract: "s15-conversation/v1", requestId: id, conversationId: id, text, continuation: null })).status).toBe(202); await f.service.conversation.drain();
+  }
+  const claims = f.service.memory.view(f.owner).claims, preference = claims.find(claim => claim.text.includes("concise"))!;
+  const context = await browser.newContext({ viewport: { width, height: 900 }, locale: width === 1440 ? "en-US" : "th-TH" }), copy = width === 1440 ? en : th;
+  const errors: string[] = []; let dropForget = true;
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url()); if (url.origin !== "http://localhost:3099") { await route.abort(); return; }
+    const headers = { ...request.headers(), host: "localhost:3099" }, body = request.method() === "POST" ? request.postDataJSON() : undefined;
+    const response = await f.request(url.pathname + url.search, request.method(), body, headers);
+    // The server applies the forget, but the browser never sees the response: an unknown outcome.
+    if (dropForget && body?.kind === "memory.forget") { dropForget = false; await route.abort("connectionreset"); return; }
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+  const page = await context.newPage(); page.on("pageerror", error => errors.push(error.message));
+  try {
+    await page.goto(`http://localhost:3099/s16/memory#${preference.id}`);
+    const dialog = page.getByRole("dialog", { name: copy["s16.memory.detail"] });
+    await dialog.locator(".memory-text").getByText("I prefer concise replies.", { exact: true }).waitFor();
+    await dialog.getByRole("button", { name: copy["s16.memory.forget"], exact: true }).click();
+    await dialog.getByText(copy["s16.memory.forgetLimits"], { exact: true }).waitFor();
+    await dialog.getByRole("button", { name: copy["s16.memory.forgetConfirm"], exact: true }).click();
+    await dialog.getByText(copy["s16.memory.unknown"], { exact: true }).waitFor();
+    expect(f.service.memory.view(f.owner).claims.find(claim => claim.id === preference.id)!.lifecycle).toBe("forgotten");
+
+    // Selecting another item keeps the unresolved command and blocks new changes until it is checked.
+    await dialog.getByRole("button", { name: copy["s16.common.close"], exact: true }).click();
+    await page.getByText(copy["s16.memory.unknown"], { exact: true }).waitFor();
+    await page.getByRole("button", { name: (width === 1440 ? en : th)["s16.memory.open"].replace("{text}", "My timezone is Asia/Bangkok."), exact: true }).click();
+    await dialog.getByText(copy["s16.memory.unknown"], { exact: true }).waitFor();
+    expect(await dialog.getByRole("button", { name: copy["s16.memory.forget"], exact: true }).isDisabled()).toBe(true);
+    await dialog.getByRole("button", { name: copy["s16.memory.checkAgain"], exact: true }).click();
+    await dialog.getByText(copy["s16.memory.forgotten"], { exact: true }).waitFor();
+    expect(f.service.memory.view(f.owner).claims.filter(claim => claim.lifecycle === "forgotten")).toHaveLength(1);
+    expect(await dialog.getByRole("button", { name: copy["s16.memory.forget"], exact: true }).isDisabled()).toBe(false);
+    await dialog.getByRole("button", { name: copy["s16.common.close"], exact: true }).click();
+
+    // The claim hash from the memory link never becomes a chat recovery request.
+    if (width === 390) await page.locator(".mobile-nav").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
+    else await page.locator(".rail").getByRole("button", { name: `● ${copy["s16.chat.title"]}`, exact: true }).click();
+    const composer = page.getByRole("textbox", { name: copy["s16.chat.prompt"], exact: true }); await composer.waitFor();
+    expect(await composer.isDisabled()).toBe(false); expect(await page.getByText(copy["s16.chat.originalNotFound"], { exact: true }).count()).toBe(0);
+    expect(await page.locator(".memory").count()).toBe(0); expect(page.url()).toMatch(/\/s16\/chat\/[A-Za-z0-9_-]+$/); expect(errors).toEqual([]);
+  } finally { await context.close(); await f.close(); }
+}, 60000);

@@ -5842,6 +5842,7 @@ export const en: Record<MessageKey, string> = {
   "s16.memory.sourceHistorical": "Imported history · {date}",
   "s16.memory.lastUsed": "Last used {date}",
   "s16.memory.neverUsed": "Not used yet",
+  "s16.memory.lastUseUnknown": "Used before last-use times were recorded",
   "s16.memory.stateSuperseded": "Corrected",
   "s16.memory.stateForgotten": "Forgotten",
   "s16.memory.stateWithdrawn": "Source withdrawn",

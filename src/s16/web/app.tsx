@@ -21,7 +21,7 @@ const client = new JitClient({ origin: location.origin });
 function App() {
   const [locale, setLocale] = useState<Locale>(document.documentElement.lang === "en" ? "en" : "th"), t = copy(locale);
   const [boot, setBoot] = useState<Omit<ClientBootstrap, "csrf"> | null>(null), [conversation, setConversation] = useState(() => /^\/s16\/chat\/([A-Za-z0-9_-]{1,128})$/.exec(location.pathname)?.[1] ?? uid());
-  const [snapshot, setSnapshot] = useState<ClientSnapshot | null>(null), [error, setError] = useState<string | null>(null), [drafts, setDrafts] = useState<Record<string, Draft>>(() => { const id = recoveryHash(); return id ? { [conversation]: { ...empty(), recoveryId: id } } : {}; }), [sending, setSending] = useState(false), [menu, setMenu] = useState(false), [search, setSearch] = useState("");
+  const [snapshot, setSnapshot] = useState<ClientSnapshot | null>(null), [error, setError] = useState<string | null>(null), [drafts, setDrafts] = useState<Record<string, Draft>>(() => { const id = memoryPath() ? undefined : recoveryHash(); return id ? { [conversation]: { ...empty(), recoveryId: id } } : {}; }), [sending, setSending] = useState(false), [menu, setMenu] = useState(false), [search, setSearch] = useState("");
   const [authHidden, setAuthHidden] = useState(false), notice = useRef<HTMLDivElement>(null);
   const [memory, setMemory] = useState(memoryPath), [memoryClaim, setMemoryClaim] = useState<string | null>(() => memoryPath() ? recoveryHash() ?? null : null);
   const [library, setLibrary] = useState(false), [preview, setPreview] = useState<FileArtifact | null>(null), [previewText, setPreviewText] = useState<string | null>(null);
@@ -196,7 +196,7 @@ function App() {
       </form></>}
     </main>
     {preview && <aside ref={inspector} className="inspector" role="dialog" aria-modal={matchMedia("(max-width: 900px)").matches} aria-label={t("s16.artifact.preview", { name: preview.name })}><header><h2>{preview.name}</h2><button aria-label={t("s16.common.close")} onClick={closePreview}>×</button></header><p>{preview.mime} · {preview.bytes.toLocaleString()} bytes</p><details><summary>{t("s16.common.details")}</summary><code>{preview.sha256}</code><p>{t("s16.artifact.revision")}</p></details>{previewText === null ? <p role="status">{t("s16.common.loading")}</p> : <pre className="preview-text">{previewText}</pre>}<h3>{t("s16.artifact.sources")}</h3>{rows.find(row => row.requestId === preview.requestId)?.files?.inputs.map(file => <div key={file.id}><p>{file.name}</p>{fileDetails(file)}</div>)}</aside>}
-    <nav className="mobile-nav"><button onClick={() => { setLibrary(false); composer.current?.focus(); }}>{t("s16.nav.chats")}</button><a href="/needs-you">{t("s16.nav.needsYou")}</a><a href="/work">{t("s15.nav.work")}</a><button onClick={() => setMenu(!menu)}>{t("s16.nav.more")}</button></nav>
+    <nav className="mobile-nav"><button onClick={() => { if (memory) navigate(conversation); setLibrary(false); requestAnimationFrame(() => composer.current?.focus()); }}>{t("s16.nav.chats")}</button><a href="/needs-you">{t("s16.nav.needsYou")}</a><a href="/work">{t("s15.nav.work")}</a><button onClick={() => setMenu(!menu)}>{t("s16.nav.more")}</button></nav>
   </div>;
 }
 

@@ -32,9 +32,9 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
   const [query, setQuery] = useState(initialQuery), [text, setText] = useState("");
   const [list, setList] = useState<ClientMemoryList | null>(null), [listState, setListState] = useState<Load>("loading"), [listError, setListError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(initialClaim), [detail, setDetail] = useState<ClientMemoryDetail | null>(null), [detailState, setDetailState] = useState<Load>("loading");
-  const [editing, setEditing] = useState<string | null>(null), [forgetting, setForgetting] = useState<{ state: Load; impact: ClientMemoryImpact | null } | null>(null);
+  const [editing, setEditing] = useState<string | null>(null), [forgetting, setForgetting] = useState<{ claim: { id: string; revision: number }; state: Load; impact: ClientMemoryImpact | null } | null>(null);
   const [command, setCommand] = useState<Command | null>(null), [reload, setReload] = useState(0);
-  const inspector = useRef<HTMLElement>(null), returnFocus = useRef<HTMLElement | null>(null), heading = useRef<HTMLHeadingElement>(null), notice = useRef<HTMLDivElement>(null);
+  const current = useRef<string | null>(initialClaim), inspector = useRef<HTMLElement>(null), returnFocus = useRef<HTMLElement | null>(null), heading = useRef<HTMLHeadingElement>(null), notice = useRef<HTMLDivElement>(null);
   const date = (value: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { dateStyle: "medium", timeStyle: "short" }).format(value);
   const fail = (error: unknown) => { if (code(error) === "client_response_stale") return true; if (privateFailure(error)) { onFailure(error); return true; } return false; };
 
@@ -47,7 +47,7 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
     return () => stop.abort();
   }, [available, query, reload]);
   useEffect(() => {
-    onSelect?.(selected); setEditing(null); setForgetting(null);
+    current.current = selected; onSelect?.(selected); setEditing(null); setForgetting(null);
     if (!selected || !available) { setDetail(null); return; }
     const stop = new AbortController(); setDetailState("loading"); setDetail(null);
     client.memoryDetail(selected, stop.signal).then(data => { if (!stop.signal.aborted) { setDetail(data); setDetailState("ready"); } })
@@ -66,8 +66,10 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
     document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key);
   }, [selected]);
 
-  function open(item: ClientMemoryItem, origin: HTMLElement) { returnFocus.current = origin; setCommand(null); setSelected(item.id); }
-  function close() { const id = selected; setSelected(null); setCommand(current => current?.state === "unknown" ? current : null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-memory-id="${id}"]`)?.focus(); }); }
+  /** Clears only settled notices. A pending or unknown command keeps its identity and "Check again" until resolved. */
+  function settle() { setCommand(value => value?.state === "pending" || value?.state === "unknown" ? value : null); }
+  function open(item: ClientMemoryItem, origin: HTMLElement) { returnFocus.current = origin; settle(); setSelected(item.id); }
+  function close() { const id = selected; setSelected(null); settle(); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-memory-id="${id}"]`)?.focus(); }); }
   async function run(next: ClientMemoryCommand) {
     setCommand({ command: next, state: "pending" });
     try {
@@ -82,10 +84,13 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
     }
     requestAnimationFrame(() => notice.current?.focus());
   }
+  /** The preview is bound to one exact claim revision; a late response for another selection is dropped. */
   async function previewForget(item: ClientMemoryItem) {
-    setEditing(null); setForgetting({ state: "loading", impact: null });
-    try { const result = await client.memoryCommand({ contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.impact", claim: { id: item.id, revision: item.revision } }); setForgetting(result.contract === "s15-memory-impact/v1" ? { state: "ready", impact: result.impact } : { state: "error", impact: null }); }
-    catch (error) { if (fail(error)) return; setForgetting({ state: "error", impact: null }); setCommand({ command: { contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.impact", claim: { id: item.id, revision: item.revision } }, state: "error", code: code(error) }); }
+    const claim = { id: item.id, revision: item.revision }, still = () => current.current === claim.id;
+    setEditing(null); setForgetting({ claim, state: "loading", impact: null });
+    const command: ClientMemoryCommand = { contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.impact", claim };
+    try { const result = await client.memoryCommand(command); if (still()) setForgetting(value => value?.claim.id === claim.id && value.claim.revision === claim.revision ? result.contract === "s15-memory-impact/v1" && result.claim.id === claim.id && result.claim.revision === claim.revision ? { claim, state: "ready", impact: result.impact } : { claim, state: "error", impact: null } : value); }
+    catch (error) { if (fail(error) || !still()) return; setForgetting(value => value?.claim.id === claim.id ? { claim, state: "error", impact: null } : value); setCommand(value => value?.state === "pending" || value?.state === "unknown" ? value : { command, state: "error", code: code(error) }); }
   }
 
   const kindLabel = (item: ClientMemoryItem) => `${t(item.kind === "fact" ? "s16.memory.kindFact" : "s16.memory.kindInference")} · ${t(item.confirmation === "owner_stated" ? "s16.memory.confirmationOwner" : item.confirmation === "observed" ? "s16.memory.confirmationObserved" : "s16.memory.confirmationUnconfirmed")}`;
@@ -95,6 +100,7 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
   const stateBadge = (item: ClientMemoryItem) => item.state === "active" ? null : <span className={`memory-badge memory-state-${item.state}`}>{t(item.state === "superseded" ? "s16.memory.stateSuperseded" : item.state === "forgotten" ? "s16.memory.stateForgotten" : "s16.memory.stateWithdrawn")}</span>;
   const labels = (item: ClientMemoryItem) => <p className="memory-labels"><span className={`memory-badge memory-kind-${item.kind}`}>{kindLabel(item)}</span><span>{categoryLabel(item)}</span><span>{scopeLabel(item)}</span>{stateBadge(item)}</p>;
   const pending = command?.state === "pending" || command?.state === "unknown";
+  const lastUse = (entry: ClientMemoryItem) => entry.lastUsedAt !== null ? t("s16.memory.lastUsed", { date: date(entry.lastUsedAt) }) : t(entry.contexts > 0 ? "s16.memory.lastUseUnknown" : "s16.memory.neverUsed");
   const commandNotice = command && <div ref={notice} tabIndex={-1} className={`notice memory-notice ${command.state === "done" ? "memory-ok" : ""}`} role={command.state === "done" ? "status" : "alert"}>
     {command.state === "pending" && <p>{t("s16.memory.saving")}</p>}
     {command.state === "done" && <p>{t(command.command.kind === "memory.correct" ? "s16.memory.corrected" : "s16.memory.forgotten")}</p>}
@@ -126,7 +132,7 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
         <ul className="memory-list">{list.items.map(entry => <li key={entry.id}><button type="button" className="memory-row" data-memory-id={entry.id} aria-current={entry.id === selected ? "true" : undefined} aria-label={entry.snippet ? t("s16.memory.open", { text: entry.snippet }) : t("s16.memory.openErased")} onClick={event => open(entry, event.currentTarget)}>
           {entry.snippet ? <span className="memory-snippet">{entry.snippet}</span> : <span className="memory-snippet memory-erased">{t("s16.memory.erased")}</span>}
           {labels(entry)}
-          <small>{sourceLabel(entry)} · {entry.lastUsedAt === null ? t("s16.memory.neverUsed") : t("s16.memory.lastUsed", { date: date(entry.lastUsedAt) })}</small>
+          <small>{sourceLabel(entry)} · {lastUse(entry)}</small>
         </button></li>)}</ul>
         {list.total > list.limit && <nav className="memory-pages" aria-label={t("s16.memory.count", { from, to, total: list.total })}><button type="button" disabled={list.query.offset === 0} onClick={() => setQuery(current => ({ ...current, offset: Math.max(0, current.offset - list.limit) }))}>{t("s16.memory.previous")}</button><button type="button" disabled={to >= list.total} onClick={() => setQuery(current => ({ ...current, offset: current.offset + list.limit }))}>{t("s16.memory.next")}</button></nav>}
       </>)}
@@ -143,21 +149,21 @@ export function MemoryView({ client, t, locale, available, initialClaim = null, 
         {item.kind === "inference" && <p className="limits">{t("s16.memory.inferenceNote")}</p>}
         {item.quote && item.quote !== item.text && <><h3>{t("s16.memory.quote")}</h3><blockquote className="memory-quote">{item.quote}</blockquote></>}
         <h3>{t("s16.memory.about")}</h3>
-        <ul className="memory-facts"><li>{sourceLabel(item)}{item.source.conversationId && <> · <button type="button" className="memory-link" onClick={() => onOpenConversation(item.source.conversationId!)}>{t("s16.memory.sourceConversation")}</button></>}</li><li>{t("s16.memory.created", { date: date(item.createdAt) })}</li><li>{item.lastUsedAt === null ? t("s16.memory.neverUsed") : t("s16.memory.lastUsed", { date: date(item.lastUsedAt) })}</li><li>{t("s16.memory.uses", { contexts: detail.uses.contexts, summaries: detail.uses.summaries, artifacts: detail.uses.artifacts, work: detail.uses.workItems })}</li></ul>
+        <ul className="memory-facts"><li>{sourceLabel(item)}{item.source.conversationId && <> · <button type="button" className="memory-link" onClick={() => onOpenConversation(item.source.conversationId!)}>{t("s16.memory.sourceConversation")}</button></>}</li><li>{t("s16.memory.created", { date: date(item.createdAt) })}</li><li>{lastUse(item)}</li><li>{t("s16.memory.uses", { contexts: detail.uses.contexts, summaries: detail.uses.summaries, artifacts: detail.uses.artifacts, work: detail.uses.workItems })}</li></ul>
         {!!detail.files.length && <details className="memory-files"><summary>{t("s16.memory.fileSources")}</summary>{detail.files.map(file => <div key={file.sourceId + file.sha256}><p><span className="memory-badge">{t(file.current ? "s16.memory.fileCurrent" : "s16.memory.fileWithdrawn")}</span></p><p>{t("s16.memory.fileOriginal")}</p><code>{file.sha256}</code>{file.representationSha256 && <><p>{t("s16.memory.fileDerived")}</p><code>{file.representationSha256}</code></>}</div>)}</details>}
-        {!!detail.chain.length && <><h3>{t("s16.memory.chain")}</h3><ol className="memory-chain">{detail.chain.map(entry => <li key={entry.id}><button type="button" className="memory-link" onClick={() => { setCommand(null); setSelected(entry.id); }}>{entry.snippet || t("s16.memory.openErased")}</button> {stateBadge(entry)}</li>)}</ol></>}
-        {item.state === "active" && !editing && !forgetting && <div className="memory-actions"><button type="button" disabled={pending} onClick={() => { setCommand(null); setEditing(item.text); }}>{t("s16.memory.correct")}</button><button type="button" className="memory-danger" disabled={pending} onClick={() => { setCommand(null); void previewForget(item); }}>{t("s16.memory.forget")}</button></div>}
+        {!!detail.chain.length && <><h3>{t("s16.memory.chain")}</h3><ol className="memory-chain">{detail.chain.map(entry => <li key={entry.id}><button type="button" className="memory-link" onClick={() => { settle(); setSelected(entry.id); }}>{entry.snippet || t("s16.memory.openErased")}</button> {stateBadge(entry)}</li>)}</ol></>}
+        {item.state === "active" && !editing && !forgetting && <div className="memory-actions"><button type="button" disabled={pending} onClick={() => { settle(); setEditing(item.text); }}>{t("s16.memory.correct")}</button><button type="button" className="memory-danger" disabled={pending} onClick={() => { settle(); void previewForget(item); }}>{t("s16.memory.forget")}</button></div>}
         {editing !== null && <form className="memory-edit" onSubmit={event => { event.preventDefault(); if (editing.trim()) void run({ contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.correct", claim: { id: item.id, revision: item.revision }, text: editing.trim() }); }}>
           <label htmlFor="memory-correction">{t("s16.memory.correctLabel")}</label>
           <textarea id="memory-correction" maxLength={2048} value={editing} aria-describedby="memory-correction-help" onChange={event => setEditing(event.target.value)} autoFocus />
           <p id="memory-correction-help" className="limits">{t("s16.memory.correctHelp")} <span aria-live="polite">{t("s16.memory.correctCount", { count: editing.length })}</span></p>
           <div className="memory-actions"><button type="submit" className="primary" disabled={pending || !editing.trim() || editing.trim() === item.text}>{t(command?.state === "pending" ? "s16.memory.saving" : "s16.memory.saveCorrection")}</button><button type="button" disabled={command?.state === "pending"} onClick={() => setEditing(null)}>{t("s16.memory.cancel")}</button></div>
         </form>}
-        {forgetting && <div className="memory-forget" role="group" aria-labelledby="memory-forget-title"><h3 id="memory-forget-title">{t("s16.memory.forgetTitle")}</h3>
+        {forgetting && forgetting.claim.id === item.id && <div className="memory-forget" role="group" aria-labelledby="memory-forget-title"><h3 id="memory-forget-title">{t("s16.memory.forgetTitle")}</h3>
           {forgetting.state === "loading" && <p role="status">{t("s16.memory.forgetLoading")}</p>}
           {forgetting.impact && <p>{t("s16.memory.forgetImpact", { claims: forgetting.impact.claims, sources: forgetting.impact.sources, contexts: forgetting.impact.contexts, summaries: forgetting.impact.summaries, artifacts: forgetting.impact.artifacts, native: forgetting.impact.nativeSessions, work: forgetting.impact.workItems })}</p>}
           <p className="limits">{t("s16.memory.forgetLimits")}</p>
-          <div className="memory-actions"><button type="button" className="memory-danger" disabled={pending || forgetting.state !== "ready"} onClick={() => void run({ contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.forget", claim: { id: item.id, revision: item.revision } })}>{t(command?.state === "pending" ? "s16.memory.saving" : "s16.memory.forgetConfirm")}</button><button type="button" disabled={command?.state === "pending"} onClick={() => setForgetting(null)}>{t("s16.memory.cancel")}</button></div>
+          <div className="memory-actions"><button type="button" className="memory-danger" disabled={pending || forgetting.state !== "ready"} onClick={() => { if (forgetting.claim.id === item.id && forgetting.claim.revision === item.revision) void run({ contract: "s15-memory-command/v1", requestId: uid(), kind: "memory.forget", claim: forgetting.claim }); }}>{t(command?.state === "pending" ? "s16.memory.saving" : "s16.memory.forgetConfirm")}</button><button type="button" disabled={command?.state === "pending"} onClick={() => setForgetting(null)}>{t("s16.memory.cancel")}</button></div>
         </div>}
       </>}
     </aside>}

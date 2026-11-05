@@ -50,7 +50,7 @@ test("owner searches, inspects, corrects and forgets sourced memory, and later m
   expect((await w.say("ask1", "How should replies look?")).result).toBe("Concise reply.");
   const used = await w.detail(original.id);
   expect(used.item).toMatchObject({ text: "I prefer concise replies.", quote: "I prefer concise replies." });
-  expect(used.uses.contexts).toBeGreaterThanOrEqual(1); expect(used.item.lastUsedAt).toEqual(expect.any(Number));
+  expect(used.uses.contexts).toBeGreaterThanOrEqual(1); expect(used.item.lastUsedAt).toEqual(expect.any(Number)); expect(used.item.contexts).toBe(used.uses.contexts);
 
   const impact = await (await w.command({ contract: "s15-memory-command/v1", requestId: "impact1", kind: "memory.impact", claim: { id: original.id, revision: original.revision } })).json();
   expect(impact).toMatchObject({ contract: "s15-memory-impact/v1", impact: { claims: 1, sources: 1 } }); expect(impact.impact.contexts).toBeGreaterThanOrEqual(1);
@@ -187,6 +187,34 @@ test("a Bot filter removes other Bots' private items, including inherited ones, 
   expect(beta.bots).toEqual(["alpha", "beta"]);
   expect(searchMemory(index(values), query({ q: "launch codename falcon" })).total).toBe(4);
   expect(searchMemory(index(values), query({ bot: "gamma" })).items.map(entry => entry.id)).toEqual(["c1"]);
+});
+
+test("shared ancestors are not mistaken for cycles, while real cycles stay hidden", () => {
+  const values = [
+    claim("d1", "Common base fact.", { kind: "team" }),
+    claim("d2", "Middle fact.", { kind: "team" }, { dependencies: ["d1"] }),
+    claim("d3", "Diamond fact uses both.", { kind: "team" }, { dependencies: ["d2", "d1"] }),
+    claim("d4", "Cycle one.", { kind: "team" }, { dependencies: ["d5"] }),
+    claim("d5", "Cycle two.", { kind: "team" }, { dependencies: ["d4"] }),
+  ];
+  expect(searchMemory(index(values), query({ bot: "beta" })).items.map(entry => entry.id).sort()).toEqual(["d1", "d2", "d3"]);
+});
+
+test("the shared client refuses malformed memory responses instead of returning them", async () => {
+  const valid = { id: "c1", revision: 1, kind: "fact", category: "fact", confirmation: "owner_stated", state: "active", snippet: "x", scope: { kind: "team" }, source: { kind: "owner_message", conversationId: "c", at: 1, files: 0 }, supersedes: null, correction: null, createdAt: 1, lastUsedAt: null, contexts: 0 };
+  const page = (item: unknown) => ({ contract: "s16-client-memory/v1", query: query(), total: 1, limit: 50, items: [item], bots: [] });
+  let body: unknown = null;
+  const client = new JitClient({ origin: "http://localhost:3099", async fetch() { return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }); } });
+  body = page(valid); expect((await client.memory(query())).items).toHaveLength(1);
+  for (const broken of [{ source: { ...valid.source, at: "invalid" } }, { lastUsedAt: "yesterday" }, { contexts: -1 }, { scope: { kind: "bot" } }, { category: "secret" }, { snippet: "y".repeat(281) }, { correction: "../x" }]) {
+    body = page({ ...valid, ...broken }); await expect(client.memory(query())).rejects.toMatchObject({ code: "client_protocol_invalid", outcome: "response" });
+  }
+  body = { ...page(valid), query: { ...query(), state: "deleted" } }; await expect(client.memory(query())).rejects.toMatchObject({ code: "client_protocol_invalid" });
+  const detail = { contract: "s16-client-memory-detail/v1", item: { ...valid, text: "x", quote: "x" }, files: [], chain: [], uses: { contexts: 0, summaries: 0, artifacts: 0, workItems: 0 } };
+  body = detail; expect((await client.memoryDetail("c1")).item.text).toBe("x");
+  for (const broken of [{ files: [{ sourceId: "s", sha256: "nothex", representationSha256: null, current: true }] }, { uses: { contexts: 0 } }, { chain: [{ ...valid, state: "gone" }] }]) {
+    body = { ...detail, ...broken }; await expect(client.memoryDetail("c1")).rejects.toMatchObject({ code: "client_protocol_invalid" });
+  }
 });
 
 test("search filters state/kind/category, never matches erased text and bounds snippets and pages", () => {

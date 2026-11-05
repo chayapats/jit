@@ -24,7 +24,7 @@ Only `q`, `kind`, `category`, `state`, `bot` and `offset` are accepted, each at 
 
 1. Start from MEM's owner view, which already erases text of forgotten/superseded claims and of claims whose file sources are withdrawn.
 2. Apply state, kind and category filters.
-3. With `bot`, keep only items whose own scope and every transitive dependency scope is team or that Bot. This runs before relevance scoring and before any snippet is built, so another Bot's private item is never ranked, counted or excerpted.
+3. With `bot`, keep only items whose own scope and every transitive dependency scope is team or that Bot. Shared ancestors are memoized; only a real dependency cycle hides an item. This runs before relevance scoring and before any snippet is built, so another Bot's private item is never ranked, counted or excerpted.
 4. With `q`, match only active text: a normalized substring match scores 100, plus the shared lexical word/trigram score; items below 3 are dropped. Order is score, then newest. Without `q`, newest first.
 5. Snippets are at most 280 characters and are empty for every non-active item.
 
@@ -32,7 +32,7 @@ Without `bot`, the owner sees every scope, matching the existing S15 owner memor
 
 ### Usage and last use
 
-New MEM context/native/summary/artifact derivatives record an optional creation time `at`. `lastUsedAt` is the newest `at` of a context that included the item; rows written before this contract have no time and report `null`. Usage counts include retired lineage so the owner can see past use. Counts describe Jit's retained lineage only; content already shown to a provider, downloaded or sent elsewhere cannot be recalled.
+New MEM context/native/summary/artifact derivatives record an optional creation time `at`. `lastUsedAt` is the newest `at` of a context that included the item; rows written before this contract have no time and report `null`. Each item also carries `contexts`, the retained context count, so a client shows "used, time unknown" rather than "never used" when `lastUsedAt` is null but `contexts` is positive. Usage counts include retired lineage so the owner can see past use. Counts describe Jit's retained lineage only; content already shown to a provider, downloaded or sent elsewhere cannot be recalled.
 
 ## Commands and recovery
 
@@ -42,7 +42,7 @@ Correction supersedes: MEM withdraws TEAM ancestry, tombstones the old claim and
 
 ## Client
 
-`JitClient.memory`, `memoryDetail` and `memoryCommand` validate response shapes. The `/s16/memory` route renders the authored memory view (`src/s16/web/MemoryView.tsx`); conversation rows link to it with the retained item preselected. The S15 server-rendered `/memory` page remains for installations without the capability.
+`JitClient.memory`, `memoryDetail` and `memoryCommand` validate every field the UI renders (enums, identifiers, hashes, non-negative counts and times) and fail `client_protocol_invalid` otherwise. The view keeps a pending or unknown command, with its original identity and "Check again", across item selection and blocks new changes until it resolves; a forget preview is bound to the exact claim revision it was loaded for. The `/s16/memory` route renders the authored memory view (`src/s16/web/MemoryView.tsx`); conversation rows link to it with the retained item preselected. The S15 server-rendered `/memory` page remains for installations without the capability.
 
 ## Evidence
 

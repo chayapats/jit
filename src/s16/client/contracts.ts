@@ -58,6 +58,8 @@ export interface ClientMemoryItem {
   createdAt: number;
   /** Latest recorded context that included this item; null when unused or recorded before v1 timing. */
   lastUsedAt: number | null;
+  /** Retained contexts that included this item. With a null `lastUsedAt`, a positive count means "time unknown". */
+  contexts: number;
 }
 /** Exact search/filter echo. `bot` restricts to items that Bot may retrieve, before any ranking. */
 export interface ClientMemoryQuery { q: string; kind: "all" | "fact" | "inference"; category: "all" | "fact" | "preference" | "working_knowledge"; state: "active" | "inactive" | "all"; bot: string | null; offset: number }

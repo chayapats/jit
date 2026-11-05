@@ -5846,6 +5846,7 @@ export const th = {
   "s16.memory.sourceHistorical": "ประวัติที่นำเข้า · {date}",
   "s16.memory.lastUsed": "ใช้ล่าสุด {date}",
   "s16.memory.neverUsed": "ยังไม่เคยใช้",
+  "s16.memory.lastUseUnknown": "เคยใช้ก่อนเริ่มบันทึกเวลาที่ใช้ล่าสุด",
   "s16.memory.stateSuperseded": "แก้ไขแล้ว",
   "s16.memory.stateForgotten": "ลืมแล้ว",
   "s16.memory.stateWithdrawn": "ถอนที่มาแล้ว",
