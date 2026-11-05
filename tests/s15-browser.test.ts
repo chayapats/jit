@@ -6,6 +6,7 @@ import type { BrokerResponse } from '../src/s15/browser';
 import type { BrowserEngine, EngineOptions, EngineInputContext } from '../src/s15/browser/engine';
 import { denyProxy } from '../src/s15/browser/engine';
 import { operation, validateRequest } from '../src/s15/browser/validation';
+import { unknownUsage } from '../src/s15/policy/validation';
 import { protectedBrowserTools } from '../src/s15/browser/tools';
 import { browserFixture, browserSite } from './fixtures/s15-browser';
 
@@ -127,9 +128,20 @@ test('current browser continuity survives process loss and never turns an armed 
   const { mkdtempSync, rmSync } = await import('node:fs'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
   const dir = mkdtempSync(join(tmpdir(), 'jit-browser-continuity-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, 'current.sqlite'), a = { id: 'armed', revision: 1, actionHash: 'a'.repeat(64) };
+  const secretPayload = 'recipient=team&message=Exact+secret-payload-must-not-persist';
   const first = browserContinuity(path, true, 'profile_resource'), previous = first.advance(); first.arm(a); first.close();
   const recovered = browserContinuity(path, false, 'profile_resource');
-  try { expect(recovered.advance()).toBeGreaterThan(previous); expect(recovered.uncertain()).toEqual(a); expect(() => recovered.arm(a)).toThrow('reconciliation_required'); }
+  try {
+    expect(recovered.advance()).toBeGreaterThan(previous); expect(recovered.uncertain()).toEqual(a); expect(() => recovered.arm(a)).toThrow('reconciliation_required');
+    // The durable file names only the armed action reference: no request bytes, cookies or payloads survive a crash.
+    const bytes = readFileSync(path);
+    expect(bytes.includes(Buffer.from(secretPayload))).toBe(false);
+    expect(bytes.includes(Buffer.from('jit_session'))).toBe(false);
+    expect(JSON.stringify(recovered.uncertain())).not.toContain('message');
+    // Settling requires the exact armed reference; a different revision cannot clear the uncertainty.
+    expect(() => recovered.settle({ id: 'armed', revision: 2, actionHash: 'a'.repeat(64) })).toThrow('continuity_unavailable');
+    recovered.settle(a); expect(recovered.uncertain()).toBeNull();
+  }
   finally { recovered.close(); }
   expect(() => browserContinuity(path, true, 'profile_resource')).toThrow('continuity_unavailable');
   expect(() => browserContinuity(path, false, 'other_resource')).toThrow('continuity_unavailable');
@@ -146,6 +158,42 @@ test('an observed HTTP response without verified business outcome stays unknown 
   expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
 });
 
+test('an armed browser dispatch reconciles only through a read-only service verifier and never resends', async () => {
+  const f = await setup(), original = f.server.site.classify;
+  f.server.site.classify = (request, mode) => { const meaning = original(request, mode); if (meaning?.kind !== 'effect') return meaning; const { verifyResponse: _, ...unverified } = meaning; return unverified; };
+  const body = 'recipient=team&message=Reconcile+exactly+once';
+  f.engine.next = post(f.server.origin + '/message', body);
+  const held = await f.execute({ kind: 'click', target: 'e1_1' }); if (held.state !== 'held') throw Error('expected_hold');
+  f.approve(held.action); expect(await f.work.resume(held.action)).toMatchObject({ state: 'unknown', code: 'reconciliation_required' });
+  expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+  const sentBefore = f.engine.sent;
+  // Without a read-only verifier the unknown outcome cannot be resolved: no retry, no new dispatch.
+  expect(await f.gateway.owner.reconcile(f.owner, held.action, 'browser_reconcile_missing')).toMatchObject({ outcome: 'unknown' });
+  expect(f.work.state().reconciliation).toEqual(held.action);
+  expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+  // An owner statement records what the owner believes, but it cannot clear the protected browser uncertainty.
+  f.service.owner.recordStatement(f.owner, held.action, 'browser_statement_1', 'occurred');
+  expect(f.work.state().reconciliation).toEqual(held.action);
+  expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+  // A read-only verifier inspects already-received service state; it never resubmits the effect.
+  f.server.site.reconcileEffect = async (request, context) => {
+    context.beforeRead();
+    expect(request.url).toBe(f.server.origin + '/message');
+    expect(Buffer.from(request.bodyBase64, 'base64').toString()).toBe(body);
+    expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+    expect(f.engine.sent).toBe(sentBefore);
+    return { outcome: 'succeeded', actual: unknownUsage(), transportSettled: true };
+  };
+  expect(await f.gateway.owner.reconcile(f.owner, held.action, 'browser_reconcile_verified')).toMatchObject({ outcome: 'succeeded' });
+  expect(f.work.state().reconciliation).toBeNull();
+  expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+  expect(f.engine.sent).toBe(sentBefore);
+  // After verified recovery the browser accepts fresh work, and the old action cannot dispatch again.
+  expect((await f.execute({ kind: 'read' })).state).toBe('observed');
+  expect((await f.work.resume(held.action)).state).toBe('unsupported');
+  expect(f.server.received.filter(r => r.path === '/message')).toHaveLength(1);
+});
+
 test('a settled host lease can pass to another work actor while every old closure remains fenced', async () => {
   const f = await setup(); f.work.release();
   const actor = f.admit().actor!, next = f.gateway.open(actor);
@@ -159,6 +207,18 @@ test('an automatic document submission cannot borrow a navigation input even whe
   const f = await setup(); f.engine.afterNavigate = post(f.server.origin + '/edit', 'note=Unrequested');
   expect(await f.execute({ kind: 'navigate', url: f.server.origin + '/clean-task' })).toMatchObject({ state: 'unsupported', code: 'unattributable_request' });
   expect(f.server.received.some(r => r.path === '/edit')).toBe(false);
+});
+
+test('redirect and download responses refuse without following, delivering or arming recovery', async () => {
+  const f = await setup();
+  expect(await f.execute({ kind: 'navigate', url: f.server.origin + '/redirect' })).toMatchObject({ state: 'unsupported', code: 'redirect_unsupported' });
+  expect(f.server.received.some(r => r.path === '/redirect')).toBe(true);
+  expect(f.server.received.some(r => r.path.startsWith('/unknown-effect'))).toBe(false);
+  expect(f.work.state().reconciliation).toBeNull();
+  expect(await f.execute({ kind: 'navigate', url: f.server.origin + '/download' })).toMatchObject({ state: 'unsupported', code: 'download_unsupported' });
+  expect(f.server.received.some(r => r.path === '/download')).toBe(false);
+  expect(f.work.state().reconciliation).toBeNull();
+  expect((await f.execute({ kind: 'read' })).state).toBe('observed');
 });
 
 
