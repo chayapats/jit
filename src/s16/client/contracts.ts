@@ -1,6 +1,6 @@
 import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt } from "../../s15/conversation/types";
 import type { ConversationListEntry, ConversationNeedsYou, ConversationOwnerRow, ConversationOwnerView } from "../../s15/conversation/owner-view";
-import type { FileLimits } from "../files/types";
+import type { FileArtifact, FileLimits } from "../files/types";
 
 /** Versioned client capabilities describe actual composed operations, never execution authority. */
 export interface ClientCapabilities {
@@ -11,7 +11,8 @@ export interface ClientCapabilities {
   exactDecisions: boolean;
   liveSteering: false;
   uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: boolean; memoryContract?: "s16-file-memory/v1"; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
-  artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text" };
+  /** `library`/`revisions`/`html` are additive: absent on older services, which keep conversation cards only. */
+  artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
   /** Additive field: owner memory search/detail/correct/forget over the existing MEM authority. */
   memory?: { available: false; code: "memory_unavailable" } | { available: true; contract: "s16-client-memory/v1" };
 }
@@ -85,3 +86,23 @@ export interface ClientMemoryImpact { claims: number; sources: number; summaries
 export type ClientMemoryResult =
   | { contract: "s15-memory-impact/v1"; claim: { id: string; revision: number }; impact: ClientMemoryImpact }
   | { contract: "s15-memory-receipt/v1"; requestId: string; kind: "memory.correct" | "memory.forget"; claim: { id: string; revision: number } | null; impact: ClientMemoryImpact };
+
+/** Library search echo. `before` is the opaque `createdAt.id` position of the previous page's last item. */
+export interface ClientArtifactQuery { q: string; type: "all" | "text" | "markdown" | "csv" | "html"; conversation: string | null; before: string | null }
+/**
+ * One committed, currently publishable artifact. `label` is the plain producing owner message (at most 120
+ * characters); `revision` counts immutable parents; `parent` is the revised artifact, if any. Data only.
+ */
+export interface ClientArtifactItem { artifact: FileArtifact; conversationId: string; label: string; revision: number; parent: string | null; inputs: number }
+/** Bounded newest-first page recomputed under current authorization on every read. */
+export interface ClientArtifactList { contract: "s16-client-artifacts/v1"; query: ClientArtifactQuery; limit: 50; items: ClientArtifactItem[]; next: string | null }
+/** An exact input of the producing request; `origin` names the parent artifact of a revision input. */
+export interface ClientArtifactInput { id: string; name: string; mime: string; bytes: number; sha256: string; origin: string | null }
+/**
+ * Current provenance and committed revision family (oldest first), at most 256 members: the viewed file, all
+ * its ancestors, then the newest others. `familyTotal` counts the whole current family. Preview names the
+ * only allowed renderer.
+ */
+export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item: ClientArtifactItem; inputs: ClientArtifactInput[]; revisions: ClientArtifactItem[]; familyTotal: number; preview: "escaped_text" | "sandboxed_html" }
+/** Explicit owner command copying one exact committed artifact into a new input of its own conversation. */
+export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }

@@ -27,7 +27,15 @@ export interface FileLimits { fileBytes: number; messageFiles: number; messageBy
 export interface FileOwner { id: string; generation: number }
 /** Guarded immutable output identity. A candidate is not downloadable until CHAT commits its reference. */
 export interface FileArtifact extends FileReference {
-  contract: "s16-file-artifact/v1"; requestId: string; workId: string; conversationId: string; name: string; mime: "text/plain" | "text/markdown" | "text/csv"; bytes: number; createdAt: number;
+  contract: "s16-file-artifact/v1"; requestId: string; workId: string; conversationId: string; name: string; mime: "text/plain" | "text/markdown" | "text/csv" | "text/html"; bytes: number; createdAt: number;
 }
+/**
+ * Metadata-only revision lineage of an artifact (`s16-artifact-lineage/v1`). `parents` are the prior
+ * artifacts whose exact bytes became inputs of the producing request; `current` is true only while every
+ * transitive input source is still ready. No field grants read, publication or recipient authority.
+ */
+export interface FileArtifactLineage { artifact: FileArtifact; inputs: FileReference[]; parents: FileReference[]; current: boolean }
+/** Exact command adopting one committed artifact as a new input of its own conversation; never work authority. */
+export interface FileArtifactInputCommand { requestId: string; conversationId: string; artifact: FileReference }
 /** Initial text-only profile; binary formats remain unavailable until their isolated parser path is proven. */
 export const defaultFileLimits: Readonly<FileLimits> = Object.freeze({ fileBytes: 64 * 1024, messageFiles: 4, messageBytes: 128 * 1024, totalBytes: 32 * 1024 * 1024, uploadLifetimeMs: 24 * 60 * 60 * 1000 });

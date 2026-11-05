@@ -9,14 +9,19 @@ import { attachmentDisplayName, AttachmentSniffer } from "../../attachments/type
 import { containsCredential } from "../../security/credentials";
 import { DurableJournal } from "../../s15/durable-journal";
 import { canonical, digest, exact, identity, integer } from "../../s15/conversation/validation";
-import { defaultFileLimits, type FileArtifact, type FileLimits, type FileOwner, type FileReceipt, type FileReference, type FileUpload, type FileUploadCommand } from "./types";
+import { defaultFileLimits, type FileArtifact, type FileArtifactInputCommand, type FileArtifactLineage, type FileLimits, type FileOwner, type FileReceipt, type FileReference, type FileUpload, type FileUploadCommand } from "./types";
 import type { Ref } from "../../s15/policy";
 import { ref as validateRef } from "../../s15/policy/validation";
 import type { DisclosureSource } from "../../s15/disclosure";
 import { filePins, type FileSourcePin } from "../../s15/file-lineage";
 
-interface UploadRecord extends FileUpload { kind: "upload"; owner: FileOwner; resource: Ref }
-interface ArtifactRecord extends FileArtifact { kind: "artifact"; owner: FileOwner; inputs: FileReference[] }
+/** An input copied from a committed artifact keeps that exact parent; absent on ordinary uploads. */
+interface ArtifactOrigin { contract: "s16-artifact-input/v1"; artifact: FileReference }
+interface UploadRecord extends FileUpload { kind: "upload"; owner: FileOwner; resource: Ref; origin?: ArtifactOrigin }
+/** `parents` is absent on artifacts staged before revision lineage existed; they have no parent. */
+interface ArtifactRecord extends FileArtifact { kind: "artifact"; owner: FileOwner; inputs: FileReference[]; parents?: FileReference[] }
+/** Revision chains are finite: a deeper chain is refused rather than walked without bound. */
+export const maxArtifactRevisionDepth = 32;
 /** Protected storage composition. Work/resource/disclosure authorization stays with the owning adapter. */
 export interface FileStoreOptions<Actor> {
   path: string; directory: string; installationId: string; create: boolean;
@@ -43,6 +48,8 @@ export class FileStore<Actor> {
   #closing: Promise<void> | null = null;
   #cancellations = new Map<string, AbortController>();
   #writes = new Set<Promise<FileUpload>>();
+  /** Lineage heights valid until the next journal write or transaction end (commit or rollback). */
+  #heights = new Map<string, number>();
   constructor(readonly options: FileStoreOptions<Actor>) {
     if (!isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError("protected_file_path_required");
     validateRef(options.resource);
@@ -54,7 +61,13 @@ export class FileStore<Actor> {
     const stat = lstatSync(options.directory);
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077 || realpathSync(options.directory) !== options.directory) throw new AppError("unprotected_file_store");
     this.directory = options.directory;
-    this.journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a495446, undefined, [1, 2]);
+    // Formats: 1 text-only, 2 binary receipts, 3 artifact-derived inputs (older readers would ignore `origin`).
+    this.journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a495446, undefined, [1, 2, 3]);
+    // Any write, and the end of any transaction, invalidates cached lineage. Heights depend only on journal
+    // rows: every input of a staged artifact is retained at staging, so ancestor usability is time-free.
+    const put = this.journal.put.bind(this.journal), tx = this.journal.tx.bind(this.journal);
+    this.journal.put = (key, value) => { this.#heights.clear(); put(key, value); this.#heights.clear(); };
+    this.journal.tx = <T>(action: () => T): T => { try { return tx(action); } finally { this.#heights.clear(); } };
     const history = this.records().some(row => row.kind === "upload" && (row.receipt?.contract === "s16-file-receipt/v2" || /\.(pdf|png|jpe?g)$/i.test(row.name)));
     if (history && !options.parserRuntime) { this.journal.close(); throw new AppError("file_parser_required", 503); }
     try { this.parser = options.parserRuntime ? new FileParser(options.parserRuntime, join(this.directory, "..", "file-parser"), options.create || !history) : undefined; } catch (error) { this.journal.close(); throw error; }
@@ -80,7 +93,48 @@ export class FileStore<Actor> {
     identity(id); const value = this.journal.get<UploadRecord>(id);
     if (value.kind !== "upload") throw new AppError("file_not_found", 404); return value;
   }
-  private publicUpload(record: UploadRecord): FileUpload { const { kind: _kind, owner: _owner, resource: _resource, ...view } = record; return structuredClone(view); }
+  private publicUpload(record: UploadRecord): FileUpload {
+    const { kind: _kind, owner: _owner, resource: _resource, origin: _origin, ...view } = record;
+    // An artifact-derived input is withdrawn as soon as any transitive ancestor is, without a second write.
+    if (view.state === "ready" && !this.lineageCurrent(record)) return structuredClone({ ...view, state: "withdrawn" as const, code: "lineage_withdrawn" });
+    return structuredClone(view);
+  }
+  /** Monotonic journal format fence inside the caller's transaction; never downgrades a newer stamp. */
+  private stamp(format: 2 | 3): void { const current = this.journal.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version; if (current < format) this.journal.db.exec(`PRAGMA user_version=${format}`); }
+  private record(id: string): UploadRecord | ArtifactRecord | null { try { return this.journal.get<UploadRecord | ArtifactRecord>(id) ?? null; } catch { return null; } }
+  /**
+   * Metadata-only ancestry check: every input of every parent artifact is still a ready, current source.
+   * Returns the copy height (0 for an ordinary upload) or -1 when withdrawn/invalid/too deep. Each upload is
+   * evaluated once per `memo`, so shared ancestors in a revision graph stay linear, not exponential.
+   */
+  private lineageHeight(row: UploadRecord, memo: Map<string, number> = this.#heights): number {
+    if (!row.origin) return 0;
+    const known = memo.get(row.id); if (known !== undefined) return known;
+    memo.set(row.id, -1); // A cycle cannot be current; real records cannot form one.
+    const artifact = this.record(row.origin.artifact.id);
+    let height = 0;
+    if (!artifact || artifact.kind !== "artifact" || artifact.sha256 !== row.origin.artifact.sha256 || artifact.owner.id !== row.owner.id || artifact.conversationId !== row.conversationId) return -1;
+    for (const input of artifact.inputs) {
+      const parent = this.record(input.id);
+      if (!parent || parent.kind !== "upload" || !this.usable(parent) || parent.expectedHash !== input.sha256) return -1;
+      const above = this.lineageHeight(parent, memo); if (above < 0) return -1;
+      height = Math.max(height, above + 1);
+    }
+    if (height > maxArtifactRevisionDepth) return -1;
+    memo.set(row.id, height); return height;
+  }
+  private lineageCurrent(row: UploadRecord, memo?: Map<string, number>): boolean { return this.lineageHeight(row, memo) >= 0; }
+  private usable(row: UploadRecord): boolean { return row.state === "ready" && (row.retained || this.now() < row.expiresAt); }
+  /** Transitive upload ancestors of one input (excluding itself), parents before their own inputs. */
+  ancestors(id: string): string[] {
+    const found: string[] = [], visit = (current: string, depth: number) => {
+      const row = this.record(current); if (!row || row.kind !== "upload" || !row.origin) return;
+      if (depth >= maxArtifactRevisionDepth) throw new AppError("lineage_withdrawn", 409);
+      const artifact = this.record(row.origin.artifact.id); if (!artifact || artifact.kind !== "artifact") throw new AppError("lineage_withdrawn", 409);
+      for (const input of artifact.inputs) if (!found.includes(input.id)) { found.push(input.id); if (found.length > 128) throw new AppError("lineage_limit", 409); visit(input.id, depth + 1); }
+    };
+    visit(id, 0); return found;
+  }
   private capacity(additional: number): void {
     for (const row of this.records()) if (row.kind === "upload" && !row.retained && this.now() >= row.expiresAt && ["created", "uploading", "validating", "ready"].includes(row.state)) {
       row.state = "expired"; row.code = "upload_expired"; this.journal.put(row.id, row);
@@ -104,7 +158,7 @@ export class FileStore<Actor> {
       const created = this.journal.once(commandId.length <= 128 ? commandId : `create_${digest(commandId)}`, fingerprint, () => {
         this.capacity(input.bytes);
         // Fence old text-only file readers even before the first binary CHAT ingress.
-        if (/\.(pdf|png|jpe?g)$/i.test(name)) this.journal.db.exec("PRAGMA user_version=2");
+        if (/\.(pdf|png|jpe?g)$/i.test(name)) this.stamp(2);
         const id = `file_${crypto.randomUUID().replaceAll("-", "")}`, at = this.now();
         const row: UploadRecord = { kind: "upload", resource: structuredClone(this.options.resource), contract: "s16-file-upload/v1", owner, id, requestId: input.requestId, conversationId: input.conversationId, name, expectedBytes: input.bytes, expectedHash: input.sha256, bytes: 0, state: "created", code: null, createdAt: at, expiresAt: at + this.limits.uploadLifetimeMs, retained: false, receipt: null };
         this.journal.put(id, row); return { id };
@@ -201,7 +255,7 @@ export class FileStore<Actor> {
   read(actor: Actor, conversationId: string, reference: FileReference): { receipt: FileReceipt; text: string } {
     exact(reference, ["id", "sha256"]); identity(conversationId);
     const upload = this.status(actor, reference.id);
-    if (upload.state !== "ready" || !upload.receipt || upload.conversationId !== conversationId || upload.expectedHash !== reference.sha256) throw new AppError("file_unavailable", 409);
+    if (upload.state !== "ready" || !upload.receipt || upload.conversationId !== conversationId || upload.expectedHash !== reference.sha256) throw new AppError(upload.code === "lineage_withdrawn" ? "lineage_withdrawn" : "file_unavailable", 409);
     const bytes = this.readPath(this.path(upload.id), upload.bytes);
     if (hash(bytes) !== reference.sha256) throw new AppError("file_integrity_failed", 409);
     if (upload.receipt.contract === "s16-file-receipt/v2") { const derived = this.readPath(this.path(upload.id) + ".derived", upload.receipt.representation.bytes); if (hash(derived) !== upload.receipt.representation.sha256) throw new AppError("file_integrity_failed", 409); return { receipt: upload.receipt, text: upload.receipt.representation.mime === "text/plain" ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(derived) : "" }; }
@@ -250,29 +304,34 @@ export class FileStore<Actor> {
         writeFileSync(this.path(id), bytes, { mode: 0o600, flag: "wx" });
         const fd = openSync(this.path(id), constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); }
         this.syncDirectory();
-        const row: ArtifactRecord = { kind: "artifact", contract: "s16-file-artifact/v1", owner, id, sha256: hash(bytes), requestId: input.requestId, workId: input.workId, conversationId: input.conversationId, name, mime, bytes: bytes.length, createdAt: this.now(), inputs: structuredClone(input.inputs) };
+        const parents: FileReference[] = [];
+        for (const ref of input.inputs) { const origin = this.upload(ref.id).origin; if (origin && !parents.some(parent => parent.id === origin.artifact.id)) parents.push(structuredClone(origin.artifact)); }
+        const row: ArtifactRecord = { kind: "artifact", contract: "s16-file-artifact/v1", owner, id, sha256: hash(bytes), requestId: input.requestId, workId: input.workId, conversationId: input.conversationId, name, mime, bytes: bytes.length, createdAt: this.now(), inputs: structuredClone(input.inputs), parents };
         try { this.journal.put(id, row); } catch (error) { rmSync(this.path(id), { force: true }); throw error; }
         return row;
       });
       this.owner(actor, saved);
-      const { kind: _kind, owner: _owner, inputs: _inputs, ...view } = saved; return view;
+      return this.publicArtifact(saved);
     }); } catch (error) { if (created) rmSync(this.path(created), { force: true }); throw error; }
   }
   /** Pure local format/bound check before an adapter claim. It grants no work or publication authority. */
   validateArtifact(input: { name: string; text: string }): { name: string; mime: FileArtifact["mime"]; bytes: Uint8Array } {
     if (typeof input.name !== "string" || containsCredential(input.name)) throw new AppError("artifact_content_refused");
     const name = attachmentDisplayName(encodeURIComponent(input.name));
-    const ext = name.split(".").at(-1)!.toLowerCase(), mime = ext === "md" || ext === "markdown" ? "text/markdown" : ext === "csv" ? "text/csv" : ext === "txt" ? "text/plain" : null;
+    const ext = name.split(".").at(-1)!.toLowerCase(), mime = ext === "md" || ext === "markdown" ? "text/markdown" : ext === "csv" ? "text/csv" : ext === "txt" ? "text/plain" : ext === "html" || ext === "htm" ? "text/html" : null;
     if (!mime || typeof input.text !== "string" || !input.text.isWellFormed() || containsCredential(input.text)) throw new AppError("artifact_content_refused");
     const bytes = new TextEncoder().encode(input.text); integer(bytes.length, 1, this.limits.fileBytes);
-    const sniffer = new AttachmentSniffer(); sniffer.push(bytes); if (sniffer.finish(name).kind !== "text") throw new AppError("artifact_content_refused");
+    // HTML output is inert document data: it is only ever downloaded as an attachment or rendered in a
+    // script-free opaque-origin sandbox. It is still UTF-8 text without NUL or another format's signature.
+    if (mime === "text/html") { if (input.text.includes("\u0000") || name.split(".").length > 2) throw new AppError("artifact_content_refused"); const sniffer = new AttachmentSniffer(); sniffer.push(bytes); try { sniffer.finish("artifact.txt"); } catch (error) { if (!(error instanceof AppError && (error.detail as { reason?: string } | null)?.reason === "html")) throw new AppError("artifact_content_refused"); } }
+    else { const sniffer = new AttachmentSniffer(); sniffer.push(bytes); if (sniffer.finish(name).kind !== "text") throw new AppError("artifact_content_refused"); }
     return { name, mime, bytes };
   }
   /** Protected source catalog only. The immutable resource generation is pinned at upload creation. */
   source(id: string): DisclosureSource | null {
     let row: UploadRecord | ArtifactRecord; try { row = this.journal.get(id); } catch { return null; }
     if (!row || row.kind !== "upload") return null;
-    return { ref: { id: row.id, revision: 1, generation: row.owner.generation }, resource: structuredClone(row.resource), classification: "private", ownerReleasable: true, active: row.state === "ready" && (row.retained || this.now() < row.expiresAt) };
+    return { ref: { id: row.id, revision: 1, generation: row.owner.generation }, resource: structuredClone(row.resource), classification: "private", ownerReleasable: true, active: this.usable(row) && this.lineageCurrent(row) };
   }
   /** Owner-scoped metadata anchor; it contains no private bytes, path or reusable principal. */
   pin(actor: Actor, id: string): FileSourcePin {
@@ -293,7 +352,7 @@ export class FileStore<Actor> {
   /** Internal candidates only. A client library/download must additionally verify committed CHAT references. */
   candidates(actor: Actor, requestId: string, workId: string): FileArtifact[] {
     this.current(actor);
-    return this.records().flatMap(row => { if (row.kind !== "artifact" || row.requestId !== requestId || row.workId !== workId) return []; this.owner(actor, row); const { kind: _kind, owner: _owner, inputs: _inputs, ...view } = row; return [view]; });
+    return this.records().flatMap(row => { if (row.kind !== "artifact" || row.requestId !== requestId || row.workId !== workId) return []; this.owner(actor, row); return [this.publicArtifact(row)]; });
   }
   /** Internal exact artifact read; caller must first verify the current producer and committed result reference. */
   artifact(actor: Actor, id: string): { artifact: FileArtifact; bytes: Uint8Array; inputs: FileReference[] } {
@@ -301,8 +360,58 @@ export class FileStore<Actor> {
     if (row.kind !== "artifact") throw new AppError("file_not_found", 404);
     this.inputs(actor, row.conversationId, row.inputs);
     const bytes = this.readPath(this.path(id), row.bytes); if (hash(bytes) !== row.sha256) throw new AppError("file_integrity_failed", 409);
-    const { kind: _kind, owner: _owner, inputs, ...artifact } = row; return { artifact, bytes, inputs };
+    return { artifact: this.publicArtifact(row), bytes, inputs: structuredClone(row.inputs) };
   }
+  private publicArtifact(row: ArtifactRecord): FileArtifact { const { kind: _kind, owner: _owner, inputs: _inputs, parents: _parents, ...view } = row; return structuredClone(view); }
+  /**
+   * Owner-scoped metadata index of every staged artifact, newest first. Staging is not publication: callers
+   * must still check CHAT's committed reference and the current producer before listing or releasing one.
+   */
+  lineage(actor: Actor): FileArtifactLineage[] {
+    const owner = this.current(actor), memo = this.#heights;
+    return this.records().flatMap(row => {
+      if (row.kind !== "artifact" || row.owner.id !== owner.id || row.owner.generation !== owner.generation) return [];
+      const current = row.inputs.every(input => { const source = this.record(input.id); return !!source && source.kind === "upload" && source.expectedHash === input.sha256 && this.usable(source) && this.lineageCurrent(source, memo); });
+      return [{ artifact: this.publicArtifact(row), inputs: structuredClone(row.inputs), parents: structuredClone(row.parents ?? []), current }];
+    }).sort((a, b) => b.artifact.createdAt - a.artifact.createdAt || (a.artifact.id < b.artifact.id ? 1 : -1));
+  }
+  /** Copy one exact artifact's bytes into a new private input of the same conversation. The parent link
+   * fences it: withdrawing any transitive source withdraws this input too. It starts no work. */
+  adoptArtifact(actor: Actor, input: FileArtifactInputCommand): FileUpload {
+    this.current(actor); exact(input, ["requestId", "conversationId", "artifact"]); identity(input.requestId); identity(input.conversationId); exact(input.artifact, ["id", "sha256"]); identity(input.artifact.id);
+    if (!sha(input.artifact.sha256)) throw new AppError("invalid_file_metadata");
+    let created: string | undefined;
+    try { return this.journal.tx(() => {
+      const owner = this.current(actor), fingerprint = digest(canonical({ owner, input })), commandId = `adopt_${input.requestId}`;
+      const saved = this.journal.once(commandId.length <= 128 ? commandId : `adopt_${digest(commandId)}`, fingerprint, () => {
+        const parent = this.record(input.artifact.id);
+        if (!parent || parent.kind !== "artifact") throw new AppError("artifact_unavailable", 409);
+        this.owner(actor, parent);
+        if (parent.sha256 !== input.artifact.sha256 || parent.conversationId !== input.conversationId) throw new AppError("artifact_unavailable", 409);
+        // The new copy sits one level above its parent's deepest input; refuse rather than exceed the bound.
+        const memo = this.#heights, heights = parent.inputs.map(ref => { const row = this.record(ref.id); return row?.kind === "upload" ? this.lineageHeight(row, memo) : -1; });
+        if (heights.some(height => height < 0)) throw new AppError("lineage_withdrawn", 409);
+        if (Math.max(...heights) + 1 >= maxArtifactRevisionDepth) throw new AppError("revision_limit", 409);
+        // Exact current parent bytes and every transitive source; a withdrawn ancestor refuses here.
+        const { bytes } = this.artifact(actor, parent.id);
+        if (bytes.length > this.limits.fileBytes) throw new AppError("file_too_large", 413);
+        this.capacity(bytes.length);
+        // An older reader would treat this copy as an independent source after its ancestor is withdrawn.
+        this.stamp(3);
+        const id = `file_${crypto.randomUUID().replaceAll("-", "")}`, at = this.now(); created = id;
+        writeFileSync(this.path(id), bytes, { mode: 0o600, flag: "wx" });
+        const fd = openSync(this.path(id), constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); }
+        this.syncDirectory();
+        const row: UploadRecord = { kind: "upload", resource: structuredClone(parent.inputs.length ? this.upload(parent.inputs[0]!.id).resource : this.options.resource), origin: { contract: "s16-artifact-input/v1", artifact: { id: parent.id, sha256: parent.sha256 } }, contract: "s16-file-upload/v1", owner, id, requestId: input.requestId, conversationId: input.conversationId, name: parent.name, expectedBytes: bytes.length, expectedHash: parent.sha256, bytes: bytes.length, state: "ready", code: null, createdAt: at, expiresAt: at + this.limits.uploadLifetimeMs, retained: false,
+          receipt: { contract: "s16-file-receipt/v1", id, sha256: parent.sha256, conversationId: input.conversationId, name: parent.name, mime: "text/plain", bytes: bytes.length, expiresAt: at + this.limits.uploadLifetimeMs } };
+        try { this.journal.put(id, row); } catch (error) { rmSync(this.path(id), { force: true }); throw error; }
+        return { id };
+      });
+      return this.status(actor, saved.id);
+    }); } catch (error) { if (created && this.record(created)?.kind !== "upload") rmSync(this.path(created), { force: true }); throw error; }
+  }
+  /** Exact parent artifact of an artifact-derived input, or null for an ordinary upload. Metadata only. */
+  origin(actor: Actor, id: string): FileReference | null { const row = this.upload(id); this.owner(actor, row); return row.origin ? structuredClone(row.origin.artifact) : null; }
   /** Fence admission, cancel active byte readers and settle them before closing protected continuity. */
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
