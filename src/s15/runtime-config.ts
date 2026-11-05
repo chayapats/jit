@@ -9,7 +9,7 @@ import type { EffectBounds } from './effects';
 import type { GithubRuntimeConfig } from './github/runtime';
 import type { RuntimeDisclosureConfig } from './disclosure/runtime';
 import type { S15CompositionOptions } from './composition';
-import { validateBinaryFileConfig, type BinaryFileConfig } from '../s16/files/runtime';
+import { validateBinaryFileConfig, type BinaryFileConfig } from '../s16/files/config';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
