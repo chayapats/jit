@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { FileSourcePin } from "../../s15/file-lineage";
 import type { HostImageProbeRecord, ImageContent } from "schway/host";
 import type { ModelStepHooks } from "../../s15/model/types";
 import { AppError } from "../../errors";
@@ -22,7 +23,7 @@ export function createFileWorkflow(options: {
   disclosure(): DisclosureService | undefined;
   guardResource(work: ConversationPolicyWork, write: boolean): void;
   request(workId: string): ConversationRequest;
-}): { port: ConversationFilePort<OwnerActor, ConversationPolicyWork>; adapter: ActionAdapter; readHandler: ReadHandler; images(work: ConversationPolicyWork, row: ConversationRequest, probes: readonly HostImageProbeRecord[], observe: (evidence: ConversationEvidence) => void): { references: readonly ImageContent[]; hooks: NonNullable<ModelStepHooks["images"]> } | undefined } {
+}): { port: ConversationFilePort<OwnerActor, ConversationPolicyWork>; adapter: ActionAdapter; readHandler: ReadHandler; memory: { pins(work: ConversationPolicyWork, row: ConversationRequest): FileSourcePin[]; observed(work: ConversationPolicyWork, row: ConversationRequest, evidence: ConversationEvidence, observations?: readonly ConversationEvidence[]): string | null }; images(work: ConversationPolicyWork, row: ConversationRequest, probes: readonly HostImageProbeRecord[], observe: (evidence: ConversationEvidence) => void): { references: readonly ImageContent[]; hooks: NonNullable<ModelStepHooks["images"]> } | undefined } {
   const files = options.store;
   function request(work: WorkAuthority): ConversationRequest {
     const row = options.request(work.id);
@@ -136,7 +137,29 @@ export function createFileWorkflow(options: {
       return artifacts;
     },
   };
-  return { port, adapter, readHandler, images(work, row, probes, observe) {
+  return { port, adapter, readHandler, memory: {
+    pins(work, row) { guard(work, row); return row.fileInputs!.map(file => files.pin(work.actor, file.id)); },
+    observed(work, row, evidence, observations = [evidence]) {
+      if (evidence.tool !== "file_read" || evidence.isError) return null;
+      guard(work, row); const value = JSON.parse(evidence.content); exact(value, ["id", "sha256", "offset", "nextOffset", "totalBytes"]);
+      const selected = row.fileInputs!.find(file => file.id === value.id && file.sha256 === value.sha256); if (!selected) throw new AppError("invalid_file_lineage");
+      const bytes = new TextEncoder().encode(files.read(work.actor, row.receipt.conversationId, refOf(selected)).text);
+      integer(value.offset, 0, bytes.length); integer(value.nextOffset, Number(value.offset) + 1, bytes.length);
+      if (value.totalBytes !== bytes.length || Number(value.nextOffset) - Number(value.offset) > 4096) throw new AppError("invalid_file_lineage");
+      if (observations.length > 128) throw new AppError("output_limit");
+      const ranges = observations.flatMap(item => { if (item.tool !== "file_read" || item.isError) return []; const r = JSON.parse(item.content); return r.id === selected.id && r.sha256 === selected.sha256 && r.totalBytes === bytes.length ? [{ id: item.id, start: Number(r.offset), end: Number(r.nextOffset) }] : []; });
+      for (const range of ranges) { integer(range.start, 0, bytes.length); integer(range.end, range.start + 1, bytes.length); if (range.end - range.start > 4096) throw new AppError("invalid_file_lineage"); }
+      const covered = (start: number, end: number, prior: boolean) => { let at = start; for (const range of ranges.filter(range => !prior || range.id !== evidence.id).sort((a, b) => a.start - b.start)) { if (range.start > at) break; if (range.end > at) at = range.end; } return at >= end; };
+      // Reassemble only newly complete observed lines. Crossing a chunk boundary does not discard
+      // useful knowledge, and a read cannot borrow a single unobserved byte or duplicate old lines.
+      const lines: string[] = []; let start = 0, size = 0;
+      for (let end = 1; end <= bytes.length; end++) if (bytes[end - 1] === 10 || end === bytes.length) {
+        if (end - start <= 8192 && covered(start, end, false) && !covered(start, end, true)) { const line = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(start, end)); if (line.length <= 2048) { size += end - start; if (size > 32768) throw new AppError("output_limit"); lines.push(line); } }
+        start = end;
+      }
+      return lines.join("") || null;
+    },
+  }, images(work, row, probes, observe) {
     const selected = row.fileInputs?.filter(file => file.contract === "s16-file-receipt/v2" && file.representation.mime !== "text/plain") ?? [];
     if (!selected.length) return undefined;
     guard(work, row);

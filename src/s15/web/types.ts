@@ -1,4 +1,5 @@
 import type { Locale } from "../../i18n";
+import type { FileSourcePin } from "../file-lineage";
 import type { LoginState, OwnerBrowserInput } from "../browser";
 import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationNeedsYou, ConversationListEntry, ConversationOwnerView, ConversationReceipt } from "../conversation";
 import type { ModelBudgetView } from "../model";
@@ -190,7 +191,7 @@ export interface S15ReadinessReport {
 /** Structural subset of MEM15-01 `MemoryClaimView`. */
 export interface S15MemoryClaim {
   id: string; revision: number; kind: "fact" | "inference"; category: "fact" | "preference" | "working_knowledge"; text: string;
-  provenance: { origin: { kind: "owner_message" | "work" | "historical"; id: string; conversationId: string | null; at: number }; scope: { kind: "team" } | { kind: "bot"; botId: string; origin: "s15" | "s14" } };
+  provenance: { origin: { kind: "owner_message" | "work" | "historical"; id: string; conversationId: string | null; at: number }; scope: { kind: "team" } | { kind: "bot"; botId: string; origin: "s15" | "s14" }; filePins?: FileSourcePin[] };
   createdAt: number; lifecycle: "active" | "superseded" | "forgotten"; confirmation: "owner_stated" | "observed" | "unconfirmed";
   supersedes: string | null; correction: string | null; sourceState: "current" | "withdrawn";
 }

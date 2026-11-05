@@ -4,6 +4,7 @@ import { createS16ClientHandler } from '../s16/http';
 import { createS16WebHandler } from '../s16/web/handler';
 import { FileStore } from '../s16/files/store';
 import { createFileWorkflow } from '../s16/files/workflow';
+import type { FileLineagePort } from './file-lineage';
 import type { FileLimits } from '../s16/files/types';
 import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type HostCredentialStore, type Model } from 'schway/host';
 import { AppError } from '../errors';
@@ -46,7 +47,7 @@ export interface S15CompositionOptions {
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
   /** Explicit S16 file byte custody; requires DATA15. Does not change installed standing rules. */
-  files?: { limits?: FileLimits; parserRuntime?: import("../attachments/sanitizer-runtime").AttachmentSanitizerRuntime; imageProbes?: readonly import("schway/host").HostImageProbeRecord[] };
+  files?: { limits?: FileLimits; parserRuntime?: import("../attachments/sanitizer-runtime").AttachmentSanitizerRuntime; imageProbes?: readonly import("schway/host").HostImageProbeRecord[]; memory?: boolean };
   recurring?: RecurringRuleOptions;
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
@@ -156,7 +157,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const credentials = createHostCredentialLifecycle(options.credentials?.store ? { store: options.credentials.store } : {});
     cleanup.push(async () => { await closeCredentialLifecycle(credentials); });
     const routeAuth = { lifecycle: credentials, ...(options.credentials?.fetch ? { fetch: options.credentials.fetch } : {}) };
-    const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create, !!options.files); cleanup.push(() => store.close());
+    const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create, !!options.files, options.files?.memory === true); cleanup.push(() => store.close());
     let files: FileStore<OwnerActor | WorkActor> | undefined;
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
     // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
@@ -226,7 +227,16 @@ export async function composeS15(options: S15CompositionOptions) {
       reads: composeS15ReadHandlers([...vmIntegration.reads, ...(fileWorkflow ? [fileWorkflow.readHandler] : []), ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(webGithub ? [{ operation: 'read' as const, validate: (payload: import('./policy').JsonValue, context: { work: import('./policy').WorkAuthority; resource: Ref }) => githubReadHandler(githubConnections!.repositories()).validate(payload, context) }, webGithub.readHandler] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
     cleanup.push(() => policy.control.close()); disclosure?.attach(policy); browser?.attach(policy); google?.attach(policy);
-    team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
+    const fileLineage: FileLineagePort | undefined = options.files?.memory && files ? {
+      current(pins) { return pins.every(pin => pin.source.generation === options.owner.generation()) && files!.pinsCurrent(pins); },
+      verify(work, pins) {
+        const actor = policy.control.bindWork(work.id), current = policy.work.guard(actor); if (!equal(current, work)) throw new AppError('stale_authority');
+        const resources = current.mode === 'interpretation' ? policy.control.policyForWork(current.id).resources : current.request.resources;
+        if (pins.some(pin => !resources.some(resource => equal(resource, pin.resource)))) throw new AppError('outside_scope', 403);
+        files!.verifyPins(actor, pins);
+      },
+    } : undefined;
+    team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, ...(fileLineage ? { fileLineage } : {}), producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
@@ -305,14 +315,14 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
     // Repository ports follow the live selection; each stays scoped to its one repository resource.
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []), ...(options.tools ?? [])];
-    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
-      ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown) {
+    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+      ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
         const standing = policy.control.policyForWork(current.authority.id);
         // Privacy check conservatively covers all standing resources because isolated owner/assistant
         // history can contain derived results. This projection is never admitted or used for tools.
         const privacy = { ...current.authority, request: { ...current.authority.request, resources: standing.resources } };
-        privacy.request.fences = [...(privacy.request.fences ?? []), ...options.disclosure!.workSources(privacy).map(ref => ({ kind: 'lineage' as const, ref }))];
+        privacy.request.fences = [...(privacy.request.fences ?? []), ...options.disclosure!.workSources(privacy).map(ref => ({ kind: 'lineage' as const, ref })), ...files.map(pin => ({ kind: 'lineage' as const, ref: pin.source }))];
         modelDisclosure.guard(privacy, candidate, payload);
       } } : {}),
       tools: { async open(current, input) {

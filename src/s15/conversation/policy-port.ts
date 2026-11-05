@@ -41,7 +41,7 @@ export function createConversationPolicy(host: S15PolicyService, input: {
     prepareInterpretation(actor, request) {
       try {
         // The standing expiry is stable across an interrupted local ingress commit; local phase deadlines stay finite.
-        const policy = current(actor), prepared = invoke(() => host.owner.prepareInterpretation(actor, { requestId: `ci_${digest(request.requestId)}`, selection: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt) }));
+        const policy = current(actor), prepared = invoke(() => host.owner.prepareInterpretation(actor, { requestId: `ci_${digest(request.requestId)}`, selection: config.selection, bot: config.bot, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt) }));
         return { state: "admitted", authority: snapshot(prepared.authority, true), purposes: prepared.purposes.map(purpose => purpose.id), resources: policy.resources.map(resource => resource.id) };
       } catch (error) { return { state: "held", code: mapped(error).code }; }
     },

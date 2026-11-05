@@ -1,4 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { memoryDerivativeId } from "../src/s15/memory/identity";
+import { ProtectedDataStore } from "../src/s15/team/store";
+import { MEMORY_SCHEMA_V1 } from "../src/s15/memory/store";
 import { MemoryService, type MemoryClaim } from "../src/s15/memory";
 import { teamMemoryFixture } from "./fixtures/s15-team-memory";
 import { ref } from "./fixtures/s15-policy";
@@ -18,6 +21,22 @@ test("automatic preference/fact/working knowledge retention has source, time, ca
   expect(next.claims.map(c => c.text)).toContain("I prefer concise replies."); expect(next.section).toContain(input.origin.id);
   expect(f.memory.view(f.f.owner).claims).toHaveLength(4);
   expect(f.memory.retain(context, input)).toHaveLength(4);
+});
+
+test("namespaced derivatives fence old writers even without files and retain legacy packet readability", () => {
+  const f = fixture(), context = f.context(), claim = f.memory.retain(context, f.source())[0]!;
+  f.memory.prepare(context, "legacy", "Reply format");
+  // Simulate an existing pre-namespace packet without changing its ancestry or public key.
+  const row = f.memory.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(memoryDerivativeId("native", "legacy"))!;
+  const legacy = { ...JSON.parse(row.record_json), id: "native_legacy" };
+  f.memory.store.db.query("DELETE FROM derivatives WHERE id=?").run(memoryDerivativeId("native", "legacy"));
+  f.memory.store.db.query("INSERT INTO derivatives VALUES (?,?,?)").run(legacy.id, legacy.state, JSON.stringify(legacy)); f.memory.store.db.exec("PRAGMA user_version=1");
+  f.reopen(); const next = f.context(); f.memory.include(next, "legacy", [claim.id]); expect(f.memory.derivative(next, "legacy").claimIds).toContain(claim.id);
+  f.memory.prepare(next, "fresh", "Reply format"); expect(f.memory.store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version).toBe(3);
+  expect(() => f.memory.prepare(next, memoryDerivativeId("native", "fresh"), "Reply format")).toThrow();
+  const options = f.memory.options; f.memory.close();
+  expect(() => new ProtectedDataStore(options.path, options.installationId, false, 0x4a495437, MEMORY_SCHEMA_V1, true)).toThrow("s15_data_store_incompatible");
+  f.reopen(); expect(f.memory.derivative(f.context(), "legacy").claimIds).toContain(claim.id);
 });
 
 test("owner correction supersedes the prior value and every dependent summary/context; later retrieval uses only correction", () => {
@@ -52,7 +71,7 @@ test("forget reports impact, clears derivatives and blocks source/claim re-extra
   expect(f.memory.retain(fresh, source)).toHaveLength(0); expect(f.memory.retain(fresh, f.source(source.text))).toHaveLength(0);
   expect(f.memory.retain(fresh, f.source(`Other text.\n${source.text}`))).toHaveLength(0);
   expect(f.memory.allowHistory(source.origin.id, source.text)).toBe(false);
-  expect(f.memory.store.db.query<{ state: string }, []>("SELECT state FROM derivatives WHERE id='native_used_request'").get()?.state).toBe("retired");
+  expect(f.memory.store.db.query<{ state: string }, [string]>("SELECT state FROM derivatives WHERE id=?").get(memoryDerivativeId("native", "used_request"))?.state).toBe("retired");
 });
 
 test("forgetting a corrected claim also prevents old correction-command receipts from returning forgotten bytes", () => {

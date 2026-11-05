@@ -1,4 +1,5 @@
 import { AppError } from "../../errors";
+import { filePins, type FileSourcePin } from "../file-lineage";
 import { digest } from "../conversation/validation";
 import { ProtectedDataStore, TEAM_SCHEMA_V1 } from "./store";
 import { canonical, content, exact, identity, ids, inScope, integer, origin, reference, resource, scope } from "./validation";
@@ -25,7 +26,7 @@ export class TeamService {
     if (options.runtime !== "s15") throw new AppError("s15_opt_in_required");
     integer(options.maxConcurrentOperations, 1, 64);
     this.now = options.now ?? Date.now;
-    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495436, TEAM_SCHEMA_V1);
+    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495436, TEAM_SCHEMA_V1, !!options.fileLineage);
     // Process loss cannot prove that input, a file write or a transport has stopped.
     this.store.db.query("UPDATE leases SET state='unknown' WHERE state IN ('reserved','in_flight')").run();
   }
@@ -114,6 +115,12 @@ export class TeamService {
     const handle = Object.freeze({}) as TeamContext;
     this.#contexts.set(handle, { actor, authority: structuredClone(authority) }); return handle;
   }
+  /** Opaque inference-only history identity; it cannot capture sources or obtain working resources. */
+  bindHistory(actor: TeamActor): TeamContext {
+    const authority = this.options.policy.work.guard(actor);
+    if (authority.mode !== "interpretation" || !this.options.fileLineage) throw new AppError("outside_scope", 403);
+    const handle = Object.freeze({}) as TeamContext; this.#contexts.set(handle, { actor, authority: structuredClone(authority) }); return handle;
+  }
   /** Fresh authority check at every tool/read/handoff/publication boundary. */
   guard(context: TeamContext): WorkAuthority {
     const saved = this.#contexts.get(context);
@@ -125,22 +132,25 @@ export class TeamService {
   /** Intersects current work, explicit resource policy and private scope before any resource bytes. */
   resource(context: TeamContext, id: string, operation: "read" | "write" | "input" = "read"): TeamResource {
     identity(id); const work = this.guard(context), item = this.findResource(id), bot = work.request.bot.id;
+    if (work.mode !== "work") throw new AppError("outside_scope", 403);
     if (!item || !item.active || !work.request.resources.some(r => same(r, item)) || !item.purposes.includes(work.request.purpose.id) || !inScope(item.scope, bot) || item.allowedBots !== null && !item.allowedBots.includes(bot) || item.deniedBots.includes(bot) || !item.operations.includes(operation)) throw new AppError("outside_scope", 403);
     if (operation !== "read" && (work.request.intent !== "execute" || work.request.access === "read")) throw new AppError("outside_scope", 403);
     return item;
   }
   /** Captures only a bounded immutable work/message subset; every ancestor keeps its original fences. */
-  capture(context: TeamContext, value: Pick<TeamSource, "id" | "text" | "scope" | "origin" | "resources" | "parents">): TeamSource {
-    canonical(value); exact(value, ["id", "text", "scope", "origin", "resources", "parents"]); identity(value.id); content(value.text, 32768); scope(value.scope); origin(value.origin); ids(value.parents, 128);
+  capture(context: TeamContext, value: Pick<TeamSource, "id" | "text" | "scope" | "origin" | "resources" | "parents" | "filePins">): TeamSource {
+    canonical(value); exact(value, ["id", "text", "scope", "origin", "resources", "parents", ...(value.filePins ? ["filePins"] : [])]); identity(value.id); content(value.text, 32768); scope(value.scope); origin(value.origin); ids(value.parents, 128);
     if (!Array.isArray(value.resources) || value.resources.length > 32) throw new AppError("invalid_source");
     value.resources.forEach(reference);
     if (new Set(value.resources.map(r => r.id)).size !== value.resources.length) throw new AppError("invalid_source");
     return this.store.transaction(() => {
-      this.store.capacity(); const work = this.guard(context);
+      this.store.capacity(); const work = this.guard(context); if (work.mode !== "work") throw new AppError("outside_scope", 403);
       if (!inScope(value.scope, work.request.bot.id) || value.origin.kind === "historical" && (value.scope.kind !== "bot" || value.scope.origin !== "s14")) throw new AppError("outside_scope", 403);
       value.resources.forEach(pin => { if (!same(this.resource(context, pin.id), pin)) throw new AppError("stale_authority", 409); });
       value.parents.forEach(id => this.source(context, id));
-      const source: TeamSource = { contract: "s15-team-source/v1", ...structuredClone(value), producer: { workId: work.id, bot: work.request.bot, policyRevision: work.policyRevision, ownerGeneration: work.ownerGeneration }, active: true };
+      const pins = filePins(value.filePins, this.ancestry(context, value.parents)); this.verifyFiles(context, pins);
+      if (pins.length) this.store.db.exec("PRAGMA user_version=2");
+      const source: TeamSource = { contract: "s15-team-source/v1", ...structuredClone(value), ...(pins.length ? { filePins: pins } : {}), producer: { workId: work.id, bot: work.request.bot, policyRevision: work.policyRevision, ownerGeneration: work.ownerGeneration }, active: true };
       const prior = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(source.id);
       if (prior) { if (canonical(source) !== prior.record_json) throw new AppError("source_id_conflict", 409); return JSON.parse(prior.record_json) as TeamSource; }
       this.store.db.query("INSERT INTO sources VALUES (?,?)").run(source.id, canonical(source)); return source;
@@ -148,18 +158,49 @@ export class TeamService {
   }
   /** Full ancestry and producer/resource fences are checked before returning content or scoring relevance. */
   source(context: TeamContext, id: string): TeamSource {
-    identity(id); const work = this.guard(context), seen = new Set<string>();
+    if (this.guard(context).mode !== "work") throw new AppError("outside_scope", 403);
+    const { item, pins } = this.inspect(context, id, false); this.verifyFiles(context, pins); return item;
+  }
+  /** Inference-only standing-resource projection. It never creates tools, work scope or dispatch rights. */
+  historyResource(context: TeamContext, id: string): TeamResource {
+    identity(id); const work = this.guard(context), item = this.findResource(id), bot = work.request.bot.id;
+    if (work.mode !== "interpretation") throw new AppError("outside_scope", 403);
+    const standing = this.options.policy.control.policyForWork(work.id);
+    if (!item || !item.active || !standing.resources.some(pin => same(pin, item)) || !inScope(item.scope, bot) || item.allowedBots !== null && !item.allowedBots.includes(bot) || item.deniedBots.includes(bot) || !item.operations.includes("read")) throw new AppError("outside_scope", 403);
+    return item;
+  }
+  private inspect(context: TeamContext, id: string, history: boolean): { item: TeamSource; pins: FileSourcePin[] } {
+    identity(id); const work = this.guard(context), seen = new Set<string>(); let pins: FileSourcePin[] = [];
     const visit = (currentId: string): TeamSource => {
       if (seen.has(currentId) || seen.size >= 256) throw new AppError("lineage_withdrawn", 409);
       seen.add(currentId);
       const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(currentId);
       const item = row ? JSON.parse(row.record_json) as TeamSource : null;
       if (!item || !item.active || !inScope(item.scope, work.request.bot.id) || this.store.db.query("SELECT 1 FROM withdrawals WHERE id=?").get(currentId) || !this.options.producerCurrent(item.producer)) throw new AppError("lineage_withdrawn", 409);
-      for (const pin of item.resources) if (!same(this.resource(context, pin.id), pin)) throw new AppError("lineage_withdrawn", 409);
+      for (const pin of item.resources) if (!same(history ? this.historyResource(context, pin.id) : this.resource(context, pin.id), pin)) throw new AppError("lineage_withdrawn", 409);
+      const own = filePins(item.filePins); if (own.length && !this.options.fileLineage?.current(own)) throw new AppError("lineage_withdrawn", 409);
+      for (const pin of own) if (!same(history ? this.historyResource(context, pin.resource.id) : this.resource(context, pin.resource.id), pin.resource)) throw new AppError("lineage_withdrawn", 409);
+      pins = filePins(pins, own);
       for (const parent of item.parents) { if (!seen.has(parent)) visit(parent); }
       return item;
     };
-    return visit(id);
+    const item = visit(id); return { item, pins };
+  }
+  /** Metadata-only complete private/resource/source traversal, before payload ranking or retrieval. */
+  ancestry(context: TeamContext, sourceIds: readonly string[]): FileSourcePin[] {
+    ids([...sourceIds], 128); return filePins(...sourceIds.map(id => this.inspect(context, id, false).pins));
+  }
+  /** Metadata-only history ancestry under the dedicated inference privacy projection. */
+  historyAncestry(context: TeamContext, sourceIds: readonly string[]): FileSourcePin[] {
+    ids([...sourceIds], 128); return filePins(...sourceIds.map(id => this.inspect(context, id, true).pins));
+  }
+  /** Synchronous final selected-byte check; a metadata query alone never permits release. */
+  verifyFiles(context: TeamContext, input: readonly FileSourcePin[], history = false): void {
+    const work = this.guard(context), pins = filePins(input);
+    if (!pins.length) return;
+    if (!this.options.fileLineage?.current(pins)) throw new AppError("lineage_withdrawn", 409);
+    for (const pin of pins) if (!same(history ? this.historyResource(context, pin.resource.id) : this.resource(context, pin.resource.id), pin.resource)) throw new AppError("lineage_withdrawn", 409);
+    this.options.fileLineage.verify(work, pins);
   }
   /** Current withdrawal metadata for replay filtering, including a withdrawal committed before MEM's transaction. */
   isWithdrawn(sourceId: string): boolean {
@@ -169,7 +210,9 @@ export class TeamService {
       if (seen.size > 256 || this.store.db.query("SELECT 1 FROM withdrawals WHERE id=?").get(current)) return true;
       const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(current);
       if (!row) return true;
-      pending.push(...(JSON.parse(row.record_json) as TeamSource).parents);
+      const source = JSON.parse(row.record_json) as TeamSource;
+      if (source.filePins?.length && !this.options.fileLineage?.current(source.filePins)) return true;
+      pending.push(...source.parents);
     }
     return false;
   }

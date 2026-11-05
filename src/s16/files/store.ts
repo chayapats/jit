@@ -13,6 +13,7 @@ import { defaultFileLimits, type FileArtifact, type FileLimits, type FileOwner, 
 import type { Ref } from "../../s15/policy";
 import { ref as validateRef } from "../../s15/policy/validation";
 import type { DisclosureSource } from "../../s15/disclosure";
+import { filePins, type FileSourcePin } from "../../s15/file-lineage";
 
 interface UploadRecord extends FileUpload { kind: "upload"; owner: FileOwner; resource: Ref }
 interface ArtifactRecord extends FileArtifact { kind: "artifact"; owner: FileOwner; inputs: FileReference[] }
@@ -99,7 +100,8 @@ export class FileStore<Actor> {
     if (!textExtensions.has(name.split(".").at(-1)!.toLowerCase()) && !(this.parser && /\.(pdf|png|jpe?g)$/i.test(name))) throw new AppError("file_type_unavailable", 415);
     return this.journal.tx(() => {
       const owner = this.current(actor), fingerprint = digest(canonical({ owner, input }));
-      const created = this.journal.once(`create_${input.requestId}`, fingerprint, () => {
+      const commandId = `create_${input.requestId}`;
+      const created = this.journal.once(commandId.length <= 128 ? commandId : `create_${digest(commandId)}`, fingerprint, () => {
         this.capacity(input.bytes);
         // Fence old text-only file readers even before the first binary CHAT ingress.
         if (/\.(pdf|png|jpe?g)$/i.test(name)) this.journal.db.exec("PRAGMA user_version=2");
@@ -268,9 +270,25 @@ export class FileStore<Actor> {
   }
   /** Protected source catalog only. The immutable resource generation is pinned at upload creation. */
   source(id: string): DisclosureSource | null {
-    const row = this.records().find(row => row.kind === "upload" && row.id === id);
+    let row: UploadRecord | ArtifactRecord; try { row = this.journal.get(id); } catch { return null; }
     if (!row || row.kind !== "upload") return null;
     return { ref: { id: row.id, revision: 1, generation: row.owner.generation }, resource: structuredClone(row.resource), classification: "private", ownerReleasable: true, active: row.state === "ready" && (row.retained || this.now() < row.expiresAt) };
+  }
+  /** Owner-scoped metadata anchor; it contains no private bytes, path or reusable principal. */
+  pin(actor: Actor, id: string): FileSourcePin {
+    const status = this.status(actor, id), row = this.upload(id);
+    if (status.state !== "ready" || !status.receipt) throw new AppError("lineage_withdrawn", 409);
+    return { contract: "s16-file-source/v1", source: this.source(id)!.ref, resource: structuredClone(row.resource), sha256: status.receipt.sha256, representationSha256: status.receipt.contract === "s16-file-receipt/v2" ? status.receipt.representation.sha256 : null };
+  }
+  /** Protected metadata query for filtering/ranking/tombstone UI; never a byte-release permit. */
+  pinsCurrent(input: readonly FileSourcePin[]): boolean {
+    if (this.#closed) return false;
+    try { return filePins(input).every(pin => { const row = this.upload(pin.source.id), source = this.source(pin.source.id); return !!source?.active && canonical(source.ref) === canonical(pin.source) && canonical(row.resource) === canonical(pin.resource) && row.expectedHash === pin.sha256 && (row.receipt?.contract === "s16-file-receipt/v2" ? row.receipt.representation.sha256 : null) === pin.representationSha256; }); } catch { return false; }
+  }
+  /** Final selected original/derived byte verification under the caller's current protected owner/work. */
+  verifyPins(actor: Actor, input: readonly FileSourcePin[]): void {
+    const pins = filePins(input); if (!this.pinsCurrent(pins)) throw new AppError("lineage_withdrawn", 409);
+    for (const pin of pins) { const row = this.upload(pin.source.id); this.read(actor, row.conversationId, { id: row.id, sha256: pin.sha256 }); }
   }
   /** Internal candidates only. A client library/download must additionally verify committed CHAT references. */
   candidates(actor: Actor, requestId: string, workId: string): FileArtifact[] {

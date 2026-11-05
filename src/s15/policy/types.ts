@@ -118,7 +118,7 @@ export interface ReadClaim { id: string; workId: string; input: ReadInput; paylo
 export type ReadDecision = { state: 'allow'; claim: ReadClaim } | { state: 'hold' | 'deny'; code: string };
 
 /** One pre-retrieval model call, with no resources, recipients, tools or effect authority. */
-export interface InterpretationInput { requestId: string; selection: Selection; expiresAt: number }
+export interface InterpretationInput { requestId: string; selection: Selection; expiresAt: number; /** Current protected conversation Bot, never inferred from history or supplied by the model. */ bot?: Ref }
 /** Owner-only exact read model; payloadBytesBase64 encodes the complete canonical UTF-8 payload without truncation. */
 export interface ActionSlip { contract: 's15-action-slip/v1'; action: PreparedAction; payloadBytesBase64: string; state: 'pending' | 'approved' | 'executing' | 'succeeded' | 'failed' | 'unknown' | 'changed' | 'expired' | 'denied' | 'unsupported' | 'stale_rules'; expiresAt: number; reasonCode: string | null; canApprove: boolean; replacement: ActionRef | null; observation: Observation | null; recurring: { rule: Rule; deviations: string[] }[]; statements: { outcome: 'occurred' | 'did_not_occur' }[] }
 /** Protected first-run rule summary. An incomplete proposal contains null fields and cannot install; it invents no budget/profile. */

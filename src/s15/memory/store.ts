@@ -1,5 +1,7 @@
 /**
- * MEM schema v1, application_id 0x4a495437, user_version 1. Current claim/source withdrawals,
+ * MEM DDL v1, application_id 0x4a495437. Formats 1/2 retain legacy keys (2 carries file pins);
+ * formats 3/4 fence old prefix writers after disjoint derivative keys (4 carries file pins).
+ * Current claim/source withdrawals,
  * correction heads, derivative retirement and command dedupe are protected continuity, never restored
  * independently from an old image. Source records retain hashes/provenance rather than whole history.
  */

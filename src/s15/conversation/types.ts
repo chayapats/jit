@@ -1,6 +1,7 @@
 import type { HostClock, HostRunUsage, Model, ToolDefinition } from "schway/host";
 import type { ActionRef, ActionSlip, ApprovalInput, Observation, PendingDecisionInput } from "../policy";
 import type { FileArtifact, FileReceipt, FileReference } from "../../s16/files/types";
+import type { FileSourcePin } from "../file-lineage";
 
 /** Authenticated ordinary text only. Attachments/history are data supplied separately by trusted adapters. */
 export interface ConversationTextCommand {
@@ -119,6 +120,8 @@ export interface ConversationRequest {
   memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
   inputEvidence?: ConversationEvidence[];
   fileInputs?: FileReceipt[];
+  /** Frozen ingress semantics; enabling memory later never promotes previously accepted file work. */
+  fileMemory?: "s16-file-memory/v1";
   artifacts?: FileArtifact[];
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   /** Usage evidence of the latest interpretation run, kept on failure too. Absent before MODEL15-02. */
@@ -131,11 +134,15 @@ export interface ConversationRequest {
 }
 /** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
 export interface ConversationMemoryPort<WorkContext> {
+  fileContract?: "s16-file-memory/v1";
   prepare(work: WorkContext, request: ConversationRequest, ingress?: { receivedAt: number }): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
   guard(work: WorkContext, requestId: string): void;
-  observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence): NonNullable<ConversationRequest["memory"]>["retained"];
-  complete(work: WorkContext, requestId: string, text: string): void;
+  observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence, observations?: readonly ConversationEvidence[]): NonNullable<ConversationRequest["memory"]>["retained"];
+  complete(work: WorkContext, requestId: string, text: string): NonNullable<ConversationRequest["memory"]>["retained"] | void;
+  artifacts?(work: WorkContext, requestId: string, artifacts: readonly FileArtifact[]): void;
   allowHistory(requestId: string, originalText: string): boolean;
+  history?(work: WorkContext, requestId: string, originalText: string): boolean;
+  guardHistory?(work: WorkContext, fragments: readonly { id: string; text: string }[]): FileSourcePin[];
   release(requestId: string): void;
 }
 /** Protected composition explicitly opts in. Scripted model injection is a deterministic test seam only. */
@@ -153,7 +160,7 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
    * and MODEL15 renewals on the same store share one single-flight token request. */
   routeAuth?: Pick<import("schway/host").HostAuthSelection, "store" | "lifecycle" | "fetch">;
   /** Privacy-only check before the public interpreter stream; it grants no tools or execution scope. */
-  guardInterpretation?: (work: WorkContext, request: unknown) => void;
+  guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[]) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
   runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
