@@ -1,7 +1,7 @@
 /**
  * Adapted from Rakazo, copyright 2026 Rakazo contributors, Apache-2.0.
  * Source: apps/web/src/components/ArtifactFileCard.tsx at abf3c08145a05cba92a912d6c24fdfb5f569d0e0.
- * Modified for Jit: protected Fetch client, local i18n, Astra-authored inspector, escaped text only,
+ * Modified for Jit: protected Fetch client, local i18n, the authored inspector, escaped text only,
  * fresh verified downloads and no upstream RPC, renderer, icon or design-system dependencies.
  * See third_party/rakazo/LICENSE and provenance.json.
  */
