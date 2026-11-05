@@ -27,8 +27,8 @@
       "sha256": "1ba299e9e0ae636e460b9301c6c332a007d352f9a33db4407701468754013132",
       "destination": "src/s16/web/ArtifactFileCard.tsx",
       "license": "Apache-2.0",
-      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; text-only protected inspector.",
-      "destinationSha256": "ba60c31f9050fb8a45f989557a1c29bfef59b3488628744fb6d9d11af6cd7067",
+      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; protected text inspector forwards the actual auth failure for private-state invalidation.",
+      "destinationSha256": "92ec9c26238fab23f1210fb830e57d756c4e0f0282709af8142033c02ceab7a7",
       "imports": [
         "../client/artifact-preview",
         "react",
