@@ -12,7 +12,7 @@ import type { JitClient } from "../client";
 import type { Copy } from "./copy";
 
 /** Committed artifact only. Preview and Download have separate labelled controls and current guards. */
-export function ArtifactFileCard({ artifact, client, t, onPreview, onFailure }: { artifact: FileArtifact; client: JitClient; t: Copy; onPreview(file: FileArtifact, returnFocus: HTMLButtonElement | null): void; onFailure(): void }) {
+export function ArtifactFileCard({ artifact, client, t, onPreview, onFailure }: { artifact: FileArtifact; client: JitClient; t: Copy; onPreview(file: FileArtifact, returnFocus: HTMLButtonElement | null): void; onFailure(error: unknown): void }) {
   const previewButton = useRef<HTMLButtonElement>(null), [error, setError] = useState(false), [busy, setBusy] = useState(false);
   const kind = artifactPreviewKind(artifact.mime), previewable = kind === "markdown" || kind === "text";
   async function download() {
@@ -21,7 +21,7 @@ export function ArtifactFileCard({ artifact, client, t, onPreview, onFailure }: 
       const bytes = await client.artifactBytes(artifact), url = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer], { type: "application/octet-stream" }));
       const link = document.createElement("a"); link.href = url; link.download = artifact.name; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch { setError(true); onFailure(); } finally { setBusy(false); }
+    } catch (error) { setError(true); onFailure(error); } finally { setBusy(false); }
   }
   return <div className="artifact-wrap">
     <div className="artifact-card">

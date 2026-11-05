@@ -9,6 +9,7 @@ import { AppError } from "../src/errors";
 import { ConversationStore } from "../src/s15/conversation/store";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { JitClient } from "../src/s16/client";
 
 const fixtures: Awaited<ReturnType<typeof composedFixture>>[] = [];
 afterEach(async () => { for (const f of fixtures.splice(0)) await f.close(); });
@@ -56,6 +57,26 @@ test("composed authenticated bytes → actual POLICY read → immutable output �
   await f.request(`/api/s16/client/uploads/${receipt.id}/withdraw`, "POST", {});
   expect((await f.request(path)).status).toBe(409); expect(f.service.conversation.view(f.owner, input.requestId)).toMatchObject({ result: null, evidence: [], artifacts: [] });
   const snapshot = await (await f.request("/api/s16/client/conversations/conversation")).json(); expect(snapshot.conversation.rows[0].files.artifacts).toEqual([]);
+});
+
+test("UTF-8 BOM bytes remain in actual read coverage and a valid file completes", async () => {
+  const f = await fixture(), text = "\ufeffLaunch: Friday.\n", receipt = await upload(f, text), row = await run(f, command(receipt));
+  expect(row.state).toBe("completed"); expect(row.artifacts).toHaveLength(1);
+  expect(f.service.files!.read(f.owner, "conversation", { id: receipt.id, sha256: receipt.sha256 }).text).toBe(text);
+  const read = row.evidence.find(evidence => evidence.tool === "file_read")!;
+  expect(JSON.parse(read.content)).toMatchObject({ totalBytes: receipt.bytes, nextOffset: receipt.bytes });
+});
+
+test("an old artifact response cannot release private bytes after a new client session starts", async () => {
+  const f = await fixture(), receipt = await upload(f, "Launch: Friday.\n"), row = await run(f, command(receipt));
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const c = new JitClient({ origin: "http://localhost:3099", async fetch(request) {
+    const url = new URL(request.url), response = await f.request(url.pathname + url.search, request.method, request.method === "POST" ? await request.json() : undefined, Object.fromEntries(request.headers));
+    if (url.pathname.includes("/artifacts/")) { entered.resolve(); await release.promise; } return response;
+  } });
+  await c.bootstrap(); const old = c.artifactBytes(row.artifacts![0]!); await entered.promise;
+  try { c.clear(); await c.bootstrap(); } finally { release.resolve(); }
+  await expect(old).rejects.toMatchObject({ code: "client_response_stale" });
 });
 test("a ready file alone is received without inference or execution, and exact references cannot cross conversations", async () => {
   const f = await fixture(), receipt = await upload(f, "Do not send this to a new recipient.\n"), input = command(receipt, "");

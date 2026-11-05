@@ -109,7 +109,7 @@ export function createFileWorkflow(options: {
           const bytes = new TextEncoder().encode(files.read(work.actor, row.receipt.conversationId, refOf(receipt)).text);
           if (parsed.offset >= bytes.length) throw new AppError("outside_scope");
           let end = Math.min(bytes.length, parsed.offset + 4096), text: string;
-          for (;;) { try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(parsed.offset, end)); break; } catch { if (end <= parsed.offset || end < Math.min(bytes.length, parsed.offset + 4096) - 3) throw new AppError("outside_scope"); end--; } }
+          for (;;) { try { text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(parsed.offset, end)); break; } catch { if (end <= parsed.offset || end < Math.min(bytes.length, parsed.offset + 4096) - 3) throw new AppError("outside_scope"); end--; } }
           return { content: JSON.stringify({ id: receipt.id, sha256: receipt.sha256, offset: parsed.offset, nextOffset: end, totalBytes: bytes.length, text }) };
         }); },
       }, {

@@ -183,7 +183,7 @@ export class FileStore<Actor> {
     if (upload.state !== "ready" || !upload.receipt || upload.conversationId !== conversationId || upload.expectedHash !== reference.sha256) throw new AppError("file_unavailable", 409);
     const bytes = this.readPath(this.path(upload.id), upload.bytes);
     if (hash(bytes) !== reference.sha256) throw new AppError("file_integrity_failed", 409);
-    return { receipt: upload.receipt, text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
+    return { receipt: upload.receipt, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) };
   }
   /** Owner cancellation/withdrawal is monotonic. It never revives a cancelled transfer or refunds effects. */
   withdraw(actor: Actor, id: string): FileUpload {

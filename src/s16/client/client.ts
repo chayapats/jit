@@ -114,11 +114,19 @@ export class JitClient {
   artifactUrl(requestId: string, artifactId: string): string { return `${this.origin}/api/s16/client/requests/${id(requestId)}/artifacts/${id(artifactId)}`; }
   /** Reacquire publication permission and verify exact bounded immutable bytes before preview/download. */
   async artifactBytes(artifact: FileArtifact, signal?: AbortSignal): Promise<Uint8Array> {
+    const generation = this.#sessionGeneration;
     if (!Number.isSafeInteger(artifact.bytes) || artifact.bytes < 1 || artifact.bytes > 1024 * 1024 || !/^[a-f0-9]{64}$/.test(artifact.sha256)) return invalid();
     let response: Response;
     try { response = await this.#fetch(new Request(this.artifactUrl(artifact.requestId, artifact.id), { credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}) })); }
     catch { throw new JitClientError("connection_lost", null, "not_sent"); }
-    if (response.status === 401 || response.status === 403) this.clear();
+    if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, "response"); }
+    if (response.status === 401 || response.status === 403) {
+      this.clear(); const current = this.#sessionGeneration;
+      let code = response.status === 401 ? "authentication_required" : "authorization_required";
+      try { const data = await this.json(response, "GET", null); const reason = safeCode(record(data) ? data.error : null); if (reason !== "client_unavailable") code = reason; } catch { /* The status still establishes that private content must be withheld. */ }
+      if (current !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, "response");
+      throw new JitClientError(code, response.status, "response");
+    }
     if (!response.ok || response.redirected || response.headers.get("content-type") !== "application/octet-stream" || response.headers.get("x-content-sha256") !== artifact.sha256) { await response.body?.cancel(); throw new JitClientError("artifact_unavailable", response.status, "response"); }
     const reader = response.body?.getReader(); if (!reader) return invalid();
     const bytes = new Uint8Array(artifact.bytes); let offset = 0;
@@ -126,6 +134,7 @@ export class JitClient {
     finally { reader.releaseLock(); }
     const checksum = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(value => value.toString(16).padStart(2, "0")).join("");
     if (signal?.aborted) throw new JitClientError("aborted", null, "not_sent");
+    if (generation !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, "response");
     if (offset !== artifact.bytes || checksum !== artifact.sha256) return invalid();
     return bytes;
   }
@@ -154,6 +163,12 @@ export class JitClient {
     if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId); }
     if (response.status === 401 || response.status === 403) this.clear();
     const responseGeneration = this.#sessionGeneration;
+    const data = await this.json(response, method, requestId);
+    if (responseGeneration !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId);
+    if (!response.ok) throw new JitClientError(safeCode(record(data) ? data.error : null), response.status, "response", requestId);
+    return data;
+  }
+  private async json(response: Response, method: "GET" | "POST", requestId: string | null): Promise<unknown> {
     if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json" || response.redirected) throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId);
     const reader = response.body?.getReader(); if (!reader) throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId);
     let data: unknown;
@@ -164,8 +179,6 @@ export class JitClient {
       data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) { if (error instanceof JitClientError) throw error; throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId); }
     finally { reader.releaseLock(); }
-    if (responseGeneration !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId);
-    if (!response.ok) throw new JitClientError(safeCode(record(data) ? data.error : null), response.status, "response", requestId);
     return data;
   }
 }
