@@ -5863,7 +5863,7 @@ export const en: Record<MessageKey, string> = {
   "s16.memory.fileCurrent": "Current",
   "s16.memory.fileWithdrawn": "Withdrawn",
   "s16.memory.chain": "Correction history",
-  "s16.memory.inferenceNote": "An inference is the Bot's reading of a source, not something you confirmed.",
+  "s16.memory.inferenceNote": "An inference is how the Bot read a source, not something you confirmed.",
   "s16.memory.correct": "Correct memory",
   "s16.memory.correctLabel": "Corrected text",
   "s16.memory.correctHelp": "Your correction becomes a new fact stated by you. The old item stops being used and contexts built from it are retired.",
