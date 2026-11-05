@@ -2,7 +2,7 @@
 export { ConversationApplication } from "./application";
 export { ConversationStore } from "./store";
 export { createConversationHandler } from "./http";
-export { conversationAction, conversationOwnerView, conversationList, conversationPendingNeeds } from "./owner-view";
+export { conversationAction, conversationOwnerView, conversationList, conversationPendingNeeds, conversationRequestView } from "./owner-view";
 export { createConversationPolicy } from "./policy-port";
 export type { ConversationPolicyWork, ModelCallBound } from "./policy-port";
 export { createConversationVmTools } from "./vm-port";

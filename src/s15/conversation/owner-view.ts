@@ -81,6 +81,11 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
 }
 
+/** One guarded owner row independent of the bounded conversation window; never exposes the raw journal. */
+export function conversationRequestView<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, requestId: string): ConversationOwnerRow {
+  return ownerRow(app, actor, requestId);
+}
+
 /**
  * Every outstanding owner item across all conversations, independent of the bounded thread and
  * navigation windows, newest first. Only requests that can still wait on the owner are read.

@@ -38,6 +38,8 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Conversation:** A durable discussion with one or more Bot participants. Membership, a display label and an @mention do not grant execution or resource access.
 
+**Shared client (S16, API16-01):** The browser/native-safe transport and ephemeral projection state over the existing protected Jit service. It submits exact owner commands, reads currently authorized snapshots/control events, recovers the original send identity and reviews exact actions. It is not a second authority, engine or store. The first [client contract](docs/contracts/s16-client-v1.md) advertises text/tool work and exact decisions; uploads, immutable artifacts and live steering remain unavailable until their contracts land.
+
 **Work item:** A proposed or owner-requested obligation with a status, explicit completion rule, origin and evidence. A work item may involve multiple Bots and conversations without becoming a Project.
 
 **Responsibility (S15 opt-in):** An authenticated conversational assignment retaining its original purpose, selected subject, completion rule and current policy authority across bounded attempts and durable waits. Waiting holds no VM/native session; interrupted effects reconcile before new attempts. A measured stall pauses this responsibility with evidence and a recommendation while other authorized work continues. See `src/s15/work/` and `docs/contracts/s15-responsibility-v1.md`.
