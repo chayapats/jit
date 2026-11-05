@@ -32,6 +32,7 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run upstream:check
   tests:
     name: tests (${{ matrix.arch }}, ${{ matrix.shard }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false

@@ -18,6 +18,7 @@
     "ops:smoke": "bun ops/package/arm64-smoke.ts",
     "s15:evidence:arm64": "bun ops/evidence/s15-arm64.ts",
     "typecheck": "tsc --noEmit",
+    "upstream:check": "bun ops/package/upstream.ts",
     "test": "bun test --timeout 30000"
   },
   "devDependencies": {

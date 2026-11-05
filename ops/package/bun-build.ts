@@ -6,6 +6,7 @@ import { safeVersion } from "../../src/evidence/contract";
 import { s14SchemaVersion } from "../../src/s14/store";
 import { schemaVersion } from "../../src/store";
 import type { CommandRunner } from "../../src/ops/supervisor";
+import { validateUpstream } from "./upstream";
 
 /** Engine contract identifiers allow path segments, e.g. jit.schway.bridge/v1. */
 const contractPattern = /^[a-z][a-z0-9_./-]{0,119}$/;
@@ -212,11 +213,13 @@ export function buildPackage(options: BuildOptions): BuildManifest {
   const manifest = JSON.parse(readFileSync(join(srcDir, "package.json"), "utf8")) as { version?: unknown };
   if (safeVersion(manifest.version) !== manifest.version) throw new Error("invalid_package_source");
   if (typeof Bun === "undefined" || safeVersion(Bun.version) !== Bun.version) throw new Error("invalid_build_runtime");
+  validateUpstream(srcDir);
   mkdirSync(outDir, { recursive: true, mode: 0o755 });
   try {
     for (const entry of packagedEntries) {
       cpSync(join(srcDir, entry), join(outDir, entry), { recursive: true, filter: path => !excluded(relative(srcDir, path)) });
     }
+    validateUpstream(outDir);
     // Canonical modes are bound into the content pin: dirs 0755, files 0644.
     canonicalizeModes(outDir);
     const metadata: Omit<BuildManifest, "contentHash"> = { artifact: "jit.service.artifact/v1", artifactId: randomUUID(),
@@ -298,6 +301,8 @@ export function validateArtifact(outDir: string, options: { runtime?: boolean } 
   catch { checks.push({ check: "lock-pin", ok: false }); }
   try { checks.push({ check: "content-pin", ok: artifactContentHash(dir, manifestMetadata(manifest)) === manifest.contentHash }); }
   catch { checks.push({ check: "content-pin", ok: false }); }
+  try { validateUpstream(dir, { historical: true }); checks.push({ check: "upstream-provenance", ok: true }); }
+  catch { checks.push({ check: "upstream-provenance", ok: false }); }
   // Release modes: every packaged directory 0755 and file 0644, so the dedicated non-root unit can read all of it.
   try {
     const root = lstatSync(dir).mode & 0o7777;
