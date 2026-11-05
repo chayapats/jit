@@ -1,6 +1,6 @@
 # Implementation backlog
 
-Current target: [S15](../specs/S15-conversational-autonomy.md), [parent #316](https://github.com/chayapats/jit/issues/316), [delivery graph](S15-conversational-autonomy-roadmap.md) and [manifest](s15/manifest.json). Current readiness comes from verified S15 blockers/contracts and the [workflow](../agents/workflow.md), not the historical labels/counts below. No implement-parallel/coordinator/claim workflow applies.
+Current target: [S16](../specs/S16-rakazo-experience.md), [parent #392](https://github.com/chayapats/jit/issues/392) and [delivery graph](S16-rakazo-experience-roadmap.md). [S15](../specs/S15-conversational-autonomy.md), [#316](https://github.com/chayapats/jit/issues/316), its [graph](S15-conversational-autonomy-roadmap.md) and [manifest](s15/manifest.json) retain their implementation/authority scope, with live evidence/adoption in #340/#341. Readiness comes from actual verified slice contracts/blockers and the [workflow](../agents/workflow.md), not historical labels/counts. No implement-parallel/coordinator/claim workflow applies.
 
 ## Historical MVP backlog
 

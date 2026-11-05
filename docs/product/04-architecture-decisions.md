@@ -1,6 +1,10 @@
 # Jit Architecture Decision Records
 
-Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S15](../specs/S15-conversational-autonomy.md); S14 remains the implemented default. Engineering choices and support claims require their own contract/evidence status.
+Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S16](../specs/S16-rakazo-experience.md), extending the retained S15 authority baseline; S14 remains default with opt-in S15. Engineering choices and support claims require their own contract/evidence status.
+
+## S16 proposal
+
+[ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) records selective Rakazo source reuse on Jit + Schway, stack alternatives, shared-client/API boundaries, protected browser/computer integration and source/license obligations. The owner confirmed the product direction and freedom to improve stacks; React/storage/API/package choices remain engineering proposals pending their concrete slices.
 
 ## S15 proposal
 

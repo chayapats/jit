@@ -1,6 +1,6 @@
 # Jit Product Requirements Document
 
-Current product target: [S15](../specs/S15-conversational-autonomy.md), owner-confirmed 2026-11-02. [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) records proposed engineering and unresolved enforcement gates. Existing FR/NFR IDs are retained and refined below; these requirements are not a claim that S15 is implemented. New runs/installations still default to S14, while explicit legacy and existing legacy service configs retain S09–S13. [Owner-Pi acceptance](../evidence/s14-owner-pi-cutover.md) remains scoped to its recorded build. Historical S14 behavior and contracts remain in the earlier specs and Git history until replacement slices land.
+Current product target: [S16](../specs/S16-rakazo-experience.md), owner-confirmed 2026-11-05: the Rakazo-style persistent teammate experience on Jit + Schway, with selective upstream code reuse and freedom to improve existing stacks. [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) records proposed integration choices. S16's feature/acceptance matrix extends the stable FR/NFR IDs below. [S15](../specs/S15-conversational-autonomy.md) and [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) retain the authority/continuity baseline until explicit replacement decisions/contracts. Opt-in S15 code is implemented; new unconfigured runs/installations still default to S14. Explicit legacy and existing legacy service configs retain S09–S13. [Owner-Pi acceptance](../evidence/s14-owner-pi-cutover.md) remains scoped to its recorded build; no S16 parity or host adoption is inferred.
 
 ## Actors and journeys
 
@@ -13,6 +13,7 @@ One owner works with Jit and persistent Bots. Coordinator, worker Bot, scheduler
 - J05: handle quota, failed sources, stalled progress, cancellation or crash through honest state and safe recovery.
 - J06: inspect GitHub readiness and wait for issue selection; then implement/babysit selected work. Default publication requires approval; an opt-in personal rule permits technical publication and eligible auto-merge. Production waits.
 - J07: use connected personal/business accounts for authorized routine edits; inspect exact outbound messages and transactions before approving, unless a bounded standing exception applies.
+- J08: work with files, graphical computers, connected apps, governed tools/skills and voice from Web/desktop/mobile clients of the same persistent Jit service, as specified by S16-AC01–AC22.
 
 ## Functional requirements
 
@@ -44,7 +45,7 @@ Owner-scoped monitoring, readiness inspection and immutable PR review remain sup
 Findings name location/source, trigger, impact and evidence. Report revision and coverage remain explicit. Deduplicate logical notifications; remote delivery unknown is never falsely claimed delivered.
 
 ### FR-10 — Owner Web controls
-Expose persistent work/Bot/resource state, evidence, artifacts, stop and waiting reasons through authenticated Web. Refresh/reconnect must not start duplicate work. Concrete UI/UX is authored by the designated Opus designer.
+Expose persistent work/Bot/resource state, evidence, artifacts, stop and waiting reasons through authenticated Web. Refresh/reconnect must not start duplicate work. Concrete UI/UX is authored by the owner's designated design subagent under the current AGENTS.md instruction.
 
 ### FR-11 — Companion channels
 Bound owner channels use the same revisioned commands/receipts. Channel identity, a forwarded message or a quoted instruction cannot widen power. Telegram support is conditional on its actual transport evidence, not assumed shipped.
@@ -86,7 +87,7 @@ New chat/work needs no Project, promotion, Work-mode switch or repeated grant ce
 Idempotent setup establishes owner/persona, working VM capability, approved routes/connections and standing limits once, without a Project or per-Bot account duplication. Readiness distinguishes configuration from a demonstrated working tool/model/backend. New ordinary tasks reuse policy. Existing state is preserved through an explicit transition/rollback plan; the new direction is not permission for implicit deletion/conversion or a live cutover.
 
 ### FR-24 — Conversational Web experience
-The experience must support ordinary conversational work, meaningful approvals and evidenced results without per-task scope setup. Concrete S15 UI/UX must be authored by Claude Opus 5.5 at effort high; prior S14/Plain layouts are not automatically the new design. Preserve accessible responsive dark/light behavior and disclose unsupported/no-script paths honestly. No sensitive authenticated data in service-worker cache.
+The experience must support ordinary conversational work, meaningful approvals and evidenced results without per-task scope setup. Concrete UI/UX uses the current owner-designated design author (S16: Astra at high effort, with detailed Mobbin MCP research); earlier S15 authoring requirements retain their historical scope. Prior layouts and stacks are references, not mandatory new-client constraints. Preserve accessible responsive dark/light behavior and disclose unsupported paths honestly. No sensitive authenticated data in service-worker cache.
 
 ### FR-25 — Thai and English
 Thai is default; all labels and states have English counterparts and Unicode-safe storage/retrieval. Persona language and UI preferences remain owner-controlled.
