@@ -29,6 +29,8 @@ The reusable runtime's output stream independently caps metadata (2 KiB), PDF ou
 
 Binary receipt `s16-file-receipt/v2` retains original `id`, `sha256`, `conversationId`, display `name`, original `mime`, `bytes` and `expiresAt`. It adds `validation: "s16-isolated-file/v1"`, immutable `parserGeneration` (the pinned image in production), and `representation`:
 
+The shared client validates ready receipt identity/hash/size, validation/profile strings and complete representation fields before returning a typed result. PDF text requires pages and null image dimensions; image representations require positive actual original/model dimensions and null pages. Missing or malformed data fails `client_protocol_invalid` before the detail view renders it.
+
 - `sha256`, `bytes`, `mime`: exact validated model representation, separate from the original hash.
 - `pages`: complete extracted PDF page count, otherwise null.
 - `width`, `height`, `originalWidth`, `originalHeight`: actual model/original image dimensions, otherwise null.
@@ -40,6 +42,8 @@ The file journal stamps `user_version=2` atomically at first binary upload creat
 ## Actual model input and publication
 
 Every original remains a separate private DATA15 source on its pinned resource. Entire selected-set ancestry is registered before any model stream. PDF `file_read` returns actual extracted UTF-8 chunks; complete contiguous derived-text coverage is required, while its evidence still binds the original source. Image `file_read` cannot stand in for image processing. Public Schway `createImageContent`, `HostInput.images`, `HostOptions.images.probes/resolve` supply actual re-encoded pixels. The resolver freshly verifies the selected original/representation and every source/resource fence on each model attempt/tool round.
+
+CHAT admission requests finite read capacity for both tool reads and accepted-image reads on every allowed physical model send: `toolCalls + selectedImages * modelCalls`, capped by the existing owner read ceiling. The image count comes only from accepted immutable receipt metadata, never client/model authority. Every send still repeats current source, recipient, POLICY read and byte-integrity checks; a lower owner ceiling continues to stop work.
 
 MODEL15 keeps image references in native context and input hashes; `imageData` remains an ephemeral hash-keyed byte map. It is excluded from durable model records and disclosure metadata. Supported provider adapters perform wire encoding. The existing final physical-send authorizer invokes the caller's image guard for initial sends and supported auth resends. That guard rechecks owner generation, running work, TEAM/resource ceilings, all selected original/derived hashes, active sources and current recipient approval; it verifies the exact outgoing map and performs real reserved/settled/published POLICY reads. One image's refusal fences the send, never silently drops that image.
 

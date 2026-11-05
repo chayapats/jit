@@ -19,8 +19,8 @@ async function fixture(model?: Model, tune?: (options: S15CompositionOptions) =>
     const configured = { ...options, files: { parserRuntime: binaryRuntime(), imageProbes }, ...(model ? { model: { ...options.model, scripted: () => model } } : {}) }; return tune ? tune(configured) : configured;
   }); fixtures.push(f); return f;
 }
-async function upload(f: Awaited<ReturnType<typeof fixture>>, name: string, bytes: Uint8Array): Promise<FileReceipt> {
-  const created = await f.request("/api/s16/client/conversations/conversation/uploads", "POST", { requestId: "upload", conversationId: "conversation", name, bytes: bytes.length, sha256: hash(bytes) });
+async function upload(f: Awaited<ReturnType<typeof fixture>>, name: string, bytes: Uint8Array, requestId = "upload"): Promise<FileReceipt> {
+  const created = await f.request("/api/s16/client/conversations/conversation/uploads", "POST", { requestId, conversationId: "conversation", name, bytes: bytes.length, sha256: hash(bytes) });
   expect(created.status).toBe(201); const pending = await created.json() as FileUpload;
   const response = await f.raw(`/api/s16/client/uploads/${pending.id}/bytes`, new Uint8Array(bytes).buffer);
   expect(response.status).toBe(200); const ready = await response.json() as FileUpload;
@@ -30,6 +30,21 @@ async function send(f: Awaited<ReturnType<typeof fixture>>, file: FileReceipt) {
   const command = { contract: "s16-conversation/v2", requestId: "work", conversationId: "conversation", text: "Create a brief from the attached file", continuation: null, files: [{ id: file.id, sha256: file.sha256 }] };
   expect((await f.request("/api/s16/client/conversations/conversation/messages", "POST", command)).status).toBe(202); await f.service.conversation.drain(); return f.service.conversation.view(f.owner, "work");
 }
+test.each([1000, 16])("four images account for six model sends while keeping the owner's read ceiling %i", async ceiling => {
+  let turns = 0;
+  const model: Model = { provider: "codex-subscription", id: "fixture-model", async *stream(request) {
+    expect(request.imageData?.size).toBe(1); const step = turns++;
+    yield { type: "message_complete", message: { type: "assistant", id: "images" + step, content: step < 4 ? [{ type: "tool_call", id: "list" + step, name: "files", arguments: {} }] : step === 4 ? [{ type: "tool_call", id: "write", name: "file_create", arguments: { name: "images.md", text: "Observed all four selected images.\n" } }] : [{ type: "text", text: "Created the image brief." }] } };
+  } };
+  const f = await fixture(model, options => { options.conversation.limits.modelCalls = 6; options.conversation.limits.toolCalls = 16; options.model.limits.turns = 6; options.proposedPolicy!.budget!.ceiling.reads = ceiling; return options; });
+  const receipts = await Promise.all([0, 1, 2, 3].map(i => upload(f, "image.png", fixtureImage("metadata-polyglot.png"), "image" + i)));
+  expect((await f.request("/api/s16/client/conversations/conversation/messages", "POST", { contract: "s16-conversation/v2", requestId: "images", conversationId: "conversation", text: "Create a brief from the attached images", continuation: null, files: receipts.map(file => ({ id: file.id, sha256: file.sha256 })) })).status).toBe(202);
+  await f.service.conversation.drain(); const row = f.service.conversation.view(f.owner, "images");
+  const work = f.service.policy.work.guard(f.service.policy.control.bindWork(row.authority!.id)); expect(work.readLimit).toBe(Math.min(40, ceiling));
+  if (ceiling === 1000) { expect({ state: row.state, code: row.code }).toEqual({ state: "completed", code: null }); expect(turns).toBe(6); expect(row.evidence.filter(e => e.tool === "image_input")).toHaveLength(24); }
+  else { expect(row.result).toBeNull(); expect(row.code).toBe("read_bound_exhausted"); expect(turns).toBeLessThan(6); }
+});
+
 test("PDF actual isolated-runtime fixture extraction reaches model/tools and a guarded immutable download", async () => {
   let fileId = "", turn = 0;
   const model: Model = { provider: "codex-subscription", id: "fixture-model", async *stream(request) {

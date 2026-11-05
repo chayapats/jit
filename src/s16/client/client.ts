@@ -143,7 +143,20 @@ export class JitClient {
   private uploadResponse(data: unknown, requestId?: string, uploadId?: string, mutation = false): FileUpload {
     const malformed = () => new JitClientError("client_protocol_invalid", null, requestId || mutation ? "unknown" : "response", requestId ?? uploadId ?? null);
     if (!record(data) || data.contract !== "s16-file-upload/v1" || !identifier(data.id) || requestId && data.requestId !== requestId || uploadId && data.id !== uploadId || !identifier(data.conversationId) || typeof data.state !== "string" || !["created", "uploading", "validating", "ready", "rejected", "cancelled", "expired", "withdrawn"].includes(data.state)) throw malformed();
-    if (data.state === "ready" && (!record(data.receipt) || !["s16-file-receipt/v1", "s16-file-receipt/v2"].includes(String(data.receipt.contract)) || data.receipt.id !== data.id || data.receipt.conversationId !== data.conversationId || data.receipt.sha256 !== data.expectedHash || data.receipt.bytes !== data.bytes || typeof data.receipt.name !== "string")) throw malformed();
+    const positive = (value: unknown) => Number.isSafeInteger(value) && (value as number) > 0;
+    const sha = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+    if (data.state === "ready") {
+      const receipt = data.receipt;
+      if (!record(receipt) || typeof receipt.contract !== "string" || !["s16-file-receipt/v1", "s16-file-receipt/v2"].includes(receipt.contract) || receipt.id !== data.id || receipt.conversationId !== data.conversationId || !sha(receipt.sha256) || receipt.sha256 !== data.expectedHash || !positive(receipt.bytes) || receipt.bytes !== data.bytes || typeof receipt.name !== "string" || !receipt.name || receipt.expiresAt !== null && !positive(receipt.expiresAt)) throw malformed();
+      if (receipt.contract === "s16-file-receipt/v1") { if (receipt.mime !== "text/plain") throw malformed(); }
+      else {
+        const representation = receipt.representation;
+        if (receipt.validation !== "s16-isolated-file/v1" || typeof receipt.parserGeneration !== "string" || !receipt.parserGeneration || receipt.parserGeneration.length > 4096 || !record(representation) || !sha(representation.sha256) || !positive(representation.bytes)) throw malformed();
+        if (receipt.mime === "application/pdf") {
+          if (representation.mime !== "text/plain" || !positive(representation.pages) || [representation.width, representation.height, representation.originalWidth, representation.originalHeight].some(value => value !== null)) throw malformed();
+        } else if (!["image/png", "image/jpeg"].includes(receipt.mime as string) || !["image/png", "image/jpeg"].includes(representation.mime as string) || representation.pages !== null || [representation.width, representation.height, representation.originalWidth, representation.originalHeight].some(value => !positive(value))) throw malformed();
+      }
+    }
     return data as unknown as FileUpload;
   }
   private receipt(data: unknown, command: { requestId: string; conversationId: string }): ClientReceipt {
