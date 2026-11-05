@@ -1,5 +1,5 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { lookup } from 'node:dns/promises';
@@ -52,6 +52,28 @@ export function browserSite(options: { delayMs?: number } = {}) {
       return new Response('<h1>Signed in</h1><a href="/task">Task</a>', { headers });
     }
     if (path === '/session') return html('Session observation', request.headers.get('cookie')?.includes(`jit_session=${session}`) && request.headers.get('cookie')?.includes(`jit_proof=${proof}`) ? 200 : 401);
+    // S16 conformance task: neither the form nor its data exists in the static response.
+    if (path.startsWith('/dynamic')) {
+      if (path === '/dynamic.js') return new Response(`
+        const xhr = new Promise((resolve, reject) => { const r = new XMLHttpRequest(); r.open('GET', '/dynamic-xhr'); r.onload = () => r.status === 200 ? resolve(JSON.parse(r.responseText)) : reject(); r.onerror = reject; r.send(); });
+        Promise.all([fetch('/dynamic-data').then(r => { if (!r.ok) throw Error(); return r.json(); }), xhr]).then(([data, metadata]) => {
+          const root = document.querySelector('main'); root.textContent = data.title + ' / ' + metadata.project;
+          const form = document.createElement('form'); form.method = 'post'; form.action = '/dynamic-send';
+          const recipient = document.createElement('select'); recipient.name = 'recipient'; for (const name of ['team', 'support']) recipient.add(new Option(name, name));
+          const message = document.createElement('textarea'); message.name = 'message'; message.value = data.title;
+          const send = document.createElement('button'); send.name = 'confirm'; send.textContent = 'Send hydrated record';
+          form.append(recipient, message, send); root.append(form);
+          if (location.pathname === '/dynamic-tamper') form.addEventListener('submit', () => { recipient.value = 'support'; message.value = 'Substituted after input selection'; });
+          const mutation = document.createElement('button'); mutation.type = 'button'; mutation.name = 'xhr'; mutation.textContent = 'Send with fetch';
+          mutation.onclick = () => { fetch('/dynamic-send', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'recipient=team&message=Unbound+fetch' }).catch(() => {}); }; root.append(mutation);
+        }).catch(() => { document.querySelector('main').textContent = 'Hydration unavailable'; });
+      `, { headers: { 'content-type': 'application/javascript' } });
+      if (!request.headers.get('cookie')?.includes(`jit_session=${session}`)) return html('Sign in required', 401);
+      if (['/dynamic', '/dynamic-tamper'].includes(path)) return html('<main>JavaScript required to load the record</main><script src="/dynamic.js"></script>');
+      if (path === '/dynamic-data') return Response.json({ title: 'Launch day: Friday' });
+      if (path === '/dynamic-xhr') return Response.json({ project: 'Launch project' });
+      if (path === '/dynamic-send' && request.method === 'POST') return Response.json({ acceptedSha256: createHash('sha256').update(body).digest('hex') });
+    }
     if (path === '/task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a><input name="upload" type="file">`);
     if (path === '/clean-task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a>`);
     if (['/message', '/checkout', '/edit'].includes(path)) return html(`<h1>Request accepted</h1><a href="/clean-task">Back</a>`);
@@ -64,15 +86,20 @@ export function browserSite(options: { delayMs?: number } = {}) {
   const verifyResponse = (r: { status: number; body: Uint8Array }): 'succeeded' | 'unknown' => r.status === 200 && Buffer.from(r.body).includes(Buffer.from('Request accepted')) ? 'succeeded' : 'unknown';
   const site: BrowserSitePolicy = {
     loginDocuments: [origin + '/login', origin + '/two-factor'], session: { url: origin + '/session', cookie: 'jit_session', signedInStatus: 200, signedOutStatus: 401 },
-    observable: url => { const u = new URL(url); return u.origin === origin && ['/', '/clean-task', '/message', '/checkout', '/edit', '/attacks'].includes(u.pathname); },
+    observable: url => { const u = new URL(url); return u.origin === origin && ['/', '/clean-task', '/message', '/checkout', '/edit', '/attacks', '/dynamic', '/dynamic-tamper', '/dynamic-send'].includes(u.pathname); },
     classify(r) {
       const u = new URL(r.url); if (u.origin !== origin) return null;
       if (u.pathname === '/download') return { kind: 'unsupported', code: 'download_unsupported' };
       if (['/login', '/two-factor'].includes(u.pathname) && r.method === 'POST') return { kind: 'login' };
+      if (['GET', 'HEAD'].includes(r.method) && !u.search && ['/dynamic', '/dynamic-tamper', '/dynamic.js', '/dynamic-data', '/dynamic-xhr'].includes(u.pathname)) return { kind: 'read', private: u.pathname !== '/dynamic.js' };
       if (['GET', 'HEAD'].includes(r.method) && !u.search && ['/', '/app.js', '/login', '/session', '/task', '/clean-task', '/attacks', '/redirect', '/download'].includes(u.pathname)) return { kind: 'read', private: ['/session', '/task', '/clean-task'].includes(u.pathname) };
       if (u.pathname === '/leak' && r.method === 'GET' && [...u.searchParams.keys()].join() === 'private') return { kind: 'effect', verifyResponse, classes: ['disclosure', 'new_egress'], recipients: [ref('other')], transaction: null, impact: 'reversible' };
       if (u.search || r.method !== 'POST') return null;
       const fields = new URLSearchParams(Buffer.from(r.bodyBase64, 'base64').toString());
+      if (u.pathname === '/dynamic-send' && ['team', 'support'].includes(fields.get('recipient') ?? '') && fields.has('message') && [...fields.keys()].every(k => ['recipient', 'message', 'confirm'].includes(k))) return {
+        kind: 'effect', classes: ['communication'], recipients: [ref(fields.get('recipient') === 'team' ? 'payee' : 'other')], transaction: null, impact: 'reversible',
+        verifyResponse(response) { try { return response.status === 200 && JSON.parse(Buffer.from(response.body).toString()).acceptedSha256 === createHash('sha256').update(Buffer.from(r.bodyBase64, 'base64')).digest('hex') ? 'succeeded' : 'unknown'; } catch { return 'unknown'; } },
+      };
       if (u.pathname === '/message' && [...fields.keys()].every(k => ['recipient', 'message', 'channel', 'confirm'].includes(k))) return { kind: 'effect', verifyResponse, classes: ['communication'], recipients: [ref('payee')], transaction: null, impact: 'reversible' };
       if (u.pathname === '/edit' && [...fields.keys()].every(k => ['note', 'confirm'].includes(k))) return { kind: 'effect', verifyResponse, classes: ['ordinary_edit'], recipients: [], transaction: null, impact: 'reversible' };
       if (u.pathname === '/checkout' && fields.get('currency') === 'USD' && /^[1-9][0-9]{0,6}$/.test(fields.get('amount') ?? '')) return { kind: 'effect', verifyResponse, classes: ['financial'], recipients: [ref('payee')], transaction: { payee: ref('payee'), account: ref('account'), currency: 'USD', minorUnit: 2, amountMinor: fields.get('amount')!, quoteId: 'checkout_quote', quoteVersion: '1', quoteExpiresAt: 80000 }, impact: 'reversible' };
@@ -83,7 +110,7 @@ export function browserSite(options: { delayMs?: number } = {}) {
 }
 /** Real policy service and disposable protected profile shared by deterministic and opt-in engine tests. */
 export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>, clock?: BrowserClock, egress: BrowserEgressPorts = loopbackFixtureEgress) {
-  const dir = mkdtempSync(join(tmpdir(), 'jit-protected-browser-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'jit-protected-browser-')));
   const gateway = await registerProtectedBrowser({ runtime: 's15', continuity: { path: join(dir, 'continuity.sqlite'), create: true }, mode, resource: ref('account'), fences: [{ kind: 'input', ref: ref('input') }], profilePath: join(dir, 'profile'), executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, upperBound: { attempts: 0, steps: 1, calls: 0, reads: 1, outputBytes: 2097152, activeMs: 30000, spendMinor: '0' }, now: () => 1000, egress }, factory, clock);
   const f = fixture({ adapters: [gateway.adapter], reads: [gateway.readHandler] });
   f.input.budget!.ceiling = { attempts: 1000, steps: 1000, calls: 1000, reads: 1000, outputBytes: 2_000_000_000, activeMs: 30_000_000, spendMinor: '100' };

@@ -164,7 +164,12 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
     }, value); input.guard();
   };
   return {
-    async navigate(url, input) { targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard(); await checked(page.goto(url, { waitUntil: 'domcontentloaded' }), input); },
+    async navigate(url, input) {
+      targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard();
+      // Match native navigation's readiness barrier so initial JS reads stay inside the bounded scope.
+      // Quiescence acknowledges navigation; exact request guards still decide authority and outcomes.
+      await checked(page.goto(url, { waitUntil: options.mode === 'general' ? 'networkidle' : 'domcontentloaded' }), input);
+    },
     async read(generation) {
       targets.clear(); const n = ++serial;
       // Fixed protected capture code, never agent-provided JS. Input values, hidden DOM and scripts are absent.
