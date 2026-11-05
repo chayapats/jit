@@ -132,8 +132,15 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     identity(input.requestId); identity(input.conversationId); exact(input.action, ["id", "revision", "actionHash"]); identity(input.action.id); integer(input.action.revision, 1);
     if (typeof input.action.actionHash !== "string" || !/^[a-f0-9]{64}$/.test(input.action.actionHash)) throw new AppError("invalid_body");
     const text = `${input.decision} ${input.action.id}`;
+    const fingerprint = digest(`s15.chat.decision.v1\n${canonical(input)}`);
     return this.store.transaction(() => {
-      if (!this.store.db.query("SELECT id FROM commands WHERE id=?").get(input.requestId)) {
+      const prior = this.store.db.query<{ root_id: string }, [string]>("SELECT root_id FROM commands WHERE id=?").get(input.requestId);
+      if (prior) {
+        const retained = this.store.request(prior.root_id); this.owner(actor, retained);
+        const same = retained.decision?.decision === input.decision && retained.decision.action.id === input.action.id && retained.decision.action.revision === input.action.revision && retained.decision.action.actionHash === input.action.actionHash;
+        // Old successful typed decisions retained the exact action but predate the full command hash.
+        if (retained.decisionCommandHash ? retained.decisionCommandHash !== fingerprint : !same) throw new AppError("request_id_conflict", 409);
+      } else {
         const principal = this.options.policy.requireOwner(actor);
         const presented = this.store.db.query<{ record_json: string }, [string, string, number]>("SELECT record_json FROM presentations WHERE conversation_id=? AND action_id=? AND owner_generation=?").get(input.conversationId, input.action.id, principal.generation);
         const same = (a: ActionRef) => a.id === input.action.id && a.revision === input.action.revision && a.actionHash === input.action.actionHash;
@@ -142,7 +149,10 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         // Approval needs an approvable revision; a denial (which only narrows authority) needs only a pending one.
         if (!current.some(slip => same(slip.action) && slip.state === "pending" && (slip.canApprove || input.decision === "deny"))) throw new AppError("stale_action", 409);
       }
-      return this.submit(actor, { contract: "s15-conversation/v1", requestId: input.requestId, conversationId: input.conversationId, text, continuation: null });
+      const receipt = this.submit(actor, { contract: "s15-conversation/v1", requestId: input.requestId, conversationId: input.conversationId, text, continuation: null });
+      const retained = this.store.request(receipt.rootRequestId);
+      retained.decisionCommandHash = fingerprint; this.store.save(retained);
+      return receipt;
     });
   }
   private owner(actor: OwnerActor, request: ConversationRequest): void {
@@ -156,6 +166,14 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (selected.length !== 1 || !candidates.includes(selected[0]!) || !/^(?:please\s+)?(?:implement|fix|start|ทำ|แก้|เริ่ม)/iu.test(original.text.trim()) || !["execute", "accept", "ambiguous"].includes(intent.kind)) throw new AppError("outside_scope", 403);
     if (!/^(?:(?:implement|fix|start|select|choose|เลือก|ทำ|แก้|เริ่ม)\s*)?(?:issue\s*)?#?\d+[.!\s]*$/iu.test(next.text.trim())) throw new AppError("outside_scope", 403);
     return { kind: "execute", subject: selected[0]!, instruction: `${original.text}\nOwner selected only ${selected[0]}.` };
+  }
+  /** Recover exact committed ingress metadata under its original owner; a clarification names its root work. */
+  receipt(actor: OwnerActor, commandId: string): ConversationReceipt {
+    this.options.policy.requireOwner(actor); identity(commandId);
+    const command = this.store.db.query<{ receipt_json: string; root_id: string }, [string]>("SELECT receipt_json,root_id FROM commands WHERE id=?").get(commandId);
+    if (!command) throw new AppError("not_found", 404);
+    this.owner(actor, this.store.request(command.root_id));
+    return JSON.parse(command.receipt_json) as ConversationReceipt;
   }
   /** Read-only current request projection; a stale/revoked authority withholds result and evidence bodies. */
   view(actor: OwnerActor, requestId: string): ConversationRequest & { evidence: ReturnType<ConversationStore["evidence"]>; slips: ActionSlip[] } {

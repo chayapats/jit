@@ -114,6 +114,8 @@ export interface ConversationRequest {
   actions: ActionRef[];
   /** Owner-only exact decision/dispatch. It cannot resume a model loop or grant another purpose. */
   decision: { action: ActionRef; decision: "approve" | "deny"; expiresAt: number; observation: Observation | null } | null;
+  /** Full typed decision fingerprint; retries cannot reinterpret a changed revision/hash as the old vote. */
+  decisionCommandHash?: string;
 }
 /** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
 export interface ConversationMemoryPort<WorkContext> {

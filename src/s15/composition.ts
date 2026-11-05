@@ -1,5 +1,6 @@
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { createS16ClientHandler } from '../s16/http';
 import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type HostCredentialStore, type Model } from 'schway/host';
 import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels } from './policy';
@@ -487,6 +488,7 @@ export async function composeS15(options: S15CompositionOptions) {
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
     const githubHandler = github ? createGithubHandler(github, { origin: options.origin, cookieName, authentication, resolveWork(owner, id) {
@@ -524,6 +526,7 @@ export async function composeS15(options: S15CompositionOptions) {
             return Response.json(team.register(owner, body.requestId, body.expectedRevision, body.resource));
           }
           if (path.startsWith('/api/s15/')) return chatHandler(request);
+          if (path.startsWith('/api/s16/client/')) return clientHandler(request);
           if (path.startsWith('/s15/vm/')) { authenticate(request); try { return await vmHandler(request); } finally { if (request.method === 'POST') reconcileVm(); } }
           if (path === '/s15/models') { authenticate(request); return modelHandler(request); }
           if (path.startsWith('/s15/responsibilities/')) { authenticate(request); return workHandler(request); }
