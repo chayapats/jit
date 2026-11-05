@@ -36,7 +36,7 @@ browserTest.each([1440, 390])("real React upload, committed artifact preview/dow
     await page.getByText(text["s16.files.ready"], { exact: true }).waitFor();
     const input = f.service.files!.journal.all<FileUpload>().find(row => row.contract === "s16-file-upload/v1")!;
     f.script = [{ type: "tool_call", id: "read", name: "file_read", arguments: { id: input.id, offset: 0 } }, { type: "tool_call", id: "write", name: "file_create", arguments: { name: "brief.md", text: "# Brief\nLaunch: Friday.\n<script>window.attacked=true</script>\n" } }];
-    await page.getByRole("textbox", { name: text["s16.chat.prompt"], exact: true }).fill("Create a downloadable Markdown brief from the attached notes");
+    await page.getByRole("textbox", { name: text["s16.chat.prompt"], exact: true }).fill(width === 390 ? "สรุปโน้ตเหล่านี้แล้วสร้างไฟล์ Markdown ให้ดาวน์โหลด" : "Create a downloadable Markdown brief from the attached notes");
     await page.getByRole("textbox", { name: text["s16.chat.prompt"], exact: true }).press("Enter");
     if (width === 390) await page.getByRole("button", { name: text["s16.chat.recover"], exact: true }).click();
     const preview = text["s16.artifact.preview"].replace("{name}", "brief.md"), downloadLabel = text["s16.artifact.download"].replace("{name}", "brief.md");

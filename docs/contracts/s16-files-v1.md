@@ -27,7 +27,7 @@ Upload states are `created → uploading → ready` or `rejected/cancelled/expir
 
 ## Authority, actual work and memory
 
-Original authenticated owner text alone determines work intent. File text/names never enter the isolated interpreter. A narrow v2-only grammar recognizes an explicit terminal local-file deliverable such as “Summarize these notes and create a downloadable Markdown brief.” Conditions, another mixed mutation and v1 report-only semantics retain their ceilings. The interpreter still proposes purpose/resources/access inside current policy; it cannot install rules or approve anything.
+Original authenticated owner text alone determines work intent. File text/names never enter the isolated interpreter. A narrow v2-only English/Thai grammar recognizes an explicit terminal local-file deliverable such as “Summarize these notes and create a downloadable Markdown brief.” Conditions, another mixed mutation and v1 report-only semantics retain their ceilings. The interpreter still proposes purpose/resources/access inside current policy; it cannot install rules or approve anything.
 
 The first file work port exposes only `file_inputs`, `file_read` and, for authorized reversible/effect execution, `file_create`. It opens no VM, app, shell or external-effect tool. The computer resource revision/generation is pinned at upload creation, then intersected with current work scope and TEAM read/write restrictions. Every selected input is a distinct private DATA15 source, stamped before any work-model stream, not only after its first tool read. New recipients therefore need actual current approval for those sources. File selection is not recipient permission.
 

@@ -88,7 +88,9 @@ test("file-only local output wording does not relax v1, conditions or another mi
   const text = "Summarize these notes and create a downloadable Markdown brief.";
   expect(groundConversationIntent(text)).toMatchObject({ hold: "mixed_scope" });
   expect(groundConversationIntent(text, { fileOutput: true }).kind).toBe("execute");
+  expect(groundConversationIntent("สรุปโน้ตเหล่านี้แล้วสร้างไฟล์ Markdown ให้ดาวน์โหลด", { fileOutput: true }).kind).toBe("execute");
   for (const value of ["If it is ready, " + text, "Review notes and delete the originals and create a file.", 'Review "and create a downloadable Markdown brief."']) expect(groundConversationIntent(value, { fileOutput: true }).kind).not.toBe("execute");
+  for (const value of ["ถ้าโน้ตพร้อม ให้สรุปแล้วสร้างไฟล์ Markdown", "สรุปโน้ตแล้วลบต้นฉบับแล้วสร้างไฟล์ Markdown"]) expect(groundConversationIntent(value, { fileOutput: true }).kind).not.toBe("execute");
 });
 test("a failed CHAT publication commit never publishes its already-staged immutable candidate", async () => {
   const f = await fixture(), receipt = await upload(f, "Launch: Friday.\n");
