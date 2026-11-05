@@ -6,6 +6,8 @@ import type { ConversationFileCommand } from "../src/s15/conversation/types";
 import type { ClientArtifactDetail, ClientArtifactList } from "../src/s16/client/contracts";
 import { groundConversationIntent } from "../src/s15/conversation/intent";
 import { artifactPreviewPolicy } from "../src/s16/http";
+import { artifactDetail } from "../src/s16/artifacts";
+import type { FileArtifact as Artifact } from "../src/s16/files/types";
 import { JitClient } from "../src/s16/client";
 import { en } from "../src/i18n/en";
 import { readFileSync } from "node:fs";
@@ -184,6 +186,39 @@ test("the shared client validates library, detail and adoption responses without
   expect(input.receipt!.sha256).toBe(detail.item.artifact.sha256); expect(posts).toBe(1);
   expect(client.artifactPreviewUrl(detail.item.artifact)).toBe(`http://localhost:3099/api/s16/client/requests/message1/artifacts/${detail.item.artifact.id}/preview`);
   await expect(client.artifactInput(detail.item.artifact.id, { requestId: "adopt2", conversationId: "conversation", sha256: "0".repeat(64) })).rejects.toMatchObject({ code: "artifact_unavailable", outcome: "response" });
+});
+
+test("lineage checks stay linear when two copies of each revision feed the next one", async () => {
+  const f = await fixture(), notes = await upload(f, "Launch: Friday.\n");
+  let artifact = (await produce(f, message("message0", notes), { name: "brief.md", text: "# Brief 0\n" })).artifacts![0]!;
+  for (let level = 1; level <= 8; level++) {
+    f.advance(10);
+    const copies = [await adopt(f, artifact, `adopt_${level}_a`), await adopt(f, artifact, `adopt_${level}_b`)];
+    f.script = [...copies.map((copy, index) => ({ type: "tool_call" as const, id: `read_${level}_${index}`, name: "file_read", arguments: { id: copy.id, offset: 0 } })), { type: "tool_call", id: `create_${level}`, name: "file_create", arguments: { name: "brief.md", text: `# Brief ${level}\n` } }];
+    const command: ConversationFileCommand = { contract: "s16-conversation/v2", requestId: `message${level}`, conversationId: "conversation", text: revise, continuation: null, files: copies.map(copy => ({ id: copy.id, sha256: copy.receipt!.sha256 })) };
+    expect((await f.request("/api/s16/client/conversations/conversation/messages", "POST", command)).status).toBe(202); await f.service.conversation.drain();
+    const row = f.service.conversation.view(f.owner, command.requestId); expect(row.state).toBe("completed"); artifact = row.artifacts![0]!;
+  }
+  const top = await adopt(f, artifact, "adopt_top"), journal = f.service.files!.journal, get = journal.get.bind(journal); let reads = 0;
+  journal.get = ((id: string) => { reads++; return get(id); }) as typeof journal.get;
+  try { expect((await (await f.request(`/api/s16/client/uploads/${top.id}`)).json()).state).toBe("ready"); } finally { journal.get = get; }
+  // 2^8 paths without reuse; each upload/artifact is read about once with it.
+  expect(reads).toBeLessThan(80);
+  const detail = await (await f.request(`/api/s16/client/artifacts/${artifact.id}`)).json() as ClientArtifactDetail;
+  expect(detail.item.revision).toBe(9); expect(detail.revisions.map(item => item.revision)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  await f.request(`/api/s16/client/uploads/${notes.id}/withdraw`, "POST", {});
+  expect(await (await f.request(`/api/s16/client/uploads/${top.id}`)).json()).toMatchObject({ state: "withdrawn", code: "lineage_withdrawn" });
+});
+
+test("a large sibling family is bounded to the viewed file, its ancestors and the newest others", () => {
+  const sha = (n: number) => n.toString(16).padStart(64, "0"), art = (n: number): Artifact => ({ contract: "s16-file-artifact/v1", id: `artifact_${n}`, sha256: sha(n), requestId: `r${n}`, workId: `w${n}`, conversationId: "conversation", name: "brief.md", mime: "text/markdown", bytes: 1, createdAt: n });
+  const lineage = Array.from({ length: 301 }, (_, n) => ({ artifact: art(n), inputs: [{ id: `file_${n}`, sha256: sha(1000 + n) }], parents: n ? [{ id: "artifact_0", sha256: sha(0) }] : [], current: true })).reverse();
+  const files = { lineage: () => lineage, status: (_actor: unknown, id: string) => ({ state: "ready", receipt: { name: "notes.txt", mime: "text/plain", bytes: 1, sha256: sha(1000 + Number(id.slice(5))) } }), origin: () => null };
+  const app = { view: (_actor: unknown, requestId: string) => { const n = Number(requestId.slice(1)); return { state: "completed", result: "ok", authority: { id: `w${n}` }, receipt: { rootRequestId: requestId, conversationId: "conversation" }, artifacts: [art(n)], command: { text: "Make a brief" } }; } };
+  const detail = artifactDetail(app as never, files as never, {}, "artifact_5");
+  expect(detail.familyTotal).toBe(301); expect(detail.revisions).toHaveLength(256);
+  const ids = detail.revisions.map(item => item.artifact.id);
+  expect(ids).toContain("artifact_0"); expect(ids).toContain("artifact_5"); expect(ids).toContain("artifact_300"); expect(ids).not.toContain("artifact_6");
 });
 
 test("narrow revision deliverable grammar recognizes explicit revised files only", () => {

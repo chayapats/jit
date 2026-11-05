@@ -5910,6 +5910,8 @@ export const en: Record<MessageKey, string> = {
   "s16.artifact.current": "Artifacts in this conversation",
   "s16.artifact.empty": "No delivered files in this conversation yet.",
   "s16.artifact.unavailable": "This file is unavailable. Refresh the conversation to check current access.",
+  "s16.artifact.reviseFull": "The next message in that conversation already has the maximum number or size of files. Remove one there, then try again.",
+  "s16.artifact.historyPartial": "Showing {shown} of {total} revisions: this file, its earlier revisions and the newest others.",
   "s16.artifact.immutable": "Immutable file · revising creates a new file",
   "s16.artifact.library": "Artifacts",
   "s16.artifact.libraryLead": "Files your Bots delivered, across conversations. Only files you can still use are listed.",

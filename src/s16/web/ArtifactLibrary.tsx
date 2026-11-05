@@ -14,6 +14,8 @@ export interface ArtifactLibraryProps {
   /** Server offers the sandboxed HTML viewer. */
   html: boolean;
   initialArtifact?: string | null;
+  /** Incremented by the shell's Refresh: reloads the list and the open detail from the service. */
+  refresh?: number;
   /** Shared private-content withholding for authentication/authorization failures. */
   onFailure(error: unknown): void;
   onOpenConversation(conversationId: string): void;
@@ -31,7 +33,7 @@ const initialQuery = (): ClientArtifactQuery => ({ q: "", type: "all", conversat
  * current preview, verified download and an explicit "Revise this file" that starts no work by itself.
  * Withdrawn or no-longer-published artifacts disappear on the next read; a cursor never restores them.
  */
-export function ArtifactLibrary({ client, t, locale, revisions, html, initialArtifact = null, onFailure, onOpenConversation, onRevise, onSelect }: ArtifactLibraryProps) {
+export function ArtifactLibrary({ client, t, locale, revisions, html, initialArtifact = null, refresh = 0, onFailure, onOpenConversation, onRevise, onSelect }: ArtifactLibraryProps) {
   const [query, setQuery] = useState(initialQuery), [text, setText] = useState("");
   const [items, setItems] = useState<ClientArtifactItem[] | null>(null), [next, setNext] = useState<string | null>(null), [listState, setListState] = useState<Load>("loading"), [listError, setListError] = useState<string | null>(null), [more, setMore] = useState(false);
   const [selected, setSelected] = useState<string | null>(initialArtifact), [detail, setDetail] = useState<ClientArtifactDetail | null>(null), [detailState, setDetailState] = useState<Load | "gone">("loading");
@@ -46,7 +48,7 @@ export function ArtifactLibrary({ client, t, locale, revisions, html, initialArt
     client.artifacts(query, stop.signal).then(page => { if (!stop.signal.aborted && turn === listTurn.current) { setItems(page.items); setNext(page.next); setListState("ready"); setListError(null); } })
       .catch(error => { if (stop.signal.aborted || fail(error)) return; setListState("error"); setListError(code(error)); });
     return () => stop.abort();
-  }, [query, reload]);
+  }, [query, reload, refresh]);
   useEffect(() => {
     onSelect?.(selected); setAction(null);
     if (!selected) { setDetail(null); return; }
@@ -55,7 +57,7 @@ export function ArtifactLibrary({ client, t, locale, revisions, html, initialArt
       .catch(error => { if (stop.signal.aborted || fail(error)) return; setDetailState(code(error) === "artifact_unavailable" ? "gone" : "error"); });
     requestAnimationFrame(() => heading.current?.focus());
     return () => stop.abort();
-  }, [selected, reload]);
+  }, [selected, reload, refresh]);
   useEffect(() => {
     if (!selected) return;
     const key = (event: KeyboardEvent) => {
@@ -79,7 +81,7 @@ export function ArtifactLibrary({ client, t, locale, revisions, html, initialArt
   function previewFailure(error: unknown) { if (fail(error)) return; setSelected(null); setDetailState("gone"); setReload(value => value + 1); }
   async function revise(item: ClientArtifactItem) {
     setAction({ state: "pending" });
-    try { await onRevise(item); } catch (error) { if (fail(error)) return; setAction({ state: "error", code: code(error) }); }
+    try { await onRevise(item); setAction(null); } catch (error) { if (fail(error)) return; setAction({ state: "error", code: code(error) }); }
   }
   const typeLabel = (mime: string) => t(mime === "text/markdown" ? "s16.artifact.typeMarkdown" : mime === "text/csv" ? "s16.artifact.typeCsv" : mime === "text/html" ? "s16.artifact.typeHtml" : "s16.artifact.typeText");
   const meta = (item: ClientArtifactItem) => `${typeLabel(item.artifact.mime)} · ${item.artifact.bytes.toLocaleString()} bytes · ${t("s16.artifact.revision", { n: item.revision })} · ${date(item.artifact.createdAt)}`;
@@ -121,10 +123,11 @@ export function ArtifactLibrary({ client, t, locale, revisions, html, initialArt
           <button type="button" className="memory-link" onClick={() => onOpenConversation(item.conversationId)}>{t("s16.artifact.openConversation")}</button>
         </div>
         {revisions && <p className="limits">{t("s16.artifact.reviseHelp")}</p>}
-        {action?.state === "error" && <div className="notice" role="alert"><p>{t(action.code === "lineage_withdrawn" || action.code === "artifact_unavailable" ? "s16.artifact.gone" : "s16.artifact.reviseFailed")}</p><details><summary>{t("s16.common.details")}</summary><code>{action.code}</code></details></div>}
+        {action?.state === "error" && <div className="notice" role="alert"><p>{t(action.code === "lineage_withdrawn" || action.code === "artifact_unavailable" ? "s16.artifact.gone" : action.code === "file_message_limit" ? "s16.artifact.reviseFull" : "s16.artifact.reviseFailed")}</p><details><summary>{t("s16.common.details")}</summary><code>{action.code}</code></details></div>}
         <h3>{t("s16.artifact.sources")}</h3>
         <ul className="memory-facts">{detail.inputs.map(input => <li key={input.id}>{input.name} · {input.bytes.toLocaleString()} bytes{input.origin && <> · <button type="button" className="memory-link" onClick={() => open(input.origin!, null)}>{t("s16.artifact.revisionOf")}</button></>}<details className="source-details"><summary>{t("s16.common.details")}</summary><code>{input.sha256}</code></details></li>)}</ul>
         <h3>{t("s16.artifact.history")}</h3>
+        {detail.familyTotal > detail.revisions.length && <p className="limits">{t("s16.artifact.historyPartial", { shown: detail.revisions.length, total: detail.familyTotal })}</p>}
         <ol className="memory-chain">{detail.revisions.map(entry => <li key={entry.artifact.id}>{entry.artifact.id === item.artifact.id ? <strong aria-current="true">{t("s16.artifact.revision", { n: entry.revision })} · {entry.artifact.name} · {t("s16.artifact.viewing")}</strong> : <button type="button" className="memory-link" onClick={() => open(entry.artifact.id, null)}>{t("s16.artifact.revision", { n: entry.revision })} · {entry.artifact.name} · {date(entry.artifact.createdAt)}</button>}</li>)}</ol>
         <details className="memory-files"><summary>{t("s16.common.details")}</summary><p>{t("s16.artifact.immutable")}</p><code>{item.artifact.sha256}</code></details>
       </>}

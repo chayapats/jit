@@ -5914,6 +5914,8 @@ export const th = {
   "s16.artifact.current": "ไฟล์ผลงานในบทสนทนานี้",
   "s16.artifact.empty": "ยังไม่มีไฟล์ผลงานที่ส่งมอบในบทสนทนานี้",
   "s16.artifact.unavailable": "ไฟล์ไม่พร้อมใช้งาน โหลดบทสนทนาใหม่เพื่อตรวจสอบสิทธิ์ปัจจุบัน",
+  "s16.artifact.reviseFull": "ข้อความถัดไปในบทสนทนานั้นแนบไฟล์ครบจำนวนหรือขนาดสูงสุดแล้ว เอาออกหนึ่งไฟล์แล้วลองอีกครั้ง",
+  "s16.artifact.historyPartial": "แสดง {shown} จาก {total} revision: ไฟล์นี้ revision ก่อนหน้า และ revision ล่าสุดอื่นๆ",
   "s16.artifact.immutable": "ไฟล์แก้ไขทับไม่ได้ · การแก้ไขจะสร้างไฟล์ใหม่",
   "s16.artifact.library": "ไฟล์ผลงาน",
   "s16.artifact.libraryLead": "ไฟล์ที่ Bot ส่งมอบจากทุกบทสนทนา แสดงเฉพาะไฟล์ที่ยังใช้งานได้",

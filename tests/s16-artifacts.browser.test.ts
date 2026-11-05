@@ -20,14 +20,14 @@ async function fixture() {
 }
 type F = Awaited<ReturnType<typeof fixture>>;
 /** Real upload → guarded read → committed artifact, through the same protected HTTP API the client uses. */
-async function produce(f: F, output: { name: string; text: string }) {
+async function produce(f: F, output: { name: string; text: string }, suffix = "1") {
   const notes = "Launch: Friday.\nOwner: Ana.\n";
-  const created = await (await f.request("/api/s16/client/conversations/conversation/uploads", "POST", { requestId: "upload1", conversationId: "conversation", name: "notes.txt", bytes: Buffer.byteLength(notes), sha256: hash(notes) })).json() as FileUpload;
+  const created = await (await f.request("/api/s16/client/conversations/conversation/uploads", "POST", { requestId: "upload" + suffix, conversationId: "conversation", name: "notes.txt", bytes: Buffer.byteLength(notes), sha256: hash(notes) })).json() as FileUpload;
   const receipt = (await (await f.raw(`/api/s16/client/uploads/${created.id}/bytes`, notes)).json() as FileUpload).receipt!;
-  f.script = [{ type: "tool_call", id: "read1", name: "file_read", arguments: { id: receipt.id, offset: 0 } }, { type: "tool_call", id: "create1", name: "file_create", arguments: output }];
-  expect((await f.request("/api/s16/client/conversations/conversation/messages", "POST", { contract: "s16-conversation/v2", requestId: "message1", conversationId: "conversation", text: "Summarize these notes and create a downloadable Markdown brief.", continuation: null, files: [{ id: receipt.id, sha256: receipt.sha256 }] })).status).toBe(202);
+  f.script = [{ type: "tool_call", id: "read" + suffix, name: "file_read", arguments: { id: receipt.id, offset: 0 } }, { type: "tool_call", id: "create" + suffix, name: "file_create", arguments: output }];
+  expect((await f.request("/api/s16/client/conversations/conversation/messages", "POST", { contract: "s16-conversation/v2", requestId: "message" + suffix, conversationId: "conversation", text: "Summarize these notes and create a downloadable Markdown brief.", continuation: null, files: [{ id: receipt.id, sha256: receipt.sha256 }] })).status).toBe(202);
   await f.service.conversation.drain(); f.advance(1000);
-  return { receipt, artifact: f.service.conversation.view(f.owner, "message1").artifacts![0]! };
+  return { receipt, artifact: f.service.conversation.view(f.owner, "message" + suffix).artifacts![0]! };
 }
 async function route(context: BrowserContext, f: F, external: string[], contexts: string[] = []) {
   await context.route("**/*", async routed => {
@@ -92,6 +92,13 @@ browserTest.each([1440, 390])("library search, provenance, explicit revise, revi
     await f.request(`/api/s16/client/uploads/${receipt.id}/withdraw`, "POST", {});
     await page.getByText(copy["s16.artifact.libraryEmpty"], { exact: true }).waitFor({ timeout: 15000 });
     expect(await page.locator(".inspector .preview-text").count()).toBe(0);
+    // Refresh reloads the library; leaving it through Chats/the Bot restores the chat address.
+    await produce(f, { name: "later.md", text: "# Later\n" }, "9");
+    await page.getByRole("button", { name: copy["s16.common.refresh"], exact: true }).click();
+    await page.getByRole("button", { name: fill("s16.artifact.open", { name: "later.md" }), exact: true }).waitFor();
+    if (width === 390) await page.locator(".mobile-nav").getByRole("button", { name: copy["s16.nav.chats"], exact: true }).click();
+    else await page.locator(".rail .bot").click();
+    await page.waitForURL(/\/s16\/chat\/[A-Za-z0-9_-]+$/); await page.reload(); await prompt.waitFor(); expect(page.url()).toMatch(/\/s16\/chat\//);
     expect(errors).toEqual([]); expect(external).toEqual([]); expect(f.vmCalls).toEqual([]);
   } finally { await context.close(); await f.close(); }
 }, 60000);

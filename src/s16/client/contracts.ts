@@ -98,7 +98,11 @@ export interface ClientArtifactItem { artifact: FileArtifact; conversationId: st
 export interface ClientArtifactList { contract: "s16-client-artifacts/v1"; query: ClientArtifactQuery; limit: 50; items: ClientArtifactItem[]; next: string | null }
 /** An exact input of the producing request; `origin` names the parent artifact of a revision input. */
 export interface ClientArtifactInput { id: string; name: string; mime: string; bytes: number; sha256: string; origin: string | null }
-/** Current provenance and committed revision family (oldest first). Preview names the only allowed renderer. */
-export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item: ClientArtifactItem; inputs: ClientArtifactInput[]; revisions: ClientArtifactItem[]; preview: "escaped_text" | "sandboxed_html" }
+/**
+ * Current provenance and committed revision family (oldest first), at most 256 members: the viewed file, all
+ * its ancestors, then the newest others. `familyTotal` counts the whole current family. Preview names the
+ * only allowed renderer.
+ */
+export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item: ClientArtifactItem; inputs: ClientArtifactInput[]; revisions: ClientArtifactItem[]; familyTotal: number; preview: "escaped_text" | "sandboxed_html" }
 /** Explicit owner command copying one exact committed artifact into a new input of its own conversation. */
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }

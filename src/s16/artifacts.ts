@@ -6,6 +6,8 @@ import type { FileArtifactLineage, FileUpload } from "./files/types";
 
 /** Fixed page size. A cursor only names the last returned position, never a cached result set. */
 export const artifactPageSize = 50;
+/** Detail returns at most this many family members: the viewed file, all its ancestors, then the newest others. */
+export const artifactFamilyLimit = 256;
 const types = { all: null, text: "text/plain", markdown: "text/markdown", csv: "text/csv", html: "text/html" } as const;
 interface Committed { entry: FileArtifactLineage; label: string }
 
@@ -75,7 +77,12 @@ export function artifactDetail<Actor, Work>(app: ConversationApplication<Actor, 
     if (upload.state !== "ready" || !upload.receipt || upload.receipt.sha256 !== ref.sha256) throw new AppError("artifact_unavailable", 409);
     return { id: ref.id, name: upload.receipt.name, mime: upload.receipt.mime, bytes: upload.receipt.bytes, sha256: ref.sha256, origin: files.origin(actor, ref.id)?.id ?? null };
   });
-  const revisionsList = items.filter(entry => family.has(entry.entry.artifact.id)).map(entry => project(entry, revisions))
+  const ancestors = new Set([id]);
+  for (const queue = [id]; queue.length;) for (const parent of parentsOf(queue.shift()!)) if (!ancestors.has(parent.id)) { ancestors.add(parent.id); queue.push(parent.id); }
+  const members = items.filter(entry => family.has(entry.entry.artifact.id));
+  // Ancestors are at most the 32-level chain; siblings are unbounded, so keep the newest within the limit.
+  const kept = [...members.filter(entry => ancestors.has(entry.entry.artifact.id)), ...members.filter(entry => !ancestors.has(entry.entry.artifact.id))].slice(0, artifactFamilyLimit);
+  const revisionsList = kept.map(entry => project(entry, revisions))
     .sort((a, b) => a.revision - b.revision || a.artifact.createdAt - b.artifact.createdAt || (a.artifact.id < b.artifact.id ? -1 : 1));
-  return { contract: "s16-client-artifact/v1", item: project(item, revisions), inputs, revisions: revisionsList, preview: item.entry.artifact.mime === "text/html" ? "sandboxed_html" : "escaped_text" };
+  return { contract: "s16-client-artifact/v1", item: project(item, revisions), inputs, revisions: revisionsList, familyTotal: members.length, preview: item.entry.artifact.mime === "text/html" ? "sandboxed_html" : "escaped_text" };
 }

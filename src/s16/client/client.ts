@@ -158,7 +158,7 @@ export class JitClient {
     const data = await this.call(`/artifacts/${id(artifactId)}`, "GET", undefined, signal);
     if (!record(data) || data.contract !== "s16-client-artifact/v1" || !this.artifactItem(data.item) || (data.item as unknown as ClientArtifactItem).artifact.id !== artifactId || !["escaped_text", "sandboxed_html"].includes(data.preview as string)
       || !Array.isArray(data.inputs) || data.inputs.length > 8 || data.inputs.some(input => !record(input) || !identifier(input.id) || typeof input.name !== "string" || typeof input.mime !== "string" || !count(input.bytes) || !sha256(input.sha256) || input.origin !== null && !identifier(input.origin))
-      || !Array.isArray(data.revisions) || data.revisions.length > 256 || data.revisions.some(item => !this.artifactItem(item))) return invalid();
+      || !Array.isArray(data.revisions) || data.revisions.length > 256 || data.revisions.some(item => !this.artifactItem(item)) || !Number.isSafeInteger(data.familyTotal) || (data.familyTotal as number) < data.revisions.length) return invalid();
     return data as unknown as ClientArtifactDetail;
   }
   /**

@@ -30,6 +30,7 @@ function App() {
   const [memory, setMemory] = useState(memoryPath), [memoryClaim, setMemoryClaim] = useState<string | null>(() => memoryPath() ? recoveryHash() ?? null : null);
   const [library, setLibrary] = useState(() => !!artifactsPath()), [libraryArtifact, setLibraryArtifact] = useState<string | null>(() => artifactsPath()?.[1] ?? null), [preview, setPreview] = useState<FileArtifact | null>(null);
   const target = useRef(conversation), generation = useRef(0), picker = useRef<HTMLInputElement>(null), composer = useRef<HTMLTextAreaElement>(null), inspector = useRef<HTMLElement>(null), returnFocus = useRef<HTMLElement | null>(null), transfers = useRef(new Map<string, { stop: AbortController; cancelled: boolean }>());
+  const [libraryRefresh, setLibraryRefresh] = useState(0), viewTurn = useRef(0), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const refreshing = useRef<{ id: string; turn: number; stop: AbortController } | null>(null), privacyEpoch = useRef(0);
   const draft = drafts[conversation] ?? empty(), capabilities = boot?.capabilities.uploads, rows = snapshot?.conversation.rows ?? [];
   const artifactCaps = boot?.capabilities.artifacts.available ? boot.capabilities.artifacts : null, libraryAvailable = artifactCaps?.library === "s16-client-artifacts/v1", htmlPreview = artifactCaps?.html === "sandboxed_static";
@@ -58,22 +59,32 @@ function App() {
     try { const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return; setBoot(data); setAuthHidden(false); await refresh(); const recovery = drafts[target.current]?.recoveryId; if (recovery && epoch === privacyEpoch.current) await recover(target.current, recovery); }
     catch (error) { if (epoch === privacyEpoch.current && errorCode(error) !== "client_response_stale") { hidePrivate(error); setBoot(null); } }
   }
-  function openLibrary(artifact: string | null = null) { closePreview(); setMemory(false); setMenu(false); setLibraryArtifact(artifact); setLibrary(true); history.pushState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }
+  function openLibrary(artifact: string | null = null) { viewTurn.current++; closePreview(); setMemory(false); setMenu(false); setLibraryArtifact(artifact); setLibrary(true); history.pushState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }
   /** Adopt the exact committed artifact into its own conversation and open the composer with an editable
    * revision request. Nothing is sent: the owner still reviews the text and presses Send. */
   async function reviseArtifact(item: ClientArtifactItem) {
-    const id = item.conversationId, epoch = privacyEpoch.current, current = drafts[id];
+    const id = item.conversationId, epoch = privacyEpoch.current, view = viewTurn.current, current = drafts[id];
     if (current?.pending || current?.recoveryId) { navigate(id); return; }
+    // Refuse before copying when the next message has no room, instead of opening a draft without the file.
+    const room = (draft: Draft | undefined) => !capabilities?.available || (draft?.chips.length ?? 0) < capabilities.limits.messageFiles && (draft?.chips.reduce((sum, chip) => sum + chip.bytes, 0) ?? 0) + item.artifact.bytes <= capabilities.limits.messageBytes;
+    if (!room(current)) throw new JitClientError("file_message_limit", 413, "not_sent");
     const upload = await client.artifactInput(item.artifact.id, { requestId: uid(), conversationId: id, sha256: item.artifact.sha256 });
     if (epoch !== privacyEpoch.current) return;
     if (upload.state !== "ready" || !upload.receipt) throw new JitClientError(upload.code ?? "file_unavailable", 409, "response");
     const receipt = upload.receipt, start = t("s16.artifact.reviseStart"), template = start + t("s16.artifact.reviseEnd");
+    const latest = draftsRef.current[id];
+    if (latest?.pending || latest?.recoveryId) return;
+    if (!latest?.chips.some(chip => chip.receipt?.id === receipt.id)) {
+      if (!room(latest)) throw new JitClientError("file_message_limit", 413, "response");
+      change(id, draft => draft.chips.some(chip => chip.receipt?.id === receipt.id) ? draft : { ...draft, text: draft.text.trim() ? draft.text : template, chips: [...draft.chips, { key: uid(), name: receipt.name, bytes: receipt.bytes, state: "ready", receipt, uploadId: upload.id }] });
+    }
+    // The owner may have moved on while the copy was prepared: keep the draft, do not pull them back.
+    if (view !== viewTurn.current) return;
     navigate(id);
-    change(id, draft => draft.pending || draft.recoveryId || draft.chips.some(chip => chip.receipt?.id === receipt.id) || (capabilities?.available && draft.chips.length >= capabilities.limits.messageFiles) ? draft : { ...draft, text: draft.text.trim() ? draft.text : template, chips: [...draft.chips, { key: uid(), name: receipt.name, bytes: receipt.bytes, state: "ready", receipt, uploadId: upload.id }] });
     requestAnimationFrame(() => requestAnimationFrame(() => { const field = composer.current; if (!field) return; field.focus(); if (field.value === template) field.setSelectionRange(start.length, start.length); }));
   }
-  function openMemory(claim: string | null = null) { closePreview(); setLibrary(false); setMenu(false); setMemoryClaim(claim); setMemory(true); history.pushState(null, "", `/s16/memory${claim ? '#' + claim : ''}`); }
-  function navigate(id: string) { target.current = id; generation.current++; setConversation(id); setSnapshot(null); closePreview(); setLibrary(false); setMemory(false); setMenu(false); setError(null); const pending = drafts[id]?.pending?.requestId ?? drafts[id]?.recoveryId; history.pushState(null, "", `/s16/chat/${id}${pending ? '#' + pending : ''}`); }
+  function openMemory(claim: string | null = null) { viewTurn.current++; closePreview(); setLibrary(false); setMenu(false); setMemoryClaim(claim); setMemory(true); history.pushState(null, "", `/s16/memory${claim ? '#' + claim : ''}`); }
+  function navigate(id: string) { viewTurn.current++; target.current = id; generation.current++; setConversation(id); setSnapshot(null); closePreview(); setLibrary(false); setMemory(false); setMenu(false); setError(null); const pending = drafts[id]?.pending?.requestId ?? drafts[id]?.recoveryId; history.pushState(null, "", `/s16/chat/${id}${pending ? '#' + pending : ''}`); }
   useEffect(() => { if (chatPath()) history.replaceState(null, "", `/s16/chat/${conversation}${location.hash}`); void bootstrap();
     const pop = () => { if (memoryPath()) { closePreview(); setLibrary(false); setMemoryClaim(recoveryHash() ?? null); setMemory(true); return; } setMemory(false);
       const artifacts = artifactsPath(); if (artifacts) { closePreview(); setLibraryArtifact(artifacts[1] ?? null); setLibrary(true); return; } setLibrary(false); const id = /^\/s16\/chat\/([A-Za-z0-9_-]{1,128})$/.exec(location.pathname)?.[1]; if (id) { target.current = id; generation.current++; setConversation(id); setSnapshot(null); closePreview(); const recovery = recoveryHash(); if (recovery) change(id, draft => draft.pending || draft.recoveryId ? draft : { ...draft, recoveryId: recovery }); } };
@@ -179,17 +190,17 @@ function App() {
   return <div className={`s16-app ${menu ? "nav-open" : ""} ${preview ? "inspector-open" : ""}`}>
     <a className="skip-link" href="#conversation-main">{t("s16.nav.chats")}</a>
     <nav className="rail" aria-label={t("s16.common.menu")}><a className="brand" href="/s16">Jit <span>S16</span></a><button onClick={() => navigate(uid())}>＋ {t("s16.chat.new")}</button><label className="search"><span>{t("s16.nav.search")}</span><input value={search} onChange={event => setSearch(event.target.value)} /></label>
-      <a href="/needs-you">{t("s16.nav.needsYou")} <span className="count">{boot?.needsYou.length ?? 0}</span></a><h2>{t("s16.nav.bots")}</h2><button className="bot selected" onClick={() => { if (memory) navigate(conversation); setLibrary(false); }}>● {t("s16.chat.title")}</button>
+      <a href="/needs-you">{t("s16.nav.needsYou")} <span className="count">{boot?.needsYou.length ?? 0}</span></a><h2>{t("s16.nav.bots")}</h2><button className="bot selected" onClick={() => { if (memory || library) navigate(conversation); }}>● {t("s16.chat.title")}</button>
       <div className="recent">{boot?.conversations.filter(entry => entry.firstMessage.toLowerCase().includes(search.toLowerCase())).map(entry => <button key={entry.conversationId} aria-current={entry.conversationId === conversation ? "page" : undefined} onClick={() => navigate(entry.conversationId)}>{entry.firstMessage || t("s16.chat.receivedFiles")}</button>)}</div>
       <a href="/work">{t("s15.nav.work")}</a><button aria-current={library && libraryAvailable ? "page" : undefined} onClick={() => { if (libraryAvailable) { openLibrary(); return; } if (memory) navigate(conversation); setLibrary(true); setMenu(false); }}>{t("s16.nav.artifacts")}</button><div className="rail-secondary">{boot?.capabilities.memory?.available ? <button aria-current={memory ? "page" : undefined} onClick={() => openMemory()}>{t("s16.nav.memory")}</button> : <a href="/memory">{t("s16.nav.memory")}</a>}<a href="/resources">{t("s16.nav.connections")}</a><a href="/rules">{t("s16.nav.settings")}</a><label>{t("s16.common.language")} <select value={locale} onChange={event => setLocale(event.target.value === "en" ? "en" : "th")}><option value="th">TH</option><option value="en">English</option></select></label></div>
     </nav>
-    <main id="conversation-main"><header className="chat-header"><button className="menu-toggle" aria-label={t("s16.common.menu")} onClick={() => setMenu(!menu)}>☰</button><div><h1>{t("s16.chat.title")}</h1><p>{t("s16.chat.lead")}</p></div><button onClick={() => void bootstrap()}>{t("s16.common.refresh")}</button></header>
+    <main id="conversation-main"><header className="chat-header"><button className="menu-toggle" aria-label={t("s16.common.menu")} onClick={() => setMenu(!menu)}>☰</button><div><h1>{t("s16.chat.title")}</h1><p>{t("s16.chat.lead")}</p></div><button onClick={() => { setLibraryRefresh(value => value + 1); void bootstrap(); }}>{t("s16.common.refresh")}</button></header>
       {memory ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
         {boot ? <MemoryView key={memoryClaim ?? ""} client={client} t={t} locale={locale} available={!!boot.capabilities.memory?.available} initialClaim={memoryClaim} onFailure={hidePrivate} onOpenConversation={navigate} onSelect={claim => { if (memoryPath()) history.replaceState(null, "", `/s16/memory${claim ? '#' + claim : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : library && (libraryAvailable || !boot && artifactsPath()) ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <ArtifactLibrary key={libraryArtifact ?? ""} client={client} t={t} locale={locale} revisions={artifactCaps?.revisions === true && !!capabilities?.available} html={htmlPreview} initialArtifact={libraryArtifact} onFailure={hidePrivate} onOpenConversation={navigate} onRevise={reviseArtifact} onSelect={artifact => { if (artifactsPath()) history.replaceState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <ArtifactLibrary key={libraryArtifact ?? ""} refresh={libraryRefresh} client={client} t={t} locale={locale} revisions={artifactCaps?.revisions === true && !!capabilities?.available} html={htmlPreview} initialArtifact={libraryArtifact} onFailure={hidePrivate} onOpenConversation={navigate} onRevise={reviseArtifact} onSelect={artifact => { if (artifactsPath()) history.replaceState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : <>
       <div className="transcript" aria-busy={!snapshot && !error}>
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
@@ -213,7 +224,7 @@ function App() {
       </form></>}
     </main>
     {preview && <aside ref={inspector} className="inspector" role="dialog" aria-modal={matchMedia("(max-width: 900px)").matches} aria-label={t("s16.artifact.preview", { name: preview.name })}><header><h2>{preview.name}</h2><button aria-label={t("s16.common.close")} onClick={closePreview}>×</button></header><p>{preview.mime} · {preview.bytes.toLocaleString()} bytes</p><details><summary>{t("s16.common.details")}</summary><code>{preview.sha256}</code><p>{t("s16.artifact.immutable")}</p></details><ArtifactPreview key={preview.id} artifact={preview} client={client} t={t} html={htmlPreview} onFailure={hidePrivate} />{libraryAvailable && <p><button type="button" className="memory-link" onClick={() => openLibrary(preview.id)}>{t("s16.artifact.openInLibrary")}</button></p>}<h3>{t("s16.artifact.sources")}</h3>{rows.find(row => row.requestId === preview.requestId)?.files?.inputs.map(file => <div key={file.id}><p>{file.name}</p>{fileDetails(file)}</div>)}</aside>}
-    <nav className="mobile-nav"><button onClick={() => { if (memory) navigate(conversation); setLibrary(false); requestAnimationFrame(() => composer.current?.focus()); }}>{t("s16.nav.chats")}</button><a href="/needs-you">{t("s16.nav.needsYou")}</a><a href="/work">{t("s15.nav.work")}</a><button onClick={() => setMenu(!menu)}>{t("s16.nav.more")}</button></nav>
+    <nav className="mobile-nav"><button onClick={() => { if (memory || library) navigate(conversation); requestAnimationFrame(() => composer.current?.focus()); }}>{t("s16.nav.chats")}</button><a href="/needs-you">{t("s16.nav.needsYou")}</a><a href="/work">{t("s15.nav.work")}</a><button onClick={() => setMenu(!menu)}>{t("s16.nav.more")}</button></nav>
   </div>;
 }
 

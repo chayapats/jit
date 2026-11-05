@@ -95,14 +95,28 @@ export class FileStore<Actor> {
   /** Monotonic journal format fence inside the caller's transaction; never downgrades a newer stamp. */
   private stamp(format: 2 | 3): void { const current = this.journal.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version; if (current < format) this.journal.db.exec(`PRAGMA user_version=${format}`); }
   private record(id: string): UploadRecord | ArtifactRecord | null { try { return this.journal.get<UploadRecord | ArtifactRecord>(id) ?? null; } catch { return null; } }
-  /** Metadata-only ancestry check: every input of every parent artifact is still a ready, current source. */
-  private lineageCurrent(row: UploadRecord, depth = 0): boolean {
-    if (!row.origin) return true;
-    if (depth >= maxArtifactRevisionDepth) return false;
+  /**
+   * Metadata-only ancestry check: every input of every parent artifact is still a ready, current source.
+   * Returns the copy height (0 for an ordinary upload) or -1 when withdrawn/invalid/too deep. Each upload is
+   * evaluated once per `memo`, so shared ancestors in a revision graph stay linear, not exponential.
+   */
+  private lineageHeight(row: UploadRecord, memo: Map<string, number> = new Map()): number {
+    if (!row.origin) return 0;
+    const known = memo.get(row.id); if (known !== undefined) return known;
+    memo.set(row.id, -1); // A cycle cannot be current; real records cannot form one.
     const artifact = this.record(row.origin.artifact.id);
-    if (!artifact || artifact.kind !== "artifact" || artifact.sha256 !== row.origin.artifact.sha256 || artifact.owner.id !== row.owner.id || artifact.conversationId !== row.conversationId) return false;
-    return artifact.inputs.every(input => { const parent = this.record(input.id); return !!parent && parent.kind === "upload" && this.usable(parent) && parent.expectedHash === input.sha256 && this.lineageCurrent(parent, depth + 1); });
+    let height = 0;
+    if (!artifact || artifact.kind !== "artifact" || artifact.sha256 !== row.origin.artifact.sha256 || artifact.owner.id !== row.owner.id || artifact.conversationId !== row.conversationId) return -1;
+    for (const input of artifact.inputs) {
+      const parent = this.record(input.id);
+      if (!parent || parent.kind !== "upload" || !this.usable(parent) || parent.expectedHash !== input.sha256) return -1;
+      const above = this.lineageHeight(parent, memo); if (above < 0) return -1;
+      height = Math.max(height, above + 1);
+    }
+    if (height > maxArtifactRevisionDepth) return -1;
+    memo.set(row.id, height); return height;
   }
+  private lineageCurrent(row: UploadRecord, memo?: Map<string, number>): boolean { return this.lineageHeight(row, memo) >= 0; }
   private usable(row: UploadRecord): boolean { return row.state === "ready" && (row.retained || this.now() < row.expiresAt); }
   /** Transitive upload ancestors of one input (excluding itself), parents before their own inputs. */
   ancestors(id: string): string[] {
@@ -347,10 +361,10 @@ export class FileStore<Actor> {
    * must still check CHAT's committed reference and the current producer before listing or releasing one.
    */
   lineage(actor: Actor): FileArtifactLineage[] {
-    const owner = this.current(actor);
+    const owner = this.current(actor), memo = new Map<string, number>();
     return this.records().flatMap(row => {
       if (row.kind !== "artifact" || row.owner.id !== owner.id || row.owner.generation !== owner.generation) return [];
-      const current = row.inputs.every(input => { const source = this.record(input.id); return !!source && source.kind === "upload" && source.expectedHash === input.sha256 && this.usable(source) && this.lineageCurrent(source); });
+      const current = row.inputs.every(input => { const source = this.record(input.id); return !!source && source.kind === "upload" && source.expectedHash === input.sha256 && this.usable(source) && this.lineageCurrent(source, memo); });
       return [{ artifact: this.publicArtifact(row), inputs: structuredClone(row.inputs), parents: structuredClone(row.parents ?? []), current }];
     }).sort((a, b) => b.artifact.createdAt - a.artifact.createdAt || (a.artifact.id < b.artifact.id ? 1 : -1));
   }
@@ -367,11 +381,12 @@ export class FileStore<Actor> {
         if (!parent || parent.kind !== "artifact") throw new AppError("artifact_unavailable", 409);
         this.owner(actor, parent);
         if (parent.sha256 !== input.artifact.sha256 || parent.conversationId !== input.conversationId) throw new AppError("artifact_unavailable", 409);
-        const depth = (id: string, level: number): number => { const row = this.record(id); if (!row || row.kind !== "upload" || !row.origin) return level; if (level >= maxArtifactRevisionDepth) throw new AppError("revision_limit", 409); const art = this.record(row.origin.artifact.id); return art?.kind === "artifact" ? Math.max(level, ...art.inputs.map(ref => depth(ref.id, level + 1))) : level; };
-        if (Math.max(0, ...parent.inputs.map(ref => depth(ref.id, 1))) >= maxArtifactRevisionDepth) throw new AppError("revision_limit", 409);
+        // The new copy sits one level above its parent's deepest input; refuse rather than exceed the bound.
+        const memo = new Map<string, number>(), heights = parent.inputs.map(ref => { const row = this.record(ref.id); return row?.kind === "upload" ? this.lineageHeight(row, memo) : -1; });
+        if (heights.some(height => height < 0)) throw new AppError("lineage_withdrawn", 409);
+        if (Math.max(...heights) + 1 >= maxArtifactRevisionDepth) throw new AppError("revision_limit", 409);
         // Exact current parent bytes and every transitive source; a withdrawn ancestor refuses here.
         const { bytes } = this.artifact(actor, parent.id);
-        if (parent.inputs.some(ref => { const row = this.record(ref.id); return !row || row.kind !== "upload" || !this.lineageCurrent(row); })) throw new AppError("lineage_withdrawn", 409);
         if (bytes.length > this.limits.fileBytes) throw new AppError("file_too_large", 413);
         this.capacity(bytes.length);
         // An older reader would treat this copy as an independent source after its ancestor is withdrawn.
