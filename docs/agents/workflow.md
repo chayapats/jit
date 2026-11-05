@@ -1,6 +1,6 @@
 # Specs and implementation tickets
 
-Owner instruction, 2026-10-30: do not use `implement-parallel` or its coordinator/claim workflow for Jit. Continue checking existing ownership, branches/PRs and prerequisites, and use issue-specific branches/worktrees. UI/UX uses the owner's designated design subagent. For S16, the owner selected Astra at high effort on 2026-11-05 and authorized detailed Mobbin MCP research, replacing the unavailable Claude author; earlier authoring requirements retain their historical scope.
+Owner instruction, 2026-10-30: do not use `implement-parallel` or its coordinator/claim workflow for Jit. Continue checking existing ownership, branches/PRs and prerequisites, and use issue-specific branches/worktrees. Owner instruction, 2026-11-05: the primary agent owns UI/UX design and implementation; the earlier designated design-subagent requirement (Claude, then Astra) no longer applies to new work, and earlier designs keep their historical provenance.
 
 Tracker: GitHub Issues for chayapats/jit, using gh. Engine changes belong to chayapats/schway and reference the Jit parent spec.
 
