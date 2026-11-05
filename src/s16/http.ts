@@ -6,9 +6,10 @@ import { clientResponseBytes, type ClientBootstrap, type ClientCapabilities } fr
 import { binaryLimits } from "./files/parser";
 import type { FileStore } from "./files/store";
 import type { FileUploadCommand } from "./files/types";
+import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from "./memory";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -36,7 +37,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
-      artifacts: files && app.options.files ? { available: true, preview: "escaped_text" } : { available: false, code: "artifact_unavailable" } };
+      artifacts: files && app.options.files ? { available: true, preview: "escaped_text" } : { available: false, code: "artifact_unavailable" },
+      memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" } };
   };
   return async request => {
     try {
@@ -96,6 +98,18 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (output.artifact.sha256 !== committed.sha256 || output.artifact.workId !== row.authority?.id || output.artifact.requestId !== row.receipt.rootRequestId) throw new AppError("artifact_unavailable", 409);
         const name = encodeURIComponent(committed.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16).toUpperCase());
         return new Response(new Uint8Array(output.bytes).buffer, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(committed.bytes), "Content-Disposition": `attachment; filename="artifact.txt"; filename*=UTF-8''${name}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Content-Security-Policy": "default-src 'none'; sandbox", "Referrer-Policy": "no-referrer", "X-Content-SHA256": committed.sha256, Vary: "Cookie" } });
+      }
+      const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
+      if (memory) {
+        if (!options.memory) throw new AppError("memory_unavailable", 503);
+        if (request.method === "GET" && !memory[1]) return json(searchMemory(options.memory.ownerIndex(currentOwner()), parseMemoryQuery(url.searchParams)));
+        if (request.method === "GET" && memory[1] && memory[1] !== "commands") { if (url.search) throw new AppError("invalid_body"); return json(memoryDetail(options.memory.ownerIndex(currentOwner()), memory[1])); }
+        if (request.method === "POST" && memory[1] === "commands") {
+          if (url.search) throw new AppError("invalid_body");
+          // Exact-revision MEM command; the body stream is an async boundary, so owner/CSRF are rechecked.
+          const input = await body(request); return json(options.memory.command(currentOwner(), input));
+        }
+        throw new AppError("method_rejected", 405);
       }
       if (url.pathname === "/api/s16/client/session" && request.method === "GET") { if (url.search) throw new AppError("invalid_body"); return json({ authenticated: true }); }
       if (url.pathname === "/api/s16/client/bootstrap" && request.method === "GET") {

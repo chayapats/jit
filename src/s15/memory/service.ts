@@ -7,7 +7,7 @@ import { canonical, content, exact, identity, ids, inScope, integer, origin, ref
 import { extractMemory } from "./extract";
 import { derivativeIdentity, memoryDerivativeId, memoryId } from "./identity";
 import { MEMORY_SCHEMA_V1 } from "./store";
-import type { ForgetImpact, MemoryCandidate, MemoryClaim, MemoryCommand, MemoryDerivative, MemoryInput, MemoryOptions, MemoryPacket, MemoryProvenance, MemoryView, OwnerActor, TeamContext } from "./types";
+import type { ForgetImpact, MemoryOwnerIndex, MemoryUsage, MemoryCandidate, MemoryClaim, MemoryCommand, MemoryDerivative, MemoryInput, MemoryOptions, MemoryPacket, MemoryProvenance, MemoryView, OwnerActor, TeamContext } from "./types";
 
 interface SuppressedSpan { fingerprint: string; length: number }
 interface SourceRecord extends MemoryProvenance { id: string; active: boolean; withdrawnSpans?: SuppressedSpan[] }
@@ -151,8 +151,9 @@ export class MemoryService {
     this.store.transaction(() => {
       this.store.capacity(); claims.forEach(claim => { if (!this.accessible(context, claim)) throw new AppError("memory_context_stale", 409); });
       const workId = this.options.team.guard(context).id;
-      this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
-      this.saveDerivative({ id: memoryDerivativeId("native", requestId), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
+      const at = this.now();
+      this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), at });
+      this.saveDerivative({ id: memoryDerivativeId("native", requestId), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), at });
     });
     return { id: requestId, claims, section: canonical({ authority: "none", claims }), retained: [] };
   }
@@ -213,7 +214,7 @@ export class MemoryService {
       this.guard(context, packetId);
       const parent = JSON.parse(this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(packetId)!.record_json) as MemoryDerivative;
       if (this.store.db.query("SELECT 1 FROM derivatives WHERE id=?").get(value.id)) throw new AppError("source_id_conflict", 409);
-      this.store.capacity(); this.saveDerivative({ ...structuredClone(value), claimIds: parent.claimIds, sourceIds: parent.sourceIds, state: "active", ...(parent.filePins?.length ? { filePins: parent.filePins } : {}) });
+      this.store.capacity(); this.saveDerivative({ ...structuredClone(value), claimIds: parent.claimIds, sourceIds: parent.sourceIds, state: "active", ...(parent.filePins?.length ? { filePins: parent.filePins } : {}), at: this.now() });
     });
   }
   /** Derived content read always rechecks original claim/resource/private scope before returning bytes. */
@@ -249,6 +250,23 @@ export class MemoryService {
   }
   /** JSON claim inspection retains labels/provenance while forgotten claim/quote bytes are erased. */
   view(actor: OwnerActor): MemoryView { this.owner(actor); return { contract: "s15-memory-view/v1", claims: this.rows<MemoryClaim>("claims").map(claim => { const source = this.source(claim.sourceId), filesWithdrawn = !!source.filePins?.length && !this.options.team.options.fileLineage?.current(source.filePins); return { ...claim, ...(filesWithdrawn ? { text: "", quote: "" } : {}), sourceState: filesWithdrawn || !source.active || source.teamSourceId !== null && this.options.team.isWithdrawn(source.teamSourceId) ? "withdrawn" as const : "current" as const }; }), nativePolicy: "fresh_sessions_retire_on_close" }; }
+  /**
+   * Owner inspection index for client search/detail. It uses the same erasure as view(); usage counts
+   * include retired lineage so the owner can see where an item was used, not only current contexts.
+   */
+  ownerIndex(actor: OwnerActor): MemoryOwnerIndex {
+    const claims = this.view(actor).claims, usage: Record<string, MemoryUsage & { work: Set<string> }> = {};
+    for (const claim of claims) usage[claim.id] = { contexts: 0, summaries: 0, artifacts: 0, workItems: 0, lastUsedAt: null, work: new Set() };
+    for (const derivative of this.rows<MemoryDerivative>("derivatives")) for (const claimId of new Set(derivative.claimIds)) {
+      const entry = usage[claimId]; if (!entry) continue;
+      if (derivative.kind === "context") { entry.contexts++; if (typeof derivative.at === "number" && (entry.lastUsedAt === null || derivative.at > entry.lastUsedAt)) entry.lastUsedAt = derivative.at; }
+      else if (derivative.kind === "summary") entry.summaries++; else if (derivative.kind === "artifact") entry.artifacts++;
+      if (derivative.workId) entry.work.add(derivative.workId);
+    }
+    const files: MemoryOwnerIndex["files"] = {};
+    for (const claim of claims) files[claim.id] = filePins(claim.provenance.filePins).map(pin => ({ sourceId: pin.source.id, sha256: pin.sha256, representationSha256: pin.representationSha256, current: this.options.team.options.fileLineage?.current([pin]) === true }));
+    return { claims, files, usage: Object.fromEntries(Object.entries(usage).map(([claimId, { work, ...entry }]) => [claimId, { ...entry, workItems: work.size }])) };
+  }
   private affected(root: MemoryClaim): { claims: MemoryClaim[]; sources: SourceRecord[]; derivatives: MemoryDerivative[]; impact: ForgetImpact } {
     const all = this.rows<MemoryClaim>("claims"), affected = new Set([root.id]);
     // Independently extracted copies of the exact same scoped assertion must not survive an owner
