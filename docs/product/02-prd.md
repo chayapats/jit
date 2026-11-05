@@ -1,6 +1,6 @@
 # Jit Product Requirements Document
 
-Current product target: [S15](../specs/S15-conversational-autonomy.md), owner-confirmed 2026-11-02. [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) records proposed engineering and unresolved enforcement gates. Existing FR/NFR IDs are retained and refined below; these requirements are not a claim that S15 is implemented. New runs/installations still default to S14, while explicit legacy and existing legacy service configs retain S09–S13. [Owner-Pi acceptance](../evidence/s14-owner-pi-cutover.md) remains scoped to its recorded build. Historical S14 behavior and contracts remain in the earlier specs and Git history until replacement slices land.
+Current product target: [S16](../specs/S16-rakazo-experience.md), owner-confirmed 2026-11-05: the Rakazo-style persistent teammate experience on Jit + Schway, with selective upstream code reuse and freedom to improve existing stacks. [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) records proposed integration choices. S16's feature/acceptance matrix extends the stable FR/NFR IDs below. [S15](../specs/S15-conversational-autonomy.md) and [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) retain the authority/continuity baseline until explicit replacement decisions/contracts. Opt-in S15 code is implemented; new unconfigured runs/installations still default to S14. Explicit legacy and existing legacy service configs retain S09–S13. [Owner-Pi acceptance](../evidence/s14-owner-pi-cutover.md) remains scoped to its recorded build; no S16 parity or host adoption is inferred.
 
 ## Actors and journeys
 
@@ -13,6 +13,7 @@ One owner works with Jit and persistent Bots. Coordinator, worker Bot, scheduler
 - J05: handle quota, failed sources, stalled progress, cancellation or crash through honest state and safe recovery.
 - J06: inspect GitHub readiness and wait for issue selection; then implement/babysit selected work. Default publication requires approval; an opt-in personal rule permits technical publication and eligible auto-merge. Production waits.
 - J07: use connected personal/business accounts for authorized routine edits; inspect exact outbound messages and transactions before approving, unless a bounded standing exception applies.
+- J08: work with files, graphical computers, connected apps, governed tools/skills and voice from Web/desktop/mobile clients of the same persistent Jit service, as specified by S16-AC01–AC22.
 
 ## Functional requirements
 

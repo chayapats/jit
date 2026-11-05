@@ -1,5 +1,17 @@
 # Jit — Repository and platform evidence
 
+## Rakazo reference, 2026-11-05
+
+The owner selected Rakazo as the primary product reference and authorized selective concept/source reuse while retaining Jit + Schway. The owner also invited simpler stack alternatives. [S16](../specs/S16-rakazo-experience.md) and [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) distinguish confirmed outcomes, integration proposals and evidence.
+
+- Repository/commit: [elie222/rakazo at abf3c08145a05cba92a912d6c24fdfb5f569d0e0](https://github.com/elie222/rakazo/tree/abf3c08145a05cba92a912d6c24fdfb5f569d0e0).
+- [Vision](https://github.com/elie222/rakazo/blob/abf3c08145a05cba92a912d6c24fdfb5f569d0e0/VISION.md): persistent teammates, durable computers, shared clients and explicit trust.
+- [README](https://github.com/elie222/rakazo/blob/abf3c08145a05cba92a912d6c24fdfb5f569d0e0/README.md) and [user documentation](https://github.com/elie222/rakazo/tree/abf3c08145a05cba92a912d6c24fdfb5f569d0e0/docs): reference capabilities and workflows, not independent live validation.
+- [License](https://github.com/elie222/rakazo/blob/abf3c08145a05cba92a912d6c24fdfb5f569d0e0/LICENSE): Apache-2.0; inspect module/dependency/assets licensing and applicable notices before each import.
+- Inspected source archive SHA-256: `10aa4afe806a958a56fa996451466899956d7b5db9bd7b3ce06109350f7150a3`. No upstream install/runtime scripts were executed and no runtime source was copied by the baseline documentation change.
+
+Historical discovery snapshots below retain their own dates and limitations.
+
 แยก observed facts ออกจาก proposed design รายการนี้ไม่ใช่ผล deployment/security test และไม่รับรอง external provider availability ในอนาคต
 
 ## Repository snapshot

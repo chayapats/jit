@@ -1,6 +1,6 @@
 # Jit Product Vision
 
-Status: retained S14 vision, confirmed 2026-10-30. [S15](../specs/S15-conversational-autonomy.md), confirmed 2026-11-02, is the current target and supersedes conflicting scope below. S14 remains the implemented default runtime; S09–S13 is retained through explicit legacy selection/configuration. See the [current PRD](02-prd.md) and [CONTEXT.md](../../CONTEXT.md).
+Status: retained S14 vision, confirmed 2026-10-30. [S16](../specs/S16-rakazo-experience.md), confirmed 2026-11-05, is the current target: the Rakazo-style experience through selective reuse on Jit + Schway, with stack changes open for improvement. It extends the [S15](../specs/S15-conversational-autonomy.md) authority baseline. S14 remains the default runtime, with opt-in S15; S09–S13 is retained through explicit legacy selection/configuration. See the [current PRD](02-prd.md) and [CONTEXT.md](../../CONTEXT.md).
 
 ## Purpose
 
@@ -29,7 +29,7 @@ Coding from a request to reviewable code/tests/PR, and personal assistance with 
 
 Jit owns Bots, grants, conversations, tasks, memory, artifacts, durable jobs and channels. Schway owns loop/provider/session/compaction/model-retry primitives through its supported public host surface. We build Jit itself, taking ideas from OpenBot/OpenDuet/Grok Bot without requiring their platform or memory service.
 
-MIT remains the repository license. Open source does not imply multi-user tenancy or support for every website/model/OS.
+Jit-origin code remains MIT-licensed. Adapted upstream code retains its applicable license and notices; Rakazo's Apache-2.0 source must not be presented as MIT-only. Open source does not imply multi-user tenancy or proven support for every website/model/OS.
 
 ## Validation
 

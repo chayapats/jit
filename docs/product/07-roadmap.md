@@ -1,6 +1,6 @@
 # Jit Development Roadmap
 
-Status: retained S14 capability order and [ticket breakdown](../tickets/S14-bot-first-roadmap.md). [S15](../specs/S15-conversational-autonomy.md) is the current confirmed target; see [parent #316](https://github.com/chayapats/jit/issues/316) and its [delivery graph](../tickets/S15-conversational-autonomy-roadmap.md). No date, inherited research-only sequencing or ready-for-agent status follows from this historical roadmap or from closing an unverified contract blocker.
+Status: retained S14 capability order and [ticket breakdown](../tickets/S14-bot-first-roadmap.md). [S16](../specs/S16-rakazo-experience.md) is the current confirmed target; see [parent #392](https://github.com/chayapats/jit/issues/392) and its [delivery graph](../tickets/S16-rakazo-experience-roadmap.md). S15 retains its implementation/authority baseline and separate evidence/adoption. No date, inherited research-only sequencing or ready-for-agent status follows from this historical roadmap or from closing an unverified contract blocker.
 
 ## A — research MVP
 

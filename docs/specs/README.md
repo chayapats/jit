@@ -25,7 +25,11 @@
 
 ดู [workflow](../agents/workflow.md) Specs นี้ไม่ได้สร้าง implementation claims หรืออนุมัติให้ติดตั้งบน Pi/ใช้ live subscription จากงานเขียนเอกสาร
 
-## S15 — current owner-confirmed target
+## S16 — current owner-confirmed target
+
+[S16](S16-rakazo-experience.md), confirmed 2026-11-05, makes Rakazo the primary product reference while retaining Jit + Schway. The owner authorized selective source/concept reuse and improvements to existing stacks. Files/artifacts, general browser/desktop, app/tool/skill connections, persistent team/routine/memory behavior, voice and native clients are required outcomes. [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) separates integration proposals from confirmed direction. Track delivery in [#392](https://github.com/chayapats/jit/issues/392) and the [S16 graph](../tickets/S16-rakazo-experience-roadmap.md). S14 remains default; S15 is opt-in; no parity or live adoption is inferred.
+
+## S15 — retained authority baseline and opt-in implementation
 
 [S15](S15-conversational-autonomy.md), confirmed 2026-11-02, records conversational execution under standing policy, an administrable working VM, shared team resources, browser-first work and automatic memory with protected human approvals. Default GitHub publication waits; an opt-in personal workflow may publish and auto-merge selected work, while production still waits. [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) separates proposed engineering and unresolved enforcement gates. The 23 decisions and S15-AC01–AC16 are the current target, tracked by [#316](https://github.com/chayapats/jit/issues/316) and the [delivery graph](../tickets/S15-conversational-autonomy-roadmap.md); no S15 implementation or live cutover is claimed.
 
