@@ -84,7 +84,7 @@ Routines use R07's conversational entry and a review sheet: instruction, Bot, ti
 
 ## Memory
 
-R06 supports separating history from retained knowledge. Memory list is searchable by fact/inference, source, Bot and scope. Detail shows original source, derivation and last use. Correct creates a superseding record; Forget previews affected derived contexts/artifacts/work and then withdraws retrieval. It does not pretend to delete unrelated original conversations. Private scope is checked before relevance or ranking. Model/computer switching keeps product memory and retire/rebuild semantics for stale contexts. Never promise that deleting a UI row purges already downloaded content.
+R06 supports separating history from retained knowledge. Memory list is searchable by fact/inference, source, Bot and scope. Detail shows original source, derivation and last use. Correct creates a superseding record; Forget previews affected derived contexts/artifacts/work and then withdraws retrieval. It does not pretend to delete unrelated original conversations. Private scope is checked before relevance or ranking. Model/computer switching keeps product memory and retire/rebuild semantics for stale contexts. Never promise that deleting a UI row purges already downloaded content. The implemented client view is recorded in [S16 memory client design](S16-memory-client.md).
 
 ## Connections and routing
 

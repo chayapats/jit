@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { Model, ModelRequest } from "schway/host";
-import { composedFixture } from "./fixtures/s15-composition";
+import { composedFixture, ref } from "./fixtures/s15-composition";
 import type { S15CompositionOptions } from "../src/s15/composition";
 import { JitClient, JitClientError } from "../src/s16/client";
 import type { ClientMemoryDetail, ClientMemoryList, ClientMemoryQuery } from "../src/s16/client";
@@ -109,6 +109,26 @@ test("forget racing in-flight work withholds publication and later retrieval, in
   expect(JSON.stringify(await (await w.f.request("/api/s16/client/conversations/race")).json())).not.toContain("Concise reply.");
   expect((await w.say("after", "How should replies look?")).result).toBe("Ordinary reply."); expect(w.lastInput()).not.toContain("I prefer concise replies.");
   expect((await w.search({ state: "all" })).items.filter(entry => entry.state === "active").map(entry => entry.snippet)).toEqual(["My timezone is Asia/Bangkok."]);
+});
+
+test("team corrections follow work to another Bot after restart; Bot-private memory and its search stay with its Bot", async () => {
+  let bot = "bot", privateRetention = false;
+  const w = await world(options => ({ ...options, conversation: { ...options.conversation, bot: ref(bot) }, team: { ...options.team!, retention: authority => privateRetention ? { kind: "bot", botId: authority.request.bot.id, origin: "s15" } : { kind: "team" } } }));
+  await w.say("pref", "I prefer concise replies.");
+  const shared = (await w.search({ q: "concise" })).items[0]!;
+  await w.command({ contract: "s15-memory-command/v1", requestId: "fix", kind: "memory.correct", claim: { id: shared.id, revision: shared.revision }, text: "I prefer detailed replies." });
+  privateRetention = true; await w.f.reopen();
+  await w.say("secret", "Working knowledge: The vault rotation is on Tuesday.");
+  const owned = (await w.search({ q: "vault rotation" })).items;
+  expect(owned.map(entry => entry.scope)).toEqual([{ kind: "bot", botId: "bot" }]);
+  expect((await w.search({ q: "vault rotation", bot: "bot" })).total).toBe(1);
+  const other = await w.search({ q: "vault rotation", bot: "specialist" }); expect(other.total).toBe(0); expect(JSON.stringify(other)).not.toContain("Tuesday");
+  expect((await w.search({ bot: "specialist" })).items.map(entry => entry.snippet)).toEqual(["I prefer detailed replies."]);
+  expect((await w.search()).bots).toEqual(["bot"]);
+
+  bot = "specialist"; await w.f.reopen();
+  expect((await w.say("peer", "How should replies look? Mention the vault rotation too.")).result).toBe("Detailed reply.");
+  expect(w.lastInput()).toContain("I prefer detailed replies."); expect(w.lastInput()).not.toContain("Tuesday"); expect(w.lastInput()).not.toContain("I prefer concise replies.");
 });
 
 test("memory routes keep the protected client boundary", async () => {
