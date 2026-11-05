@@ -9,6 +9,7 @@ import type { FileUpload, FileReceipt } from "../src/s16/files/types";
 import { ConversationStore } from "../src/s15/conversation/store";
 import { ProtectedDataStore } from "../src/s15/team/store";
 import { MEMORY_SCHEMA_V1 } from "../src/s15/memory/store";
+import { memoryDerivativeId } from "../src/s15/memory/identity";
 import { binaryRuntime, fixtureImage, imageProbes } from "./fixtures/s16-binary";
 import { routeTransport, ROUTE_MODEL } from "./fixtures/s15-route-transport";
 
@@ -54,10 +55,12 @@ test("actual observed file knowledge changes a later request through exact sourc
   expect(JSON.stringify(w.captures.at(-1))).toContain(source.receipt.sha256); expect(JSON.stringify(w.captures.at(-1))).toContain(fact.trim());
   const bootstrap = await (await w.f.request("/api/s16/client/bootstrap")).json(); expect(bootstrap.capabilities).toMatchObject({ revision: 2, uploads: { memory: true, memoryContract: "s16-file-memory/v1" } });
   expect(readFileSync(join(w.f.directory, "conversation.sqlite")).readUInt32BE(60)).toBe(4);
-  expect(readFileSync(join(w.f.directory, "team.sqlite")).readUInt32BE(60)).toBe(2); expect(readFileSync(join(w.f.directory, "memory.sqlite")).readUInt32BE(60)).toBe(2);
+  expect(readFileSync(join(w.f.directory, "team.sqlite")).readUInt32BE(60)).toBe(2); expect(readFileSync(join(w.f.directory, "memory.sqlite")).readUInt32BE(60)).toBe(4);
   await w.f.reopen(); expect((await w.answer("restarted")).result).toBe("The launch day is Friday.");
   await w.f.service.close(); expect(() => new ConversationStore(join(w.f.directory, "conversation.sqlite"), "fixture", false, true)).toThrow("conversation_store_incompatible");
   expect(() => new ProtectedDataStore(join(w.f.directory, "memory.sqlite"), "fixture", false, 0x4a495437, MEMORY_SCHEMA_V1)).toThrow("s15_data_store_incompatible");
+  expect(() => new ProtectedDataStore(join(w.f.directory, "memory.sqlite"), "fixture", false, 0x4a495437, MEMORY_SCHEMA_V1, true)).toThrow("s15_data_store_incompatible");
+  expect(() => new ProtectedDataStore(join(w.f.directory, "memory.sqlite"), "fixture", false, 0x4a495437, MEMORY_SCHEMA_V1, false, [1, 3])).toThrow("s15_data_store_incompatible");
 });
 test("withdrawal invalidates memory, history and old artifact downloads without blocking clean unrelated work", async () => {
   const w = await world(), source = await w.file(); expect((await w.answer()).result).toContain("Friday");
@@ -187,4 +190,19 @@ test("an authorized VM tool receives the actual memory-derived content under the
 test("a maximum-length client request identity does not overflow internal memory observation keys", async () => {
   const w = await world(); await w.file(fact, "r".repeat(128)); expect((await w.answer()).result).toContain("Friday");
   await w.f.reopen(); expect((await w.answer("after_long_id_restart")).result).toContain("Friday");
+});
+
+test.each([false, true])("public aliases of old native/reply keys cannot replace file lineage (long first: %s)", async longFirst => {
+  const w = await world(), source = await w.file(), long = "r".repeat(128);
+  const aliases = [`memory_${hash(`native_${long}`)}`, `memory_${hash(`reply_${long}`)}`, "native_short", "reply_short"];
+  const answer = async (id: string, text?: string) => { const result = await w.answer(id, id, text); expect(result.state).toBe("completed"); return result; };
+  if (longFirst) { await answer(long, "Tell me a short greeting"); await answer("short", "Tell me another greeting"); }
+  for (const alias of aliases) expect((await answer(alias)).result).toContain("Friday");
+  if (!longFirst) { await answer(long, "Tell me a short greeting"); await answer("short", "Tell me another greeting"); }
+  const rows = () => w.f.service.memory.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?");
+  for (const alias of aliases) expect(JSON.parse(rows().get(alias)!.record_json)).toMatchObject({ kind: "context", filePins: [expect.objectContaining({ sha256: source.receipt.sha256 })] });
+  expect(JSON.parse(rows().get(memoryDerivativeId("native", long))!.record_json)).toMatchObject({ kind: "native", claimIds: [] });
+  await w.f.reopen();
+  await w.f.request(`/api/s16/client/uploads/${source.receipt.id}/withdraw`, "POST", {});
+  for (const alias of aliases) expect(w.f.service.conversation.view(w.f.owner, alias).result).toBeNull();
 });

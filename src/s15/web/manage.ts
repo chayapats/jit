@@ -17,7 +17,9 @@ export interface S15MemoryPage { csrf: string; claims: S15MemoryClaim[] | null; 
 export function memoryBody(page: S15MemoryPage): string {
   if (!page.claims) return `<div class="s-col">${notYet("s15.memory.not_composed")}</div>`;
   const nav = `<nav class="s-tabs" aria-label="${tr("s15.memory.filters")}">${filters.map(name => `<a href="/memory?filter=${name}"${page.filter === name ? ' aria-current="page"' : ""}>${tr(key(`s15.memory.filter.${name}`))}</a>`).join("")}</nav>`;
-  const rows = page.claims.filter(claim => matches(claim, page.filter)).slice(0, 200);
+  const filtered = page.claims.filter(claim => matches(claim, page.filter));
+  const selected = filtered.find(claim => claim.id === (page.forgetting?.claim.id ?? page.correcting));
+  const rows = selected ? [selected, ...filtered.filter(claim => claim.id !== selected.id).slice(0, 199)] : filtered.slice(0, 200);
   const row = (claim: S15MemoryClaim) => {
     const state = claim.lifecycle === "superseded" ? tr("s15.memory.corrected_by_you") : claim.lifecycle === "forgotten" ? tr("s15.memory.forgotten") : claim.sourceState === "withdrawn" ? tr("s15.memory.source_withdrawn") : "";
     const text = claim.text ? `<p class="s15-text">${e(claim.text)}</p>` : `<p class="s-sub">${tr("s15.memory.text_removed")}</p>`;

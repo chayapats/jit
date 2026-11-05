@@ -5,7 +5,7 @@ import type { MemoryService } from "./service";
 import { filePins, type FileSourcePin } from "../file-lineage";
 import { extractMemory } from "./extract";
 import { digest } from "../conversation/validation";
-import { memoryId } from "./identity";
+import { memoryDerivativeId, memoryId } from "./identity";
 import type { ConversationEvidence } from "../conversation/types";
 
 /** Trusted selected-file observation and DATA15 release hooks; no model has access to these ports. */
@@ -61,10 +61,10 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
       const current = context(work, requestId), packet = memory.derivative(current, requestId), authority = memory.options.team.guard(current), scope = memory.options.retention(authority);
       const retained = files && scope && packet.filePins?.length && memory.retainGeneratedFiles(current, requestId) ? memory.retain(current, { id: `reply_claims_${digest(requestId)}`, text, origin: { kind: "work", id: requestId, conversationId: conversations.get(requestId) ?? null, at: memory.now() }, scope, resources: authority.request.resources, parents: packet.claimIds, filePins: packet.filePins }, extractMemory(text).map(candidate => ({ ...candidate, kind: "inference" as const }))) : [];
       if (retained.length) memory.include(current, requestId, retained.map(claim => claim.id));
-      memory.derive(current, requestId, { id: memoryId(`reply_${requestId}`), kind: "summary", text, workId: work.authority.id });
+      memory.derive(current, requestId, { id: memoryDerivativeId("summary", requestId), kind: "summary", text, workId: work.authority.id });
       return retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin }));
     },
-    artifacts(work, requestId, artifacts) { for (const artifact of artifacts) memory.derive(context(work, requestId), requestId, { id: `file_artifact_${digest(artifact.id)}`, kind: "artifact", text: null, workId: work.authority.id }); },
+    artifacts(work, requestId, artifacts) { for (const artifact of artifacts) memory.derive(context(work, requestId), requestId, { id: memoryDerivativeId("artifact", artifact.id), kind: "artifact", text: null, workId: work.authority.id }); },
     allowHistory(requestId, text) { return memory.allowHistory(requestId, text); },
     ...(files ? {
       history(work: ConversationPolicyWork, requestId: string, text: string) { try { memory.history(historyContext(work), requestId, text); return true; } catch { return false; } },

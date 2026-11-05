@@ -5,7 +5,7 @@ import { digest } from "../conversation/validation";
 import { ProtectedDataStore } from "../team/store";
 import { canonical, content, exact, identity, ids, inScope, integer, origin, reference, scope } from "../team/validation";
 import { extractMemory } from "./extract";
-import { memoryId } from "./identity";
+import { derivativeIdentity, memoryDerivativeId, memoryId } from "./identity";
 import { MEMORY_SCHEMA_V1 } from "./store";
 import type { ForgetImpact, MemoryCandidate, MemoryClaim, MemoryCommand, MemoryDerivative, MemoryInput, MemoryOptions, MemoryPacket, MemoryProvenance, MemoryView, OwnerActor, TeamContext } from "./types";
 
@@ -26,7 +26,7 @@ export class MemoryService {
   constructor(readonly options: MemoryOptions) {
     if (options.runtime !== "s15") throw new AppError("s15_opt_in_required");
     this.now = options.now ?? Date.now;
-    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495437, MEMORY_SCHEMA_V1, !!options.team.options.fileLineage);
+    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495437, MEMORY_SCHEMA_V1, !!options.team.options.fileLineage, options.team.options.fileLineage ? [1, 2, 3, 4] : [1, 3]);
   }
   private owner(actor: OwnerActor): void { this.options.team.options.policy.owner.current(actor); }
   private rows<T>(table: "sources" | "claims" | "derivatives"): T[] {
@@ -43,9 +43,20 @@ export class MemoryService {
   }
   private suppressed(text: string): boolean { return !!this.store.db.query("SELECT 1 FROM suppressions WHERE fingerprint=?").get(fingerprint(text)); }
   private saveClaim(claim: MemoryClaim): void { this.store.db.query("INSERT INTO claims VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET lifecycle=excluded.lifecycle,record_json=excluded.record_json").run(claim.id, claim.lifecycle, canonical(claim)); }
-  private fileFormat(pins: readonly FileSourcePin[] | undefined): void { if (pins?.length) { if (!this.options.team.options.fileLineage) throw new AppError("file_memory_required", 503); this.store.db.exec("PRAGMA user_version=2"); } }
+  private format(): number { return this.store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version; }
+  private fileFormat(pins: readonly FileSourcePin[] | undefined): void { if (pins?.length) { if (!this.options.team.options.fileLineage) throw new AppError("file_memory_required", 503); this.store.db.exec(`PRAGMA user_version=${this.format() >= 3 ? 4 : 2}`); } }
   private saveSource(source: SourceRecord): void { this.fileFormat(source.filePins); this.store.db.query("INSERT INTO sources VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(source.id, source.sourceHash, canonical(source)); }
-  private saveDerivative(value: MemoryDerivative): void { this.fileFormat(value.filePins); this.store.db.query("INSERT INTO derivatives VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record_json=excluded.record_json").run(value.id, value.state, canonical(value)); }
+  private saveDerivative(value: MemoryDerivative): void {
+    const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(value.id);
+    if (row) {
+      const previous = JSON.parse(row.record_json) as MemoryDerivative;
+      if (previous.kind !== value.kind || previous.workId !== value.workId || previous.state === "retired" && value.state !== "retired" || previous.claimIds.some(id => !value.claimIds.includes(id)) || previous.sourceIds.some(id => !value.sourceIds.includes(id)) || filePins(previous.filePins).some(pin => !filePins(value.filePins).some(next => canonical(next) === canonical(pin)))) throw new AppError("source_id_conflict", 409);
+    }
+    // Stamp inside the caller's transaction. Old prefix writers must refuse this store on rollback.
+    if (value.id.startsWith("memory:")) this.store.db.exec(`PRAGMA user_version=${[2, 4].includes(this.format()) ? 4 : 3}`);
+    this.fileFormat(value.filePins);
+    this.store.db.query("INSERT INTO derivatives VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record_json=excluded.record_json").run(value.id, value.state, canonical(value));
+  }
   /** Access is checked before payload relevance, including transitive claims, sources and resources. */
   private accessible(context: TeamContext, claim: MemoryClaim, seen = new Set<string>(), memo = new Map<string, boolean>(), history = false): boolean {
     const known = memo.get(claim.id); if (known !== undefined) return known;
@@ -141,7 +152,7 @@ export class MemoryService {
       this.store.capacity(); claims.forEach(claim => { if (!this.accessible(context, claim)) throw new AppError("memory_context_stale", 409); });
       const workId = this.options.team.guard(context).id;
       this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
-      this.saveDerivative({ id: memoryId(`native_${requestId}`), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
+      this.saveDerivative({ id: memoryDerivativeId("native", requestId), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
     });
     return { id: requestId, claims, section: canonical({ authority: "none", claims }), retained: [] };
   }
@@ -151,10 +162,14 @@ export class MemoryService {
     this.store.transaction(() => {
       this.guard(context, packetId);
       for (const claimId of claimIds) if (!this.accessible(context, this.claim(claimId))) throw new AppError("memory_context_stale", 409);
-      for (const derivativeId of [packetId, memoryId(`native_${packetId}`)]) {
+      const native = memoryDerivativeId("native", packetId);
+      // Existing protected packets remain readable without rekeying their persisted native row.
+      const nativeId = this.store.db.query("SELECT 1 FROM derivatives WHERE id=?").get(native) ? native : memoryId(`native_${packetId}`);
+      for (const derivativeId of [packetId, nativeId]) {
         const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(derivativeId);
         if (!row) throw new AppError("memory_context_stale", 409);
         const derivative = JSON.parse(row.record_json) as MemoryDerivative;
+        if (derivative.kind !== (derivativeId === packetId ? "context" : "native")) throw new AppError("memory_context_stale", 409);
         derivative.claimIds = [...new Set([...derivative.claimIds, ...claimIds])];
         derivative.sourceIds = [...new Set([...derivative.sourceIds, ...claimIds.map(id => this.claim(id).sourceId)])];
         const pins = filePins(derivative.filePins, ...claimIds.map(id => this.claim(id).provenance.filePins)); if (pins.length) derivative.filePins = pins;
@@ -168,7 +183,7 @@ export class MemoryService {
     const value = this.packet(context, packetId); this.options.team.verifyFiles(context, value.filePins ?? []);
   }
   private packet(context: TeamContext, packetId: string, history = false): MemoryDerivative {
-    this.options.team.guard(context); identity(packetId);
+    this.options.team.guard(context); derivativeIdentity(packetId);
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(packetId);
     const value = row ? JSON.parse(row.record_json) as MemoryDerivative : null;
     if (!value || value.state !== "active" || value.claimIds.some(id => !this.accessible(context, this.claim(id), new Set(), new Map(), history)) || value.sourceIds.some(id => !this.source(id).active) || value.filePins?.length && !this.options.team.options.fileLineage?.current(value.filePins)) throw new AppError("memory_context_stale", 409);
@@ -191,7 +206,7 @@ export class MemoryService {
   }
   /** Conservative derived summaries/artifacts inherit all input claims, even when no citation is emitted. */
   derive(context: TeamContext, packetId: string, value: Pick<MemoryDerivative, "id" | "kind" | "text" | "workId">): void {
-    canonical(value); exact(value, ["id", "kind", "text", "workId"]); identity(value.id);
+    canonical(value); exact(value, ["id", "kind", "text", "workId"]); derivativeIdentity(value.id, value.kind);
     if (!["summary", "artifact", "work"].includes(value.kind)) throw new AppError("invalid_derivative");
     if (value.text !== null) content(value.text, 32768); if (value.workId !== null) identity(value.workId);
     this.store.transaction(() => {

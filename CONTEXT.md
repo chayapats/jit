@@ -78,7 +78,7 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Shared memory:** Relevant sourced facts, preferences and working knowledge available to the authorized team. S15 standing policy authorizes automatic retention with fact/inference and correction/forget lifecycle; it never grants execution power. S14 requires its existing explicit publication/share path, and existing private data is not silently promoted during transition.
 
-The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets automatically under protected retention policy. A correction creates a new owner-sourced claim while preserving inherited private/resource ceilings; forget suppresses source replay and retires dependent contexts/results. Claims, including owner-stated facts, remain data with no execution authority. S14 publication/share semantics and private data are unchanged.
+The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets automatically under protected retention policy. A correction creates a new owner-sourced claim while preserving inherited private/resource ceilings; forget suppresses source replay and retires dependent contexts/results. Generated MEM derivative keys are disjoint from public request IDs; MEM formats 3/4 fence older prefix writers, with 4 requiring file-aware readers. Legacy rows remain in place and conflicts refuse. Claims, including owner-stated facts, remain data with no execution authority. S14 publication/share semantics and private data are unchanged.
 
 **Bot-private memory:** Claims scoped to one Bot. Retrieval and context assembly enforce that scope before relevance selection.
 

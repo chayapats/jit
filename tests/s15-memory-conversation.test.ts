@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { memoryDerivativeId } from "../src/s15/memory/identity";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Model } from "schway/host";
@@ -81,7 +82,7 @@ test("forget during an active scripted model turn fences late result commit and 
   f.f.memory.command(f.f.f.owner, { contract: "s15-memory-command/v1", requestId: "forget_running", kind: "memory.forget", claim: { id: claim.id, revision: claim.revision } });
   finish.resolve(); await running;
   expect(f.app.view(f.f.f.owner, input.requestId)).toMatchObject({ state: "held", code: "memory_context_stale", result: null });
-  expect(f.f.memory.store.db.query<{ state: string }, [string]>("SELECT state FROM derivatives WHERE id=?").get(`native_${input.requestId}`)?.state).toBe("retired");
+  expect(f.f.memory.store.db.query<{ state: string }, [string]>("SELECT state FROM derivatives WHERE id=?").get(memoryDerivativeId("native", input.requestId))?.state).toBe("retired");
 });
 
 test("JSON resources/memory inspection and commands reuse authenticated Host/Origin/CSRF boundaries", async () => {

@@ -43,6 +43,23 @@ test("memory page reads MemoryService claims and corrects and forgets the exact 
   expect(tm.memory.view(tm.f.owner).claims.find(claim => claim.id === current.id)?.lifecycle).toBe("forgotten");
 });
 
+test("a deep-linked claim beyond the first 200 keeps exact correction and forget forms in the bounded page", async () => {
+  const { tm, web } = setup(), context = tm.context();
+  for (let batch = 0; batch < 13; batch++) tm.memory.retain(context, tm.source(Array.from({ length: 16 }, (_, index) => `Working knowledge: Entry ${batch * 16 + index}.`).join("\n")));
+  const claims = tm.memory.view(tm.f.owner).claims, selected = claims.at(-1)!;
+  expect(claims).toHaveLength(208);
+  const ordinary = await html(web, "/memory");
+  expect(ordinary.match(/class="s15-claim"/g)).toHaveLength(200); expect(ordinary).not.toContain(selected.text);
+  const correcting = await html(web, `/memory?claim=${selected.id}`);
+  expect(correcting.match(/class="s15-claim"/g)).toHaveLength(200); expect(correcting).toContain(selected.text);
+  expect(correcting).toContain(`name="claimId" value="${selected.id}"`); expect(correcting).toContain('action="/s15/forms/memory/correct"');
+  const forgetting = await html(web, `/memory?forget=${selected.id}`);
+  expect(forgetting.match(/class="s15-claim"/g)).toHaveLength(200); expect(forgetting).toContain('action="/s15/forms/memory/forget"');
+  expect((await web.post("/s15/forms/memory/forget", { claimId: selected.id, claimRevision: String(selected.revision), filter: "all" })).status).toBe(303);
+  const removed = await html(web, `/memory?claim=${selected.id}`);
+  expect(removed).not.toContain(selected.text); expect(removed).not.toContain(`name="claimId" value="${selected.id}"`);
+});
+
 test("F12 registration lists exactly the unregistered resources and registers them only on the owner's confirmation", async () => {
   const tm = teamMemoryFixture(); cleanups.push(() => tm.cleanup());
   const owner = () => tm.f.owner;
