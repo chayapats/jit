@@ -46,7 +46,7 @@ export interface S15CompositionOptions {
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
   /** Explicit S16 file byte custody; requires DATA15. Does not change installed standing rules. */
-  files?: { limits?: FileLimits };
+  files?: { limits?: FileLimits; parserRuntime?: import("../attachments/sanitizer-runtime").AttachmentSanitizerRuntime; imageProbes?: readonly import("schway/host").HostImageProbeRecord[] };
   recurring?: RecurringRuleOptions;
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
@@ -191,12 +191,13 @@ export async function composeS15(options: S15CompositionOptions) {
     const clockNow = options.clock?.now ?? Date.now;
     const principalOf = (actor: OwnerActor): ResumeOwnerSnapshot => { verified = null; policy.owner.current(actor); const principal = verified as AuthenticatedOwner | null; if (!principal) throw new AppError('authentication_required', 401); return { ownerId: principal.id, generation: principal.generation }; };
     if (options.files) {
-      files = new FileStore({ path: join(root, 'files.sqlite'), directory: join(root, 'file-bytes'), installationId: options.installationId, create: options.create || created.includes('files.sqlite'), resource: options.vm.resource, ...(options.files.limits ? { limits: options.files.limits } : {}), now: clockNow,
+      files = new FileStore({ path: join(root, 'files.sqlite'), directory: join(root, 'file-bytes'), installationId: options.installationId, create: options.create || created.includes('files.sqlite'), resource: options.vm.resource, ...(options.files.parserRuntime ? { parserRuntime: options.files.parserRuntime } : {}), ...(options.files.limits ? { limits: options.files.limits } : {}), now: clockNow,
         requireOwner(actor: OwnerActor | WorkActor) {
           try { const owner = principalOf(actor as OwnerActor); return { id: owner.ownerId, generation: owner.generation }; }
           catch { try { const work = policy.work.guard(actor as WorkActor); return { id: options.conversation.ownerId, generation: work.ownerGeneration }; } catch { throw new AppError('authentication_required', 401); } }
         } });
       cleanup.push(() => files!.close());
+      await files.parser?.recover();
     }
     const fileWorkflow = files ? createFileWorkflow({ store: files, resource: options.vm.resource, policy: () => policy, disclosure: () => disclosure,
       guardResource(current, write) { team.resource(team.bind(current.actor), options.vm.resource.id, write ? 'write' : 'read'); },
@@ -330,8 +331,8 @@ export async function composeS15(options: S15CompositionOptions) {
         input.guard();
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
-        try { const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction,
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall });
+        try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
@@ -507,7 +508,7 @@ export async function composeS15(options: S15CompositionOptions) {
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, ...(files ? { files } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);

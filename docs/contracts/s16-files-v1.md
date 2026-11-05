@@ -1,6 +1,6 @@
 # S16 first file workflow v1
 
-FILE16-01A [#400](https://github.com/chayapats/jit/issues/400) is a partial implementation of FILE16-01 [#396](https://github.com/chayapats/jit/issues/396), following the [authored experience](../design/S16-rakazo-experience.md) and [ADR 0076](../adr/0076-s16-file-custody-and-react-client.md). Text alone does not close #396, S16-AC03 or the complete artifact library. PDF, images, file-derived memory, revisions and cross-conversation reuse remain required downstream work.
+FILE16-01A [#400](https://github.com/chayapats/jit/issues/400) is a partial implementation of FILE16-01 [#396](https://github.com/chayapats/jit/issues/396), following the [authored experience](../design/S16-rakazo-experience.md) and [ADR 0076](../adr/0076-s16-file-custody-and-react-client.md). Text alone does not close #396, S16-AC03 or the complete artifact library. The opt-in [binary extension](s16-binary-files-v1.md) now supplies strict PDF/PNG/JPEG processing; it retains independent live-evidence obligations. File-derived memory, revisions and cross-conversation reuse remain required downstream work.
 
 ## Selection and capability
 

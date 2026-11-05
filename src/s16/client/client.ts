@@ -142,8 +142,8 @@ export class JitClient {
   clear(): void { this.#csrf = null; this.#sessionGeneration++; }
   private uploadResponse(data: unknown, requestId?: string, uploadId?: string, mutation = false): FileUpload {
     const malformed = () => new JitClientError("client_protocol_invalid", null, requestId || mutation ? "unknown" : "response", requestId ?? uploadId ?? null);
-    if (!record(data) || data.contract !== "s16-file-upload/v1" || !identifier(data.id) || requestId && data.requestId !== requestId || uploadId && data.id !== uploadId || !identifier(data.conversationId) || typeof data.state !== "string" || !["created", "uploading", "ready", "rejected", "cancelled", "expired", "withdrawn"].includes(data.state)) throw malformed();
-    if (data.state === "ready" && (!record(data.receipt) || data.receipt.contract !== "s16-file-receipt/v1" || data.receipt.id !== data.id || data.receipt.conversationId !== data.conversationId || data.receipt.sha256 !== data.expectedHash || data.receipt.bytes !== data.bytes || typeof data.receipt.name !== "string")) throw malformed();
+    if (!record(data) || data.contract !== "s16-file-upload/v1" || !identifier(data.id) || requestId && data.requestId !== requestId || uploadId && data.id !== uploadId || !identifier(data.conversationId) || typeof data.state !== "string" || !["created", "uploading", "validating", "ready", "rejected", "cancelled", "expired", "withdrawn"].includes(data.state)) throw malformed();
+    if (data.state === "ready" && (!record(data.receipt) || !["s16-file-receipt/v1", "s16-file-receipt/v2"].includes(String(data.receipt.contract)) || data.receipt.id !== data.id || data.receipt.conversationId !== data.conversationId || data.receipt.sha256 !== data.expectedHash || data.receipt.bytes !== data.bytes || typeof data.receipt.name !== "string")) throw malformed();
     return data as unknown as FileUpload;
   }
   private receipt(data: unknown, command: { requestId: string; conversationId: string }): ClientReceipt {

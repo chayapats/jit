@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser } from "playwright-core";
 import { composedFixture } from "./fixtures/s15-composition";
+import { binaryRuntime, fixtureImage, imageProbes, launchPdf } from "./fixtures/s16-binary";
 import type { FileUpload } from "../src/s16/files/types";
 import { en } from "../src/i18n/en";
 import { th } from "../src/i18n/th";
@@ -167,4 +168,40 @@ browserTest("non-local HTTP without WebCrypto gives a specific explanation befor
     await page.goto("http://jit.test/s16"); await page.getByText(en["s16.common.secureContext"], { exact: true }).waitFor();
     expect(await page.locator(".s16-app").count()).toBe(0); expect(requested.some(path => path.startsWith("/api/"))).toBe(false); expect(errors).toEqual([]); expect(f.vmCalls).toEqual([]);
   } finally { await context.close(); await f.close(); }
+}, 30000);
+
+browserTest.each([1440, 390])("binary file validation, transformations and actual artifact UI at width %i", async width => {
+  const release = Promise.withResolvers<void>(), runtime = binaryRuntime();
+  const f = await composedFixture("default", false, undefined, options => {
+    options.proposedPolicy!.rules[0]!.adapters.push("s16_files"); options.proposedPolicy!.rules[0]!.operations.push("artifact_create");
+    return { ...options, files: { imageProbes, parserRuntime: { ...runtime, async run(job, signal) { await runtime.run(job, signal); await release.promise; } } } };
+  });
+  const context = await browser.newContext({ viewport: { width, height: 1000 }, locale: width === 1440 ? "en-US" : "th-TH", acceptDownloads: true }), text = width === 1440 ? en : th;
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url()); if (url.origin !== "http://localhost:3099") { await route.abort(); return; }
+    const headers = { ...request.headers(), host: "localhost:3099" }, path = url.pathname + url.search;
+    const response = request.method() !== "POST" ? await f.request(path, request.method(), undefined, headers) : request.headers()["content-type"] === "application/octet-stream" ? await f.raw(path, new Uint8Array(request.postDataBuffer()!).buffer, headers) : await f.request(path, "POST", request.postDataJSON(), headers);
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+  const page = await context.newPage(), errors: string[] = []; page.on("pageerror", error => errors.push(error.message));
+  try {
+    await page.goto("http://localhost:3099/s16/chat/conversation"); await page.waitForFunction(() => document.querySelector<HTMLButtonElement>(".composer-actions button")?.disabled === false);
+    const pdf = width === 1440;
+    expect(await page.locator('input[type="file"]').getAttribute("accept")).toContain(pdf ? ".pdf" : ".png");
+    await page.locator('input[type="file"]').setInputFiles({ name: pdf ? "notes.pdf" : "image.png", mimeType: pdf ? "application/pdf" : "image/png", buffer: Buffer.from(pdf ? launchPdf() : fixtureImage("metadata-polyglot.png")) });
+    await page.getByText(text["s16.files.validating"], { exact: true }).waitFor();
+    expect(await page.getByRole("button", { name: text["s16.chat.send"], exact: true }).isDisabled()).toBe(true);
+    expect(await page.locator(".upload-chip progress").getAttribute("value")).toBeNull(); release.resolve();
+    await page.getByText(text["s16.files.ready"], { exact: true }).waitFor();
+    await page.locator(".upload-chip summary").click();
+    expect(await page.locator(".upload-chip").innerText()).toContain(pdf ? "text/plain" : "2048");
+    const input = f.service.files!.journal.all<FileUpload>().find(row => row.contract === "s16-file-upload/v1")!;
+    f.script = [...(pdf ? [{ type: "tool_call" as const, id: "read", name: "file_read", arguments: { id: input.id, offset: 0 } }] : []), { type: "tool_call", id: "write", name: "file_create", arguments: { name: "brief.md", text: "# Brief\nValidated file result.\n" } }];
+    await page.getByRole("textbox", { name: text["s16.chat.prompt"], exact: true }).fill("Create a downloadable Markdown brief from the attached file");
+    await page.getByRole("button", { name: text["s16.chat.send"], exact: true }).click();
+    const label = text["s16.artifact.preview"].replace("{name}", "brief.md"); await page.getByRole("button", { name: label, exact: true }).waitFor();
+    await page.getByRole("button", { name: label, exact: true }).click(); await page.locator(".preview-text").waitFor();
+    expect(await page.locator(".preview-text").innerText()).toContain("Validated file result.");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true); expect(errors).toEqual([]);
+  } finally { release.resolve(); await context.close(); await f.close(); }
 }, 30000);

@@ -68,7 +68,8 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "aac2fc0afdfe53f0a5076cb9d3edfaf33d280581";
+import { SCHWAY_PINNED_REVISION } from "../schway-version";
+export { SCHWAY_PINNED_REVISION } from "../schway-version";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
 /** SHA-256 of `vendor/schway-1.0.0-rc.2-aac2fc0.tgz`, the tested artifact. */

@@ -96,7 +96,7 @@ export interface ConversationEvent {
   code: string | null;
 }
 /** A service-observed tool invocation, never a model-authored citation or claim of success. */
-export interface ConversationEvidence { id: string; tool: string; inputHash: string; outputHash: string; content: string; isError: boolean; at: number }
+export interface ConversationEvidence { kind?: "input"; id: string; tool: string; inputHash: string; outputHash: string; content: string; isError: boolean; at: number }
 /** Durable request lifecycle. Claimed interrupted work is reconcile-only and is never automatically replayed. */
 export interface ConversationRequest {
   receipt: ConversationReceipt; command: ConversationCommand; owner: ConversationOwner;
@@ -116,6 +116,7 @@ export interface ConversationRequest {
   /** Durable ingress event sequence: interpretation cannot use subsequently authored context. */
   contextSequence?: number;
   memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
+  inputEvidence?: ConversationEvidence[];
   fileInputs?: FileReceipt[];
   artifacts?: FileArtifact[];
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
@@ -154,7 +155,7 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   guardInterpretation?: (work: WorkContext, request: unknown) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
-  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }

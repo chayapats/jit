@@ -9,6 +9,7 @@ import type { EffectBounds } from './effects';
 import type { GithubRuntimeConfig } from './github/runtime';
 import type { RuntimeDisclosureConfig } from './disclosure/runtime';
 import type { S15CompositionOptions } from './composition';
+import { validateBinaryFileConfig, type BinaryFileConfig } from '../s16/files/runtime';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
@@ -21,7 +22,7 @@ export interface S15RuntimeConfig {
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   disclosure?: RuntimeDisclosureConfig;
   /** Explicit S16 file workflow and additive protected custody. Requires DATA15 configuration. */
-  files?: boolean;
+  files?: boolean | BinaryFileConfig;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -60,7 +61,8 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (!value || value.contract !== 's15-runtime/v1' || typeof value.directory !== 'string' || !isAbsolute(value.directory) || typeof value.installationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.installationId) || new URL(value.origin).origin !== value.origin || !Array.isArray(value.catalog) || !Array.isArray(value.models) || !value.models.length) throw new AppError('invalid_s15_config');
   if (!value.models.some(r => equal(r.selection, value.conversation.selection) && r.modelId === value.conversation.route.model && r.provider === value.conversation.route.provider)) throw new AppError('route_unavailable');
   readS15VmPool(value.vm);
-  if (value.files !== undefined && typeof value.files !== 'boolean' || value.files && !value.disclosure) throw new AppError('invalid_s15_config');
+  if (value.files !== undefined && typeof value.files !== 'boolean') validateBinaryFileConfig(value.files);
+  if (value.files && !value.disclosure) throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }
