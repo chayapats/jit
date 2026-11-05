@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
@@ -139,6 +139,46 @@ export class JitClient {
     if (generation !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, "response");
     if (offset !== artifact.bytes || checksum !== artifact.sha256) return invalid();
     return bytes;
+  }
+  /** Same-origin, script-free HTML viewer URL for an iframe; the server refuses any other request context. */
+  artifactPreviewUrl(artifact: FileArtifact): string { return `${this.artifactUrl(artifact.requestId, artifact.id)}/preview`; }
+  /** Current library page. Reading never changes an artifact, its sources or its publication. */
+  async artifacts(query: ClientArtifactQuery, signal?: AbortSignal): Promise<ClientArtifactList> {
+    const params = new URLSearchParams();
+    if (query.q) params.set("q", query.q); if (query.type !== "all") params.set("type", query.type);
+    if (query.conversation !== null) params.set("conversation", id(query.conversation)); if (query.before !== null) params.set("before", query.before);
+    const data = await this.call(`/artifacts${params.size ? "?" + params : ""}`, "GET", undefined, signal);
+    const echo = record(data) ? data.query : null;
+    if (!record(data) || data.contract !== "s16-client-artifacts/v1" || !record(echo) || echo.q !== query.q || echo.type !== query.type || echo.conversation !== query.conversation || echo.before !== query.before || data.limit !== 50
+      || !Array.isArray(data.items) || data.items.length > 50 || data.items.some(item => !this.artifactItem(item)) || data.next !== null && (typeof data.next !== "string" || !/^\d{1,16}\.[A-Za-z0-9_-]{1,128}$/.test(data.next))) return invalid();
+    return data as unknown as ClientArtifactList;
+  }
+  /** Fresh provenance/revision detail for one committed artifact. */
+  async artifact(artifactId: string, signal?: AbortSignal): Promise<ClientArtifactDetail> {
+    const data = await this.call(`/artifacts/${id(artifactId)}`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-artifact/v1" || !this.artifactItem(data.item) || (data.item as unknown as ClientArtifactItem).artifact.id !== artifactId || !["escaped_text", "sandboxed_html"].includes(data.preview as string)
+      || !Array.isArray(data.inputs) || data.inputs.length > 8 || data.inputs.some(input => !record(input) || !identifier(input.id) || typeof input.name !== "string" || typeof input.mime !== "string" || !count(input.bytes) || !sha256(input.sha256) || input.origin !== null && !identifier(input.origin))
+      || !Array.isArray(data.revisions) || data.revisions.length > 256 || data.revisions.some(item => !this.artifactItem(item))) return invalid();
+    return data as unknown as ClientArtifactDetail;
+  }
+  /**
+   * Explicitly copy one exact committed artifact into a ready input of its conversation. It starts no work;
+   * the owner still sends a message. An unknown outcome may resend the same command: the service returns the
+   * original input for the same request ID and refuses a changed payload.
+   */
+  async artifactInput(artifactId: string, command: ClientArtifactInputCommand, signal?: AbortSignal): Promise<FileUpload> {
+    const input = structuredClone(command); id(artifactId); id(input.requestId); id(input.conversationId);
+    if (!sha256(input.sha256)) throw new JitClientError("invalid_file_metadata", null, "not_sent", input.requestId);
+    const upload = this.uploadResponse(await this.call(`/artifacts/${artifactId}/inputs`, "POST", input, signal, input.requestId), input.requestId);
+    if (upload.conversationId !== input.conversationId || upload.state === "ready" && upload.receipt?.sha256 !== input.sha256) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return upload;
+  }
+  private artifactItem(value: unknown): boolean {
+    if (!record(value) || !record(value.artifact)) return false;
+    const artifact = value.artifact;
+    return artifact.contract === "s16-file-artifact/v1" && identifier(artifact.id) && sha256(artifact.sha256) && identifier(artifact.requestId) && identifier(artifact.workId) && identifier(artifact.conversationId) && artifact.conversationId === value.conversationId
+      && typeof artifact.name === "string" && !!artifact.name && ["text/plain", "text/markdown", "text/csv", "text/html"].includes(artifact.mime as string) && Number.isSafeInteger(artifact.bytes) && (artifact.bytes as number) > 0 && count(artifact.createdAt)
+      && typeof value.label === "string" && Array.from(value.label).length <= 120 && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1 && (value.parent === null || identifier(value.parent)) && Number.isSafeInteger(value.inputs) && (value.inputs as number) >= 1;
   }
   /** Owner memory search; reading never changes retrieval, ranking or retention. */
   async memory(query: ClientMemoryQuery, signal?: AbortSignal): Promise<ClientMemoryList> {

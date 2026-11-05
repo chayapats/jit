@@ -7,6 +7,14 @@ import { binaryLimits } from "./files/parser";
 import type { FileStore } from "./files/store";
 import type { FileUploadCommand } from "./files/types";
 import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from "./memory";
+import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
+
+/**
+ * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
+ * scripts, forms, popups, top navigation and downloads, and gives the document no access to service cookies
+ * or the parent; every fetch directive is closed except inline style and inline data images.
+ */
+export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
 export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor> }): (request: Request) => Promise<Response> {
@@ -37,7 +45,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
-      artifacts: files && app.options.files ? { available: true, preview: "escaped_text" } : { available: false, code: "artifact_unavailable" },
+      artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" } };
   };
   return async request => {
@@ -87,15 +95,37 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
           finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
         }
       }
-      const artifact = /^\/api\/s16\/client\/requests\/([A-Za-z0-9_-]{1,128})\/artifacts\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
+      const library = /^\/api\/s16\/client\/artifacts(?:\/([A-Za-z0-9_-]{1,128})(?:\/(inputs))?)?$/.exec(url.pathname);
+      if (library) {
+        if (!options.files || !app.options.files) throw new AppError("artifact_unavailable", 503);
+        if (request.method === "GET" && !library[1]) return json(listArtifacts(app, options.files, currentOwner(), parseArtifactQuery(url.searchParams)));
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !library[2]) return json(artifactDetail(app, options.files, currentOwner(), library[1]!));
+        if (request.method === "POST" && library[2] === "inputs") {
+          // Body streaming is an async boundary: the committed/current check uses the owner/CSRF after it.
+          const input = await body(request); exact(input, ["requestId", "conversationId", "sha256"]);
+          const owner = currentOwner(), current = artifactDetail(app, options.files, owner, library[1]!).item;
+          if (input.conversationId !== current.conversationId) throw new AppError("outside_scope", 403);
+          if (input.sha256 !== current.artifact.sha256) throw new AppError("artifact_unavailable", 409);
+          return json(options.files.adoptArtifact(owner, { requestId: input.requestId as string, conversationId: current.conversationId, artifact: { id: current.artifact.id, sha256: current.artifact.sha256 } }), 201);
+        }
+        throw new AppError("method_rejected", 405);
+      }
+      const artifact = /^\/api\/s16\/client\/requests\/([A-Za-z0-9_-]{1,128})\/artifacts\/([A-Za-z0-9_-]{1,128})(\/preview)?$/.exec(url.pathname);
       if (artifact && request.method === "GET") {
         if (!options.files || !app.options.files) throw new AppError("artifact_unavailable", 503);
         if (url.search) throw new AppError("invalid_body");
+        // The HTML viewer is only a same-origin iframe navigation; it is never a script-readable response.
+        if (artifact[3] && (request.headers.get("sec-fetch-dest") !== "iframe" || request.headers.get("sec-fetch-site") !== "same-origin" || request.headers.get("sec-fetch-mode") !== "navigate")) throw new AppError("preview_context_rejected", 403);
         const owner = currentOwner(), row = app.view(owner, artifact[1]!);
         const committed = row.result !== null && row.state === "completed" ? row.artifacts?.find(item => item.id === artifact[2]) : null;
         if (!committed) throw new AppError("artifact_unavailable", 409);
         const output = options.files.artifact(owner, committed.id);
         if (output.artifact.sha256 !== committed.sha256 || output.artifact.workId !== row.authority?.id || output.artifact.requestId !== row.receipt.rootRequestId) throw new AppError("artifact_unavailable", 409);
+        if (artifact[3]) {
+          if (committed.mime !== "text/html") throw new AppError("preview_unavailable", 409);
+          return new Response(new Uint8Array(output.bytes).buffer, { headers: { "Content-Type": "text/html; charset=utf-8", "Content-Length": String(committed.bytes), "Content-Security-Policy": artifactPreviewPolicy, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin", "Permissions-Policy": "camera=(), microphone=(), geolocation=(), display-capture=(), clipboard-read=(), clipboard-write=()", "X-Content-SHA256": committed.sha256, Vary: "Cookie" } });
+        }
         const name = encodeURIComponent(committed.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16).toUpperCase());
         return new Response(new Uint8Array(output.bytes).buffer, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(committed.bytes), "Content-Disposition": `attachment; filename="artifact.txt"; filename*=UTF-8''${name}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Content-Security-Policy": "default-src 'none'; sandbox", "Referrer-Policy": "no-referrer", "X-Content-SHA256": committed.sha256, Vary: "Cookie" } });
       }
