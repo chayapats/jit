@@ -1,14 +1,20 @@
 import type { HostClock, HostRunUsage, Model, ToolDefinition } from "schway/host";
 import type { ActionRef, ActionSlip, ApprovalInput, Observation, PendingDecisionInput } from "../policy";
+import type { FileArtifact, FileReceipt, FileReference } from "../../s16/files/types";
 
 /** Authenticated ordinary text only. Attachments/history are data supplied separately by trusted adapters. */
-export interface ConversationCommand {
+export interface ConversationTextCommand {
   contract: "s15-conversation/v1";
   requestId: string;
   conversationId: string;
   text: string;
   continuation: { requestId: string; revision: number } | null;
 }
+/** Explicit file-bearing ingress. Only immutable ready receipts are accepted; bytes confer no authority. */
+export interface ConversationFileCommand extends Omit<ConversationTextCommand, "contract" | "continuation"> {
+  contract: "s16-conversation/v2"; continuation: null; files: readonly FileReference[];
+}
+export type ConversationCommand = ConversationTextCommand | ConversationFileCommand;
 /** Exact owner decision posted from a reviewed slip. It names one action revision and hash; it is never model output. */
 export interface ConversationDecisionCommand {
   contract: "s15-conversation-decision/v1";
@@ -67,6 +73,8 @@ export interface ConversationPolicy<OwnerActor, WorkContext> {
 export interface ConversationTool {
   access: "read" | "reversible_write" | "effect";
   definition: ToolDefinition;
+  /** Host-owned bounded evidence projection; outputHash still binds the complete actual tool response. */
+  evidenceContent?: (content: string) => string;
 }
 /** Work-scoped VM/broker session. Its tools must guard actual I/O after waits and retain their own effect claims. */
 export interface ConversationTools {
@@ -108,6 +116,8 @@ export interface ConversationRequest {
   /** Durable ingress event sequence: interpretation cannot use subsequently authored context. */
   contextSequence?: number;
   memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
+  fileInputs?: FileReceipt[];
+  artifacts?: FileArtifact[];
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   /** Usage evidence of the latest interpretation run, kept on failure too. Absent before MODEL15-02. */
   interpretationUsage?: HostRunUsage;
@@ -132,6 +142,7 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   tools: ConversationToolPort<WorkContext>;
   nativeDirectory: string;
   memory?: ConversationMemoryPort<WorkContext>;
+  files?: ConversationFilePort<OwnerActor, WorkContext>;
   clock?: HostClock;
   model?: Model;
   /** Optional separate scripted interpreter; production uses the preapproved public host auth route. */
@@ -146,4 +157,11 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
+}
+/** Protected file integration. First-slice file work does not retain/retrieve memory or interpreter history. */
+export interface ConversationFilePort<OwnerActor, WorkContext> {
+  accept(actor: OwnerActor, command: ConversationFileCommand): FileReceipt[];
+  guard(work: WorkContext, request: ConversationRequest): void;
+  open(work: WorkContext, request: ConversationRequest, input: Parameters<ConversationToolPort<WorkContext>["open"]>[1]): Promise<ConversationTools>;
+  complete(work: WorkContext, request: ConversationRequest, evidence: readonly ConversationEvidence[]): FileArtifact[];
 }

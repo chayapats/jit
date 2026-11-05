@@ -65,7 +65,7 @@ export interface BuildOptions {
 }
 
 /** Packaged entries. `ops/package` is imported by the service lifecycle; `vendor/` holds the pinned engine tarball. */
-const packagedEntries = ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor"] as const;
+const packagedEntries = ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor", "LICENSE", "NOTICE", "third_party"] as const;
 const requiredFiles = ["package.json", "bun.lock", "src/main.ts", "ops/package/service-config.ts", "ops/package/systemd/jit.service"] as const;
 const excluded = (path: string) => /(^|\/)(node_modules|\.local|\.git)(\/|$)/.test(path) || /(^|\/)\.DS_Store$/.test(path);
 

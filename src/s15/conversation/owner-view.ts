@@ -20,6 +20,7 @@ export interface ConversationOwnerRow {
   needsYou: ConversationNeedsYou | null;
   slips: ActionSlip[];
   memory: ConversationRequest["memory"] | null;
+  files?: { inputs: NonNullable<ConversationRequest["fileInputs"]>; artifacts: NonNullable<ConversationRequest["artifacts"]> };
   /** The owner's latest clarification reply when it differs from the root message; owner bytes, not model text. */
   reply: string | null;
   /** Material clarification hold only: issue references taken from the owner's own original bytes. They are reply labels, not a selection. */
@@ -77,6 +78,7 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       scopeLine: request.authority && request.intent.scope ? { authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
       result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, memory: request.memory ?? null, question,
+      ...(request.fileInputs ? { files: { inputs: request.fileInputs, artifacts: request.result === null ? [] : request.artifacts ?? [] } } : {}),
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
       decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
 }

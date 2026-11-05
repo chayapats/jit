@@ -24,9 +24,9 @@ The path and posted conversation identity must match. Query parameters are rejec
 
 ## Capabilities and known limits
 
-This revision supports text messages, current control progress, snapshots, original-send recovery, stop and exact decisions where the actual policy ports are composed. `liveSteering` is false. Uploads and immutable artifact delivery are explicitly unavailable with stable reason codes. The current conversation drain can retain new ingress while another request runs; this adapter does not claim concurrent run scheduling, token streaming or targeted live steering. Those need their own supported execution/ordering contract.
+This revision supports text messages, current control progress, snapshots, original-send recovery, stop and exact decisions where the actual policy ports are composed. `liveSteering` is false. Uploads and immutable artifact delivery remain unavailable unless the explicit [file composition](s16-files-v1.md) is enabled; that versioned seam adds UTF-8 receipts, file-bearing messages and committed immutable downloads. The current conversation drain can retain new ingress while another request runs; this adapter does not claim concurrent run scheduling, token streaming or targeted live steering. Those need their own supported execution/ordering contract.
 
-Future file-bearing messages, upload receipts and artifact collection/publication require versioned contracts and current disclosure/input custody. A filename/path embedded in model text is not a file. The existing result library is not recast as immutable artifacts. Rendering the React shell and exposing more capabilities are subsequent deliveries; this headless slice does not claim new UI.
+File-bearing messages, upload receipts and artifact collection/publication use the separate [S16 file contract](s16-files-v1.md) and current disclosure/input custody. A filename/path embedded in model text is not a file. The existing result library is not recast as immutable artifacts. The first React renderer is explicitly selected at `/s16` on S15; API16-01 itself remains the headless contract foundation.
 
 ## Client continuity
 

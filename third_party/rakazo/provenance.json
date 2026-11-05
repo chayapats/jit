@@ -1,0 +1,23 @@
+{
+  "contract": "jit.upstream-provenance/v1",
+  "files": [
+    {
+      "repository": "https://github.com/elie222/rakazo",
+      "commit": "abf3c08145a05cba92a912d6c24fdfb5f569d0e0",
+      "source": "packages/contracts/src/attachments.ts",
+      "sha256": "45fabe9f10a44bec61e58e33b301db5efd433802478034ce3fed02815204c20b",
+      "destination": "src/s16/client/artifact-preview.ts",
+      "license": "Apache-2.0",
+      "modifications": "Extracted MIME preview classification only. No upstream acceptance limits, upload policy or authority."
+    },
+    {
+      "repository": "https://github.com/elie222/rakazo",
+      "commit": "abf3c08145a05cba92a912d6c24fdfb5f569d0e0",
+      "source": "apps/web/src/components/ArtifactFileCard.tsx",
+      "sha256": "1ba299e9e0ae636e460b9301c6c332a007d352f9a33db4407701468754013132",
+      "destination": "src/s16/web/ArtifactFileCard.tsx",
+      "license": "Apache-2.0",
+      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; text-only protected inspector."
+    }
+  ]
+}

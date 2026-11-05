@@ -9,13 +9,14 @@ const applicationId = 0x4a495435;
 /**
  * Fresh opt-in protected conversation journal, outside guest/native/recovery images. Never opens an
  * S14/legacy database for writing. One OS-backed process lock makes boot recovery exclusive; receipts,
- * queues, claims, evidence and events share synchronous FULL SQLite transactions. No migration/import.
+ * queues, claims, evidence and events share synchronous FULL SQLite transactions. File opt-in stamps
+ * format 2 with its first committed command; no S14/legacy state is imported.
  */
 export class ConversationStore {
   readonly db!: Database;
   #lock: Database;
   #closed = false;
-  constructor(readonly path: string, installationId: string, create = false) {
+  constructor(readonly path: string, installationId: string, create = false, readonly fileContract = false) {
     identity(installationId);
     const existing = existsSync(path);
     if (existing) {
@@ -24,7 +25,7 @@ export class ConversationStore {
       const header = Buffer.alloc(100), fd = openSync(path, "r");
       let length: number;
       try { length = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
-      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || header.readUInt32BE(60) !== 1) throw new AppError("conversation_store_incompatible", 409);
+      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && header.readUInt32BE(60) === 2)) throw new AppError("conversation_store_incompatible", 409);
     } else if (!create) throw new AppError("continuity_unavailable", 503);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lockPath = `${path}.runtime-lock.sqlite`;
@@ -59,6 +60,12 @@ export class ConversationStore {
   }
   /** Synchronous writer boundary; no model, tool or async callback is permitted inside it. */
   transaction<T>(action: () => T): T { return this.db.transaction(action).immediate(); }
+  /** Stamp the incompatible file-publication dependency in the same transaction as the first file
+   * command. Older binaries refuse format 2 even if an earlier composition manifest is restored. */
+  requireFileContract(): void {
+    if (!this.fileContract || !this.db.inTransaction) throw new AppError("files_required", 503);
+    this.db.exec("PRAGMA user_version=2");
+  }
   /** Reads one exact retained request; absence never creates a new authority or queue. */
   request(requestId: string): ConversationRequest {
     identity(requestId);

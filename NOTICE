@@ -5,3 +5,16 @@ Copyright (c) 2026 Schway contributors
 Licensed under the MIT License. The permission notice is included in LICENSE.
 
 Jit-specific product documents and specifications are maintained in this repository.
+
+Jit contains original MIT-licensed code and selected Apache-2.0 adaptations.
+
+Rakazo
+Copyright 2026 Rakazo contributors
+https://github.com/elie222/rakazo
+Licensed under Apache License 2.0, included at third_party/rakazo/LICENSE.
+Pinned sources and local modifications: third_party/rakazo/provenance.json.
+No upstream endorsement is implied.
+
+React, React DOM and Scheduler
+Copyright Meta Platforms, Inc. and affiliates.
+MIT licenses are included in third_party/react/.

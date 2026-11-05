@@ -5,7 +5,7 @@ import type { ConversationPolicyWork } from "./policy-port";
 import type { ConversationToolPort } from "./types";
 import { canonical, content, digest } from "./validation";
 
-type Metadata = Pick<ToolDefinition, "name" | "description" | "inputSchema">;
+type Metadata = Pick<ToolDefinition, "name" | "description" | "inputSchema"> & { evidenceContent?: (content: string) => string };
 /** Protected read implementation must call dispatch with the actual final payload after all waits.
  * Fulfillment certifies this read's transport ended. A rejection after dispatch leaves uncertainty.
  * No client/model effect hint registers this handler or substitutes for POLICY's ReadHandler. */
@@ -31,7 +31,7 @@ export function createConversationPolicyTools(host: S15PolicyService, registrati
   const registry = registrations.map(entry => ({ ...entry, inputSchema: structuredClone(entry.inputSchema), ...(entry.access === "read" ? { resource: structuredClone(entry.resource), upperBound: structuredClone(entry.upperBound), fences: structuredClone(entry.fences) } : {}) }));
   return { async open(work, input) {
     input.guard(); let sequence = 0;
-    return { tools: registry.filter(entry => input.mode === "execute" || entry.access === "read").map(entry => ({ access: entry.access,
+    return { tools: registry.filter(entry => input.mode === "execute" || entry.access === "read").map(entry => ({ access: entry.access, ...(entry.evidenceContent ? { evidenceContent: entry.evidenceContent } : {}),
       definition: { name: entry.name, description: entry.description, inputSchema: entry.inputSchema, execution: "exclusive", effect: entry.access === "read" ? "read-only" : "mutating",
         async execute(value) {
           input.guard(); const slot = `ct_${digest(`${work.authority.id}:${++sequence}`)}`;

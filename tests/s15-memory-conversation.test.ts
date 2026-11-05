@@ -7,7 +7,7 @@ import { createTeamResourceTools, type TeamContext } from "../src/s15/team";
 import type { ConversationPolicyWork } from "../src/s15/conversation/policy-port";
 import type { ConversationToolPort } from "../src/s15/conversation/types";
 import { createConversationMemory } from "../src/s15/memory";
-import type { ConversationCommand } from "../src/s15/conversation/types";
+import type { ConversationCommand, ConversationTextCommand } from "../src/s15/conversation/types";
 import { zero } from "../src/s15/policy/validation";
 import { createS15WebHandler, s15ConversationPort } from "../src/s15/web";
 import { ref, selection } from "./fixtures/s15-policy";
@@ -16,7 +16,7 @@ import { teamMemoryFixture } from "./fixtures/s15-team-memory";
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
 let serial = 0;
-const command = (text: string): ConversationCommand => ({ contract: "s15-conversation/v1", requestId: `chat_${serial++}`, conversationId: "conversation", text, continuation: null });
+const command = (text: string): ConversationTextCommand => ({ contract: "s15-conversation/v1", requestId: `chat_${serial++}`, conversationId: "conversation", text, continuation: null });
 
 function fixture(limits = { modelCalls: 3, toolCalls: 2 }) {
   const f = teamMemoryFixture(); cleanup.push(() => f.cleanup());
