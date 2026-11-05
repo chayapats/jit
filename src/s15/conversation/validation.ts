@@ -12,9 +12,16 @@ export function content(value: unknown, max = 16384): asserts value is string {
 /** Reject authority-bearing extra keys; exact command bytes remain the dedupe identity. */
 export function command(value: unknown): asserts value is ConversationCommand {
   canonical(value);
-  exact(value, ["contract", "requestId", "conversationId", "text", "continuation"]);
-  if (value.contract !== "s15-conversation/v1") throw new AppError("invalid_contract");
-  identity(value.requestId); identity(value.conversationId); content(value.text);
+  exact(value, Object.keys(value && typeof value === "object" ? value : {}));
+  const files = value.contract === "s16-conversation/v2";
+  exact(value, ["contract", "requestId", "conversationId", "text", "continuation", ...(files ? ["files"] : [])]);
+  if (!files && value.contract !== "s15-conversation/v1") throw new AppError("invalid_contract");
+  identity(value.requestId); identity(value.conversationId);
+  if (!files || value.text !== "") content(value.text);
+  if (files) {
+    if (value.continuation !== null || !Array.isArray(value.files) || !value.files.length || value.files.length > 8) throw new AppError("invalid_body");
+    for (const file of value.files) { exact(file, ["id", "sha256"]); identity(file.id); if (typeof file.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new AppError("invalid_body"); }
+  }
   if (value.continuation !== null) { exact(value.continuation, ["requestId", "revision"]); identity(value.continuation.requestId); integer(value.continuation.revision, 1); }
 }
 /** Strict JSON body parser rejects duplicate keys before JSON.parse discards their provenance. */

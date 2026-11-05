@@ -8,7 +8,7 @@ import { groundConversationIntent } from "./intent";
  * deterministic/original-byte ceiling. This never installs policy or approves an effect. The returned
  * purpose/resources/access are frozen before any retrieval/tool and cannot be changed by the work loop.
  */
-export function freezeInterpretation(raw: string, grounded: ConversationIntent, catalog: { purposes: readonly string[]; resources: readonly string[]; selectedSubjects?: readonly string[] }): ConversationIntent {
+export function freezeInterpretation(raw: string, grounded: ConversationIntent, catalog: { purposes: readonly string[]; resources: readonly string[]; selectedSubjects?: readonly string[]; fileOutput?: boolean }): ConversationIntent {
   const proposal = parseCommandJson(raw);
   exact(proposal, ["intent", "purposeId", "resourceIds", "access", "subject"]);
   if (!["answer", "accept", "inspect", "execute", "ambiguous"].includes(proposal.intent as string) || !["read", "reversible_write", "effect"].includes(proposal.access as string)) throw new AppError("outside_scope");
@@ -23,7 +23,7 @@ export function freezeInterpretation(raw: string, grounded: ConversationIntent, 
   const explicitIssues = [...new Set([...grounded.instruction.replace(/"[^"\n]*"|`[^`]*`|^\s*>.*$/gm, " ").matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `issue:${match[1]}`))];
   if (explicitIssues.length > 1 && grounded.kind === "ambiguous") kind = "ambiguous";
   // Re-ground retained original bytes too: requests persisted before hold metadata existed are safe.
-  const hold = grounded.hold ?? groundConversationIntent(grounded.instruction).hold;
+  const hold = grounded.hold ?? groundConversationIntent(grounded.instruction, { fileOutput: catalog.fileOutput === true }).hold;
   if (hold) kind = "inspect";
   if (grounded.subject && proposal.subject && grounded.subject !== proposal.subject) throw new AppError("outside_scope");
   if (explicitIssues.length === 0 && proposal.subject && !catalog.selectedSubjects?.includes(proposal.subject)) throw new AppError("material_ambiguity");

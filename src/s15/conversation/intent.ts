@@ -5,7 +5,7 @@ import type { ConversationIntent } from "./types";
  * Quotes, fenced code and forwarded lines are inert. Known conditional/mixed scope remains read-only;
  * unknown wording may use isolated interpretation. This is not a universal language classifier.
  */
-export function groundConversationIntent(original: string): ConversationIntent {
+export function groundConversationIntent(original: string, options: { fileOutput?: boolean } = {}): ConversationIntent {
   const instruction = original.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, " ")
     .replace(/^\s*>.*$/gm, " ").replace(/"(?:\\.|[^"\\])*"|“[^”]*”|‘[^’]*’|'[^'\n]*'|`[^`]*`/g, " ").trim();
   let text = instruction.toLowerCase();
@@ -18,6 +18,10 @@ export function groundConversationIntent(original: string): ConversationIntent {
   if (/(?:\bif\b|\bunless\b|\bwhen\b|only after|ถ้า|หาก|เมื่อ)/u.test(text)) return { ...result("ambiguous"), hold: "conditional" };
   if (issues.length > 1 && /^(?:implement|fix|start|work|ทำ|เริ่ม|แก้)/u.test(text)) return result("ambiguous");
   if (/^(?:inspect|check|review|recommend|report|read|list|look\s+(?:at|up)|find|search|analy[sz]e|explain|summari[sz]e|ตรวจ|ดู|แนะนำ|อ่าน|ค้นหา|สรุป|วิเคราะห์|อธิบาย)/u.test(text)) {
+    // Only v2's exclusively file-scoped tool port may interpret an explicit terminal request for a
+    // local deliverable as execution. Conditional, negated, quoted and other mixed effects retain holds.
+    const deliverable = options.fileOutput ? /(?:(?:\band(?:\s+then)?\b|\bthen\b)\s*(?:create|write)\s+(?:(?:a|an)\s+)?(?:downloadable\s+)?(?:markdown\s+|text\s+|csv\s+)?(?:brief|summary|report|file)(?:\s+file)?|(?:และจากนั้น|แล้ว|และ)\s*(?:สร้าง|เขียน)\s*ไฟล์(?:\s*(?:markdown|csv|txt|ข้อความ|สรุป|รายงาน))?(?:\s*(?:สำหรับดาวน์โหลด|ให้ดาวน์โหลด|ที่ดาวน์โหลดได้))?)[.!\s]*$/u.exec(text) : null;
+    if (deliverable) { const prior = groundConversationIntent(text.slice(0, deliverable.index)); if (prior.kind === "inspect" && !prior.hold) return result("execute"); }
     // An explicit subsequent mutation is material scope, not an inspection method.
     if (/(?:\band\b|\band then\b|\bthen\b|และจากนั้น|แล้ว|และ)\s*(?:implement|fix|write|create|delete|publish|ทำ|แก้|สร้าง|ลบ)/u.test(text)) return { ...result("ambiguous"), hold: "mixed_scope" };
     return result("inspect");

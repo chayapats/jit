@@ -976,13 +976,18 @@ test("release and dependency modes are canonical and sealed; a nested 0600 membe
   const l = layout();
   // A source checkout with a restrictive nested member is canonicalized by the build.
   const src = join(l.root, "checkout");
-  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
+  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "ops/box", "vendor", "LICENSE", "NOTICE", "third_party"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
   chmodSync(join(src, "src", "config.ts"), 0o600);
   chmodSync(join(src, "src", "ops"), 0o700);
+  chmodSync(join(src, "third_party", "rakazo", "LICENSE"), 0o600);
   const out = join(l.root, "canonical");
   buildPackage({ srcDir: src, outDir: out, engineContract: "jit.schway.bridge/v1", engineRevision: null });
   expect(lstatSync(join(out, "src", "config.ts")).mode & 0o777).toBe(0o644);
   expect(lstatSync(join(out, "src", "ops")).mode & 0o777).toBe(0o755);
+  expect(lstatSync(join(out, "third_party", "rakazo", "LICENSE")).mode & 0o777).toBe(0o644);
+  expect(readFileSync(join(out, "third_party", "rakazo", "LICENSE"))).toEqual(readFileSync(join(repoRoot, "third_party", "rakazo", "LICENSE")));
+  expect(readFileSync(join(out, "NOTICE"), "utf8")).toContain("Copyright (c) 2026 Schway contributors");
+  expect(readFileSync(join(out, "NOTICE"), "utf8")).toContain("Copyright 2026 Rakazo contributors");
   expect(validateArtifact(out).ok).toBe(true);
   // A release member made 0600 after the build breaks the seal.
   chmodSync(join(out, "src", "config.ts"), 0o600);

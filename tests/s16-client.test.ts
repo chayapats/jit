@@ -175,7 +175,8 @@ test("a lost clarification response recovers its exact ingress receipt and guard
   await c.bootstrap(); const root = c.prepareMessage("conversation", "Implement issue #42 or #43");
   await c.send(root); await f.service.conversation.drain(); const held = (await c.request(root.requestId)).row;
   expect(held.state).toBe("question");
-  const reply = { ...c.prepareMessage("conversation", "Select issue #42"), continuation: { requestId: root.requestId, revision: held.revision } }; lose = true;
+  const selected = c.prepareMessage("conversation", "Select issue #42"); if (selected.contract !== "s15-conversation/v1") throw Error("text clarification required");
+  const reply = { ...selected, continuation: { requestId: root.requestId, revision: held.revision } }; lose = true;
   await expect(c.send(reply)).rejects.toMatchObject({ outcome: "unknown", requestId: reply.requestId }); await f.service.conversation.drain();
   const recovered = await c.request(reply.requestId);
   expect(recovered.receipt).toMatchObject({ requestId: reply.requestId, rootRequestId: root.requestId, conversationId: "conversation" });

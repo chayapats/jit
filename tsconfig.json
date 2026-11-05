@@ -10,7 +10,8 @@
     "noImplicitOverride": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
+    "jsx": "react-jsx",
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "ops/evidence/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts", "ops/evidence/**/*.ts"]
 }

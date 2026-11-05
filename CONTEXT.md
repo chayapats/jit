@@ -38,7 +38,7 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Conversation:** A durable discussion with one or more Bot participants. Membership, a display label and an @mention do not grant execution or resource access.
 
-**Shared client (S16, API16-01):** The browser/native-safe transport and ephemeral projection state over the existing protected Jit service. It submits exact owner commands, reads currently authorized snapshots/control events, recovers the original send identity and reviews exact actions. It is not a second authority, engine or store. The first [client contract](docs/contracts/s16-client-v1.md) advertises text/tool work and exact decisions; uploads, immutable artifacts and live steering remain unavailable until their contracts land.
+**Shared client (S16, API16-01):** The browser/native-safe transport and ephemeral projection state over the existing protected Jit service. It submits exact owner commands, reads currently authorized snapshots/control events, recovers the original send identity and reviews exact actions. It is not a second authority, engine or store. The [client contract](docs/contracts/s16-client-v1.md) supports text/tool work and exact decisions. Explicit file composition additionally supports the first [UTF-8 file-to-artifact workflow](docs/contracts/s16-files-v1.md) and React `/s16` client; binary inputs, file-derived memory and live steering remain unavailable.
 
 **Work item:** A proposed or owner-requested obligation with a status, explicit completion rule, origin and evidence. A work item may involve multiple Bots and conversations without becoming a Project.
 

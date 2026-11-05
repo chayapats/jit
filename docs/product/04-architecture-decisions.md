@@ -6,6 +6,8 @@ Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S1
 
 [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md) records selective Rakazo source reuse on Jit + Schway, stack alternatives, shared-client/API boundaries, protected browser/computer integration and source/license obligations. The owner confirmed the product direction and freedom to improve stacks; React/storage/API/package choices remain engineering proposals pending their concrete slices.
 
+[ADR 0075](../adr/0075-s16-shared-protected-client.md) selects the shared protected client. [ADR 0076](../adr/0076-s16-file-custody-and-react-client.md) selects the first file-custody/publication contract and small React client, with precise binary/memory gaps and source/license obligations. Neither records complete S16 or live-host acceptance.
+
 ## S15 proposal
 
 [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) records conversational admission under standing policy, shared working resources and a control plane protected from the administrable VM. It identifies unresolved administration/destruction, browser/effect, disclosure, budget and transition proofs. Its engineering status is proposed; S15-D01–D23 are confirmed product inputs. Existing ADRs retain their historical/runtime meaning until explicit replacement contracts land.

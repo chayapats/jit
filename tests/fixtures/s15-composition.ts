@@ -10,6 +10,7 @@ import { VmSshTransport } from '../../src/s15/vm/transport';
 import type { VmManagement } from '../../src/s15/vm/types';
 import { equal, zero } from '../../src/s15/policy/validation';
 import type { PolicyInput, Ref, Rule } from '../../src/s15/policy';
+import type { RecipientApproval } from '../../src/s15/disclosure';
 import { GithubProtocolFixture, coding, repo } from './s15-github';
 import { googleFixture } from './s15-effects';
 import { recordEngine, documentRecord, taskRecord, businessRecord } from './s15-effect-browser';
@@ -42,7 +43,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   for (const source of dataSources) records.set('lineage:' + source.ref.id, { ref: source.ref, active: true });
   for (const id of ['github_service', 'google_service', 'browser_service', 'other', 'self']) records.set('recipient:' + id, { ref: ref(id), active: true });
   let uploads = 0;
-  const recipientApprovals = [...['provider', 'github_service', 'google_service', 'browser_service'].map(id => ({ recipient: ref(id), purpose: ref('purpose'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 })), { recipient: ref('provider'), purpose: ref('interpret'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 }];
+  const recipientApprovals: RecipientApproval[] = [...['provider', 'github_service', 'google_service', 'browser_service'].map(id => ({ recipient: ref(id), purpose: ref('purpose'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 })), { recipient: ref('provider'), purpose: ref('interpret'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 }];
   const files = new Map<string, Uint8Array>(), vmCalls: string[] = []; let liveVm = 0, implementations = 0, snapshots = 0;
   let managementState: 'running' | 'stopped' = 'running', cleanupConfirmed = true;
   const manager: VmManagement = { async inspect() { return { state: managementState, identity: 'fixture', boot: 'boot', cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() { managementState = 'stopped'; }, async start() { managementState = 'running'; }, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
@@ -108,6 +109,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     get now() { return now; }, advance(ms: number) { now += ms; }, set generation(v: number) { generation = v; }, set sourceLive(v: boolean) { sourceLive = v; },
     set interpretation(value: typeof interpretation) { interpretation = value; }, set cleanupConfirmed(value: boolean) { cleanupConfirmed = value; }, set script(value: typeof script) { script = value; },
     async request(path: string, method = 'GET', value?: unknown, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method, headers: { ...headers, ...supplied }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) })); },
+    async raw(path: string, body: BodyInit, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/octet-stream', ...supplied }, body })); },
     async form(path: string, fields: Record<string, string>, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded', ...supplied }, body: new URLSearchParams({ csrf, requestId: uid(), ...fields }) })); },
     async chat(text: string, commandId = uid()) { const command = { contract: 's15-conversation/v1' as const, requestId: commandId, conversationId: 'conversation', text, continuation: null }; const response = await this.request('/api/s15/conversations/conversation/messages', 'POST', command); if (response.status !== 202) throw Error(await response.text()); await service.conversation.drain(); return service.conversation.view(owner, commandId); },
     async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(proof); },

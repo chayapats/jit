@@ -12,7 +12,7 @@ import type { ConversationAuthority, ConversationCommand, ConversationDecisionCo
 const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
-  "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid"]);
+  "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
@@ -48,6 +48,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
     this.clock = options.clock ?? clock;
     if (!options.memory && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.memory')='object' LIMIT 1").get()) throw new AppError("memory_required", 503);
+    if (!options.files && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileInputs')='array' LIMIT 1").get()) throw new AppError("files_required", 503);
     // Store lifetime holds the exclusive process lock; another live worker cannot be declared lost.
     this.store.transaction(() => {
       for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='running'").all()) {
@@ -70,7 +71,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       }
       if (this.#closing) throw new AppError("conversation_unavailable", 503);
       this.store.capacity();
-      let intent = groundConversationIntent(input.text);
+      let intent = groundConversationIntent(input.text, { fileOutput: input.contract === "s16-conversation/v2" });
       let request: ConversationRequest;
       const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId: input.requestId, rootRequestId: input.continuation?.requestId ?? input.requestId, conversationId: input.conversationId, receivedAt: this.clock.now() };
       if (input.continuation) {
@@ -81,11 +82,17 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         intent = this.clarification(request.command, input, intent);
       } else {
         request = { receipt, command: input, interpretationRequest: input, owner, revision: 0, intent, state: "held", code: null, authority: null, phase: "interpretation", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null };
+        if (input.contract === "s16-conversation/v2") {
+          if (!this.options.files) throw new AppError("upload_unavailable", 503);
+          this.store.requireFileContract();
+          request.fileInputs = this.options.files.accept(actor, input); request.artifacts = [];
+          if (input.text === "") intent = { kind: "accept", subject: null, instruction: "" };
+        }
         this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(input.requestId, input.conversationId, request.state, canonical(request));
       }
       request.intent = intent; request.interpretationRequest = input; request.revision++;
       const exactDecision = ownerDecision(input.text);
-      if (exactDecision && input.continuation === null) {
+      if (exactDecision && input.continuation === null && !request.fileInputs) {
         try { applyOwnerDecision(this, actor, request, exactDecision); }
         catch (error) { request.state = "held"; request.code = safeCode(error); }
       }
@@ -198,7 +205,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         slips = [...slips, ...next];
       }
       rememberActionPresentation(this, request, slips);
-    } catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips: [] }; }
+    } catch (error) { return { ...projected, ...(request.fileInputs ? { artifacts: [] } : {}), result: null, code: safeCode(error), evidence: [], slips: [] }; }
     if (projected.decision && projected.decision.observation === null) {
       const exact = projected.decision.action;
       const observed = slips.find(slip => slip.action.id === exact.id && slip.action.revision === exact.revision && slip.action.actionHash === exact.actionHash)?.observation;
@@ -211,7 +218,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     }
     if (request.result !== null) {
       try { this.publication(request); }
-      catch (error) { return { ...projected, result: null, code: safeCode(error), evidence: [], slips }; }
+      catch (error) { return { ...projected, ...(request.fileInputs ? { artifacts: [] } : {}), result: null, code: safeCode(error), evidence: [], slips }; }
     }
     return { ...projected, evidence: request.state === "completed" ? this.store.evidence(requestId) : [], slips };
   }
@@ -235,6 +242,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (request.state !== "completed" || request.result === null || !request.authority) throw new AppError("result_unavailable", 409);
     const work = this.options.policy.open(request.authority);
     this.options.policy.guard(work, "publication");
+    if (request.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, request); }
     if (request.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, request.receipt.rootRequestId); }
   }
   /** Stops only this request. Unknown guest/effect claims remain retained by their owning service. */
@@ -242,6 +250,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     this.store.transaction(() => {
       const request = this.store.request(requestId); this.owner(actor, request);
       if (request.state === "stopped") return;
+      // Versioned file publication is already delivered if its commit won this race. Source withdrawal
+      // has its own explicit lifecycle; a late stop must not erase the earlier committed deliverable.
+      if (request.fileInputs && request.state === "completed") return;
       if (request.authority) this.options.policy.stopWork?.(actor, request.authority, requestId);
       request.state = "stopped"; request.code = "aborted"; request.revision++;
       this.store.save(request); this.store.event(request, "stopped", this.clock.now(), "aborted");
@@ -297,6 +308,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (current.code) throw new AppError(current.code);
       if (this.clock.now() - startedAt >= (current.phase === "interpretation" ? current.interpretation!.authority : current.authority!).limits.activeMs) throw new AppError("expired");
       this.options.policy.guard(work, stage);
+      if (current.phase === "work" && current.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, current); }
       if (current.phase === "work" && current.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, id); }
     };
     const cancelTools = () => { if (tools && !cancel) cancel = Promise.resolve().then(() => tools!.cancel()).catch(() => {}); };
@@ -330,7 +342,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         guard("model"); const current = this.store.request(id), actor = registration!.actor;
         this.owner(actor, current);
         const selectedSubjects = interpretationContext.filter(message => message.role === "owner").map(message => groundConversationIntent(message.text)).filter(intent => intent.kind === "accept" || intent.kind === "execute").flatMap(intent => intent.subject ? [intent.subject] : []);
-        current.intent = freezeInterpretation(interpreted.text, current.intent, { purposes: current.interpretation!.purposes, resources: current.interpretation!.resources, selectedSubjects });
+        current.intent = freezeInterpretation(interpreted.text, current.intent, { purposes: current.interpretation!.purposes, resources: current.interpretation!.resources, selectedSubjects, fileOutput: current.command.contract === "s16-conversation/v2" });
+        if (current.fileInputs && current.intent.kind === "answer") throw new AppError("file_work_required");
         if (current.intent.kind === "ambiguous" || current.intent.kind === "accept") {
           current.state = current.intent.kind === "accept" ? "accepted" : "held"; current.code = current.intent.kind === "accept" ? null : "material_ambiguity";
         } else {
@@ -352,23 +365,24 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       clearTimeout(timer); startedAt = this.clock.now(); timer = setTimeout(() => abort.abort(), request.authority!.limits.activeMs);
       // Persist continuity dependency before MEM can retain/withdraw anything. A later boot without
       // that protected service must refuse rather than replay raw owner/history or publish old data.
-      if (this.options.memory) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
+      if (this.options.memory && !request.fileInputs) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
       const ingress = this.store.db.query<{ receipt_json: string }, [string]>("SELECT receipt_json FROM commands WHERE id=?").get(request.interpretationRequest.requestId)!;
-      const memory = this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
+      const memory = request.fileInputs ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
       if (memory) {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
       }
-      const mode = request.intent.kind === "inspect" ? "inspect" : "execute";
+      const mode: "inspect" | "execute" = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
-        tools = await this.options.tools.open(work!, { mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
+        const toolInput = { mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
           guard(); exact(action, ["id", "revision", "actionHash"]); identity(action.id); integer(action.revision, 1);
           if (!/^[a-f0-9]{64}$/.test(action.actionHash)) throw new AppError("invalid_data");
           const current = this.store.request(id);
           if (current.actions.some(ref => ref.id === action.id && ref.revision === action.revision && ref.actionHash === action.actionHash)) return;
           if (current.actions.length >= 64) throw new AppError("output_limit");
           current.actions.push(structuredClone(action)); this.store.save(current);
-        }) });
+        }) };
+        tools = request.fileInputs ? await this.options.files!.open(work!, request, toolInput) : await this.options.tools.open(work!, toolInput);
         if (abort.signal.aborted) cancelTools();
         guard();
       }
@@ -394,8 +408,10 @@ export class ConversationApplication<OwnerActor, WorkContext> {
               // Adapter receives no raw progress callback, host env or authority-bearing model fields.
               const result = await definition.execute(input, { workspace: context.workspace, signal: abort.signal });
               content(result.content, request.authority!.limits.outputBytes);
-              if (this.store.evidence(id).reduce((bytes, evidence) => bytes + Buffer.byteLength(evidence.content), 0) + Buffer.byteLength(result.content) > request.authority!.limits.outputBytes) throw new AppError("output_limit");
-              const evidence = { id: slot, tool: definition.name, inputHash, outputHash: digest(result.content), content: result.content, isError: result.isError === true, at: this.clock.now() };
+              const evidenceContent = tool.evidenceContent?.(result.content) ?? result.content;
+              content(evidenceContent, request.authority!.limits.outputBytes);
+              if (this.store.evidence(id).reduce((bytes, evidence) => bytes + Buffer.byteLength(evidence.content), 0) + Buffer.byteLength(evidenceContent) > request.authority!.limits.outputBytes) throw new AppError("output_limit");
+              const evidence = { id: slot, tool: definition.name, inputHash, outputHash: digest(result.content), content: evidenceContent, isError: result.isError === true, at: this.clock.now() };
               this.store.transaction(() => {
                 this.store.db.query("UPDATE tool_calls SET state='returned',evidence_json=? WHERE id=?").run(canonical(evidence), slot!);
                 this.store.event(this.store.request(id), "evidence", this.clock.now());
@@ -440,6 +456,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (current.code) throw new AppError(current.code);
         if (current.intent.kind !== "answer" && !evidence.some(item => !item.isError)) throw new AppError("result_unavailable");
         if (current.memory) this.options.memory?.complete(work!, id, output.text);
+        if (current.fileInputs) current.artifacts = this.options.files!.complete(work!, current, evidence);
         current.state = "completed"; current.code = current.intent.hold ? "owner_start_required" : null; current.result = output.text; current.usage = output.usage; current.revision++;
         this.store.save(current); this.store.event(current, "result", this.clock.now());
         if (current.code) this.store.event(current, "needs_me", this.clock.now(), current.code);
@@ -472,6 +489,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     for (const row of prior) {
       const value = this.store.request(row.id);
       if (value.owner.id !== request.owner.id || value.owner.generation !== request.owner.generation) continue;
+      // File-derived context needs its own cross-request source ancestry. Until that lands, never replay
+      // file requests into interpretation or sourced memory, including their owner/assistant text.
+      if (value.fileInputs) continue;
       const ownerCommand = JSON.parse(row.command_json) as ConversationCommand;
       if (this.options.memory && (!this.options.memory.allowHistory(ownerCommand.requestId, ownerCommand.text) || !this.options.memory.allowHistory(row.id, ownerCommand.text))) continue;
       const next: { role: "owner" | "assistant"; text: string }[] = [{ role: "owner", text: ownerCommand.text }];

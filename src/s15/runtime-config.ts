@@ -20,6 +20,8 @@ export interface S15RuntimeConfig {
   conversation: S15CompositionOptions['conversation']; models: ApprovedModelRoute[]; modelLimits: ModelRunLimits;
   team?: { maxConcurrentOperations: number; memory: 'team' | 'bot' | 'off' };
   disclosure?: RuntimeDisclosureConfig;
+  /** Explicit S16 file workflow and additive protected custody. Requires DATA15 configuration. */
+  files?: boolean;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -58,6 +60,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (!value || value.contract !== 's15-runtime/v1' || typeof value.directory !== 'string' || !isAbsolute(value.directory) || typeof value.installationId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.installationId) || new URL(value.origin).origin !== value.origin || !Array.isArray(value.catalog) || !Array.isArray(value.models) || !value.models.length) throw new AppError('invalid_s15_config');
   if (!value.models.some(r => equal(r.selection, value.conversation.selection) && r.modelId === value.conversation.route.model && r.provider === value.conversation.route.provider)) throw new AppError('route_unavailable');
   readS15VmPool(value.vm);
+  if (value.files !== undefined && typeof value.files !== 'boolean' || value.files && !value.disclosure) throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }
