@@ -68,7 +68,7 @@ Protected gates must govern actual effects regardless of stack. If preserving a 
 ## Evidence and delivery rules
 
 - Follow [the repository workflow](../agents/workflow.md), check ownership/branches/PRs before implementation, and use issue-specific branches/worktrees. No implement-parallel coordinator/claim workflow.
-- All UI/UX design requires the designated Claude Opus 5.5/high author. The primary implementation owner reviews architecture, logic, authority and contracts. A design handoff supplies concrete experience decisions; this spec does not author UI layouts.
+- All UI/UX design requires the owner-designated author. On 2026-11-05 the owner selected Astra at high effort to replace the unavailable prior author and authorized detailed Mobbin MCP research before design. The primary implementation owner reviews architecture, logic, authority and contracts. A design handoff supplies concrete experience decisions; this spec does not author UI layouts.
 - Use Bun and TypeScript for Jit implementation. Imported components may bring reviewed build dependencies; there is no blanket prohibition on changing frameworks.
 - Use scripted models, protocol fixtures, barriers and fake clocks for deterministic checks. Test observable outcomes, effect duplication, cancellation, private lineage, credential custody, concurrency and crash recovery.
 - Browser/device/provider/VM evidence is opt-in and tied to the exact tested artifact. Human credentials are owner steps after the implementation is concrete; do not stop independent development because a live login is absent.

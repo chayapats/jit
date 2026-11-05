@@ -19,7 +19,7 @@ All runtime slices currently require Frontier judgment. Split Standard tickets o
 | Key | Observable outcome / scope | Direct prerequisites | Acceptance |
 | --- | --- | --- | --- |
 | DOC16-01 [#393](https://github.com/chayapats/jit/issues/393) | Record confirmed scope, architecture alternatives, source pin/license and complete graph | None | All baseline mappings |
-| UX16-01 [#394](https://github.com/chayapats/jit/issues/394) | Required experience handoff for the complete product and the first working slice; compare adapting upstream React with extending current UI | DOC16-01 baseline; pinned source | AC01–AC22 experience |
+| UX16-01 [#394](https://github.com/chayapats/jit/issues/394) | Owner-selected Astra/high experience handoff after detailed Mobbin MCP research; cover the complete product and first working slice, comparing upstream React adaptation with current UI | DOC16-01 baseline; pinned source; inspected Mobbin references | AC01–AC22 experience |
 | BASE16-01 | A reusable source import and release-notice process, with the first actually used adapted module attributed | DOC16-01; chosen module/dependency audit | AC21/22 |
 | API16-01 [#395](https://github.com/chayapats/jit/issues/395) | A client performs a real tool-backed conversation against protected Jit through shared contracts, with progress/stop/receipts and reconnect | DOC16-01; UX16-01 for rendered interaction | AC02/14/21 |
 | FILE16-01 [#396](https://github.com/chayapats/jit/issues/396) | Attach a text/document/image to a conversation, use it in real bounded work and return a committed downloadable result | API16-01; UX16-01; current sanitizer/Schway image seam audit | AC03/04 |

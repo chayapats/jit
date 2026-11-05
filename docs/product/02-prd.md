@@ -45,7 +45,7 @@ Owner-scoped monitoring, readiness inspection and immutable PR review remain sup
 Findings name location/source, trigger, impact and evidence. Report revision and coverage remain explicit. Deduplicate logical notifications; remote delivery unknown is never falsely claimed delivered.
 
 ### FR-10 — Owner Web controls
-Expose persistent work/Bot/resource state, evidence, artifacts, stop and waiting reasons through authenticated Web. Refresh/reconnect must not start duplicate work. Concrete UI/UX is authored by the designated Opus designer.
+Expose persistent work/Bot/resource state, evidence, artifacts, stop and waiting reasons through authenticated Web. Refresh/reconnect must not start duplicate work. Concrete UI/UX is authored by the owner's designated design subagent under the current AGENTS.md instruction.
 
 ### FR-11 — Companion channels
 Bound owner channels use the same revisioned commands/receipts. Channel identity, a forwarded message or a quoted instruction cannot widen power. Telegram support is conditional on its actual transport evidence, not assumed shipped.
@@ -87,7 +87,7 @@ New chat/work needs no Project, promotion, Work-mode switch or repeated grant ce
 Idempotent setup establishes owner/persona, working VM capability, approved routes/connections and standing limits once, without a Project or per-Bot account duplication. Readiness distinguishes configuration from a demonstrated working tool/model/backend. New ordinary tasks reuse policy. Existing state is preserved through an explicit transition/rollback plan; the new direction is not permission for implicit deletion/conversion or a live cutover.
 
 ### FR-24 — Conversational Web experience
-The experience must support ordinary conversational work, meaningful approvals and evidenced results without per-task scope setup. Concrete S15 UI/UX must be authored by Claude Opus 5.5 at effort high; prior S14/Plain layouts are not automatically the new design. Preserve accessible responsive dark/light behavior and disclose unsupported/no-script paths honestly. No sensitive authenticated data in service-worker cache.
+The experience must support ordinary conversational work, meaningful approvals and evidenced results without per-task scope setup. Concrete UI/UX uses the current owner-designated design author (S16: Astra at high effort, with detailed Mobbin MCP research); earlier S15 authoring requirements retain their historical scope. Prior layouts and stacks are references, not mandatory new-client constraints. Preserve accessible responsive dark/light behavior and disclose unsupported paths honestly. No sensitive authenticated data in service-worker cache.
 
 ### FR-25 — Thai and English
 Thai is default; all labels and states have English counterparts and Unicode-safe storage/retrieval. Persona language and UI preferences remain owner-controlled.
