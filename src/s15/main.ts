@@ -31,6 +31,7 @@ import { createTelegramBotApi } from './telegram';
 import { liveRouteAvailability } from './model/availability';
 import { readS15RuntimeConfig, readS15VmPool } from './runtime-config';
 import { takeInheritedSocket, vmmProxySocketName } from './vm/vmm';
+import { binaryFileRuntime } from '../s16/files/runtime';
 
 export { parseS15RuntimeConfig, readS15RuntimeConfig, readS15VmPool, type S15RuntimeConfig } from './runtime-config';
 
@@ -116,7 +117,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       classify(request) { const u = new URL(request.url); return config.browser?.publicOrigins.includes(u.origin) && request.method === 'GET' && request.navigation && !request.bodyBase64 && !u.search ? { kind: 'read', private: false } : null; } };
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       ...protectedPorts,
-      ...(config.files ? { files: {} } : {}),
+      ...(config.files ? { files: typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {} } : {}),
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
       ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [], config.github ? undefined : { ...s15GithubRecipient })) } : {}),
       // POLICY15-02: approved subscription routes need no owner budget; the registry bounds each work. Without a configured

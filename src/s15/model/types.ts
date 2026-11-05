@@ -1,4 +1,4 @@
-import type { HostAttemptEffort, HostAuthFetch, HostAuthStatusCode, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, HostRouteRenewal, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
+import type { HostImageOptions, ImageContent, HostAttemptEffort, HostAuthFetch, HostAuthStatusCode, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, HostRouteRenewal, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
 import type { BudgetVector, Ref, Selection, S15PolicyService, Usage, WorkActor } from '../policy';
 
 /** Protected approved route binding. Account/billing/recipient identities are exact refs, never labels
@@ -25,7 +25,7 @@ export interface ApprovedModelRegistry { list(): readonly ApprovedModelRoute[]; 
 export interface ModelRunLimits { turns: number; attempts: number; activeMs: number; outputBytes: number; contextWindow: number; inputChars: number }
 /** Each step preserves original decisions and source labels in strict context. Tools are trusted scoped
  * closures whose owning services guard actual effects; selection confers no tool/effect permission. */
-export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string }
+export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; images?: readonly ImageContent[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string }
 /** One physical provider send that Schway presented to Jit's synchronous `authorizeDispatch`. An authorized
  * send holds its own nonrefundable POLICY reservation; a refused one carries `refusal` (Jit's code), never left
  * the process and holds no reservation unless it was refused after reserving. Credential-free: the body hash
@@ -114,7 +114,7 @@ export interface ModelBudgetView {
 /** Trusted caller hooks for one step. They can only refuse a call, never widen MODEL/POLICY limits.
  * `beforeCall` runs synchronously once per physical send (route models: inside Schway's dispatch authorizer,
  * auth-retry resends included), immediately before that send's POLICY reservation. */
-export interface ModelStepHooks { beforeCall(): void }
+export interface ModelStepHooks { beforeCall(): void; images?: { options: HostImageOptions; beforeSend(data: ReadonlyMap<string, Uint8Array>): void } }
 /** Host-only step execution; Schway owns the loop/retries/compaction and Jit never refreshes credentials. */
 export interface ModelService {
   /** `hooks.beforeCall` is the caller's own durable per-model-call ceiling (for example CHAT's

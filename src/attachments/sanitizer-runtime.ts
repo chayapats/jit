@@ -10,6 +10,8 @@ import { receiveSanitizerOutput, sanitizerOutputBudget, sanitizerStreamLimit } f
 export interface SanitizeJob { input: string; output: string; kind: "png" | "jpeg" | "webp" | "pdf"; pixels: number }
 /** A disposable, networkless parser. Cleanup uncertainty must reject with sanitizer_cleanup_failed and retain work. */
 export interface AttachmentSanitizerRuntime {
+  /** Explicit strict S16 parser generation; legacy runtimes cannot advertise binary S16 support. */
+  readonly s16?: { contract: "s16-isolated-file/v1"; generation: string };
   status?(): Promise<PodmanReadiness>;
   available(): Promise<boolean>;
   reset(): Promise<void>;
@@ -54,13 +56,16 @@ export function sanitizerCommandRunner(binary = "podman", serviceEnv: Record<str
  * fences an orphan from a prior process before any new parser starts. Service queue ownership fences callers.
  */
 export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
+  readonly s16?: { contract: "s16-isolated-file/v1"; generation: string };
   readonly name: string;
   readonly command: SanitizerCommandRunner;
   constructor(readonly image: string, installation: string, readonly limits: AttachmentLimits,
     readonly probeCommand: SanitizerCommandRunner = sanitizerCommandRunner(),
-    readonly timer: (callback: () => void, ms: number) => () => void = (callback, ms) => { const t = setTimeout(callback, ms); return () => clearTimeout(t); }) {
+    readonly timer: (callback: () => void, ms: number) => () => void = (callback, ms) => { const t = setTimeout(callback, ms); return () => clearTimeout(t); },
+    profile?: "s16-isolated-file/v1") {
     if (!pinnedImagePattern.test(image)) throw new Error("sanitizer_unavailable");
     this.command = readinessCommands(this, probeCommand);
+    if (profile) this.s16 = { contract: profile, generation: image };
     this.name = `jit-sanitize-${createHash("sha256").update(installation).digest("hex").slice(0, 32)}`;
   }
   async available(): Promise<boolean> {
@@ -72,7 +77,7 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
     if (readiness.state !== "ready") return readiness;
     try {
       const image = await this.probeCommand(["image", "inspect", "--format", "json", this.image], { timeoutMs: 5000 });
-      return image.exitCode === 0 && JSON.parse(new TextDecoder().decode(image.stdout))[0]?.Config?.Labels?.["jit.sanitize.version"] === "2"
+      return image.exitCode === 0 && (this.s16 ? ["3"] : ["2", "3"]).includes(JSON.parse(new TextDecoder().decode(image.stdout))[0]?.Config?.Labels?.["jit.sanitize.version"])
         ? readiness : { state: "unavailable", reason: "runtime" };
     } catch { return { state: "unavailable", reason: "runtime" }; }
   }
@@ -98,7 +103,7 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
       `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000",
       "--user", "1000:1000", "--log-driver=none", "--workdir", "/", "--env", "HOME=/tmp", "--env", "LANG=C.UTF-8",
       "--mount", `type=bind,source=${job.input},destination=/in,ro=true`,
-      this.image, "/opt/jit/sanitize", job.kind, String(job.pixels), String(this.limits.sanitizerSeconds), "--stream"];
+      this.image, "/opt/jit/sanitize", job.kind, String(job.pixels), String(this.limits.sanitizerSeconds), ...(this.s16 ? ["--s16"] : []), "--stream"];
     const abort = new AbortController(); let timedOut = false;
     let interrupt!: () => void;
     const interrupted = new Promise<never>((_, reject) => { interrupt = () => reject(new Error("sanitize_timeout")); });

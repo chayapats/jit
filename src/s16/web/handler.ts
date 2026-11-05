@@ -11,7 +11,7 @@ export async function createS16WebHandler(authenticate: (request: Request) => Pr
   const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'", Vary: "Cookie, Accept-Language" };
   return async request => {
     const url = new URL(request.url);
-    const checked = await authenticate(new Request(new URL("/api/s16/client/bootstrap", url), { headers: request.headers }));
+    const checked = await authenticate(new Request(new URL("/api/s16/client/session", url), { headers: request.headers }));
     if (!checked.ok) return checked;
     await checked.body?.cancel();
     if (request.method !== "GET" || url.search) return new Response("", { status: 405, headers });

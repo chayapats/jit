@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { classifyAuthError, createHost, createHostCredentialLifecycle, HostError, isDispatchRefused, isRouteControlRefused, listRouteModels, type HostAuthFetch, type HostAuthStatusCode, type HostCredentialLifecycle, type HostRouteRenewal, type HostRouteRenewalOptions, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
+import { classifyAuthError, createHost, createHostCredentialLifecycle, HostError, isDispatchRefused, isRouteControlRefused, listRouteModels, hostCapabilities, type HostAuthFetch, type HostAuthStatusCode, type HostCredentialLifecycle, type HostRouteRenewal, type HostRouteRenewalOptions, type HostClock, type HostDispatch, type HostModelChoice, type Model, type ModelRequest, type ModelUsage, type ThinkingLevel, type ToolDefinition } from 'schway/host';
 import { AppError } from '../../errors';
 import { DurableJournal } from '../durable-journal';
 import { PolicyError, type Selection, type Usage, type WorkActor } from '../policy';
@@ -50,7 +50,7 @@ async function bounded<T>(work: Promise<T>, clock: HostClock, ms: number, signal
 const ROUTE_STATUS_CODES: Partial<Record<HostAuthStatusCode, string>> = { 'needs-login': 'route_needs_login', 'store-unavailable': 'route_store_unavailable', 'invalid-store': 'route_store_invalid',
   rejected: 'route_rejected', 'quota-exceeded': 'quota_exceeded', 'integration-unavailable': 'route_integration_unavailable' };
 /** One live model stream: its frozen request projection and the POLICY-reserved physical sends it made. */
-interface LiveStream { request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number; settled?: boolean }[] }
+interface LiveStream { imageData?: ReadonlyMap<string, Uint8Array>; request: unknown; sends: { reservationId: string; sample: { reservationId: string; usage: ModelUsage | null }; started: number; settled?: boolean }[] }
 function pins(value: ModelPins): void { exact(value, ['route', 'model', 'effort']); if (value.route !== null) ref(value.route); if (value.model !== null) ref(value.model); if (value.effort !== null && !levels.includes(value.effort)) fail('selection_pinned'); }
 function matches(s: Selection, p: ModelPins): boolean { return (!p.route || equal(s.route, p.route)) && (!p.model || equal(s.model, p.model)) && (!p.effort || s.effort === p.effort); }
 const defaultClock: HostClock = { now: Date.now, monotonicNow: () => performance.now(), sleep: (ms, signal) => new Promise((resolve, reject) => {
@@ -123,8 +123,13 @@ export function openModelService(options: ModelOptions): ModelService {
   }
   journal.tx(() => { for (const record of journal.all<ModelSelectionRecord>()) if (record.state === 'running' || record.state === 'selected') { record.state = 'reconcile_only'; record.code = 'context_lost'; record.output = null; journal.put(record.id, record); } });
 
-  function prepare(actor: WorkActor, input: ModelStepInput): ModelSelectionRecord {
+  function prepare(actor: WorkActor, input: ModelStepInput, imageProbes: readonly import("schway/host").HostImageProbeRecord[] = []): ModelSelectionRecord {
+    if (input.images?.length && !imageProbes.some(probe => probe.verdict === "pass")) fail("images_unsupported");
     id(input.stepId); string(input.text, limits.inputChars); if (!['ordinary', 'difficult'].includes(input.difficulty)) fail('invalid_shape');
+    if (input.images) {
+      if (input.images.length > 5) fail('images_unsupported');
+      for (const image of input.images) { exact(image, ['type','reference','mediaType','byteLength','width','height','sha256']); if (image.type !== 'image' || !['image/png','image/jpeg'].includes(image.mediaType) || !/^[a-f0-9]{64}$/.test(image.sha256)) fail('invalid_shape'); string(image.reference,128); nat(image.byteLength,true); nat(image.width,true); nat(image.height,true); }
+    }
     canonical({ text: input.text, ownerDecisions: input.ownerDecisions, sources: input.sources });
     if (input.memorySection !== undefined) string(input.memorySection, limits.inputChars);
     if (input.ownerDecisions.length > 64 || input.sources.length > 64) fail('invalid_shape'); input.ownerDecisions.forEach(value => string(value));
@@ -132,12 +137,13 @@ export function openModelService(options: ModelOptions): ModelService {
     return journal.tx(() => {
       const work = options.policy.work.guard(actor); options.guardWork?.(work.id);
       if (input.sources.some(source => !work.request.fences?.some(fence => fence.kind === 'lineage' && equal(fence.ref, source.ref)))) fail('lineage_withdrawn');
-      const stepKey = key(work.id, input.stepId), inputHash = digest('s15.model.input.v1', { text: input.text, difficulty: input.difficulty, ownerDecisions: input.ownerDecisions, sources: input.sources, memorySection: input.memorySection ?? null, tools: (input.tools ?? []).map(tool => ({ name: tool.name, inputSchema: toolSchema(tool) })) });
+      const stepKey = key(work.id, input.stepId), inputHash = digest('s15.model.input.v1', { text: input.text, difficulty: input.difficulty, ownerDecisions: input.ownerDecisions, sources: input.sources, ...(input.images?.length ? { images: input.images } : {}), memorySection: input.memorySection ?? null, tools: (input.tools ?? []).map(tool => ({ name: tool.name, inputSchema: toolSchema(tool) })) });
       const previous = journal.all<ModelSelectionRecord>().find(row => row.id === stepKey);
       if (previous) { if (previous.inputHash !== inputHash) fail('request_id_conflict'); fail(previous.state === 'reconcile_only' ? 'reconciliation_required' : 'already_claimed'); }
       if (journal.all<ModelSelectionRecord>().some(row => row.workId === work.id && ['selected', 'running', 'reconcile_only'].includes(row.state))) fail('reconciliation_required');
       if (input.tools?.length && !options.guardWork) fail('responsibility_guard_required');
       const baseline = options.registry.current(work.request.selection); if (!baseline) fail('route_unavailable'); route(baseline);
+      if (input.images?.length && !imageProbes.some(probe => probe.verdict === 'pass' && probe.route === baseline.provider && probe.model === baseline.modelId)) fail('images_unsupported');
       const anchor = journal.all<ModelSelectionRecord>().find(row => row.workId === work.id)?.route;
       if (anchor && (anchor.provider !== baseline.provider || !equal(anchor.account, baseline.account) || !equal(anchor.billing, baseline.billing) || !equal(anchor.recipient, baseline.recipient) || anchor.charge !== baseline.charge)) fail('account_changed');
       let pin = clone(options.registry.pins(work.id)); pins(pin);
@@ -147,7 +153,7 @@ export function openModelService(options: ModelOptions): ModelService {
         pins(pin);
       }
       const approved = options.policy.work.modelSelections?.(actor) ?? [work.request.selection];
-      const candidates = registry().filter(candidate => approved.some(selection => equal(selection, candidate.selection)) && candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
+      const candidates = registry().filter(candidate => (!input.images?.length || imageProbes.some(probe => probe.verdict === 'pass' && probe.route === candidate.provider && probe.model === candidate.modelId)) && approved.some(selection => equal(selection, candidate.selection)) && candidate.provider === baseline.provider && equal(candidate.account, baseline.account) && equal(candidate.billing, baseline.billing) && equal(candidate.recipient, baseline.recipient) && candidate.charge === baseline.charge && matches(candidate.selection, pin) && (!work.request.selectionPin || equal(candidate.selection, work.request.selectionPin)));
       const eligible = candidates.filter(candidate => !options.disclosure || options.disclosure.allows(work, candidate));
       if (candidates.length && !eligible.length) fail('recipient_unapproved');
       const available = eligible.filter(candidate => candidate.availability === 'available').sort((a, b) => a.rank[input.difficulty] - b.rank[input.difficulty] || (canonical(a.selection) < canonical(b.selection) ? -1 : 1));
@@ -163,7 +169,7 @@ export function openModelService(options: ModelOptions): ModelService {
   }
   return {
     async runStep(actor, input, signal, hooks) {
-      if (signal?.aborted) fail('cancelled'); const record = prepare(actor, input); active.add(record.id);
+      if (signal?.aborted) fail('cancelled'); const probes = hooks?.images?.options.probes ?? []; hostCapabilities(probes); const record = prepare(actor, input, probes); active.add(record.id);
       let host: Awaited<ReturnType<typeof createHost>> | undefined;
       const save = () => journal.tx(() => journal.put(record.id, record));
       const elapsed = () => (clock.monotonicNow ?? clock.now)();
@@ -176,6 +182,7 @@ export function openModelService(options: ModelOptions): ModelService {
             { name: 'current-owner-decisions', content: JSON.stringify(input.ownerDecisions) },
             { name: 'labelled-sources', content: JSON.stringify(input.sources) },
             { name: 'admitted-responsibility', content: JSON.stringify(options.policy.work.guard(actor).request) }], sources: input.memorySection ? [{ id: 'sourced-memory-data-never-authority', revision: '1', content: input.memorySection }] : [] },
+          ...(hooks?.images ? { images: hooks.images.options } : {}),
           tools: { policy: 'exact', definitions: (input.tools ?? []).map(tool => ({ ...tool, inputSchema: toolSchema(tool), async execute(value, context) {
             guard(actor, record);
             const output = await tool.execute(value, { ...context, onOutput: chunk => { guard(actor, record); context.onOutput?.(chunk); } });
@@ -203,6 +210,7 @@ export function openModelService(options: ModelOptions): ModelService {
             rejected.settled = true; measure(); save();
           }
           guard(actor, record); if (signal?.aborted) fail('cancelled');
+          if (stream.imageData?.size) { if (!hooks?.images) fail("images_unavailable"); hooks.images.beforeSend(stream.imageData); }
           hooks?.beforeCall();
           const reservation = options.policy.work.reserveModelCall(actor, { requestId: 'mc_' + digest('s15.model.call.v1', { step: record.id, ordinal: ordinal++ }), selection: record.route.selection, upperBound });
           const sample = { reservationId: reservation.id, usage: null as ModelUsage | null }; reserved?.(reservation.id);
@@ -282,7 +290,8 @@ export function openModelService(options: ModelOptions): ModelService {
           let complete = false, outputBytes = 0; streamCode = null;
           try {
             if (live) fail('capacity_busy');
-            stream.request = JSON.parse(JSON.stringify(request));
+            const { imageData, ...metadata } = request;
+            stream.request = JSON.parse(JSON.stringify(metadata)); if (imageData) stream.imageData = imageData;
             if (options.scripted) admit(stream, null);
             // Fail closed before route credential reads; the authorizer repeats these at each physical send.
             else { guard(actor, record); if (signal?.aborted) fail('cancelled'); options.disclosure?.guard(options.policy.work.guard(actor), record.route, stream.request); }
@@ -315,14 +324,14 @@ export function openModelService(options: ModelOptions): ModelService {
         const session = await host.createSession();
         try {
           record.session = { id: session.reference.id, branchId: session.reference.branchId }; save(); guard(actor, record);
-          const result = await session.submit({ text: input.text }, guarded, { ...(signal ? { signal } : {}), clock });
+          const result = await session.submit({ text: input.text, ...(input.images?.length ? { images: input.images } : {}) }, guarded, { ...(input.images?.length ? { imageRoute: record.route.provider } : {}), ...(signal ? { signal } : {}), clock });
           // Usage evidence is retained even when authority has since changed; it never grants publication.
           const run = result.usage.providerRequests, renewed = record.catalogRenewal?.renewalRequests ?? 0;
           record.providerRequests = run && { ...run, renewalRequests: run.renewalRequests + renewed }; record.effort = { ...record.effort, attempts: result.usage.attempts.map(attempt => attempt.effort) }; save();
           guard(actor, record);
           if ('model' in result && (result.model.id !== selected.id || result.model.provider !== selected.provider)) fail('wrong_model');
           if (result.outcome !== 'completed') {
-            record.code = streamCode ?? (result.outcome === 'cancelled' ? 'cancelled' : 'model_run_incomplete');
+            record.code = streamCode ?? (result.outcome === 'cancelled' ? 'cancelled' : result.outcome === 'images-unsupported' ? 'images_unsupported' : result.outcome === 'images-unavailable' ? 'images_unavailable' : 'model_run_incomplete');
             record.state = record.reservations.length ? 'reconcile_only' : ['finite_budget_required', 'budget_exhausted', 'capacity_busy', 'cost_unknown'].includes(record.code) ? 'held' : 'failed';
           }
           else {

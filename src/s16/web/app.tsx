@@ -7,7 +7,7 @@ import type { FileArtifact, FileReceipt, FileUploadCommand } from "../files/type
 import { ArtifactFileCard } from "./ArtifactFileCard";
 import { copy } from "./copy";
 
-type Chip = { key: string; name: string; bytes: number; file?: File; state: "selected" | "uploading" | "ready" | "error"; code?: string; receipt?: FileReceipt; uploadId?: string; command?: FileUploadCommand };
+type Chip = { key: string; name: string; bytes: number; file?: File; state: "selected" | "uploading" | "validating" | "ready" | "error"; code?: string; receipt?: FileReceipt; uploadId?: string; command?: FileUploadCommand };
 type Draft = { text: string; chips: Chip[]; pending?: ClientMessage; recoveryId?: string; notFound?: boolean };
 const uid = () => crypto.randomUUID().replaceAll("-", "");
 const empty = (): Draft => ({ text: "", chips: [] });
@@ -72,7 +72,9 @@ function App() {
   }, [preview]);
   async function upload(id: string, chip: Chip) {
     const transfer = { stop: new AbortController(), cancelled: false }; transfers.current.set(chip.key, transfer);
-    const update = (patch: Partial<Chip>) => change(id, draft => ({ ...draft, chips: draft.chips.map(current => current.key === chip.key ? { ...current, ...patch } : current) }));
+    const update = (patch: Partial<Chip>) => { if (!transfer.cancelled) change(id, draft => ({ ...draft, chips: draft.chips.map(current => current.key === chip.key ? { ...current, ...patch } : current) })); };
+    let timer: ReturnType<typeof setInterval> | undefined, checking = false;
+    const polling = new AbortController();
     update({ state: "uploading" });
     try {
       if (!chip.file) throw new JitClientError("file_unavailable", null, "not_sent");
@@ -83,12 +85,28 @@ function App() {
       let status = chip.uploadId ? await client.uploadStatus(chip.uploadId, transfer.stop.signal) : await client.createUpload(command, transfer.stop.signal);
       update({ uploadId: status.id });
       if (transfer.cancelled) { await client.withdrawUpload(status.id); return; }
+      const uploadId = status.id;
+      // The phase comes from the server journal. No transfer percentage or fabricated validation delay.
+      timer = setInterval(() => {
+        if (checking || transfer.cancelled || polling.signal.aborted) return;
+        checking = true;
+        void client.uploadStatus(uploadId, AbortSignal.any([transfer.stop.signal, polling.signal])).then(current => {
+          if (!polling.signal.aborted && !transfer.stop.signal.aborted && current.state === "validating") update({ state: "validating" });
+        }).catch(error => { if (!polling.signal.aborted && error instanceof JitClientError && (error.status === 401 || error.status === 403)) { hidePrivate(error.code); transfer.stop.abort(); } }).finally(() => { checking = false; });
+      }, 400);
       if (status.state === "created") status = await client.uploadBytes(status.id, bytes, transfer.stop.signal);
+      // An uncertain upload reply may leave a live receiver/parser. Recover identity without replaying bytes.
+      const until = Date.now() + 65000;
+      while (["uploading", "validating"].includes(status.state) && !transfer.stop.signal.aborted && Date.now() < until) {
+        if (status.state === "validating") update({ state: "validating" });
+        await new Promise<void>(resolve => setTimeout(resolve, 400));
+        status = await client.uploadStatus(status.id, transfer.stop.signal);
+      }
       if (transfer.cancelled) { await client.withdrawUpload(status.id); return; }
       if (status.state !== "ready" || !status.receipt) throw new JitClientError(status.code ?? "file_unavailable", 409, "response");
       update({ state: "ready", receipt: status.receipt });
     } catch (error) { if (!transfer.cancelled) { update({ state: "error", code: errorCode(error) }); if (error instanceof JitClientError && (error.status === 401 || error.status === 403)) hidePrivate(error); } }
-    finally { if (transfers.current.get(chip.key) === transfer) transfers.current.delete(chip.key); }
+    finally { clearInterval(timer); polling.abort(); if (transfers.current.get(chip.key) === transfer) transfers.current.delete(chip.key); }
   }
   function choose(files: FileList | null) {
     if (!files || !capabilities?.available || pendingId) return;
@@ -96,7 +114,8 @@ function App() {
     if (draft.chips.length + selected.length > capabilities.limits.messageFiles || draft.chips.reduce((sum, chip) => sum + chip.bytes, 0) + selected.reduce((sum, file) => sum + file.size, 0) > capabilities.limits.messageBytes) { setError("file_message_limit"); return; }
     const chips = selected.map(file => ({ key: uid(), file, name: file.name, bytes: file.size, state: "selected" as const })); change(id, draft => ({ ...draft, chips: [...draft.chips, ...chips] }));
     for (const chip of chips) {
-      if (!chip.bytes || chip.bytes > capabilities.limits.fileBytes || !capabilities.extensions.includes(chip.name.split(".").at(-1)!.toLowerCase())) change(id, draft => ({ ...draft, chips: draft.chips.map(current => current.key === chip.key ? { ...current, state: "error", code: "file_type_or_size_unavailable" } : current) }));
+      const extension = chip.name.split(".").at(-1)!.toLowerCase(), limit = capabilities.formats?.find(format => format.extension === extension)?.bytes ?? capabilities.limits.fileBytes;
+      if (!chip.bytes || chip.bytes > limit || !capabilities.extensions.includes(extension)) change(id, draft => ({ ...draft, chips: draft.chips.map(current => current.key === chip.key ? { ...current, state: "error", code: "file_type_or_size_unavailable" } : current) }));
       else void upload(id, chip);
     }
   }
@@ -138,6 +157,7 @@ function App() {
   async function resend() { if (!draft.pending || !draft.notFound || sending) return; const id = conversation; setSending(true); try { await client.send(draft.pending); change(id, () => empty()); if (target.current === id) { history.replaceState(null, "", `/s16/chat/${id}`); await refresh(id); } } catch (error) { hidePrivate(error); } finally { setSending(false); } }
   const status = (state: string) => t(state === "done" ? "s16.chat.done" : state === "working" || state === "inspecting" ? "s16.chat.working" : state === "understanding" ? "s16.chat.understanding" : state === "received" ? "s16.chat.received" : state === "stopped" ? "s16.chat.stopped" : "s16.chat.hold");
   const artifactCards = (items: FileArtifact[]) => { const epoch = privacyEpoch.current; return items.map(artifact => <ArtifactFileCard key={artifact.id} artifact={artifact} client={client} t={t} onPreview={(file, focus) => { returnFocus.current = focus; setPreview(file); }} onFailure={error => { if (epoch === privacyEpoch.current) hidePrivate(error); }} />); };
+  const fileDetails = (file: FileReceipt) => <details className="source-details"><summary>{t("s16.common.details")}</summary><p>{t("s16.files.original")} · {file.mime} · {file.bytes.toLocaleString()} bytes</p><code>{file.sha256}</code>{file.contract === "s16-file-receipt/v2" && <><p>{t("s16.files.transformed")} · {file.representation.mime} · {file.representation.bytes.toLocaleString()} bytes</p>{file.representation.pages !== null ? <p>{t("s16.files.pages", { count: file.representation.pages })}</p> : <p>{file.representation.originalWidth} × {file.representation.originalHeight} → {file.representation.width} × {file.representation.height} px</p>}<code>{file.representation.sha256}</code></>}</details>;
   return <div className={`s16-app ${menu ? "nav-open" : ""} ${preview ? "inspector-open" : ""}`}>
     <a className="skip-link" href="#conversation-main">{t("s16.nav.chats")}</a>
     <nav className="rail" aria-label={t("s16.common.menu")}><a className="brand" href="/s16">Jit <span>S16</span></a><button onClick={() => navigate(uid())}>＋ {t("s16.chat.new")}</button><label className="search"><span>{t("s16.nav.search")}</span><input value={search} onChange={event => setSearch(event.target.value)} /></label>
@@ -151,7 +171,7 @@ function App() {
         {!snapshot && !error && <p role="status">{t("s16.common.loading")}</p>}
         {library ? <section><h2>{t("s16.artifact.current")}</h2>{artifactCards(rows.flatMap(row => row.files?.artifacts ?? []))}{!rows.some(row => row.files?.artifacts.length) && <p>{t("s16.artifact.empty")}</p>}</section> : <>
           {snapshot && !rows.length && <div className="empty"><h2>{t("s16.chat.empty")}</h2></div>}
-          {rows.map(row => <article className="exchange" key={row.requestId}><div className="owner-message"><p>{row.ownerMessage}</p>{row.files?.inputs.map(file => <div className="source-chip" key={file.id}><span>{file.name} · {file.bytes.toLocaleString()} bytes</span><button disabled={!!pendingId || draft.chips.some(chip => chip.receipt?.id === file.id)} onClick={() => void selectReceipt(file)}>{t("s16.files.useNext")}</button><button title={t("s16.files.withdrawImpact")} onClick={() => void client.withdrawUpload(file.id).then(() => refresh()).catch(error => hidePrivate(error))}>{t("s16.files.withdraw")}</button></div>)}</div>
+          {rows.map(row => <article className="exchange" key={row.requestId}><div className="owner-message"><p>{row.ownerMessage}</p>{row.files?.inputs.map(file => <div className="source-chip" key={file.id}><span>{file.name} · {file.bytes.toLocaleString()} bytes</span>{fileDetails(file)}<button disabled={!!pendingId || draft.chips.some(chip => chip.receipt?.id === file.id)} onClick={() => void selectReceipt(file)}>{t("s16.files.useNext")}</button><button title={t("s16.files.withdrawImpact")} onClick={() => void client.withdrawUpload(file.id).then(() => refresh()).catch(error => hidePrivate(error))}>{t("s16.files.withdraw")}</button></div>)}</div>
             <div className="bot-message"><strong>{t("s16.chat.title")}</strong><span className="status">{status(row.state)}</span>{row.result ? <p className="result">{row.result.text}</p> : row.files && row.state === "received" ? <p>{t("s16.chat.receivedFiles")}</p> : null}
               {artifactCards(row.files?.artifacts ?? [])}{row.progress.active && <button onClick={() => void client.stop(row.requestId).then(() => refresh()).catch(error => hidePrivate(error))}>{t("s16.chat.stop")}</button>}
               {row.needsYou && <div className="notice"><p>{t("s16.chat.hold")}</p>{row.needsYou.slip && <a href={`/actions/${row.needsYou.slip.action.id}`}>{t("s16.chat.review")}</a>}<details><summary>{t("s16.common.details")}</summary><code>{row.needsYou.code}</code></details></div>}
@@ -160,14 +180,14 @@ function App() {
         </>}
       </div>
       <form className="composer" onSubmit={event => { event.preventDefault(); void send(); }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); choose(event.dataTransfer.files); }}>
-        <div className="chips" aria-live="polite">{draft.chips.map(chip => <div className="upload-chip" key={chip.key}><span>{chip.name} · {chip.bytes.toLocaleString()} bytes</span><small>{chip.state === "uploading" ? t("s16.files.uploading", { name: chip.name }) : chip.state === "ready" ? t("s16.files.ready") : chip.state === "error" ? t("s16.files.failed") : t("s16.files.selected")}</small>{chip.state === "uploading" && <progress aria-label={t("s16.files.uploading", { name: chip.name })} />}{chip.state === "error" && <><code>{chip.code}</code><button type="button" onClick={() => void upload(conversation, chip)}>{t("s16.files.recover")}</button></>}<button type="button" aria-label={t("s16.files.removeFromMessage", { name: chip.name })} onClick={() => void remove(chip)}>×</button></div>)}</div>
+        <div className="chips" aria-live="polite">{draft.chips.map(chip => <div className="upload-chip" key={chip.key}><span>{chip.name} · {chip.bytes.toLocaleString()} bytes</span><small>{chip.state === "validating" ? t("s16.files.validating") : chip.state === "uploading" ? t("s16.files.uploading", { name: chip.name }) : chip.state === "ready" ? t("s16.files.ready") : chip.state === "error" ? t("s16.files.failed") : t("s16.files.selected")}</small>{(chip.state === "uploading" || chip.state === "validating") && <progress aria-label={chip.state === "validating" ? t("s16.files.validating") : t("s16.files.uploading", { name: chip.name })} />}{chip.receipt && fileDetails(chip.receipt)}{chip.state === "error" && <><code>{chip.code}</code><button type="button" onClick={() => void upload(conversation, chip)}>{t("s16.files.recover")}</button></>}<button type="button" aria-label={t("s16.files.removeFromMessage", { name: chip.name })} onClick={() => void remove(chip)}>×</button></div>)}</div>
         <label className="visually-hidden" htmlFor="message">{t("s16.chat.prompt")}</label><textarea ref={composer} id="message" value={draft.text} disabled={!!pendingId} placeholder={t("s16.chat.prompt")} onChange={event => change(conversation, draft => ({ ...draft, text: event.target.value }))} onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); choose(event.clipboardData.files); } }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
         {pendingId && !sending && <div className="notice"><p>{t(draft.recoveryId && draft.notFound ? "s16.chat.originalNotFound" : "s16.chat.unknown")}</p><button type="button" onClick={() => void recover()}>{t("s16.chat.recover")}</button>{draft.notFound && (draft.pending ? <button type="button" onClick={() => void resend()}>{t("s16.chat.resend")}</button> : <button type="button" onClick={composeReplacement}>{t("s16.chat.composeReplacement")}</button>)}<code>{pendingId}</code></div>}
         <div className="composer-actions"><input ref={picker} type="file" className="visually-hidden" multiple accept={capabilities?.available ? capabilities.extensions.map(ext => '.' + ext).join(',') : undefined} tabIndex={-1} onChange={event => { choose(event.target.files); event.target.value = ""; }} /><button type="button" disabled={!capabilities?.available || !!pendingId} title={!capabilities?.available ? t("s16.files.unavailable") : undefined} onClick={() => picker.current?.click()}>＋ {t("s16.files.attach")}</button><small>{t("s16.common.keyboard")}</small><button className="primary" type="submit" disabled={!boot || sending || !!pendingId || draft.chips.some(chip => chip.state !== "ready") || (!draft.text.trim() && !draft.chips.length)}>{t(sending ? "s16.chat.sending" : "s16.chat.send")}</button></div>
         <p className="limits">{capabilities?.available ? t("s16.files.limits", { count: capabilities.limits.messageFiles, bytes: capabilities.limits.fileBytes.toLocaleString() }) : t("s16.files.unavailable")}</p>{capabilities?.available && <p className="limits">{t("s16.files.memory")}</p>}
       </form>
     </main>
-    {preview && <aside ref={inspector} className="inspector" role="dialog" aria-modal={matchMedia("(max-width: 900px)").matches} aria-label={t("s16.artifact.preview", { name: preview.name })}><header><h2>{preview.name}</h2><button aria-label={t("s16.common.close")} onClick={closePreview}>×</button></header><p>{preview.mime} · {preview.bytes.toLocaleString()} bytes</p><details><summary>{t("s16.common.details")}</summary><code>{preview.sha256}</code><p>{t("s16.artifact.revision")}</p></details>{previewText === null ? <p role="status">{t("s16.common.loading")}</p> : <pre className="preview-text">{previewText}</pre>}<h3>{t("s16.artifact.sources")}</h3>{rows.find(row => row.requestId === preview.requestId)?.files?.inputs.map(file => <p key={file.id}>{file.name}<br /><code>{file.sha256}</code></p>)}</aside>}
+    {preview && <aside ref={inspector} className="inspector" role="dialog" aria-modal={matchMedia("(max-width: 900px)").matches} aria-label={t("s16.artifact.preview", { name: preview.name })}><header><h2>{preview.name}</h2><button aria-label={t("s16.common.close")} onClick={closePreview}>×</button></header><p>{preview.mime} · {preview.bytes.toLocaleString()} bytes</p><details><summary>{t("s16.common.details")}</summary><code>{preview.sha256}</code><p>{t("s16.artifact.revision")}</p></details>{previewText === null ? <p role="status">{t("s16.common.loading")}</p> : <pre className="preview-text">{previewText}</pre>}<h3>{t("s16.artifact.sources")}</h3>{rows.find(row => row.requestId === preview.requestId)?.files?.inputs.map(file => <div key={file.id}><p>{file.name}</p>{fileDetails(file)}</div>)}</aside>}
     <nav className="mobile-nav"><button onClick={() => { setLibrary(false); composer.current?.focus(); }}>{t("s16.nav.chats")}</button><a href="/needs-you">{t("s16.nav.needsYou")}</a><a href="/work">{t("s15.nav.work")}</a><button onClick={() => setMenu(!menu)}>{t("s16.nav.more")}</button></nav>
   </div>;
 }

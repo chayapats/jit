@@ -45,7 +45,7 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         return { state: "admitted", authority: snapshot(prepared.authority, true), purposes: prepared.purposes.map(purpose => purpose.id), resources: policy.resources.map(resource => resource.id) };
       } catch (error) { return { state: "held", code: mapped(error).code }; }
     },
-    admit(actor, request, intent) {
+    admit(actor, request, intent, reads) {
       try {
         const policy = current(actor), scope = intent.scope;
         if (!scope) throw new AppError("outside_scope");
@@ -54,7 +54,12 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         if (!purpose) return { state: "proposed", code: "outside_scope" };
         const subjects = input.subjectResourceIds ? resources.filter(r => input.subjectResourceIds!.includes(r.id)) : resources;
         if (intent.subject && subjects.length !== 1) return { state: "held", code: "material_ambiguity" };
-        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit: Math.min(config.limits.toolCalls, policy.budget?.ceiling.reads ?? host.control.subscriptionLimits()?.tools?.reads ?? 0), subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
+        const images = reads?.imageInputs ?? 0;
+        if (!Number.isSafeInteger(images) || images < 0 || images > 8) throw new AppError("outside_scope");
+        // Every model send can also read each selected image; this requests finite capacity only.
+        // Current POLICY and the owner's read ceiling still authorize every physical read.
+        const readLimit = Math.min(config.limits.toolCalls + images * config.limits.modelCalls, policy.budget?.ceiling.reads ?? host.control.subscriptionLimits()?.tools?.reads ?? 0);
+        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit, subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
         if (!admitted.work) throw new AppError("outside_scope");
         return { state: "admitted", authority: snapshot(admitted.work) };
       } catch (error) { const code = mapped(error).code; return { state: code === "outside_scope" ? "proposed" : "held", code }; }

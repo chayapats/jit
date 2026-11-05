@@ -12,7 +12,7 @@ import type { ConversationAuthority, ConversationCommand, ConversationDecisionCo
 const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
-  "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
+  "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
@@ -85,7 +85,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (input.contract === "s16-conversation/v2") {
           if (!this.options.files) throw new AppError("upload_unavailable", 503);
           this.store.requireFileContract();
-          request.fileInputs = this.options.files.accept(actor, input); request.artifacts = [];
+          request.fileInputs = this.options.files.accept(actor, input);
+          if (request.fileInputs.some(file => file.contract === "s16-file-receipt/v2")) this.store.requireFileContract(3); request.artifacts = [];
           if (input.text === "") intent = { kind: "accept", subject: null, instruction: "" };
         }
         this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(input.requestId, input.conversationId, request.state, canonical(request));
@@ -347,7 +348,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (current.intent.kind === "ambiguous" || current.intent.kind === "accept") {
           current.state = current.intent.kind === "accept" ? "accepted" : "held"; current.code = current.intent.kind === "accept" ? null : "material_ambiguity";
         } else {
-          const decision = this.options.policy.admit(actor, current.command, current.intent);
+          const imageInputs = current.fileInputs?.filter(file => file.contract === "s16-file-receipt/v2" && file.representation.mime !== "text/plain").length ?? 0;
+          const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs });
           this.owner(actor, current);
           if (decision.state !== "admitted") { current.state = decision.state; current.code = safeCodes.has(decision.code) ? decision.code : "policy_match_required"; }
           else {
@@ -439,7 +441,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (current.modelCalls >= current.authority!.limits.modelCalls) throw new AppError("budget_exhausted");
         current.modelCalls++; this.store.save(current);
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
+      const observeInput = (evidence: import("./types").ConversationEvidence) => this.store.transaction(() => {
+        guard("model"); canonical(evidence); content(evidence.content, 4096); const current = this.store.request(id);
+        if (!current.fileInputs || evidence.kind !== "input" || evidence.isError) throw new AppError("outside_scope");
+        current.inputEvidence ??= []; if (current.inputEvidence.some(row => row.id === evidence.id)) return;
+        if (current.inputEvidence.length >= 64) throw new AppError("output_limit"); current.inputEvidence.push(evidence); this.store.save(current); this.store.event(current, "evidence", this.clock.now());
+      });
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         guard: () => guard("model"),
         // Usage evidence is kept on a failed run too; publication below still requires completion.
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),

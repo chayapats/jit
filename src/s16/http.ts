@@ -3,11 +3,12 @@ import type { ConversationApplication, ConversationHttpAuthentication } from "..
 import { conversationList, conversationOwnerView, conversationPendingNeeds, conversationRequestView } from "../s15/conversation/owner-view";
 import { exact, parseCommandJson } from "../s15/conversation/validation";
 import { clientResponseBytes, type ClientBootstrap, type ClientCapabilities } from "./client/contracts";
+import { binaryLimits } from "./files/parser";
 import type { FileStore } from "./files/store";
 import type { FileUploadCommand } from "./files/types";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -25,7 +26,18 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       catch { throw new AppError("invalid_body"); }
     } finally { reader.releaseLock(); }
   };
-  const capabilities = (): ClientCapabilities => ({ contract: "s16-client-capabilities/v1", revision: 1, textMessages: true, progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: false, uploads: options.files && app.options.files ? { available: true, limits: { ...options.files.limits }, extensions: ["txt", "md", "markdown", "csv", "tsv"], memory: false } : { available: false, code: "upload_unavailable" }, artifacts: options.files && app.options.files ? { available: true, preview: "escaped_text" } : { available: false, code: "artifact_unavailable" } });
+  const capabilities = async (): Promise<ClientCapabilities> => {
+    const files = options.files, binary = !!files?.parser && await files.parser.available(), images = binary && options.imageAvailable?.() === true;
+    const textBytes = files ? Math.min(files.limits.fileBytes, files.parser ? binaryLimits.textBytes : files.limits.fileBytes) : 0;
+    const formats = [ ...["txt", "md", "markdown", "csv", "tsv"].map(extension => ({ extension, mime: "text/plain", bytes: textBytes })),
+      ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
+      ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
+    return { contract: "s16-client-capabilities/v1", revision: 1, textMessages: true, progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: false,
+      uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: false,
+        ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
+        ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
+      artifacts: files && app.options.files ? { available: true, preview: "escaped_text" } : { available: false, code: "artifact_unavailable" } };
+  };
   return async request => {
     try {
       const url = new URL(request.url);
@@ -50,6 +62,10 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (url.search) throw new AppError("invalid_body");
         const input = await body(request);
         if (!input || typeof input !== "object" || !("conversationId" in input) || input.conversationId !== uploadCreate[1]) throw new AppError("outside_scope", 403);
+        if ("name" in input && typeof input.name === "string" && /\.(pdf|png|jpe?g)$/i.test(input.name)) {
+          if (!options.files.parser || !await options.files.parser.available()) throw new AppError("sanitizer_unavailable", 503);
+          if (/\.(png|jpe?g)$/i.test(input.name) && options.imageAvailable?.() !== true) throw new AppError("images_unsupported", 409);
+        }
         return json(options.files.create(currentOwner(), input as FileUploadCommand), 201);
       }
       const upload = /^\/api\/s16\/client\/uploads\/([A-Za-z0-9_-]{1,128})(?:\/(bytes|withdraw))?$/.exec(url.pathname);
@@ -81,9 +97,11 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const name = encodeURIComponent(committed.name).replace(/['()*]/g, value => '%' + value.charCodeAt(0).toString(16).toUpperCase());
         return new Response(new Uint8Array(output.bytes).buffer, { headers: { "Content-Type": "application/octet-stream", "Content-Length": String(committed.bytes), "Content-Disposition": `attachment; filename="artifact.txt"; filename*=UTF-8''${name}`, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, no-store", "Content-Security-Policy": "default-src 'none'; sandbox", "Referrer-Policy": "no-referrer", "X-Content-SHA256": committed.sha256, Vary: "Cookie" } });
       }
+      if (url.pathname === "/api/s16/client/session" && request.method === "GET") { if (url.search) throw new AppError("invalid_body"); return json({ authenticated: true }); }
       if (url.pathname === "/api/s16/client/bootstrap" && request.method === "GET") {
         if (url.search) throw new AppError("invalid_body");
-        return json({ contract: "s16-client-bootstrap/v1", csrf: authenticated.csrf, capabilities: capabilities(), conversations: conversationList(app, authenticated.actor, 64), needsYou: conversationPendingNeeds(app, authenticated.actor) } satisfies ClientBootstrap);
+        const caps = await capabilities(), current = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1)); app.options.policy.requireOwner(current.actor);
+        return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, capabilities: caps, conversations: conversationList(app, current.actor, 64), needsYou: conversationPendingNeeds(app, current.actor) } satisfies ClientBootstrap);
       }
       const conversation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})(?:\/(messages|events|decisions))?$/.exec(url.pathname);
       if (conversation) {

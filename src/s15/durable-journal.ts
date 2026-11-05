@@ -13,7 +13,8 @@ export class DurableJournal {
   #lease: Database;
   #closed = false;
   #capacity: { records: number; bytes: number };
-  constructor(path: string, installation: string, create: boolean, applicationId: number, capacity = maximumCapacity) {
+  constructor(path: string, installation: string, create: boolean, applicationId: number, capacity = maximumCapacity, formats: readonly number[] = [1]) {
+    if (!formats.includes(1) || !formats.length || formats.some(v => !Number.isSafeInteger(v) || v < 1 || v > 32)) fail('invalid_shape');
     nat(capacity.records, true); nat(capacity.bytes, true);
     if (capacity.records > maximumCapacity.records || capacity.bytes > maximumCapacity.bytes || capacity.bytes < 2 * recordBytes) fail('invalid_capacity');
     this.#capacity = { ...capacity };
@@ -25,7 +26,7 @@ export class DurableJournal {
       const stat = lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) fail('unprotected_ledger');
       const bytes = Buffer.alloc(100), fd = openSync(path, 'r'); let size: number;
       try { size = readSync(fd, bytes, 0, 100, 0); } finally { closeSync(fd); }
-      if (size !== 100 || bytes.toString('ascii', 0, 16) !== 'SQLite format 3\0' || bytes.readUInt32BE(68) !== applicationId || bytes.readUInt32BE(60) !== 1) fail('continuity_unavailable');
+      if (size !== 100 || bytes.toString('ascii', 0, 16) !== 'SQLite format 3\0' || bytes.readUInt32BE(68) !== applicationId || !formats.includes(bytes.readUInt32BE(60))) fail('continuity_unavailable');
     }
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lock = path + '.process-lock';

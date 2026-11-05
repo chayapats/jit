@@ -10,7 +10,7 @@ export interface ClientCapabilities {
   progress: "control_events";
   exactDecisions: boolean;
   liveSteering: false;
-  uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; memory: false };
+  uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: false; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text" };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */

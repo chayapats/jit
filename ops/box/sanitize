@@ -34,14 +34,16 @@ def bounded_command(argv, cap):
         return bytes(output[:cap]), cut
 
 
-def sanitize(kind, pixels, source, out):
+def sanitize(kind, pixels, source, out, strict=False):
     if kind == "pdf":
         info, cut = bounded_command(["pdfinfo", str(source)], 65536)
+        if strict and not re.search(rb"(?m)^Encrypted:\s+no\s*$", info):
+            raise ValueError("pdf_extract_failed")
         match = re.search(rb"(?m)^Pages:\s+(\d+)\s*$", info)
         if cut or not match or int(match[1]) < 1:
             raise ValueError("pdf_extract_failed")
         pages = int(match[1])
-        text, cut = bounded_command(["pdftotext", "-f", "1", "-l", str(min(50, pages)), "-enc", "UTF-8", str(source), "-"], TEXT_BYTES)
+        text, cut = bounded_command(["pdftotext", "-f", "1", "-l", str(min(50, pages)), "-enc", "UTF-8", str(source), "-"], 65536 if strict else TEXT_BYTES)
         # Only a cut UTF-8 tail may be discarded; malformed complete output is a failure.
         try:
             text = text.decode("utf-8", errors="strict").encode("utf-8")
@@ -54,7 +56,7 @@ def sanitize(kind, pixels, source, out):
         if b"\0" in text:
             raise ValueError("pdf_extract_failed")
         (out / "text.txt").write_bytes(text)
-        return {"ok": True, "pages": min(50, pages), "truncated": cut or pages > 50}
+        return {"ok": True, "pages": min(50, pages), "truncated": cut or pages > 50, **({"encrypted": False, "validation": "s16-isolated-file/v1"} if strict else {})}
     from PIL import Image
     Image.MAX_IMAGE_PIXELS = pixels
     warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -74,7 +76,7 @@ def sanitize(kind, pixels, source, out):
         clean.save(out / ("clean." + ext), format=fmt)
         clean.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
         clean.save(out / ("model." + ext), format=fmt)
-        return {"ok": True, "width": width, "height": height, "truncated": False}
+        return {"ok": True, "width": width, "height": height, "truncated": False, **({"validation": "s16-isolated-file/v1"} if strict else {})}
     except (Image.DecompressionBombError, Image.DecompressionBombWarning):
         raise ValueError("image_too_many_pixels") from None
 
@@ -113,6 +115,9 @@ def main():
     stream = sys.argv[-1] == "--stream"
     if stream:
         sys.argv.pop()
+    strict = "--s16" in sys.argv
+    if strict:
+        sys.argv.remove("--s16")
     # The external deadline also kills/removes the container; this alarm bounds an orphan after a service crash.
     signal.alarm(seconds)
     # Optional paths exist for deterministic fake-runtime fixtures; production passes only kind, pixel cap and deadline.
@@ -120,7 +125,7 @@ def main():
     out = Path(sys.argv[5]) if len(sys.argv) > 5 else Path("/out")
     result = {"ok": False, "reason": "pdf_extract_failed" if kind == "pdf" else "image_decode_failed"}
     try:
-        result = sanitize(kind, pixels, source, out)
+        result = sanitize(kind, pixels, source, out, strict)
     except MemoryError:
         result = {"ok": False, "reason": "sanitize_out_of_memory"}
     except Exception as error:

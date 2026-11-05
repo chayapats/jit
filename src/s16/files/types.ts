@@ -1,14 +1,22 @@
 /** Opaque immutable input identity; filenames never become filesystem paths or authority. */
 export interface FileReference { id: string; sha256: string }
 /** Bounded, currently accepted text input. Receipt acceptance is distinct from work authorization. */
-export interface FileReceipt extends FileReference {
+export interface TextFileReceipt extends FileReference {
   contract: "s16-file-receipt/v1"; conversationId: string; name: string; mime: "text/plain"; bytes: number; expiresAt: number | null;
 }
+/** Sanitized representation is immutable and tied to the original receipt; parsing is not work authority. */
+export interface BinaryFileReceipt extends FileReference {
+  contract: "s16-file-receipt/v2"; conversationId: string; name: string; mime: "application/pdf" | "image/png" | "image/jpeg"; bytes: number; expiresAt: number | null;
+  validation: "s16-isolated-file/v1";
+  parserGeneration: string;
+  representation: { sha256: string; bytes: number; mime: "text/plain" | "image/png" | "image/jpeg"; pages: number | null; width: number | null; height: number | null; originalWidth: number | null; originalHeight: number | null };
+}
+export type FileReceipt = TextFileReceipt | BinaryFileReceipt;
 /** Upload identity is retained on failure/cancel so retries cannot recreate or repurpose old bytes. */
 export interface FileUpload {
   contract: "s16-file-upload/v1"; id: string; requestId: string; conversationId: string; name: string;
   expectedBytes: number; expectedHash: string; bytes: number;
-  state: "created" | "uploading" | "ready" | "rejected" | "cancelled" | "expired" | "withdrawn";
+  state: "created" | "uploading" | "validating" | "ready" | "rejected" | "cancelled" | "expired" | "withdrawn";
   code: string | null; createdAt: number; expiresAt: number; retained: boolean; receipt: FileReceipt | null;
 }
 /** Authenticated metadata commit before any byte stream; declared type/size/hash are untrusted. */

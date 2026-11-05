@@ -25,7 +25,7 @@ export class ConversationStore {
       const header = Buffer.alloc(100), fd = openSync(path, "r");
       let length: number;
       try { length = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
-      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && header.readUInt32BE(60) === 2)) throw new AppError("conversation_store_incompatible", 409);
+      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && [2, 3].includes(header.readUInt32BE(60)))) throw new AppError("conversation_store_incompatible", 409);
     } else if (!create) throw new AppError("continuity_unavailable", 503);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lockPath = `${path}.runtime-lock.sqlite`;
@@ -62,9 +62,10 @@ export class ConversationStore {
   transaction<T>(action: () => T): T { return this.db.transaction(action).immediate(); }
   /** Stamp the incompatible file-publication dependency in the same transaction as the first file
    * command. Older binaries refuse format 2 even if an earlier composition manifest is restored. */
-  requireFileContract(): void {
+  requireFileContract(version: 2 | 3 = 2): void {
     if (!this.fileContract || !this.db.inTransaction) throw new AppError("files_required", 503);
-    this.db.exec("PRAGMA user_version=2");
+    const current = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    this.db.exec(`PRAGMA user_version=${Math.max(current, version)}`);
   }
   /** Reads one exact retained request; absence never creates a new authority or queue. */
   request(requestId: string): ConversationRequest {
@@ -79,8 +80,8 @@ export class ConversationStore {
   event(request: ConversationRequest, kind: ConversationEvent["kind"], at: number, code: string | null = null): void {
     this.db.query("INSERT INTO events(request_id,conversation_id,at,kind,code) VALUES (?,?,?,?,?)").run(request.receipt.rootRequestId, request.receipt.conversationId, at, kind, code);
   }
-  /** Evidence comes exclusively from the tool wrapper after an actual invocation returned. */
-  evidence(requestId: string): ConversationEvidence[] { return this.db.query<{ evidence_json: string }, [string]>("SELECT evidence_json FROM tool_calls WHERE request_id=? AND evidence_json IS NOT NULL ORDER BY rowid").all(requestId).map(row => JSON.parse(row.evidence_json) as ConversationEvidence); }
+  /** Evidence comes from actual tool returns or guarded model-input send admission, never model claims. */
+  evidence(requestId: string): ConversationEvidence[] { return [...(this.request(requestId).inputEvidence ?? []), ...this.db.query<{ evidence_json: string }, [string]>("SELECT evidence_json FROM tool_calls WHERE request_id=? AND evidence_json IS NOT NULL ORDER BY rowid").all(requestId).map(row => JSON.parse(row.evidence_json) as ConversationEvidence)]; }
   /** Finite custody refuses new ingress without evicting dedupe identities or claims. */
   capacity(): void {
     const count = this.db.query<{ n: number }, []>("SELECT count(*) AS n FROM commands").get()!.n;
