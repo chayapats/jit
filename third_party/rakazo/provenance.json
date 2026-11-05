@@ -27,8 +27,8 @@
       "sha256": "1ba299e9e0ae636e460b9301c6c332a007d352f9a33db4407701468754013132",
       "destination": "src/s16/web/ArtifactFileCard.tsx",
       "license": "Apache-2.0",
-      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; protected text inspector forwards the actual auth failure for private-state invalidation.",
-      "destinationSha256": "92ec9c26238fab23f1210fb830e57d756c4e0f0282709af8142033c02ceab7a7",
+      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; protected text inspector forwards the actual auth failure for private-state invalidation. Exports the verified download and preview-kind helpers shared by the artifact library; HTML is previewable only when the service offers its sandboxed static viewer.",
+      "destinationSha256": "e03a9f1c82bee1ae7f5655f2886e022e2d27598b8993d6e25a6365889ebb133c",
       "imports": [
         "../client/artifact-preview",
         "react",

@@ -10,3 +10,5 @@
 @media(max-width:1100px){.memory-has-detail{grid-template-columns:minmax(0,1fr) 340px;column-gap:20px}}
 @media(max-width:900px){.memory-main{padding:16px 16px 88px}.memory-has-detail{display:block}.memory-has-detail>.memory-detail{position:fixed;inset:0;z-index:8;max-height:100dvh;border:0;border-radius:0;padding:16px 16px 32px}.memory-filters{grid-template-columns:1fr 1fr}.memory-row{padding:12px}}
 @media(max-width:340px){.memory-filters{grid-template-columns:1fr}}
+.artifact-frame-wrap{margin:8px 0}.artifact-frame{display:block;width:100%;min-height:360px;height:50dvh;border:1px solid var(--line);border-radius:12px;background:#fff}
+.library .memory-snippet{overflow-wrap:anywhere}.library .memory-row small{overflow-wrap:anywhere}.library .memory-actions .memory-link{align-self:center}
