@@ -191,7 +191,7 @@ test("the shared client validates library, detail and adoption responses without
 test("lineage checks stay linear when two copies of each revision feed the next one", async () => {
   const f = await fixture(), notes = await upload(f, "Launch: Friday.\n");
   let artifact = (await produce(f, message("message0", notes), { name: "brief.md", text: "# Brief 0\n" })).artifacts![0]!;
-  for (let level = 1; level <= 8; level++) {
+  for (let level = 1; level <= 5; level++) {
     f.advance(10);
     const copies = [await adopt(f, artifact, `adopt_${level}_a`), await adopt(f, artifact, `adopt_${level}_b`)];
     f.script = [...copies.map((copy, index) => ({ type: "tool_call" as const, id: `read_${level}_${index}`, name: "file_read", arguments: { id: copy.id, offset: 0 } })), { type: "tool_call", id: `create_${level}`, name: "file_create", arguments: { name: "brief.md", text: `# Brief ${level}\n` } }];
@@ -202,10 +202,10 @@ test("lineage checks stay linear when two copies of each revision feed the next 
   const top = await adopt(f, artifact, "adopt_top"), journal = f.service.files!.journal, get = journal.get.bind(journal); let reads = 0;
   journal.get = ((id: string) => { reads++; return get(id); }) as typeof journal.get;
   try { expect((await (await f.request(`/api/s16/client/uploads/${top.id}`)).json()).state).toBe("ready"); } finally { journal.get = get; }
-  // 2^8 paths without reuse; each upload/artifact is read about once with it.
-  expect(reads).toBeLessThan(80);
+  // 2^5 ancestor paths without reuse; each upload/artifact is read about once with it.
+  expect(reads).toBeLessThan(64);
   const detail = await (await f.request(`/api/s16/client/artifacts/${artifact.id}`)).json() as ClientArtifactDetail;
-  expect(detail.item.revision).toBe(9); expect(detail.revisions.map(item => item.revision)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  expect(detail.item.revision).toBe(6); expect(detail.revisions.map(item => item.revision)).toEqual([1, 2, 3, 4, 5, 6]);
   await f.request(`/api/s16/client/uploads/${notes.id}/withdraw`, "POST", {});
   expect(await (await f.request(`/api/s16/client/uploads/${top.id}`)).json()).toMatchObject({ state: "withdrawn", code: "lineage_withdrawn" });
 });

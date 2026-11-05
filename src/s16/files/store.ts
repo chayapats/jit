@@ -48,6 +48,8 @@ export class FileStore<Actor> {
   #closing: Promise<void> | null = null;
   #cancellations = new Map<string, AbortController>();
   #writes = new Set<Promise<FileUpload>>();
+  /** Lineage heights valid until the next journal write or transaction end (commit or rollback). */
+  #heights = new Map<string, number>();
   constructor(readonly options: FileStoreOptions<Actor>) {
     if (!isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError("protected_file_path_required");
     validateRef(options.resource);
@@ -61,6 +63,11 @@ export class FileStore<Actor> {
     this.directory = options.directory;
     // Formats: 1 text-only, 2 binary receipts, 3 artifact-derived inputs (older readers would ignore `origin`).
     this.journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a495446, undefined, [1, 2, 3]);
+    // Any write, and the end of any transaction, invalidates cached lineage. Heights depend only on journal
+    // rows: every input of a staged artifact is retained at staging, so ancestor usability is time-free.
+    const put = this.journal.put.bind(this.journal), tx = this.journal.tx.bind(this.journal);
+    this.journal.put = (key, value) => { this.#heights.clear(); put(key, value); this.#heights.clear(); };
+    this.journal.tx = <T>(action: () => T): T => { try { return tx(action); } finally { this.#heights.clear(); } };
     const history = this.records().some(row => row.kind === "upload" && (row.receipt?.contract === "s16-file-receipt/v2" || /\.(pdf|png|jpe?g)$/i.test(row.name)));
     if (history && !options.parserRuntime) { this.journal.close(); throw new AppError("file_parser_required", 503); }
     try { this.parser = options.parserRuntime ? new FileParser(options.parserRuntime, join(this.directory, "..", "file-parser"), options.create || !history) : undefined; } catch (error) { this.journal.close(); throw error; }
@@ -100,7 +107,7 @@ export class FileStore<Actor> {
    * Returns the copy height (0 for an ordinary upload) or -1 when withdrawn/invalid/too deep. Each upload is
    * evaluated once per `memo`, so shared ancestors in a revision graph stay linear, not exponential.
    */
-  private lineageHeight(row: UploadRecord, memo: Map<string, number> = new Map()): number {
+  private lineageHeight(row: UploadRecord, memo: Map<string, number> = this.#heights): number {
     if (!row.origin) return 0;
     const known = memo.get(row.id); if (known !== undefined) return known;
     memo.set(row.id, -1); // A cycle cannot be current; real records cannot form one.
@@ -361,7 +368,7 @@ export class FileStore<Actor> {
    * must still check CHAT's committed reference and the current producer before listing or releasing one.
    */
   lineage(actor: Actor): FileArtifactLineage[] {
-    const owner = this.current(actor), memo = new Map<string, number>();
+    const owner = this.current(actor), memo = this.#heights;
     return this.records().flatMap(row => {
       if (row.kind !== "artifact" || row.owner.id !== owner.id || row.owner.generation !== owner.generation) return [];
       const current = row.inputs.every(input => { const source = this.record(input.id); return !!source && source.kind === "upload" && source.expectedHash === input.sha256 && this.usable(source) && this.lineageCurrent(source, memo); });
@@ -382,7 +389,7 @@ export class FileStore<Actor> {
         this.owner(actor, parent);
         if (parent.sha256 !== input.artifact.sha256 || parent.conversationId !== input.conversationId) throw new AppError("artifact_unavailable", 409);
         // The new copy sits one level above its parent's deepest input; refuse rather than exceed the bound.
-        const memo = new Map<string, number>(), heights = parent.inputs.map(ref => { const row = this.record(ref.id); return row?.kind === "upload" ? this.lineageHeight(row, memo) : -1; });
+        const memo = this.#heights, heights = parent.inputs.map(ref => { const row = this.record(ref.id); return row?.kind === "upload" ? this.lineageHeight(row, memo) : -1; });
         if (heights.some(height => height < 0)) throw new AppError("lineage_withdrawn", 409);
         if (Math.max(...heights) + 1 >= maxArtifactRevisionDepth) throw new AppError("revision_limit", 409);
         // Exact current parent bytes and every transitive source; a withdrawn ancestor refuses here.
