@@ -46,6 +46,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   #running = new Map<string, AbortController>();
   #owners = new Map<string, { actor: OwnerActor; commandId: string }>();
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
+    if (options.memory?.fileContract && (!store.fileMemory || !options.guardInterpretation)) throw new AppError("file_memory_required", 503);
+    if (!options.memory?.fileContract && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileMemory')='text' LIMIT 1").get()) throw new AppError("file_memory_required", 503);
     this.clock = options.clock ?? clock;
     if (!options.memory && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.memory')='object' LIMIT 1").get()) throw new AppError("memory_required", 503);
     if (!options.files && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileInputs')='array' LIMIT 1").get()) throw new AppError("files_required", 503);
@@ -87,6 +89,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
           this.store.requireFileContract();
           request.fileInputs = this.options.files.accept(actor, input);
           if (request.fileInputs.some(file => file.contract === "s16-file-receipt/v2")) this.store.requireFileContract(3); request.artifacts = [];
+          if (this.options.memory?.fileContract) { this.store.requireFileContract(4); request.fileMemory = this.options.memory.fileContract; }
           if (input.text === "") intent = { kind: "accept", subject: null, instruction: "" };
         }
         this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(input.requestId, input.conversationId, request.state, canonical(request));
@@ -326,11 +329,11 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.options.beforeCommit?.(); return request;
       });
       timer = setTimeout(() => abort.abort(), request.interpretation!.authority.limits.activeMs);
-      const interpretationContext = this.interpretationContext(request);
+      const interpretationContext = this.interpretationContext(request, work!);
       const interpreted = await runConversation({ directory: this.options.nativeDirectory, request, definitions: [], signal: abort.signal, clock: this.clock, scripted: this.options.interpreterModel ?? this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
-        interpretation: { ...request.interpretation!, context: interpretationContext }, guard: () => guard("model"),
+        interpretation: { ...request.interpretation!, context: interpretationContext.messages }, guard: () => { guard("model"); this.options.memory?.guardHistory?.(work!, interpretationContext.fragments); },
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.interpretationUsage = usage; this.store.save(current); }),
-        ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => this.options.guardInterpretation!(work!, payload) } : {}),
+        ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => { const pins = this.options.memory?.guardHistory?.(work!, interpretationContext.fragments) ?? []; this.options.guardInterpretation!(work!, payload, pins); } } : {}),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);
           const attempt = current.interpretationAttempt ?? 1;
@@ -342,7 +345,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       request = this.store.transaction(() => {
         guard("model"); const current = this.store.request(id), actor = registration!.actor;
         this.owner(actor, current);
-        const selectedSubjects = interpretationContext.filter(message => message.role === "owner").map(message => groundConversationIntent(message.text)).filter(intent => intent.kind === "accept" || intent.kind === "execute").flatMap(intent => intent.subject ? [intent.subject] : []);
+        const selectedSubjects = interpretationContext.messages.filter(message => message.role === "owner").map(message => groundConversationIntent(message.text)).filter(intent => intent.kind === "accept" || intent.kind === "execute").flatMap(intent => intent.subject ? [intent.subject] : []);
         current.intent = freezeInterpretation(interpreted.text, current.intent, { purposes: current.interpretation!.purposes, resources: current.interpretation!.resources, selectedSubjects, fileOutput: current.command.contract === "s16-conversation/v2" });
         if (current.fileInputs && current.intent.kind === "answer") throw new AppError("file_work_required");
         if (current.intent.kind === "ambiguous" || current.intent.kind === "accept") {
@@ -367,9 +370,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       clearTimeout(timer); startedAt = this.clock.now(); timer = setTimeout(() => abort.abort(), request.authority!.limits.activeMs);
       // Persist continuity dependency before MEM can retain/withdraw anything. A later boot without
       // that protected service must refuse rather than replay raw owner/history or publish old data.
-      if (this.options.memory && !request.fileInputs) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
+      if (this.options.memory && (!request.fileInputs || request.fileMemory)) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
       const ingress = this.store.db.query<{ receipt_json: string }, [string]>("SELECT receipt_json FROM commands WHERE id=?").get(request.interpretationRequest.requestId)!;
-      const memory = request.fileInputs ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
+      const memory = request.fileInputs && !request.fileMemory ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
       if (memory) {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
@@ -420,7 +423,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
               });
               guard();
               if (request.memory && this.options.memory?.observe) {
-                const retained = this.options.memory.observe(work!, request, evidence);
+                const retained = this.options.memory.observe(work!, request, evidence, this.store.evidence(id));
                 if (retained.length) this.store.transaction(() => { const current = this.store.request(id); current.memory!.retained.push(...retained); this.store.save(current); });
               }
               return { content: result.content, isError: evidence.isError };
@@ -463,8 +466,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         guard("publication"); const current = this.store.request(id), evidence = this.store.evidence(id);
         if (current.code) throw new AppError(current.code);
         if (current.intent.kind !== "answer" && !evidence.some(item => !item.isError)) throw new AppError("result_unavailable");
-        if (current.memory) this.options.memory?.complete(work!, id, output.text);
         if (current.fileInputs) current.artifacts = this.options.files!.complete(work!, current, evidence);
+        if (current.memory) { const retained = this.options.memory?.complete(work!, id, output.text); if (retained?.length) current.memory.retained.push(...retained); }
+        if (current.memory && current.artifacts?.length) this.options.memory?.artifacts?.(work!, id, current.artifacts);
         current.state = "completed"; current.code = current.intent.hold ? "owner_start_required" : null; current.result = output.text; current.usage = output.usage; current.revision++;
         this.store.save(current); this.store.event(current, "result", this.clock.now());
         if (current.code) this.store.event(current, "needs_me", this.clock.now(), current.code);
@@ -488,8 +492,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (this.#owners.get(id)?.commandId === registration?.commandId) this.#owners.delete(id);
     }
   }
-  private interpretationContext(request: ConversationRequest): { role: "owner" | "assistant"; text: string }[] {
+  private interpretationContext(request: ConversationRequest, work: WorkContext): { messages: { role: "owner" | "assistant"; text: string }[]; fragments: { id: string; text: string }[] } {
     const context: { role: "owner" | "assistant"; text: string }[] = []; let bytes = 0;
+    const fragments: { id: string; text: string }[] = [];
     if (request.interpretationRequest.requestId !== request.command.requestId) context.push({ role: "owner", text: request.command.text });
     const cutoff = request.contextSequence ?? this.store.db.query<{ sequence: number }, [string]>("SELECT min(sequence) AS sequence FROM events WHERE request_id=? AND kind='received'").get(request.receipt.rootRequestId)!.sequence;
     const prior = this.store.db.query<{ id: string; command_json: string }, [string, string, string]>(`SELECT r.id,c.command_json FROM commands c JOIN requests r ON r.id=c.root_id
@@ -497,11 +502,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     for (const row of prior) {
       const value = this.store.request(row.id);
       if (value.owner.id !== request.owner.id || value.owner.generation !== request.owner.generation) continue;
-      // File-derived context needs its own cross-request source ancestry. Until that lands, never replay
-      // file requests into interpretation or sourced memory, including their owner/assistant text.
-      if (value.fileInputs) continue;
+      // Older file commands keep their frozen memory/history fence. New file-aware history is admitted
+      // only with an existing current packet, precise ancestry and a final per-send disclosure check.
+      if (value.fileInputs && (!value.fileMemory || !this.options.memory?.fileContract)) continue;
       const ownerCommand = JSON.parse(row.command_json) as ConversationCommand;
       if (this.options.memory && (!this.options.memory.allowHistory(ownerCommand.requestId, ownerCommand.text) || !this.options.memory.allowHistory(row.id, ownerCommand.text))) continue;
+      if (value.memory && this.options.memory?.history && !this.options.memory.history(work, row.id, ownerCommand.text)) continue;
+      if (value.fileInputs && !value.memory) continue;
       const next: { role: "owner" | "assistant"; text: string }[] = [{ role: "owner", text: ownerCommand.text }];
       // Only tool-free answers published before this ingress may enter owner/assistant context.
       const answeredBefore = this.store.db.query<{ sequence: number }, [string, number]>("SELECT sequence FROM events WHERE request_id=? AND kind='result' AND sequence<? LIMIT 1").get(row.id, cutoff);
@@ -511,8 +518,9 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       }
       const size = Buffer.byteLength(JSON.stringify(next)); if (bytes + size > 16384) continue;
       bytes += size; context.unshift(...next);
+      if (value.memory && this.options.memory?.guardHistory) fragments.push({ id: row.id, text: ownerCommand.text });
     }
-    return context;
+    return { messages: context, fragments };
   }
   /** Graceful stop fences late publication and waits before closing the protected store. */
   async shutdown(): Promise<void> {

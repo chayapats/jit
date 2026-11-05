@@ -10,13 +10,13 @@ const applicationId = 0x4a495435;
  * Fresh opt-in protected conversation journal, outside guest/native/recovery images. Never opens an
  * S14/legacy database for writing. One OS-backed process lock makes boot recovery exclusive; receipts,
  * queues, claims, evidence and events share synchronous FULL SQLite transactions. File opt-in stamps
- * format 2 with its first committed command; no S14/legacy state is imported.
+ * format 2/3 with text/binary input and format 4 with explicit file-memory ingress; no legacy import.
  */
 export class ConversationStore {
   readonly db!: Database;
   #lock: Database;
   #closed = false;
-  constructor(readonly path: string, installationId: string, create = false, readonly fileContract = false) {
+  constructor(readonly path: string, installationId: string, create = false, readonly fileContract = false, readonly fileMemory = false) {
     identity(installationId);
     const existing = existsSync(path);
     if (existing) {
@@ -25,7 +25,7 @@ export class ConversationStore {
       const header = Buffer.alloc(100), fd = openSync(path, "r");
       let length: number;
       try { length = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
-      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && [2, 3].includes(header.readUInt32BE(60)))) throw new AppError("conversation_store_incompatible", 409);
+      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && ([2, 3].includes(header.readUInt32BE(60)) || fileMemory && header.readUInt32BE(60) === 4))) throw new AppError("conversation_store_incompatible", 409);
     } else if (!create) throw new AppError("continuity_unavailable", 503);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lockPath = `${path}.runtime-lock.sqlite`;
@@ -62,8 +62,9 @@ export class ConversationStore {
   transaction<T>(action: () => T): T { return this.db.transaction(action).immediate(); }
   /** Stamp the incompatible file-publication dependency in the same transaction as the first file
    * command. Older binaries refuse format 2 even if an earlier composition manifest is restored. */
-  requireFileContract(version: 2 | 3 = 2): void {
+  requireFileContract(version: 2 | 3 | 4 = 2): void {
     if (!this.fileContract || !this.db.inTransaction) throw new AppError("files_required", 503);
+    if (version === 4 && !this.fileMemory) throw new AppError("file_memory_required", 503);
     const current = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
     this.db.exec(`PRAGMA user_version=${Math.max(current, version)}`);
   }

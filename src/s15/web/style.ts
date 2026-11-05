@@ -51,6 +51,7 @@ export function s15StyleSheet(): string {
 .s15-setup-steps li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .s15-rule-lists { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .s15-rule-lists ul { padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: var(--size-sm); }
+.s15-file-sources code { display: block; max-width: 100%; overflow-wrap: anywhere; word-break: break-all; }
 .s15-claim { padding: 10px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
 .s15-forget { margin-top: 8px; }
 .s15-needs-count { margin-left: auto; }

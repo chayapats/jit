@@ -5,7 +5,8 @@ import { AppError } from "../../errors";
 import { identity } from "../conversation/validation";
 
 /**
- * Version-one protected store shared by the TEAM/MEM implementations. Each supplies a distinct
+ * Protected store shared by TEAM/MEM. File-aware compositions additionally accept stamped format 2.
+ * Each supplies a distinct
  * application ID and explicit DDL. Existing foreign/older/newer stores refuse before writable open.
  * This is current continuity state, excluded from guest disks and ordinary backup/restore images.
  */
@@ -13,7 +14,7 @@ export class ProtectedDataStore {
   readonly db!: Database;
   #lock: Database;
   #closed = false;
-  constructor(readonly path: string, installationId: string, create: boolean, applicationId: number, ddl: string) {
+  constructor(readonly path: string, installationId: string, create: boolean, applicationId: number, ddl: string, fileAware = false) {
     identity(installationId);
     const existing = existsSync(path);
     if (existing) {
@@ -22,7 +23,7 @@ export class ProtectedDataStore {
       const header = Buffer.alloc(100), fd = openSync(path, "r");
       let length: number;
       try { length = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
-      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || header.readUInt32BE(60) !== 1) throw new AppError("s15_data_store_incompatible", 409);
+      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileAware && header.readUInt32BE(60) === 2)) throw new AppError("s15_data_store_incompatible", 409);
     } else if (!create) throw new AppError("continuity_unavailable", 503);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lockPath = `${path}.runtime-lock.sqlite`;

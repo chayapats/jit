@@ -361,10 +361,10 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       return clone(options?.requireUsable ? usablePolicy() : getPolicy());
     }); },
     prepareInterpretation(actor, input) { return tx(() => {
-      v.exact(input, ['requestId', 'selection', 'expiresAt']); v.id(input.requestId); v.selection(input.selection); v.nat(input.expiresAt, true);
+      v.exact(input, ['requestId', 'selection', 'expiresAt', ...(input.bot ? ['bot'] : [])]); v.id(input.requestId); v.selection(input.selection); v.nat(input.expiresAt, true); if (input.bot) v.ref(input.bot);
       return receipt(actor, input.requestId, { kind: 'interpretation.prepare', input }, () => {
         const p = policyCurrent(); if (!p.interpretationPurpose) v.fail('interpretation_policy_required');
-        const request: T.WorkRequest = { requestId: input.requestId, intent: 'inspect', access: 'read', purpose: clone(p.interpretationPurpose), bot: clone(p.bots[0] ?? v.fail('outside_scope')), resources: [], recipients: [], selection: clone(input.selection), selectionPin: clone(input.selection), expiresAt: input.expiresAt };
+        const request: T.WorkRequest = { requestId: input.requestId, intent: 'inspect', access: 'read', purpose: clone(p.interpretationPurpose), bot: clone(input.bot ?? p.bots[0] ?? v.fail('outside_scope')), resources: [], recipients: [], selection: clone(input.selection), selectionPin: clone(input.selection), expiresAt: input.expiresAt };
         checkRequest(p, request); if (time() >= input.expiresAt || input.expiresAt > p.expiresAt || (p.budget && input.expiresAt > p.budget.expiresAt)) v.fail('expired');
         const authority: T.WorkAuthority = { id: uid(), mode: 'interpretation', readLimit: 0, ownerGeneration: p.ownerGeneration, policyRevision: p.revision, policyHash: v.digest('s15.policy.v1', p), request, createdAt: time(), expiresAt: input.expiresAt };
         if (!options.catalogs.allows(clone(authority), null)) v.fail('outside_scope');

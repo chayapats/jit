@@ -1,4 +1,5 @@
 import type { OwnerActor, Ref, S15PolicyService, WorkActor, WorkAuthority } from "../policy";
+import type { FileLineagePort, FileSourcePin } from "../file-lineage";
 
 /** Versioned privacy label; S14 material must retain its exact private Bot owner. */
 export type DataScope = { kind: "team" } | { kind: "bot"; botId: string; origin: "s15" | "s14" };
@@ -25,6 +26,7 @@ export interface TeamSource {
   origin: SourceOrigin; resources: Ref[]; parents: string[];
   producer: { workId: string; bot: Ref; policyRevision: number; ownerGeneration: number };
   active: boolean;
+  filePins?: FileSourcePin[];
 }
 declare const contextBrand: unique symbol, leaseBrand: unique symbol;
 /** Process-local identity; JSON, source text and stored metadata cannot recreate it. */
@@ -42,6 +44,8 @@ export interface TeamOptions {
   maxConcurrentOperations: number;
   /** Current producer fences, resolved by the owning service; missing evidence withholds descendants. */
   producerCurrent: (producer: TeamSource["producer"]) => boolean;
+  /** Explicit precise-file integration. Absence refuses file-aware continuity. */
+  fileLineage?: FileLineagePort;
 }
 /** Explicit current resource view for protected UI; it contains no credential/profile/session handles. */
 export interface TeamResourcesView {
