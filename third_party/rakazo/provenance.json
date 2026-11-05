@@ -1,5 +1,12 @@
 {
-  "contract": "jit.upstream-provenance/v1",
+  "contract": "jit.upstream-provenance/v2",
+  "upstream": {
+    "repository": "https://github.com/elie222/rakazo",
+    "commit": "abf3c08145a05cba92a912d6c24fdfb5f569d0e0",
+    "tree": "f8ca5adc96366b722bb60186c21cb29cec0f5390",
+    "archiveSha256": "10aa4afe806a958a56fa996451466899956d7b5db9bd7b3ce06109350f7150a3",
+    "notice": null
+  },
   "files": [
     {
       "repository": "https://github.com/elie222/rakazo",
@@ -8,7 +15,10 @@
       "sha256": "45fabe9f10a44bec61e58e33b301db5efd433802478034ce3fed02815204c20b",
       "destination": "src/s16/client/artifact-preview.ts",
       "license": "Apache-2.0",
-      "modifications": "Extracted MIME preview classification only. No upstream acceptance limits, upload policy or authority."
+      "modifications": "Extracted MIME preview classification only. No upstream acceptance limits, upload policy or authority.",
+      "destinationSha256": "bc7efeb85fca3c08ed500c97c51ca84ec349c05695847184551955b45da6da3c",
+      "imports": [],
+      "review": "No upstream nested packages, assets, credentials, telemetry or runtime were retained. React imports bind to the separately reviewed local dependency inventory."
     },
     {
       "repository": "https://github.com/elie222/rakazo",
@@ -17,7 +27,53 @@
       "sha256": "1ba299e9e0ae636e460b9301c6c332a007d352f9a33db4407701468754013132",
       "destination": "src/s16/web/ArtifactFileCard.tsx",
       "license": "Apache-2.0",
-      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; text-only protected inspector."
+      "modifications": "Adapted separate preview/download card, error state and focus ownership. Replaced RPC, design system, i18n, rendering and authentication; protected text inspector forwards the actual auth failure for private-state invalidation.",
+      "destinationSha256": "92ec9c26238fab23f1210fb830e57d756c4e0f0282709af8142033c02ceab7a7",
+      "imports": [
+        "../client/artifact-preview",
+        "react",
+        "react/jsx-dev-runtime"
+      ],
+      "review": "No upstream nested packages, assets, credentials, telemetry or runtime were retained. React imports bind to the separately reviewed local dependency inventory."
     }
-  ]
+  ],
+  "dependencies": {
+    "playwright-core": "1.64.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "schway": "file:vendor/schway-1.0.0-rc.2-aac2fc0.tgz"
+  },
+  "lockSha256": "2bb52ed5a9e6e4e36c92a9f44e99552119492a6317201e64bb1aa6492ac24fd5",
+  "browserDependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "scheduler": "0.28.0"
+  },
+  "licenses": [
+    {
+      "path": "LICENSE",
+      "sha256": "8aeb3cfca8a685becd755e1cb4b94a255897c326138991d032457049c7d3d7f2"
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "754a2099a2ba5178e5ee84edb353abd07ed4d2118bfbedf40d772b584623d6d6"
+    },
+    {
+      "path": "third_party/rakazo/LICENSE",
+      "sha256": "b9738182c46747cb7cd36cad62d55c8922ca8d0029df280d3d73bb3c95d34935"
+    },
+    {
+      "path": "third_party/react/react-LICENSE",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "path": "third_party/react/react-dom-LICENSE",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "path": "third_party/react/scheduler-LICENSE",
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    }
+  ],
+  "assets": []
 }

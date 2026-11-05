@@ -1,13 +1,14 @@
 import { readFileSync } from "node:fs";
 import { AppError } from "../../errors";
 import { negotiateLocale } from "../../i18n";
+import { resolve } from "node:path";
+import { browserLicenseHeader } from "../../../ops/package/upstream";
 
 /** Bun-built React surface over the protected client API. No inline script, second auth or server. */
 export async function createS16WebHandler(authenticate: (request: Request) => Promise<Response>): Promise<(request: Request) => Promise<Response>> {
-  const built = await Bun.build({ entrypoints: [new URL("./app.tsx", import.meta.url).pathname], target: "browser", minify: true, define: { "process.env.NODE_ENV": JSON.stringify("production") } });
-  if (!built.success || built.outputs.length !== 1) throw new AppError("client_build_unavailable", 503);
-  // License texts also ship in every source/release artifact (NOTICE and third_party).
-  const script = await built.outputs[0]!.text(), style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
+  const built = await Bun.build({ entrypoints: [new URL("./app.tsx", import.meta.url).pathname], target: "browser", minify: true, metafile: true, define: { "process.env.NODE_ENV": JSON.stringify("production") } });
+  if (!built.success || built.outputs.length !== 1 || !built.metafile) throw new AppError("client_build_unavailable", 503);
+  const script = browserLicenseHeader(resolve(import.meta.dir, "../../.."), built.metafile.inputs) + await built.outputs[0]!.text(), style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
   const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'", Vary: "Cookie, Accept-Language" };
   return async request => {
     const url = new URL(request.url);
