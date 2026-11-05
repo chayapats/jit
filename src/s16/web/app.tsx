@@ -143,4 +143,8 @@ function App() {
   </div>;
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = document.getElementById("root")!;
+if (typeof globalThis.crypto?.randomUUID !== "function" || !globalThis.crypto?.subtle) {
+  root.className = "notice"; root.setAttribute("role", "alert");
+  root.textContent = copy(document.documentElement.lang === "en" ? "en" : "th")("s16.common.secureContext");
+} else createRoot(root).render(<App />);

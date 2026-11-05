@@ -5820,6 +5820,7 @@ export const en: Record<MessageKey, string> = {
   "s16.artifact.unavailable": "This file is unavailable. Refresh the conversation to check current access.",
   "s16.common.refresh": "Refresh",
   "s16.common.loading": "Loading…",
+  "s16.common.secureContext": "This client needs browser WebCrypto. Open Jit over HTTPS or through localhost, then reload.",
   "s16.common.error": "Unable to load. Sign in again or refresh to check current access.",
   "s16.common.details": "Details",
   "s16.common.close": "Close",

@@ -5824,6 +5824,7 @@ export const th = {
   "s16.artifact.unavailable": "ไฟล์ไม่พร้อมใช้งาน โหลดบทสนทนาใหม่เพื่อตรวจสอบสิทธิ์ปัจจุบัน",
   "s16.common.refresh": "โหลดใหม่",
   "s16.common.loading": "กำลังโหลด…",
+  "s16.common.secureContext": "client นี้ต้องใช้ WebCrypto ของ browser เปิดจิตผ่าน HTTPS หรือ localhost แล้วโหลดใหม่ครับ",
   "s16.common.error": "โหลดไม่สำเร็จ เข้าสู่ระบบอีกครั้งหรือโหลดใหม่เพื่อตรวจสอบสิทธิ์",
   "s16.common.details": "รายละเอียด",
   "s16.common.close": "ปิด",

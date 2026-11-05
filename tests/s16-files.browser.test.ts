@@ -61,3 +61,20 @@ browserTest.each([1440, 390])("real React upload, committed artifact preview/dow
     expect(errors).toEqual([]); expect(external).toEqual([]); expect(f.vmCalls).toEqual([]); expect(messages).toBe(1);
   } finally { releaseSnapshot.resolve(); await context.close(); await f.close(); }
 }, 30000);
+
+browserTest("non-local HTTP without WebCrypto gives a specific explanation before creating client requests", async () => {
+  const f = await composedFixture(), context = await browser.newContext({ locale: "en-US" });
+  const requested: string[] = [], errors: string[] = [];
+  await context.route("**/*", async route => {
+    const incoming = route.request(), url = new URL(incoming.url());
+    if (url.origin !== "http://jit.test") { await route.abort(); return; }
+    requested.push(url.pathname);
+    const response = await f.request(url.pathname, incoming.method(), undefined, { ...incoming.headers(), host: "localhost:3099" });
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+  const page = await context.newPage(); page.on("pageerror", error => errors.push(error.message));
+  try {
+    await page.goto("http://jit.test/s16"); await page.getByText(en["s16.common.secureContext"], { exact: true }).waitFor();
+    expect(await page.locator(".s16-app").count()).toBe(0); expect(requested.some(path => path.startsWith("/api/"))).toBe(false); expect(errors).toEqual([]); expect(f.vmCalls).toEqual([]);
+  } finally { await context.close(); await f.close(); }
+}, 30000);
