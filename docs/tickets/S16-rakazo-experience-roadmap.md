@@ -65,4 +65,6 @@ All paths refer to Rakazo commit `abf3c08145a05cba92a912d6c24fdfb5f569d0e0`. A c
 
 ## Completion evidence
 
+UX16-01 has an authored [complete experience handoff](../design/S16-rakazo-experience.md) and [Mobbin research record](../design/S16-mobbin-research.md) against baseline `80cc1c80`, reviewed for the distinction between existing bindings and proposed contracts. The first slice selects a Bun-built React client over the protected Jit service, retaining current stores initially; upload receipts, immutable artifact publication and live steering require implementation. The design is not runtime or live acceptance evidence.
+
 Every owning issue records tested SHA, current contracts, imported-file provenance, checks, residuals and opt-in live outcomes. Follow the S16-AC22 scenarios. A terminal child response, closed upstream ticket, compile success, mock UI, copied source tree or feature count does not establish completion. Publish honest pending/unsupported cases; do not mark the parent complete for documentation or the first working slice.

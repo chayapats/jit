@@ -2,6 +2,8 @@
 
 Status: owner-confirmed product direction, 2026-11-05; implementation is in progress, not accepted parity. Parent: [#392](https://github.com/chayapats/jit/issues/392). [Delivery graph](../tickets/S16-rakazo-experience-roadmap.md). [ADR 0074](../adr/0074-rakazo-reuse-and-product-convergence.md).
 
+The [experience handoff](../design/S16-rakazo-experience.md) and [inspected Mobbin references](../design/S16-mobbin-research.md) supply UX16-01's concrete design input. Their proposed operations are not supported runtime contracts until implemented and tested.
+
 ## Confirmed direction
 
 The owner asked for the Rakazo experience, authorized reusing its concepts and code, and explicitly chose to keep Jit + Schway rather than start a Rakazo fork and port Jit back into it. The owner subsequently instructed that existing stacks and implementation constraints must not be treated as fixed: propose changes that make the product simpler or better.
