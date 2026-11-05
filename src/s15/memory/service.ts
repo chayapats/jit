@@ -5,6 +5,7 @@ import { digest } from "../conversation/validation";
 import { ProtectedDataStore } from "../team/store";
 import { canonical, content, exact, identity, ids, inScope, integer, origin, reference, scope } from "../team/validation";
 import { extractMemory } from "./extract";
+import { memoryId } from "./identity";
 import { MEMORY_SCHEMA_V1 } from "./store";
 import type { ForgetImpact, MemoryCandidate, MemoryClaim, MemoryCommand, MemoryDerivative, MemoryInput, MemoryOptions, MemoryPacket, MemoryProvenance, MemoryView, OwnerActor, TeamContext } from "./types";
 
@@ -140,7 +141,7 @@ export class MemoryService {
       this.store.capacity(); claims.forEach(claim => { if (!this.accessible(context, claim)) throw new AppError("memory_context_stale", 409); });
       const workId = this.options.team.guard(context).id;
       this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
-      this.saveDerivative({ id: `native_${requestId}`, kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
+      this.saveDerivative({ id: memoryId(`native_${requestId}`), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}) });
     });
     return { id: requestId, claims, section: canonical({ authority: "none", claims }), retained: [] };
   }
@@ -150,7 +151,7 @@ export class MemoryService {
     this.store.transaction(() => {
       this.guard(context, packetId);
       for (const claimId of claimIds) if (!this.accessible(context, this.claim(claimId))) throw new AppError("memory_context_stale", 409);
-      for (const derivativeId of [packetId, `native_${packetId}`]) {
+      for (const derivativeId of [packetId, memoryId(`native_${packetId}`)]) {
         const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(derivativeId);
         if (!row) throw new AppError("memory_context_stale", 409);
         const derivative = JSON.parse(row.record_json) as MemoryDerivative;

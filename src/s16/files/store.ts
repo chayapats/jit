@@ -100,7 +100,8 @@ export class FileStore<Actor> {
     if (!textExtensions.has(name.split(".").at(-1)!.toLowerCase()) && !(this.parser && /\.(pdf|png|jpe?g)$/i.test(name))) throw new AppError("file_type_unavailable", 415);
     return this.journal.tx(() => {
       const owner = this.current(actor), fingerprint = digest(canonical({ owner, input }));
-      const created = this.journal.once(`create_${input.requestId}`, fingerprint, () => {
+      const commandId = `create_${input.requestId}`;
+      const created = this.journal.once(commandId.length <= 128 ? commandId : `create_${digest(commandId)}`, fingerprint, () => {
         this.capacity(input.bytes);
         // Fence old text-only file readers even before the first binary CHAT ingress.
         if (/\.(pdf|png|jpe?g)$/i.test(name)) this.journal.db.exec("PRAGMA user_version=2");

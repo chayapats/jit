@@ -31,8 +31,9 @@ async function world(tune?: (options: S15CompositionOptions) => S15CompositionOp
   }); all.push(f);
   async function file(text = fact, id = "filework", reads = [0], completed = true) {
     phase = "file"; calls = 0; offsets = reads;
-    const pending = await (await f.request(`/api/s16/client/conversations/${id}/uploads`, "POST", { requestId: "up_" + id, conversationId: id, name: "knowledge.txt", bytes: Buffer.byteLength(text), sha256: hash(text) })).json() as FileUpload;
-    const response = await f.raw(`/api/s16/client/uploads/${pending.id}/bytes`, text); expect(response.status).toBe(200);
+    const started = await f.request(`/api/s16/client/conversations/${id}/uploads`, "POST", { requestId: "up_" + hash(id), conversationId: id, name: "knowledge.txt", bytes: Buffer.byteLength(text), sha256: hash(text) });
+    expect(started.status).toBe(201); const pending = await started.json() as FileUpload;
+    const response = await f.raw(`/api/s16/client/uploads/${pending.id}/bytes`, text); expect({ status: response.status, error: response.ok ? null : await response.clone().text() }).toEqual({ status: 200, error: null });
     const receipt = (await response.json() as FileUpload).receipt!; inputId = receipt.id;
     expect((await f.request(`/api/s16/client/conversations/${id}/messages`, "POST", { contract: "s16-conversation/v2", requestId: id, conversationId: id, text: "Create a downloadable summary from this file", continuation: null, files: [{ id: receipt.id, sha256: receipt.sha256 }] })).status).toBe(202);
     await f.service.conversation.drain(); const row = f.service.conversation.view(f.owner, id); expect({ state: row.state, code: row.code }).toEqual(completed ? { state: "completed", code: null } : { state: "held", code: "file_read_required" }); phase = "answer";
@@ -182,4 +183,8 @@ test("an authorized VM tool receives the actual memory-derived content under the
   await w.file(); vm = true; w.f.interpretation = { intent: "execute", purposeId: "purpose", resourceIds: ["computer"], access: "reversible_write", subject: null };
   const result = await w.f.chat("Run a command using the working knowledge about the launch day", "vm_memory");
   expect({ state: result.state, code: result.code }).toEqual({ state: "completed", code: null }); expect(w.f.vmCalls).toContain("spawn"); expect(JSON.stringify(transported)).toContain("printf Friday");
+});
+test("a maximum-length client request identity does not overflow internal memory observation keys", async () => {
+  const w = await world(); await w.file(fact, "r".repeat(128)); expect((await w.answer()).result).toContain("Friday");
+  await w.f.reopen(); expect((await w.answer("after_long_id_restart")).result).toContain("Friday");
 });

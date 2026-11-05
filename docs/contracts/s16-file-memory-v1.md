@@ -10,6 +10,8 @@ The protected client advertises capabilities revision 2, `uploads.memory: true`,
 
 First new file-memory ingress stamps CHAT `user_version=4` atomically with that command. TEAM/MEM stamp `user_version=2` when they first persist file pins. Only explicit file-aware compositions accept those versions; turning the integration off or rolling back to an older reader refuses before writable adoption. The file journal retains its text/binary formats 1/2. No table conversion, old command rewrite or native history recovery occurs. Restoring only an earlier manifest cannot remove these fences; recovery needs a compatible release/state plan.
 
+Public request identities retain their 128-character bound. Internal prefixed memory and upload-command keys preserve existing short identities and hash only overlong compositions. Exact source metadata and command fingerprints still fence mismatched reuse; an internal key is never an authority or source substitute. Maximum-length request retention and upload idempotency survive restart.
+
 ## Immutable metadata and selected-byte verification
 
 `s16-file-source/v1` is a closed metadata pin:

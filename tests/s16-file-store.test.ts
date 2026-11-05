@@ -53,6 +53,14 @@ test("streamed input has an exact immutable receipt, safe name and current owner
   expect(readdirSync(join(f.root, "bytes"))).toEqual([`${ready.id}.blob`]);
 });
 
+test("maximum-length upload command identities stay idempotent across restart", async () => {
+  const f = fixture(), input = { ...f.command("Notes"), requestId: "u".repeat(128) };
+  const original = f.store.create(f.actor, input);
+  expect(f.store.create(f.actor, input).id).toBe(original.id);
+  await f.reopen(); expect(f.store.create(f.actor, input).id).toBe(original.id);
+  expect(() => f.store.create(f.actor, { ...input, name: "changed.txt" })).toThrow("request_id_conflict");
+});
+
 test.each(["<html>Active document</html>", "%PDF-1.7\n", "MZ executable", "PK\u0003\u0004archive", "invalid\u0000text"])("disguised input bytes are refused and quarantine is removed: %j", async text => {
   const f = fixture(), input = f.command(text), upload = f.store.create(f.actor, input);
   await expect(f.store.write(f.actor, upload.id, stream(bytes(text)))).rejects.toThrow();
