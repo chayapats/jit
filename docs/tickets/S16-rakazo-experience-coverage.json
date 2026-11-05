@@ -1,0 +1,1778 @@
+{
+  "schema": "jit.s16-backlog-coverage/v1",
+  "audited_at": "2026-11-05",
+  "baseline": "17b814220371cd1e2126be2ec9bd9753537f69e6",
+  "main_baseline": "76e15e9faece6b321a242725f161271fe1c20cf2",
+  "meaning": "Coverage ownership, not implementation or live acceptance. Native blocker edges denote required deliveries for final acceptance; independent contract investigation may proceed sooner.",
+  "roadmap_rows": {
+    "DOC16-01": 393,
+    "UX16-01": 394,
+    "BASE16-01": 405,
+    "API16-01": 395,
+    "FILE16-01": 396,
+    "ART16-01": 407,
+    "BROW16-01": 397,
+    "DESK16-01": 410,
+    "TEAM16-01": 411,
+    "BOT16-01": 412,
+    "DELEG16-01": 413,
+    "ROUT16-01": 414,
+    "MEM16-01": 416,
+    "CONN16-01": 417,
+    "MCP16-01": 418,
+    "OPEN16-01": 419,
+    "SKILL16-01": 420,
+    "MODEL16-01": 421,
+    "VOICE16-01": 422,
+    "CALL16-01": 423,
+    "CHANNEL16-01": 424,
+    "DESKTOP16-01": 425,
+    "MOBILE16-01": 426,
+    "COMPUTER16-01": 427,
+    "SPACE16-01": 428,
+    "OPS16-01": 429,
+    "EVID16-01": 430,
+    "CUT16-01": 432
+  },
+  "acceptance_owners": {
+    "S16-AC01": [
+      411,
+      412,
+      430,
+      431
+    ],
+    "S16-AC02": [
+      395,
+      406,
+      430,
+      431
+    ],
+    "S16-AC03": [
+      396,
+      400,
+      401,
+      402,
+      430,
+      431,
+      433
+    ],
+    "S16-AC04": [
+      396,
+      400,
+      401,
+      402,
+      407,
+      430,
+      431,
+      433
+    ],
+    "S16-AC05": [
+      410,
+      411,
+      430,
+      431
+    ],
+    "S16-AC06": [
+      397,
+      408,
+      409,
+      430,
+      431
+    ],
+    "S16-AC07": [
+      408,
+      410,
+      430,
+      431
+    ],
+    "S16-AC08": [
+      402,
+      413,
+      430,
+      431
+    ],
+    "S16-AC09": [
+      414,
+      415,
+      430,
+      431
+    ],
+    "S16-AC10": [
+      402,
+      416,
+      430,
+      431
+    ],
+    "S16-AC11": [
+      417,
+      430,
+      431
+    ],
+    "S16-AC12": [
+      418,
+      419,
+      430,
+      431
+    ],
+    "S16-AC13": [
+      420,
+      430,
+      431
+    ],
+    "S16-AC14": [
+      395,
+      421,
+      430,
+      431
+    ],
+    "S16-AC15": [
+      422,
+      423,
+      430,
+      431
+    ],
+    "S16-AC16": [
+      425,
+      430,
+      431
+    ],
+    "S16-AC17": [
+      426,
+      430,
+      431
+    ],
+    "S16-AC18": [
+      424,
+      430,
+      431
+    ],
+    "S16-AC19": [
+      427,
+      430,
+      431
+    ],
+    "S16-AC20": [
+      402,
+      407,
+      412,
+      416,
+      428,
+      430,
+      431
+    ],
+    "S16-AC21": [
+      395,
+      405,
+      429,
+      430,
+      431,
+      432
+    ],
+    "S16-AC22": [
+      405,
+      430,
+      431,
+      432
+    ]
+  },
+  "requirements_owners": {
+    "FR-01": [
+      405,
+      407,
+      411,
+      412,
+      416,
+      428,
+      430,
+      431,
+      432
+    ],
+    "FR-02": [
+      405,
+      410,
+      411,
+      412,
+      413,
+      421,
+      430,
+      431,
+      432
+    ],
+    "FR-03": [
+      405,
+      413,
+      430,
+      431,
+      432
+    ],
+    "FR-04": [
+      405,
+      407,
+      411,
+      412,
+      414,
+      415,
+      416,
+      424,
+      425,
+      428,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-05": [
+      405,
+      407,
+      412,
+      416,
+      428,
+      430,
+      431,
+      432
+    ],
+    "FR-06": [
+      405,
+      406,
+      422,
+      423,
+      430,
+      431,
+      432
+    ],
+    "FR-07": [
+      405,
+      407,
+      408,
+      409,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-08": [
+      405,
+      415,
+      430,
+      431,
+      432
+    ],
+    "FR-09": [
+      405,
+      414,
+      415,
+      424,
+      430,
+      431,
+      432
+    ],
+    "FR-10": [
+      405,
+      407,
+      408,
+      410,
+      412,
+      416,
+      417,
+      425,
+      426,
+      428,
+      430,
+      431,
+      432
+    ],
+    "FR-11": [
+      405,
+      414,
+      415,
+      422,
+      423,
+      424,
+      426,
+      430,
+      431,
+      432
+    ],
+    "FR-12": [
+      405,
+      414,
+      415,
+      430,
+      431,
+      432
+    ],
+    "FR-13": [
+      405,
+      421,
+      422,
+      423,
+      430,
+      431,
+      432
+    ],
+    "FR-14": [
+      405,
+      406,
+      410,
+      411,
+      413,
+      421,
+      422,
+      423,
+      427,
+      430,
+      431,
+      432
+    ],
+    "FR-15": [
+      405,
+      406,
+      410,
+      411,
+      414,
+      415,
+      418,
+      419,
+      424,
+      427,
+      429,
+      430,
+      431,
+      432
+    ],
+    "FR-16": [
+      405,
+      407,
+      412,
+      416,
+      428,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-17": [
+      405,
+      408,
+      409,
+      416,
+      418,
+      419,
+      420,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-18": [
+      405,
+      407,
+      408,
+      410,
+      412,
+      416,
+      425,
+      426,
+      427,
+      428,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-19": [
+      405,
+      406,
+      422,
+      423,
+      430,
+      431,
+      432
+    ],
+    "FR-20": [
+      405,
+      411,
+      412,
+      413,
+      420,
+      430,
+      431,
+      432
+    ],
+    "FR-21": [
+      405,
+      410,
+      411,
+      413,
+      418,
+      419,
+      420,
+      430,
+      431,
+      432
+    ],
+    "FR-22": [
+      405,
+      407,
+      412,
+      416,
+      417,
+      428,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-23": [
+      405,
+      417,
+      425,
+      427,
+      429,
+      430,
+      431,
+      432
+    ],
+    "FR-24": [
+      405,
+      406,
+      407,
+      412,
+      416,
+      422,
+      423,
+      425,
+      426,
+      428,
+      430,
+      431,
+      432
+    ],
+    "FR-25": [
+      405,
+      422,
+      423,
+      426,
+      430,
+      431,
+      432
+    ],
+    "FR-26": [
+      405,
+      414,
+      415,
+      430,
+      431,
+      432
+    ],
+    "FR-27": [
+      405,
+      413,
+      421,
+      430,
+      431,
+      432
+    ],
+    "FR-28": [
+      405,
+      414,
+      415,
+      424,
+      426,
+      430,
+      431,
+      432
+    ],
+    "FR-29": [
+      405,
+      406,
+      413,
+      430,
+      431,
+      432
+    ],
+    "FR-30": [
+      405,
+      424,
+      430,
+      431,
+      432
+    ],
+    "FR-31": [
+      405,
+      413,
+      416,
+      420,
+      421,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-32": [
+      405,
+      425,
+      430,
+      431,
+      432
+    ],
+    "FR-33": [
+      405,
+      414,
+      415,
+      430,
+      431,
+      432
+    ],
+    "FR-34": [
+      405,
+      414,
+      415,
+      430,
+      431,
+      432
+    ],
+    "FR-35": [
+      405,
+      407,
+      408,
+      410,
+      411,
+      412,
+      413,
+      416,
+      417,
+      418,
+      419,
+      420,
+      424,
+      425,
+      426,
+      427,
+      428,
+      429,
+      430,
+      431,
+      432
+    ],
+    "FR-36": [
+      405,
+      408,
+      410,
+      411,
+      427,
+      430,
+      431,
+      432
+    ],
+    "FR-37": [
+      405,
+      408,
+      409,
+      417,
+      418,
+      419,
+      422,
+      423,
+      424,
+      426,
+      430,
+      431,
+      432
+    ],
+    "FR-38": [
+      405,
+      408,
+      409,
+      410,
+      411,
+      417,
+      418,
+      419,
+      420,
+      421,
+      422,
+      423,
+      424,
+      425,
+      426,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "FR-39": [
+      405,
+      418,
+      419,
+      420,
+      430,
+      431,
+      432
+    ],
+    "FR-40": [
+      405,
+      408,
+      409,
+      410,
+      411,
+      425,
+      427,
+      430,
+      431,
+      432
+    ],
+    "FR-41": [
+      405,
+      408,
+      409,
+      430,
+      431,
+      432
+    ],
+    "FR-42": [
+      405,
+      407,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-01": [
+      405,
+      410,
+      411,
+      420,
+      427,
+      430,
+      431,
+      432
+    ],
+    "NFR-02": [
+      405,
+      413,
+      418,
+      419,
+      420,
+      421,
+      429,
+      430,
+      431,
+      432
+    ],
+    "NFR-03": [
+      405,
+      421,
+      430,
+      431,
+      432
+    ],
+    "NFR-04": [
+      405,
+      427,
+      429,
+      430,
+      431,
+      432
+    ],
+    "NFR-05": [
+      405,
+      406,
+      407,
+      411,
+      412,
+      413,
+      414,
+      415,
+      417,
+      418,
+      419,
+      422,
+      423,
+      424,
+      425,
+      426,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-06": [
+      405,
+      406,
+      407,
+      410,
+      411,
+      413,
+      414,
+      415,
+      418,
+      419,
+      421,
+      422,
+      423,
+      424,
+      427,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-07": [
+      405,
+      407,
+      408,
+      409,
+      410,
+      412,
+      413,
+      416,
+      417,
+      418,
+      419,
+      420,
+      422,
+      423,
+      424,
+      425,
+      426,
+      428,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-08": [
+      405,
+      407,
+      411,
+      412,
+      416,
+      425,
+      427,
+      428,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-09": [
+      405,
+      416,
+      417,
+      420,
+      421,
+      422,
+      423,
+      424,
+      426,
+      429,
+      430,
+      431,
+      432
+    ],
+    "NFR-10": [
+      405,
+      408,
+      409,
+      414,
+      415,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-11": [
+      405,
+      406,
+      407,
+      408,
+      410,
+      412,
+      416,
+      422,
+      423,
+      425,
+      426,
+      428,
+      430,
+      431,
+      432
+    ],
+    "NFR-12": [
+      405,
+      407,
+      410,
+      411,
+      412,
+      416,
+      425,
+      428,
+      429,
+      430,
+      431,
+      432,
+      433
+    ],
+    "NFR-13": [
+      405,
+      425,
+      426,
+      428,
+      430,
+      431,
+      432
+    ],
+    "NFR-14": [
+      405,
+      408,
+      409,
+      410,
+      411,
+      417,
+      418,
+      419,
+      420,
+      425,
+      427,
+      430,
+      431,
+      432,
+      433
+    ]
+  },
+  "issues": [
+    {
+      "number": 392,
+      "url": "https://github.com/chayapats/jit/issues/392",
+      "key": "S16",
+      "state": "open",
+      "labels": [
+        "spec",
+        "needs-triage"
+      ],
+      "parent": null,
+      "blocked_by": [],
+      "children": [
+        393,
+        394,
+        395,
+        396,
+        397,
+        402,
+        405,
+        406,
+        407,
+        410,
+        411,
+        412,
+        413,
+        414,
+        415,
+        416,
+        417,
+        418,
+        419,
+        420,
+        421,
+        422,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        430,
+        431,
+        432
+      ],
+      "status": "scope-parent",
+      "acceptance": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "number": 393,
+      "url": "https://github.com/chayapats/jit/issues/393",
+      "key": "DOC16-01",
+      "state": "open",
+      "labels": [
+        "documentation",
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [],
+      "children": [],
+      "status": "implemented-on-draft",
+      "acceptance": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "number": 394,
+      "url": "https://github.com/chayapats/jit/issues/394",
+      "key": "UX16-01",
+      "state": "open",
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        393
+      ],
+      "children": [],
+      "status": "implemented-on-draft",
+      "acceptance": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "number": 395,
+      "url": "https://github.com/chayapats/jit/issues/395",
+      "key": "API16-01",
+      "state": "open",
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        393
+      ],
+      "children": [],
+      "status": "implemented-on-draft",
+      "acceptance": [
+        2,
+        14,
+        21
+      ]
+    },
+    {
+      "number": 396,
+      "url": "https://github.com/chayapats/jit/issues/396",
+      "key": "FILE16-01",
+      "state": "open",
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        394
+      ],
+      "children": [
+        400,
+        401,
+        433
+      ],
+      "status": "scope-parent",
+      "acceptance": [
+        3,
+        4
+      ]
+    },
+    {
+      "number": 397,
+      "url": "https://github.com/chayapats/jit/issues/397",
+      "key": "BROW16-01",
+      "state": "open",
+      "labels": [
+        "enhancement",
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        393,
+        394
+      ],
+      "children": [
+        408,
+        409
+      ],
+      "status": "planned",
+      "acceptance": [
+        6
+      ]
+    },
+    {
+      "number": 400,
+      "url": "https://github.com/chayapats/jit/issues/400",
+      "key": "FILE16-01A",
+      "state": "open",
+      "labels": [],
+      "parent": 396,
+      "blocked_by": [
+        394,
+        395
+      ],
+      "children": [],
+      "status": "implemented-on-draft",
+      "acceptance": [
+        3,
+        4
+      ]
+    },
+    {
+      "number": 401,
+      "url": "https://github.com/chayapats/jit/issues/401",
+      "key": "FILE16-01B",
+      "state": "open",
+      "labels": [],
+      "parent": 396,
+      "blocked_by": [
+        400
+      ],
+      "children": [],
+      "status": "implemented-on-draft",
+      "acceptance": [
+        3,
+        4
+      ]
+    },
+    {
+      "number": 402,
+      "url": "https://github.com/chayapats/jit/issues/402",
+      "key": "MEM16-01A",
+      "state": "open",
+      "labels": [],
+      "parent": 392,
+      "blocked_by": [
+        400
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        3,
+        4,
+        8,
+        10,
+        20
+      ]
+    },
+    {
+      "number": 405,
+      "url": "https://github.com/chayapats/jit/issues/405",
+      "key": "BASE16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        400
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        21,
+        22
+      ]
+    },
+    {
+      "number": 406,
+      "url": "https://github.com/chayapats/jit/issues/406",
+      "key": "CHAT16-02",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        2
+      ]
+    },
+    {
+      "number": 407,
+      "url": "https://github.com/chayapats/jit/issues/407",
+      "key": "ART16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        400,
+        402
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        4,
+        20
+      ]
+    },
+    {
+      "number": 408,
+      "url": "https://github.com/chayapats/jit/issues/408",
+      "key": "BROW16-01A",
+      "state": "open",
+      "labels": [
+        "ready-for-agent"
+      ],
+      "parent": 397,
+      "blocked_by": [],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        6,
+        7
+      ]
+    },
+    {
+      "number": 409,
+      "url": "https://github.com/chayapats/jit/issues/409",
+      "key": "BROW16-01B",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 397,
+      "blocked_by": [
+        408,
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        6
+      ]
+    },
+    {
+      "number": 410,
+      "url": "https://github.com/chayapats/jit/issues/410",
+      "key": "DESK16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        408,
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        5,
+        7
+      ]
+    },
+    {
+      "number": 411,
+      "url": "https://github.com/chayapats/jit/issues/411",
+      "key": "TEAM16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        1,
+        5
+      ]
+    },
+    {
+      "number": 412,
+      "url": "https://github.com/chayapats/jit/issues/412",
+      "key": "BOT16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        411
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        1,
+        20
+      ]
+    },
+    {
+      "number": 413,
+      "url": "https://github.com/chayapats/jit/issues/413",
+      "key": "DELEG16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        411,
+        402
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        8
+      ]
+    },
+    {
+      "number": 414,
+      "url": "https://github.com/chayapats/jit/issues/414",
+      "key": "ROUT16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        9
+      ]
+    },
+    {
+      "number": 415,
+      "url": "https://github.com/chayapats/jit/issues/415",
+      "key": "ROUT16-02",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        414
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        9
+      ]
+    },
+    {
+      "number": 416,
+      "url": "https://github.com/chayapats/jit/issues/416",
+      "key": "MEM16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        402
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        10,
+        20
+      ]
+    },
+    {
+      "number": 417,
+      "url": "https://github.com/chayapats/jit/issues/417",
+      "key": "CONN16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        11
+      ]
+    },
+    {
+      "number": 418,
+      "url": "https://github.com/chayapats/jit/issues/418",
+      "key": "MCP16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        417
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        12
+      ]
+    },
+    {
+      "number": 419,
+      "url": "https://github.com/chayapats/jit/issues/419",
+      "key": "OPEN16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        417
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        12
+      ]
+    },
+    {
+      "number": 420,
+      "url": "https://github.com/chayapats/jit/issues/420",
+      "key": "SKILL16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        418
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        13
+      ]
+    },
+    {
+      "number": 421,
+      "url": "https://github.com/chayapats/jit/issues/421",
+      "key": "MODEL16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        402
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        14
+      ]
+    },
+    {
+      "number": 422,
+      "url": "https://github.com/chayapats/jit/issues/422",
+      "key": "VOICE16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        417
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        15
+      ]
+    },
+    {
+      "number": 423,
+      "url": "https://github.com/chayapats/jit/issues/423",
+      "key": "CALL16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        422,
+        406
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        15
+      ]
+    },
+    {
+      "number": 424,
+      "url": "https://github.com/chayapats/jit/issues/424",
+      "key": "CHANNEL16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        400,
+        395
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        18
+      ]
+    },
+    {
+      "number": 425,
+      "url": "https://github.com/chayapats/jit/issues/425",
+      "key": "DESKTOP16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        400
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        16
+      ]
+    },
+    {
+      "number": 426,
+      "url": "https://github.com/chayapats/jit/issues/426",
+      "key": "MOBILE16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        395,
+        400
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        17
+      ]
+    },
+    {
+      "number": 427,
+      "url": "https://github.com/chayapats/jit/issues/427",
+      "key": "COMPUTER16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        411,
+        410
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        19
+      ]
+    },
+    {
+      "number": 428,
+      "url": "https://github.com/chayapats/jit/issues/428",
+      "key": "SPACE16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        412,
+        407,
+        416
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        20
+      ]
+    },
+    {
+      "number": 429,
+      "url": "https://github.com/chayapats/jit/issues/429",
+      "key": "OPS16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        405,
+        407,
+        411,
+        412,
+        414,
+        417,
+        418,
+        419,
+        420,
+        421,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        21
+      ]
+    },
+    {
+      "number": 430,
+      "url": "https://github.com/chayapats/jit/issues/430",
+      "key": "EVID16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        406,
+        407,
+        409,
+        410,
+        411,
+        412,
+        413,
+        415,
+        416,
+        418,
+        419,
+        420,
+        421,
+        423,
+        424,
+        425,
+        426,
+        427,
+        428,
+        429,
+        433
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "number": 431,
+      "url": "https://github.com/chayapats/jit/issues/431",
+      "key": "LIVE16-01",
+      "state": "open",
+      "labels": [
+        "needs-info",
+        "ready-for-human"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        430
+      ],
+      "children": [],
+      "status": "pending-live-evidence",
+      "acceptance": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22
+      ]
+    },
+    {
+      "number": 432,
+      "url": "https://github.com/chayapats/jit/issues/432",
+      "key": "CUT16-01",
+      "state": "open",
+      "labels": [
+        "needs-info",
+        "ready-for-human"
+      ],
+      "parent": 392,
+      "blocked_by": [
+        429,
+        430,
+        431
+      ],
+      "children": [],
+      "status": "pending-live-evidence",
+      "acceptance": [
+        21,
+        22
+      ]
+    },
+    {
+      "number": 433,
+      "url": "https://github.com/chayapats/jit/issues/433",
+      "key": "FILE16-01C",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 396,
+      "blocked_by": [
+        401,
+        402,
+        411
+      ],
+      "children": [],
+      "status": "planned",
+      "acceptance": [
+        3,
+        4
+      ]
+    }
+  ],
+  "baseline_reuse": [
+    "S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser/Telegram/adoption",
+    "S14/legacy continuity"
+  ],
+  "next_eligible": [
+    408
+  ],
+  "primary_owned_next": 402,
+  "live_gates": [
+    431,
+    432
+  ],
+  "unchanged_separate_s15": [
+    340,
+    341
+  ],
+  "validation": {
+    "issue_count": 38,
+    "new_issue_count": 29,
+    "updated_existing_count": 9,
+    "native_parent_edges": 37,
+    "native_blocking_edges": 91,
+    "acyclic": true,
+    "required_sections": "all scoped tickets checked against reread published bodies",
+    "coverage": "28 rows, 22 acceptance cases, 42 FR and 14 NFR; each requirement has a non-evidence feature owner",
+    "relative_links": "passed",
+    "runtime_tests": "not run; documentation-only"
+  }
+}
