@@ -169,6 +169,66 @@ test("an invalid successful mutation response retains unknown outcome and the or
   expect(f.vmCalls.filter(op => op === "spawn")).toHaveLength(1);
 });
 
+test("a lost clarification response recovers its exact ingress receipt and guarded root across restart", async () => {
+  const f = await fixture(), send = transport(f); let lose = false, posts = 0;
+  const c = client(f, async request => { const response = await send(request); if (request.method === "POST") { posts++; if (lose) { lose = false; throw Error("committed clarification response lost"); } } return response; });
+  await c.bootstrap(); const root = c.prepareMessage("conversation", "Implement issue #42 or #43");
+  await c.send(root); await f.service.conversation.drain(); const held = (await c.request(root.requestId)).row;
+  expect(held.state).toBe("question");
+  const reply = { ...c.prepareMessage("conversation", "Select issue #42"), continuation: { requestId: root.requestId, revision: held.revision } }; lose = true;
+  await expect(c.send(reply)).rejects.toMatchObject({ outcome: "unknown", requestId: reply.requestId }); await f.service.conversation.drain();
+  const recovered = await c.request(reply.requestId);
+  expect(recovered.receipt).toMatchObject({ requestId: reply.requestId, rootRequestId: root.requestId, conversationId: "conversation" });
+  expect(recovered.row.requestId).toBe(root.requestId); expect(posts).toBe(2);
+  await f.reopen(); expect((await c.request(reply.requestId)).receipt).toEqual(recovered.receipt);
+  expect(f.service.conversation.store.db.query("SELECT id FROM requests").all()).toHaveLength(1);
+  f.generation = 2; await expect(c.request(reply.requestId)).rejects.toMatchObject({ code: "authentication_required", status: 401 });
+});
+
+test.each([{ clear: true, status: 200 }, { clear: false, status: 200 }, { clear: true, status: 401 }])("late bootstrap cannot replace or clear a newer session: %j", async scenario => {
+  const f = await fixture(), send = transport(f), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let first = true;
+  const c = client(f, async request => {
+    const response = await send(request);
+    if (request.url.endsWith("/bootstrap") && first) { first = false; const data = await response.json(); entered.resolve(); await release.promise; return scenario.status === 401 ? Response.json({ error: "authentication_required" }, { status: 401 }) : Response.json({ ...data, csrf: "stale-fixture-csrf" }); }
+    return response;
+  });
+  const old = c.bootstrap(); await entered.promise;
+  try { if (scenario.clear) c.clear(); await c.bootstrap(); } finally { release.resolve(); }
+  await expect(old).rejects.toMatchObject({ code: "client_response_stale" });
+  const command = c.prepareMessage("conversation", "Run the requested command"); await c.send(command); await f.service.conversation.drain();
+  expect((await c.request(command.requestId)).row.result).not.toBeNull(); expect(f.vmCalls.filter(op => op === "spawn")).toHaveLength(1);
+});
+
+test.each([false, true])("missing or empty successful mutation JSON retains unknown send identity: empty reader=%j", async emptyReader => {
+  const f = await fixture(), send = transport(f); let posts = 0;
+  const c = client(f, async request => { const response = await send(request); if (request.method === "POST") { posts++; return new Response(emptyReader ? "" : null, { status: 202, headers: { "content-type": "application/json" } }); } return response; });
+  await c.bootstrap(); const command = c.prepareMessage("conversation", "Run the requested command");
+  await expect(c.send(command)).rejects.toMatchObject({ code: "client_protocol_invalid", outcome: "unknown", requestId: command.requestId });
+  await f.service.conversation.drain(); expect((await c.request(command.requestId)).row.result).not.toBeNull(); expect(posts).toBe(1);
+});
+
+test("a wrong successful stop acknowledgement preserves the original unknown outcome", async () => {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = await fixture("default", false, undefined, options => { const interpreter = options.interpreter!; return { ...options, interpreter: { ...interpreter, async *stream(request) { entered.resolve(); await release.promise; yield* interpreter.stream(request); } } }; });
+  const send = transport(f); let stops = 0;
+  const c = client(f, async request => { const response = await send(request); if (request.url.endsWith("/stop")) { stops++; return Response.json({ state: "wrong_acknowledgement" }); } return response; });
+  await c.bootstrap(); const command = c.prepareMessage("conversation", "Run the requested command"); await c.send(command); await entered.promise;
+  try { await expect(c.stop(command.requestId)).rejects.toMatchObject({ code: "client_protocol_invalid", outcome: "unknown", requestId: command.requestId }); } finally { release.resolve(); }
+  await f.service.conversation.drain(); expect((await c.request(command.requestId)).row.state).toBe("stopped"); expect(stops).toBe(1);
+});
+
+test("a cookie-only native adapter can bootstrap but must add the configured Origin for commands", async () => {
+  const f = webFixture(); let includeOrigin = false;
+  try {
+    const handler = createS16ClientHandler(f.app, { origin: webOrigin, cookieName: "jit_s15", authentication: f.ports.authentication });
+    const c = new JitClient({ origin: webOrigin, fetch(request) { const headers = new Headers(request.headers); headers.set("cookie", "jit_s15=owner-token"); if (includeOrigin && request.method === "POST") headers.set("origin", webOrigin); return handler(new Request(request, { headers })); } });
+    await c.bootstrap(); const command = c.prepareMessage("conversation", "Create hello.txt containing hello.");
+    await expect(c.send(command)).rejects.toMatchObject({ code: "origin_rejected", status: 403 }); expect(f.store.db.query("SELECT id FROM requests").all()).toHaveLength(0);
+    includeOrigin = true; await c.bootstrap(); expect((await c.send(command)).requestId).toBe(command.requestId); await f.app.drain();
+    expect(f.store.db.query("SELECT id FROM requests").all()).toHaveLength(1);
+  } finally { f.cleanup(); }
+});
+
 test("the shared client bundles for browsers without importing protected services or Schway", async () => {
   const build = await Bun.build({ entrypoints: [new URL("../src/s16/client/index.ts", import.meta.url).pathname], target: "browser" });
   expect(build.success).toBe(true); expect(build.outputs).toHaveLength(1);

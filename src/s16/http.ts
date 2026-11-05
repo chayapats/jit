@@ -66,8 +66,9 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       const work = /^\/api\/s16\/client\/requests\/([A-Za-z0-9_-]{1,128})(\/stop)?$/.exec(url.pathname);
       if (work && request.method === "GET" && !work[2]) {
         if (url.search) throw new AppError("invalid_body");
-        const row = conversationRequestView(app, authenticated.actor, work[1]!);
-        return json({ contract: "s16-client-request/v1", conversationId: row.receipt.conversationId, row });
+        const receipt = app.receipt(authenticated.actor, work[1]!);
+        const row = conversationRequestView(app, authenticated.actor, receipt.rootRequestId);
+        return json({ contract: "s16-client-request/v1", conversationId: receipt.conversationId, receipt, row });
       }
       if (work?.[2] && request.method === "POST") {
         if (url.search) throw new AppError("invalid_body");

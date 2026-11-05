@@ -4,7 +4,8 @@ import { clientResponseBytes, type ClientBootstrap, type ClientDecision, type Cl
 export class JitClientError extends Error {
   constructor(readonly code: string, readonly status: number | null, readonly outcome: "not_sent" | "unknown" | "response", readonly requestId: string | null = null) { super(code); this.name = "JitClientError"; }
 }
-/** Fetch injection supports native session adapters and deterministic tests; no model/provider transport. */
+/** Fetch injection supports native session adapters and deterministic tests. Native adapters add the
+ * authenticated cookie and exact configured Origin on POST; browsers supply Origin themselves. */
 export interface JitClientOptions { origin: string; fetch?: (request: Request) => Promise<Response> }
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -20,6 +21,7 @@ export class JitClient {
   readonly origin: string;
   readonly #fetch: (request: Request) => Promise<Response>;
   #csrf: string | null = null;
+  #sessionGeneration = 0;
   constructor(options: JitClientOptions) {
     const url = new URL(options.origin);
     if (!["https:", "http:"].includes(url.protocol) || url.origin !== options.origin || url.username || url.password) throw new JitClientError("client_origin_invalid", null, "not_sent");
@@ -27,7 +29,9 @@ export class JitClient {
   }
   /** Read current capabilities/navigation and establish CSRF for explicit subsequent commands. */
   async bootstrap(signal?: AbortSignal): Promise<Omit<ClientBootstrap, "csrf">> {
+    this.clear(); const generation = this.#sessionGeneration;
     const data = await this.call("/bootstrap", "GET", undefined, signal);
+    if (generation !== this.#sessionGeneration) throw new JitClientError("client_response_stale", null, "response");
     if (!record(data) || data.contract !== "s16-client-bootstrap/v1" || typeof data.csrf !== "string" || !data.csrf || data.csrf.length > 4096 || !record(data.capabilities) || data.capabilities.contract !== "s16-client-capabilities/v1" || !Array.isArray(data.conversations) || data.conversations.length > 64 || !Array.isArray(data.needsYou) || data.needsYou.length > 1024) return invalid();
     for (const entry of data.conversations) if (!record(entry) || !identifier(entry.conversationId) || typeof entry.firstMessage !== "string" || !Number.isSafeInteger(entry.latestAt)) return invalid();
     this.#csrf = data.csrf;
@@ -55,7 +59,8 @@ export class JitClient {
   /** Recovers a retained send by ID, including outside the recent conversation window; never resends. */
   async request(requestId: string, signal?: AbortSignal): Promise<ClientRequest> {
     const data = await this.call(`/requests/${id(requestId)}`, "GET", undefined, signal);
-    if (!record(data) || data.contract !== "s16-client-request/v1" || !identifier(data.conversationId) || !record(data.row) || data.row.requestId !== requestId || !record(data.row.receipt) || data.row.receipt.conversationId !== data.conversationId) return invalid();
+    if (!record(data) || data.contract !== "s16-client-request/v1" || !identifier(data.conversationId) || !record(data.receipt) || !record(data.row) || !identifier(data.row.requestId) || data.row.requestId !== data.receipt.rootRequestId || !record(data.row.receipt) || data.row.receipt.rootRequestId !== data.row.requestId || data.row.receipt.conversationId !== data.conversationId) return invalid();
+    this.receipt(data.receipt, { requestId, conversationId: data.conversationId });
     return data as unknown as ClientRequest;
   }
   /** Metadata invalidates snapshots; only a fresh snapshot can supply result/evidence/approval content. */
@@ -75,7 +80,7 @@ export class JitClient {
   /** Stops only the named work. The acknowledgement does not certify external process/effect settlement. */
   async stop(requestId: string, signal?: AbortSignal): Promise<void> {
     const data = await this.call(`/requests/${id(requestId)}/stop`, "POST", {}, signal, requestId);
-    if (!record(data) || data.state !== "stop_requested") return invalid();
+    if (!record(data) || data.state !== "stop_requested") throw new JitClientError("client_protocol_invalid", null, "unknown", requestId);
   }
   /** Explicit exact-slip command; never auto-refreshes an action revision or repeats a decision. */
   async decide(command: ClientDecision, signal?: AbortSignal): Promise<ClientReceipt> {
@@ -83,12 +88,13 @@ export class JitClient {
     return this.receipt(await this.call(`/conversations/${input.conversationId}/decisions`, "POST", input, signal, input.requestId), input);
   }
   /** Drop authority material when a native session signs out; callers also discard private projections. */
-  clear(): void { this.#csrf = null; }
+  clear(): void { this.#csrf = null; this.#sessionGeneration++; }
   private receipt(data: unknown, command: { requestId: string; conversationId: string }): ClientReceipt {
     if (!record(data) || data.contract !== "s15-conversation-receipt/v1" || data.requestId !== command.requestId || data.conversationId !== command.conversationId || !identifier(data.rootRequestId) || !Number.isSafeInteger(data.receivedAt)) throw new JitClientError("client_protocol_invalid", null, "unknown", command.requestId);
     return data as unknown as ClientReceipt;
   }
   private async call(path: string, method: "GET" | "POST", body: unknown, signal?: AbortSignal, requestId: string | null = null): Promise<unknown> {
+    const generation = this.#sessionGeneration;
     if (method === "POST" && !this.#csrf) throw new JitClientError("client_not_initialized", null, "not_sent", requestId);
     if (signal?.aborted) throw new JitClientError("aborted", null, "not_sent", requestId);
     const headers: Record<string, string> = { accept: "application/json" };
@@ -97,9 +103,11 @@ export class JitClient {
     let response: Response;
     try { response = await this.#fetch(request); }
     catch { throw new JitClientError(signal?.aborted ? "aborted" : "connection_lost", null, method === "POST" ? "unknown" : "not_sent", requestId); }
+    if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId); }
     if (response.status === 401 || response.status === 403) this.clear();
+    const responseGeneration = this.#sessionGeneration;
     if (response.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json" || response.redirected) throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId);
-    const reader = response.body?.getReader(); if (!reader) return invalid();
+    const reader = response.body?.getReader(); if (!reader) throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId);
     let data: unknown;
     try {
       const chunks: Uint8Array[] = []; let length = 0;
@@ -108,6 +116,7 @@ export class JitClient {
       data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     } catch (error) { if (error instanceof JitClientError) throw error; throw new JitClientError("client_protocol_invalid", response.status, method === "POST" ? "unknown" : "response", requestId); }
     finally { reader.releaseLock(); }
+    if (responseGeneration !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId);
     if (!response.ok) throw new JitClientError(safeCode(record(data) ? data.error : null), response.status, "response", requestId);
     return data;
   }

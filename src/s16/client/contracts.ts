@@ -23,7 +23,7 @@ export interface ClientBootstrap {
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
 export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView }
 /** One currently authorized request, including requests older than the bounded conversation window. */
-export interface ClientRequest { contract: "s16-client-request/v1"; conversationId: string; row: ConversationOwnerRow }
+export interface ClientRequest { contract: "s16-client-request/v1"; conversationId: string; receipt: ConversationReceipt; row: ConversationOwnerRow }
 /** Monotonic conversation-bound metadata, used only to invalidate and refresh owner projections. */
 export interface ClientEvents { contract: "s16-client-events/v1"; conversationId: string; cursor: number; events: ConversationEvent[] }
 /** Existing text and exact-decision semantics are retained; file-bearing commands require a new version. */

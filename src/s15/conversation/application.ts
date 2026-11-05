@@ -167,6 +167,14 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (!/^(?:(?:implement|fix|start|select|choose|เลือก|ทำ|แก้|เริ่ม)\s*)?(?:issue\s*)?#?\d+[.!\s]*$/iu.test(next.text.trim())) throw new AppError("outside_scope", 403);
     return { kind: "execute", subject: selected[0]!, instruction: `${original.text}\nOwner selected only ${selected[0]}.` };
   }
+  /** Recover exact committed ingress metadata under its original owner; a clarification names its root work. */
+  receipt(actor: OwnerActor, commandId: string): ConversationReceipt {
+    this.options.policy.requireOwner(actor); identity(commandId);
+    const command = this.store.db.query<{ receipt_json: string; root_id: string }, [string]>("SELECT receipt_json,root_id FROM commands WHERE id=?").get(commandId);
+    if (!command) throw new AppError("not_found", 404);
+    this.owner(actor, this.store.request(command.root_id));
+    return JSON.parse(command.receipt_json) as ConversationReceipt;
+  }
   /** Read-only current request projection; a stale/revoked authority withholds result and evidence bodies. */
   view(actor: OwnerActor, requestId: string): ConversationRequest & { evidence: ReturnType<ConversationStore["evidence"]>; slips: ActionSlip[] } {
     const request = this.store.request(requestId); this.owner(actor, request);
