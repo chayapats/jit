@@ -6065,7 +6065,7 @@ export const th = {
   "s16.routine.source.url": "ที่อยู่",
   "s16.routine.source.secret": "Secret",
   "s16.routine.source.githubHelp": "ในการตั้งค่า webhook ของ repository ใช้ที่อยู่นี้ content type application/json และ secret นี้ แล้วเลือก Check suites, Workflow runs หรือ Pull request reviews",
-  "s16.routine.source.signedHelp": "ส่ง POST พร้อม X-Jit-Event, X-Jit-Delivery ที่ไม่ซ้ำ และ X-Jit-Signature: t=<วินาที unix>,v1=<HMAC-SHA256 ของ t.body ด้วย secret นี้> คำขอที่เก่ากว่าห้านาทีจะถูกปฏิเสธ",
+  "s16.routine.source.signedHelp": "ส่ง POST พร้อม X-Jit-Event, X-Jit-Delivery ที่ไม่ซ้ำ, X-Jit-Key (ถ้ามี) และ X-Jit-Signature: t=<วินาที unix>,v1=<HMAC-SHA256 ด้วย secret นี้ ของบรรทัด s16-routine-event/v1, t, delivery, event และ key แล้วตามด้วย body> คำขอที่เก่ากว่าห้านาทีจะถูกปฏิเสธ",
   "s16.routine.source.githubLabel": "GitHub · {repository}",
   "s16.routine.source.signedLabel": "event ที่ลงชื่อ · {events}",
   "s16.routine.source.artifactLabel": "ไฟล์ฉบับใหม่",

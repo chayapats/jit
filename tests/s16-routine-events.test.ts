@@ -6,6 +6,7 @@ import { routineFixture, at, rid, type RoutineFixture } from "./fixtures/s16-rou
 import type { FileArtifact, FileUpload } from "../src/s16/files/types";
 import type { ConversationFileCommand } from "../src/s15/conversation/types";
 import { AppError } from "../src/errors";
+import { signedPrefix } from "../src/s16/routines/service";
 
 const fixtures: RoutineFixture[] = [];
 afterEach(async () => { for (const f of fixtures.splice(0)) await f.close(); });
@@ -22,8 +23,9 @@ async function source(f: RoutineFixture, routineId: string, value: Record<string
   return f.command({ kind: "routine.source.create", requestId, routineId, expectedRevision: revision, source: value });
 }
 function signed(f: RoutineFixture, path: string, secret: string, body: string, headers: Record<string, string> = {}, at = Math.floor(f.now / 1000)) {
-  const signature = createHmac("sha256", secret).update(`${at}.${body}`).digest("hex");
-  return f.service.fetch(new Request("http://localhost:3099" + path, { method: "POST", headers: { "content-type": "application/json", "x-jit-signature": `t=${at},v1=${signature}`, "x-jit-event": "inbox.updated", "x-jit-delivery": rid("d"), ...headers }, body }));
+  const all: Record<string, string> = { "content-type": "application/json", "x-jit-event": "inbox.updated", "x-jit-delivery": rid("d"), ...headers };
+  const signature = createHmac("sha256", secret).update(signedPrefix(String(at), all["x-jit-delivery"]!, all["x-jit-event"]!, all["x-jit-key"] ?? "") + body).digest("hex");
+  return f.service.fetch(new Request("http://localhost:3099" + path, { method: "POST", headers: { "x-jit-signature": `t=${at},v1=${signature}`, ...all }, body }));
 }
 function github(f: RoutineFixture, path: string, secret: string, event: string, payload: unknown, delivery = rid("gh")) {
   const body = JSON.stringify(payload), signature = createHmac("sha256", secret).update(body).digest("hex");
@@ -51,8 +53,12 @@ test("a signed source mints its secret once and every invalid, expired or replay
     [f.service.fetch(new Request("http://localhost:3099" + path, { method: "GET" })), 405], [signed(f, path, secret, "x".repeat(262145)), 413],
   ];
   for (const [response, status] of refusals) expect((await response).status).toBe(status);
-  const tampered = createHmac("sha256", secret).update(`${Math.floor(f.now / 1000)}.${body}`).digest("hex");
-  expect((await f.service.fetch(new Request("http://localhost:3099" + path, { method: "POST", headers: { "x-jit-signature": `t=${Math.floor(f.now / 1000)},v1=${tampered}`, "x-jit-event": "inbox.updated", "x-jit-delivery": "tamper" }, body: body.replace("new", "old") }))).status).toBe(401);
+  const stamp = String(Math.floor(f.now / 1000)), tampered = createHmac("sha256", secret).update(signedPrefix(stamp, "tamper", "inbox.updated", "") + body).digest("hex");
+  const replay = (headers: Record<string, string>, payload = body) => f.service.fetch(new Request("http://localhost:3099" + path, { method: "POST", headers: { "x-jit-signature": `t=${stamp},v1=${tampered}`, "x-jit-event": "inbox.updated", "x-jit-delivery": "tamper", ...headers }, body: payload }));
+  // A changed body, delivery ID, event name or coalescing key no longer matches the signature.
+  for (const response of [replay({}, body.replace("new", "old")), replay({ "x-jit-delivery": "other" }), replay({ "x-jit-event": "other.event" }), replay({ "x-jit-key": "k" })]) expect((await response).status).toBe(401);
+  // Unauthenticated routes still refuse a foreign Host.
+  expect((await signed(f, path, secret, body, { host: "evil.invalid" })).status).toBe(403);
   expect(journal(f)).toBe(before); await f.wake(); expect(requests(f)).toEqual([]);
   // A valid delivery is committed before it is acknowledged, then runs once.
   const accepted = await signed(f, path, secret, body, { "x-jit-delivery": "delivery-1", "x-jit-key": "inbox-42" });
@@ -117,7 +123,7 @@ test("a restart between event commit and dispatch creates exactly one responsibi
   const f = await fixture();
   const routine = await eventRoutine(f), created = await source(f, routine.id, { kind: "signed", events: ["inbox.updated"] });
   // Receive directly: the routed handler would wake the scheduler before the simulated process loss.
-  const commit = async () => { const body = "{}", stamp = Math.floor(f.now / 1000); const result = await f.service.routines!.receive(created.source!.id, new Request("http://localhost:3099" + created.source!.path!, { method: "POST", headers: { "x-jit-signature": `t=${stamp},v1=${createHmac("sha256", created.secret!).update(`${stamp}.${body}`).digest("hex")}`, "x-jit-event": "inbox.updated", "x-jit-delivery": rid("d") }, body })); expect(result.status).toBe(202); };
+  const commit = async () => { const body = "{}", stamp = String(Math.floor(f.now / 1000)), delivery = rid("d"); const result = await f.service.routines!.receive(created.source!.id, new Request("http://localhost:3099" + created.source!.path!, { method: "POST", headers: { "x-jit-signature": `t=${stamp},v1=${createHmac("sha256", created.secret!).update(signedPrefix(stamp, delivery, "inbox.updated", "") + body).digest("hex")}`, "x-jit-event": "inbox.updated", "x-jit-delivery": delivery }, body })); expect(result.status).toBe(202); };
   await commit();
   // Process loss after acknowledgement: the committed occurrence survives and dispatches once.
   await f.reopen(); await f.wake(); await f.wake();
@@ -192,6 +198,8 @@ test("a file reaction follows one exact artifact lineage and refuses withdrawn o
   detail = await f.detail(routine.id);
   expect(detail.occurrences[0]).toMatchObject({ state: "refused", code: "file_integrity_failed" }); expect(detail.summary.routine.runsUsed).toBe(1);
   const before = requests(f).length;
+  // A sibling revision made later is the newest one: sibling order follows creation time.
+  f.advance(1000);
   const fourth = await produce(await adopt(revision), { name: "brief.md", text: "# Brief\nLaunch: Wednesday.\n" }, "Review the attached file. Changes: Wednesday. Then create a revised Markdown file.");
   f.service.routines!.tick(); expect(f.service.routines!.occurrences(routine.id).at(-1)).toMatchObject({ state: "pending", input: { id: fourth.id } });
   expect((await f.request(`/api/s16/client/uploads/${notes.id}/withdraw`, "POST", {})).status).toBe(200);
@@ -199,3 +207,18 @@ test("a file reaction follows one exact artifact lineage and refuses withdrawn o
   detail = await f.detail(routine.id);
   expect(detail.occurrences[0]!.state).toBe("refused"); expect(requests(f).length).toBe(before + 1);
 }, 60000);
+
+test("stopping a routine fences a claimed submit instead of resubmitting it after restart", async () => {
+  const f = await fixture();
+  const routine = await eventRoutine(f, { schedule: { kind: "interval", minutes: 60 } });
+  const ports = f.service.routines!.options.conversation, submit = ports.submitRoutine;
+  ports.submitRoutine = (actor, command, pin) => { submit(actor, command, pin); throw new AppError("conversation_unavailable", 503); };
+  f.advance(3600001); f.service.routines!.tick(); f.service.routines!.dispatch();
+  const claimed = (await f.detail(routine.id)).occurrences[0]!;
+  expect(claimed.state).toBe("dispatching"); expect(f.service.conversation.view(f.owner, claimed.requestId!).state).toBe("queued");
+  await f.command({ kind: "routine.stop", routineId: routine.id, expectedRevision: routine.revision });
+  await f.reopen(); await f.wake(); await f.wake();
+  const detail = await f.detail(routine.id);
+  expect(detail.occurrences.map(row => [row.state, row.code])).toEqual([["stopped", "aborted"]]);
+  expect(f.service.conversation.view(f.owner, claimed.requestId!).state).toBe("stopped"); expect(f.workInputs).toEqual([]);
+}, 30000);

@@ -196,7 +196,11 @@ export class RoutineService<Actor> {
       case "routine.stop": {
         live();
         routine.state = "stopped"; this.#drop(routine, "stopped");
-        for (const occurrence of this.occurrences(routine.id, ["submitted", "running", "waiting_review"])) if (occurrence.requestId) { try { this.options.conversation.stop(actor, occurrence.requestId); } catch { /* Already terminal. */ } }
+        for (const occurrence of this.occurrences(routine.id, ["dispatching", "submitted", "running", "waiting_review"])) if (occurrence.requestId) {
+          try { this.options.conversation.stop(actor, occurrence.requestId); } catch { /* Not submitted yet or already terminal. */ }
+          // A claimed but unrecorded submit is fenced here; it is never resubmitted for a stopped routine.
+          if (occurrence.state === "dispatching") { occurrence.state = "stopped"; occurrence.code = "aborted"; occurrence.settledAt = now; this.#saveOccurrence(occurrence); }
+        }
         for (const source of this.sources(routine.id)) if (source.state === "active") { source.state = "revoked"; source.revokedAt = now; this.#saveSource(source); }
         bump(); return receipt(routine);
       }
@@ -381,6 +385,13 @@ export class RoutineService<Actor> {
       const routine = this.routine(routine_id); if (!routine) continue;
       const rows = this.occurrences(routine.id);
       let occurrence = rows.find(row => row.state === "dispatching");
+      if (occurrence && (routine.state === "stopped" || routine.state === "ended")) {
+        const actor = this.options.owner(routine.owner);
+        if (actor && occurrence.requestId) { try { this.options.conversation.stop(actor, occurrence.requestId); } catch { /* Never submitted. */ } }
+        const fenced = occurrence;
+        safe(() => this.journal.tx(() => { const current = this.occurrences(routine.id).find(row => row.id === fenced.id)!; if (current.state === "dispatching") { current.state = "stopped"; current.code = "aborted"; current.settledAt = this.now(); this.#saveOccurrence(current); } }));
+        continue;
+      }
       if (!occurrence) {
         if (routine.state !== "active" || rows.some(row => blocking.has(row.state) || row.state === "unknown" && !row.acknowledged)) continue;
         occurrence = rows.find(row => row.state === "pending"); if (!occurrence) continue;
@@ -503,10 +514,11 @@ export class RoutineService<Actor> {
     } else {
       const header = request.headers.get("x-jit-signature") ?? "", match = /^t=(\d{1,12}),v1=([a-f0-9]{64})$/.exec(header);
       const stamp = match ? Number(match[1]) * 1000 : 0;
-      if (!equal(hmac(secret, Buffer.concat([Buffer.from(`${match?.[1] ?? "0"}.`), body])), match?.[2] ?? null)) return refuse(401, "signature_invalid");
-      if (Math.abs(now - stamp) > routineLimits.signedSkewMs) return refuse(401, "event_expired");
       deliveryId = request.headers.get("x-jit-delivery");
       const name = request.headers.get("x-jit-event") ?? "", supplied = request.headers.get("x-jit-key");
+      // The signature covers the timestamp and every identity header, so a captured delivery cannot be replayed under new IDs.
+      if (!equal(hmac(secret, Buffer.concat([Buffer.from(signedPrefix(match?.[1] ?? "0", deliveryId ?? "", name, supplied ?? "")), body])), match?.[2] ?? null)) return refuse(401, "signature_invalid");
+      if (Math.abs(now - stamp) > routineLimits.signedSkewMs) return refuse(401, "event_expired");
       event = !EVENT.test(name) || supplied !== null && !DELIVERY.test(supplied) ? "invalid" : source.events.includes(name) ? { name, key: `event:${name}:${supplied ?? deliveryId ?? ""}` } : "ignored";
     }
     if (!deliveryId || !DELIVERY.test(deliveryId)) return refuse(400, "delivery_id_required");
@@ -576,6 +588,12 @@ export class RoutineService<Actor> {
   }
   close(): void { this.journal.close(); }
 }
+
+/**
+ * Exact signed prefix of the `signed` source format: `t`, delivery ID, event name and optional coalescing key,
+ * each on its own line, followed by the raw body bytes. HMAC-SHA256 with the source secret signs the whole.
+ */
+export const signedPrefix = (stamp: string, delivery: string, event: string, key: string) => `s16-routine-event/v1\n${stamp}\n${delivery}\n${event}\n${key}\n`;
 
 /** CHAT owner row → occurrence state. Only CHAT's committed facts decide; a model reply alone never does. */
 export function occurrenceOutcome(row: ConversationOwnerRow): [RoutineOccurrence["state"], string | null] {

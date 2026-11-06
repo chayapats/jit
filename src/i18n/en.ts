@@ -6061,7 +6061,7 @@ export const en: Record<MessageKey, string> = {
   "s16.routine.source.url": "Address",
   "s16.routine.source.secret": "Secret",
   "s16.routine.source.githubHelp": "In the repository webhook settings use this address, content type application/json and this secret, and choose Check suites, Workflow runs or Pull request reviews.",
-  "s16.routine.source.signedHelp": "Send POST requests with X-Jit-Event, a unique X-Jit-Delivery and X-Jit-Signature: t=<unix seconds>,v1=<HMAC-SHA256 of t.body with this secret>. Requests older than five minutes are refused.",
+  "s16.routine.source.signedHelp": "Send POST requests with X-Jit-Event, a unique X-Jit-Delivery, an optional X-Jit-Key and X-Jit-Signature: t=<unix seconds>,v1=<HMAC-SHA256 with this secret over the lines s16-routine-event/v1, t, delivery, event and key, then the body>. Requests older than five minutes are refused.",
   "s16.routine.source.githubLabel": "GitHub · {repository}",
   "s16.routine.source.signedLabel": "Signed events · {events}",
   "s16.routine.source.artifactLabel": "New revisions of a file",
