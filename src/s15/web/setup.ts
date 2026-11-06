@@ -153,8 +153,9 @@ export interface S15RulesCard {
   options: { currencies: string[]; periods: { id: string; days: number }[] };
   entry: { amount: string; currency: string; periodId: string } | null; budget: S15BudgetEntry | null; refused: string | null; installed: boolean;
 }
-const doesAlone = ["research", "computer", "edits", "accounts", "models"] as const;
-const alwaysAsks = ["messages", "github", "merge", "production", "payments", "recipients", "major", "new_accounts"] as const;
+const doesAlone = ["research", "computer", "edits", "accounts", "models", "sends", "github"] as const;
+// AUTH16-01 (S16-D07): owner-named sends and GitHub work after required checks no longer ask.
+const alwaysAsks = ["messages", "production", "payments", "recipients", "major", "new_accounts", "credentials"] as const;
 /** The two plain F1 lists (does alone / always asks first) and the quiet personal-GitHub line. */
 export function ruleLists(personalNote = true): string {
   return `<div class="s15-rule-lists"><section><h4 class="s-section-t">${tr("s15.setup.does_alone")}</h4><ul>${doesAlone.map(item => `<li>${tr(key(`s15.setup.alone.${item}`))}</li>`).join("")}</ul></section>

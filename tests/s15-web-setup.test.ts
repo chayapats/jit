@@ -141,7 +141,7 @@ test("rules: plain lists from the protected proposal, empty budget, disabled app
   const r = rules(), f = setup(() => ({ rules: r.port }));
   let page = await html(f, "/setup");
   let card = section(page, "rules");
-  for (const text of ["จิตทำเองได้", "ถามคุณก่อนเสมอ", "ส่งอีเมลหรือข้อความถึงคนอื่น", "Deploy production", "โปรไฟล์ GitHub ส่วนตัว: ปิดอยู่ ตั้งได้ที่ กฎประจำ"]) expect(card).toContain(text);
+  for (const text of ["จิตทำเองได้", "ถามคุณก่อนเสมอ", "ข้อความที่ Bot เริ่มส่งเอง หรือถึงคนที่คุณไม่ได้ระบุชื่อ", "Deploy production", "การ deploy ขึ้น production จาก GitHub ยังรอคุณเสมอ"]) expect(card).toContain(text);
   expect(card).toContain('name="amount" inputmode="decimal" autocomplete="off" value=""');
   expect(card).toContain('<option value="USD" selected>USD</option>');
   expect(card).toContain('disabled aria-describedby="s15-rules-reason"'); expect(card).toContain("ใส่งบใช้งานก่อน จิตจะไม่เดาตัวเลขให้");

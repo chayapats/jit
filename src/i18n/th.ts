@@ -4156,7 +4156,7 @@ export const th = {
   "s15.policy.renew_from": "ต่ออายุได้ตั้งแต่",
   "s15.policy.held_title": "รอให้คุณอนุมัติทีละรายการเสมอ",
   "s15.policy.held_note": "แต่ละรายการแสดงให้เห็นว่าจะเกิดอะไรขึ้นแน่ๆ การอนุมัติครั้งหนึ่งไม่ครอบคลุมครั้งต่อไป",
-  "s15.policy.personal_off": "ไม่มีข้อยกเว้น GitHub ส่วนตัว ทุก push, pull request และ merge ถามคุณก่อน",
+  "s15.policy.personal_off": "GitHub push, pull request, ตอบรีวิว และ merge หลัง required checks ผ่านทำได้เลย ส่วน deploy ขึ้น production ยังรอคุณ",
   "s15.policy.personal_kept": "ข้อยกเว้น GitHub ส่วนตัวที่คุณตั้งแยกไว้ ยังใช้ต่อเหมือนเดิม",
   "s15.policy.personal_where": "โปรไฟล์ GitHub ส่วนตัว",
   "s15.policy.no_money_title": "ไม่ต้องตั้งงบเงิน",

@@ -4152,7 +4152,7 @@ export const en: Record<MessageKey, string> = {
   "s15.policy.renew_from": "renewable from",
   "s15.policy.held_title": "Always waits for your exact approval",
   "s15.policy.held_note": "Each one shows exactly what would happen. Approving one never approves the next.",
-  "s15.policy.personal_off": "No personal GitHub exception: every push, pull request and merge asks you first.",
+  "s15.policy.personal_off": "GitHub push, pull requests, review replies and merges after required checks run without asking; production deploys still wait.",
   "s15.policy.personal_kept": "The personal GitHub exception you set up separately carries over unchanged.",
   "s15.policy.personal_where": "Personal GitHub profile",
   "s15.policy.no_money_title": "No money budget needed",
