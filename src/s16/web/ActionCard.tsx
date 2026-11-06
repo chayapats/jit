@@ -27,8 +27,11 @@ export function cardAmount(minor: string, minorUnit: number, currency: string): 
   return `${minorUnit ? `${digits.slice(0, -minorUnit)}.${digits.slice(-minorUnit)}` : digits} ${currency}`;
 }
 
+const calendarEvent = (p: Record<string, unknown> | null) => p?.contract === "s15-google-effect/v1" && p.kind === "calendar" ? record(record(p.calendar)?.event) : null;
+/** Extra exact fields a card shows under their own labels. */
+export type CardRow = "when" | "where" | "attendees" | "attachments" | "payee" | "account" | "quote" | "issue" | "pull" | "branch" | "head" | "thread";
 /** What the card shows, from the typed action fields and the exact payload only. */
-export function cardFacts(slip: ActionSlip): { kind: CardKind; to: string[]; cc: string[]; bcc: string[]; subject: string | null; body: string | null; amount: string | null; target: string | null; operation: string | null; request: string | null; firstShare: string[] } {
+export function cardFacts(slip: ActionSlip): { kind: CardKind; to: string[]; cc: string[]; bcc: string[]; subject: string | null; body: string | null; amount: string | null; target: string | null; operation: string | null; request: string | null; firstShare: string[]; rows: [CardRow, string][]; payloadText: string; known: boolean } {
   const a = slip.action, has = (c: string) => a.classes.includes(c as never), payload = cardPayload(slip), p = record(payload);
   const mail = p?.contract === "s15-google-effect/v1" && p.kind === "mail" ? record(p.message) : null;
   const github = p?.contract === "s15-github-effect/v1" ? p : null, op = record(github?.operation);
@@ -38,13 +41,33 @@ export function cardFacts(slip: ActionSlip): { kind: CardKind; to: string[]; cc:
     : has("communication") ? (mail ? "email" : p?.contract === "s15-google-effect/v1" && p.kind === "calendar" ? "calendar" : website ? "website" : "message")
     : has("disclosure") || has("new_egress") ? "recipient" : website ? "website" : "generic";
   const t = a.transaction, g = a.github;
-  return { kind, to: list(mail?.to), cc: list(mail?.cc), bcc: list(mail?.bcc), subject: mail ? text(mail.subject) : op ? text(op.title) || null : null,
-    body: mail ? text(mail.body) : op && typeof op.body === "string" ? op.body : website ? base64Text(text(website.bodyBase64)) || null : null,
+  return { kind, to: list(mail?.to), cc: list(mail?.cc), bcc: list(mail?.bcc), subject: mail ? text(mail.subject) : op ? text(op.title) || null : calendarEvent(p) ? text(calendarEvent(p)!.summary) || null : null,
+    body: mail ? text(mail.body) : calendarEvent(p) ? text(calendarEvent(p)!.description) || null : op && typeof op.body === "string" ? op.body : website ? base64Text(text(website.bodyBase64)) || null : null,
     amount: t ? cardAmount(t.amountMinor, t.minorUnit, t.currency) : null,
     target: g ? `${text(github?.repository) || g.repository.id} → ${g.target}` : null, operation: op ? text(op.kind) : a.operation,
     request: website ? `${text(website.method)} ${text(website.url)}` : null,
     // S16-D07 g: approving registers each first private-data recipient for later work.
-    firstShare: has("disclosure") && a.disclosure?.dataClasses.some(c => c !== "public") ? a.disclosure.recipients.map(r => r.id) : [] };
+    firstShare: has("disclosure") && a.disclosure?.dataClasses.some(c => c !== "public") ? a.disclosure.recipients.map(r => r.id) : [],
+    rows: cardRows(p, kind, slip), payloadText: payload === null ? "" : JSON.stringify(payload, null, 2),
+    // Kinds whose every owner-relevant field has its own row; anything else opens the complete exact payload.
+    known: ["email", "calendar", "payment", "publish", "reply", "merge"].includes(kind) || (kind === "production" && !!github) };
+}
+
+function cardRows(p: Record<string, unknown> | null, kind: CardKind, slip: ActionSlip): [CardRow, string][] {
+  const rows: [CardRow, string][] = [], add = (row: CardRow, value: string | null | undefined) => { if (value) rows.push([row, value]); };
+  if (p?.contract === "s15-google-effect/v1") {
+    const event = record(record(p.calendar)?.event);
+    if (event) { add("when", [text(event.start), text(event.end)].filter(Boolean).join(" – ")); add("where", text(event.location)); add("attendees", list(event.attendees).join(", ")); }
+    const files = (Array.isArray(p.attachments) ? p.attachments : []).map(record).filter((f): f is Record<string, unknown> => !!f);
+    add("attachments", files.map(f => `${text(f.name)} (${text(f.mediaType)}, ${Math.floor(text(f.dataBase64).length * 3 / 4).toLocaleString()} bytes)`).join(", "));
+  }
+  const t = slip.action.transaction; if (t) { add("payee", t.payee.id); add("account", t.account.id); add("quote", `${t.quoteId} · ${t.quoteVersion}`); }
+  if (p?.contract === "s15-github-effect/v1") {
+    const op = record(p.operation);
+    add("issue", typeof p.issue === "number" ? `#${p.issue}` : null); add("pull", typeof op?.pull === "number" ? `#${op.pull}` : null);
+    add("branch", text(p.branch)); add("head", text(p.head).slice(0, 12)); add("thread", text(op?.thread));
+  }
+  void kind; return rows;
 }
 
 const uid = () => crypto.randomUUID().replaceAll("-", "");
@@ -77,7 +100,10 @@ export function ActionCard({ slip, conversationId, client, t, onDecided }: { sli
       {field(t("s16.card.subject"), facts.subject)}{field(t("s16.card.amount"), facts.amount)}{field(t("s16.card.target"), facts.target)}{field(t("s16.card.request"), facts.request)}
       {!facts.to.length && field(t("s16.card.recipients"), a.recipients.map(r => r.id).join(", ") || null)}
     </dl>
+    {!!facts.rows.length && <dl className="card-facts">{facts.rows.map(([row, value]) => <div key={row} className="card-row"><dt>{t(`s16.card.row.${row}`)}</dt><dd>{value}</dd></div>)}</dl>}
     {facts.body !== null && facts.body !== "" && <pre className="card-body" tabIndex={0} aria-label={t("s16.card.body")}>{facts.body}</pre>}
+    {/* The complete exact payload is always available; an action shape without its own rows shows it open. */}
+    {facts.payloadText && <details className="card-payload" open={!facts.known}><summary>{t("s16.card.allFields")}</summary><pre className="card-body" tabIndex={0}>{facts.payloadText}</pre></details>}
     {!!facts.firstShare.length && <p className="card-note">{t("s16.card.remembered")}</p>}
     <p className="card-note">{t("s16.card.once")} <a href={`/actions/${encodeURIComponent(a.id)}?r=${a.revision}`}>{t("s16.card.fullReview")}</a></p>
     <div className="card-actions" role="group" aria-label={t(`s16.card.title.${facts.kind}`)}>

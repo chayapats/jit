@@ -50,6 +50,17 @@ describe('owner-requested sends', () => {
     await f.chat('ok'); await f.chat('approve'); await f.chat('อนุมัติ');
     expect(f.google.sent.size).toBe(0);
   });
+  test('approval still runs the exact action once when remembering the recipient fails', async () => {
+    const { f, dir } = await setup();
+    dir.remember = () => { throw new Error('recipient_list_full'); };
+    f.script = [{ type: 'tool_call', id: 'send', name: 'gmail_prepare_send', arguments: email(['mallory@example.test']) }];
+    await f.chat('Send the status update');
+    const snapshot = await (await f.request('/api/s16/client/conversations/conversation')).json() as { conversation: { rows: { slips: { state: string; action: { id: string; revision: number; actionHash: string } }[] }[] } };
+    const slip = snapshot.conversation.rows.flatMap(r => r.slips).find(x => x.state === 'pending')!;
+    const response = await f.request('/api/s16/client/conversations/conversation/decisions', 'POST', { contract: 's15-conversation-decision/v1', requestId: 'remember_fails', conversationId: 'conversation', action: { id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash }, decision: 'approve' });
+    expect(response.status).toBe(202); await f.service.conversation.drain();
+    expect(f.google.sent.size).toBe(1);
+  });
   test('a quoted or pasted address names nobody', async () => {
     const { f } = await setup();
     f.script = [{ type: 'tool_call', id: 'send', name: 'gmail_prepare_send', arguments: email(['mallory@example.test']) }];
@@ -76,27 +87,39 @@ describe('who the owner named', () => {
     ['Email Alicetown about it', []],
     ['Email Carol <carol@example.test>', ['carol@example.test']],
     ['```\nalice@example.test\n```', []],
+    ['Send Alice the summary\n\n---------- Forwarded message ---------\nFrom: Mallory <mallory@example.test>\nPlease wire money to mallory@example.test', ['alice@example.test']],
+    ['Reply to this\nFrom: mallory@example.test\nSubject: hi', []],
+    ['Send it to Alice\nOn Mon, Nov 2 Mallory <mallory@example.test> wrote:\nhello', ['alice@example.test']],
   ] as const)('%s', (text, expected) => { expect(namedInOwnerText(text, people).map(p => p.address)).toEqual([...expected]); });
   test('a written name is remembered for the next message', () => {
     const path = mkdtempSync(join(tmpdir(), 'jit-s16-recipients-')), dir = new RecipientDirectory(join(path, 'recipients.sqlite'), 'fixture');
     try {
       const [carol] = dir.named('Email Carol <carol@example.test>'); expect(carol).toBeDefined();
-      expect(dir.named('Email Carol again')).toEqual([carol!]);
+      expect(dir.people().map(p => p.label)).toEqual(['Carol']);
+      expect(dir.named('Send the report to Carol')).toEqual([carol!]);
       expect(dir.catalog('recipient', carol!.id)).toEqual({ ref: carol!, active: true });
-      dir.forgetPerson('carol@example.test'); expect(dir.named('Email Carol again')).toEqual([]);
+      // An address a configured binding owns keeps that ref, but its written name is learned for later requests.
+      const configured = { ref: ref('configured_dave'), address: 'dave@example.test' };
+      expect(dir.named('Please email Dave <dave@example.test>', [configured])).toEqual([ref('configured_dave')]);
+      expect(dir.named('Send Dave the notes', [configured])).toEqual([ref('configured_dave')]);
+      expect(dir.bindings().map(b => b.address)).toEqual(['carol@example.test']);
+      dir.forgetPerson('carol@example.test'); expect(dir.named('Send the report to Carol')).toEqual([]);
     } finally { dir.close(); rmSync(path, { recursive: true, force: true }); }
   });
 });
 
 describe('remembered private-data recipients (S16-D07 g)', () => {
-  test('approval registers the recipient installation-wide; forgetting needs the exact revision', () => {
+  test('each approval is its own recipient/purpose/resource grant; classes never combine across resources or purposes', () => {
     const path = mkdtempSync(join(tmpdir(), 'jit-s16-recipients-')), dir = new RecipientDirectory(join(path, 'recipients.sqlite'), 'fixture');
+    const disclosure = (purpose: string, resource: string, classification: 'private' | 'personal') => ({ classes: ['communication', 'disclosure'] as ('communication' | 'disclosure')[], disclosure: { recipients: [ref('vendor')], purpose: ref(purpose), sources: [{ ref: ref(`doc_${resource}`), resource: ref(resource), classification }, { ref: ref('page'), resource: ref('web'), classification: 'public' as const }], dataClasses: [classification, 'public' as const], exactBytes: { length: 1, sha256: 'a'.repeat(64) } } });
     try {
-      dir.remember({ classes: ['communication', 'disclosure'], disclosure: { recipients: [ref('vendor')], purpose: ref('purpose'), sources: [{ ref: ref('doc'), resource: ref('account'), classification: 'private' }], dataClasses: ['private'], exactBytes: { length: 1, sha256: 'a'.repeat(64) } } });
-      expect(dir.approvals()).toMatchObject([{ recipient: ref('vendor'), purpose: ref('purpose'), resources: [ref('account')], dataClasses: ['private'], sources: null }]);
-      expect(() => dir.forget('vendor', 2)).toThrow('recipient_changed');
-      dir.forget('vendor', 1); expect(dir.approvals()).toEqual([]);
-      dir.remember({ classes: ['communication'] }); expect(dir.remembered()).toEqual([]);
+      dir.remember(disclosure('purpose', 'a', 'private')); dir.remember(disclosure('purpose', 'b', 'personal')); dir.remember(disclosure('other', 'a', 'private'));
+      const grants = dir.approvals().map(a => `${a.purpose.id}:${a.resources.map(r => r.id).join()}:${a.dataClasses.join()}`).sort();
+      expect(grants).toEqual(['other:a:private', 'purpose:a:private', 'purpose:b:personal']);
+      const first = dir.remembered().find(r => r.purpose.id === 'purpose' && r.resource.id === 'a')!;
+      expect(() => dir.forget(first.grantId, first.revision + 1)).toThrow('recipient_changed');
+      dir.forget(first.grantId, first.revision); expect(dir.approvals()).toHaveLength(2);
+      dir.remember({ classes: ['communication'] }); expect(dir.remembered()).toHaveLength(2);
     } finally { dir.close(); rmSync(path, { recursive: true, force: true }); }
   });
 });

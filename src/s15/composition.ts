@@ -467,8 +467,8 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(options.recipients ? { recipients: (directory => ({
         list: (actor: OwnerActor) => { policy.owner.current(actor);
           return { people: directory.people().map(p => ({ address: p.address, label: p.label, addedAt: p.addedAt })),
-            remembered: directory.remembered().map(r => ({ recipientId: r.recipient.id, label: directory.label(r.recipient.id), purposeId: r.purpose.id, dataClasses: [...r.dataClasses], rememberedAt: r.rememberedAt, revision: r.revision })) }; },
-        forget: (actor: OwnerActor, _requestId: string, recipientId: string, revision: number) => { policy.owner.current(actor); directory.forget(recipientId, revision); },
+            remembered: directory.remembered().map(r => ({ grantId: r.grantId, label: directory.label(r.recipient.id), purposeId: r.purpose.id, resourceId: r.resource.id, dataClasses: [...r.dataClasses], rememberedAt: r.rememberedAt, revision: r.revision })) }; },
+        forget: (actor: OwnerActor, _requestId: string, grantId: string, revision: number) => { policy.owner.current(actor); directory.forget(grantId, revision); },
         forgetPerson: (actor: OwnerActor, _requestId: string, address: string) => { policy.owner.current(actor); directory.forgetPerson(address); },
       }))(options.recipients) } : {}),
       ...(browser && options.browser?.approved ? { websites: (approved => ({

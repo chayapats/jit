@@ -31,7 +31,8 @@ export function createConversationPolicy(host: S15PolicyService, input: {
   subjectResourceIds?: readonly string[];
   /** AUTH16-01: binds the recipients one live owner message names (S16 recipient directory). Never called for a routine. */
   namedRecipients?: (text: string) => Ref[];
-  /** AUTH16-01 (S16-D07 g): called after POLICY recorded an exact owner approval, with the approved revision. */
+  /** AUTH16-01 (S16-D07 g): called after POLICY recorded an exact owner approval, with the approved revision. A failure
+   * here never undoes or blocks that decision. */
   onApproved?: (action: PreparedAction) => void;
 }): ConversationPolicy<OwnerActor, ConversationPolicyWork> {
   const config = structuredClone({ ownerId: input.ownerId, bot: input.bot, selection: input.selection, route: input.route, limits: input.limits, modelCallUpperBound: input.modelCallUpperBound });
@@ -81,7 +82,12 @@ export function createConversationPolicy(host: S15PolicyService, input: {
     guard(work) { invoke(() => host.work.guard(work.actor)); },
     actionSlips(actor, actions) { return invoke(() => actions.map(action => host.owner.actionSlip(actor, action))); },
     decidePending(actor, input) { invoke(() => host.owner.decidePending(actor, input)); },
-    decideAction(actor, decision) { invoke(() => { host.owner.decide(actor, decision); if (decision.decision === "approve" && input.onApproved) input.onApproved(host.owner.actionSlip(actor, decision.action).action); }); },
+    decideAction(actor, decision) {
+      invoke(() => host.owner.decide(actor, decision));
+      // The exact approval is already recorded and must still queue its action. Remembering the recipient is a
+      // convenience only: if it fails (for example a full list), the next first disclosure simply asks again.
+      if (decision.decision === "approve" && input.onApproved) { try { input.onApproved(host.owner.actionSlip(actor, decision.action).action); } catch { /* narrows only */ } }
+    },
     dispatchAction(reference, action) { return host.work.dispatch(invoke(() => host.control.bindWork(reference.id)), action).catch(error => { throw mapped(error); }); },
     stopWork(actor, reference, requestId) { invoke(() => host.owner.revoke(actor, `cs_${digest(requestId)}`, { kind: "work", id: reference.id })); },
     reserveModel(work, slot) {

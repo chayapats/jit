@@ -240,8 +240,8 @@ export interface S15ApprovedWebsite { origin: string; revision: number; addedAt:
  */
 /** AUTH16-01 (S16-D07 b, g) owner settings list; forgetting needs the exact registration revision. */
 export interface S15WebRecipients<Actor> {
-  list(actor: Actor): { people: { address: string; label: string | null; addedAt: number }[]; remembered: { recipientId: string; label: string; purposeId: string; dataClasses: string[]; rememberedAt: number; revision: number }[] };
-  forget(actor: Actor, requestId: string, recipientId: string, revision: number): void;
+  list(actor: Actor): { people: { address: string; label: string | null; addedAt: number }[]; remembered: { grantId: string; label: string; purposeId: string; resourceId: string; dataClasses: string[]; rememberedAt: number; revision: number }[] };
+  forget(actor: Actor, requestId: string, grantId: string, revision: number): void;
   forgetPerson(actor: Actor, requestId: string, address: string): void;
 }
 export interface S15WebWebsites<Actor> {

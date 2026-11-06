@@ -592,9 +592,9 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
       if (url.pathname === "/s15/forms/recipients/forget" || url.pathname === "/s15/forms/recipients/forget-person") {
         const recipients = ports.recipients; if (!recipients) throw new AppError("not_found", 404);
         const person = url.pathname.endsWith("-person");
-        only(fields, person ? ["csrf", "requestId", "address"] : ["csrf", "requestId", "recipientId", "revision"]);
+        only(fields, person ? ["csrf", "requestId", "address"] : ["csrf", "requestId", "grantId", "revision"]);
         if (!person && !/^[1-9]\d{0,8}$/.test(fields.revision!)) throw new AppError("invalid_body");
-        try { if (person) recipients.forgetPerson(actor, fields.requestId!, fields.address!); else recipients.forget(actor, fields.requestId!, fields.recipientId!, Number(fields.revision)); }
+        try { if (person) recipients.forgetPerson(actor, fields.requestId!, fields.address!); else recipients.forget(actor, fields.requestId!, fields.grantId!, Number(fields.revision)); }
         catch (error) { if (codeOf(error) === "authentication_required") throw error; return recipientsPage(codeOf(error), false, 409); }
         return redirect("/resources/recipients?forgot=1");
       }

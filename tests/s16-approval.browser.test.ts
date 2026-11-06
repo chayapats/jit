@@ -33,7 +33,7 @@ browserTest.each([1440, 390])("actual in-chat approval card at width %i", async 
     const card = page.getByRole("region", { name: copy["s16.card.title.email"] });
     await card.waitFor({ timeout: 15000 });
     expect(await card.getByText("recipient@example.test").count()).toBeGreaterThan(0);
-    expect(await card.getByText("Quarterly status").count()).toBe(1);
+    expect(await card.getByText("Quarterly status", { exact: true }).count()).toBe(1);
     expect(await card.getByText(copy["s16.card.once"], { exact: false }).count()).toBe(1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     if (process.env.JIT_S16_SCREENSHOT_DIR) await card.screenshot({ path: `${process.env.JIT_S16_SCREENSHOT_DIR}/approval-card-${width}.png` });

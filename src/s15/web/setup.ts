@@ -153,13 +153,19 @@ export interface S15RulesCard {
   options: { currencies: string[]; periods: { id: string; days: number }[] };
   entry: { amount: string; currency: string; periodId: string } | null; budget: S15BudgetEntry | null; refused: string | null; installed: boolean;
 }
-const doesAlone = ["research", "computer", "edits", "accounts", "models", "sends", "github"] as const;
-// AUTH16-01 (S16-D07): owner-named sends and GitHub work after required checks no longer ask.
-const alwaysAsks = ["messages", "production", "payments", "recipients", "major", "new_accounts", "credentials"] as const;
-/** The two plain F1 lists (does alone / always asks first) and the quiet personal-GitHub line. */
-export function ruleLists(personalNote = true): string {
-  return `<div class="s15-rule-lists"><section><h4 class="s-section-t">${tr("s15.setup.does_alone")}</h4><ul>${doesAlone.map(item => `<li>${tr(key(`s15.setup.alone.${item}`))}</li>`).join("")}</ul></section>
-    <section><h4 class="s-section-t">${tr("s15.setup.always_asks")}</h4><ul>${alwaysAsks.map(item => `<li>${tr(key(`s15.setup.asks.${item}`))}</li>`).join("")}</ul></section></div>${personalNote ? `<p class="s-note">${tr("s15.setup.personal_off")}</p>` : ""}`;
+/**
+ * The two plain F1 lists (does alone / always asks first). With an installed policy they describe that policy:
+ * revision-3 behavior (owner-named sends, GitHub after checks) is listed as done alone only when the installed rules
+ * contain it, otherwise as asking first plus a note that the newer defaults apply only after acceptance.
+ */
+export function ruleLists(personalNote = true, installed: Pick<StandingPolicy, "rules"> | null = null): string {
+  const named = !installed || installed.rules.some(r => r.mode === "owner_named_send"), github = !installed || installed.rules.some(r => r.mode === "github_default");
+  const alone = ["research", "computer", "edits", "accounts", "models", ...(named ? ["sends"] : []), ...(github ? ["github"] : [])];
+  // AUTH16-01 (S16-D07): owner-named sends and GitHub work after required checks no longer ask once accepted.
+  const asks = [named ? "messages" : "messages_all", ...(github ? [] : ["github", "merge"]), "production", "payments", "recipients", "major", "new_accounts", "credentials"];
+  const pending = !named || !github ? `<p class="s-note">${tr("s15.rules.proposed_note")} <a class="s-link-text" href="/rules#s15-policy-review">${tr("s15.rules.proposed_link")}</a></p>` : "";
+  return `<div class="s15-rule-lists"><section><h4 class="s-section-t">${tr("s15.setup.does_alone")}</h4><ul>${alone.map(item => `<li>${tr(key(`s15.setup.alone.${item}`))}</li>`).join("")}</ul></section>
+    <section><h4 class="s-section-t">${tr("s15.setup.always_asks")}</h4><ul>${asks.map(item => `<li>${tr(key(`s15.setup.asks.${item}`))}</li>`).join("")}</ul></section></div>${pending}${personalNote ? `<p class="s-note">${tr("s15.setup.personal_off")}</p>` : ""}`;
 }
 const fieldLabels: Record<string, string> = { "budget.currency": "s15.budget.field.currency", "budget.startsAt": "s15.budget.field.starts", "budget.expiresAt": "s15.budget.field.expires", "budget.ceiling.spendMinor": "s15.budget.field.spend",
   "budget.ceiling.attempts": "s15.budget.field.attempts", "budget.ceiling.steps": "s15.budget.field.steps", "budget.ceiling.calls": "s15.budget.field.calls", "budget.ceiling.reads": "s15.budget.field.reads",
@@ -175,7 +181,7 @@ function fieldValue(path: string, value: unknown, currency: string | null): stri
 /** F1 section 5: plain rule lists, empty budget fields and the exact proposal hash for `policy.install`. */
 export function rulesCard(card: S15RulesCard): string {
   if (card.unavailable) return notYet("s15.rules.not_composed");
-  if (card.current) return `${card.installed ? `<div role="status">${banner("ok", fill("s15.rules.installed", { n: card.current.revision }))}</div>` : `<p class="s-row">${pill(fill("s15.rules.active", { n: card.current.revision }), "ok", "✓")}</p>`}${ruleLists()}`;
+  if (card.current) return `${card.installed ? `<div role="status">${banner("ok", fill("s15.rules.installed", { n: card.current.revision }))}</div>` : `<p class="s-row">${pill(fill("s15.rules.active", { n: card.current.revision }), "ok", "✓")}</p>`}${ruleLists(true, card.current)}`;
   const options = card.options, entry = card.entry, proposal = card.proposal;
   const select = (name: string, label: string, items: { value: string; text: string }[], chosen: string) => `<label class="s-field"><span>${e(label)}</span>${items.length ? `<select name="${name}" required>${items.length > 1 ? `<option value=""${chosen ? "" : " selected"}>${tr("s15.budget.choose")}</option>` : ""}${items.map(item => `<option value="${e(item.value)}"${item.value === chosen || items.length === 1 ? " selected" : ""}>${e(item.text)}</option>`).join("")}</select>` : `<span class="s-sub">${tr("s15.setup.no_reviewed_value")}</span>`}</label>`;
   const budgetForm = form("/s15/forms/rules/review", card.csrf, `<fieldset class="s-field"><legend>${tr("s15.budget.legend")}</legend>
