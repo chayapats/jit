@@ -210,7 +210,8 @@ export class RoutineService<Actor> {
         bump(); return receipt(routine);
       }
       case "routine.seen": {
-        routine.attention = 0; bump(); return receipt(routine);
+        // Attention is display state, not configuration: clearing it does not invalidate other owner views.
+        routine.attention = 0; this.#saveRoutine(routine); return receipt(routine);
       }
       case "routine.acknowledge": {
         const occurrence = this.occurrences(routine.id).find(row => row.id === raw.occurrenceId);
