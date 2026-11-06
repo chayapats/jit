@@ -68,8 +68,14 @@ export function vapidKey(privateKey: Uint8Array): VapidKey {
   return { privateKey: Uint8Array.from(privateKey), publicKey: Uint8Array.from(ecdh.getPublicKey()) };
 }
 
+/** Left-pads a big-endian scalar to 32 bytes: OpenSSL drops leading zero bytes (about 1 key in 256). */
+export function scalar32(value: Uint8Array): Uint8Array {
+  if (value.length > 32) throw new AppError("vapid_key_invalid");
+  const out = new Uint8Array(32); out.set(value, 32 - value.length); return out;
+}
+
 /** Fresh random VAPID key pair. */
-export function generateVapidKey(): VapidKey { const ecdh = createECDH("prime256v1"); ecdh.generateKeys(); return vapidKey(ecdh.getPrivateKey()); }
+export function generateVapidKey(): VapidKey { const ecdh = createECDH("prime256v1"); ecdh.generateKeys(); return vapidKey(scalar32(ecdh.getPrivateKey())); }
 
 /** Longest token lifetime Jit signs; RFC 8292 §2 caps `exp` at 24 hours and push services may require less. */
 export const vapidLifetimeSeconds = 12 * 3600;

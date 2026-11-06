@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createDecipheriv, createECDH, createHmac, createPublicKey, verify } from "node:crypto";
-import { base64url, encryptPushPayload, generateVapidKey, isP256Point, pushRecordSize, vapidAuthorization, vapidKey, vapidLifetimeSeconds, vapidSubject } from "../src/s16/notifications/crypto";
+import { base64url, encryptPushPayload, generateVapidKey, isP256Point, pushRecordSize, scalar32, vapidAuthorization, vapidKey, vapidLifetimeSeconds, vapidSubject } from "../src/s16/notifications/crypto";
 
 // RFC 8291 Appendix A.
 const vector = {
@@ -76,4 +76,16 @@ test("VAPID authorization is an ES256 JWT for the push origin that expires withi
   expect(() => vapidAuthorization(key, "http://push.example.test", "mailto:jit@localhost", now)).toThrow("push_endpoint_invalid");
   expect(() => vapidAuthorization(key, "https://push.example.test/path", "mailto:jit@localhost", now)).toThrow("push_endpoint_invalid");
   expect(() => vapidKey(new Uint8Array(32))).toThrow("vapid_key_invalid");
+});
+
+test("a private scalar with leading zero bytes, as OpenSSL returns it short, still yields a valid 32-byte VAPID key", () => {
+  const full = new Uint8Array(32); full[0] = 0; full[1] = 0; for (let i = 2; i < 32; i++) full[i] = (i * 37 + 11) & 0xff;
+  const short = full.subarray(2);
+  expect(short.length).toBe(30);
+  const key = vapidKey(scalar32(short));
+  expect(key.privateKey).toEqual(full); expect(key.publicKey).toEqual(vapidKey(full).publicKey);
+  const header = vapidAuthorization(key, "https://push.example.net", "mailto:jit@localhost", 1_800_000_000_000);
+  expect(header).toStartWith("vapid t=");
+  expect(() => scalar32(new Uint8Array(33))).toThrow("vapid_key_invalid");
+  for (let i = 0; i < 64; i++) expect(generateVapidKey().privateKey.length).toBe(32);
 });
