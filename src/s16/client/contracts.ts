@@ -17,6 +17,8 @@ export interface ClientCapabilities {
   memory?: { available: false; code: "memory_unavailable" } | { available: true; contract: "s16-client-memory/v1" };
   /** Additive field: owner-confirmed routines (`s16-routines/v1`). Reactions list the source kinds this service composes. */
   routines?: { available: false; code: "routines_unavailable" } | { available: true; contract: "s16-client-routines/v1"; reactions: { signed: true; github: true; artifacts: boolean }; feed: true };
+  /** Additive field: Web Push notices (`s16-notifications/v1`) and the fixed service worker/scope that receives them. */
+  notifications?: { available: false; code: "notifications_unavailable" } | { available: true; contract: "s16-notifications/v1"; transport: "web_push"; serviceWorker: "/s16/sw.js"; scope: "/s16/" };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
@@ -111,3 +113,4 @@ export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item
 /** Explicit owner command copying one exact committed artifact into a new input of its own conversation. */
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }
 export type { RoutineDetail as ClientRoutineDetail, RoutineList as ClientRoutineList, RoutineOptions as ClientRoutineOptions, RoutineProposal as ClientRoutineProposal, RoutineReceipt as ClientRoutineReceipt, RoutineDraft as ClientRoutineDraft, RoutineOccurrence as ClientRoutineOccurrence, RoutineSummary as ClientRoutineSummary, RoutineSourceView as ClientRoutineSource } from "../routines/types";
+export type { NotificationSettings as ClientNotificationSettings, NotificationDevice as ClientNotificationDevice, NotificationSubscribeCommand as ClientNotificationSubscribeCommand, NotificationPayload as ClientNotificationPayload, NoticeKind as ClientNoticeKind } from "../notifications/types";

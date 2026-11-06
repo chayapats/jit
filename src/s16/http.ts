@@ -9,6 +9,7 @@ import type { FileUploadCommand } from "./files/types";
 import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from "./memory";
 import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
+import type { NotificationService } from "./notifications/service";
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -18,7 +19,7 @@ import type { RoutineService } from "./routines/service";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -48,7 +49,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
-      routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" } };
+      routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
+      notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" } };
   };
   return async request => {
     try {
@@ -141,6 +143,17 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
         if (request.method === "POST" && routine[1] === "proposals") { const input = await body(request); return json(options.routines.propose(currentOwner(), input)); }
         if (request.method === "POST" && routine[1] === "commands") { const input = await body(request); const receipt = options.routines.command(currentOwner(), input); options.wake?.(); return json(receipt); }
+        throw new AppError("method_rejected", 405);
+      }
+      const notify = /^\/api\/s16\/client\/notifications(?:\/(subscribe|unsubscribe|devices\/([a-f0-9]{64})))?$/.exec(url.pathname);
+      if (notify) {
+        if (!options.notifications) throw new AppError("notifications_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !notify[1]) return json(options.notifications.settings(currentOwner()));
+        if (request.method === "GET" && notify[2]) return json(options.notifications.device(currentOwner(), notify[2]));
+        // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
+        if (request.method === "POST" && notify[1] === "subscribe") { const input = await body(request); return json(options.notifications.subscribe(currentOwner(), input)); }
+        if (request.method === "POST" && notify[1] === "unsubscribe") { const input = await body(request); return json(options.notifications.unsubscribe(currentOwner(), input)); }
         throw new AppError("method_rejected", 405);
       }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
