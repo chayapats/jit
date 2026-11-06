@@ -72,6 +72,8 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Routine:** An owner-authorized standing purpose with selected resources/Bots/tools, schedule/timezone/misfire policy and finite limits. Findings outside it are proposals, not new execution authority.
 
+**Routine occurrence (S16, ROUT16-01/02):** One scheduled, Run-now, signed-event or file-revision wake of an owner-confirmed routine. It enters CHAT through the protected `submitRoutine` ingress with an immutable purpose/resource/access pin and is admitted under the current standing policy; the routine itself grants nothing. A routine has at most one pending occurrence (later triggers coalesce into it) and runs one obligation at a time: an exact approval or unknown outcome holds the next run. See `src/s16/routines/` and the [routines contract](docs/contracts/s16-routines-v1.md).
+
 **Decision:** A conclusion explicitly selected by the owner, retaining the proposal and evidence it resolves. An agent vote or recommendation is not a decision.
 
 **Memory claim:** A retained statement with source/revision, originating Bot/conversation, fact-or-inference status and lifecycle state. It is not the entire transcript or unqualified truth.
@@ -148,7 +150,7 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Local API:** An owner-enabled loopback API/CLI over the same authorized commands. It is not a general host shell.
 
-**Webhook trigger:** A signed wake-up for already-authorized work. Its payload is data, not a mandate.
+**Webhook trigger:** A signed wake-up for already-authorized work. Its payload is data, not a mandate. In S16 a reaction source wakes one read-only routine; only validated identity fields (commit SHA, review ID, delivery/key) are read for coalescing and nothing from the payload reaches a model.
 
 **Managed backup:** A credential-free versioned application/artifact image with opaque native snapshots, reconciled before activation.
 

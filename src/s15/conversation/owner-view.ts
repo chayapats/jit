@@ -25,6 +25,8 @@ export interface ConversationOwnerRow {
   reply: string | null;
   /** Material clarification hold only: issue references taken from the owner's own original bytes. They are reply labels, not a selection. */
   question: { candidates: string[] } | null;
+  /** Present on a routine occurrence: the message is the owner-confirmed routine instruction, not a live owner message. */
+  routine?: { routineId: string; occurrenceId: string; quiet: boolean };
   /** Owner decision this message recorded on one exact action revision, with its dispatch observation when known. */
   decision: { action: ActionRef; decision: "approve" | "deny"; outcome: Observation["outcome"] | null } | null;
 }
@@ -80,6 +82,7 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, memory: request.memory ?? null, question,
       ...(request.fileInputs ? { files: { inputs: request.fileInputs, artifacts: request.result === null ? [] : request.artifacts ?? [] } } : {}),
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
+      ...(request.routine ? { routine: { routineId: request.routine.routineId, occurrenceId: request.routine.occurrenceId, quiet: request.routine.quiet } } : {}),
       decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
 }
 

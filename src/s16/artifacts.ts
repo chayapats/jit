@@ -86,3 +86,8 @@ export function artifactDetail<Actor, Work>(app: ConversationApplication<Actor, 
     .sort((a, b) => a.revision - b.revision || a.artifact.createdAt - b.artifact.createdAt || (a.artifact.id < b.artifact.id ? -1 : 1));
   return { contract: "s16-client-artifact/v1", item: project(item, revisions), inputs, revisions: revisionsList, familyTotal: members.length, preview: item.entry.artifact.mime === "text/html" ? "sandboxed_html" : "escaped_text" };
 }
+
+/** Committed current artifacts with their revision parents, for protected watchers. Metadata only; no bytes. */
+export function committedArtifacts<Actor, Work>(app: ConversationApplication<Actor, Work>, files: FileStore<Actor>, actor: Actor): FileArtifactLineage[] {
+  return committed(app, files, actor).items.map(item => structuredClone(item.entry));
+}
