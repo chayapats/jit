@@ -13,7 +13,11 @@ import { calendarProposalSchema, mailProposalSchema } from './schemas';
 export interface GoogleEffectsOptions {
   runtime: 's15'; google: GooglePersonal; mailAccount: () => GoogleEffectAccount | null; calendarAccount: () => GoogleEffectAccount | null;
   token(account: GoogleEffectAccount, scope: 'gmail.readonly' | 'gmail.send' | 'calendar.readonly' | 'calendar.events'): Promise<string>;
-  recipients: () => readonly CommunicationRecipient[]; attachment(id: string, revision: number): MailAttachment | null;
+  recipients: () => readonly CommunicationRecipient[];
+  /** AUTH16-01: gives an address nobody bound yet a protected recipient identity, so a send to it waits as an exact
+   * card instead of failing. Identity only: the new recipient is outside every work's recipients and needs approval. */
+  bindRecipient?: (address: string) => void;
+  attachment(id: string, revision: number): MailAttachment | null;
   bounds: EffectBounds; now: () => number;
   /** Protected DATA15 composition. Bind Google and every actual person recipient before POLICY
    * registration; read guards run before credentials and final GET, and source stamping precedes output. */
@@ -94,7 +98,10 @@ export function registerGoogleEffects(options: GoogleEffectsOptions) {
     ref(a.resource); string(a.account, 254); if (!a.account || /[\r\n]/.test(a.account) || kind === 'calendar' && !a.calendarId) fail('personal_account_required');
     return JSON.parse(canonical(a)) as GoogleEffectAccount;
   }
-  const recipients = (addresses: readonly string[]) => googleRecipientRefs(addresses, options.recipients());
+  const recipients = (addresses: readonly string[]) => {
+    if (options.bindRecipient) { const known = options.recipients(); for (const address of addresses) if (!known.some(r => googleAddressKey(r.address) === googleAddressKey(address))) options.bindRecipient(address); }
+    return googleRecipientRefs(addresses, options.recipients());
+  };
   function attachments(p: MailProposal): MailAttachment[] { return p.attachments.map(r => { const a = options.attachment(r.id, r.revision); if (!a || a.id !== r.id || a.revision !== r.revision) fail('attachment_changed'); validateMailAttachment(a); return structuredClone(a); }); }
   function payload(kind: 'mail' | 'calendar', proposal: unknown, work: WorkAuthority): Payload {
     const a = account(kind, kind === 'mail' ? 'gmail.send' : 'calendar.events');

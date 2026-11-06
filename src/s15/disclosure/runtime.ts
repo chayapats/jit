@@ -20,7 +20,10 @@ export interface RuntimeDisclosureConfig {
 
 /** Bind serialized configuration to protected owning-service resolvers. Actual Google recipients,
  * browser URL origins and acquisition URLs are resolved before I/O; model text supplies no labels. */
-export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: readonly ApprovedModelRoute[], catalogs: CatalogPort, googleRecipients: readonly { ref: Ref; address: string }[], webGithubRecipient?: Ref): ComposedDisclosure {
+export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: readonly ApprovedModelRoute[], catalogs: CatalogPort, googleRecipients: readonly { ref: Ref; address: string }[] | (() => readonly { ref: Ref; address: string }[]), webGithubRecipient?: Ref,
+  /** AUTH16-01: installation-wide remembered recipients (S16-D07 g), merged after the configured approvals. */
+  remembered?: () => readonly RecipientApproval[]): ComposedDisclosure {
+  const bindings = typeof googleRecipients === 'function' ? googleRecipients : () => googleRecipients;
   // GIT15-04: a Web-connected GitHub account uses its protected service recipient when no GitHub recipient is configured.
   if (!config.githubRecipient && webGithubRecipient) config = { ...config, githubRecipient: webGithubRecipient };
   const origins = [...config.browser, ...config.acquisitions];
@@ -32,7 +35,7 @@ export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: reado
     catalogs: {
       source: value => config.sources.find(s => equal(s.ref, value)) ?? null,
       recipient: value => { const current = catalogs.current('recipient', value.id); return current && equal(current.ref, value) ? current : null; },
-      approvals: () => config.approvals,
+      approvals: () => remembered ? [...config.approvals, ...remembered()] : config.approvals,
     },
     routes: [
       ...models.map((model, index) => ({ id: `inference_${index}`, kind: 'model' as const, resolve: () => [model.recipient] })),
@@ -40,7 +43,7 @@ export function runtimeDisclosure(config: RuntimeDisclosureConfig, models: reado
       ...(config.googleRecipient ? [{ id: 'google', kind: 'adapter' as const, resolve: (_work: unknown, payload: JsonValue) => {
         // Same derivation and address identity as the Google adapter itself (removed attendees, a
         // non-owner organizer, case-insensitive bindings); any unbound person keeps the route unknown.
-        try { return [config.googleRecipient!, ...googleRecipientRefs(googleEffectPeople(payload as unknown as Parameters<typeof googleEffectPeople>[0]), googleRecipients)]; }
+        try { return [config.googleRecipient!, ...googleRecipientRefs(googleEffectPeople(payload as unknown as Parameters<typeof googleEffectPeople>[0]), bindings())]; }
         catch { return null; }
       } }] : []),
       { id: 'browser', kind: 'browser', resolve: (_work, payload) => { const binding = config.browser.find(r => r.origin === origin(payload)); return binding ? [binding.recipient] : null; } },

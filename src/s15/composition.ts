@@ -47,6 +47,9 @@ export interface S15OwnerAuthentication {
 export interface S15CompositionOptions {
   runtime: 's15'; directory: string; create: boolean; installationId: string; origin: string;
   owner: S15OwnerAuthentication; catalogs: CatalogPort;
+  /** AUTH16-01 installation-wide recipient directory (owner-named people, remembered private-data recipients). The
+   * caller also resolves its refs in `catalogs` and its bindings/approvals in DATA15; composition closes it. */
+  recipients?: import('../s16/autonomy/recipients').RecipientDirectory;
   conversation: Omit<Parameters<typeof createConversationPolicy>[1], 'ownerGeneration'>;
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
@@ -156,6 +159,7 @@ export async function composeS15(options: S15CompositionOptions) {
     for (const name of storeNames) { if (added.includes(name)) continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
   }
   const cleanup: (() => void | Promise<void>)[] = [];
+  if (options.recipients) { const directory = options.recipients; cleanup.push(() => directory.close()); }
   // A failed additive boot removes only stores it created itself, so the next boot sees the same state.
   if (created.length) cleanup.push(() => { if (!added.length) return; for (const name of created) for (const suffix of ['', '-wal', '-shm', '.runtime-lock.sqlite']) rmSync(join(root, `${name}${suffix}`), { force: true }); });
   let closing = false;
@@ -301,7 +305,8 @@ export async function composeS15(options: S15CompositionOptions) {
       return auth.actor;
     };
     const subjectIds = new Proxy([] as string[], { get: (_target, key) => { const ids = githubIds(), value = Reflect.get(ids, key); return typeof value === 'function' ? value.bind(ids) : value; } });
-    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation });
+    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
+      ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}) });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;

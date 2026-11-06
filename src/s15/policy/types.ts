@@ -14,8 +14,9 @@ export type ActionClass = 'ordinary_edit' | 'guest_local_admin' | 'guest_system_
 export interface RecurringPaymentRule { payee: Ref; account: Ref; currency: string; minorUnit: number; amountCeilingMinor: string; minIntervalMs: number; maxPayments: number; totalCeilingMinor: string; startsAt: number }
 /**
  * Rule modes. AUTH16-01 (contract revision 3, ADR 0084) adds two product-default modes:
- * `owner_named_send` satisfies `communication` only for recipients the owner's own message named
- * (`WorkRequest.named`), never for a routine, steer or Bot-initiated send; `github_default` satisfies
+ * `owner_named_send` satisfies `communication` only when every person reached is one the owner's own message named
+ * (`WorkRequest.named`), never for a routine or Bot-initiated send; its own `recipients` list only the carrier
+ * services (mail provider, GitHub) that deliver the send, never people; `github_default` satisfies
  * `github_publish`/`github_merge` (and a review reply's `communication`) on the rule's repositories once the
  * adapter's evidence says the target's required checks and reviews passed. Neither satisfies production.
  */

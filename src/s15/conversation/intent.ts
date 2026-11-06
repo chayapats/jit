@@ -1,13 +1,18 @@
 import type { ConversationIntent } from "./types";
 
+/** The owner's own instruction with quotes, fenced code and forwarded lines removed; only this view determines authority. */
+export function ownerInstructionText(original: string): string {
+  return original.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, " ")
+    .replace(/^\s*>.*$/gm, " ").replace(/"(?:\\.|[^"\\])*"|“[^”]*”|‘[^’]*’|'[^'\n]*'|`[^`]*`/g, " ").trim();
+}
+
 /**
  * Conservative English/Thai direct-request grammar. Only original authenticated owner text is input.
  * Quotes, fenced code and forwarded lines are inert. Known conditional/mixed scope remains read-only;
  * unknown wording may use isolated interpretation. This is not a universal language classifier.
  */
 export function groundConversationIntent(original: string, options: { fileOutput?: boolean } = {}): ConversationIntent {
-  const instruction = original.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, " ")
-    .replace(/^\s*>.*$/gm, " ").replace(/"(?:\\.|[^"\\])*"|“[^”]*”|‘[^’]*’|'[^'\n]*'|`[^`]*`/g, " ").trim();
+  const instruction = ownerInstructionText(original);
   let text = instruction.toLowerCase();
   for (let prefix = 0; prefix < 4; prefix++) text = text.replace(/^(?:please\s+|can you\s+|could you\s+|i want you to\s+|help me\s+|ช่วย|กรุณา)/u, "").trim();
   const issues = [...new Set([...instruction.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `issue:${match[1]}`))];

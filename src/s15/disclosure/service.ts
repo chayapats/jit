@@ -67,6 +67,9 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
     return values.map(value => { const current = options.catalogs.recipient(clone(value)); if (!current?.active || !equal(current.ref, value)) fail('recipient_unknown'); return clone(value); }).sort((a, b) => canonical(a).localeCompare(canonical(b)));
   }
   function approved(work: WorkAuthority, recipient: Ref, lineage: DisclosureSource[]): boolean {
+    // AUTH16-01 (S16-D07 b): a recipient the owner's own message named for this work is an owner-directed release for
+    // this work only (never remembered); a non-releasable source still refuses below.
+    if (work.request.named && contains(work.request.named, recipient) && lineage.every(s => s.classification === 'public' || s.ownerReleasable)) return true;
     return lineage.filter(s => s.classification !== 'public').every(s => options.catalogs.approvals().some(a => {
       ref(a.recipient); ref(a.purpose); refs(a.resources); if (a.sources !== null) refs(a.sources); nat(a.expiresAt);
       if (!Array.isArray(a.dataClasses) || a.dataClasses.some(c => !classes.includes(c))) fail('classification_unknown');

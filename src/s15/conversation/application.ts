@@ -507,7 +507,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
           current.state = current.intent.kind === "accept" ? "accepted" : "held"; current.code = current.intent.kind === "accept" ? null : "material_ambiguity";
         } else {
           const imageInputs = current.fileInputs?.filter(file => file.contract === "s16-file-receipt/v2" && file.representation.mime !== "text/plain").length ?? 0;
-          const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs });
+          const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs, ownerMessage: !current.routine });
           this.owner(actor, current);
           if (decision.state !== "admitted") { current.state = decision.state; current.code = safeCodes.has(decision.code) ? decision.code : "policy_match_required"; }
           else {

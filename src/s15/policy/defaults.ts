@@ -74,7 +74,7 @@ export function s15DefaultPolicy(input: {
   const ordinary: Rule = { id: 'owner_requested_work', mode: 'ordinary', purposes: [structuredClone(s15DefaultRefs.work)], bots: [structuredClone(input.bot)], resources, recipients, selections,
     adapters: adapters.length ? adapters : ['working_vm'], operations: operations.length ? operations : ['vm_write'], classes: [...s15DefaultRuleClasses], expiresAt, recurrence: null };
   // AUTH16-01 (S16-D07 b, d): owner-named sends and GitHub work after required checks run without approval.
-  const named: Rule = { ...structuredClone(ordinary), id: s16DefaultRuleIds.namedSends, mode: 'owner_named_send', recipients: [], classes: ['ordinary_edit', 'communication'] };
+  const named: Rule = { ...structuredClone(ordinary), id: s16DefaultRuleIds.namedSends, mode: 'owner_named_send', recipients: recipients.map(r => structuredClone(r)), classes: ['ordinary_edit', 'communication'] };
   const repositories = input.resources.filter(r => r.kind === 'repository' && r.adapters.some(a => a.id === 's15_github'));
   const githubOps = [...new Set(repositories.flatMap(r => r.adapters.filter(a => a.id === 's15_github').flatMap(a => a.operations)))].filter(op => s16GithubDefaultOperations.includes(op)).sort();
   const rules: Rule[] = [ordinary, named];
