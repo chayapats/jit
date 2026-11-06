@@ -27,8 +27,7 @@ export interface ResumeBindingOptions<Actor> {
   retention?: number;
 }
 /**
- * WORK15-02 durable "resume after this owner request completes" port. Used by the Web composer and the
- * Telegram channel. A binding never resumes from model output or quoted text: it only names the paused
+ * WORK15-02 durable "resume after this owner request completes" port. Used by the Web composer. A binding never resumes from model output or quoted text: it only names the paused
  * responsibility, and WORK's own `resume` checks (after the pause, same scope, current authority, completed
  * owner message) decide. Settlement happens at most once per binding, after restart and without a page view.
  */

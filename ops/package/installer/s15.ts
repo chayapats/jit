@@ -664,8 +664,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       "Owner steps (Web UI only; no file edits):",
       `  1. Open the link shown above (single-use, valid for 15 minutes; re-run install.sh --s15 for a new one) on this host, or from your computer through: ssh -L ${port}:127.0.0.1:${port} <this host>. Set the owner password. An existing owner signs in at ${config.origin}/s14/login.`,
       `  2. Settings → Provider (${config.origin}/settings/provider): sign in to Codex with the device code. It is stored for the ${p.user} identity only; the approved Codex route becomes available after this sign-in.`,
-      `  3. Manage → Telegram (${config.origin}/resources/telegram): paste the new BotFather token, press Check and save, then bind your account with the one-time code.`,
-      "  4. Install your standing rules in the Web UI when you are ready. No policy, budget or personal GitHub rule was installed for you.",
+      "  3. Install your standing rules in the Web UI when you are ready. No policy, budget or personal GitHub rule was installed for you.",
     ]) out(line);
     if (computer?.state === "failed") throw new InstallerFailure("working-computer", `${codeCopy(computer.code)} The controller is installed and healthy; retry from Resources → Computer.`);
     return { events, config, computer, release, rolledBack: false };

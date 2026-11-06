@@ -254,7 +254,7 @@ if (provisioning && globalThis.location) {
   let navigation = 0, controller = null, closing = 0, detailTarget = "", opener = null;
   const positions = new Map(), selections = new Map();
   const asset = doc.querySelector('script[type="module"][src]')?.getAttribute("src");
-  const pagePath = /^(?:\/(?:work|needs|memory|library|models|recovery|setup|search)|\/rules(?:\/recurring)?|\/duties\/[A-Za-z0-9_-]{1,128}|\/chats\/(?:new|[A-Za-z0-9_-]{1,128})|\/resources\/(?:accounts|websites|telegram|computer|github))$/;
+  const pagePath = /^(?:\/(?:work|needs|memory|library|models|recovery|setup|search)|\/rules(?:\/recurring)?|\/duties\/[A-Za-z0-9_-]{1,128}|\/chats\/(?:new|[A-Za-z0-9_-]{1,128})|\/resources\/(?:accounts|websites|computer|github))$/;
   const detailPath = /^\/(?:actions|duties)\/[A-Za-z0-9_-]{1,128}$/;
   const sensitiveView = () => !!doc.querySelector('input[type="password"], #s15-takeover-bar, [data-s15-refresh]');
   const allowed = url => url.origin === location.origin && (pagePath.test(url.pathname) || detailPath.test(url.pathname));
