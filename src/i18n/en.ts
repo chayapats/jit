@@ -6014,6 +6014,6 @@ export const en: Record<MessageKey, string> = {
   "s16.notify.on": "On for this device",
   "s16.notify.off": "Off for this device",
   "s16.notify.denied": "Blocked in browser settings",
-  "s16.notify.unsupported": "This browser can't show notifications. On iPhone, add Jit to the Home Screen first.",
-  "s16.notify.failed": "Couldn't turn on notifications. Try again.",
+  "s16.notify.unsupported": "This browser cannot show notifications. On iPhone, add Jit to the Home Screen first.",
+  "s16.notify.failed": "Could not turn on notifications. Try again.",
 };
