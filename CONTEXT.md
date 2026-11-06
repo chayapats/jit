@@ -114,6 +114,10 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **External effect:** An action leaving the execution boundary, including remote edits, communications, publication, payments and deletion. S15 distinguishes ordinary reversible authorized edits, narrowly captured standing exceptions and human-required actions. S14 retains exact-effect approval contracts. Unknown tools/actions cannot bypass the applicable mediation.
 
+**Owner-named recipient (AUTH16-01):** A person the owner's own message in that conversation names, by exact address, `Name <address>` or a unique known name. An owner-requested send to only such people runs without a card; any other recipient waits.
+
+**Remembered recipient (S16-D07 g):** A recipient of private data the owner approved once; installation-wide for that purpose and data, listed and revocable under Resources → Recipients.
+
 **Human-required action:** An action held for owner authority under the S16-D07 list: payments/purchases/transfers/new billing or accounts/budget increases; a message to another person that the Bot initiated or that reaches a recipient the owner did not name; a public post; production deployment; a destructive, bulk or hard-to-reverse change to real data outside the working VM; a password/account/credential/permission/approval-policy change; the first disclosure of private data to a new recipient (remembered after approval). Login/2FA/CAPTCHA is an owner handoff. Final approval binds the actual action; recurring rules remain purpose/resource/amount/frequency bounded.
 
 **Disclosure lineage (S15 opt-in):** The protected source/resource revisions and public/private/personal/business restrictions accumulated by work. Derived text, screenshots, artifacts and shared-VM inputs inherit ancestry even without citations. An exact new-recipient approval releases one prepared disclosure and never declassifies the source or approves that recipient generally. Registry destination control does not prevent content/covert-channel disclosure through allowed destinations; see [s15-private-data/v1](docs/contracts/s15-private-data-v1.md).

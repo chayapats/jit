@@ -43,6 +43,10 @@ Unknown requests are denied. Non-document JavaScript fetch/beacon/timer effects 
 
 Public JavaScript page rendering and ordinary native form workflows are implemented. A missing causal/semantic/secret proof produces an actionable reason, not a broad approval card. There is no shell, raw CDP/BiDi or script fallback to bypass the boundary. Full cross-VM bypass/host-adoption acceptance is separate from the bounded browser evidence.
 
+## Website trust tiers (AUTH16-01, ADR 0084)
+
+Each approved website carries `tier: 'sensitive' | 'trusted'` (default `sensitive`). The owner sets it for the exact approval revision on Resources → Websites; a change advances the revision. Identity providers, primary email, banking and payment hosts refuse `trusted` (`website_sensitive_only`). The protected browser refuses requests to a trusted origin with `website_trusted_vm` and never observes it, so no trusted-site session accumulates in the protected profile and no protected session is ever exported to the working VM. Trusted and public sites are used from the working VM browser, which reaches public DNS names through the VM proxy's public-web mode (private, reserved and IP-literal destinations still refuse; registry hosts keep their disclosure lease). Accepted residual: on trusted sites and the public web the human-required list is applied by tool policy and instructions, not bypass-resistantly.
+
 ## Owner login and input
 
 Only an authentic policy `OwnerActor` can take over, obtain live PNG frames or send transient finite named-field input. Input is restricted to protected configured login/2FA documents; website credentials go directly to the browser and never to the work API, ledger, receipts or logs. Owner input is not an alternative generic effect executor. Login requests stay inside their exact protected login semantics; other owner-generated effects are unavailable through this port.

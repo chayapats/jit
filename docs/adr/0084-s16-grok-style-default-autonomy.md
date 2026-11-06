@@ -51,3 +51,14 @@ The working VM browser may reach the public web so that public and trusted-site 
 - *Keep S15 defaults*: safest, but contradicts the requested experience and keeps the general-browser work blocked.
 - *Approve by typed reply*: closest to chat, but a page or quoted text could imitate it; the one-press card gives the same flow with an authenticated, exact decision.
 - *Everything in the VM*: simplest, but would expose banking/email sessions to a root-controlled guest.
+
+## Implementation notes (AUTH16-01, #442)
+
+Engineering choices made while implementing (the owner may overturn them):
+
+- *Who the owner named* (owner answer 2026-11-06): an exact address, `Name <address>`, or a name matching exactly one known person; ambiguous names wait. Quoted, fenced and forwarded text names nobody. A named recipient is an owner-directed release for that work's private data (not remembered); the first disclosure to a Bot-chosen recipient still waits.
+- *Remembered recipients* are installation-wide (owner answer), per purpose/resources/data classes, expire after five years and are revocable with the exact revision.
+- *Update path* (owner answer): an installed policy without the revision-3 rules shows an accept banner; the owner accepts the update at `/rules`.
+- *Sensitive-only sites*: a fixed list of identity, primary-email, banking and payment hosts (plus `login.`/`auth.`/`id.` hosts and `bank`/`wallet`/`payment` labels) can never be marked trusted.
+- *Public web* is on for Jit-managed working VMs through the existing proxy, without a registry disclosure lease.
+- *Not delivered in #442*: the owner's one-time sign-in to a trusted site inside the working VM browser needs a way for the owner to see and operate that browser, which is the graphical takeover of DESK16-01 (#410). Until then the Bot uses trusted and public sites from the VM without a stored login, and sign-in for sensitive sites keeps the protected browser's handoff.
