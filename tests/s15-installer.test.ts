@@ -78,7 +78,6 @@ test("a fresh S15 install creates the separate installation, its QEMU identity b
   expect(JSON.parse(readFileSync(f.at(s15Installation.installerState), "utf8"))).toMatchObject({ runtime: "s15", release: "/opt/jit-s15/releases/release-a" });
   expect(f.lines).toContain("Working computer: Ready / พร้อมใช้");
   expect(f.lines.some(line => line.includes("/settings/provider") && line.includes("Codex"))).toBe(true);
-  expect(f.lines.some(line => line.includes("/resources/telegram"))).toBe(true);
   expect(f.lines.join("\n")).not.toContain("?token=");
 });
 

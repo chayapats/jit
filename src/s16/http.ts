@@ -9,6 +9,7 @@ import type { FileUploadCommand } from "./files/types";
 import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from "./memory";
 import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
+import type { NotificationService } from "./notifications/service";
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -18,7 +19,7 @@ import type { RoutineService } from "./routines/service";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -42,13 +43,14 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
     const formats = [ ...["txt", "md", "markdown", "csv", "tsv"].map(extension => ({ extension, mime: "text/plain", bytes: textBytes })),
       ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
       ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
-    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: false,
+    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
       uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
-      routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" } };
+      routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
+      notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" } };
   };
   return async request => {
     try {
@@ -143,6 +145,17 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST" && routine[1] === "commands") { const input = await body(request); const receipt = options.routines.command(currentOwner(), input); options.wake?.(); return json(receipt); }
         throw new AppError("method_rejected", 405);
       }
+      const notify = /^\/api\/s16\/client\/notifications(?:\/(subscribe|unsubscribe|devices\/([a-f0-9]{64})))?$/.exec(url.pathname);
+      if (notify) {
+        if (!options.notifications) throw new AppError("notifications_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !notify[1]) return json(options.notifications.settings(currentOwner()));
+        if (request.method === "GET" && notify[2]) return json(options.notifications.device(currentOwner(), notify[2]));
+        // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
+        if (request.method === "POST" && notify[1] === "subscribe") { const input = await body(request); return json(options.notifications.subscribe(currentOwner(), input)); }
+        if (request.method === "POST" && notify[1] === "unsubscribe") { const input = await body(request); return json(options.notifications.unsubscribe(currentOwner(), input)); }
+        throw new AppError("method_rejected", 405);
+      }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
       if (memory) {
         if (!options.memory) throw new AppError("memory_unavailable", 503);
@@ -161,7 +174,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const caps = await capabilities(), current = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1)); app.options.policy.requireOwner(current.actor);
         return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, capabilities: caps, conversations: conversationList(app, current.actor, 64), needsYou: conversationPendingNeeds(app, current.actor), ...(options.routines ? { routines: { attention: options.routines.list(current.actor).attention } } : {}) } satisfies ClientBootstrap);
       }
-      const conversation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})(?:\/(messages|events|decisions))?$/.exec(url.pathname);
+      const conversation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})(?:\/(messages|events|decisions|steers))?$/.exec(url.pathname);
       if (conversation) {
         const conversationId = conversation[1]!;
         if (request.method === "GET" && !conversation[2]) {
@@ -171,6 +184,16 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "GET" && conversation[2] === "events") {
           if ([...url.searchParams.keys()].some(key => key !== "after") || url.searchParams.getAll("after").length > 1 || !/^(?:0|[1-9]\d{0,15})$/.test(url.searchParams.get("after") ?? "0")) throw new AppError("cursor_invalid", 409);
           return json({ contract: "s16-client-events/v1", conversationId, ...app.events(authenticated.actor, conversationId, Number(url.searchParams.get("after") ?? "0")) });
+        }
+        if (request.method === "POST" && conversation[2] === "steers") {
+          if (url.search) throw new AppError("invalid_body");
+          const input = await body(request);
+          const current = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1));
+          app.options.policy.requireOwner(current.actor); options.authentication.verifyCsrf(current.csrf, request.headers.get("x-csrf-token"));
+          if (!input || typeof input !== "object" || !("conversationId" in input) || input.conversationId !== conversationId) throw new AppError("outside_scope", 403);
+          const receipt = app.steer(current.actor, input);
+          void app.drain().catch(() => {});
+          return json(receipt, 202);
         }
         if (request.method === "POST" && (conversation[2] === "messages" || conversation[2] === "decisions")) {
           if (url.search) throw new AppError("invalid_body");

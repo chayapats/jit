@@ -101,7 +101,7 @@ An external enforcement design must cover guest-root changes to routes/firewalls
 
 ## Public host audit and reusable seams
 
-Pin: [package.json](../../package.json), [vendor artifact](../../vendor/schway-1.0.0-rc.2-aac2fc0.tgz), `schway@1.0.0-rc.2`, upstream `aac2fc0afdfe53f0a5076cb9d3edfaf33d280581`, SHA-256 `2801a5a4a322faabba276a0f607f39027784e2e1e73b720937c77b0f4f0027ae` (re-vendored by MODEL15-02 and MODEL15-03 from `697bf40`, at which the declarations below were read; capabilities retained). Static public declarations were read from this tarball, without invoking the engine, a model or runner. Only `schway/host` imports are proposed. Reading a public re-export's declaration does not authorize importing its internal path.
+Pin: [package.json](../../package.json), [vendor artifact](../../vendor/schway-1.0.0-rc.2-39194f7.tgz), `schway@1.0.0-rc.2`, upstream `39194f7439d3f97900477cfac22bbd7164937530`, SHA-256 `58c80215fa0d8330c73c07674038ae50aed5dd5e69cc9d95e5d421e689091b8a` (re-vendored by MODEL15-02 and MODEL15-03 from `697bf40`, at which the declarations below were read; capabilities retained). Static public declarations were read from this tarball, without invoking the engine, a model or runner. Only `schway/host` imports are proposed. Reading a public re-export's declaration does not authorize importing its internal path.
 
 | Existing source / public seam | Valid reuse and limit |
 | --- | --- |

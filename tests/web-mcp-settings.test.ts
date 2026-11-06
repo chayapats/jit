@@ -88,11 +88,6 @@ test("(3) Accept POST → 303; the server is installing (no installer is wired, 
   // The redirect lands on the page holding the proposal's reply (checked cursor from the read model).
   expect(res.headers.get("location")).toBe(`${topicPath(f)}?after=1#proposal-${proposal!.id}`);
   expect(f.app.mcpServers(f.auth.actor, f.project.id)).toMatchObject([{ name: "notes", state: "installing" }]);
-  // Telegram may narrow (reject) but never accept: EXE12 refuses with `mcp_install_requires_web`.
-  try {
-    f.app.execute(f.telegram, { kind: "mcp.install.accept", requestId: rid(), projectId: f.project.id, expectedRevision: 2, payload: { proposalId: proposal!.id, env: {} } });
-    throw new Error("expected mcp_install_requires_web");
-  } catch (error) { expect(error).toBeInstanceOf(AppError); expect((error as AppError).code).toBe("mcp_install_requires_web"); }
 });
 
 test("(4) a project at the read level → mcp.error_level text", async () => {

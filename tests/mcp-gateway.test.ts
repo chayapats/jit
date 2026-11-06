@@ -163,11 +163,10 @@ test("acceptance is Web only, revision-bound, needs workspace and binds exactly 
   const w = await world();
   setLevel(w.f, "workspace");
   const [proposal] = await propose(w, spec({ env: ["NOTES_TOKEN"] }));
-  rejects(() => accept(w, proposal!, {}, w.f.telegram), "mcp_install_requires_web", 403);
   w.f.app.execute(w.f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: w.f.app.localApi(w.f.auth.actor).revision, payload: { enabled: true } });
   const local = w.f.app.issueLocalApiActor()!.actor;
   rejects(() => accept(w, proposal!, {}, local), "mcp_install_requires_web", 403);
-  rejects(() => w.f.app.execute(w.f.telegram, { kind: "mcp.install.revise", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1, payload: { proposalId: proposal!.id, spec: ownerSpec() } }), "mcp_install_requires_web", 403);
+  rejects(() => w.f.app.execute(local, { kind: "mcp.install.revise", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1, payload: { proposalId: proposal!.id, spec: ownerSpec() } }), "mcp_install_requires_web", 403);
   rejects(() => accept(w, { ...proposal!, revision: 4 }), "stale_revision", 409);
   rejects(() => accept(w, proposal!, {}), "mcp_env_unbound", 409);
   rejects(() => accept(w, proposal!, { NOTES_TOKEN: connection(w.f, "deploy_secret", "deploy-secret-value-1") }), "mcp_connection_kind_mismatch", 409);
@@ -186,14 +185,14 @@ test("acceptance is Web only, revision-bound, needs workspace and binds exactly 
   await settle(w.f);
   expect(w.f.app.mcpServers(w.f.auth.actor, w.f.project.id)).toHaveLength(1);
   expect(w.f.runtime.calls.filter(call => call.op === "sidecar.ensure").length).toBeGreaterThanOrEqual(1);
-  // Reject is a narrowing and works from Telegram; the owner's revision supersedes Jit's.
+  // Reject is a narrowing; the owner's revision supersedes Jit's.
   const [, second] = await propose(w, spec({ name: "other" })).then(list => [null, list.find(p => p.spec?.name === "other")!]);
   const revised = w.f.app.execute(w.f.auth.actor, { kind: "mcp.install.revise", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1,
     payload: { proposalId: second!.id, spec: ownerSpec({ name: "other", version: "2.0.0" }) } });
   expect(revised.proposal).toMatchObject({ revision: 2, author: "owner", state: "proposed", spec: { version: "2.0.0" }, history: [{ revision: 1, state: "superseded" }, { revision: 2, state: "proposed" }] });
   rejects(() => w.f.app.execute(w.f.auth.actor, { kind: "mcp.install.revise", requestId: rid(), projectId: w.f.project.id, expectedRevision: 2,
     payload: { proposalId: second!.id, spec: { name: "other", source: "npm", package: "x", version: "latest", command: "x", args: [], env: [] } } }), "invalid_mcp_spec");
-  const rejected = w.f.app.execute(w.f.telegram, { kind: "mcp.install.reject", requestId: rid(), projectId: w.f.project.id, expectedRevision: 2, payload: { proposalId: second!.id } });
+  const rejected = w.f.app.execute(w.f.auth.actor, { kind: "mcp.install.reject", requestId: rid(), projectId: w.f.project.id, expectedRevision: 2, payload: { proposalId: second!.id } });
   expect(rejected.proposal).toMatchObject({ state: "rejected", revision: 3 });
   expect(() => mcpCommandIdentity({ kind: "mcp.install.accept", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1, payload: { proposalId: proposal!.id, env: {}, extra: 1 } } as never)).toThrow("invalid_mcp_command");
 });
@@ -242,7 +241,7 @@ test("hint classification: read-only tools run directly, every other call waits 
   // The gated tool did not run: only the read-only call reached the server.
   expect(w.calls().map(call => call.tool)).toEqual(["read_note"]);
   const card = w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, pending.cardId);
-  expect(card).toMatchObject({ kind: "mcp_tool", state: "pending", telegramEligible: true,
+  expect(card).toMatchObject({ kind: "mcp_tool", state: "pending",
     action: { kind: "mcp_tool", server: { id: server.id, name: "notes", revision: 2 }, tool: "write_note", arguments: { body: "hello" } } });
   // A denied card performs nothing; an approved one runs the exact call once, through the gateway.
   decide(w.f, card, "approve");
@@ -283,7 +282,6 @@ test("auto-approve rules name an exact server and tool; anything else still wait
   expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, body.cardId)).toMatchObject({ state: "succeeded", decision: { channel: "auto-rule" } });
   expect(w.calls().map(call => call.arguments)).toEqual([{ body: "b" }]);
   // A rule can only be written from Web, and only names exact pairs.
-  rejects(() => setRule(w.f, "mcp_tool", { tools: [{ server: "notes", tool: "write_note" }] }, true, w.f.telegram), "approval_rule_requires_web", 403);
   rejects(() => setRule(w.f, "mcp_tool", { tools: [] } as never), "invalid_approval_command");
   rejects(() => setRule(w.f, "mcp_tool", { server: "notes" } as never), "invalid_approval_command");
 });
@@ -391,7 +389,7 @@ test("review fixes: a removed server stops at once, names are unique across serv
   // The owner removes a server while a run is connected: its next read-only call is refused and never sent.
   const before = w.calls().length;
   const removed = await w.run([{ name: "mcp_foo_bar_bar_baz", input: {} }, () => {
-    w.f.app.execute(w.f.telegram, { kind: "mcp.server.remove", requestId: rid(), projectId: w.f.project.id, expectedRevision: fooBar.revision, payload: { serverId: fooBar.id } });
+    w.f.app.execute(w.f.auth.actor, { kind: "mcp.server.remove", requestId: rid(), projectId: w.f.project.id, expectedRevision: fooBar.revision, payload: { serverId: fooBar.id } });
   }, { name: "mcp_foo_bar_bar_baz", input: {} }]);
   expect(removed.results[0]!.content).toContain("\"untrusted\":true");
   expect(removed.results[1]).toMatchObject({ isError: true });
@@ -468,6 +466,6 @@ for (const corrupt of [false, true]) for (const readonly of [true, false]) test(
   expect(w.calls()).toHaveLength(0);
   const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
   expect(cards).toHaveLength(1);
-  expect(cards[0]).toMatchObject({ runId: runA, kind: readonly ? "outbound_release" : "mcp_tool", state: "pending", telegramEligible: false });
+  expect(cards[0]).toMatchObject({ runId: runA, kind: readonly ? "outbound_release" : "mcp_tool", state: "pending" });
   expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

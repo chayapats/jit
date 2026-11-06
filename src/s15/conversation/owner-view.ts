@@ -1,5 +1,5 @@
 import type { ConversationApplication } from "./application";
-import type { ConversationEvidence, ConversationReceipt, ConversationRequest, ConversationScope } from "./types";
+import type { ConversationEvidence, ConversationReceipt, ConversationRequest, ConversationScope, ConversationSteer } from "./types";
 import { identity } from "./validation";
 import type { ActionRef, ActionSlip, Observation } from "../policy";
 
@@ -27,6 +27,8 @@ export interface ConversationOwnerRow {
   question: { candidates: string[] } | null;
   /** Present on a routine occurrence: the message is the owner-confirmed routine instruction, not a live owner message. */
   routine?: { routineId: string; occurrenceId: string; quiet: boolean };
+  /** CHAT16-02 owner steers of this request in acceptance order, with their current disposition. */
+  steers: ConversationSteer[];
   /** Owner decision this message recorded on one exact action revision, with its dispatch observation when known. */
   decision: { action: ActionRef; decision: "approve" | "deny"; outcome: Observation["outcome"] | null } | null;
 }
@@ -83,6 +85,7 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       ...(request.fileInputs ? { files: { inputs: request.fileInputs, artifacts: request.result === null ? [] : request.artifacts ?? [] } } : {}),
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
       ...(request.routine ? { routine: { routineId: request.routine.routineId, occurrenceId: request.routine.occurrenceId, quiet: request.routine.quiet } } : {}),
+      steers: app.store.steers(id),
       decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
 }
 

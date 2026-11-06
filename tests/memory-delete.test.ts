@@ -191,7 +191,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   expect(confirmed.operation.state).toBe("pending");
   expect(confirmed.operation.tombstones.map(t => t.claimId)).toContain(c1!.claimId);
   expect(confirmed.operation.tombstones.some(t => t.kind === "source" && t.sourceId === s1.sourceId)).toBe(true);
-  expect(confirmed.operation.residuals.join(",")).toContain("telegram");
+  expect(confirmed.operation.residuals.join(",")).toContain("provider_session_copies_not_deleted");
   expect(jobState(f, a.id, discussion.discussion!.jobId).state).toBe("blocked");
   expect(f.rt.app.task(actor(f), a.id, proposed.task.id).task.state).toBe("proposed");
   expect(f.rt.app.source(actor(f), a.id, s1).state).toBe("unavailable");

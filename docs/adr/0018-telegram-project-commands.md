@@ -3,6 +3,8 @@ status: accepted for TG02 engineering choices (Jit #21)
 scope: Telegram project follow-up and task acceptance through Application
 ---
 
+> Superseded 2026-11-06 by [ADR 0085](0085-remove-telegram-web-push-notifications.md): Telegram is removed from Jit.
+
 # Map authorized Telegram input to shared Application commands
 
 ## Confirmed decisions and required behavior
@@ -27,7 +29,7 @@ All transport verification remains fixture-backed. This slice does not introduce
 
 Parsing natural-language acceptances would violate FR-11. A separate Telegram task store would diverge from Web. Advancing team dispatch without Application.execute would bypass receipts and revision checks.
 
-Exact surfaces are in [telegram-project-commands-v1](../contracts/telegram-project-commands-v1.md). Evidence is `tests/telegram.test.ts` TG02 cases with scripted Application adapters and `ScriptedTelegramSender`.
+Exact surfaces were in `telegram-project-commands-v1` (removed with ADR 0085). Evidence is `tests/telegram.test.ts` TG02 cases with scripted Application adapters and `ScriptedTelegramSender`.
 
 ## S14 refinement status
 

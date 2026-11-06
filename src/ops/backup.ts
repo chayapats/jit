@@ -282,7 +282,12 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   export_artifact_bodies: "exclude",
   // app.schedule_feed/v1 (schema 30): installation-scoped feed token hash; preserved from live on activation.
   schedule_feed: "exclude",
-  telegram_binding: "scrub", command_receipts: "scrub",
+  command_receipts: "scrub",
+  // Inert tables of the Telegram channel removed by ADR 0085. Nothing reads or writes them any more, but installed
+  // stores keep them, so they stay classified and backups of those stores succeed. Pending challenge nonces are
+  // still scrubbed; per-chat context, callback references and control replies never enter an image.
+  telegram_binding: "scrub", telegram_inbox: "include", telegram_poll: "include",
+  telegram_control_replies: "exclude", telegram_project_context: "exclude", telegram_callback_refs: "exclude", telegram_message_commands: "exclude",
   app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
   deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",
   delivery_attempts: "include", delivery_intents: "include", delivery_reports: "include",
@@ -337,7 +342,7 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
   team_contexts: "include", team_runs: "include", team_state: "include",
-  telegram_inbox: "include", telegram_poll: "include", topics: "include", upgrade_journal: "include",
+  topics: "include", upgrade_journal: "include",
   // PR tables are created lazily by ensurePrSchema; none holds credentials (payloads are credential-screened).
   pr_monitors: "include", pr_poll_checkpoints: "include", pr_candidates: "include", pr_snapshots: "include",
   pr_reports: "include", pr_report_annotations: "include",
@@ -371,7 +376,7 @@ export interface BackupImage { bytes: Uint8Array; hash: string; excludedTables: 
  * Serializes the caller's consistent transaction view, then removes all
  * credential and live-authority state from an in-memory copy: owner password
  * verifier, browser sessions, login throttle, scheduler/delivery claims,
- * pending Telegram challenge nonces and secret-bearing receipt fields. Deleted
+ * inert pending Telegram challenge nonces and secret-bearing receipt fields. Deleted
  * pages are zeroed (`secure_delete`) and the copy is vacuumed, so no residual
  * credential bytes survive. The live database is never modified.
  */

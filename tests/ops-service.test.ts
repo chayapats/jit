@@ -314,13 +314,13 @@ test("quarantine boot refuses activation while read-only status stays available"
   await stopDrain(restarted.handle, { timeoutMs: 5000 });
   restarted.handle.service.close();
   restarted.handle.store.close();
-  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", quarantined: false,
     evidenceReady: false, blockedGates: [] })).toMatchObject({ service: "running", nextAction: "none" });
-  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", quarantined: false,
     evidenceReady: true, blockedGates: [] }).service).toBe("observed-ready");
-  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "owned", quarantined: false,
+  expect(serviceStatus({ now: 1800000000000, scheduler: "free", quarantined: false,
     evidenceReady: true, blockedGates: [] })).toMatchObject({ service: "blocked" });
-  expect(() => serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+  expect(() => serviceStatus({ now: 1800000000000, scheduler: "owned", quarantined: false,
     evidenceReady: false, blockedGates: ["Authorization: Bearer x"] })).toThrow();
 });
 

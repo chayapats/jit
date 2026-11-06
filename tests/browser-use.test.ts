@@ -185,7 +185,6 @@ test("every confirm action waits for its card: denial performs nothing, approval
 test("takeover is Web only; while it is active agent browser calls and approved cards fail takeover_active", async () => {
   const w = await browserWorld();
   setLevel(w.f, "workspace");
-  await rejects(() => w.takeover("start", w.f.telegram), "takeover_requires_web", 403);
   w.f.app.execute(w.f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: w.f.app.localApi(w.f.auth.actor).revision, payload: { enabled: true } });
   await rejects(() => w.takeover("start", w.f.app.issueLocalApiActor()!.actor), "takeover_requires_web", 403);
   await w.run([{ name: "browser_open", input: { url: cart.url } }, { name: "browser_click", input: { ref: "e2" } }]);
@@ -210,12 +209,12 @@ test("takeover is Web only; while it is active agent browser calls and approved 
   await input("takeover.type", { text: "สวัสดี it's me" });
   await input("takeover.key", { key: "ctrl+l" });
   expect(w.desktop).toEqual(["DISPLAY=:99 xdotool mousemove --sync 10 20 click 1", "DISPLAY=:99 xdotool type --delay 12 -- 'สวัสดี it'\\''s me'", "DISPLAY=:99 xdotool key --delay 12 -- ctrl+l"]);
-  await rejects(() => input("takeover.click", { x: 1, y: 1 }, w.f.telegram), "takeover_requires_web", 403);
+  await rejects(() => input("takeover.click", { x: 1, y: 1 }, w.f.app.issueLocalApiActor()!.actor), "takeover_requires_web", 403);
   await rejects(() => w.f.app.execute(w.f.auth.actor, { kind: "takeover.click", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1, payload: { takeoverId: rid(), x: 1, y: 1 } } as never), "takeover_not_active", 409);
   await rejects(() => input("takeover.click", { x: 5000, y: 1 }), "invalid_takeover_command");
   expect(() => xdotoolCommand({ kind: "key", keys: ["Return; rm -rf /"] })).toThrow("invalid_desktop_input");
   // The owner ends the takeover; the agent works again.
-  await rejects(() => w.takeover("end", w.f.telegram), "takeover_requires_web", 403);
+  await rejects(() => w.takeover("end", w.f.app.issueLocalApiActor()!.actor), "takeover_requires_web", 403);
   expect(w.takeover("end").takeover).toMatchObject({ active: false, revision: 2 });
   const after = await w.run([{ name: "browser_snapshot", input: {} }]);
   expect(after.results[0]!.isError).toBeUndefined();
@@ -305,7 +304,6 @@ test("screenshots: a reference for the agent, a bounded ring and a Web-only read
   expect(Object.keys(meta!).sort()).toEqual(["bytes", "id", "mime", "projectId", "source", "takenAt"]);
   expect(meta).toMatchObject({ id: reference.screenshot, source: "agent", mime: "image/png" });
   expect(w.f.app.boxScreenshot(w.f.auth.actor, w.f.project.id, meta!.id).data).toEqual(fakePng);
-  await rejects(() => w.f.app.boxScreenshots(w.f.telegram, w.f.project.id), "channel_not_authorized", 403);
   await rejects(() => w.f.app.boxScreenshot(w.f.auth.actor, w.f.project.id, rid()), "screenshot_not_found", 404);
   // The owner's live view captures the whole display.
   const desktop = await w.f.app.captureBoxScreen(w.f.auth.actor, w.f.project.id);
@@ -403,14 +401,12 @@ test("review fix: an expired confirm card releases its page on the next tick", a
   expect(w.cdp.open()).toBe(0);
 });
 
-test("the Web and Telegram card renderers show the new kinds without a password value", async () => {
+test("the Web card renderer shows the new kinds without a password value", async () => {
   const { summarizeApprovalAction } = await import("../src/web-proposal-card");
-  const { approvalDetailParts } = await import("../src/telegram/approval-messages");
   const action = { kind: "browser_confirm", operation: "type", url: cart.url, element: { ref: "e5", tag: "input", name: "Password" }, formFields: ["email", "password"],
     text: null, textDigest: "a".repeat(64), reasons: ["line_break"] } as const;
-  const web = summarizeApprovalAction(action as never), telegram = approvalDetailParts({ action } as never);
+  const web = summarizeApprovalAction(action as never);
   expect(web).toEqual([cart.url, "type · Password", "email, password", "••••••"]);
-  expect([...telegram.pinned, ...telegram.flexible].join("\n")).not.toContain("a".repeat(64));
   expect(summarizeApprovalAction({ kind: "computer_confirm", operation: "key", x: null, y: null, text: null, keys: ["Return"], intent: "input", reasons: ["enter_key"] } as never))
     .toEqual(["key Return", "input · enter_key"]);
   for (const kind of ["mcp_tool", "browser_confirm", "computer_confirm"]) {
@@ -429,7 +425,7 @@ for (const confirmed of [false, true]) test(`ATT04 browser_type guards attachmen
   expect(w.cdp.actions).toHaveLength(0);
   const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
   expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(confirmed ? "browser_confirm" : "outbound_release");
-  expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id); expect(cards[0]!.telegramEligible).toBe(false);
+  expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id);
   decide(w.f, cards[0]!, "approve"); await w.f.executor.idle();
   expect(w.cdp.actions.some(input => JSON.stringify(input).includes(marker))).toBe(true);
 });
@@ -469,6 +465,6 @@ for (const tool of ["browser_open", "browser_type"] as const) for (const corrupt
   expect(navigations).toBe(1); expect(w.cdp.actions).toHaveLength(0);
   const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
   expect(cards).toHaveLength(1);
-  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", telegramEligible: false, action: { tool } });
+  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", action: { tool } });
   expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

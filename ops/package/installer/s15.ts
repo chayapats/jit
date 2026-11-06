@@ -40,7 +40,7 @@ const ref = (id: string) => ({ id, revision: 1, generation: 1 });
  * the approved Codex subscription route for the owner's single device login (live availability follows that
  * login), no policy, budget or personal GitHub rule, and the Jit-managed local working computer whose QEMU runs
  * as the separate identity (`vmm: null` on a host without local VM support: the owner enrolls their own VM in
- * the Web instead). `browser: null` selects the provisioned protected browser (BROW15-02): pinned Chromium that
+ * the Web instead). Web Push notifications are composed (NOTIFY16-01). `browser: null` selects the provisioned protected browser (BROW15-02): pinned Chromium that
  * the controller verifies itself and the owner's approved-website list in the Web. GitHub and Google stay off.
  */
 export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions | null; origin?: string }): S15RuntimeConfig {
@@ -48,6 +48,8 @@ export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmm
   // One model call is one attempt; a zero attempt bound would record an overrun on the first settled call.
   const bound = { ...zero(), attempts: 1, calls: 1, steps: 1, activeMs: 30000, outputBytes: 32768 };
   return parseS15RuntimeConfig({ contract: "s15-runtime/v1", installationId: input.installationId, directory: s15Installation.state, origin: input.origin ?? s15Installation.origin, policy: null,
+    // NOTIFY16-01: Web Push is on by default; nothing is sent until the owner turns it on for a device.
+    notifications: true,
     catalog: [{ kind: "bot", ref: ref("jit"), active: true }, { kind: "resource", ref: ref("computer"), active: true }, { kind: "route", ref: selection.route, active: true }, { kind: "model", ref: selection.model, active: true }], resourceBots: [],
     conversation: { ownerId: "owner", bot: ref("jit"), selection, route: { provider: "codex", model: "gpt-6.1-sol" }, limits: { modelCalls: 6, toolCalls: 16, outputBytes: 32768, activeMs: 300000 }, modelCallUpperBound: bound },
     models: [{ selection, provider: "codex", modelId: "gpt-6.1-sol", account: ref("codex_account"), billing: ref("codex_subscription"), recipient: ref("codex_provider"), charge: "subscription", availability: "available", efforts: ["high"], effortEvidence: "requested_only", upperBound: bound, rank: { ordinary: 0, difficult: 0 } }],
@@ -664,8 +666,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       "Owner steps (Web UI only; no file edits):",
       `  1. Open the link shown above (single-use, valid for 15 minutes; re-run install.sh --s15 for a new one) on this host, or from your computer through: ssh -L ${port}:127.0.0.1:${port} <this host>. Set the owner password. An existing owner signs in at ${config.origin}/s14/login.`,
       `  2. Settings → Provider (${config.origin}/settings/provider): sign in to Codex with the device code. It is stored for the ${p.user} identity only; the approved Codex route becomes available after this sign-in.`,
-      `  3. Manage → Telegram (${config.origin}/resources/telegram): paste the new BotFather token, press Check and save, then bind your account with the one-time code.`,
-      "  4. Install your standing rules in the Web UI when you are ready. No policy, budget or personal GitHub rule was installed for you.",
+      "  3. Install your standing rules in the Web UI when you are ready. No policy, budget or personal GitHub rule was installed for you.",
     ]) out(line);
     if (computer?.state === "failed") throw new InstallerFailure("working-computer", `${codeCopy(computer.code)} The controller is installed and healthy; retry from Resources → Computer.`);
     return { events, config, computer, release, rolledBack: false };

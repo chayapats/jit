@@ -298,10 +298,9 @@ async function fixture(env: Record<string, string> = {}) {
   const app = new Application(store, config, { now: () => clock.now, jobs: queue, boxes });
   const web = createWebHandler(app);
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
-  const telegramActor = app.issueAdapterActor(token, "telegram");
   const project = (name: string) => app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(),
     expectedRevision: store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision), payload: { name } }).project;
-  return { root, state, secrets, config, store, clock, runtime, boxes, gates, opened, queue, app, web, token, auth, telegramActor, project };
+  return { root, state, secrets, config, store, clock, runtime, boxes, gates, opened, queue, app, web, token, auth, project };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
@@ -354,7 +353,7 @@ test("no Jit environment variable, secret path or state path appears in any box"
   for (const box of f.runtime.boxes.values()) {
     const text = JSON.stringify(box);
     expect(Object.keys(box.env).filter(name => name.startsWith("JIT_"))).toEqual([]);
-    for (const forbidden of [f.state, f.secrets, f.config.databasePath, "JIT_", "telegram"]) expect(text).not.toContain(forbidden);
+    for (const forbidden of [f.state, f.secrets, f.config.databasePath, "JIT_"]) expect(text).not.toContain(forbidden);
     expect(box.mounts.map(mount => mount.destination)).toEqual(["/workspace"]);
     for (const value of Object.values(box.env)) expect(Object.values(process.env).filter(v => v && v.length > 8).includes(value)).toBe(false);
   }
@@ -495,8 +494,7 @@ test("reset is Web only, revisioned, refuses while busy and wipes the workspace 
   const p = f.project("รีเซ็ต");
   setLevel(f, p.id, "workspace");
   (await f.boxes.open(p.id, null)).release();
-  // Telegram and the local API may not reset.
-  await rejectsAsync(() => reset(f, p.id, false, f.telegramActor), "box_reset_requires_web", 403);
+  // The local API may not reset.
   f.app.execute(f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: f.app.localApi(f.auth.actor).revision, payload: { enabled: true } });
   await rejectsAsync(() => reset(f, p.id, false, f.app.issueLocalApiActor()!.actor), "box_reset_requires_web", 403);
   expect(f.runtime.calls.some(call => call.op === "reset")).toBe(false);

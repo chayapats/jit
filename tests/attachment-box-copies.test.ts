@@ -263,7 +263,7 @@ for (const tool of ["web_search", "web_fetch"] as const) for (const corrupt of [
   expect(transports).toEqual([tool === "web_search" ? "weather" : "https://public.example/?q=weather"]);
   const cards = f.app.approvalCards(f.auth.actor, f.project.id);
   expect(cards).toHaveLength(1);
-  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", telegramEligible: false, action: { tool } });
+  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", action: { tool } });
   expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
   expect(JSON.stringify(f.store.read(tx => tx.all("SELECT subject FROM web_tool_calls WHERE status = 'blocked-private-context'")))).not.toContain(marker);
 });

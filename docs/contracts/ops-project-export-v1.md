@@ -2,7 +2,7 @@
 
 Owner: Jit #31 (OPS03). Contract: `ops.project_export/v1`, artifact/manifest `formatVersion` 2. Implementation: `src/ops/export.ts`, `src/application.ts`, `src/memory/delete.ts` (retained-export tracking), `src/web.ts`, `src/web-layout.ts`, `src/ops/upgrade.ts` (recovery backup strip). Uses `app.project_commands/v1` (receipts, expected revision), `app.data_lifecycle/v1` (deletion ledger, operations, suppression), `ops.backup_manifest/v1` (residual backups) and `jobs.attempt_fence/v1` (job evidence references only). FR-04, FR-05, FR-16, FR-18, NFR-07, NFR-09, NFR-10, NFR-11, NFR-12.
 
-An ordinary export is an inspectable, portable JSON copy of one project. It is **not** a restorable backup, it never deletes external copies (Telegram, provider sessions, older backups), and it never contains secrets or native session data. Import or synchronization across installations is out of scope.
+An ordinary export is an inspectable, portable JSON copy of one project. It is **not** a restorable backup, it never deletes external copies (provider sessions, older backups), and it never contains secrets or native session data. Import or synchronization across installations is out of scope.
 
 ## Exact public surface
 
@@ -81,7 +81,7 @@ Fields:
 - `retention: { maxExports: 20, maxBytes: 32 MiB, pruned[] }`. `maxBytes` caps the bytes of a project's valid exports and is also the ceiling for any single artifact. `pruned` lists the registrations this outcome retired.
 - `state` (`valid` | `failed`), `failure`, `artifact: { storage: "sqlite", bytes, hash (sha256), downloadPath } | { storage: "legacy_file", path, bytes, hash, directorySync: "legacy_unverified" } | null`.
 
-`disclosure` is `{ restorableBackup: false, externalCopiesDeleted: false, secrets: "excluded", nativeSessions: "excluded", rawHistory: "included" | "metadata_only" }`. `residuals.external` always names `telegram_delivery_copies_not_exported_or_deleted` and `provider_session_copies_not_exported`. `residuals.backups` lists backup manifests that may still hold this project's data.
+`disclosure` is `{ restorableBackup: false, externalCopiesDeleted: false, secrets: "excluded", nativeSessions: "excluded", rawHistory: "included" | "metadata_only" }`. `residuals.external` always names `provider_session_copies_not_exported`; exports written before [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md) may also name `telegram_delivery_copies_not_exported_or_deleted`. `residuals.backups` lists backup manifests that may still hold this project's data.
 
 ## Artifact
 
@@ -111,7 +111,7 @@ The complete final envelope, including `note` and every `data` collection (proje
 
 ## Never exported
 
-Owner password hash, session tokens, CSRF secrets, model/provider credentials (route labels such as `authRoute` names are not credentials), auth headers, Telegram bot tokens and chat bindings, PR `apiBase` and private service addresses, raw process environments, native session data, snapshot file patches.
+Owner password hash, session tokens, CSRF secrets, model/provider credentials (route labels such as `authRoute` names are not credentials), auth headers, Telegram bot tokens and chat bindings left in inert tables, PR `apiBase` and private service addresses, raw process environments, native session data, snapshot file patches.
 
 ## Declared residuals
 

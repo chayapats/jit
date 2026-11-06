@@ -13,7 +13,7 @@ export const rid = (prefix = "r") => `${prefix}${++sequence}_${Math.random().toS
  * either a final text (one model turn) or a tool call followed by a final text. Runs past the queue reply
  * with ordinary observed-evidence text. Interpretation defaults to a read-only inspection of the computer.
  */
-export async function routineFixture(options: { files?: boolean; start?: number; profile?: "default" | "personal" } = {}) {
+export async function routineFixture(options: { files?: boolean; start?: number; profile?: "default" | "personal"; notifications?: import("../../src/s15/composition").S15CompositionOptions["notifications"] } = {}) {
   const replies: ({ tools?: { name: string; arguments: Record<string, unknown> }[]; text: string; hold?: boolean; gate?: Promise<unknown> })[] = [];
   const workInputs: string[] = [];
   let step = 0, current: (typeof replies)[number] | undefined;
@@ -38,7 +38,7 @@ export async function routineFixture(options: { files?: boolean; start?: number;
     // Read-only inspection needs `stat`, which the shared fixture transport does not script.
     const transport = base.vm.transport;
     const vm = { ...base.vm, transport: (endpoint: Parameters<NonNullable<typeof transport>>[0]) => { const t = transport!(endpoint); const invoke = t.invoke.bind(t); t.invoke = async (request, input) => { if (request.op === "stat") { input.beforeStart(); return { type: "file" }; } return invoke(request, input); }; return t; } };
-    return { ...base, vm, routines: {}, ...(options.files ? { files: {} } : {}), model: { ...base.model, scripted: () => model }, owner: { ...base.owner, verifyOwner: proof => { const owner = verify(proof); return owner && { ...owner, expiresAt: far }; } } };
+    return { ...base, vm, routines: {}, ...(options.files ? { files: {} } : {}), ...(options.notifications ? { notifications: options.notifications } : {}), model: { ...base.model, scripted: () => model }, owner: { ...base.owner, verifyOwner: proof => { const owner = verify(proof); return owner && { ...owner, expiresAt: far }; } } };
   });
   for (const approval of f.recipientApprovals) approval.expiresAt = far;
   f.interpretation = { intent: "inspect", purposeId: "purpose", resourceIds: ["computer"], access: "read", subject: null };

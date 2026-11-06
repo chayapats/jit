@@ -45,7 +45,7 @@ export const deterministicCoverage: Readonly<Record<DeterministicChecklistId, { 
   J01: { legs: ["groups", "memory-queries"], missing: "team dispatch and coordinator synthesis are bun test evidence, not drilled" },
   J02: { legs: ["memory-queries", "schedules"], missing: "task acceptance and memory correction are bun test evidence, not drilled" },
   J03: { legs: ["pr-snapshots", "pr-alerts"], missing: null },
-  J04: { legs: ["deliveries"], missing: "Telegram project commands are bun test evidence; no Bot API traffic was drilled" },
+  J04: { legs: ["deliveries"], missing: "in-app notices only; there is no push transport to drill (ADR 0085)" },
   J05: { legs: ["quota-wait", "cancel"], missing: "service restart and reboot reconciliation need OPS05 human evidence" },
   crash: { legs: ["backup", "quarantine", "upgrade-preflight"], missing: "crash-at-every-boundary matrices are bun test evidence, not drilled" },
   trust: { legs: ["network", "export"], missing: "GitHub-write, shell and forged-command refusals are bun test evidence, not drilled" },

@@ -13,7 +13,7 @@ type AccessLevel = "read" | "workspace" | "full";          // levelRank: 0, 1, 2
 interface ProjectAccess { projectId; level; revision; halted; haltRevision; fullAllowed; updatedAt: number | null }
 interface RoleAccess { projectId; roleId; level: AccessLevel | null; revision; updatedAt; effective: EffectiveAccess }
 interface EffectiveAccess { level; halted; projectLevel; roleLevel: AccessLevel | null }
-Application.projectAccess(actor, projectId): ProjectAccess;  // web or telegram actor
+Application.projectAccess(actor, projectId): ProjectAccess;  // web or local-api actor
 Application.roleAccess(actor, projectId): RoleAccess[];
 assertExecutionAllowed(tx, projectId, roleId | null, needed: AccessLevel): AccessLevel;
 accessConfirmToken(projectId, from, to, expectedRevision): string; // sha256 hex of JSON.stringify([projectId, from, to, expectedRevision])
@@ -35,7 +35,7 @@ Every command is `{ kind, requestId, projectId, expectedRevision, payload }`, va
 | `execution.halt { reason? }` | halt revision | The kill switch, from any authorized channel. In the same transaction it records the halt, fences every queued, admitted or waiting execution-capable job of the project like `job.stop` (works without a running scheduler), and — with a live scheduler — stops every active team discussion (`team.stop_all` path), Jit reply (`jit.reply.stop` path) and coordinator synthesis (its job's `job.stop`) of the project. Transports are asked to abort after commit. The receipt's `halt` lists `fencedJobIds`, `stoppedReplyIds`, `stoppedDiscussionIds` and `stoppedSynthesisIds`. |
 | `execution.resume {}` | halt revision | Web only (`access_widen_requires_web`, 403). Needs a halted project (`execution_not_halted`). |
 
-Owner actors from Web, Telegram and the S10 REL06 local API (app.local_api/v1) are accepted. The local API listener's actor carries `channel: "web"` for ordinary commands, but access commands attribute it to `local-api` (recorded in the revision rows), so it may narrow and halt but never widen or resume. Widening checks `channel === "web"`, so every other channel is refused.
+Owner actors from Web and the S10 REL06 local API (app.local_api/v1) are accepted. The local API listener's actor carries `channel: "web"` for ordinary commands, but access commands attribute it to `local-api` (recorded in the revision rows), so it may narrow and halt but never widen or resume. Widening checks `channel === "web"`, so every other channel is refused.
 
 ## Execution-capable jobs
 
@@ -50,10 +50,6 @@ Same session, Origin and CSRF (`x-csrf-token` header or `csrf` field) rules as `
 - `POST /api/projects/:project/access/roles` `{ requestId, expectedRevision, roleId, level }` (`level` may be `null`)
 - `POST /api/projects/:project/execution/halt` `{ requestId, expectedRevision, reason? }`
 - `POST /api/projects/:project/execution/resume` `{ requestId, expectedRevision }`
-
-## Telegram
-
-`/halt [reason]` in the bound owner chat issues `execution.halt` for the chat's bound project with the `telegram` channel. No Telegram text or callback widens anything; a forged callback ref with an access action is refused as unsupported.
 
 ## Not in v1
 

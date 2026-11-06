@@ -1,4 +1,4 @@
-/** Immutable text committed with a report or reminder. It is not a Telegram transport request. */
+/** Immutable text committed with a report or reminder. It is not a transport request. */
 export interface DeliveryPayload {
   kind: "report" | "reminder";
   text: string;
@@ -12,7 +12,7 @@ export interface DeliveryPayload {
   };
 }
 
-/** Where the committed payload came from. Inspection shows this even when send fails. */
+/** Where the committed payload came from. */
 export interface DeliveryProvenance {
   reportId: string;
   reportRevision: number;
@@ -42,31 +42,29 @@ export interface DeliveryAttention {
 /** Why a sent intent no longer stands for an open item. */
 export interface DeliveryResolution { reason: "owner_answered" | "no_longer_waiting"; at: number }
 
-/** Local logical notification. `sent` is a known remote response, never a claim that the report itself was delivered. */
+/**
+ * Local logical notification state. New intents stay `waiting` (in-app only) until cancelled; `claimed`, `sent`,
+ * `failed` and `unknown` appear only on intents recorded by the push transport removed on 2026-11-06 (ADR 0085).
+ * `sent` was a known remote response, never a claim that the report itself was delivered.
+ */
 export type DeliveryStatus = "waiting" | "queued" | "claimed" | "sent" | "failed" | "unknown" | "cancelled";
 
-/** Remote acknowledgement, distinct from the persisted local intent. */
+/** Remote acknowledgement recorded by the removed push transport; always `none` on new intents. */
 export type DeliveryRemote = "none" | "accepted" | "rejected" | "uncertain";
 
 /**
- * One logical private notification.
- * `guarantee` is only local dedupe. This record never claims exactly-once external delivery.
+ * One logical private notification, shown in the app. There is no push transport in this runtime (ADR 0085): new
+ * intents are never sent. Rows stored before the removal may carry extra legacy transport fields in their JSON
+ * record; they are kept as-is and never read. `guarantee` is only local dedupe.
  */
 export interface DeliveryIntent {
   id: string;
   dedupeKey: string;
   projectId: string;
   ownerId: "owner";
-  channel: "telegram";
   authorityGeneration: number;
   inputGeneration: number;
-  /** Binding revision observed at commit, or null when the channel was not bound yet. */
-  bindingRevision: number | null;
-  /**
-   * Registered send-time currentness guard (for example `pr-alert`), or null/absent for unguarded intents.
-   * A guarded intent is rechecked immediately before claim/send and when a result lands; when the guard
-   * is not registered in this process the intent waits instead of sending (fail closed).
-   */
+  /** Domain guard name (for example `pr-alert`), or null/absent for unguarded intents. The owning domain retires stale intents. */
   guard?: string | null;
   /**
    * delivery.attention_levels/v1: how the producer classified this notice and the owner-waiting item it stands for.
@@ -85,20 +83,19 @@ export interface DeliveryIntent {
   guarantee: "local_dedupe_only";
   failureReason: string | null;
   nextAction: string;
+  /** Remote message reference recorded by the removed push transport; null on new intents. */
   messageRef: { chatId: number; messageId: number } | null;
   stale: boolean;
   staleReason: string | null;
   revision: number;
-  /** Generations of delivery attempts. A late result must not overwrite a newer settled generation. */
-  attemptGeneration: number;
-  settledGeneration: number | null;
-  safeRetriesRemaining: number;
-  retryable: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
-/** Fenced send attempt linked to one logical intent. Transport outcome is recorded here, not on the report. */
+/**
+ * Send attempt recorded by the push transport removed on 2026-11-06 (ADR 0085). Kept readable as history; no new
+ * attempts are created.
+ */
 export interface DeliveryAttempt {
   id: string;
   intentId: string;
@@ -144,15 +141,6 @@ export interface CommitDeliveryCommand {
   payload: { kind: "report" | "reminder"; text: string; dedupeKey: string };
 }
 
-/** Owner command that authorizes another send of an existing intent. Duplicates are possible. */
-export interface ResendDeliveryCommand {
-  kind: "delivery.resend";
-  requestId: string;
-  projectId: string;
-  expectedRevision: number;
-  payload: { intentId: string };
-}
-
 /** Owner command that supersedes or deletes a report and fences unsent intents. */
 export interface RetireDeliveryCommand {
   kind: "delivery.retire";
@@ -162,7 +150,7 @@ export interface RetireDeliveryCommand {
   payload: { reportId: string; action: "supersede" | "delete" };
 }
 
-export type DeliveryCommand = CommitDeliveryCommand | ResendDeliveryCommand | RetireDeliveryCommand;
+export type DeliveryCommand = CommitDeliveryCommand | RetireDeliveryCommand;
 
 /** Receipt for a commit. `created` is false when the dedupe key already had an intent. */
 export interface DeliveryReceipt {
@@ -171,20 +159,13 @@ export interface DeliveryReceipt {
   created: boolean;
 }
 
-/** Receipt for an explicit resend. The warning is part of the contract, not optional copy. */
-export interface DeliveryResendReceipt {
-  intent: DeliveryIntent;
-  attempt: DeliveryAttempt;
-  warning: "duplicates_possible";
-}
-
-/** Receipt for supersede or delete. Already-accepted remote sends are not withdrawn. */
+/** Receipt for supersede or delete. Legacy already-accepted remote sends are not withdrawn. */
 export interface DeliveryRetireReceipt {
   report: DeliveryReport;
   cancelledIntentIds: string[];
 }
 
-/** Bounded page of intents for owner inspection. Reading does not send. */
+/** Bounded page of intents for owner inspection. */
 export interface DeliveryPage {
   items: DeliveryIntent[];
   hasMore: boolean;

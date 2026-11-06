@@ -30,17 +30,16 @@ import { backupDirectoryProblem } from "./backup";
 import { backupNativePortFor } from "./schway-backup";
 import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "./lifecycle-ledger";
 import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
-import { ServiceChannels, channelReadiness, type ChannelTransportFactory } from "./service-channels";
 import { tickWorkGroups } from "../team/work-group";
 import { ManagedService } from "./upgrade-service";
 import { upgradeFenced } from "./upgrade-fence";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import {
-  parseServiceConfig, serviceDatabasePath, serviceDrainTimeoutMs, serviceOrigin, telegramEnabled, telegramTokenPath, type ServiceConfig,
+  parseServiceConfig, serviceDatabasePath, serviceDrainTimeoutMs, serviceOrigin, type ServiceConfig,
 } from "../../ops/package/service-config";
 
 /** Fixed preflight gates. A blocked gate never implies its remedy is authorized. */
-export const preflightGates = ["config", "schema", "engine", "quarantine", "scheduler", "deliveries", "channels", "secrets", "artifact"] as const;
+export const preflightGates = ["config", "schema", "engine", "quarantine", "scheduler", "secrets", "artifact"] as const;
 export type PreflightGateName = typeof preflightGates[number];
 
 export interface PreflightGate {
@@ -125,8 +124,6 @@ export interface PreflightInput {
   artifact?: BuildManifest;
   now?: () => number;
   ledgerGate?: LedgerGate;
-  /** Telegram transport factory; absent means no supported transport is installed. */
-  transports?: ChannelTransportFactory;
   /**
    * Expected owner of the state and backup directories. Defaults to the
    * running uid (`serve` runs as the service identity); an operator status
@@ -167,8 +164,7 @@ export function serviceAppConfig(config: AppConfig, service: ServiceConfig | nul
   return { ...config, searxngEnabled: config.searxngEnabled && parsed.searxngEnabled !== false, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
     attachments: { ...attachmentLimitsForDirectories(config.attachments, parsed.stateDirectory, parsed.backupDirectory),
       enabled: parsed.attachmentsEnabled ?? config.attachments.enabled },
-    origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed),
-    telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
+    origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed) };
 }
 
 /**
@@ -231,22 +227,11 @@ export function preflightService(input: PreflightInput): PreflightResult {
   gates.push(ledger.trusted
     ? { gate: "quarantine", state: "ready", nextAction: "none", detail: ledger.detail }
     : { gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason });
-  const ownerPid = (table: "job_scheduler" | "delivery_worker"): number | null => {
-    try { return store.read(tx => tx.get<{ pid: number }>(`SELECT pid FROM ${table} WHERE id = 1`)?.pid ?? null); } catch { return null; }
-  };
-  const schedulerPid = ownerPid("job_scheduler");
+  let schedulerPid: number | null;
+  try { schedulerPid = store.read(tx => tx.get<{ pid: number }>("SELECT pid FROM job_scheduler WHERE id = 1")?.pid ?? null); } catch { schedulerPid = null; }
   gates.push(schedulerPid === null || !alive(schedulerPid)
     ? { gate: "scheduler", state: "ready", nextAction: "none", detail: schedulerPid === null ? "admission free" : "stale owner; takeover permitted" }
     : { gate: "scheduler", state: "blocked", nextAction: "stop-other-instance", detail: "another scheduler owns admission" });
-  const workerPid = ownerPid("delivery_worker");
-  gates.push(workerPid === null || !alive(workerPid)
-    ? { gate: "deliveries", state: "ready", nextAction: "none", detail: "delivery worker free" }
-    : { gate: "deliveries", state: "blocked", nextAction: "stop-other-delivery-worker", detail: "another delivery worker owns sending" });
-  const channels = channelReadiness({ enabled: service ? telegramEnabled(service) : false,
-    botTokenPath: serviceAppConfig(input.config, service).telegram.botTokenPath, transports: input.transports });
-  gates.push(channels.state === "blocked"
-    ? { gate: "channels", state: "blocked", nextAction: channels.nextAction, detail: channels.detail }
-    : { gate: "channels", state: "ready", nextAction: "none", detail: channels.detail });
   if (service) {
     const secretProblems: string[] = [];
     for (const ref of service.secretRefs) {
@@ -308,8 +293,6 @@ export interface FullAppHandle {
   app: Application;
   /** Service lifecycle owner shared with the upgrade (ops.schema_migrations/v1). */
   service: ManagedService;
-  /** Delivery worker and Telegram poller, or null when the channel is not enabled. */
-  channels: ServiceChannels | null;
   /** Effective application configuration (service-defined database, bind and origin). */
   config: AppConfig;
   /** Trusted installation configuration, or null under the development profile. */
@@ -337,8 +320,6 @@ export interface StartInput {
   requiredEngine?: string;
   now?: () => number;
   ledgerGate?: LedgerGate;
-  /** Telegram transport factory. Production builds register none, so an enabled channel fails closed. */
-  transports?: ChannelTransportFactory;
   /** Process-owned PR snapshot cache (default `<state>/pr-cache` for a service, `.local/pr-cache` otherwise). */
   prCacheRoot?: string;
 }
@@ -348,20 +329,18 @@ export interface StartInput {
  * without `--service-config`) and therefore by the packaged systemd unit:
  *
  * 1. Preflight (read-only): configuration, schema/upgrade, engine,
- *    quarantine ledger, single scheduler and delivery owner, channels,
- *    secrets and the running release artifact. Blocked gates are returned;
+ *    quarantine ledger, single scheduler, secrets and the running release
+ *    artifact. Blocked gates are returned;
  *    nothing is enabled.
  * 2. Concrete engine gate (`JIT_RUN_PORT=schway`): the pinned bridge must
  *    verify before any admission.
  * 3. Pre-listen state preparation (legacy alert quarantine) unless an
  *    upgrade/restore fence holds.
- * 4. One managed composition (same workers as Web, Telegram, PR, schedule
- *    and recovery paths) and the Application.
+ * 4. One managed composition (same workers as Web, PR, schedule and
+ *    recovery paths) and the Application.
  * 5. Ledger gate in `boot` mode, then session/deletion reconciliation
  *    (jobs.session_reconcile/v1, app.data_lifecycle/v1) and completion of an
  *    activated upgrade, before anything is served or pumped.
- * 6. Opt-in channels (delivery worker + Telegram poller) last, so no send
- *    can precede reconciliation.
  */
 export async function startFullApp(input: StartInput): Promise<{ ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] }> {
   const service = input.service === null ? null : parseServiceConfig(input.service);
@@ -373,15 +352,13 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
   const store = input.store ?? new TransactionStore(resolve(input.storePath ?? config.databasePath), { migrateExisting: false });
   const owned = !input.store;
   let managed: ManagedService | undefined;
-  let channels: ServiceChannels | null = null;
   const refuse = (gates: PreflightGate[]) => {
     try { managed?.close(); } catch { /* Teardown only. */ }
     if (owned) store.close();
     return { ok: false as const, gates };
   };
   try {
-    const preflight = preflightService({ store, config, service, requiredEngine, now, ledgerGate,
-      ...(input.transports ? { transports: input.transports } : {}) });
+    const preflight = preflightService({ store, config, service, requiredEngine, now, ledgerGate });
     if (!preflight.ok) return refuse(preflight.gates);
     if (config.runPort === "schway") {
       const bridge = await verifySchwayBridge(store);
@@ -437,12 +414,8 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     await boxes?.reconcile().catch(() => { /* Podman unavailable: boxes are re-ensured (and re-verified) on open. */ });
     // app.mcp_servers/v1: sidecars of the previous process held released values; none may outlive it.
     await mcp?.pruneSidecars().catch(() => { /* Podman unavailable: the next boot prunes again. */ });
-    if (service && telegramEnabled(service)) {
-      // Preflight proved the token reference and transport; a failure here still fails closed.
-      channels = ServiceChannels.start(store, config, input.transports!, now);
-    }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp, web,
+      store, app, service: managed, config, serviceConfig: service, boxes, effects, browser, mcp, web,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -450,7 +423,6 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     };
     return { ok: true, handle };
   } catch (error) {
-    try { await channels?.close(); } catch { /* Teardown only. */ }
     try { managed?.close(); } catch { /* Teardown only. */ }
     if (owned) { try { store.close(); } catch { /* Teardown only. */ } }
     throw error;
@@ -469,7 +441,7 @@ export interface RunningService {
 
 /**
  * Listens on the configured private bind and pumps the managed queue,
- * schedules and opt-in channels. Owner authentication stays enforced by the
+ * and schedules. Owner authentication stays enforced by the
  * Web handler; neither the bind address nor a request to `/login` grants
  * owner authority.
  */
@@ -516,7 +488,6 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       void handle.boxes.sweep(Date.now()).catch(() => undefined).finally(() => { sweeping = false; });
     }
     groups();
-    handle.channels?.tick();
   }, options.intervalMs ?? 100);
   timer.unref();
   let stopping: Promise<DrainResult> | null = null;
@@ -547,19 +518,17 @@ export interface DrainResult {
 }
 
 /**
- * Drains the full app with bounded cooperative cancellation. Channels stop
- * sending and polling first, then the queue fences admission and in-flight
- * work; the caller waits at most `timeoutMs` for settlement. On timeout the
+ * Drains the full app with bounded cooperative cancellation. The queue fences
+ * admission and in-flight work; the caller waits at most `timeoutMs` for settlement. On timeout the
  * supervisor must terminate, and remote work/delivery is reported as
  * interrupted or unknown, never as stopped or sent. The next start's
- * delivery worker and queue reconciliation consume the recovery metadata.
+ * queue reconciliation consumes the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null; mcp?: McpGateway | null },
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { effects?: EffectExecutor | null; mcp?: McpGateway | null },
   options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
-  try { await handle.channels?.close(); } catch { /* Ownership already released or store gone; reconciliation handles it. */ }
   // Only attempts this drain interrupted count; historical waiting/blocked/failed jobs are not new interruptions.
   const { interrupted } = handle.queue.close();
   // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)

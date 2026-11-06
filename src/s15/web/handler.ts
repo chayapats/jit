@@ -14,7 +14,6 @@ import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
 import { accountsBody, needsBody, recoveryBody, restoreSection, teamPendingCard, type S15NeedItem } from "./resources";
 import { websitesBody, type S15WebsitesSaved } from "./websites";
 import { recurringProposalBody, rulesBody } from "./rules";
-import { telegramBody, telegramSaved } from "./telegram";
 import { parsePaymentAmount } from "../payments";
 import type { ActionSlip } from "../policy";
 import type { ResponsibilityProjection } from "../work";
@@ -282,8 +281,6 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         const t = found.slip.action.transaction, ceiling = state.ceiling ?? (() => { const d = t.amountMinor.padStart(t.minorUnit + 1, "0"); return t.minorUnit ? `${d.slice(0, -t.minorUnit)}.${d.slice(-t.minorUnit)}` : d; })();
         return render(() => shell(nav("/rules"), tr("s15.rules.recurring_title"), recurringProposalBody({ csrf, slip: found.slip, frequencies: ports.recurring!.frequencies(), proposal: state.proposal ?? null, ceiling, frequencyId: state.frequencyId ?? "", refused: state.refused ?? null, fromJit: false })), status);
       };
-      const telegramPage = (refused: string | null = null, status = 200) => render(() => shell(nav("/resources/telegram"), tr("s15.telegram.title"),
-        telegramBody({ status: ports.telegram ? ports.telegram.status(actor) : null, csrf, refused, saved: refused ? null : telegramSaved(url.searchParams.get("saved")), now: now() })), status);
       const memoryPage = (state: Partial<S15MemoryPage> = {}, status = 200) => {
         const claims = memoryClaims(), filter = memoryFilter(url.searchParams.get("filter") ?? state.filter ?? null);
         let forgetting: S15MemoryPage["forgetting"] = null, refused = state.refused ?? null;
@@ -345,7 +342,6 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (url.pathname === "/rules") return rulesPage();
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
         if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
-        if (url.pathname === "/resources/telegram") return telegramPage();
         if (url.pathname === "/resources/websites") return websitesPage();
         if (url.pathname === "/resources/github") return githubPage();
         if (url.pathname === "/recovery") {
@@ -589,22 +585,6 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           if (url.pathname === "/s15/forms/computer/forget-check") { only(fields, ["csrf", "requestId", "return"]); progress.check = null; return done(); }
         } catch (error) { if (codeOf(error) === "authentication_required") throw error; if (codeOf(error) === "vm_setup_expired") { progress.setup = null; progress.check = null; } return back(codeOf(error), 409); }
         throw new AppError("not_found", 404);
-      }
-      if (url.pathname.startsWith("/s15/forms/telegram/")) {
-        // CHAN15-01 owner commands. The token is write-only: never echoed, kept or logged here.
-        const telegram = ports.telegram; if (!telegram) throw new AppError("not_found", 404);
-        const commands: Record<string, [string, () => void | Promise<void>, string]> = {
-          "/s15/forms/telegram/token": ["token", () => telegram.setToken(actor, fields.requestId!, fields.token ?? ""), "token#s15-tg-bot"],
-          "/s15/forms/telegram/remove": ["", () => telegram.removeToken(actor, fields.requestId!), "removed#s15-tg-bot"],
-          "/s15/forms/telegram/bind": ["", () => telegram.startBinding(actor, fields.requestId!), "#s15-tg-binding"],
-          "/s15/forms/telegram/cancel": ["", () => telegram.cancelBinding(actor, fields.requestId!), "cancelled#s15-tg-binding"],
-          "/s15/forms/telegram/revoke": ["", () => telegram.revoke(actor, fields.requestId!), "revoked#s15-tg-binding"],
-          "/s15/forms/telegram/gap": ["", () => telegram.acknowledgeGap(actor, fields.requestId!), "gap#s15-tg-flow"],
-        };
-        const command = commands[url.pathname]; if (!command) throw new AppError("not_found", 404);
-        only(fields, command[0] ? ["csrf", "requestId", command[0]] : ["csrf", "requestId"]);
-        try { await command[1](); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return telegramPage(codeOf(error), 409); }
-        return redirect(`/resources/telegram${command[2].startsWith("#") ? command[2] : `?saved=${command[2]}`}`);
       }
       if (url.pathname.startsWith("/s15/forms/websites/")) {
         // BROW15-02 owner commands over the protected approved-website list and the pinned Chromium.

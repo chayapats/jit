@@ -76,7 +76,7 @@ runbook for opt-in hardened-unit acceptance; deterministic tests use fixtures.
 
 `{ kind: "execution.box.reset", requestId, projectId, expectedRevision, payload: { wipeWorkspace } }` → `{ box: BoxView }`, where `BoxView = { projectId, revision, lastReset, holding, busy }`. Schema 33 `execution_box_resets(project_id, revision, wipe_workspace, channel, created_at)` is append-only; `expectedRevision` is the box reset revision (0 before any).
 
-- Web only: the Telegram channel and the local API (`local-api`) are `box_reset_requires_web` (403).
+- Web only: the local API (`local-api`) is `box_reset_requires_web` (403).
 - `stale_revision` (409) when the revision moved; `box_busy` (409) while an execution job of the project is admitted or the box is in use; `box_not_configured` (503) without execution configuration; `invalid_box_command` for another shape.
 - From the start of the reset until its receipt commits, the project admits no execution job (`hasCapacity` is false) and opens are `box_busy`. The runtime reset runs first; the revision, receipt and audit row commit only after it succeeded, so a failed reset can be retried with the same request id. A replay returns the first receipt; another payload under the id is `request_id_conflict`.
 

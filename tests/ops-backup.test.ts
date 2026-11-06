@@ -16,7 +16,6 @@ import { SchwayBackupNativePort, createSchwayBackupNativePort, schwayBackupEngin
 import { currentSupportedSchema, upgradeEngineContract, upgradeNativeFormatVersion } from "../src/ops/upgrade";
 import { SchwayRunPort, schwayHostDirs, type SchwayPortOptions } from "../src/team/schway-port";
 import type { ApplicationRunRequest } from "../src/team/types";
-import { TelegramChannel } from "../src/telegram";
 import { TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 
@@ -376,11 +375,10 @@ test("concurrent project write after snapshot does not corrupt manifest revision
 test("ordinary backup image excludes every credential and secret-bearing value", async () => {
   const f = await fixture({ native: scriptedNative() });
   createProject(f); seedLifecycle(f);
-  const telegram = new TelegramChannel(f.store, f.config, { now: () => 1800000000000 });
-  const channel = telegram.authenticate(f.token);
-  const pending = telegram.execute(channel, { kind: "telegram.bind", requestId: rid(), expectedRevision: telegram.status(channel).binding.revision,
-    payload: { telegramUserId: 42, telegramChatId: 77 } });
-  const nonce = pending.binding.challengeNonce!;
+  // A pending challenge nonce left in the inert Telegram binding table of an installed store (ADR 0085) is still scrubbed.
+  const nonce = `nonce-${rid()}`;
+  f.store.transaction(tx => tx.run("UPDATE telegram_binding SET revision = 2, state = 'pending', telegram_user_id = 42, telegram_chat_id = 77, challenge_nonce = ?, challenge_expires_at = ? WHERE id = 1",
+    nonce, 1800000900000));
   const passwordHash = f.store.read(tx => tx.get<{ password_hash: string }>("SELECT password_hash FROM owner")!.password_hash);
   const tokenHash = createHash("sha256").update(f.token).digest("hex");
   const receipt = await f.app.execute(f.auth.actor, backupCommand(f));

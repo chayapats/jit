@@ -1,6 +1,6 @@
 # Jit — Discovery decision record
 
-Current-target precedence: [S15-D01–D23](../specs/S15-conversational-autonomy.md#confirmed-decisions), confirmed 2026-11-02, supersedes conflicting historical decisions below. S14 remains the implemented runtime.
+Current-target precedence: [S15-D01–D23](../specs/S15-conversational-autonomy.md#confirmed-decisions), confirmed 2026-11-02, supersedes conflicting historical decisions below. S16-D10 (2026-11-06, [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)) removes Telegram, so the Telegram parts of C09 and P04 are historical. S14 remains the implemented runtime.
 
 สถานะ: ปิด discovery ตามคำยืนยันของผู้ก่อตั้ง และได้รับคำสั่งให้สร้างชุดเอกสาร spec แล้ว บันทึกนี้รักษาเจตนาจาก Q1–Q41; ข้อเสนอวิศวกรรมใหม่ไม่ใช่คำตอบเพิ่มเติมของผู้ก่อตั้ง
 

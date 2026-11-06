@@ -1,6 +1,6 @@
 # APP02 conversation and source contracts, v1
 
-Owner: Jit #4. Status: implemented on this issue branch; downstream eligibility requires the reviewed artifact in its integration base. Extends APP01 at merge commit `25c5778fb68c0c99827bf7753c0a3c267931ce43`. No Schway, provider, Telegram, memory or live-host capability is claimed.
+Owner: Jit #4. Status: implemented on this issue branch; downstream eligibility requires the reviewed artifact in its integration base. Extends APP01 at merge commit `25c5778fb68c0c99827bf7753c0a3c267931ce43`. No Schway, provider, memory or live-host capability is claimed.
 
 | Contract | Entry and behavior |
 | --- | --- |

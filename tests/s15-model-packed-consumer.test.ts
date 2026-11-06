@@ -8,7 +8,7 @@ import { join, resolve } from "node:path";
 test("packed public consumer proves per-send authorization, exact HostDispatch and providerRequests, pins, caps and route renewal", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-s15-dispatch-packed-"));
   try {
-    writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", dependencies: { schway: `file:${resolve("vendor/schway-1.0.0-rc.2-aac2fc0.tgz")}` } }));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module", dependencies: { schway: `file:${resolve("vendor/schway-1.0.0-rc.2-39194f7.tgz")}` } }));
     const fixture = readFileSync(join(import.meta.dir, "fixtures/s15-model-dispatch-consumer.ts"), "utf8");
     expect([...fixture.matchAll(/from "([^"]+)"/g)].map(m => m[1]).filter(name => !name!.startsWith("node:"))).toEqual(["schway/host"]);
     writeFileSync(join(root, "consumer.ts"), fixture);

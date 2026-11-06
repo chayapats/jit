@@ -48,7 +48,7 @@ Findings name location/source, trigger, impact and evidence. Report revision and
 Expose persistent work/Bot/resource state, evidence, artifacts, stop and waiting reasons through authenticated Web. Refresh/reconnect must not start duplicate work. Concrete UI/UX is authored by the owner's designated design subagent under the current AGENTS.md instruction.
 
 ### FR-11 — Companion channels
-Bound owner channels use the same revisioned commands/receipts. Channel identity, a forwarded message or a quoted instruction cannot widen power. Telegram support is conditional on its actual transport evidence, not assumed shipped.
+Bound owner channels use the same revisioned commands/receipts. Channel identity, a forwarded message or a quoted instruction cannot widen power. Telegram was removed on 2026-11-06 ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)); Jit has no messaging channel, and notifications move to Web Push (S16-D10).
 
 ### FR-12 — Authorized routines
 Capture an ongoing responsibility assigned through authenticated conversation, with purpose/resources, finite budgets and applicable scheduling/timezone/misfire policy. Derive necessary authorized subwork without repeated per-task setup. Out-of-scope findings are proposals. An assigned purpose is not arbitrary future coding authority; inspection still waits for selection/start when that is the owner's request.

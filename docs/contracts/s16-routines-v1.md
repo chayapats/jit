@@ -153,7 +153,7 @@ Deterministic, scripted models and protocol fixtures with a fake clock; no live 
 ## Limits and pending
 
 - Editing a saved routine is not offered; stop and create a new one. Routines run as the conversation's configured Bot (TEAM/BOT16 own per-Bot choice).
-- Notifications are in-app attention and Needs you only; channel delivery of routine outcomes belongs to CHANNEL16-01 [#424](https://github.com/chayapats/jit/issues/424).
+- Notifications are in-app attention and Needs you only; Web Push delivery of routine outcomes belongs to NOTIFY16-01 [#441](https://github.com/chayapats/jit/issues/441) (S16-D10).
 - File reactions watch committed artifact lineages; host folder watching is not offered. Working-computer file output collection remains #433.
 - CI/review reactions wake a routine; they do not settle S15 WORK `ci`/`review` waits, which have no production driver yet.
 - Live GitHub webhook delivery, Linux x64/arm64 runs and owner-host activation are pending (#431/#432).

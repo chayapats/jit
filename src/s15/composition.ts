@@ -3,6 +3,9 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
 import { createS16WebHandler } from '../s16/web/handler';
 import { RoutineService, routineQuietDecision } from '../s16/routines/service';
+import { NotificationService } from '../s16/notifications/service';
+import { conversationNotices, routineNotices } from '../s16/notifications/producers';
+import type { NotificationLimits } from '../s16/notifications/types';
 import { committedArtifacts } from '../s16/artifacts';
 import { FileStore } from '../s16/files/store';
 import { createFileWorkflow } from '../s16/files/workflow';
@@ -21,7 +24,6 @@ import type { ProtectedChromium } from './browser/chromium';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
 import { closeCredentialLifecycle, openModelService, createModelProjectionHandler, type ModelOptions } from './model';
 import { openWorkService, openResumeBindings, createResponsibilityProjectionHandler, type ResumeOwnerSnapshot, type WorkOptions } from './work';
-import { openTelegramChannel, type TelegramLimits, type TelegramTransport } from './telegram';
 import { GithubService, GithubStore, createGithubActionAdapter, createGithubConversationTools, createGithubHandler, githubReadHandler, type GithubLimits, type GithubRepository, type GithubWorkspace, type ProtectedGithubGateway } from './github';
 import { GithubConnections, s15GithubRecipient } from './github/connection';
 import { webGithubDisclosure } from './github/disclosure';
@@ -54,6 +56,10 @@ export interface S15CompositionOptions {
   /** Explicit S16 routines (`s16-routines/v1`): owner-confirmed schedules and signed/file reactions. Opt-in; it adds
    * `routines.sqlite` and changes no installed standing policy. `feedLabel` names calendar events when routine names stay private. */
   routines?: { feedLabel?: string };
+  /** Explicit S16 Web Push (`s16-notifications/v1`). Opt-in; it adds `notifications.sqlite` and a VAPID key file that is
+   * created on first use, and changes no installed standing policy. `fetch` is the push transport (tests inject a fake
+   * push service); `resultAfterMs` is how long a request must take before its finished result is announced. */
+  notifications?: { fetch?: (request: Request) => Promise<Response>; limits?: Partial<NotificationLimits>; resultAfterMs?: number };
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -89,8 +95,6 @@ export interface S15CompositionOptions {
   /** GIT15-04: the owner connects GitHub from the Web; the token lives only in `vault`. Ignored with an explicit `github`. */
   githubWeb?: { vault: import('../exec/connections').ConnectionVault; fetch?: typeof fetch;
     runtime(input: { repositories(): readonly GithubRepository[]; credential(): string; catalogPurpose: Ref; fetch?: typeof fetch; now?: () => number }): { github: NonNullable<S15CompositionOptions['github']>; readHandler: ReadHandler; current(id: string): { ref: Ref; active: boolean } | null } };
-  /** CHAN15-01 bound Telegram owner channel. The bot token is written only by the owner's protected Web form into this vault. */
-  telegram?: { vault: import('../exec/connections').ConnectionVault; transport(token: string): TelegramTransport; limits?: Partial<TelegramLimits>; beforeOffsetAdvance?: () => void };
 }
 
 /** Combine the modules' closed read validators. Every request must pass one actual owning handler. */
@@ -118,7 +122,7 @@ export async function composeS15(options: S15CompositionOptions) {
   let githubConnections: GithubConnections | undefined;
   if (webGithubEnabled && options.disclosure) options = { ...options, disclosure: webGithubDisclosure(options.disclosure, { connections: () => githubConnections, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -131,7 +135,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -188,10 +192,10 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubIds = () => (gh?.repositories ?? []).map(r => r.resource.id);
     let policy!: S15PolicyService;
     let team!: TeamService;
-    // Protected channel principals (WORK15-02 settlement, the bound Telegram owner). Each proof is a process-local
-    // object whose check re-reads its durable binding on every POLICY owner verification; none is serializable,
-    // and a changed owner generation or revoked binding refuses at once.
-    const channelProofs = new WeakMap<object, () => AuthenticatedOwner | null>(), channelActors = new WeakSet<OwnerActor>();
+    // Protected channel principals (WORK15-02 settlement). Each proof is a process-local object whose check
+    // re-reads its durable binding on every POLICY owner verification; none is serializable, and a changed
+    // owner generation refuses at once.
+    const channelProofs = new WeakMap<object, () => AuthenticatedOwner | null>();
     let verified: AuthenticatedOwner | null = null;
     const verifyOwner = (proof: unknown) => { const check = proof !== null && typeof proof === 'object' ? channelProofs.get(proof) : undefined; return verified = check ? check() : options.owner.verifyOwner(proof); };
     const clockNow = options.clock?.now ?? Date.now;
@@ -208,10 +212,10 @@ export async function composeS15(options: S15CompositionOptions) {
     const fileWorkflow = files ? createFileWorkflow({ store: files, resource: options.vm.resource, policy: () => policy, disclosure: () => disclosure,
       guardResource(current, write) { team.resource(team.bind(current.actor), options.vm.resource.id, write ? 'write' : 'read'); },
       request(workId) { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
-    const channelOwner = (snapshot: ResumeOwnerSnapshot, current: () => boolean, channel: boolean): OwnerActor | null => {
+    const channelOwner = (snapshot: ResumeOwnerSnapshot, current: () => boolean): OwnerActor | null => {
       const proof = Object.freeze({});
       channelProofs.set(proof, () => current() && snapshot.generation === options.owner.generation() ? { id: snapshot.ownerId, generation: snapshot.generation, expiresAt: clockNow() + 60000 } : null);
-      try { const actor = policy.owner.authenticate(proof); if (channel) channelActors.add(actor); return actor; } catch { return null; }
+      try { return policy.owner.authenticate(proof); } catch { return null; }
     };
     const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => {
         // A Web-connected repository that was unselected or whose connection was removed is inactive whatever TEAM says.
@@ -300,11 +304,6 @@ export async function composeS15(options: S15CompositionOptions) {
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
-    // Defense in depth for ADR 0072: a channel owner can never decide a held action, whatever its text says.
-    for (const name of ['decideAction', 'decidePending'] as const) {
-      const decide = conversationPolicy[name] as ((actor: OwnerActor, input: never) => void) | undefined;
-      if (decide) conversationPolicy[name] = ((actor: OwnerActor, input: never) => { if (channelActors.has(actor)) throw new AppError('approval_web_only', 403); decide.call(conversationPolicy, actor, input); }) as never;
-    }
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
     const work = openWorkService({ runtime: 's15', path: join(root, 'work.sqlite'), create: options.create, installationId: options.installationId, policy,
       conversation: { view: (owner, id) => conversation.view(owner, id) }, remainingCalls: workId => {
@@ -347,7 +346,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
         try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, ...(images ? { images: images.hooks } : {}) });
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
@@ -356,11 +355,11 @@ export async function composeS15(options: S15CompositionOptions) {
     // WORK15-02: the owner's own completed stall reply resumes its named responsibility, after restart too.
     const resumes = openResumeBindings<OwnerActor>({ store, conversation: { submit: (actor, command) => conversation.submit(actor, command) },
       work: { project: (actor, id) => work.project(actor, id), resume: (actor, id, source) => { work.resume(actor, id, source); } },
-      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true, false), now: clockNow });
+      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true), now: clockNow });
     // S16 routines: occurrences post through CHAT's protected routine ingress and re-establish only this owner's
     // authority; a changed owner generation refuses instead of running under a new owner.
     const routines = options.routines ? new RoutineService<OwnerActor>({ path: join(root, 'routines.sqlite'), installationId: options.installationId, create: options.create || created.includes('routines.sqlite'), keyPath: join(root, 'routine-hooks.key'), origin: options.origin, now: clockNow,
-      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true, false),
+      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true),
       catalog: owner => {
         const current = policy.owner.current(owner); if (!current) return null;
         const labels = new Map(team.resources(owner).resources.filter(item => item.active).map(item => [item.id, item] as const));
@@ -373,13 +372,16 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(files ? { files: { committed: (actor: OwnerActor) => committedArtifacts(conversation, files!, actor).map(item => ({ artifact: item.artifact, parents: item.parents.map(parent => parent.id) })), adopt: (actor: OwnerActor, input: import('../s16/files/types').FileArtifactInputCommand) => files!.adoptArtifact(actor, input) } } : {}),
       ...(options.routines.feedLabel ? { feedLabel: options.routines.feedLabel } : {}) }) : undefined;
     if (routines) cleanup.push(() => routines.close());
-    const telegram = options.telegram ? openTelegramChannel({ installationId: options.installationId, origin: options.origin, store, vault: options.telegram.vault, transport: options.telegram.transport,
-      conversation: { submit: (actor, command) => conversation.submit(actor, command), publish: (actor, id, consume) => conversation.publish(actor, id, consume), slips: (actor, actions) => conversationPolicy.actionSlips?.(actor, actions) ?? [] },
-      resumes, work: { list: actor => work.list(actor), project: (actor, id) => work.project(actor, id) }, principal: principalOf,
-      owner: binding => channelOwner({ ownerId: binding.ownerId, generation: binding.generation }, binding.current, true),
-      ...(options.web?.locale ? { locale: options.web.locale } : {}), clock: options.clock ?? { now: Date.now, sleep: (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const timer = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); }) },
-      ...(options.telegram.limits ? { limits: options.telegram.limits } : {}), ...(options.telegram.beforeOffsetAdvance ? { beforeOffsetAdvance: options.telegram.beforeOffsetAdvance } : {}) }) : undefined;
-    if (telegram) cleanup.push(() => telegram.close());
+    // S16 Web Push: notices are derived from CHAT's immutable event journal and settled routine outcomes, each read as its
+    // recorded owner; a changed owner generation reads nothing and removes that owner's devices before any push.
+    const notifications = options.notifications ? new NotificationService<OwnerActor>({ path: join(root, 'notifications.sqlite'), installationId: options.installationId, create: options.create || created.includes('notifications.sqlite'),
+      keyPath: join(root, 'notifications-vapid.key'), origin: options.origin, now: clockNow, ...(options.notifications.fetch ? { fetch: options.notifications.fetch } : {}), ...(options.notifications.limits ? { limits: options.notifications.limits } : {}),
+      principal: principalOf, ownerCurrent: owner => owner.ownerId === options.conversation.ownerId && owner.generation === options.owner.generation(),
+      producers: [conversationNotices({ db: store.db, row: (owner, requestId) => { const actor = channelOwner(owner, () => true); return actor ? conversationRequestView(conversation, actor, requestId) : null; } }, { resultAfterMs: options.notifications.resultAfterMs ?? 30_000 }),
+        ...(routines ? [routineNotices(routines.journal.db, clockNow)] : [])] }) : undefined;
+    if (notifications) { cleanup.push(() => notifications.close()); try { notifications.observe(); } catch { /* Observed next wake. */ } }
+    /** Derive new notices and start a delivery pass without waiting for it; a pass already running is joined. */
+    const pumpNotifications = () => { if (!notifications || closing) return; try { notifications.observe(); } catch { /* Observed next wake. */ } void notifications.deliver().catch(() => {}); };
     const githubCatalogActor = (owner: OwnerActor) => {
       const current = policy.owner.current(owner), purpose = gh?.catalogPurpose;
       if (!current || !purpose || !github) throw new AppError('outside_scope');
@@ -454,7 +456,6 @@ export async function composeS15(options: S15CompositionOptions) {
     const web = createS15WebHandler({ authentication, memory, conversation: s15ConversationPort(conversation), models,
       ...(adoptionStatus ? { adoption: adoptionStatus } : {}),
       actions: s15ActionsPort<OwnerActor>(policy, actor => actor), duties: s15DutiesPort<OwnerActor>(work, actor => actor), resumes, team: teamPort,
-      ...(telegram ? { telegram } : {}),
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
       // BROW15-02 Resources → Websites: every read and command re-verifies the owner through POLICY first.
@@ -539,7 +540,7 @@ export async function composeS15(options: S15CompositionOptions) {
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -557,10 +558,10 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram, routines,
-      /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
-       * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
-      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },
+    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, routines,
+      /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
+       * settle after CHAT. */
+      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {
@@ -593,7 +594,15 @@ export async function composeS15(options: S15CompositionOptions) {
       },
       /** Await all model/tool cleanup before releasing protected stores. Unknown VM/effects remain fenced. */
       async close() { if (closing) return; closing = true; await conversation.shutdown(); await draining; await files?.close(); for (const close of cleanup.reverse()) await close(); },
+      /** S16 Web Push (`s16-notifications/v1`), when composed. */
+      notifications,
     };
+    if (notifications) {
+      // Notices are derived on every wake, also while a long CHAT run holds the shared drain, and again once a drain
+      // settles. Delivery runs beside the drain and never delays it.
+      const drain = composed.drain;
+      composed.drain = () => { pumpNotifications(); return drain().finally(pumpNotifications); };
+    }
     return composed;
   } catch (error) { for (const close of cleanup.reverse()) try { await close(); } catch {} throw error; }
 }

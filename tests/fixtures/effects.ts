@@ -102,13 +102,12 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
     ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) });
   const password = "fixture-exe07-owner-password";
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
-  const telegram = app.issueAdapterActor(token, "telegram");
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการ effect" } }).project;
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "ส่งงาน" } }).topic;
   const jitId = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: app.team(auth.actor).ownerRevision,
     payload: { roleId: null, name: "จิต", kind: "coordinator", responsibility: "ตอบเจ้าของและส่งงาน", enabled: true, route: grok } }).role!.id;
   const close = async () => { queue.close(); await queue.idle(); await executor.idle(); await mcp?.idle(); store.close(); };
-  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, mcp, browser, computer, fetches, port, queue, app, auth, telegram, project, topic, jitId, seen, close, token };
+  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, mcp, browser, computer, fetches, port, queue, app, auth, project, topic, jitId, seen, close, token };
 }
 export type EffectFixture = Awaited<ReturnType<typeof effectFixture>>;
 

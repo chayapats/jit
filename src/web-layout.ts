@@ -633,17 +633,18 @@ export function jobsPage(state: ReturnType<Application["jobs"]>, workspace: Work
     <nav class="pagination" aria-label="${tr("jobs.job_queue_pages")}">${after ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("jobs.next_jobs")}</a>` : ""}</nav></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 const deliveryLabels = (): Record<string, string> => ({
-  waiting: tr("delivery.waiting_for_a_linked_channel"), queued: tr("delivery.request_saved_not_sent_yet"), claimed: tr("delivery.sending_result_unknown"),
-  sent: tr("delivery.acknowledged_by_telegram"), failed: tr("common.send_failed"), unknown: tr("delivery.delivery_unknown"), cancelled: tr("common.cancelled_before_sending"),
+  waiting: tr("delivery.in_app_only"), queued: tr("delivery.request_saved_not_sent_yet"), claimed: tr("delivery.sending_result_unknown"),
+  sent: tr("delivery.acknowledged_by_destination"), failed: tr("common.send_failed"), unknown: tr("delivery.delivery_unknown"), cancelled: tr("common.cancelled_before_sending"),
 });
 const deliveryNext = (): Record<string, string> => ({
-  wait_for_channel_binding: tr("delivery.wait_until_a_personal_channel"), wait_for_delivery: tr("delivery.waiting_for_the_system_to"),
-  inspect_sent_message: tr("delivery.check_the_message_reference_telegram"), inspect_failure: tr("delivery.check_why_sending_failed"),
-  inspect_unknown_then_explicit_resend: tr("delivery.check_the_unknown_status_then"),
+  // ADR 0085: no push transport remains, so legacy "waiting to send" states read as in-app only.
+  in_app_only: tr("delivery.in_app_only_next"), wait_for_channel_binding: tr("delivery.in_app_only_next"), wait_for_delivery: tr("delivery.in_app_only_next"),
+  inspect_sent_message: tr("delivery.check_the_message_reference"), inspect_failure: tr("delivery.check_why_sending_failed"),
+  inspect_unknown_then_explicit_resend: tr("delivery.check_the_unknown_status"),
   safe_retry_limit_reached: tr("delivery.automatic_retries_exhausted"), inspect_cancelled_intent: tr("delivery.this_request_was_cancelled_before"),
   authorization_changed: tr("delivery.owner_authorization_changed"), binding_revoked: tr("delivery.channel_link_revoked"), source_superseded: tr("delivery.report_superseded"),
-  source_deleted: tr("delivery.source_deleted"), telegram_rejected: tr("delivery.destination_rejected_permanently"), telegram_unavailable: tr("delivery.destination_temporarily_unavailable"),
-  unknown_transport: tr("delivery.result_unknown_after_sending_started"), not_bound: tr("delivery.no_channel_linked_yet"),
+  source_deleted: tr("delivery.source_deleted"),
+  unknown_transport: tr("delivery.result_unknown_after_sending_started"), not_bound: tr("delivery.in_app_only_next"),
   wait_for_current_source: tr("delivery.held_until_the_source_is"), currentness_unavailable: tr("delivery.couldnt_verify_the_source_is"),
   candidate_superseded: tr("delivery.pr_has_a_new_revision"), revision_changed: tr("delivery.base_head_changed"), pr_closed: tr("delivery.pr_closed"),
   monitoring_revoked: tr("delivery.pr_tracking_revoked"), report_dismissed: tr("delivery.owner_turned_off_notifications_for"), finding_dismissed: tr("delivery.owner_turned_off_notifications_for_2"),
@@ -654,18 +655,18 @@ const deliveryNext = (): Record<string, string> => ({
 export function deliveryPage(state: ReturnType<Application["deliveries"]>, workspace: Workspace, csrf: string, after: number): string {
   const { project } = state;
   const base = `/projects/${project.id}/delivery`;
-  return shell(tr("common.notifications"), { project, workspace, csrf, section: "settings", settings: "telegram" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.private_send_requests")}</p><h2>${tr("delivery.delivery_status")} ${escape(project.name)}</h2><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
+  return shell(tr("common.notifications"), { project, workspace, csrf, section: "settings", settings: "notifications" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.private_send_requests")}</p><h2>${tr("delivery.delivery_status")} ${escape(project.name)}</h2><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
     <form class="create-form" method="post" action="${base}">${hiddenCommand(csrf, project.revision)}<label>${tr("common.type")}<select name="kind"><option value="report">${tr("delivery.report")}</option><option value="reminder">${tr("common.reminder")}</option></select></label><label>${tr("common.message")}<input name="text" required maxlength="4096"></label><label>${tr("delivery.unique_id")}<input name="dedupeKey" required minlength="8" maxlength="160" placeholder="report:example:1"></label><button class="primary">${tr("delivery.save_send_request")}</button></form>
     ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="${base}/${item.id}">${escape(deliveryLabels()[item.status] ?? item.status)}</a></h3><p>${escape(item.payload.kind === "reminder" ? tr("common.reminder") : tr("delivery.report"))} · ${escape(deliveryNext()[item.nextAction] ?? item.nextAction)}</p><p class="literal">${escape(item.payload.text)}</p></div></li>`).join("")}</ul>` : `<p class="empty-list">${tr("delivery.no_send_requests_yet")}</p>`}
-    <nav class="pagination" aria-label="${tr("delivery.notification_pages")}">${after ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("common.next")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("settings.telegram"), href: "/settings/telegram" } });
+    <nav class="pagination" aria-label="${tr("delivery.notification_pages")}">${after ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("common.next")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("common.notifications"), href: "/settings/notifications" } });
 }
 
-/** Shows provenance, outcome and the next action for one intent. A resend warns that duplicates are possible. */
+/** Shows provenance, any legacy transport outcome and the next action for one intent. */
 export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, workspace: Workspace, csrf: string): string {
   const { project, intent, report } = state;
   const source = `/projects/${project.id}/sources/${report.sourceId}?revision=${report.sourceRevision}&generation=${report.sourceGeneration}`;
   const uncertain = intent.status === "failed" || intent.status === "unknown";
-  return shell(tr("delivery.delivery_details"), { project, workspace, csrf, section: "settings", settings: "telegram" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.local_dedupe_only")}</p><h2>${escape(deliveryLabels()[intent.status] ?? intent.status)}</h2><p>${escape(deliveryNext()[intent.nextAction] ?? intent.nextAction)}</p><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
+  return shell(tr("delivery.delivery_details"), { project, workspace, csrf, section: "settings", settings: "notifications" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.local_dedupe_only")}</p><h2>${escape(deliveryLabels()[intent.status] ?? intent.status)}</h2><p>${escape(deliveryNext()[intent.nextAction] ?? intent.nextAction)}</p><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
     <article class="team-card"><p class="literal">${escape(intent.payload.text)}</p><p>${tr("delivery.request_status")} ${escape(intent.status)} ${tr("delivery.destination_result")} ${escape(intent.remote)} ${tr("delivery.guarantee")} ${escape(intent.guarantee)}</p>
     ${intent.failureReason ? `<p>${tr("delivery.reason")} ${escape(deliveryNext()[intent.failureReason] ?? intent.failureReason)}</p>` : ""}
     ${intent.stale ? `<p>${tr("delivery.this_result_occurred_while_the")}${escape(intent.staleReason ?? "")}${tr("delivery.the_system_did_not_suppress")}</p>` : ""}
@@ -673,7 +674,6 @@ export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, w
     ${intent.messageRef ? `<p>${tr("delivery.message_reference")} ${intent.messageRef.chatId} / ${intent.messageRef.messageId}</p>` : ""}
     ${uncertain ? `<p>${tr("delivery.the_source_report_is_still")}</p>` : ""}
     <p><a href="${source}">${tr("delivery.open_saved_report")}</a></p>
-    ${["failed", "unknown", "sent"].includes(intent.status) ? `<form method="post" action="/projects/${project.id}/delivery/${intent.id}/resend">${hiddenCommand(csrf, intent.revision)}<p>${tr("delivery.sending_again_may_duplicate_the")}</p><button class="primary">${tr("delivery.send_again")}</button></form>` : ""}
     </article><details class="team-card"><summary>${tr("common.message_origin")}</summary><dl><dt>${tr("delivery.report")}</dt><dd>${escape(report.id)} ${tr("delivery.generation")} ${report.revision}/${report.generation} · ${escape(report.availability)}</dd><dt>${tr("delivery.authorization_data_generation")}</dt><dd>${intent.provenance.authorityGeneration} / ${intent.provenance.inputGeneration}</dd><dt>${tr("delivery.unique_id")}</dt><dd>${escape(intent.dedupeKey)}</dd><dt>${tr("delivery.attempts")}</dt><dd>${state.attempts.length}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/delivery` } });
 }
 
@@ -1373,9 +1373,9 @@ ${localApi ? `<section class="settings-section" id="local-api" aria-labelledby="
       <label class="choice"><input type="checkbox" name="enabled"${localApi.enabled ? " checked" : ""}>${tr("settings.local_api_enabled")}</label>
       <small>${tr(localApi.enabled ? "settings.local_api_state_on" : "settings.local_api_state_off")} · ${tr("settings.local_api_revision")} ${localApi.revision}</small><button class="primary">${tr("settings.local_api_save")}</button></form></section>` : ""}
 ${attention ? `<section class="settings-section" id="attention" aria-labelledby="attention-title"><h2 id="attention-title">${tr("settings.attention")}</h2><p>${tr("settings.attention_note")}</p>
-    ${(["telegram", "web"] as const).map(channel => `<form class="team-form" method="post" action="/settings/attention">${hiddenCommand(csrf, attention[channel].revision)}<input type="hidden" name="channel" value="${channel}">
-      <fieldset class="choice-group"><legend>${tr(channel === "telegram" ? "settings.attention_channel_telegram" : "settings.attention_channel_web")}</legend>${choice("level", "all", tr("settings.attention_level_all"), attention[channel].level)}${choice("level", "needs-me", tr("settings.attention_level_needs_me"), attention[channel].level)}</fieldset>
-      ${channel === "web" ? `<p>${tr("settings.attention_web_note")}</p>` : ""}<small>${tr("settings.attention_revision")} ${attention[channel].revision}</small><button class="primary">${tr("settings.attention_save")}</button></form>`).join("")}</section>` : ""}
+    ${(["web"] as const).map(channel => `<form class="team-form" method="post" action="/settings/attention">${hiddenCommand(csrf, attention[channel].revision)}<input type="hidden" name="channel" value="${channel}">
+      <fieldset class="choice-group"><legend>${tr("settings.attention_channel_web")}</legend>${choice("level", "all", tr("settings.attention_level_all"), attention[channel].level)}${choice("level", "needs-me", tr("settings.attention_level_needs_me"), attention[channel].level)}</fieldset>
+      <p>${tr("settings.attention_web_note")}</p><small>${tr("settings.attention_revision")} ${attention[channel].revision}</small><button class="primary">${tr("settings.attention_save")}</button></form>`).join("")}</section>` : ""}
         <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
       <a href="${assetUrl("OFL-Inter.txt")}">Inter</a> · <a href="${assetUrl("OFL-NotoSansThai.txt")}">Noto Sans Thai</a> · <a href="${assetUrl("OFL-JetBrainsMono.txt")}">JetBrains Mono</a></p></section></div>`);
 }

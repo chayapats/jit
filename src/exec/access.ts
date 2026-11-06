@@ -11,7 +11,7 @@ import type { AppTransaction } from "../store";
  *
  * `read` (the default, revision 0) runs no execution tool; `workspace` runs core tools in the project box;
  * `full` adds network. Only the owner in Web widens anything, after confirming the exact revision; any authorized
- * owner channel may narrow. Model output, retrieved content and Telegram text never change a level: the only writers
+ * owner channel may narrow. Model output and retrieved content never change a level: the only writers
  * are the owner commands below, committed through `Application.execute` with receipts.
  */
 export type AccessLevel = "read" | "workspace" | "full";
@@ -185,7 +185,7 @@ export function accessCommandIdentity(command: AccessCommand): string {
 
 /**
  * Restrict-only authority: only the `web` channel may widen anything (a level, a role override, or resume after a
- * halt). Every other channel — `telegram`, the local API, an automatic rule, a model — is refused with
+ * halt). Every other channel — the local API, an automatic rule, a model — is refused with
  * `access_widen_requires_web` (403).
  */
 export function requireWideningChannel(channel: string): void {

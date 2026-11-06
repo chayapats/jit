@@ -157,13 +157,14 @@ image and are purged; the ledger has none), with `secure_delete` on:
   `inspect_restored_job_then_resume_explicitly`; read work restarts only by an
   explicit owner `job.resume`, which applies the existing authority, budget,
   deadline and replay rules (non-read work requires manual reconciliation);
-- outbox: every restored unsent intent (`waiting`, `queued`, `claimed`,
-  retryable `failed`) becomes `unknown` (`restored_outcome_unknown`,
-  `inspect_restored_intent_then_resend_explicitly`) and active delivery
+- outbox: an in-app intent (`nextAction` `in_app_only`) was never sendable and
+  is kept as it is. An unsent intent recorded while the removed push transport
+  existed (`waiting`, `queued`, `claimed`, retryable `failed`) becomes `unknown`
+  (`restored_outcome_unknown`, `inspect_restored_intent`) and active delivery
   attempts are interrupted, because it may have been sent after the backup;
-  only an explicit owner resend sends it;
-- external integrations: the live Telegram binding is adopted when it
-  differs, and PR monitors active in the image but paused, revoked or absent
+  nothing resends it (the outbox has no transport since ADR 0085). The
+  `outbox_held` validation check ignores in-app intents;
+- external integrations: PR monitors active in the image but paused, revoked or absent
   in live take the live state (or `paused`): a restore never re-enables an
   integration;
 - generation fence: `app_state.revision` = max(live revision at prepare,
@@ -246,11 +247,11 @@ and is removed at `complete`, `failed` and `discarded`. The legacy
 verdict), `ledger` (source, head, counts, backup checkpoint/position),
 `invalidated` (sources purged, claims purged/forgotten, suppressions applied
 and ledger-only, contexts retired/already deleted/scheduled, jobs and
-attempts fenced, deliveries held, Telegram binding, PR monitors), `pending`
+attempts fenced, deliveries held, PR monitors), `pending`
 (jobs awaiting owner resume, unknown deliveries, native deletes pending),
 `discarded` (live-only counts), `retention` (retained backups still hold
 deleted data until pruned; live writes discarded; native sessions are not
-restored from snapshots; Telegram/provider copies are outside Jit),
+restored from snapshots; provider copies are outside Jit),
 `generation` (live and restored revision, sessions revoked) and `activation`
 (`allowed`, `blockers`). Evidence carries identities and counts only.
 

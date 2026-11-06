@@ -156,8 +156,7 @@ stale release never removes a newer claim. While present:
 `Application.execute` refuses every non-upgrade command with
 `upgrade_in_progress` (after authenticating), `JobQueue.available` is false and
 `pump` admits nothing (automatic contexts, memory extraction, PR monitoring
-and schedule-produced work never start), `tickSchedules` returns `[]`, and
-`DeliveryWorker.claimNext`/`sendClaimed` never claim or invoke a sender.
+and schedule-produced work never start) and `tickSchedules` returns `[]`.
 
 Quiesce goes through the service lifecycle (`UpgradeServiceControl`):
 `ManagedService.quiesce` calls `JobQueue.close` (admitted attempts are fenced

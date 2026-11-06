@@ -13,17 +13,6 @@ import { opsBounds } from "./ops/limits";
  */
 export const MIN_MESSAGE_BYTES = 1024;
 
-/** Finite Telegram companion limits; bot credentials stay outside this projection. */
-export interface TelegramPolicy {  /** Path to the bot token file inside the trusted secret boundary; never logged or exported. */
-  botTokenPath: string;
-  challengeSeconds: number;
-  retentionHours: number;
-  pollBackoffMs: number;
-  maxPollBackoffMs: number;
-  processAttempts: number;
-  inboxBytes: number;
-}
-
 /** Finite operating limits; drill invocation ceilings and local evidence retention. */
 export interface OpsPolicy {
   /** Managed-state growth ceiling that turns drill disk pressure into a blocked result. */
@@ -179,7 +168,6 @@ export interface AppConfig {
   loginWindowSeconds: number;
   jobs: JobPolicy;
   team: TeamPolicy;
-  telegram: TelegramPolicy;
   ops: OpsPolicy;
   /** Operator execution-box settings; null paths mean execution is not configured. */
   execution: ExecutionConfig;
@@ -215,9 +203,6 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   // could race refresh-token rotation. Schway mode stays single-route until
   // a process-stable public store handle exists.
   if (runPort === "schway" && jobRouteConcurrency !== 1) throw new Error("Invalid JIT_JOB_ROUTE_CONCURRENCY");
-  const pollBackoffMs = positive("JIT_TELEGRAM_POLL_BACKOFF_MS", 1_000, 60_000);
-  const maxPollBackoffMs = positive("JIT_TELEGRAM_MAX_POLL_BACKOFF_MS", 30_000, 300_000);
-  if (maxPollBackoffMs < pollBackoffMs) throw new Error("Invalid JIT_TELEGRAM_MAX_POLL_BACKOFF_MS");
   if (env.JIT_SEARXNG_ENABLED !== undefined && !["0", "1"].includes(env.JIT_SEARXNG_ENABLED)) throw new Error("Invalid JIT_SEARXNG_ENABLED");
   const databasePath = resolve(env.JIT_DATABASE ?? ".local/jit.sqlite");
   return {
@@ -253,15 +238,6 @@ export function readConfig(env: Record<string, string | undefined> = process.env
         outputTokens: positive("JIT_JOB_OUTPUT_TOKENS", 16_000, 1_000_000_000),
         retries: positive("JIT_JOB_RETRIES", 3, 100), wallMs: positive("JIT_JOB_WALL_MS", 60_000, 3_600_000),
       },
-    },
-    telegram: {
-      botTokenPath: resolve(env.JIT_TELEGRAM_BOT_TOKEN_PATH ?? ".local/telegram-bot.token"),
-      challengeSeconds: positive("JIT_TELEGRAM_CHALLENGE_SECONDS", 900, 86_400),
-      retentionHours: positive("JIT_TELEGRAM_RETENTION_HOURS", 24, 24),
-      pollBackoffMs,
-      maxPollBackoffMs,
-      processAttempts: positive("JIT_TELEGRAM_PROCESS_ATTEMPTS", 3, 20),
-      inboxBytes: positive("JIT_TELEGRAM_INBOX_BYTES", 16_384, 65_536),
     },
     // One bound definition (src/ops/limits.ts) shared with drill fallbacks and record validation.
     ops: {

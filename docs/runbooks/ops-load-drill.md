@@ -8,7 +8,7 @@ Owner-executable checklist. The drill runs on the dev machine against disposable
 bun src/main.ts diagnose          # or: bun run ops:drill diagnose
 ```
 
-- Prints queue/admission, redacted routes, budget/deadline exhaustion, quota/login/authority waits, disk vs watermark, Telegram configured/bound, engine mode and declared state, configured vs observed provider routes, schema, upgrade fence/journal, restore journals and the restore read gate, evidence references, `nextAction` and every applicable `nextActions` entry.
+- Prints queue/admission, redacted routes, budget/deadline exhaustion, quota/login/authority waits, disk vs watermark, engine mode and declared state, configured vs observed provider routes, schema, upgrade fence/journal, restore journals and the restore read gate, evidence references, `nextAction` and every applicable `nextActions` entry.
 - Claims no scheduler ownership, starts no background work, never probes the engine or a provider, and writes nothing. `providers.readiness` stays `configured-unverified` until live route evidence (S01/OPS05) exists; diagnose never upgrades it.
 - Work through `nextActions` in order using the table below. A listed action is the next owner step, not an authorization.
 
@@ -31,7 +31,6 @@ bun src/main.ts diagnose          # or: bun run ops:drill diagnose
 | `resolve-unknown-delivery` | §5 Delivery unknown |
 | `resolve-blocked-work` | §3: open the job in `/projects/<id>/jobs`, read its reason, stop or re-enqueue explicitly |
 | `drain-queue` | Nothing to fix; queued work is admitted as capacity frees |
-| `configure-telegram` / `bind-telegram` | Place the bot credential file (mode 0600) at `JIT_TELEGRAM_BOT_TOKEN_PATH`, then complete the owner binding challenge (`telegram.bind`, then `telegram.confirm` with the challenge nonce) |
 
 ## 2. Run the bounded fixture drill
 
@@ -40,11 +39,11 @@ cat .local/ops-drill.json   # review workload sizes first; all values are finite
 bun run ops:drill drill --config .local/ops-drill.json
 ```
 
-- Creates disposable state and runs, in order: groups, the static PR path (snapshot → scripted review → alert admission), memory queries, fixture deliveries (including unknown), explicit-clock schedules, a quota wait, a cooperative cancel, a sanitized project export, a managed backup with integrity re-verification, a read-only upgrade preflight, a quarantined restore of that backup (prepare → migrate → ledger replay → validate → discard; never activated), a network-isolation check and the disk watermark.
+- Creates disposable state and runs, in order: groups, the static PR path (snapshot → scripted review → alert admission), memory queries, in-app delivery intents (recorded, never sent), explicit-clock schedules, a quota wait, a cooperative cancel, a sanitized project export, a managed backup with integrity re-verification, a read-only upgrade preflight, a quarantined restore of that backup (prepare → migrate → ledger replay → validate → discard; never activated), a network-isolation check and the disk watermark.
 - `scripted` on `backup`/`upgrade-preflight` means the fixture engine declared the snapshot contract; no Schway engine ran.
 - `quarantine` passes only when validation passed every check, the quarantine was discarded and the fence and read gate were released. `blocked` names the journal reason (for example an untrusted `ledger_checkpoint_*`); fix that on the real installation per §7 before trusting a restore. This is part of the result, not a failure to hide.
 - `deadlineMs` bounds the whole drill: a leg still running at the deadline is stopped and recorded `blocked`, and the rest are skipped (`retry-bounded-drill`). Only one drill runs per process.
-- `exhaustedLimits` lists only typed limit events (deadline, disk watermark, job budget/deadline, delivery retry ceiling, queue limit). The default fixture reaches `delivery-retry` on purpose: its safe-failure delivery exhausts the intent's retry budget.
+- `exhaustedLimits` lists only typed limit events (deadline, disk watermark, job budget/deadline, queue limit).
 - A `blocked` outcome is valid. Re-run only with the same config after addressing the recorded `nextAction`; never loosen limits to force a pass. `retry-bounded-drill` means the drill was cancelled or hit `deadlineMs`; the skipped legs are listed as `not-run`.
 
 ## 3. Pause/stop
@@ -60,8 +59,8 @@ bun run ops:drill drill --config .local/ops-drill.json
 
 ## 5. Delivery unknown
 
-- In the drill, `unknownDeliveries > 0` is expected: the DeliveryWorker sends every committed intent over a fixture binding and scripted transport (sent/unknown/failed), without Bot API traffic.
-- On a live installation, `resolve-unknown-delivery` means a send may or may not have reached Telegram. Open `/projects/<id>/delivery`, check the chat, then resend explicitly (`delivery.resend`) or retire the intent (`delivery.retire`). Never treat unknown as sent; migration, restore and reconciliation never resend on their own.
+- Jit has no push transport for the legacy/S14 outbox since Telegram was removed ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)). New intents are recorded for in-app attention only and are never sent; the drill binds no channel and sends nothing.
+- `resolve-unknown-delivery` can only come from an intent stored with an `unknown` outcome before that removal. Open `/projects/<id>/delivery`, read it as history and retire it (`delivery.retire`). Jit never resends it; migration, restore and reconciliation never send anything.
 
 ## 6. Quota/auth reconnection and engine
 

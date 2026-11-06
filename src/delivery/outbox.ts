@@ -1,36 +1,17 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
-import { fenceDenied } from "../jobs/attempts";
 import { containsCredential } from "../security/credentials";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { commitOutputSource, requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
-import { TransactionStore } from "../store";
-import { upgradeFenced } from "../ops/upgrade-fence";
-import { readBinding } from "../telegram/binding";
-import type { DeliverySender, DeliverySendResult } from "./sender";
 import type {
   CommitDeliveryCommand, DeliveryAttention, DeliveryAttempt, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryPayload,
-  DeliveryReceipt, DeliveryReport, DeliveryResendReceipt, DeliveryResolution, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
+  DeliveryReceipt, DeliveryReport, DeliveryResolution, DeliveryRetireReceipt, RetireDeliveryCommand,
 } from "./types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
 const dedupeOk = (value: string) => /^[A-Za-z0-9._:/-]{8,160}$/.test(value);
-const DEFAULT_SAFE_RETRIES = 2;
-
-/** Phases a deterministic test can interrupt after the corresponding local commit. */
-export type DeliveryCrashPhase = "after_claim" | "after_remote_accept" | "before_response_commit";
-
-/** Clock, lease and fixture sender for one local delivery worker. */
-export interface DeliveryWorkerOptions {
-  now?: () => number;
-  pid?: number;
-  isAlive?: (pid: number) => boolean;
-  leaseMs?: number;
-  sender: DeliverySender;
-  crash?: (phase: DeliveryCrashPhase) => void;
-}
 
 interface CommitInput {
   projectId: string;
@@ -38,9 +19,8 @@ interface CommitInput {
   text: string;
   dedupeKey: string;
   maxBytes: number;
-  maxSafeRetries?: number;
   expectedProjectRevision?: number;
-  /** Registered send-time currentness guard name; absent for unguarded report/reminder intents. */
+  /** Domain guard name stored on the intent (for example `pr-alert`); absent for unguarded report/reminder intents. */
   guard?: string;
   /** delivery.attention_levels/v1 classification stored on the intent (identities only). */
   attention?: DeliveryAttention;
@@ -54,54 +34,13 @@ function validAttention(value: DeliveryAttention): boolean {
     (value.workGroupId === null || (typeof value.workGroupId === "string" && /^[a-f0-9-]{36}$/.test(value.workGroupId)));
 }
 
-/**
- * Verdict of a send-time currentness guard. `hold` keeps the intent waiting (for example while
- * monitoring is paused); otherwise a non-current intent is cancelled before send and marked stale.
- */
-export type DeliveryCurrentness = { current: true } | { current: false; reason: string; hold?: boolean };
-
-/** Domain recheck run inside the claim/send transaction immediately before the sender is invoked. */
-export type DeliveryGuard = (tx: AppTransaction, intent: DeliveryIntent) => DeliveryCurrentness;
-
 const guardName = /^[a-z][a-z0-9-]{0,31}$/;
-const guards = new Map<string, DeliveryGuard>();
 
-/**
- * Dedupe-key namespaces that always require their guard, including legacy intents committed before
- * the `guard` field existed. Static so the outbox fails closed even when the owning module never loaded.
- */
+/** Dedupe-key namespaces that always require their guard name on commit. */
 const RESERVED_GUARDS: ReadonlyArray<readonly [prefix: string, guard: string]> = Object.freeze([["pr-alert/", "pr-alert"] as const]);
 
 function reservedGuard(dedupeKey: string): string | null {
   return RESERVED_GUARDS.find(([prefix]) => dedupeKey.startsWith(prefix))?.[1] ?? null;
-}
-
-/**
- * Registers the process-wide send-time currentness guard for intents committed with `guard: name`.
- * Owning domains (for example `pr.private_alerts/v1`) register at module load. Re-registering a name
- * replaces the previous check. An intent whose guard is not registered waits rather than sends.
- */
-export function registerDeliveryGuard(name: string, check: DeliveryGuard): void {
-  if (!guardName.test(name) || typeof check !== "function") throw new AppError("invalid_delivery_command");
-  guards.set(name, check);
-}
-
-function guardVerdict(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
-  const reserved = reservedGuard(intent.dedupeKey);
-  // A legacy guardless intent in a reserved namespace is upgraded in memory; the next save persists it.
-  if (reserved !== null && intent.guard !== reserved) intent.guard = reserved;
-  const name = intent.guard ?? null;
-  if (name === null) return { current: true };
-  const check = guards.get(name);
-  if (!check) return { current: false, reason: "currentness_unavailable", hold: true };
-  try {
-    const verdict = check(tx, intent);
-    if (verdict?.current === true) return verdict;
-    if (verdict?.current === false && typeof verdict.reason === "string" && /^[a-z0-9_]{1,64}$/.test(verdict.reason)) return verdict;
-    return { current: false, reason: "currentness_unavailable", hold: true };
-  } catch {
-    return { current: false, reason: "currentness_unavailable", hold: true };
-  }
 }
 
 function exact(value: unknown, keys: string[]): value is Record<string, unknown> {
@@ -166,7 +105,7 @@ export function listDeliveryAttempts(tx: AppTransaction, intentId: string): Deli
 /**
  * Commits one report and one logical outbox intent in the caller's transaction.
  * The same dedupe key returns the existing intent. Rollback removes both the report and the intent.
- * `delivery.outbox/v1` — local dedupe only; this function does not send and does not claim exactly-once delivery.
+ * `delivery.outbox/v1` — local dedupe only. The intent is an in-app notice: nothing in this runtime sends it.
  */
 export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now: number): DeliveryReceipt {
   requireId(input.projectId);
@@ -181,8 +120,6 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   const reserved = reservedGuard(input.dedupeKey);
   if (reserved !== null && input.guard !== reserved) throw new AppError("invalid_delivery_command");
   if (input.attention !== undefined && !validAttention(input.attention)) throw new AppError("invalid_delivery_command");
-  const retries = input.maxSafeRetries ?? DEFAULT_SAFE_RETRIES;
-  if (!Number.isSafeInteger(retries) || retries < 0 || retries > 5) throw new AppError("invalid_delivery_command");
   const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", input.projectId);
   if (!project) throw new AppError("project_not_found", 404);
   if (input.expectedProjectRevision !== undefined && project.revision !== input.expectedProjectRevision) throw new AppError("stale_revision", 409);
@@ -196,8 +133,6 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   }
   const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
   if (!owner) throw new AppError("owner_not_configured", 409);
-  const binding = readBinding(tx);
-  const bound = binding.state === "bound" && binding.telegramChatId !== null;
   const reportId = crypto.randomUUID();
   const source = commitOutputSource(tx, { projectId: input.projectId, participantId: "delivery", runId: reportId, text, committedAt: now });
   const report: DeliveryReport = {
@@ -210,17 +145,17 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
     reference: { reportId, revision: 1, generation: 1, sourceId: source.sourceId, sourceRevision: source.revision, sourceGeneration: source.generation },
   };
   const intent: DeliveryIntent = {
-    id: crypto.randomUUID(), dedupeKey: input.dedupeKey, projectId: input.projectId, ownerId: "owner", channel: "telegram",
-    authorityGeneration: owner.generation, inputGeneration: 1, bindingRevision: bound ? binding.revision : null,
+    id: crypto.randomUUID(), dedupeKey: input.dedupeKey, projectId: input.projectId, ownerId: "owner",
+    authorityGeneration: owner.generation, inputGeneration: 1,
     guard: input.guard ?? null,
     ...(input.attention ? { attention: { ...input.attention }, resolution: null } : {}),
     payload, provenance: {
       reportId, reportRevision: 1, reportGeneration: 1, sourceId: source.sourceId, sourceRevision: source.revision,
       sourceGeneration: source.generation, committedAt: now, authorityGeneration: owner.generation, inputGeneration: 1,
     },
-    status: bound ? "queued" : "waiting", remote: "none", guarantee: "local_dedupe_only", failureReason: null,
-    nextAction: bound ? "wait_for_delivery" : "wait_for_channel_binding", messageRef: null, stale: false, staleReason: null,
-    revision: 1, attemptGeneration: 0, settledGeneration: null, safeRetriesRemaining: retries, retryable: false,
+    // ADR 0085: there is no push transport in this runtime. The intent is a durable in-app notice and is never sent.
+    status: "waiting", remote: "none", guarantee: "local_dedupe_only", failureReason: null,
+    nextAction: "in_app_only", messageRef: null, stale: false, staleReason: null, revision: 1,
     createdAt: now, updatedAt: now,
   };
   tx.run("INSERT INTO delivery_intents (id, dedupe_key, project_id, record_json) VALUES (?, ?, ?, ?)", intent.id, intent.dedupeKey, intent.projectId, JSON.stringify(intent));
@@ -228,7 +163,8 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
 }
 
 function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string, now: number, stale = false): boolean {
-  // Terminal transport outcomes stay recorded: a known rejection is never rewritten as "never sent".
+  // Outcomes recorded by the removed push transport stay recorded: a known rejection is never rewritten as "never sent",
+  // and a legacy attempt that had already invoked the sender keeps its unknown outcome.
   if (intent.status === "sent" || intent.status === "unknown" || intent.status === "failed") return false;
   const attempts = listDeliveryAttempts(tx, intent.id);
   if (attempts.some(attempt => attempt.senderInvoked && attempt.outcome === "none")) return false;
@@ -238,7 +174,7 @@ function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string
     }
   }
   intent.status = "cancelled"; intent.failureReason = reason; intent.nextAction = "inspect_cancelled_intent";
-  intent.retryable = false; intent.remote = "none"; intent.revision += 1; intent.updatedAt = now;
+  intent.remote = "none"; intent.revision += 1; intent.updatedAt = now;
   if (stale) { intent.stale = true; intent.staleReason = reason; }
   saveIntent(tx, intent);
   return true;
@@ -282,8 +218,7 @@ export function scrubDeliveryIntentText(tx: AppTransaction, intent: DeliveryInte
 /**
  * Retires one logical intent because its domain source is no longer current.
  * Unsent work is cancelled and marked stale with `reason`. With `markSettledStale`, an intent that
- * already has a sent/unknown/failed outcome stays recorded but is marked visibly stale; an in-flight
- * send is left for `recordDeliveryResult`, whose guard recheck marks the landed result stale.
+ * already has a legacy sent/unknown/failed outcome stays recorded but is marked visibly stale.
  * This never claims a remote message was withdrawn.
  */
 export function retireDeliveryIntent(
@@ -304,9 +239,9 @@ export function retireDeliveryIntent(
 
 /**
  * delivery.attention_levels/v1: the item one intent stood for stopped waiting on the owner (the owner answered from
- * any channel, or the item closed by itself). Unsent work is cancelled with `reason`; an intent whose send already
- * reached the transport (sent, unknown, failed, or in flight) keeps its outcome and is marked resolved, and a
- * failed intent loses its safe automatic retry. This never claims a remote message was withdrawn.
+ * any channel, or the item closed by itself). Unsent work is cancelled with `reason`; a legacy intent whose send
+ * already reached the removed transport (sent, unknown, failed, or in flight) keeps its outcome and is marked
+ * resolved. This never claims a remote message was withdrawn.
  */
 export function resolveDeliveryIntent(
   tx: AppTransaction, projectId: string, intentId: string, reason: DeliveryResolution["reason"], now: number,
@@ -317,7 +252,6 @@ export function resolveDeliveryIntent(
   if (intent.status === "cancelled" || intent.resolution) return "unchanged";
   if (cancelUnsent(tx, intent, reason, now)) return "cancelled";
   intent.resolution = { reason, at: now };
-  if (intent.status === "failed") intent.retryable = false;
   intent.revision += 1; intent.updatedAt = now;
   saveIntent(tx, intent);
   return "resolved";
@@ -325,7 +259,7 @@ export function resolveDeliveryIntent(
 
 /**
  * Cancels every unsent intent committed by one configured schedule.
- * Intents already accepted remotely or with an in-flight sender stay recorded; revocation
+ * Legacy intents already accepted remotely or with an in-flight sender stay recorded; revocation
  * never claims an external send was withdrawn. Used by `jobs.configured_schedules/v1`
  * revoke/edit fencing inside the same owner transaction that fences schedule attempts.
  */
@@ -341,8 +275,8 @@ export function cancelScheduleIntents(tx: AppTransaction, scheduleId: string, re
 }
 
 /**
- * Marks a report superseded or deleted and cancels intents that have not invoked the sender.
- * A send already accepted remotely stays recorded. This does not claim the remote message was withdrawn.
+ * Marks a report superseded or deleted and cancels its unsent intents.
+ * A legacy send already accepted remotely stays recorded. This does not claim the remote message was withdrawn.
  */
 export function retireDeliveryReport(tx: AppTransaction, projectId: string, reportId: string, action: "supersede" | "delete", expectedRevision: number, now: number): DeliveryRetireReceipt {
   if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(expectedRevision)) throw new AppError("invalid_delivery_command");
@@ -362,34 +296,6 @@ export function retireDeliveryReport(tx: AppTransaction, projectId: string, repo
   return { report, cancelledIntentIds };
 }
 
-/**
- * Authorizes one new delivery attempt for an intent that already has a terminal or uncertain outcome.
- * The receipt warns that a duplicate external message is possible. This does not send by itself.
- */
-export function resendDeliveryIntent(tx: AppTransaction, projectId: string, intentId: string, expectedRevision: number, now: number): DeliveryResendReceipt {
-  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_delivery_command");
-  const intent = readDeliveryIntent(tx, projectId, intentId);
-  if (intent.revision !== expectedRevision) throw new AppError("stale_revision", 409);
-  if (!["failed", "unknown", "sent"].includes(intent.status)) throw new AppError("delivery_not_resendable", 409);
-  const previous = listDeliveryAttempts(tx, intent.id).at(-1) ?? null;
-  const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
-  if (!owner || owner.generation !== intent.authorityGeneration) throw new AppError("authorization_changed", 409);
-  const report = readDeliveryReport(tx, projectId, intent.provenance.reportId);
-  if (report.availability !== "available") throw new AppError("delivery_report_not_current", 409);
-  intent.attemptGeneration += 1;
-  const attempt: DeliveryAttempt = {
-    id: crypto.randomUUID(), intentId: intent.id, generation: intent.attemptGeneration, scheduler: "",
-    leaseUntil: 0, deadlineAt: 0, ownerGeneration: owner.generation, bindingRevision: null,
-    state: "authorized", senderInvoked: false, outcome: "none", reason: null, messageRef: null, chatId: null, stale: false,
-    linkedFrom: previous?.id ?? null, createdAt: now,
-  };
-  tx.run("INSERT INTO delivery_attempts (id, intent_id, record_json) VALUES (?, ?, ?)", attempt.id, attempt.intentId, JSON.stringify(attempt));
-  intent.status = "queued"; intent.remote = "none"; intent.retryable = false; intent.nextAction = "wait_for_delivery";
-  intent.failureReason = null; intent.revision += 1; intent.updatedAt = now;
-  saveIntent(tx, intent);
-  return { intent, attempt, warning: "duplicates_possible" };
-}
-
 /** Canonical identity for delivery command receipts. Extra fields are rejected rather than ignored. */
 export function deliveryCommandIdentity(command: DeliveryCommand, maxBytes: number): string {
   if (!exact(command, ["kind", "requestId", "projectId", "expectedRevision", "payload"]) || !requestIdOk(command.requestId) ||
@@ -403,10 +309,6 @@ export function deliveryCommandIdentity(command: DeliveryCommand, maxBytes: numb
     if (!dedupeOk(command.payload.dedupeKey)) throw new AppError("invalid_delivery_command");
     return digest(JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.kind, command.payload.text, command.payload.dedupeKey]));
   }
-  if (command.kind === "delivery.resend") {
-    if (!exact(command.payload, ["intentId"]) || !/^[a-f0-9-]{36}$/.test(command.payload.intentId)) throw new AppError("invalid_delivery_command");
-    return digest(JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.intentId]));
-  }
   if (command.kind === "delivery.retire") {
     if (!exact(command.payload, ["reportId", "action"]) || !/^[a-f0-9-]{36}$/.test(command.payload.reportId) ||
         !["supersede", "delete"].includes(command.payload.action)) throw new AppError("invalid_delivery_command");
@@ -415,291 +317,4 @@ export function deliveryCommandIdentity(command: DeliveryCommand, maxBytes: numb
   throw new AppError("invalid_delivery_command");
 }
 
-type GateDecision = { ok: true; chatId: number; bindingRevision: number } | { ok: false; reason: string; wait: boolean; stale?: boolean; nextAction?: string };
-
-function gate(tx: AppTransaction, intent: DeliveryIntent): GateDecision {
-  const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
-  if (owner !== intent.authorityGeneration) return { ok: false, reason: "authorization_changed", wait: false };
-  let report: DeliveryReport;
-  try { report = readDeliveryReport(tx, intent.projectId, intent.provenance.reportId); }
-  catch { return { ok: false, reason: "source_deleted", wait: false }; }
-  if (report.availability === "superseded") return { ok: false, reason: "source_superseded", wait: false };
-  if (report.availability !== "available") return { ok: false, reason: "source_deleted", wait: false };
-  const source = tx.get<{ availability: string }>("SELECT availability FROM sources WHERE id = ? AND project_id = ?", report.sourceId, intent.projectId);
-  if (source?.availability !== "available") return { ok: false, reason: "source_deleted", wait: false };
-  // Domain currentness runs before the channel check so a stale intent is retired even while unbound.
-  const verdict = guardVerdict(tx, intent);
-  if (!verdict.current) {
-    return verdict.hold
-      ? { ok: false, reason: verdict.reason, wait: true, nextAction: "wait_for_current_source" }
-      : { ok: false, reason: verdict.reason, wait: false, stale: true };
-  }
-  const binding = readBinding(tx);
-  if (binding.state !== "bound" || binding.telegramChatId === null) {
-    return intent.bindingRevision === null
-      ? { ok: false, reason: "not_bound", wait: true }
-      : { ok: false, reason: "binding_revoked", wait: false };
-  }
-  if (intent.bindingRevision !== null && binding.revision !== intent.bindingRevision) return { ok: false, reason: "binding_revoked", wait: false };
-  return { ok: true, chatId: binding.telegramChatId, bindingRevision: binding.revision };
-}
-
-function staleReason(tx: AppTransaction, intent: DeliveryIntent, attempt: DeliveryAttempt): string | null {
-  const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
-  if (owner !== attempt.ownerGeneration) return "authorization_changed";
-  try {
-    const report = readDeliveryReport(tx, intent.projectId, intent.provenance.reportId);
-    if (report.availability === "superseded") return "source_superseded";
-    if (report.availability !== "available") return "source_deleted";
-  } catch { return "source_deleted"; }
-  const binding = readBinding(tx);
-  if (attempt.bindingRevision !== null && (binding.state !== "bound" || binding.revision !== attempt.bindingRevision)) return "binding_revoked";
-  const verdict = guardVerdict(tx, intent);
-  if (!verdict.current) return verdict.reason;
-  return null;
-}
-
-/**
- * Applies a transport result for one attempt.
- * A newer settled generation is left as-is. Revoke or supersede during the send keeps the actual or unknown outcome and marks it stale.
- */
-export function recordDeliveryResult(tx: AppTransaction, attemptId: string, result: DeliverySendResult, now: number): DeliveryIntent {
-  requireId(attemptId);
-  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
-  const row = tx.get<{ record_json: string }>("SELECT record_json FROM delivery_attempts WHERE id = ?", attemptId);
-  if (!row) throw new AppError("delivery_attempt_not_found", 404);
-  const attempt = attemptOf(row);
-  const intent = readDeliveryIntent(tx, tx.get<{ project_id: string }>("SELECT project_id FROM delivery_intents WHERE id = ?", attempt.intentId)!.project_id, attempt.intentId);
-  if (attempt.outcome !== "none") return intent;
-  if (intent.settledGeneration !== null && intent.settledGeneration > attempt.generation) {
-    attempt.state = "interrupted"; attempt.reason = "stale_result"; saveAttempt(tx, attempt);
-    return readDeliveryIntent(tx, intent.projectId, intent.id);
-  }
-  const stale = staleReason(tx, intent, attempt);
-  let outcome: DeliveryAttempt["outcome"] = "unknown";
-  let reason: string | null = "unknown_transport";
-  let remote: DeliveryIntent["remote"] = "uncertain";
-  let status: DeliveryIntent["status"] = "unknown";
-  let nextAction = "inspect_unknown_then_explicit_resend";
-  let messageRef: DeliveryIntent["messageRef"] = null;
-  let retryable = false;
-  if (result.outcome === "sent" && Number.isSafeInteger(result.messageId) && result.messageId > 0 && attempt.chatId !== null) {
-    outcome = "sent"; reason = null; remote = "accepted"; status = "sent"; nextAction = "inspect_sent_message";
-    messageRef = { chatId: attempt.chatId, messageId: result.messageId };
-  } else if (result.outcome === "failed" && (result.reason === "telegram_rejected" || result.reason === "telegram_unavailable")) {
-    outcome = "failed"; reason = result.reason; remote = "rejected"; status = "failed"; nextAction = "inspect_failure";
-    // A resolved intent (its item stopped waiting on the owner) never earns an automatic retry.
-    retryable = result.retryable === true && result.reason === "telegram_unavailable" && stale === null && !intent.resolution;
-  }
-  attempt.state = "settled"; attempt.outcome = outcome; attempt.reason = reason; attempt.messageRef = messageRef; attempt.stale = stale !== null;
-  saveAttempt(tx, attempt);
-  if (retryable) intent.safeRetriesRemaining = Math.max(0, intent.safeRetriesRemaining - 1);
-  const retry = retryable && intent.safeRetriesRemaining > 0;
-  if (retry) {
-    intent.status = "queued"; intent.remote = "none"; intent.failureReason = null; intent.nextAction = "wait_for_delivery"; intent.retryable = true;
-  } else {
-    intent.status = status; intent.remote = remote; intent.failureReason = reason; intent.messageRef = messageRef; intent.retryable = false;
-    intent.nextAction = outcome === "failed" && result.outcome === "failed" && result.retryable === true && intent.safeRetriesRemaining === 0 ? "safe_retry_limit_reached" : nextAction;
-  }
-  intent.stale = stale !== null; intent.staleReason = stale;
-  intent.settledGeneration = attempt.generation; intent.revision += 1; intent.updatedAt = now;
-  saveIntent(tx, intent);
-  return readDeliveryIntent(tx, intent.projectId, intent.id);
-}
-
-/**
- * One local worker that claims fenced delivery attempts and records honest send outcomes.
- * Unknown results stay visible and are not retried. Safe failures retry only while the intent's remaining budget allows it.
- */
-export class DeliveryWorker {
-  #token = crypto.randomUUID();
-  #pid: number;
-  #now: () => number;
-  #leaseMs: number;
-  #closed = false;
-  #sender: DeliverySender;
-  #crash?: DeliveryWorkerOptions["crash"];
-
-  constructor(readonly store: TransactionStore, options: DeliveryWorkerOptions) {
-    this.#pid = options.pid ?? process.pid;
-    if (!Number.isSafeInteger(this.#pid) || this.#pid < 1 || this.#pid > 2_147_483_647) throw new AppError("invalid_delivery_command");
-    this.#now = options.now ?? Date.now;
-    this.#leaseMs = options.leaseMs ?? 60_000;
-    if (!Number.isSafeInteger(this.#leaseMs) || this.#leaseMs < 1 || this.#leaseMs > 3_600_000) throw new AppError("invalid_delivery_command");
-    if (typeof options.sender?.send !== "function") throw new AppError("invalid_delivery_command");
-    this.#sender = options.sender;
-    this.#crash = options.crash;
-    const alive = options.isAlive ?? ((pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; } });
-    this.store.transaction(tx => {
-      const owner = tx.get<{ token: string; pid: number }>("SELECT token, pid FROM delivery_worker WHERE id = 1");
-      if (owner && alive(owner.pid)) throw new AppError("delivery_worker_unavailable", 503);
-      tx.run("INSERT OR REPLACE INTO delivery_worker VALUES (1, ?, ?)", this.#token, this.#pid);
-      this.#reconcile(tx);
-    });
-  }
-
-  /** Drops this worker's lease ownership so a later process can reconcile attempts. */
-  close(): void {
-    this.#closed = true;
-    this.store.transaction(tx => {
-      if (tx.get<{ token: string }>("SELECT token FROM delivery_worker WHERE id = 1")?.token === this.#token) {
-        tx.run("DELETE FROM delivery_worker WHERE id = 1");
-      }
-    });
-  }
-
-  /**
-   * Claims at most one ready intent. A second call while that lease is held returns null.
-   * Unbound channels stay waiting. Revoked bindings and deleted sources cancel unsent work.
-   */
-  claimNext(): DeliveryAttempt | null {
-    // Delivery stays disabled while an ops.schema_migrations/v1 upgrade holds the fence.
-    if (upgradeFenced(this.store.path)) return null;
-    return this.store.transaction(tx => this.#claim(tx));
-  }
-
-  /**
-   * Sends one claimed attempt. The sender is invoked only after `senderInvoked` commits.
-   * A crash after that point reopens as unknown. A crash before it can be claimed again.
-   */
-  sendClaimed(attemptId: string): DeliveryIntent {
-    requireId(attemptId);
-    // Never invoke the sender under an upgrade fence; the claim stays retryable.
-    if (upgradeFenced(this.store.path)) throw new AppError("upgrade_in_progress", 409);
-    const prepared = this.store.transaction(tx => {
-      if (this.#closed || !this.#owns(tx)) throw new AppError("delivery_worker_unavailable", 503);
-      const row = tx.get<{ record_json: string }>("SELECT record_json FROM delivery_attempts WHERE id = ?", attemptId);
-      if (!row) throw new AppError("delivery_attempt_not_found", 404);
-      const attempt = attemptOf(row);
-      const intent = readDeliveryIntent(tx, tx.get<{ project_id: string }>("SELECT project_id FROM delivery_intents WHERE id = ?", attempt.intentId)!.project_id, attempt.intentId);
-      if (attempt.senderInvoked || attempt.state !== "claimed" || attempt.scheduler !== this.#token) throw new AppError("delivery_attempt_not_claimed", 409);
-      const decision = gate(tx, intent);
-      if (!decision.ok) {
-        if (decision.wait) {
-          intent.status = "waiting"; intent.nextAction = decision.nextAction ?? "wait_for_channel_binding"; intent.updatedAt = this.#time(); saveIntent(tx, intent);
-        } else cancelUnsent(tx, intent, decision.reason, this.#time(), decision.stale === true);
-        return null;
-      }
-      attempt.senderInvoked = true; attempt.state = "sending"; attempt.bindingRevision = decision.bindingRevision; attempt.chatId = decision.chatId;
-      saveAttempt(tx, attempt);
-      intent.status = "claimed"; intent.updatedAt = this.#time(); saveIntent(tx, intent);
-      return { attempt, chatId: decision.chatId, text: intent.payload.text, dedupeKey: intent.dedupeKey };
-    });
-    if (!prepared) return this.#readAttemptIntent(attemptId);
-    let result: DeliverySendResult;
-    try { result = this.#sender.send({ chatId: prepared.chatId, text: prepared.text, dedupeKey: prepared.dedupeKey }); }
-    catch { result = { outcome: "unknown" }; }
-    this.#crash?.("after_remote_accept");
-    return this.store.transaction(tx => {
-      this.#crash?.("before_response_commit");
-      return recordDeliveryResult(tx, prepared.attempt.id, result, this.#time());
-    });
-  }
-
-  /** Claims and sends until no ready intent remains, bounded so a safe retry cannot loop without a budget. */
-  pump(): DeliveryIntent[] {
-    const results: DeliveryIntent[] = [];
-    for (let count = 0; count < 32; count += 1) {
-      const attempt = this.claimNext();
-      if (!attempt) return results;
-      this.#crash?.("after_claim");
-      results.push(this.sendClaimed(attempt.id));
-    }
-    return results;
-  }
-
-  #readAttemptIntent(attemptId: string): DeliveryIntent {
-    return this.store.read(tx => {
-      const attempt = attemptOf(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_attempts WHERE id = ?", attemptId)!);
-      const projectId = tx.get<{ project_id: string }>("SELECT project_id FROM delivery_intents WHERE id = ?", attempt.intentId)!.project_id;
-      return readDeliveryIntent(tx, projectId, attempt.intentId);
-    });
-  }
-
-  #claim(tx: AppTransaction): DeliveryAttempt | null {
-    if (this.#closed || !this.#owns(tx)) return null;
-    const now = this.#time();
-    for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence")) {
-      const intent = intentOf(row);
-      const attempts = listDeliveryAttempts(tx, intent.id);
-      const active = [...attempts].reverse().find(attempt => attempt.outcome === "none" && attempt.state !== "interrupted");
-      if (active?.senderInvoked) continue;
-      if (active && active.state === "claimed") {
-        const denied = fenceDenied({
-          state: active.state, activeStates: ["claimed", "sending"], scheduler: active.scheduler, currentScheduler: this.#token,
-          generation: active.generation, authorityGeneration: intent.attemptGeneration, ownerGeneration: active.ownerGeneration,
-          currentOwnerGeneration: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null,
-          now, leaseUntil: active.leaseUntil, deadlineAt: active.deadlineAt,
-        });
-        if (!denied) continue;
-        active.state = "interrupted"; active.reason = denied; saveAttempt(tx, active);
-        if (intent.status === "claimed") { intent.status = "queued"; intent.nextAction = "wait_for_delivery"; intent.updatedAt = now; saveIntent(tx, intent); }
-      }
-      if (!["queued", "waiting", "failed"].includes(intent.status) && active?.state !== "authorized") continue;
-      if (intent.status === "failed" && !intent.retryable) continue;
-      const decision = gate(tx, intent);
-      if (!decision.ok) {
-        if (decision.wait) {
-          const nextAction = decision.nextAction ?? "wait_for_channel_binding";
-          if (intent.status !== "waiting" || intent.nextAction !== nextAction) {
-            intent.status = "waiting"; intent.nextAction = nextAction; intent.updatedAt = now; saveIntent(tx, intent);
-          }
-          continue;
-        }
-        cancelUnsent(tx, intent, decision.reason, now, decision.stale === true);
-        continue;
-      }
-      const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
-      let attempt = active?.state === "authorized" ? active : null;
-      if (!attempt) {
-        intent.attemptGeneration += 1;
-        attempt = {
-          id: crypto.randomUUID(), intentId: intent.id, generation: intent.attemptGeneration, scheduler: this.#token,
-          leaseUntil: now + this.#leaseMs, deadlineAt: now + this.#leaseMs, ownerGeneration, bindingRevision: decision.bindingRevision,
-          state: "claimed", senderInvoked: false, outcome: "none", reason: null, messageRef: null, chatId: null, stale: false, linkedFrom: null, createdAt: now,
-        };
-        tx.run("INSERT INTO delivery_attempts (id, intent_id, record_json) VALUES (?, ?, ?)", attempt.id, attempt.intentId, JSON.stringify(attempt));
-      } else {
-        attempt.scheduler = this.#token; attempt.leaseUntil = now + this.#leaseMs; attempt.deadlineAt = now + this.#leaseMs;
-        attempt.ownerGeneration = ownerGeneration; attempt.bindingRevision = decision.bindingRevision; attempt.state = "claimed";
-        saveAttempt(tx, attempt);
-      }
-      intent.status = "claimed"; intent.nextAction = "wait_for_delivery"; intent.updatedAt = now; saveIntent(tx, intent);
-      return attempt;
-    }
-    return null;
-  }
-
-  #reconcile(tx: AppTransaction): void {
-    const now = this.#time();
-    for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM delivery_attempts ORDER BY sequence")) {
-      const attempt = attemptOf(row);
-      if (attempt.outcome !== "none" || attempt.state === "interrupted" || attempt.state === "authorized") continue;
-      const projectId = tx.get<{ project_id: string }>("SELECT project_id FROM delivery_intents WHERE id = ?", attempt.intentId)?.project_id;
-      if (!projectId) continue;
-      const intent = readDeliveryIntent(tx, projectId, attempt.intentId);
-      if (attempt.senderInvoked) {
-        if (intent.settledGeneration !== null && intent.settledGeneration > attempt.generation) {
-          attempt.state = "interrupted"; attempt.reason = "stale_result"; saveAttempt(tx, attempt); continue;
-        }
-        recordDeliveryResult(tx, attempt.id, { outcome: "unknown" }, now);
-        continue;
-      }
-      attempt.state = "interrupted"; attempt.reason = "interrupted"; saveAttempt(tx, attempt);
-      if (intent.status === "claimed" && (intent.settledGeneration === null || intent.settledGeneration < attempt.generation)) {
-        intent.status = "queued"; intent.nextAction = "wait_for_delivery"; intent.updatedAt = now; saveIntent(tx, intent);
-      }
-    }
-  }
-
-  #owns(tx: AppTransaction): boolean {
-    return tx.get<{ token: string }>("SELECT token FROM delivery_worker WHERE id = 1")?.token === this.#token;
-  }
-  #time(): number {
-    const now = this.#now();
-    if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
-    return now;
-  }
-}
-
-export type { CommitDeliveryCommand, ResendDeliveryCommand, RetireDeliveryCommand };
+export type { CommitDeliveryCommand, RetireDeliveryCommand };

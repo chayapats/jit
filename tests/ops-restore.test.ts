@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
-import { DeliveryWorker } from "../src/delivery";
 import { attemptAuthority, type JobAttempt } from "../src/jobs/attempts";
 import { JobQueue } from "../src/jobs/queue";
 import { reconcileDeletions } from "../src/memory/delete";
@@ -329,7 +328,8 @@ test("older backup restored after delete and forget: removed payload never reach
   expect(validated.report.invalidated!.sourcesPurged).toBeGreaterThan(0);
   expect(validated.report.invalidated!.claimsForgotten).toBeGreaterThan(0);
   expect(validated.report.invalidated!.ledgerOnlySuppressions).toBe(1);
-  expect(validated.report.invalidated!.deliveriesHeld).toBe(2);
+  // In-app-only notices (ADR 0085) were never sendable, so none is held as unknown.
+  expect(validated.report.invalidated!.deliveriesHeld).toBe(0);
   expect(validated.report.discarded.liveOnlySources).toBeGreaterThan(0);
   expect(validated.report.generation.restoredRevision).toBeGreaterThan(liveRevision);
   expect(validated.report.retention.length).toBeGreaterThan(0);
@@ -358,13 +358,10 @@ test("older backup restored after delete and forget: removed payload never reach
   const quoted = f.rt.app.delivery(actor(f), a.id, quoting.intent.id);
   expect(JSON.stringify(quoted.intent.payload)).not.toContain("restore-del-canary-002");
   expect(JSON.stringify(quoted.report)).not.toContain("restore-del-canary-002");
-  expect(quoted.intent.status).toBe("unknown");
-  // Notification: the restored unsent report is held as unknown and never sent by a worker.
+  expect(quoted.intent.status).toBe("waiting");
+  // Notification: an in-app notice was never sendable (ADR 0085), so the restore keeps it in the app as it was.
   const intentId = (pending as { intent: { id: string } }).intent.id;
-  expect(f.rt.app.delivery(actor(f), a.id, intentId).intent).toMatchObject({ status: "unknown", nextAction: "inspect_restored_intent_then_resend_explicitly" });
-  const worker = new DeliveryWorker(f.rt.store, { sender: { send: () => { throw new Error("restored intents must not send"); } } });
-  expect(worker.pump()).toEqual([]);
-  worker.close();
+  expect(f.rt.app.delivery(actor(f), a.id, intentId).intent).toMatchObject({ status: "waiting", nextAction: "in_app_only" });
   // Context assembly for new work cites no removed payload.
   f.rt.app.execute(actor(f), dispatch(f, a, "งานหลังกู้คืน", [sKeep]));
   await drain(f);
@@ -703,19 +700,6 @@ test("a verified backup whose native references use an unsupported engine contra
 // ---------------------------------------------------------------------------
 // Mutual exclusion, service packaging and Web
 // ---------------------------------------------------------------------------
-
-test("an external integration revoked after the backup is never silently re-enabled by the restore", async () => {
-  const f = await fixture();
-  project(f, "โครงการ integration", "หัวข้อ integration");
-  f.rt.store.transaction(tx => tx.run("UPDATE telegram_binding SET revision = 2, state = 'bound', telegram_user_id = 11, telegram_chat_id = 22, bound_at = ? WHERE id = 1", f.clock.now));
-  const backup = await backupNow(f);
-  f.rt.store.transaction(tx => tx.run("UPDATE telegram_binding SET revision = 3, state = 'unbound', telegram_user_id = NULL, telegram_chat_id = NULL, bound_at = NULL WHERE id = 1"));
-  const q = await restoreThrough(f, backup.id);
-  expect(q.state).toBe("complete");
-  expect(q.report.invalidated!.telegramBinding).toBe("adopted_live");
-  expect(f.rt.store.read(tx => tx.get<{ state: string; telegram_chat_id: number | null }>("SELECT state, telegram_chat_id FROM telegram_binding WHERE id = 1")))
-    .toEqual({ state: "unbound", telegram_chat_id: null });
-});
 
 test("a run record without a valid manifest is treated as unknown: its context is deleted before service resumes", async () => {
   const f = await fixture();

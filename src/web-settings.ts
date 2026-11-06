@@ -3,15 +3,15 @@ import type { MessageKey } from "./i18n";
 /**
  * web.settings_ia/v1 — where owner pages live after S09-D05 (UX02).
  *
- * - Installation operations (team and models, Telegram, backups, upgrades, restores) live under `/settings/*`.
+ * - Installation operations (team and models, notifications, backups, upgrades, restores) live under `/settings/*`.
  *   Their earlier page URLs answer `GET` with a permanent redirect to the new place, so no bookmark or link dies.
  * - Commands keep their endpoints: forms on the new pages still post to `/team/*`, `/backups`, `/upgrades/*` and
  *   `/restores/*` with the same session, Origin, CSRF, revision and receipt rules. JSON API paths do not move.
- * - Project data operations (exports, deletions) and Telegram notifications stay at their project URLs and render
+ * - Project data operations (exports, deletions) and in-app notifications stay at their project URLs and render
  *   inside the settings frame. Memory, tasks, jobs, PR reports and the team stay at their project URLs too; the
  *   topic right panel links to them.
  */
-export type SettingsSectionId = "general" | "team" | "dispatch" | "access" | "connections" | "web_search" | "mcp" | "telegram" | "feed" | "approvals" | "backups" | "upgrades" | "restores" | "data";
+export type SettingsSectionId = "general" | "team" | "dispatch" | "access" | "connections" | "web_search" | "mcp" | "notifications" | "feed" | "approvals" | "backups" | "upgrades" | "restores" | "data";
 
 /** Settings sections in display order. `href` is the canonical page; `label` is a dictionary key. */
 export const settingsSections: readonly { readonly id: SettingsSectionId; readonly href: string; readonly label: MessageKey }[] = Object.freeze([
@@ -22,7 +22,7 @@ export const settingsSections: readonly { readonly id: SettingsSectionId; readon
   { id: "connections", href: "/settings/connections", label: "settings.connections" },
   { id: "web_search", href: "/settings/web-search", label: "settings.web_search" },
   { id: "mcp", href: "/settings/mcp", label: "settings.mcp" },
-  { id: "telegram", href: "/settings/telegram", label: "settings.telegram" },
+  { id: "notifications", href: "/settings/notifications", label: "common.notifications" },
   { id: "feed", href: "/settings/feed", label: "settings.feed" },
   { id: "approvals", href: "/settings/approvals", label: "settings.approvals" },
   { id: "backups", href: "/settings/backups", label: "settings.backups" },
@@ -104,8 +104,8 @@ export const routeInventory: readonly { readonly from: string; readonly kind: "r
   { from: "/projects/:project/exports/:export", kind: "settings", section: "data" },
   { from: "/projects/:project/memory/deletions", kind: "settings", section: "data" },
   { from: "/projects/:project/memory/deletions/:deletion", kind: "settings", section: "data" },
-  { from: "/projects/:project/delivery", kind: "settings", section: "telegram" },
-  { from: "/projects/:project/delivery/:intent", kind: "settings", section: "telegram" },
+  { from: "/projects/:project/delivery", kind: "settings", section: "notifications" },
+  { from: "/projects/:project/delivery/:intent", kind: "settings", section: "notifications" },
   { from: "/projects/:project", kind: "page" },
   { from: "/projects/:project/topics", kind: "page" },
   { from: "/projects/:project/topics/:topic", kind: "page" },

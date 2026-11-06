@@ -1,4 +1,4 @@
-import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt } from "../../s15/conversation/types";
+import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt, ConversationSteerCommand, ConversationSteerReceipt } from "../../s15/conversation/types";
 import type { ConversationListEntry, ConversationNeedsYou, ConversationOwnerRow, ConversationOwnerView } from "../../s15/conversation/owner-view";
 import type { FileArtifact, FileLimits } from "../files/types";
 
@@ -9,7 +9,8 @@ export interface ClientCapabilities {
   textMessages: true;
   progress: "control_events";
   exactDecisions: boolean;
-  liveSteering: false;
+  /** CHAT16-02: true when an unfinished request accepts `s16-conversation-steer/v1` and requests of different conversations run concurrently. */
+  liveSteering: boolean;
   uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: boolean; memoryContract?: "s16-file-memory/v1"; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
   /** `library`/`revisions`/`html` are additive: absent on older services, which keep conversation cards only. */
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
@@ -17,6 +18,8 @@ export interface ClientCapabilities {
   memory?: { available: false; code: "memory_unavailable" } | { available: true; contract: "s16-client-memory/v1" };
   /** Additive field: owner-confirmed routines (`s16-routines/v1`). Reactions list the source kinds this service composes. */
   routines?: { available: false; code: "routines_unavailable" } | { available: true; contract: "s16-client-routines/v1"; reactions: { signed: true; github: true; artifacts: boolean }; feed: true };
+  /** Additive field: Web Push notices (`s16-notifications/v1`) and the fixed service worker/scope that receives them. */
+  notifications?: { available: false; code: "notifications_unavailable" } | { available: true; contract: "s16-notifications/v1"; transport: "web_push"; serviceWorker: "/s16/sw.js"; scope: "/s16/" };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
@@ -38,6 +41,8 @@ export interface ClientEvents { contract: "s16-client-events/v1"; conversationId
 export type ClientMessage = ConversationCommand;
 export type ClientDecision = ConversationDecisionCommand;
 export type ClientReceipt = ConversationReceipt;
+export type ClientSteer = ConversationSteerCommand;
+export type ClientSteerReceipt = ConversationSteerReceipt;
 
 /** Finite complete JSON response bound shared by the protected adapter and browser/native transport. */
 export const clientResponseBytes = 8 * 1024 * 1024;
@@ -111,3 +116,4 @@ export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item
 /** Explicit owner command copying one exact committed artifact into a new input of its own conversation. */
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }
 export type { RoutineDetail as ClientRoutineDetail, RoutineList as ClientRoutineList, RoutineOptions as ClientRoutineOptions, RoutineProposal as ClientRoutineProposal, RoutineReceipt as ClientRoutineReceipt, RoutineDraft as ClientRoutineDraft, RoutineOccurrence as ClientRoutineOccurrence, RoutineSummary as ClientRoutineSummary, RoutineSourceView as ClientRoutineSource } from "../routines/types";
+export type { NotificationSettings as ClientNotificationSettings, NotificationDevice as ClientNotificationDevice, NotificationSubscribeCommand as ClientNotificationSubscribeCommand, NotificationPayload as ClientNotificationPayload, NoticeKind as ClientNoticeKind } from "../notifications/types";

@@ -112,7 +112,6 @@ export {
   evaluateReport,
   findingQualifies,
   listAlertPolicies,
-  prAlertCurrentness,
   quarantineLegacyPrAlerts,
   readAlertDecisions,
   readAlertPolicy,

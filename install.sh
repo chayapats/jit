@@ -175,7 +175,7 @@ else
     '  Try Podman/uidmap/slirp4netns; allocate unused subuid/subgid ranges and create /var/lib/cni.' \
     '  Enable linger/user manager and optional user podman.socket; install a Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
     '  Build/install sealed service artifact and dependencies; preserve existing config and data.' \
-    "  Write /etc/$name/service-config.json: loopback, Schway, recommended models, Telegram disabled." \
+    "  Write /etc/$name/service-config.json: loopback, Schway, recommended models." \
     '  Size service memory from RAM/3 (256 MiB..8 GiB), logs from disk/1000 (16..256 MiB); record RAM/CPU-sized box recommendations.' \
     "  Stop/repair/install/enable/start $name.service and bounded journald namespace; never run Jit as root." \
     '  Initialize only a new database; schema-changing upgrades retain owner-authorized staged migration gates.' \

@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { schemaVersion, type AppTransaction } from "../store";
 import { openReadOnlyStore } from "./readonly-store";
 import type { AppConfig } from "../config";
-import { botCredentialConfigured } from "../telegram/secrets";
 import { SCHWAY_RELEASE_CONTRACT, schwayHostDirs } from "../team/schway-port";
 import { hostCapabilities } from "schway/host";
 import { redactModel, redactRouteId, safeEvidenceId, safeNote, safeOpsAlias } from "./contracts";
@@ -23,7 +22,7 @@ export type DiagnosticRouteState = typeof diagnosticRouteStates[number];
 export const diagnosticActions = ["none", "run-owner-setup", "inspect-store-access", "complete-restore-activation", "finish-or-rollback-upgrade", "resolve-restore-quarantine", "run-owner-upgrade",
   "use-compatible-app-artifact", "relieve-disk-pressure", "restore-engine", "inspect-sanitized-diagnostics",
   "configure-provider-route", "reconnect-provider-login", "reauthorize-owner-work", "wait-for-quota-then-resume",
-  "resolve-unknown-delivery", "resolve-blocked-work", "drain-queue", "configure-telegram", "bind-telegram"] as const;
+  "resolve-unknown-delivery", "resolve-blocked-work", "drain-queue"] as const;
 export type DiagnosticAction = typeof diagnosticActions[number];
 
 /** Upgrade journal states diagnostics may report; anything else is rejected. */
@@ -53,7 +52,8 @@ export interface DiagnosticsInput {
   /** Jobs held on their exact route by an external condition, or fenced by an authority change. */
   waits: { quota: number; needsLogin: number; routeUnavailable: number; authorizationChanged: number };
   disk: { stateBytes: number; watermarkBytes: number };
-  telegram: { configured: boolean; binding: "unbound" | "pending" | "bound"; pendingIntents: number; unknownDeliveries: number };
+  /** delivery.outbox/v1 in-app intents still open, and legacy attempts whose outcome stayed unknown. */
+  deliveries: { pendingIntents: number; unknownDeliveries: number };
   /** Run-port mode and whether its declared engine identity is usable. Never a live probe. */
   engine: { mode: "scripted" | "schway"; available: boolean };
   /**
@@ -86,7 +86,7 @@ export interface Diagnostics {
   budgets: { exhausted: number; deadlineFailed: number };
   waits: { quota: number; needsLogin: number; routeUnavailable: number; authorizationChanged: number };
   disk: { stateBytes: number; watermarkBytes: number; pressure: boolean };
-  connections: { telegram: "configured" | "unconfigured"; binding: "unbound" | "pending" | "bound"; pendingIntents: number; unknownDeliveries: number };
+  connections: { pendingIntents: number; unknownDeliveries: number };
   /** `scripted` has no engine; `declared` means the pinned release contract matches, not that a run was observed. */
   engine: { mode: "scripted" | "schway"; state: "scripted" | "declared" | "unavailable"; observed: "not-observed" };
   /** Host-evidence vocabulary; `observed-ready` is never produced here, only by live RouteEvidence records. */
@@ -109,7 +109,7 @@ const count = (v: unknown, max: number): number => {
   return v as number;
 };
 
-const inputKeys = ["now", "store", "queue", "routes", "coverage", "budgets", "waits", "disk", "telegram", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
+const inputKeys = ["now", "store", "queue", "routes", "coverage", "budgets", "waits", "disk", "deliveries", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
 
 /**
  * Projects a redacted diagnostics snapshot. Pure and read-only: it performs no I/O,
@@ -159,11 +159,10 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   object(d);
   const disk = { stateBytes: count(d.stateBytes, 1099511627776), watermarkBytes: count(d.watermarkBytes, 1099511627776), pressure: false };
   disk.pressure = disk.stateBytes > disk.watermarkBytes;
-  const t = input.telegram;
+  const t = input.deliveries;
   object(t);
-  if (typeof t.configured !== "boolean" || !["unbound", "pending", "bound"].includes(t.binding)) fail();
-  const connections = { telegram: (t.configured ? "configured" : "unconfigured") as "configured" | "unconfigured",
-    binding: t.binding, pendingIntents: count(t.pendingIntents, countCap), unknownDeliveries: count(t.unknownDeliveries, countCap) };
+  if (Object.keys(t).sort().join(",") !== "pendingIntents,unknownDeliveries") fail();
+  const connections = { pendingIntents: count(t.pendingIntents, countCap), unknownDeliveries: count(t.unknownDeliveries, countCap) };
   const e = input.engine;
   object(e);
   if ((e.mode !== "scripted" && e.mode !== "schway") || typeof e.available !== "boolean") fail();
@@ -217,8 +216,6 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     [connections.unknownDeliveries > 0, "resolve-unknown-delivery"],
     [budgets.exhausted + budgets.deadlineFailed > 0 || queue.waiting > waits.quota + waits.needsLogin + waits.routeUnavailable, "resolve-blocked-work"],
     [queue.queued + queue.admitted > 0, "drain-queue"],
-    [!t.configured, "configure-telegram"],
-    [t.configured && t.binding !== "bound", "bind-telegram"],
   ];
   const nextActions = applicable.filter(([applies]) => applies).map(([, action]) => action);
   const nextAction: DiagnosticAction = nextActions[0] ?? "none";
@@ -312,7 +309,6 @@ interface StoreReads {
   /** Distinct active (provider, model, state) groups in the whole table, independent of the sample limit. */
   groupTotal: number;
   delivery: { pendingIntents: number; unknownDeliveries: number };
-  binding: "unbound" | "pending" | "bound";
   configuredRoutes: number;
 }
 
@@ -320,7 +316,7 @@ interface StoreReads {
 const routeSampleScan = 64;
 
 const emptyReads: StoreReads = { tally: [], available: false, groups: [], groupTotal: 0, delivery: { pendingIntents: 0, unknownDeliveries: 0 },
-  binding: "unbound", configuredRoutes: 0 };
+  configuredRoutes: 0 };
 
 /** Schema-specific queries; each one fails soft so an older schema still yields a bounded snapshot. */
 function readStore(tx: AppTransaction): StoreReads {
@@ -357,12 +353,7 @@ function readStore(tx: AppTransaction): StoreReads {
       unknownDeliveries: tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_attempts WHERE record_json LIKE '%\"outcome\":\"unknown\"%'")!.count,
     };
   } catch { /* Pre-outbox schema. */ }
-  let binding: StoreReads["binding"] = "unbound";
-  try {
-    const state = tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1")?.state;
-    binding = state === "bound" || state === "pending" ? state : "unbound";
-  } catch { /* Pre-Telegram schema. */ }
-  return { tally, available, groups, groupTotal, delivery, binding, configuredRoutes: configuredRouteCount(tx) };
+  return { tally, available, groups, groupTotal, delivery, configuredRoutes: configuredRouteCount(tx) };
 }
 
 /**
@@ -430,8 +421,7 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
     waits: { quota: total("waiting", "quota"), needsLogin: total("waiting", "needs_login"), routeUnavailable: total("waiting", "route_unavailable"),
       authorizationChanged: total("blocked", "authorization_changed") },
     disk: { stateBytes: managedStateBytes(join(root, ".local")), watermarkBytes: config.ops.diskWatermarkBytes },
-    telegram: { configured: botCredentialConfigured(config.telegram.botTokenPath), binding: reads.binding,
-      pendingIntents: cap(reads.delivery.pendingIntents), unknownDeliveries: cap(reads.delivery.unknownDeliveries) },
+    deliveries: { pendingIntents: cap(reads.delivery.pendingIntents), unknownDeliveries: cap(reads.delivery.unknownDeliveries) },
     engine: { mode: config.runPort, available: engineAvailable(config) },
     providers: { configuredRoutes: Math.min(reads.configuredRoutes, 64) },
     schema: { current: current === null ? null : Math.min(Math.max(current, 0), 100000), supported: schemaVersion },

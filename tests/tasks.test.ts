@@ -107,7 +107,7 @@ test("proposing, editing, and accepting keep one obligation; chat and a conflict
   expect(model.events.map(item => item.kind)).toEqual(["proposed", "edited", "accepted"]);
 });
 
-test("projects stay separate, forged actors have no authority, and telegram can accept only a task", async () => {
+test("projects stay separate and forged actors have no authority", async () => {
   const f = await fixture();
   const other = f.app.execute(f.auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 1, payload: { name: "โครงการงาน 🧪" } }).project;
   const otherTopic = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: other.id, requestId: rid(), expectedRevision: other.revision, payload: { title: "หัวข้ออีกโครงการ" } }).topic;
@@ -122,28 +122,21 @@ test("projects stay separate, forged actors have no authority, and telegram can 
   expect(rejection(() => f.app.execute(f.auth.actor, missingTopic)).code).toBe("topic_not_found");
   expect(rejection(() => f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: other.id, expectedRevision: first.revision, payload: { taskId: first.id, proposalId: crypto.randomUUID() } })).code).toBe("task_not_found");
   const forged = { ownerId: "owner", channel: "web" } as OwnerActor;
-  const forgedTelegram = { ownerId: "owner", channel: "telegram" } as OwnerActor;
   expect(() => f.app.execute(forged, propose(f, otherTopic))).toThrow("authentication_required");
-  expect(() => f.app.execute(forgedTelegram, propose(f, otherTopic))).toThrow("authentication_required");
-  const telegram = f.app.issueAdapterActor(f.token, "telegram");
   const open = f.app.task(f.auth.actor, other.id, second.id);
-  const accepted = f.app.execute(telegram, { kind: "task.accept", requestId: rid(), projectId: other.id, expectedRevision: open.task.revision, payload: { taskId: second.id, proposalId: open.proposals.at(-1)!.id } });
-  expect(accepted.task.acceptance?.channel).toBe("telegram");
-  expect(rejection(() => f.app.execute(telegram, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 2, payload: { name: "ไม่ควรสร้าง" } })).code).toBe("channel_not_authorized");
-  expect(rejection(() => f.app.execute(telegram, { kind: "decision.accept", requestId: rid(), projectId: other.id, expectedRevision: 1,
-    payload: { proposalId: crypto.randomUUID(), optionId: null, conclusion: "ไม่รับจากช่องนี้", rationale: "การตัดสินยังอยู่บนเว็บ" } })).code).toBe("channel_not_authorized");
-  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM owner_decisions")!.n)).toBe(0);
+  const accepted = f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: other.id, expectedRevision: open.task.revision, payload: { taskId: second.id, proposalId: open.proposals.at(-1)!.id } });
+  expect(accepted.task.acceptance?.channel).toBe("web");
 });
 
-test("one acceptance wins a two-channel race, and start writes nothing", async () => {
+test("one acceptance wins a two-session race, and start writes nothing", async () => {
   const f = await fixture();
   const proposed = f.app.execute(f.auth.actor, propose(f));
   const jobsBefore = count(f.store, "jobs");
-  const commands = (["web", "telegram"] as const).map(channel => ({ channel, command: {
+  const commands = [1, 2].map(() => ({ command: {
     kind: "task.accept" as const, requestId: rid(), projectId: f.project.id, expectedRevision: proposed.task.revision,
     payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id },
   } }));
-  const workers = commands.map(item => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, channel: item.channel, command: item.command } }));
+  const workers = commands.map(item => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, command: item.command } }));
   const messages: { ready?: boolean; ok?: boolean; message?: string; state?: string }[] = [];
   await new Promise<void>((resolve, reject) => {
     let ready = 0;
@@ -338,7 +331,7 @@ test("two competing completion commands and duplicate owner confirmation share o
   const reopened = f.app.execute(f.auth.actor, { kind: "task.reopen", requestId: rid(), projectId: f.project.id, expectedRevision: first.task.revision,
     payload: { taskId: accepted.task.id, reason: "ต้องตรวจอีกครั้ง" } });
   expect(reopened.task.state).toBe("accepted");
-  const workers = ["web", "telegram"].map(channel => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, channel, command: {
+  const workers = [1, 2].map(() => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, command: {
     kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: reopened.task.revision, payload: { taskId: accepted.task.id, note: "ชนะครั้งเดียว" },
   } } }));
   const messages: { ready?: boolean; ok?: boolean; message?: string }[] = [];

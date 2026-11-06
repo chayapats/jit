@@ -7,13 +7,14 @@ import type { AttentionClass, DeliveryAttention, DeliveryReceipt } from "./types
 /**
  * delivery.attention_levels/v1 — the owner's per-channel choice of what creates notifications (REL04, ADR 0032, FR-28).
  *
- * One row per channel (schema 35, `attention_levels`). Without a row the level is `needs-me` at revision 0 (S12-D06:
+ * One row per channel (schema 35, `attention_levels`). Only `web` remains; a saved `telegram` row from before ADR 0085 is
+ * inert and never read. Without a row the level is `needs-me` at revision 0 (S12-D06:
  * team progress stays quiet; owner-configured schedule reports and PR alerts also count as needs_owner); a saved row keeps its
  * level and is never migrated. It changes only through the `attention.set` owner command, which is revisioned per channel and idempotent by request id like every
  * other command. The level filters which delivery intents are *created*; it never hides or deletes reports, decisions
  * or history, and changing it never cancels an intent that already exists.
  */
-export type AttentionChannel = "telegram" | "web";
+export type AttentionChannel = "web";
 export type AttentionLevel = "all" | "needs-me";
 export interface AttentionSetting { channel: AttentionChannel; level: AttentionLevel; revision: number; updatedAt: number | null }
 export type AttentionLevels = Record<AttentionChannel, AttentionSetting>;
@@ -27,13 +28,13 @@ export interface SetAttentionCommand {
 }
 export interface AttentionReceipt { attention: AttentionSetting }
 
-export const attentionChannels: readonly AttentionChannel[] = Object.freeze(["telegram", "web"]);
+export const attentionChannels: readonly AttentionChannel[] = Object.freeze(["web"]);
 export const attentionLevelChoices: readonly AttentionLevel[] = Object.freeze(["all", "needs-me"]);
 /**
- * The channel every delivery.outbox/v1 intent goes to. Web/PWA has no push transport (web.pwa/v1), so its level is
- * recorded for the owner but filters nothing until a Web notification channel exists.
+ * The channel whose level filters delivery.outbox/v1 intents. The outbox has no push transport (ADR 0085): its intents
+ * are in-app notices, so the Web level decides which of them are created.
  */
-export const outboxChannel: AttentionChannel = "telegram";
+export const outboxChannel: AttentionChannel = "web";
 
 /** Reads one channel's level, or the default (`needs-me`, revision 0) when the owner never saved one. */
 export function readAttentionLevel(tx: AppTransaction, channel: AttentionChannel): AttentionSetting {
@@ -41,9 +42,9 @@ export function readAttentionLevel(tx: AppTransaction, channel: AttentionChannel
   return row ? { channel, level: row.level, revision: row.revision, updatedAt: row.updated_at } : { channel, level: "needs-me", revision: 0, updatedAt: null };
 }
 
-/** Reads both channels' levels. */
+/** Reads every channel's level. */
 export function readAttentionLevels(tx: AppTransaction): AttentionLevels {
-  return { telegram: readAttentionLevel(tx, "telegram"), web: readAttentionLevel(tx, "web") };
+  return { web: readAttentionLevel(tx, "web") };
 }
 
 /** Validates a command shape and returns its stable identity for receipt replay. */

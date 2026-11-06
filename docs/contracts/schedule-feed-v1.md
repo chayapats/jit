@@ -29,7 +29,7 @@ Application.scheduleFeed(token): { events; includePurpose; language } | null;   
 
 ## Token storage (the decision this ticket had to make)
 
-ADR 0035 asks for the token to be "encrypted at rest using the existing secret handling", but `main` has no at-rest encryption helper; `src/security/credentials.ts` only redacts. The two options the ticket offered were a `0600` secret file outside backups (like the Telegram bot token) or a stored SHA-256 with the URL shown once. **This contract takes the stored hash**:
+ADR 0035 asks for the token to be "encrypted at rest using the existing secret handling", but `main` has no at-rest encryption helper; `src/security/credentials.ts` only redacts. The two options the ticket offered were a `0600` secret file outside backups or a stored SHA-256 with the URL shown once. **This contract takes the stored hash**:
 
 - The token is 32 bytes from the platform CSPRNG in base64url (43 characters). The row stores only `sha256(token)` as 64 hex characters (`CHECK`ed by the schema). With 256 bits of entropy, the hash cannot be turned back into a working URL, so a database copy alone never exposes the feed.
 - The plaintext token leaves the service exactly once: inside the response to the `feed.create` or `feed.rotate` command that minted it, as the absolute `url` (`<JIT_ORIGIN>/feeds/schedules/<token>.ics`). The stored command receipt is written with `url: null`, so a replayed request id answers the same state with `url: null`. The settings page never shows a URL again; if the owner loses it, **New URL** makes another and the old one stops.
@@ -61,7 +61,7 @@ ADR 0035 asks for the token to be "encrypted at rest using the existing secret h
 
 ## Settings
 
-`GET /settings/feed` is the **Calendar feed** section (`settings.feed`), after Telegram. It shows whether the feed is on and since when, the revision, **New URL** (`POST /settings/feed/create` while off, `/settings/feed/rotate` while on), **Turn off** (`POST /settings/feed/disable`, only while on) and the include-purpose checkbox (`POST /settings/feed/purpose`; an unchecked box means off). All are plain forms, so they work without `app.js`.
+`GET /settings/feed` is the **Calendar feed** section (`settings.feed`), after Team dispatch. It shows whether the feed is on and since when, the revision, **New URL** (`POST /settings/feed/create` while off, `/settings/feed/rotate` while on), **Turn off** (`POST /settings/feed/disable`, only while on) and the include-purpose checkbox (`POST /settings/feed/purpose`; an unchecked box means off). All are plain forms, so they work without `app.js`.
 
 - New URL answers `200` with the same page, showing the minted URL once in a read-only field. Turn off and the purpose form answer `303` to `/settings/feed`.
 - JSON: `GET /api/settings/feed` returns `ScheduleFeed`. `POST /api/settings/feed/(create|rotate|disable|purpose)` takes `{ requestId, expectedRevision[, includePurpose] }` with the CSRF header and returns `FeedReceipt`.

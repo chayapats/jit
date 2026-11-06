@@ -58,9 +58,8 @@ async function fixture() {
   const app = new Application(store, config, { now: () => epoch, backupDir: backups, connections: vault });
   const web = createWebHandler(app);
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
-  const telegramActor = app.issueAdapterActor(token, "telegram");
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: app.workspace(auth.actor).revision, payload: { name: "โครงการ connection" } }).project;
-  return { root, state, backups, execution, secrets, config, store, vault, app, web, token, auth, telegramActor, project };
+  return { root, state, backups, execution, secrets, config, store, vault, app, web, token, auth, project };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const run = (f: Fixture, command: ConnectionCommand, actor: OwnerActor = f.auth.actor): ConnectionReceipt => f.app.execute(actor, command);
@@ -124,12 +123,12 @@ test("lifecycle: create, set, rotate, test and remove keep the value in a 0600 f
   rejects(() => create(f, [rid()]), "project_not_found", 404);
 });
 
-test("every command and the list are Web only: Telegram and the local API get connection_requires_web", async () => {
+test("every command and the list are Web only: the local API gets connection_requires_web", async () => {
   const f = await fixture();
   const id = create(f).connection.id;
   f.app.execute(f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: f.app.localApi(f.auth.actor).revision, payload: { enabled: true } });
   const local = f.app.issueLocalApiActor()!.actor;
-  for (const actor of [f.telegramActor, local]) {
+  for (const actor of [local]) {
     rejects(() => create(f, null, actor), "connection_requires_web", 403);
     rejects(() => withSecret(f, "connection.set_secret", id, secretValue("tg"), 1, actor), "connection_requires_web", 403);
     rejects(() => withSecret(f, "connection.rotate", id, secretValue("tg"), 1, actor), "connection_requires_web", 403);

@@ -1,4 +1,4 @@
-import type { HostImageOptions, ImageContent, HostAttemptEffort, HostAuthFetch, HostAuthStatusCode, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, HostRouteRenewal, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
+import type { HostImageOptions, HostSteerInput, HostSteerResult, HostSteeringReport, ImageContent, HostAttemptEffort, HostAuthFetch, HostAuthStatusCode, HostClock, HostCredentialLifecycle, HostCredentialStore, HostProviderRequests, HostRouteRenewal, Model, ModelUsage, ThinkingLevel, ToolDefinition } from 'schway/host';
 import type { BudgetVector, Ref, Selection, S15PolicyService, Usage, WorkActor } from '../policy';
 
 /** Protected approved route binding. Account/billing/recipient identities are exact refs, never labels
@@ -114,7 +114,20 @@ export interface ModelBudgetView {
 /** Trusted caller hooks for one step. They can only refuse a call, never widen MODEL/POLICY limits.
  * `beforeCall` runs synchronously once per physical send (route models: inside Schway's dispatch authorizer,
  * auth-retry resends included), immediately before that send's POLICY reservation. */
-export interface ModelStepHooks { beforeCall(): void; images?: { options: HostImageOptions; beforeSend(data: ReadonlyMap<string, Uint8Array>): void } }
+export interface ModelStepHooks { beforeCall(): void; images?: { options: HostImageOptions; beforeSend(data: ReadonlyMap<string, Uint8Array>): void }; steering?: ModelStepSteering }
+/**
+ * CHAT16-02 live steering seam over `schway.host.steering/v1`. `open` is called once, when the admitted run's first
+ * model send is authorized (Schway accepts steers only after the input is durably appended); the function it receives
+ * hands one owner steer to that run. `settle` is called exactly once with the run's exact disposition, or `null` when
+ * the run never produced one (a rejected submit or a failure before any send), in which case every steer handed to
+ * it is uncertain.
+ */
+/** The exact steering report a rejected admitted run attaches to its error, when the engine supplied one. */
+export function steeringReportOf(error: unknown): HostSteeringReport | null {
+  const report = error && typeof error === "object" ? (error as { steering?: unknown }).steering : undefined;
+  return report && typeof report === "object" && Array.isArray((report as HostSteeringReport).applied) && Array.isArray((report as HostSteeringReport).unapplied) && Array.isArray((report as HostSteeringReport).uncertain) ? report as HostSteeringReport : null;
+}
+export interface ModelStepSteering { open(steer: (input: HostSteerInput) => HostSteerResult): void; settle(report: HostSteeringReport | null): void }
 /** Host-only step execution; Schway owns the loop/retries/compaction and Jit never refreshes credentials. */
 export interface ModelService {
   /** `hooks.beforeCall` is the caller's own durable per-model-call ceiling (for example CHAT's

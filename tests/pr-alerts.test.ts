@@ -37,8 +37,7 @@ import {
   type PrMonitor,
 } from "../src/pr";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
-import { ScriptedTelegramSender, DeliveryWorker, commitDeliveryIntent, readDeliveryIntent } from "../src/delivery";
-import { TelegramChannel } from "../src/telegram";
+import { commitDeliveryIntent, readDeliveryIntent } from "../src/delivery";
 import { createWebHandler } from "../src/web";
 import { containsCredential, redactCredentials } from "../src/security/credentials";
 import { neutralizeDestinations } from "../src/security/destinations";
@@ -53,10 +52,8 @@ const sha = (n: number) => n.toString(16).padStart(40, "0");
 const roots: string[] = [];
 const stores: TransactionStore[] = [];
 const queues: JobQueue[] = [];
-const workers: DeliveryWorker[] = [];
 
 afterEach(async () => {
-  for (const w of workers.splice(0)) { try { w.close(); } catch { /* already closed */ } }
   for (const queue of queues.splice(0)) { queue.close(); await queue.idle(); }
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -107,7 +104,7 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   const root = mkdtempSync(join(tmpdir(), "jit-pr-alerts-"));
   roots.push(root);
   const path = join(root, "app.sqlite");
-  const config = readConfig({ JIT_DATABASE: path, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing-bot.token") });
+  const config = readConfig({ JIT_DATABASE: path });
   const store = new TransactionStore(path);
   stores.push(store);
   const clock = new Clock();
@@ -126,13 +123,12 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   await app.setupOwner(password);
   const token = await app.login(password);
   const auth = app.authenticate(token);
-  if (level) app.execute(auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level } });
+  if (level) app.execute(auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "web", level } });
   const project = app.execute(auth.actor, {
     kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
     expectedRevision: 0, payload: { name: "โครงการ alerts" },
   }).project;
-  const sender = new ScriptedTelegramSender();
-  return { root, path, store, clock, queue, app, project, token, auth, github, fixtures, port, config, sender };
+  return { root, path, store, clock, queue, app, project, token, auth, github, fixtures, port, config };
 }
 
 type F = Awaited<ReturnType<typeof fixture>>;
@@ -186,17 +182,17 @@ function prepareReport(f: F, monitor?: PrMonitor) {
   })();
 }
 
-function bindTelegram(f: F, userId = 42, chatId = 77) {
-  const channel = new TelegramChannel(f.store, f.config, { now: () => f.clock.now });
-  const authed = channel.authenticate(f.token);
-  const current = channel.status(authed).binding;
-  const pending = channel.execute(authed, {
-    kind: "telegram.bind", requestId: crypto.randomUUID(), expectedRevision: current.revision,
-    payload: { telegramUserId: userId, telegramChatId: chatId },
-  });
-  channel.execute(authed, {
-    kind: "telegram.confirm", requestId: crypto.randomUUID(), expectedRevision: pending.binding.revision,
-    payload: { telegramUserId: userId, telegramChatId: chatId, challengeNonce: pending.binding.challengeNonce! },
+/**
+ * Rewrites one intent as the push transport removed in ADR 0085 would have left it, so stored legacy outcomes
+ * (sent, failed, unknown) can be exercised. Nothing in this runtime produces these states any more.
+ */
+function markLegacy(f: F, intentId: string, outcome: "sent" | "failed" | "unknown") {
+  f.store.transaction(tx => {
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", intentId)!.record_json);
+    const patch = outcome === "sent" ? { status: "sent", remote: "accepted", nextAction: "inspect_sent_message", messageRef: { chatId: 77, messageId: 1 } }
+      : outcome === "failed" ? { status: "failed", remote: "rejected", failureReason: "destination_rejected", nextAction: "inspect_failure" }
+      : { status: "unknown", remote: "uncertain", failureReason: "unknown_transport", nextAction: "inspect_unknown_then_explicit_resend" };
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify({ ...row, ...patch, revision: row.revision + 1 }), intentId);
   });
 }
 
@@ -227,7 +223,7 @@ test("logical alert keys: replay dedupes to one intent", async () => {
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_intents")!.n)).toBe(1);
 });
 
-test("recheck-before-send: close/revoke/revision/owner-rotation suppress", async () => {
+test("admission rechecks: close/revoke/revision/owner-rotation suppress", async () => {
   // close
   {
     const f = await fixture();
@@ -322,16 +318,12 @@ test("payload hygiene: no secrets or PR destinations", async () => {
 
 test("read-model states: unknown delivery never delivered on outage", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const { report } = await prepareReport(f);
   const admitted = f.store.transaction(tx => admitReportAlerts(tx, { projectId: f.project.id, reportId: report.id }, f.clock.now));
   expect(admitted.admitted).toHaveLength(1);
   const intentId = admitted.admitted[0]!.intent.id;
-  f.sender.scripts = ["timeout_after_accept"];
-  const worker = new DeliveryWorker(f.store, { sender: f.sender, now: () => f.clock.now });
-  workers.push(worker);
-  const pumped = worker.pump();
-  expect(pumped[0]).toMatchObject({ status: "unknown", remote: "uncertain" });
+  // An outcome left unknown by the removed push transport (ADR 0085).
+  markLegacy(f, intentId, "unknown");
   // Read model keeps report available and delivery unknown, never delivered.
   const detail = f.app.delivery(f.auth.actor, f.project.id, intentId);
   expect(detail.intent.status).toBe("unknown");
@@ -349,8 +341,6 @@ test("read-model states: unknown delivery never delivered on outage", async () =
   expect(json.alerts[0].status).toBe("unknown");
   const html = await (await web(req(`/projects/${f.project.id}/pr/reports/${report.id}`))).text();
   expect(html).toContain("unknown");
-  expect(f.sender.calls).toBe(1);
-  worker.close(); workers.pop();
   // Reopen keeps correct status after restart.
   const reopened = new TransactionStore(f.path); stores.push(reopened);
   const app2 = new Application(reopened, f.config, { now: () => f.clock.now });
@@ -371,7 +361,6 @@ test("partial report still alerts with warning; web shows partial scope", async 
     ...fixtureOutcome("complete", partialJson),
     usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
   }));
-  bindTelegram(f);
   const monitor = enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 5, base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
@@ -440,11 +429,6 @@ const projectRevision = (f: F) => f.store.read(tx => tx.get<{ revision: number }
 const intentsOf = (f: F) => f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence").map(r => JSON.parse(r.record_json) as ReturnType<typeof readDeliveryIntent>));
 const resetCheckpoint = (f: F, monitorId: string) => f.store.transaction(tx => tx.run("UPDATE pr_poll_checkpoints SET record_json = ? WHERE monitor_id = ?",
   JSON.stringify({ monitorId, updatedAt: f.clock.now, complete: false, nextPage: 1, etag: null, lastSeenUpdatedAt: null, reason: null }), monitorId));
-function worker(f: F) {
-  const w = new DeliveryWorker(f.store, { sender: f.sender, now: () => f.clock.now });
-  workers.push(w);
-  return w;
-}
 function setPolicy(f: F, expectedRevision: number, payload: { allowedCategories: ("correctness" | "security" | "behavior")[]; minimumSeverity: "info" | "low" | "medium" | "high" | "critical"; notifyPartial: boolean }, requestId: string = crypto.randomUUID()) {
   return f.app.execute(f.auth.actor, { kind: "pr.alert_policy.set", requestId, projectId: f.project.id, expectedRevision, payload });
 }
@@ -458,7 +442,7 @@ function enqueueReview(f: F, monitorId: string, candidateId: string) {
 
 for (const level of [null, "needs-me"] as const) test(`needs-me: owner-configured PR finding alerts notify once (saved=${level !== null})`, async () => {
   const f = await fixture(undefined, level);
-  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: level ? 1 : 0 });
+  expect(f.app.attentionLevels(f.auth.actor).web).toMatchObject({ level: "needs-me", revision: level ? 1 : 0 });
   const { report } = await prepareReport(f);
   expect(intentsOf(f)).toHaveLength(1);
   expect(intentsOf(f)[0]).toMatchObject({ attention: { class: "needs_owner" } });
@@ -472,7 +456,7 @@ test("report commit admits alerts transactionally with a stored decision; duplic
   // No manual admit call: the pr.review commit produced the intent, link, persisted policy and decision.
   const intents = intentsOf(f);
   expect(intents).toHaveLength(1);
-  expect(intents[0]).toMatchObject({ status: "waiting", nextAction: "wait_for_channel_binding", guard: "pr-alert", stale: false });
+  expect(intents[0]).toMatchObject({ status: "waiting", nextAction: "in_app_only", guard: "pr-alert", stale: false });
   expect(intents[0]!.dedupeKey).toBe(alertKey(report, { id: "finding-1" }, 1));
   const policy = f.store.read(tx => readAlertPolicy(tx, f.project.id));
   expect(policy).toMatchObject({ version: 1, persisted: true, requireEvidence: true, requireActionable: true, minimumSeverity: "info", notifyPartial: true });
@@ -549,34 +533,16 @@ test("admission failure never loses the committed report or faults the queue", a
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_reports")!.n)).toBe(0);
 });
 
-test("send-time recheck: admission then drift then send attempt never sends a stale alert", async () => {
-  // Hook-free drift (closed directly in storage) is caught by the outbox guard immediately before send.
+test("domain events retire pending alert intents; a legacy sent alert keeps its outcome and is only marked stale", async () => {
+  // New revision via poll: the supersede hook retires the pending intent.
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { candidate } = await prepareReport(f);
-    expect(intentsOf(f)[0]!.status).toBe("queued");
-    f.store.transaction(tx => {
-      const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE id = ?", candidate.id)!.record_json);
-      row.status = "closed"; row.state = "closed";
-      tx.run("UPDATE pr_candidates SET status = 'closed', record_json = ? WHERE id = ?", JSON.stringify(row), candidate.id);
-    });
-    const results = worker(f).pump();
-    expect(results).toHaveLength(0);
-    expect(f.sender.calls).toBe(0);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "pr_closed", remote: "none" });
-  }
-  // New revision via poll: supersede hook retires the pending intent; send is never attempted.
-  {
-    const f = await fixture();
-    bindTelegram(f);
     const { report, monitor, conn } = await prepareReport(f);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "waiting", nextAction: "in_app_only" });
     f.github.pulls = [fixturePull({ number: 1, base: { sha: sha(1), ref: "main" }, head: { sha: sha(99), ref: "feat" } })];
     resetCheckpoint(f, monitor.id);
     f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
     expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "candidate_superseded" });
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
     const view = f.app.prReport(f.auth.actor, f.project.id, report.id);
     expect(view.report.stale).toBe(true);
     const web = createWebHandler(f.app);
@@ -584,122 +550,28 @@ test("send-time recheck: admission then drift then send attempt never sends a st
     expect(html).toContain('data-state="stale"');
     expect(html).toContain("ไม่ใช่ผลล่าสุด");
   }
-  // Revoked monitoring retires; paused monitoring holds until resume, then sends once.
+  // Revoke retires the pending intent.
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { monitor } = await prepareReport(f);
-    f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.pause", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f), payload: { monitorId: monitor.id } }, f.clock.now));
-    const w = worker(f);
-    expect(w.pump()).toHaveLength(0);
-    expect(f.sender.calls).toBe(0);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "waiting", nextAction: "wait_for_current_source", stale: false });
-    f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f), payload: { monitorId: monitor.id } }, f.clock.now));
-    f.clock.now += 120_000; // the paused claim's lease expires before the next claim
-    const sent = w.pump();
-    expect(sent.map(i => i.status)).toEqual(["sent"]);
-    expect(f.sender.calls).toBe(1);
-    // Revoke after send keeps the sent outcome but marks it visibly stale.
-    f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.revoke", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f), payload: { monitorId: monitor.id } }, f.clock.now));
-    expect(intentsOf(f)[0]).toMatchObject({ status: "sent", remote: "accepted", stale: true, staleReason: "monitoring_revoked" });
-  }
-  // Revoke before send retires the pending intent.
-  {
-    const f = await fixture();
-    bindTelegram(f);
     const { monitor } = await prepareReport(f);
     f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.revoke", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f), payload: { monitorId: monitor.id } }, f.clock.now));
     expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "monitoring_revoked" });
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
   }
-  // Waiting for a channel, then drift, then binding: the late-bound channel never receives the old alert.
+  // Revoke after a legacy send keeps the sent outcome but marks it visibly stale.
   {
     const f = await fixture();
-    const { candidate } = await prepareReport(f);
-    expect(intentsOf(f)[0]!.status).toBe("waiting");
-    f.store.transaction(tx => {
-      const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE id = ?", candidate.id)!.record_json);
-      row.status = "superseded";
-      tx.run("UPDATE pr_candidates SET status = 'superseded', record_json = ? WHERE id = ?", JSON.stringify(row), candidate.id);
-    });
-    bindTelegram(f);
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "candidate_superseded" });
+    const { monitor } = await prepareReport(f);
+    markLegacy(f, intentsOf(f)[0]!.id, "sent");
+    f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.revoke", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f), payload: { monitorId: monitor.id } }, f.clock.now));
+    expect(intentsOf(f)[0]).toMatchObject({ status: "sent", remote: "accepted", stale: true, staleReason: "monitoring_revoked" });
   }
-  // New revision lands while the send is in flight: the accepted result stays recorded but is stale.
-  {
-    const f = await fixture();
-    bindTelegram(f);
-    const { monitor, conn } = await prepareReport(f);
-    let fired = false;
-    f.sender.hook = () => {
-      if (fired) return;
-      fired = true;
-      f.github.pulls = [fixturePull({ number: 1, base: { sha: sha(1), ref: "main" }, head: { sha: sha(77), ref: "feat" } })];
-      resetCheckpoint(f, monitor.id);
-      f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
-    };
-    const [result] = worker(f).pump();
-    expect(result).toMatchObject({ status: "sent", remote: "accepted", stale: true, staleReason: "candidate_superseded" });
-    expect(f.sender.calls).toBe(1);
-  }
-});
-
-test("restart keeps unknown delivery and the reopened worker still rechecks before send", async () => {
-  const f = await fixture();
-  bindTelegram(f);
-  const { report } = await prepareReport(f);
-  f.sender.scripts = ["timeout_after_accept"];
-  const w = worker(f);
-  expect(w.pump()[0]).toMatchObject({ status: "unknown", remote: "uncertain" });
-  w.close(); workers.pop();
-  const reopened = new TransactionStore(f.path); stores.push(reopened);
-  const app2 = new Application(reopened, f.config, { now: () => f.clock.now });
-  const actor2 = app2.authenticate(f.token).actor;
-  expect(app2.prReport(actor2, f.project.id, report.id).alerts[0]).toMatchObject({ status: "unknown", remote: "uncertain" });
-  expect(JSON.stringify(app2.prReport(actor2, f.project.id, report.id).alerts).toLowerCase()).not.toContain("delivered");
-  // Unknown is never resent automatically after restart.
-  const w2 = new DeliveryWorker(reopened, { sender: f.sender, now: () => f.clock.now }); workers.push(w2);
-  expect(w2.pump()).toHaveLength(0);
-  expect(f.sender.calls).toBe(1);
-  w2.close(); workers.pop();
-
-  // A queued alert that drifts while the service is down is retired by the reopened worker, never sent.
-  const g = await fixture();
-  bindTelegram(g);
-  const { candidate } = await prepareReport(g);
-  expect(intentsOf(g)[0]!.status).toBe("queued");
-  g.store.transaction(tx => {
-    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE id = ?", candidate.id)!.record_json);
-    row.status = "closed"; row.state = "closed";
-    tx.run("UPDATE pr_candidates SET status = 'closed', record_json = ? WHERE id = ?", JSON.stringify(row), candidate.id);
-  });
-  g.queue.close(); await g.queue.idle(); queues.splice(queues.indexOf(g.queue), 1);
-  g.store.close(); stores.splice(stores.indexOf(g.store), 1);
-  const back = new TransactionStore(g.path); stores.push(back);
-  const w3 = new DeliveryWorker(back, { sender: g.sender, now: () => g.clock.now }); workers.push(w3);
-  expect(w3.pump()).toHaveLength(0);
-  expect(g.sender.calls).toBe(0);
-  expect(back.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents")!.record_json))).toMatchObject({ status: "cancelled", stale: true, staleReason: "pr_closed" });
-});
-
-test("unregistered delivery guard fails closed: the intent waits instead of sending", async () => {
-  const f = await fixture();
-  bindTelegram(f);
-  f.store.transaction(tx => commitDeliveryIntent(tx, { projectId: f.project.id, kind: "report", text: "guarded fixture", dedupeKey: "guarded/fixture-0001", maxBytes: 4000, guard: "unregistered-x" }, f.clock.now));
-  expect(worker(f).pump()).toHaveLength(0);
-  expect(f.sender.calls).toBe(0);
-  expect(intentsOf(f)[0]).toMatchObject({ status: "waiting", nextAction: "wait_for_current_source" });
 });
 
 test("versioned owner-adjustable policy: persisted revisions, retire, re-evaluate, no duplicate notification", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const { report } = await prepareReport(f);
   const first = intentsOf(f)[0]!;
-  expect(first.status).toBe("queued");
+  expect(first.status).toBe("waiting");
   // Evidence/actionability cannot be disabled and non-notifiable categories are rejected.
   expect(() => setPolicy(f, 1, { allowedCategories: ["style" as "security"], minimumSeverity: "info", notifyPartial: true })).toThrow("invalid_alert_policy");
   expect(() => f.app.execute(f.auth.actor, { kind: "pr.alert_policy.set", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: 1,
@@ -720,13 +592,11 @@ test("versioned owner-adjustable policy: persisted revisions, retire, re-evaluat
   const v3 = setPolicy(f, 2, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "critical", notifyPartial: true });
   expect(v3.decisions[0]!.findings.find(d => d.findingId === "finding-1")).toMatchObject({ decision: "held", reason: "severity_below_minimum" });
   expect(v3.decisions[0]!.findings.find(d => d.findingId === "finding-3")!.decision).toBe("held");
-  // v4: back to defaults -> one new logical intent for finding-1, sent once.
+  // v4: back to defaults -> one new logical intent for finding-1.
   const v4 = setPolicy(f, 3, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "info", notifyPartial: true });
   expect(v4.decisions[0]!.findings.find(d => d.findingId === "finding-1")!.decision).toBe("notified");
   const second = intentsOf(f)[1]!;
   expect(second.dedupeKey).toBe(alertKey(report, { id: "finding-1" }, 4));
-  const w = worker(f);
-  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
   // v5: unchanged categories -> finding-1 is already notified; no duplicate intent.
   const v5 = setPolicy(f, 4, { allowedCategories: ["security", "correctness", "behavior"], minimumSeverity: "low", notifyPartial: false });
   expect(v5.decisions[0]!.findings.find(d => d.findingId === "finding-1")).toMatchObject({ decision: "already_notified", intentId: second.id });
@@ -748,12 +618,11 @@ test("versioned owner-adjustable policy: persisted revisions, retire, re-evaluat
   expect(list).toContain("นโยบายแจ้งเตือน v6");
 });
 
-test("dismissal feeds admission and send without rewriting evidence or learning facts", async () => {
+test("dismissal feeds admission without rewriting evidence or learning facts", async () => {
   // Whole-report dismissal retires the pending alert and later admission suppresses.
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
+      const { report } = await prepareReport(f);
     const memoryBefore = f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n);
     const decisionId = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!.id;
     const receipt = f.app.execute(f.auth.actor, {
@@ -766,8 +635,6 @@ test("dismissal feeds admission and send without rewriting evidence or learning 
     expect(again.admitted).toHaveLength(0);
     expect(again.suppressed[0]!.reason).toBe("report_dismissed");
     expect(again.decision.suppressedReason).toBe("report_dismissed");
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
     const after = f.app.prReport(f.auth.actor, f.project.id, report.id);
     expect(JSON.stringify(after.report.findings)).toBe(JSON.stringify(report.findings));
     expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n)).toBe(memoryBefore);
@@ -775,8 +642,7 @@ test("dismissal feeds admission and send without rewriting evidence or learning 
   // Finding-level dismissal through the web form; unknown findings are rejected.
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
+      const { report } = await prepareReport(f);
     expect(() => f.app.execute(f.auth.actor, {
       kind: "pr.report.dismiss", requestId: crypto.randomUUID(), projectId: f.project.id,
       expectedRevision: report.revision, payload: { reportId: report.id, reason: "x", findingId: "finding-404" },
@@ -793,8 +659,6 @@ test("dismissal feeds admission and send without rewriting evidence or learning 
     const again = f.app.admitPrAlerts(f.auth.actor, f.project.id, report.id);
     expect(again.held.find(h => h.findingId === "finding-1")!.reason).toBe("finding_dismissed");
     expect(f.app.prReport(f.auth.actor, f.project.id, report.id).annotations[0]).toMatchObject({ kind: "dismiss", findingId: "finding-1" });
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
   }
 });
 
@@ -817,7 +681,7 @@ test("payload carries a service-owned report link, redacts PR-supplied destinati
   expect(stored).toContain("ผลกระทบ: crash");
 });
 
-test("web separates not-reviewed, running, no-findings and delivery queued/sent/failed", async () => {
+test("web separates not-reviewed, running, no-findings and delivery waiting/sent/failed", async () => {
   const clean = JSON.stringify({
     findings: [{ id: "finding-1", title: "nit", category: "style", severity: "low", location: { path: "a.ts", line: 1 }, condition: "c", impact: "i", reasoning: "r", evidenceType: "diff", evidenceRef: "a.ts" }],
     analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
@@ -846,20 +710,17 @@ test("web separates not-reviewed, running, no-findings and delivery queued/sent/
   }
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
+      const { report } = await prepareReport(f);
     const web = createWebHandler(f.app);
     const get = async () => (await web(new Request(`http://localhost:3000/projects/${f.project.id}/pr/reports/${report.id}`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
-    expect(await get()).toContain('data-delivery="queued"');
-    f.sender.scripts = ["reject"];
-    worker(f).pump();
+    expect(await get()).toContain('data-delivery="waiting"');
+    markLegacy(f, intentsOf(f)[0]!.id, "failed");
     expect(await get()).toContain('data-delivery="failed"');
   }
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
-    worker(f).pump();
+      const { report } = await prepareReport(f);
+    markLegacy(f, intentsOf(f)[0]!.id, "sent");
     const html = await (await createWebHandler(f.app)(new Request(`http://localhost:3000/projects/${f.project.id}/pr/reports/${report.id}`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
     expect(html).toContain('data-delivery="sent"');
     expect(html).toContain('data-state="findings"');
@@ -894,7 +755,6 @@ test("shared credential detector: provider tokens never reach findings, outbox, 
   expect(containsCredential("returns the token count for the session")).toBe(false);
   const token = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789";
   const f = await fixture(scripted(oneFinding({ condition: `config sets ${token} in a.ts` })));
-  bindTelegram(f);
   const { report } = await prepareReport(f);
   expect(report.findings[0]).toMatchObject({ status: "suspected" });
   expect(report.findings[0]!.validationErrors).toContain("payload_hygiene_secret");
@@ -940,7 +800,6 @@ test("repeated finding IDs are canonicalized before persistence and never cancel
     analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
   });
   const f = await fixture(scripted(dup));
-  bindTelegram(f);
   const { report } = await prepareReport(f);
   expect(report.findings.map(x => x.id)).toEqual(["dup-1", "dup-1-dup2", "dup-1-dup3"]);
   // Each copy keeps its own validated status; the group identity is persisted.
@@ -953,21 +812,16 @@ test("repeated finding IDs are canonicalized before persistence and never cancel
   // Raising the floor above the duplicate's severity does not affect the canonical alert.
   setPolicy(f, 1, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "medium", notifyPartial: true });
   expect(intentsOf(f)).toHaveLength(1);
-  expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
-  expect(f.sender.calls).toBe(1);
+  expect(intentsOf(f)[0]!.status).toBe("waiting");
 
-  // A legacy stored report that still repeats an ID holds every copy and never sends.
+  // A legacy stored report that still repeats an ID holds every copy.
   const g = await fixture();
-  bindTelegram(g);
   const { report: legacy } = await prepareReport(g);
   g.store.transaction(tx => {
     const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE id = ?", legacy.id)!.record_json);
     row.findings = [{ ...row.findings[0], severity: "low", status: "suspected", validationErrors: ["category_not_actionable"] }, row.findings[0]];
     tx.run("UPDATE pr_reports SET record_json = ? WHERE id = ?", JSON.stringify(row), legacy.id);
   });
-  worker(g).pump();
-  expect(g.sender.calls).toBe(0);
-  expect(intentsOf(g)[0]).toMatchObject({ status: "cancelled", staleReason: "duplicate_finding_id" });
   const again = g.app.admitPrAlerts(g.auth.actor, g.project.id, legacy.id);
   expect(again.held.filter(h => h.reason === "duplicate_finding_id")).toHaveLength(2);
 });
@@ -1023,43 +877,24 @@ test("legacy guardless pr-alert intents fail closed: verifiable ones are backfil
     repository: r.repository, pullNumber: r.pullNumber, baseSha: r.baseSha, headSha: r.headSha, policyVersion: r.policyVersion, reportId: r.id,
     finding: r.findings.find(x => x.id === "finding-1")!, coverageOverall: r.coverageOverall, enumerationComplete: r.enumerationComplete,
   });
-  // Unverifiable text (not what the sanitized builder produces) is cancelled, never sent.
+  // Unverifiable text (not what the sanitized builder produces) is cancelled visibly by the boot sweep.
   {
     const f = await fixture();
-    bindTelegram(f);
-    await prepareReport(f);
+      await prepareReport(f);
     const intent = intentsOf(f)[0]!;
     legacyize(f, intent.id, `${intent.payload.text}\nดู evil.com/phish`);
     expect(intentsOf(f)[0]!.guard).toBeUndefined();
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "legacy_alert_unverifiable", guard: "pr-alert" });
+    expect(f.store.transaction(tx => quarantineLegacyPrAlerts(tx, f.clock.now))).toEqual([intent.id]);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "legacy_alert_unverifiable" });
   }
-  // Verifiable but stale: the reviewer's repro now cancels instead of sending.
+  // Verifiable and current: backfilled with a link and kept.
   {
     const f = await fixture();
-    bindTelegram(f);
-    const { report, candidate } = await prepareReport(f);
+      const { report } = await prepareReport(f);
     const intent = intentsOf(f)[0]!;
     legacyize(f, intent.id, legacyText(report));
-    f.store.transaction(tx => {
-      const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE id = ?", candidate.id)!.record_json);
-      row.status = "superseded";
-      tx.run("UPDATE pr_candidates SET status = 'superseded', record_json = ? WHERE id = ?", JSON.stringify(row), candidate.id);
-    });
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "candidate_superseded" });
-  }
-  // Verifiable and current: backfilled with a link and guard, then sent once.
-  {
-    const f = await fixture();
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
-    const intent = intentsOf(f)[0]!;
-    legacyize(f, intent.id, legacyText(report));
-    expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
-    expect(intentsOf(f)[0]!.guard).toBe("pr-alert");
+    expect(f.store.transaction(tx => quarantineLegacyPrAlerts(tx, f.clock.now))).toEqual([]);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "waiting", stale: false });
     expect(f.store.read(tx => readAlertLinks(tx, report.id))[0]).toMatchObject({ intentId: intent.id, findingId: "finding-1", decisionId: "legacy-backfill" });
   }
   // New guardless pr-alert intents cannot be committed at all.
@@ -1071,30 +906,27 @@ test("legacy guardless pr-alert intents fail closed: verifiable ones are backfil
 
 test("retirement keeps a terminal failed delivery recorded and only marks it stale", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const { report, monitor, conn } = await prepareReport(f);
-  f.sender.scripts = ["reject"];
-  worker(f).pump();
+  markLegacy(f, intentsOf(f)[0]!.id, "failed");
   const before = intentsOf(f)[0]!;
-  expect(before).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected" });
+  expect(before).toMatchObject({ status: "failed", remote: "rejected", failureReason: "destination_rejected" });
   // Dismissal stops pending sends only; a settled failure is unchanged.
   f.app.execute(f.auth.actor, { kind: "pr.report.dismiss", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: report.revision, payload: { reportId: report.id, reason: "พอแล้ว" } });
-  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: false });
+  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "destination_rejected", stale: false });
   f.github.pulls = [fixturePull({ number: 1, base: { sha: sha(1), ref: "main" }, head: { sha: sha(55), ref: "feat" } })];
   resetCheckpoint(f, monitor.id);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
-  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "candidate_superseded" });
+  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "destination_rejected", stale: true, staleReason: "candidate_superseded" });
 });
 
 test("cross-attempt dedupe uses the canonical fingerprint: a reused generic ID for a different defect still alerts", async () => {
   let json = oneFinding({ location: { path: "a.ts", line: 10 }, condition: "when input empty" });
   const f = await fixture(() => scripted(json)());
-  bindTelegram(f);
   const { report, monitor, candidate } = await prepareReport(f);
   const first = intentsOf(f)[0]!;
   expect(f.store.read(tx => readAlertLinks(tx, report.id))[0]!.fingerprint).toBe(findingFingerprint(report.findings[0]!));
-  const w = worker(f);
-  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
+  // Each alert below stands for one that reached the owner (a legacy sent outcome), so a later attempt cannot retire it.
+  markLegacy(f, first.id, "sent");
   // Second attempt on the same revision: same raw ID "finding-1", different location and condition.
   json = oneFinding({ title: "off-by-one", location: { path: "a.ts", line: 20 }, condition: "when the list has one item" });
   enqueueReview(f, monitor.id, candidate.id);
@@ -1105,9 +937,8 @@ test("cross-attempt dedupe uses the canonical fingerprint: a reused generic ID f
   expect(decision.findings.find(d => d.findingId === "finding-1")!.decision).toBe("notified");
   const second = intentsOf(f).filter(i => i.id !== first.id);
   expect(second).toHaveLength(1);
-  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
-  expect(f.sender.calls).toBe(2);
-  expect(f.sender.external[1]!.text).toContain("off-by-one");
+  expect(second[0]!.payload.text).toContain("off-by-one");
+  markLegacy(f, second[0]!.id, "sent");
   // Third attempt: the same defect as the second under a fresh model ID stays already notified.
   json = oneFinding({ id: "renamed-7", title: "off-by-one again", location: { path: "a.ts", line: 20 }, condition: "When  the list has one item" });
   enqueueReview(f, monitor.id, candidate.id);
@@ -1120,13 +951,10 @@ test("cross-attempt dedupe uses the canonical fingerprint: a reused generic ID f
 
 test("a definitive failed delivery is not notified: the next review attempt alerts exactly once", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const { monitor, candidate } = await prepareReport(f);
-  f.sender.scripts = ["reject", "accept"];
-  const w = worker(f);
-  w.pump();
+  markLegacy(f, intentsOf(f)[0]!.id, "failed");
   const failed = intentsOf(f)[0]!;
-  expect(failed).toMatchObject({ status: "failed", failureReason: "telegram_rejected" });
+  expect(failed).toMatchObject({ status: "failed", failureReason: "destination_rejected" });
   enqueueReview(f, monitor.id, candidate.id);
   f.queue.pump(); await f.queue.idle();
   const retry = f.store.read(tx => tx.all<{ id: string }>("SELECT id FROM pr_reports ORDER BY rowid")).map(r => r.id)[1]!;
@@ -1134,18 +962,14 @@ test("a definitive failed delivery is not notified: the next review attempt aler
   expect(decision.findings.find(d => d.findingId === "finding-1")!.decision).toBe("notified");
   const fresh = intentsOf(f).filter(i => i.id !== failed.id);
   expect(fresh).toHaveLength(1);
-  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
-  // Re-admitting the current report replays the same intent; nothing is sent twice.
+  // Re-admitting the current report replays the same intent; nothing is duplicated.
   expect(f.app.admitPrAlerts(f.auth.actor, f.project.id, retry).admitted[0]!.created).toBe(false);
-  w.pump();
   expect(intentsOf(f)).toHaveLength(2);
-  expect(f.sender.external.filter(m => m.text.includes("finding finding-1"))).toHaveLength(1);
-  expect(intentsOf(f)[0]).toMatchObject({ id: failed.id, status: "failed", failureReason: "telegram_rejected" });
+  expect(intentsOf(f)[0]).toMatchObject({ id: failed.id, status: "failed", failureReason: "destination_rejected" });
 });
 
 test("maxFiles at a page boundary: the review is not complete, no clean/unwarned alert, Web shows the non-complete state", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const monitor = f.store.transaction(tx => {
     ensurePrSchema(tx);
     return mutateMonitor(tx, {
@@ -1225,13 +1049,12 @@ test("alert payload keeps every mandatory field at the minimum message ceiling; 
   expect(readConfig({ JIT_MESSAGE_BYTES: String(MIN_MESSAGE_BYTES) }).messageBytes).toBe(MIN_MESSAGE_BYTES);
 });
 
-test("duplicate-ID repair picks the evidence-backed representative in either order and sends it", async () => {
+test("duplicate-ID repair picks the evidence-backed representative in either order and alerts it", async () => {
   const suspected = { id: "dup-1", title: "maybe", category: "uncertain", severity: "high", location: { path: "a.ts", line: 1 }, condition: "c0", impact: "i0", reasoning: "r0", evidenceType: "none", evidenceRef: null };
   const actionable = { id: "dup-1", title: "real bug", category: "correctness", severity: "high", location: { path: "a.ts", line: 2 }, condition: "c1", impact: "i1", reasoning: "r1", evidenceType: "diff", evidenceRef: "a.ts" };
   for (const order of [[suspected, actionable], [actionable, suspected]]) {
     const f = await fixture(scripted(JSON.stringify({ findings: order, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
-    bindTelegram(f);
-    const { report } = await prepareReport(f);
+      const { report } = await prepareReport(f);
     const real = report.findings.find(x => x.title === "real bug")!;
     const maybe = report.findings.find(x => x.title === "maybe")!;
     expect(real).toMatchObject({ status: "actionable", duplicateGroup: "dup-1" });
@@ -1241,8 +1064,8 @@ test("duplicate-ID repair picks the evidence-backed representative in either ord
     const decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
     expect(decision.findings.find(d => d.findingId === real.id)!.decision).toBe("notified");
     expect(decision.findings.find(d => d.findingId === maybe.id)!.decision).toBe("held");
-    expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
-    expect(f.sender.external[0]!.text).toContain("real bug");
+    expect(intentsOf(f)).toHaveLength(1);
+    expect(intentsOf(f)[0]!.payload.text).toContain("real bug");
   }
 });
 
@@ -1265,15 +1088,13 @@ test("quarantined legacy credential-bearing intent no longer stores the credenti
     ...tx.all<{ v: string }>("SELECT record_json AS v FROM delivery_attempts"),
     ...tx.all<{ v: string }>("SELECT coalesce(content_text, '') AS v FROM source_versions"),
   ].filter(r => r.v.includes(token)).length);
-  // Pending: the send guard quarantines it at claim time.
+  // Pending: the boot sweep quarantines it.
   {
     const f = await fixture();
-    bindTelegram(f);
-    await prepareReport(f);
+      await prepareReport(f);
     plant(f, intentsOf(f)[0]!.id);
     expect(leaks(f)).toBe(3);
-    worker(f).pump();
-    expect(f.sender.calls).toBe(0);
+    expect(f.store.transaction(tx => quarantineLegacyPrAlerts(tx, f.clock.now))).toHaveLength(1);
     expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "legacy_alert_unverifiable" });
     expect(leaks(f)).toBe(0);
     expect(intentsOf(f)[0]!.payload.text).toContain("[credential-redacted]");
@@ -1281,15 +1102,13 @@ test("quarantined legacy credential-bearing intent no longer stores the credenti
   // Settled (failed): the boot sweep redacts and marks stale while keeping the honest outcome.
   {
     const f = await fixture();
-    bindTelegram(f);
-    await prepareReport(f);
-    f.sender.scripts = ["reject"];
-    worker(f).pump();
+      await prepareReport(f);
     const id = intentsOf(f)[0]!.id;
+    markLegacy(f, id, "failed");
     plant(f, id);
     const quarantined = f.store.transaction(tx => quarantineLegacyPrAlerts(tx, f.clock.now));
     expect(quarantined).toEqual([id]);
-    expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "legacy_alert_unverifiable" });
+    expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "destination_rejected", stale: true, staleReason: "legacy_alert_unverifiable" });
     expect(leaks(f)).toBe(0);
   }
 });
@@ -1302,8 +1121,7 @@ test("duplicate group picks its representative under the current policy and neve
   ];
   for (const c of cases) {
     const f = await fixture(scripted(JSON.stringify({ findings: c.findings, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
-    bindTelegram(f);
-    setPolicy(f, 1, c.policy);
+      setPolicy(f, 1, c.policy);
     const { report } = await prepareReport(f);
     expect(report.findings.map(x => x.status)).toEqual(["actionable", "actionable"]);
     expect(intentsOf(f)).toHaveLength(1);
@@ -1312,9 +1130,7 @@ test("duplicate group picks its representative under the current policy and neve
     let decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
     expect(decision.findings.find(d => d.findingId === winner.id)!.decision).toBe("notified");
     expect(decision.findings.find(d => d.findingId === loser.id)!.decision).toBe("held");
-    const w = worker(f);
-    expect(w.pump().map(i => i.status)).toEqual(["sent"]);
-    expect(f.sender.external[0]!.text).toContain(c.winner);
+    expect(intentsOf(f)[0]!.payload.text).toContain(c.winner);
     // Policy change to defaults makes both copies pass: the live copy stays the representative, no second alert.
     const receipt = setPolicy(f, 2, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "info", notifyPartial: true });
     decision = receipt.decisions[0]!;
@@ -1322,8 +1138,6 @@ test("duplicate group picks its representative under the current policy and neve
     expect(decision.findings.find(d => d.findingId === loser.id)).toMatchObject({ decision: "held", reason: "duplicate_finding_id" });
     expect(receipt.retiredIntentIds).toEqual([]);
     expect(intentsOf(f)).toHaveLength(1);
-    w.pump();
-    expect(f.sender.calls).toBe(1);
   }
   // Pending (unsent) representative also survives a policy change without churn or a second intent.
   const f = await fixture(scripted(JSON.stringify({ findings: [copy("low copy", "low"), copy("critical copy", "critical")], analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
@@ -1337,11 +1151,9 @@ test("duplicate group picks its representative under the current policy and neve
 
 test("service bootstrap quarantines legacy alerts before the queue or server is constructed", async () => {
   const f = await fixture();
-  bindTelegram(f);
   await prepareReport(f);
-  f.sender.scripts = ["reject"];
-  worker(f).pump();
   const id = intentsOf(f)[0]!.id;
+  markLegacy(f, id, "failed");
   f.store.transaction(tx => {
     tx.run("DELETE FROM pr_alerts WHERE intent_id = ?", id);
     const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", id)!.record_json);
@@ -1360,18 +1172,15 @@ test("service bootstrap quarantines legacy alerts before the queue or server is 
   expect(serveStart).toBeGreaterThan(-1);
   expect(prepared).toBeGreaterThan(serveStart);
   // The queue is composed through the managed service lifecycle (ops.schema_migrations/v1).
-  for (const later of ["ManagedService.forConfig(store", "ServiceChannels.start(", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
+  for (const later of ["ManagedService.forConfig(store", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
 });
 
 test("snapshot retirement retires alerts; backup images classify the alert tables", async () => {
   const f = await fixture();
-  bindTelegram(f);
   const { candidate } = await prepareReport(f);
   // Every lazily created PR/alert table is classified, so a backup image can be captured.
   const image = f.store.read(tx => captureBackupImage(tx, f.store));
   expect(image).toBeTruthy();
   f.store.transaction(tx => retirePrSnapshot(tx, f.project.id, candidate.id, f.clock.now));
   expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "source_retired" });
-  worker(f).pump();
-  expect(f.sender.calls).toBe(0);
 });

@@ -49,12 +49,6 @@ export interface ServiceConfig {
   /** Chat attachment ingestion defaults on; an explicit value overrides the environment and renders as JIT_ATTACHMENTS. */
   attachmentsEnabled?: boolean;
   /**
-   * Opt-in channels. `telegram: "enabled"` requires the `telegram-bot-token`
-   * credential-file reference and a supported transport; otherwise startup
-   * fails closed. Default disabled: no delivery worker or poller starts.
-   */
-  channels?: { telegram: "disabled" | "enabled" };
-  /**
    * Operator execution-box configuration (`ops.execution_config/v1`).
    * Rendered as `JIT_EXECUTION_*` / `JIT_BOX_*` environment variables.
    */
@@ -73,8 +67,6 @@ export function readServiceConfigFile(path: string): ServiceConfig {
   return parseServiceConfig(JSON.parse(readFileSync(file, "utf8")));
 }
 
-/** Secret reference name the Telegram channel reads its bot token through. */
-export const telegramSecretRef = "telegram-bot-token";
 /** systemd unit name managed by the operator commands. */
 export const serviceUnitName = "jit.service";
 /** journald namespace that bounds Jit log size and retention. */
@@ -254,13 +246,12 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
     parsed.runPort = c.runPort as "scripted" | "schway";
   }
   if (c.channels !== undefined) {
+    // Installed configs written before ADR 0085 may still carry `channels: { telegram: "disabled" | "enabled" }`.
+    // The Telegram channel is gone: the field is accepted so those installations keep starting, and it is ignored.
     const ch = c.channels as Record<string, unknown>;
     if (!ch || typeof ch !== "object" || Array.isArray(ch)) fail();
     keysWithin(ch, ["telegram"], []);
     if (ch.telegram !== "disabled" && ch.telegram !== "enabled") fail();
-    // An enabled channel must name its credential reference up front; there is no plaintext or prompt fallback.
-    if (ch.telegram === "enabled" && !secretRefs.some(ref => ref.name === telegramSecretRef && ref.store === "credential-file")) fail();
-    parsed.channels = { telegram: ch.telegram as "disabled" | "enabled" };
   }
   if (c.execution !== undefined) {
     const e = c.execution as Record<string, unknown>;
@@ -310,7 +301,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
       maxBoxes, memoryMb, cpus, pidsLimit, idleMinutes, registryHosts, fullAllowed };
   }
   if (c.runtime !== undefined || c.s14 !== undefined) {
-    if (c.runtime !== "s14" || !c.s14 || typeof c.s14 !== "object" || Array.isArray(c.s14) || c.execution !== undefined || c.channels && parsed.channels?.telegram !== "disabled") fail();
+    if (c.runtime !== "s14" || !c.s14 || typeof c.s14 !== "object" || Array.isArray(c.s14) || c.execution !== undefined) fail();
     const s = c.s14 as Record<string, unknown>;
     keysWithin(s, ["vaultDirectory", "computerRoot", "gitScratch"], ["images"]);
     const paths = [s.vaultDirectory, s.computerRoot, s.gitScratch].map(absolutePath);
@@ -363,16 +354,6 @@ export function serviceOrigin(config: ServiceConfig): string {
   return `http://${host}:${config.network.port}`;
 }
 
-/** Credential-file path of the Telegram bot token reference, or null when absent. */
-export function telegramTokenPath(config: ServiceConfig): string | null {
-  return config.secretRefs.find(ref => ref.name === telegramSecretRef && ref.store === "credential-file")?.key ?? null;
-}
-
-/** True when the operator explicitly opted the Telegram channel in. */
-export function telegramEnabled(config: ServiceConfig): boolean {
-  return config.channels?.telegram === "enabled";
-}
-
 /** Cooperative drain budget for stop and upgrade, in milliseconds. */
 export function serviceDrainTimeoutMs(config: ServiceConfig): number {
   return (config.resources.stopTimeoutSeconds ?? 30) * 1000;
@@ -380,7 +361,7 @@ export function serviceDrainTimeoutMs(config: ServiceConfig): number {
 
 /**
  * Process environment the supervised unit sets. Values are paths, binds and
- * fixed enums only; the bot token appears as its file reference, never its value.
+ * fixed enums only; never a credential value.
  */
 export function serviceEnvironment(config: ServiceConfig): [string, string][] {
   const parsed = parseServiceConfig(config);
@@ -400,8 +381,6 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
   if (parsed.searxngEnabled !== undefined) env.push(["JIT_SEARXNG_ENABLED", parsed.searxngEnabled ? "1" : "0"]);
   if (parsed.attachmentsEnabled !== undefined) env.push(["JIT_ATTACHMENTS", parsed.attachmentsEnabled ? "1" : "0"]);
   if (!parsed.execution) env.push(["JIT_EXECUTION_SECRETS_DIR", `${parsed.stateDirectory}.connections`]);
-  const token = telegramTokenPath(parsed);
-  if (token) env.push(["JIT_TELEGRAM_BOT_TOKEN_PATH", token]);
   if (parsed.execution) {
     const e = parsed.execution;
     env.push(["JIT_EXECUTION_DIR", e.directory]);
@@ -427,7 +406,7 @@ export interface ServicePlanChange {
 }
 
 const planFields = ["runtime", "s14", "serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
-  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"] as const;
+  "backupDirectory", "routes", "network", "resources", "runPort", "execution", "searxngEnabled", "attachmentsEnabled"] as const;
 
 /**
  * Plan/validate mode: prints only allowlisted non-secret differences between two

@@ -33,8 +33,6 @@ export interface S15WebPorts<Actor extends object> {
   duties?: S15WebDuties<Actor>;
   /** WORK15-02 durable stall-reply resume bindings. Required to name a responsibility from the composer. */
   resumes?: S15WebResumes<Actor>;
-  /** CHAN15-01 bound Telegram owner channel settings. Absent: the Telegram page says it is not available here. */
-  telegram?: S15WebTelegram<Actor>;
   /** BROW15 protected browser registrations, one per website session. Absent until composed. */
   browsers?: S15WebBrowser<Actor>[];
   /** BROW15-02 provisioned browser status and the owner's approved-website list. Absent: not composed here. */
@@ -227,27 +225,6 @@ export interface S15WebResumes<Actor> {
   submit(actor: Actor, command: ConversationCommand, dutyId: string): ConversationReceipt;
   settle(): unknown;
   refusal(actor: Actor, dutyId: string): string | null;
-}
-/** CHAN15-01 owner projection of the Telegram channel. The bot token is never part of it. */
-export interface S15TelegramStatus {
-  contract: "s15-telegram-status/v1";
-  token: "missing" | "present" | "unsafe";
-  bot: { id: number; username: string } | null;
-  binding: { state: "unbound" } | { state: "pending"; code: string; expiresAt: number; expired: boolean } | { state: "bound"; userId: number; username: string | null; boundAt: number; current: boolean };
-  poll: { state: "off" | "receiving" | "starting" | "trouble"; lastPollAt: number | null; code: string | null; gap: { since: number; noticedAt: number } | null };
-  /** Refused senders in the retained window, deliveries whose outcome is unknown, and messages waiting to be sent. */
-  counts: { refused: number; unknown: number; queued: number };
-}
-/** CHAN15-01 owner commands. Each one is an authenticated Web form post; Telegram itself can run none of them. */
-export interface S15WebTelegram<Actor> {
-  status(actor: Actor): S15TelegramStatus;
-  /** Verifies the token with Telegram `getMe`, then stores it only in the protected vault. Write-only. */
-  setToken(actor: Actor, requestId: string, token: string): Promise<void>;
-  removeToken(actor: Actor, requestId: string): void;
-  startBinding(actor: Actor, requestId: string): void;
-  cancelBinding(actor: Actor, requestId: string): void;
-  revoke(actor: Actor, requestId: string): void;
-  acknowledgeGap(actor: Actor, requestId: string): void;
 }
 /** Pinned Chromium state for Resources → Websites; `library` is a validated shared-object name. */
 export type S15WebsiteEngine = import("../browser/chromium").ProtectedChromiumStatus;

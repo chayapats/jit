@@ -6,9 +6,7 @@ import { join, resolve } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
-import { ScriptedTelegramSender } from "../src/delivery";
 import { startFullApp, stopDrain } from "../src/ops/lifecycle";
-import type { ChannelTransportFactory } from "../src/ops/service-channels";
 import { runServiceCommand } from "../src/ops/service-cli";
 import { assertServiceRuntime, rootSnapshotCopyCommand, serviceInvocationPath } from "../src/ops/service-trust";
 import { assertRootTree, type RootPathPolicy } from "../ops/package/trusted-paths";
@@ -17,7 +15,6 @@ import { installService, planInstall, upgradePackage, type OperatorHost } from "
 import { gatherServiceStatus } from "../src/ops/status";
 import type { CommandOptions, CommandResult, CommandRunner } from "../src/ops/supervisor";
 import { TransactionStore, inspectStoreSchema, schemaVersion } from "../src/store";
-import { TelegramChannel } from "../src/telegram";
 import { buildPackage, installArtifactDependencies, readManifest, validateArtifact } from "../ops/package/bun-build";
 import { smokeRefusal } from "../ops/package/arm64-smoke";
 import { parseServiceConfig, renderServiceUnit, serviceDatabasePath, type ServiceConfig } from "../ops/package/service-config";
@@ -55,12 +52,12 @@ function layout(port = 3443) {
     unit: join(root, "etc-systemd-system"), journald: join(root, "etc-systemd"), configDir: join(root, "etc-jit"), local: join(root, ".local") };
   for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dirs.work, 0o755);
-  const credential = join(root, "telegram-bot.token");
+  const credential = join(root, "example.credential");
   writeFileSync(credential, "123456:FIXTURE_TOKEN_VALUE_must_not_leak", { mode: 0o600 });
   const service: ServiceConfig = { serviceUser: "jit-service", executablePath: join(dirs.opt, "current"), workingDirectory: dirs.work,
     stateDirectory: dirs.state, ledgerPath: join(dirs.state, "ledger.json"), backupDirectory: dirs.backup,
     routes: [{ route: "codex-subscription", model: "gpt-fixture", configured: true }, { route: "grok-owner", model: null, configured: false }],
-    secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: credential }],
+    secretRefs: [{ name: "example-credential", store: "credential-file", key: credential }],
     network: { bindHost: "127.0.0.1", port, vpnInterface: null },
     resources: { memoryMaxBytes: 536870912, maxRestarts: 3, restartWindowSeconds: 300, logBytes: 1048576, retentionDays: 30, stopTimeoutSeconds: 5 } };
   const source = join(dirs.local, "service-config.json");
@@ -228,7 +225,7 @@ test("plan prints the exact unit, journald and config files with modes and no se
   expect(unit.content).toContain("WantedBy=multi-user.target");
   expect(plan.files.find(f => f.path.endsWith("journald@jit.conf"))!.content).toContain("SystemMaxUse=1048576");
   expect(plan.files.find(f => f.path.endsWith("service-config.json"))).toMatchObject({ mode: "0640", content: null });
-  expect(plan.changes.find(c => c.field === "secretRefs")).toEqual({ field: "secretRefs", before: null, after: { count: 1, names: ["telegram-bot-token"] } });
+  expect(plan.changes.find(c => c.field === "secretRefs")).toEqual({ field: "secretRefs", before: null, after: { count: 1, names: ["example-credential"] } });
   const text = JSON.stringify(planned.output);
   expect(text).not.toContain("FIXTURE_TOKEN_VALUE");
   expect(text).not.toContain("123456:");
@@ -256,10 +253,10 @@ test("configuration negatives reject before any install or background activation
   chmodSync(l.dirs.state, 0o700);
   expect(await failing(l.service, art, { ...host(), bunPath: join(l.root, "missing-bun") })).toEqual([["runtime", "install-pinned-bun"]]);
   chmodSync(l.credential, 0o644);
-  expect(await failing(l.service)).toEqual([["secret:telegram-bot-token", "restrict-credential-file"]]);
+  expect(await failing(l.service)).toEqual([["secret:example-credential", "restrict-credential-file"]]);
   rmSync(l.credential);
-  expect(await failing(l.service)).toEqual([["secret:telegram-bot-token", "provision-credential-file"]]);
-  expect(await failing({ ...l.service, secretRefs: [{ name: "keyring-ref", store: "service-keyring", key: "jit/telegram" }] }))
+  expect(await failing(l.service)).toEqual([["secret:example-credential", "provision-credential-file"]]);
+  expect(await failing({ ...l.service, secretRefs: [{ name: "keyring-ref", store: "service-keyring", key: "jit/example" }] }))
     .toEqual([["secret:keyring-ref", "verify-secret-store"]]);
   writeFileSync(l.credential, "123456:FIXTURE_TOKEN_VALUE_must_not_leak", { mode: 0o600 });
   // Modified release artifact: content pin fails.
@@ -289,15 +286,14 @@ test("configuration negatives reject before any install or background activation
     { ...l.service, backupDirectory: "/root/backups" },
     { ...l.service, ledgerPath: "/run/user/1000/ledger.json" },
     { ...l.service, resources: { ...l.service.resources, unbounded: true } },
-    { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: "relative/token" }] },
-    { ...l.service, channels: { telegram: "enabled" }, secretRefs: [] },
+    { ...l.service, secretRefs: [{ name: "example-credential", store: "credential-file", key: "relative/token" }] },
     { ...l.service, stateDirectory: join(l.dirs.opt, "releases", "state") },
     { ...l.service, workingDirectory: "/srv/jit work" },
   ]) expect(() => parseServiceConfig(bad)).toThrow("invalid_service_config");
   expect(parseServiceConfig({ ...l.service, network: { bindHost: "100.100.1.2", port: 3443, vpnInterface: "tailscale0", origin: "https://jit.tail.example" } }).network.origin)
     .toBe("https://jit.tail.example");
   // Exposed secret-like fixture values in a reference path are redacted from operator output, never printed.
-  const leaky = { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file" as const, key: join(l.root, "123456:ABCDEFGHIJKL") }] };
+  const leaky = { ...l.service, secretRefs: [{ name: "example-credential", store: "credential-file" as const, key: join(l.root, "123456:ABCDEFGHIJKL") }] };
   writeFileSync(leaky.secretRefs[0]!.key, "x", { mode: 0o600 });
   writeFileSync(l.source, JSON.stringify(leaky), { mode: 0o600 });
   const redacted = await cli(["plan", "--config", l.source, "--artifact", good], fake, l);
@@ -344,7 +340,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
     body: JSON.stringify({ requestId: rid(), expectedRevision: workspace.revision, name: "Packaged project" }) });
   expect(created.status).toBe(200);
   const status = await cli(["status"], fake, l);
-  expect(status.output).toMatchObject({ supervisor: { active: "active" }, service: { service: "running", scheduler: "owned", routes: { total: 2, configured: 1, verified: 0 }, channels: "disabled" } });
+  expect(status.output).toMatchObject({ supervisor: { active: "active" }, service: { service: "running", scheduler: "owned", routes: { total: 2, configured: 1, verified: 0 } } });
   // A duplicate writer started outside the supervisor is refused before any background activation.
   const duplicate = Bun.spawn([process.execPath, join(l.service.executablePath, "src", "main.ts"), "serve", "--service-config", join(l.dirs.configDir, "service-config.json")],
     { cwd: l.dirs.work, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
@@ -484,109 +480,6 @@ test("upgrade blocks before stopping on a quarantined ledger, a modified artifac
   expect(await upgradePackage({ service: u.l.service, artifactDir: u.second, host: { ...u.host, run: stuck }, ownerPassword: password, health: async () => true }))
     .toMatchObject({ outcome: "blocked", nextAction: "terminate-supervised-process-and-reconcile", activeArtifactId: u.a.artifactId });
 }, 60_000);
-
-// ---------------------------------------------------------------------------
-// Opt-in channels in the shared start path
-// ---------------------------------------------------------------------------
-
-function channelSetup(telegram: "enabled" | "disabled" = "enabled") {
-  const l = layout();
-  writeFileSync(l.service.ledgerPath, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }) + "\n", { mode: 0o600 });
-  const service: ServiceConfig = { ...l.service, executablePath: join(l.dirs.opt, "release"), channels: { telegram } };
-  const config = readConfig({ JIT_DATABASE: serviceDatabasePath(service) });
-  return { l, service, config };
-}
-
-function fixtureTransports(sender: ScriptedTelegramSender, polls: number[]): ChannelTransportFactory {
-  return ({ botToken }) => {
-    expect(botToken).toContain("FIXTURE_TOKEN_VALUE");
-    return { sender, updates: { getUpdates: async (offset: number) => { polls.push(offset); return []; } } };
-  };
-}
-
-test("an enabled Telegram channel fails closed without a supported transport or with an unsafe token file", async () => {
-  const { l, service, config } = channelSetup();
-  const blockedAt = async (transports?: ChannelTransportFactory) => {
-    const started = await startFullApp({ config, service, ...(transports ? { transports } : {}) });
-    expect(started.ok).toBe(false);
-    if (started.ok) throw new Error("unreachable");
-    return started.gates.filter(g => g.state === "blocked").map(g => [g.gate, g.nextAction]);
-  };
-  expect(await blockedAt()).toEqual([["channels", "install-supported-telegram-transport"]]);
-  chmodSync(l.credential, 0o644);
-  expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["channels", "restrict-telegram-token-file"], ["secrets", "verify-secret-store"]]);
-  expect(gatherServiceStatus(config, service)).toMatchObject({ service: "blocked", channels: "blocked" });
-  const store = new TransactionStore(serviceDatabasePath(service), { migrateExisting: false });
-  try {
-    expect(store.read(tx => tx.all("SELECT * FROM job_scheduler"))).toEqual([]);
-    expect(store.read(tx => tx.all("SELECT * FROM delivery_worker"))).toEqual([]);
-  } finally { store.close(); }
-  // A quarantined installation starts neither the scheduler nor delivery, even with a working transport.
-  chmodSync(l.credential, 0o600);
-  const { syncLedgerCheckpoint } = await import("../src/ops/lifecycle-ledger");
-  const established = new TransactionStore(serviceDatabasePath(service));
-  try { expect(syncLedgerCheckpoint(established, service.ledgerPath, Date.now()).state).toBe("trusted"); } finally { established.close(); }
-  rmSync(service.ledgerPath);
-  expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["quarantine", "restore_the_ledger_checkpoint_file_from_its_configured_location_then_retry"]]);
-});
-
-test("boot starts the delivery worker and Telegram poller after reconciliation; unknown sends stay unknown across restart", async () => {
-  const { service, config } = channelSetup();
-  const sender = new ScriptedTelegramSender();
-  const polls: number[] = [];
-  const started = await startFullApp({ config, service, transports: fixtureTransports(sender, polls) });
-  if (!started.ok) throw new Error(JSON.stringify(started.gates));
-  const { app, store, channels } = started.handle;
-  expect(channels).not.toBeNull();
-  expect(store.read(tx => tx.get<{ pid: number }>("SELECT pid FROM delivery_worker WHERE id = 1"))?.pid).toBe(process.pid);
-  await app.setupOwner(password);
-  const token = await app.login(password);
-  const actor = app.authenticate(token).actor;
-  const project = app.execute(actor, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: 0, payload: { name: "Channel project" } }).project;
-  const telegram = new TelegramChannel(store, started.handle.config);
-  const owner = telegram.authenticate(token);
-  const pending = telegram.execute(owner, { kind: "telegram.bind", requestId: rid(), expectedRevision: telegram.status(owner).binding.revision, payload: { telegramUserId: 42, telegramChatId: 77 } });
-  telegram.execute(owner, { kind: "telegram.confirm", requestId: rid(), expectedRevision: pending.binding.revision,
-    payload: { telegramUserId: 42, telegramChatId: 77, challengeNonce: pending.binding.challengeNonce! } });
-  const commit = (dedupeKey: string) => {
-    const current = app.project(actor, project.id);
-    app.execute(actor, { kind: "delivery.commit", requestId: rid(), projectId: project.id, expectedRevision: current.revision,
-      payload: { kind: "report", text: "รายงานบริการ", dedupeKey } });
-  };
-  commit("report:service:0001");
-  expect(channels!.tick().sent).toBe(1);
-  await channels!.settled();
-  expect(sender.external.map(m => m.dedupeKey)).toEqual(["report:service:0001"]);
-  expect(polls).toEqual([0]);
-  // The remote accepts but the response is lost: the outcome is unknown, never sent.
-  sender.scripts = ["timeout_after_accept"];
-  commit("report:service:0002");
-  channels!.tick();
-  const drained = await stopDrain(started.handle, { timeoutMs: 5000 });
-  expect(drained).toMatchObject({ outcome: "stopped", unknownDeliveries: 1 });
-  expect(store.read(tx => tx.all("SELECT * FROM delivery_worker"))).toEqual([]);
-  started.handle.service.close();
-  store.close();
-  const restartedSender = new ScriptedTelegramSender();
-  const restarted = await startFullApp({ config, service, transports: fixtureTransports(restartedSender, []) });
-  if (!restarted.ok) throw new Error(JSON.stringify(restarted.gates));
-  restarted.handle.channels!.tick();
-  await restarted.handle.channels!.settled();
-  expect(restartedSender.calls).toBe(0);
-  const statuses = restarted.handle.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence"))
-    .map(r => (JSON.parse(r.record_json) as { status: string }).status);
-  expect(statuses).toEqual(["sent", "unknown"]);
-  await stopDrain(restarted.handle, { timeoutMs: 5000 });
-  restarted.handle.service.close();
-  restarted.handle.store.close();
-});
-
-test("the rendered unit sets the bot token reference path, never the token, when Telegram is enabled", async () => {
-  const { service } = channelSetup();
-  const unit = await renderServiceUnit(service, { bunPath: process.execPath, configPath: "/etc/jit/service-config.json" });
-  expect(unit).toContain(`Environment=JIT_TELEGRAM_BOT_TOKEN_PATH=${service.secretRefs[0]!.key}`);
-  expect(unit).not.toContain("FIXTURE_TOKEN_VALUE");
-});
 
 test("all units expose only the Podman socket directory; schway additionally requires the identity's session bus", async () => {
   const l = layout();
@@ -1009,41 +902,6 @@ test("release and dependency modes are canonical and sealed; a nested 0600 membe
   expect(existsSync(l.service.ledgerPath)).toBe(false);
   delete fake.unreadable;
   expect((await cli(["install", "--config", l.source, "--artifact", art], fake, l)).exitCode).toBe(0);
-});
-
-test("the bot token reader rejects FIFOs, symlinks and oversized files without blocking or reading them", async () => {
-  const { inspectBotTokenFile, readBotToken, botCredentialConfigured } = await import("../src/telegram/secrets");
-  const { channelReadiness } = await import("../src/ops/service-channels");
-  const l = layout();
-  const transports = fixtureTransports(new ScriptedTelegramSender(), []);
-  const blockedAction = (path: string) => {
-    const readiness = channelReadiness({ enabled: true, botTokenPath: path, transports });
-    return readiness.state === "blocked" ? readiness.nextAction : readiness.state;
-  };
-  expect(readBotToken(l.credential)).toContain("FIXTURE_TOKEN_VALUE");
-  expect(blockedAction(l.credential)).toBe("ready");
-  const link = join(l.root, "token-link");
-  symlinkSync(l.credential, link);
-  expect(inspectBotTokenFile(link)).toEqual({ state: "blocked", code: "telegram_token_not_regular" });
-  expect(() => readBotToken(link)).toThrow("telegram_token_not_regular");
-  expect(blockedAction(link)).toBe("replace-telegram-token-with-regular-file");
-  const huge = join(l.root, "huge.token");
-  writeFileSync(huge, "x".repeat(1024 * 1024), { mode: 0o600 });
-  expect(inspectBotTokenFile(huge)).toEqual({ state: "blocked", code: "telegram_token_invalid" });
-  expect(() => readBotToken(huge)).toThrow("telegram_token_invalid");
-  expect(botCredentialConfigured(huge)).toBe(false);
-  const fifo = join(l.root, "token.fifo");
-  const made = Bun.spawnSync(["mkfifo", "-m", "600", fifo]);
-  if (made.exitCode !== 0) { console.warn("skip FIFO case: mkfifo unavailable"); return; }
-  const started = Date.now();
-  expect(inspectBotTokenFile(fifo)).toEqual({ state: "blocked", code: "telegram_token_not_regular" });
-  expect(() => readBotToken(fifo)).toThrow("telegram_token_not_regular");
-  expect(blockedAction(fifo)).toBe("replace-telegram-token-with-regular-file");
-  expect(botCredentialConfigured(fifo)).toBe(false);
-  // Status (metadata only) on an enabled channel with a FIFO reference returns promptly and blocked.
-  const service: ServiceConfig = { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: fifo }], channels: { telegram: "enabled" } };
-  expect(gatherServiceStatus(readConfig({ JIT_DATABASE: serviceDatabasePath(service) }), service)).toMatchObject({ channels: "blocked", telegram: "unconfigured" });
-  expect(Date.now() - started).toBeLessThan(2000);
 });
 
 test("installer install never seeds/chmods/chowns a mutable ledger path as root", async () => {

@@ -7,7 +7,7 @@ The complete self-hosted scope is required. Rows below are delivery slices, not 
 ## Initial facts
 
 - Main base: `76e15e9f`; no open PRs and no existing Rakazo/S16 issue were found at initial inspection, before opening #392/#393.
-- S15 code already supplies protected conversation/policy/model/team/memory/VM/work/GitHub/effect/adoption services, Web and Telegram. It is opt-in. Inspect current code, not historical preparation-document statuses, before reusing it.
+- S15 code already supplies protected conversation/policy/model/team/memory/VM/work/GitHub/effect/adoption services and Web. Its Telegram channel is removed by NOTIFY16-01 (ADR 0085). It is opt-in. Inspect current code, not historical preparation-document statuses, before reusing it.
 - At initial main inspection, the provisioned browser was static/public/approved-origin only and chat uploads were unavailable. The current draft stack adds uploads; the modern browser gap remains. Rakazo's `packages/chat-ui` depends on its contracts/core/UI packages and React; it is not a drop-in dependency for Jit's existing SSR renderer.
 - S15 #340/#341 remain open. Their pending model/account/device/live evidence is neither waived nor a blocker to unrelated deterministic S16 development.
 - Stack choices are open for improvement. Shared React clients and a protected Jit API are a candidate, not a requirement to preserve the old Web stack or import the whole upstream backend.
@@ -49,6 +49,8 @@ All runtime slices currently require Frontier judgment. Split Standard tickets o
 | CUT16-01 [#432](https://github.com/chayapats/jit/issues/432) | Adopt the tested release on the named installation under an exact owner-reviewed transition | [#429](https://github.com/chayapats/jit/issues/429), [#430](https://github.com/chayapats/jit/issues/430), [#431](https://github.com/chayapats/jit/issues/431) | AC21/22 |
 
 The file delivery is split into text #400, isolated binary #401 and working-computer processing #433; #402 supplies precise ancestry. The dependencies above are the verified native final-delivery edges, with scope details in each issue. Runtime/API work should not depend on unrelated voice or native packaging. Human credentials are separated from implementation and requested only at the concrete live-test boundary.
+
+CHAT16-02 [#406](https://github.com/chayapats/jit/issues/406) adds owner steering of running work over Schway's new `schway.host.steering/v1` and concurrent conversations: see the [steering contract](../contracts/s16-steering-v1.md) and [ADR 0086](../adr/0086-s16-live-steering-and-concurrent-conversations.md). NOTIFY16-01 [#441](https://github.com/chayapats/jit/issues/441) removes Telegram from every runtime and adds Web Push from the PWA: see the [notifications contract](../contracts/s16-notifications-v1.md) and [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Live provider/device evidence remains #431.
 
 ## Owner revision — 2026-11-06
 
@@ -94,7 +96,7 @@ The [machine-auditable coverage index](S16-rakazo-experience-coverage.json) reco
 
 ### Implementation and evidence distinctions
 
-- **Baseline reused:** S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser/Telegram and adoption services; S14/legacy continuity. Their existing implementation is not new S16 acceptance.
+- **Baseline reused:** S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser and adoption services (Telegram removed, ADR 0085); S14/legacy continuity. Their existing implementation is not new S16 acceptance.
 - **Implemented on draft:** DOC/UX #393/#394 (#398), API #395 (#399), UTF-8 #400 (#403), binary/image #401 (#404). The authored research is reused; no large Mobbin search is repeated. Reuse attribution already exists for two modules; #405 completes reusable validation.
 - **Planned:** #402 and all new deterministic implementation slices. File memory/history fences remain enabled. A generic resource ancestry label does not satisfy exact file-recipient/history checks.
 - **Pending live evidence:** #431 and exact adoption #432. Human labels describe required participation, not satisfied prerequisites. Real Linux parser/image account/device evidence is pending; fixtures and browser viewport tests are not native-device acceptance. S15 #340/#341 keep their separate scope.

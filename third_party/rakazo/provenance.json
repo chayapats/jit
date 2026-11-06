@@ -41,9 +41,9 @@
     "playwright-core": "1.64.1",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "schway": "file:vendor/schway-1.0.0-rc.2-aac2fc0.tgz"
+    "schway": "file:vendor/schway-1.0.0-rc.2-39194f7.tgz"
   },
-  "lockSha256": "2bb52ed5a9e6e4e36c92a9f44e99552119492a6317201e64bb1aa6492ac24fd5",
+  "lockSha256": "1fc6db60ec22d9e13c348c8a0f3b60767ff5db7e4fa29799662ce654d50e7066",
   "browserDependencies": {
     "react": "19.3.0",
     "react-dom": "19.3.0",

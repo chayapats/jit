@@ -23,7 +23,7 @@ import { displayHeight, displayWidth, maximumKeys, maximumTypedChars, takeoverAc
  *     `Linefeed` (alone or with modifiers, or `ctrl+m`/`ctrl+j`), and `computer_type` text containing `\n` or `\r`;
  *   - with the project setting `computer.confirmEveryAction` on (the default), every `computer_click` and every
  *     `computer_key` is a card. Plain `computer_type` text without a line break is not gated by the setting.
- * - **Setting.** `computer.settings.set` is Web only (`computer_setting_requires_web` for Telegram and the local API).
+ * - **Setting.** `computer.settings.set` is Web only (`computer_setting_requires_web` for the local API).
  * - **Takeover.** While the owner holds a takeover every computer call and every approved computer card fails
  *   `takeover_active`.
  */

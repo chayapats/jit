@@ -2,7 +2,7 @@
 
 Owner: Jit #133 (S11 EXE07). Status: implemented on the issue branch. Decision: [ADR 0037](../adr/0037-access-levels-approvals-and-connections.md) § Effect tools and approval cards. Spec: [S11](../specs/S11-execution-access-and-tools.md) (S11-D03, D08; S11-AC05, AC06, AC09). Requirements: FR-37, FR-38, FR-35, FR-17, FR-15, NFR-05, NFR-07, NFR-14.
 
-Uses `exec.run_tools/v1` (EXE05), `app.connections/v1` (EXE08), `app.access_level/v1` and `jobs.attempt_fence/v1`. The Web card UI is EXE09, the Telegram card UI EXE10.
+Uses `exec.run_tools/v1` (EXE05), `app.connections/v1` (EXE08), `app.access_level/v1` and `jobs.attempt_fence/v1`. The Web card UI is EXE09. The Telegram card UI (EXE10) was removed with [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md); approvals are Web-only.
 
 ## `app.effect_tools/v1`
 
@@ -23,15 +23,15 @@ A call never performs the effect. It inserts a card — only while the run's att
 `src/exec/approval-cards.ts`; schema 37 `approval_cards(id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason, decision_json, receipt_json, telegram_eligible, created_at, expires_at, updated_at, started_at)`.
 
 - `action_json` is the canonical (sorted-key) action and `digest` its SHA-256. Cards expire after 30 minutes. States: `pending`, `denied`, `expired`, `executing`, `succeeded`, `failed`, `unknown` (`approved` is reserved; approval goes straight to `executing`).
-- `telegramEligible` is true for a single action (a push with one ref, every other kind).
-- **`approval.decide { cardId, digest, decision: "approve" | "deny" }`**, `expectedRevision` = card revision, through `Application.execute` with a receipt and audit row. Web may decide any card, Telegram only an eligible one; the local API never (`approval_requires_web`, 403). A used card is `approval_card_not_pending`, an expired one `approval_card_expired`, a wrong revision `stale_revision`, a wrong digest `approval_digest_mismatch`. Approval needs the proposing role to still have `full` in an unhalted project (`access_level_insufficient`, `execution_halted`) and an effect executor (`effects_not_configured`). Approval moves the card to `executing` in the receipt's transaction; the executor runs it after commit. A replayed request returns the first receipt and runs nothing.
+- `telegram_eligible` is a retained column with no reader since [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md).
+- **`approval.decide { cardId, digest, decision: "approve" | "deny" }`**, `expectedRevision` = card revision, through `Application.execute` with a receipt and audit row. Only Web may decide a card; the local API never (`approval_requires_web`, 403). A used card is `approval_card_not_pending`, an expired one `approval_card_expired`, a wrong revision `stale_revision`, a wrong digest `approval_digest_mismatch`. Approval needs the proposing role to still have `full` in an unhalted project (`access_level_insufficient`, `execution_halted`) and an effect executor (`effects_not_configured`). Approval moves the card to `executing` in the receipt's transaction; the executor runs it after commit. A replayed request returns the first receipt and runs nothing.
 - Read API: `Application.approvalCards(actor, projectId, { state?, limit? })`, `approvalCard(actor, projectId, cardId)` (a pending card past its expiry reads `expired`, and the `state` filter follows that view); a decision first records the expiry of every card past its deadline, `effectSettings(actor, projectId)`.
 
 ## Effect targets and `app.auto_approve/v1` (Web only)
 
 - `effect.target.set { target: "git_remote", name, url, github: { owner, repo, apiBase } | null, connectionId }` and `{ target: "deploy", name, url, connectionId }`, `effect.target.remove { target, name }`, revisioned per name in `git_remotes` and `deploy_targets`. URLs are https without credentials, query or fragment. A git remote needs a `github_token` connection and a deploy target a `deploy_secret` (`effect_connection_kind_mismatch`), in scope for the project.
 - `approval.rule.set { effectKind, scope, enabled }`, revisioned per effect kind in `auto_approve_rules`. Scopes match exact names: `{ remote, branches[] }` for pushes (every pushed branch must be listed), `{ remote }` for GitHub effects, `{ target }` for deploys. A matching enabled rule decides a new card `approve` with `channel: "auto-rule"` and the rule revision.
-- Telegram and the local API are refused for both (`approval_rule_requires_web`, 403).
+- The local API is refused for both (`approval_rule_requires_web`, 403).
 
 ## Effect executor
 

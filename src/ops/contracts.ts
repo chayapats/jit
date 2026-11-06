@@ -56,7 +56,7 @@ export interface DrillMeasurements {
   queueWaitSamples: number;
   stopAckMs: number | null;
   fetchCalls: number;
-  /** Final persisted outcomes of the drill's own delivery intents after the DeliveryWorker ran, and the attempts it recorded. */
+  /** Legacy transport outcomes of the drill's own delivery intents; always 0 since ADR 0085 removed the push transport. Attempts must stay 0. */
   sentDeliveries: number;
   unknownDeliveries: number;
   failedDeliveries: number;

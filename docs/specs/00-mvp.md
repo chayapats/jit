@@ -2,6 +2,8 @@
 
 > S14 target status: Historical implemented product baseline. The owner-confirmed S14 target replaces required Projects, the first useful workflow and execution scopes; unchanged authority/evidence invariants remain. See [S14](S14-bot-first-local-assistant.md).
 
+> Telegram removed 2026-11-06 ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md), S16-D10): the Telegram requirements below are historical; Web is the only owner channel. Requirement IDs are unchanged.
+
 Tracker: https://github.com/chayapats/jit/issues/1
 
 Owner: Jit. Status: ready for ticket breakdown; implementation depends on explicit host/API feasibility gates. [Product baseline](../product/README.md) และ [decision record](../product/decision-record.md) เป็นที่มาของ scope

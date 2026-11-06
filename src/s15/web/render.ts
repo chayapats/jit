@@ -69,7 +69,7 @@ export const standalonePage = (title: string, content: string) => documentPage(t
 export interface S15Nav { conversations: ConversationListEntry[]; needs: number; current: string }
 export interface S15ShellOptions { subtitle?: string; dock?: string; live?: boolean; conversationId?: string; cursor?: number; banner?: string }
 
-const destinations = [["/memory", "s15.nav.memory"], ["/library", "s15.nav.library"], ["/resources/computer", "s15.nav.computer"], ["/resources/accounts", "s15.nav.accounts"], ["/resources/websites", "s15.nav.websites"], ["/resources/github", "s15.nav.github"], ["/resources/telegram", "s15.nav.telegram"], ["/rules", "s15.nav.rules"], ["/models", "s15.nav.models"], ["/recovery", "s15.nav.recovery"], ["/setup", "s15.nav.setup"]] as const;
+const destinations = [["/memory", "s15.nav.memory"], ["/library", "s15.nav.library"], ["/resources/computer", "s15.nav.computer"], ["/resources/accounts", "s15.nav.accounts"], ["/resources/websites", "s15.nav.websites"], ["/resources/github", "s15.nav.github"], ["/rules", "s15.nav.rules"], ["/models", "s15.nav.models"], ["/recovery", "s15.nav.recovery"], ["/setup", "s15.nav.setup"]] as const;
 
 /** Search only the freshly authorized navigation and conversation titles; it grants no additional access. */
 export function searchBody(nav: S15Nav, query = "", prefix = "s15-search"): string {

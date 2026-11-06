@@ -97,11 +97,10 @@ test("computer tools exist only at full, and only in the browser image", async (
 test("confirmEveryAction defaults on and is a Web-only toggle", async () => {
   const w = await desktopWorld();
   expect(w.f.app.computerSettings(w.f.auth.actor, w.f.project.id)).toEqual({ projectId: w.f.project.id, revision: 0, confirmEveryAction: true, updatedAt: null });
-  rejects(() => w.setConfirm(false, w.f.telegram), "computer_setting_requires_web", 403);
-  // Even turning it back on is Web only.
-  rejects(() => w.setConfirm(true, w.f.telegram), "computer_setting_requires_web", 403);
   w.f.app.execute(w.f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: w.f.app.localApi(w.f.auth.actor).revision, payload: { enabled: true } });
   rejects(() => w.setConfirm(false, w.f.app.issueLocalApiActor()!.actor), "computer_setting_requires_web", 403);
+  // Even turning it back on is Web only.
+  rejects(() => w.setConfirm(true, w.f.app.issueLocalApiActor()!.actor), "computer_setting_requires_web", 403);
   expect(w.setConfirm(false).computer).toMatchObject({ revision: 1, confirmEveryAction: false });
   rejects(() => w.f.app.execute(w.f.auth.actor, { kind: "computer.settings.set", requestId: rid(), projectId: w.f.project.id, expectedRevision: 0, payload: { confirmEveryAction: true } }), "stale_revision", 409);
   rejects(() => w.f.app.execute(w.f.auth.actor, { kind: "computer.settings.set", requestId: rid(), projectId: w.f.project.id, expectedRevision: 1, payload: { confirmEveryAction: "no" } } as never), "invalid_computer_command");
@@ -249,6 +248,6 @@ for (const corrupt of [false, true]) for (const confirmed of [false, true]) test
   expect(w.desktop).toHaveLength(0);
   const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
   expect(cards).toHaveLength(1);
-  expect(cards[0]).toMatchObject({ runId: runA, kind: confirmed ? "computer_confirm" : "outbound_release", state: "pending", telegramEligible: false });
+  expect(cards[0]).toMatchObject({ runId: runA, kind: confirmed ? "computer_confirm" : "outbound_release", state: "pending" });
   expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

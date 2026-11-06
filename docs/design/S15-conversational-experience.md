@@ -756,7 +756,7 @@ Before implementation starts, each milestone must freeze the exact dictionary ke
 | Q1 | Discover Lima/Proxmox VMs automatically? | No; paste-and-address enrolment |
 | Q2 | Required checks for repositories without branch protection | All checks reported on the head commit, owner may untick |
 | Q3 | May a standing rule allow Jit to restore its own VM? | No; restore waits for the owner |
-| Q4 | Approvals inside companion channels (Telegram) | Out of scope; channels notify and link to the Web slip |
+| Q4 | Approvals inside companion channels (Telegram) | Out of scope; Telegram was later removed (ADR 0085). Notifications only link to the Web slip |
 | Q5 | Should MemoryNote appear on every reply that retained something, or only in a daily digest? | Every reply, collapsed |
 | Q6 | Should "Needs you" include proposals from responsibilities? | Yes, as the lowest group |
 

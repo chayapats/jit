@@ -27,7 +27,6 @@ import { s15GithubRecipient } from './github/connection';
 import { s15DefaultCatalog, s15SubscriptionModels } from './policy/defaults';
 import { readS15Credential, s15CredentialKey, s15GoogleConnection } from './credentials';
 import { runtimeDisclosure } from './disclosure/runtime';
-import { createTelegramBotApi } from './telegram';
 import { liveRouteAvailability } from './model/availability';
 import { readS15RuntimeConfig, readS15VmPool } from './runtime-config';
 import { takeInheritedSocket, vmmProxySocketName } from './vm/vmm';
@@ -118,6 +117,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     service = await composeS15({ runtime: 's15', directory: join(config.directory, 'runtime'), create: initialize, installationId: config.installationId, origin: config.origin,
       ...protectedPorts,
       ...(config.routines ? { routines: {} } : {}),
+      ...(config.notifications ? { notifications: {} } : {}),
       ...(config.files ? { files: { ...(typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {}), ...(config.fileMemory ? { memory: true } : {}) } } : {}),
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
       ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [], config.github ? undefined : { ...s15GithubRecipient })) } : {}),
@@ -136,8 +136,6 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
-      // CHAN15-01: the owner pastes the bot token in protected Web settings; it is stored only in this vault.
-      telegram: { vault, transport: token => createTelegramBotApi(token) },
       vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm, ...(proxySocketFd !== null ? { proxySocketFd } : {}) } : {} } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : provisioned ? { browser: provisioned.options() } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
@@ -163,7 +161,6 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     // BROW15-02: verify (or download once) the pinned Chromium in the background; Resources → Websites shows each step.
     void provisioned?.chromium.start();
     const wake = setInterval(() => { void service?.drain().catch(() => {}); }, 1000);
-    service.telegram?.start(() => service!.drain());
     const shutdown = async () => { clearInterval(wake); clearInterval(availabilityTimer); server.stop(true); await service?.close(); await provisioned?.close(); await ownerApp.signIns.close(); await s14CredentialLifecycle().close(); ownerStore.close(); };
     process.once('SIGTERM', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });

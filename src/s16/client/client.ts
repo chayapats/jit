@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
@@ -88,6 +88,19 @@ export class JitClient {
   async stop(requestId: string, signal?: AbortSignal): Promise<void> {
     const data = await this.call(`/requests/${id(requestId)}/stop`, "POST", {}, signal, requestId);
     if (!record(data) || data.state !== "stop_requested") throw new JitClientError("client_protocol_invalid", null, "unknown", requestId);
+  }
+  /** Creates one local immutable steer identity for an unfinished request; retain it through response loss. */
+  prepareSteer(conversationId: string, target: string, text: string): ClientSteer {
+    id(conversationId); id(target);
+    if (typeof text !== "string" || !text.trim() || new TextEncoder().encode(text).length > 16384) throw new JitClientError("invalid_text", null, "not_sent");
+    return Object.freeze({ contract: "s16-conversation-steer/v1", requestId: crypto.randomUUID().replaceAll("-", ""), conversationId, target, text });
+  }
+  /** Sends the retained steer once; a repeat with the same ID returns that steer's current disposition. */
+  async steer(command: ClientSteer, signal?: AbortSignal): Promise<ClientSteerReceipt> {
+    const input = structuredClone(command); id(input.requestId); id(input.conversationId); id(input.target);
+    const data = await this.call(`/conversations/${input.conversationId}/steers`, "POST", input, signal, input.requestId);
+    if (!record(data) || data.contract !== "s16-conversation-steer-receipt/v1" || data.requestId !== input.requestId || data.conversationId !== input.conversationId || data.target !== input.target || typeof data.state !== "string") throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return data as unknown as ClientSteerReceipt;
   }
   /** Explicit exact-slip command; never auto-refreshes an action revision or repeats a decision. */
   async decide(command: ClientDecision, signal?: AbortSignal): Promise<ClientReceipt> {
@@ -257,6 +270,33 @@ export class JitClient {
     const data = await this.call("/routines/commands", "POST", command, signal, command.requestId);
     if (!record(data) || data.contract !== "s16-routine-receipt/v1") throw new JitClientError("client_protocol_invalid", null, "unknown", command.requestId);
     return data as unknown as ClientRoutineReceipt;
+  }
+  /** Installation push key and this owner's device count. The first read creates the installation key; nothing else changes. */
+  async notificationSettings(signal?: AbortSignal): Promise<ClientNotificationSettings> {
+    const data = await this.call("/notifications", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-notifications/v1" || typeof data.publicKey !== "string" || !/^[A-Za-z0-9_-]{87}$/.test(data.publicKey) || !count(data.devices) || !count(data.limit)) return invalid();
+    return data as unknown as ClientNotificationSettings;
+  }
+  /** Whether the device whose push endpoint hashes to `endpointSha256` is subscribed for this owner. */
+  async notificationDevice(endpointSha256: string, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    if (!sha256(endpointSha256)) throw new JitClientError("invalid_identity", null, "not_sent");
+    return this.device(await this.call(`/notifications/devices/${endpointSha256}`, "GET", undefined, signal), "response");
+  }
+  /** Store this device's push subscription. Idempotent per endpoint, so an unknown outcome may simply be sent again. */
+  async subscribeNotifications(command: ClientNotificationSubscribeCommand, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    const device = this.device(await this.call("/notifications/subscribe", "POST", structuredClone(command), signal), "unknown");
+    if (!device.subscribed) throw new JitClientError("client_protocol_invalid", null, "unknown");
+    return device;
+  }
+  /** Remove this device's subscription. Idempotent per endpoint. */
+  async unsubscribeNotifications(endpoint: string, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    const device = this.device(await this.call("/notifications/unsubscribe", "POST", { endpoint }, signal), "unknown");
+    if (device.subscribed) throw new JitClientError("client_protocol_invalid", null, "unknown");
+    return device;
+  }
+  private device(data: unknown, outcome: "response" | "unknown"): ClientNotificationDevice {
+    if (!record(data) || data.contract !== "s16-notification-device/v1" || typeof data.subscribed !== "boolean") throw new JitClientError("client_protocol_invalid", null, outcome);
+    return data as unknown as ClientNotificationDevice;
   }
   /** Drop authority material when a native session signs out; callers also discard private projections. */
   clear(): void { this.#csrf = null; this.#sessionGeneration++; }

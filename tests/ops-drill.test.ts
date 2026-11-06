@@ -46,7 +46,7 @@ function healthy(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
     routes: [], budgets: { exhausted: 0, deadlineFailed: 0 },
     waits: { quota: 0, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 0 },
     disk: { stateBytes: 100, watermarkBytes: 1000 },
-    telegram: { configured: true, binding: "bound", pendingIntents: 0, unknownDeliveries: 0 },
+    deliveries: { pendingIntents: 0, unknownDeliveries: 0 },
     engine: { mode: "scripted", available: true },
     providers: { configuredRoutes: 1 },
     schema: { current: schemaVersion, supported: schemaVersion },
@@ -60,10 +60,9 @@ test("diagnostics redacts identifiers and never carries secrets, paths or raw er
   const snapshot = inspectDiagnostics(healthy({
     queue: { available: true, queued: 1, admitted: 0, waiting: 0 },
     routes: [{ route: "codex-subscription", model: "gpt-6.1-sol", state: "queued", jobs: 1, attempts: 2 }],
-    telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 0 },
     artifacts: [id] }));
   expect(snapshot.routes).toEqual([{ reference: "route-1", model: "redacted", state: "queued", jobs: 1, attempts: 2 }]);
-  expect(snapshot.connections.telegram).toBe("unconfigured");
+  expect(snapshot.connections).toEqual({ pendingIntents: 0, unknownDeliveries: 0 });
   expect(JSON.stringify(snapshot)).not.toMatch(/codex-subscription|gpt-6\.1-sol|TOKEN_SENTINEL|192\.0\.2\.44|Authorization/);
   expect(() => inspectDiagnostics(healthy({ routes: [{ route: sentinel, model: null, state: "queued", jobs: 0, attempts: 0 }] }))).toThrow();
   expect(() => inspectDiagnostics({ now: NaN } as never)).toThrow();
@@ -78,10 +77,8 @@ test("diagnostics redacts identifiers and never carries secrets, paths or raw er
 
 test("failure fixtures produce inspectable next actions; observed route readiness needs live evidence", () => {
   const cases: [Partial<DiagnosticsInput>, string][] = [
-    [{ telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 0 } }, "configure-telegram"],
-    [{ telegram: { configured: true, binding: "pending", pendingIntents: 0, unknownDeliveries: 0 } }, "bind-telegram"],
     [{ engine: { mode: "schway", available: true }, providers: { configuredRoutes: 0 } }, "configure-provider-route"],
-    [{ telegram: { configured: true, binding: "bound", pendingIntents: 1, unknownDeliveries: 1 } }, "resolve-unknown-delivery"],
+    [{ deliveries: { pendingIntents: 1, unknownDeliveries: 1 } }, "resolve-unknown-delivery"],
     [{ engine: { mode: "schway", available: false } }, "restore-engine"],
     [{ waits: { quota: 0, needsLogin: 1, routeUnavailable: 0, authorizationChanged: 0 }, queue: { available: true, queued: 0, admitted: 0, waiting: 1 } }, "reconnect-provider-login"],
     [{ waits: { quota: 0, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 2 } }, "reauthorize-owner-work"],
@@ -107,8 +104,8 @@ test("failure fixtures produce inspectable next actions; observed route readines
   }
   // Combined failures stay inspectable: every applicable action is listed in priority order.
   const combined = inspectDiagnostics(healthy({ engine: { mode: "schway", available: false }, providers: { configuredRoutes: 0 },
-    restore: { open: 1, blocked: 1, gate: "none" }, telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 3 } }));
-  expect(combined.nextActions).toEqual(["resolve-restore-quarantine", "restore-engine", "configure-provider-route", "resolve-unknown-delivery", "configure-telegram"]);
+    restore: { open: 1, blocked: 1, gate: "none" }, deliveries: { pendingIntents: 0, unknownDeliveries: 3 } }));
+  expect(combined.nextActions).toEqual(["resolve-restore-quarantine", "restore-engine", "configure-provider-route", "resolve-unknown-delivery"]);
   expect(combined).toMatchObject({ engine: { state: "unavailable", observed: "not-observed" }, restore: { state: "quarantine-blocked" },
     providers: { readiness: "not-configured" } });
   // Observed readiness is never produced here: a caller-supplied observation count is rejected outright.
@@ -141,8 +138,7 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
   // An unsafe (group-readable) host directory makes the declared engine unusable.
   mkdirSync(join(root, ".jit-host"), { mode: 0o755 });
   chmodSync(join(root, ".jit-host"), 0o755);
-  const config = readConfig({ JIT_DATABASE: database, JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "1",
-    JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const config = readConfig({ JIT_DATABASE: database, JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "1" });
   const before = readdirSync(root).sort();
   const snapshot = inspectDiagnostics(gatherDiagnostics(root, config, 1800000000000));
   expect(readdirSync(root).sort()).toEqual(before);
@@ -166,7 +162,7 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
   const oldPath = join(root, "old.sqlite"), old = new Database(oldPath);
   old.exec(readFileSync(new URL("./fixtures/foundation-v10.sql", import.meta.url), "utf8"));
   old.close();
-  const older = inspectDiagnostics(gatherDiagnostics(root, readConfig({ JIT_DATABASE: oldPath, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") })));
+  const older = inspectDiagnostics(gatherDiagnostics(root, readConfig({ JIT_DATABASE: oldPath })));
   expect(older.schemaVersion).toEqual({ current: 10, supported: schemaVersion, state: "upgrade-required" });
   expect(older.nextAction).toBe("run-owner-upgrade");
   const reopened = new Database(oldPath);
@@ -177,7 +173,7 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
 test("gathered diagnostics count expired authority and provider-login waits with their next actions", async () => {
   const root = setup();
   const database = join(root, "auth.sqlite");
-  const config = readConfig({ JIT_DATABASE: database, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const config = readConfig({ JIT_DATABASE: database });
   const store = new TransactionStore(database);
   const work = (id: string, outcome: "needs_login" | "succeeded") => ({ id, title: id, revision: 1, replay: "read" as const,
     route: { provider: "fixture", model: "scripted", authRoute: "internal" }, cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
@@ -214,7 +210,7 @@ test("gathered diagnostics count expired authority and provider-login waits with
 
 test("diagnose reads user_version first through the read-only adapter: missing, newer and existing stores are never touched", async () => {
   const root = setup();
-  const cfg = (name: string) => readConfig({ JIT_DATABASE: join(root, name), JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const cfg = (name: string) => readConfig({ JIT_DATABASE: join(root, name) });
   const sidecars = (name: string) => ["-wal", "-shm", "-journal"].filter(suffix => existsSync(join(root, name) + suffix));
   // Missing store: fixed state, nothing created.
   const missing = inspectDiagnostics(gatherDiagnostics(root, cfg("absent.sqlite"), 1800000000000));
@@ -313,7 +309,7 @@ test("bounded fixture drill runs the static PR path, export, backup and upgrade 
     expect(stateOf(record, "quarantine")).toBe("passed");
     expect(record.legs.find(l => l.leg === "quarantine")!.detail)
       .toBe("states=quarantined>migrated>ledger_applied>validated checks=16 failedChecks=0 discarded=true fenceReleased=true");
-    expect(record.measurements).toMatchObject({ fetchCalls: 0, sentDeliveries: 1, unknownDeliveries: 1, failedDeliveries: 2,
+    expect(record.measurements).toMatchObject({ fetchCalls: 0, sentDeliveries: 0, unknownDeliveries: 0, failedDeliveries: 0, deliveryAttempts: 0,
       succeededJobs: 6, prReports: 3, alertIntents: 3, waitingJobs: 1, cancelledJobs: 1 });
     expect(record.measurements.exportBytes).toBeGreaterThan(0);
     expect(record.measurements.backupBytes).toBeGreaterThan(0);
@@ -366,10 +362,10 @@ test("engine-unavailable drill blocks backup and upgrade preflight and names the
   expect(record.outcome).toBe("blocked");
   expect(record.nextAction).toBe("restore-engine");
   expect(record.fixtureHonesty.join("\n")).toMatch(/injected native port/);
-  // Blocked legs are not limits: only typed limit events reach exhaustedLimits (here the scripted delivery retry ceiling).
-  expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
+  // Blocked legs are not limits: only typed limit events reach exhaustedLimits (none here).
+  expect(record.exhaustedLimits).toEqual([]);
   const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [] });
-  expect(profile.exhaustedLimits).toEqual(["delivery-retry"]);
+  expect(profile.exhaustedLimits).toEqual([]);
 });
 
 test("restore seam derives the quarantine leg from the injected port's result, failing closed on bad evidence", async () => {
@@ -414,8 +410,7 @@ test("quarantine leg reports an untrusted lifecycle ledger as blocked, never as 
   expect(record.nextAction).toBe("resolve-blocked-work");
   validateDrillRecord(record);
   // Every journal the drill opened ended (discarded or failed); nothing holds the fence or the read gate.
-  const restored = inspectDiagnostics(gatherDiagnostics(root, readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite"),
-    JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") })));
+  const restored = inspectDiagnostics(gatherDiagnostics(root, readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite") })));
   expect(restored.upgrade.fence).toBe("none");
   expect(restored.restore).toEqual({ open: 0, blocked: 0, gate: "none", state: "none" });
   expect(leg.detail).toContain("discarded=true");
@@ -496,9 +491,9 @@ test("composed profile carries versions, limits and sample bounds but never Pi r
   roots.push(root);
   const profile = composeProfile({ installationLabel: record.installationLabel, drill: record,
     sampleLimitations: [...record.fixtureHonesty] });
-  // Exhausted limits are the drill's typed limit events (scripted safe-failure retries hit the delivery retry ceiling).
+  // Exhausted limits are the drill's typed limit events; in-app deliveries have no retry ceiling to hit.
   expect(profile.exhaustedLimits).toEqual(record.exhaustedLimits);
-  expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
+  expect(record.exhaustedLimits).toEqual([]);
   expect(profile).toMatchObject({ schema: "jit.ops.profile/v1", drillId: record.id, piReadiness: "not-claimed" });
   expect(profile.versions).toEqual(record.versions);
   expect(profile.versions.schema).toBe(schemaVersion);
@@ -512,7 +507,7 @@ test("composed profile carries versions, limits and sample bounds but never Pi r
 test("diagnostics count active work with whole-table aggregates, so history beyond any row bound cannot hide it", async () => {
   const root = setup();
   const database = join(root, "history.sqlite");
-  const config = readConfig({ JIT_DATABASE: database, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const config = readConfig({ JIT_DATABASE: database });
   const store = new TransactionStore(database);
   try {
     const app = new Application(store, config, { now: () => 1800000000000 });
@@ -557,7 +552,7 @@ test("diagnostics count active work with whole-table aggregates, so history beyo
 test("route-sample omissions come from whole-table totals, not from the bounded group scan", async () => {
   const root = setup();
   const database = join(root, "groups.sqlite");
-  const config = readConfig({ JIT_DATABASE: database, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token"), JIT_JOB_QUEUE_LIMIT: "10000" });
+  const config = readConfig({ JIT_DATABASE: database, JIT_JOB_QUEUE_LIMIT: "10000" });
   const store = new TransactionStore(database);
   try {
     const app = new Application(store, config, { now: () => 1800000000000 });
@@ -658,25 +653,19 @@ test("ops-evidence retention prunes by age, count and bytes whenever a record is
   await expect(writeOpsRecord(root, { ...record, id: crypto.randomUUID() }, { retentionDays: 0, now })).rejects.toThrow("invalid_ops_retention");
 });
 
-test("deliveries go through the DeliveryWorker over a fixture binding; counts come from persisted intents and attempts", async () => {
+test("deliveries are in-app outbox intents: nothing is sent or attempted (ADR 0085)", async () => {
   const root = setup();
   const { record } = await runLoadDrill({ ...drillConfig }, { root, keepRoot: true });
-  expect(record.measurements).toMatchObject({ sentDeliveries: 1, unknownDeliveries: 1, failedDeliveries: 2 });
+  expect(record.measurements).toMatchObject({ sentDeliveries: 0, unknownDeliveries: 0, failedDeliveries: 0, deliveryAttempts: 0 });
   const store = new TransactionStore(join(root, "state", "app.sqlite"));
   try {
     const intents = store.read(tx => tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM delivery_intents WHERE dedupe_key LIKE 'drill/delivery-%' ORDER BY sequence"));
-    expect(intents.map(i => (JSON.parse(i.record_json) as { status: string }).status)).toEqual(["sent", "unknown", "failed", "failed"]);
-    const attempts = store.read(tx => tx.all<{ record_json: string }>(
-      "SELECT record_json FROM delivery_attempts WHERE intent_id IN (SELECT id FROM delivery_intents WHERE dedupe_key LIKE 'drill/delivery-%')"));
-    expect(attempts).toHaveLength(record.measurements.deliveryAttempts);
-    // Safe failures retried within their budget: more attempts than intents, each invoked only after its claim committed.
-    expect(attempts.length).toBeGreaterThan(config4());
-    expect(attempts.every(a => (JSON.parse(a.record_json) as { senderInvoked: boolean }).senderInvoked)).toBe(true);
-    expect(store.read(tx => tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1"))!.state).toBe("bound");
+    expect(intents.map(i => (JSON.parse(i.record_json) as { status: string; nextAction: string })).map(i => [i.status, i.nextAction]))
+      .toEqual(Array.from({ length: drillConfig.deliveries }, () => ["waiting", "in_app_only"]));
+    expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_attempts")!.n)).toBe(0);
   } finally { store.close(); }
-  expect(record.legs.find(l => l.leg === "deliveries")!.detail).toMatch(/attempts=\d+ unsettled=0/);
+  expect(record.legs.find(l => l.leg === "deliveries")!.detail).toBe(`recorded=${drillConfig.deliveries} inApp=${drillConfig.deliveries} attempts=0`);
 });
-const config4 = () => drillConfig.deliveries;
 
 test("queue wait is per-job admission latency and peak RSS is the process high-water mark", async () => {
   const before = process.resourceUsage().maxRSS * 1024;
@@ -917,7 +906,7 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   // The printed profile is a reviewable artifact on its own: revisions, workload, limits, limitations and the disclaimer.
   expect(Object.keys(printed.profile).sort()).toEqual(["config", "drillId", "exhaustedLimits", "measurements", "nextAction", "observedAt",
     "piReadiness", "readinessDisclaimer", "recordId", "sampleLimitations", "schema", "versions"]);
-  expect(printed.profile).toMatchObject({ piReadiness: "not-claimed", drillId: summary.recordId, config: drillConfig, exhaustedLimits: ["delivery-retry"] });
+  expect(printed.profile).toMatchObject({ piReadiness: "not-claimed", drillId: summary.recordId, config: drillConfig, exhaustedLimits: [] });
   expect(String(printed.profile.readinessDisclaimer)).toContain("not Pi or capacity readiness");
   expect(printed.checklist.outcome).toBe("blocked");
   expect(printed.revisions).toEqual((exported as { versions: unknown }).versions);

@@ -14,7 +14,7 @@ import { workspacePage, projectPage, conversationPage, boxLivePage, sourcePage, 
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
-import type { CommitDeliveryCommand, ResendDeliveryCommand, SetAttentionCommand } from "./delivery";
+import type { CommitDeliveryCommand, SetAttentionCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
 import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
@@ -31,7 +31,7 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsWebSearchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsTelegramPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsWebSearchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsNotificationsPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import { completeRoute } from "./team/route-options";
 import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
@@ -252,7 +252,6 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(pathname);
       const deliveryRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery$/.exec(pathname);
       const deliveryIntentRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})$/.exec(pathname);
-      const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(pathname);
       const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(pathname);
       const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(pathname);
       const prAlertPolicyRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/alert-policy$/.exec(pathname);
@@ -1357,7 +1356,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         return action === "create" || action === "rotate" ? page(() => settingsFeedPage(receipt.feed, nav(), auth.csrf, receipt.url))
           : respond(null, 303, { Location: "/settings/feed" });
       }
-      if (url.pathname === "/settings/telegram" && request.method === "GET") return page(() => settingsTelegramPage(app.telegramStatus(auth.actor), nav(), auth.csrf));
+      if (url.pathname === "/settings/notifications" && request.method === "GET") return page(() => settingsNotificationsPage(nav(), auth.csrf));
       if (url.pathname === "/settings/data" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
@@ -1638,18 +1637,12 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const state = app.schedule(auth.actor, scheduleRoute[2]!, scheduleRoute[3]!);
         return api ? json(state) : page(() => scheduleDetailPage(state, nav(), auth.csrf));
       }
-      if (request.method === "POST" && (deliveryRoute || deliveryResendRoute)) {
+      if (request.method === "POST" && deliveryRoute) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
-        if (deliveryResendRoute) {
-          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
-          const command: ResendDeliveryCommand = { kind: "delivery.resend", requestId: body.requestId as string, projectId: deliveryResendRoute[2]!, expectedRevision: number(body.expectedRevision) as number, payload: { intentId: deliveryResendRoute[3]! } };
-          const receipt = app.execute(auth.actor, command);
-          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${deliveryResendRoute[2]}/delivery/${deliveryResendRoute[3]}` });
-        }
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "kind", "text", "dedupeKey"].includes(key))) throw new AppError("invalid_body");
-        const command: CommitDeliveryCommand = { kind: "delivery.commit", requestId: body.requestId as string, projectId: deliveryRoute![2]!, expectedRevision: number(body.expectedRevision) as number, payload: { kind: body.kind as "report", text: body.text as string, dedupeKey: body.dedupeKey as string } };
+        const command: CommitDeliveryCommand = { kind: "delivery.commit", requestId: body.requestId as string, projectId: deliveryRoute[2]!, expectedRevision: number(body.expectedRevision) as number, payload: { kind: body.kind as "report", text: body.text as string, dedupeKey: body.dedupeKey as string } };
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.intent.projectId}/delivery/${receipt.intent.id}` });
       }

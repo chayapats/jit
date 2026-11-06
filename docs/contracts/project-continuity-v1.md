@@ -2,7 +2,7 @@
 
 Owner: Jit #20 (TASK02). Contract: `app.project_continuity/v1`. Requires `app.task_read_model/v1`, `app.decision_read_model/v1`, and `app.source_records/v1`. Schema user_version 10.
 
-Continuity answers what the owner still owes and what they already decided from committed application state. It does not call Schway, Telegram, or a live model.
+Continuity answers what the owner still owes and what they already decided from committed application state. It does not call Schway or a live model.
 
 ## Exact public surface
 

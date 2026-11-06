@@ -94,7 +94,7 @@ export function normalizeSecret(value: unknown): string {
 
 /**
  * Web only: every connection command — including create and test, which carry no value — is refused for any channel
- * but `web` with `connection_requires_web` (403). The local API counts as `local-api` and Telegram as `telegram`.
+ * but `web` with `connection_requires_web` (403). The local API counts as `local-api`.
  */
 export function requireConnectionChannel(channel: string): void {
   if (channel !== "web") throw new AppError("connection_requires_web", 403);

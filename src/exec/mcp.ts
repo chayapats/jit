@@ -15,7 +15,7 @@ import { boxEnvironmentNames, boxProxyNames, pinnedImagePattern } from "./box-ru
  * - **Owner commands.** `mcp.install.accept` is Web only (`mcp_install_requires_web`), revision-bound, needs the
  *   project at `workspace` or above (installing needs the registry), and binds every env name to an owner `mcp_env`
  *   connection. `mcp.install.revise` (Web only) appends an owner revision; `mcp.install.reject` and
- *   `mcp.server.remove` only take power away and are also accepted from Telegram.
+ *   `mcp.server.remove` only take power away.
  * - **Server.** Acceptance records an `mcp_servers` row in state `installing`; the installer then moves it to
  *   `installed` (with the first tool listing) or `failed` with a finite reason. A server with bound env runs in its own
  *   sidecar; all others in the project box. No value is ever stored here: env is names → connection ids.

@@ -7,7 +7,7 @@ Acceptance records an owner obligation. It does not start a shell, an edit, a te
 ## Exact public surface
 
 ```ts
-export type TaskChannel = "web" | "telegram";
+export type TaskChannel = "web";
 export type TaskCommand =
   | { kind: "task.propose"; requestId: string; projectId: string; expectedRevision: number;
       payload: { topicId: string; title: string; summary: string; source?: SourceReference } }
@@ -28,7 +28,6 @@ export function readTaskList(tx: AppTransaction, projectId: string, limit: numbe
 export function readTaskModel(tx: AppTransaction, projectId: string, taskId: string): TaskReadModel;
 export function applyTask(tx: AppTransaction, command: TaskCommand, channel: TaskChannel, now: number, maximumBytes: number): TaskReceipt;
 
-Application.issueAdapterActor(sessionToken: string, channel: TaskChannel): OwnerActor;
 Application.execute(actor: OwnerActor, command: TaskCommand): TaskReceipt;
 Application.tasks(actor: OwnerActor, projectId: string): { project: Project; topics: Topic[] } & TaskList;
 Application.task(actor: OwnerActor, projectId: string, taskId: string): { project: Project; topic: Topic } & TaskReadModel;
@@ -48,7 +47,7 @@ Application.task(actor: OwnerActor, projectId: string, taskId: string): { projec
 
 The same request id and payload hash replays the receipt. A different payload under that request id is `request_id_conflict` and is not stored as an edit. Stale task errors carry `{ projectId, taskId, proposalId, revision, path }`. A stale topic on propose carries `{ projectId, path }` for the topic and no task id.
 
-Web task commands allow channel `web`. `issueAdapterActor` checks the live session and may label the same commands `telegram`. It does not read Telegram updates. Forged `{ ownerId, channel }` objects have no authority. Project creation and owner decisions stay on channel `web`; a telegram actor receives `channel_not_authorized`.
+Web task commands allow channel `web`. The `telegram` adapter actor was removed with [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Forged `{ ownerId, channel }` objects have no authority. Project creation and owner decisions stay on channel `web`.
 
 PR monitor enablement and a `project.status` job do not insert a task. Ordinary chat, including the words "accept and execute", does not insert a task.
 
@@ -71,6 +70,6 @@ POST requires the owner session, `Origin`, and CSRF. GET never proposes, accepts
 
 ## Schema
 
-user_version 9 adds `tasks`, `task_proposals`, and `task_events`. States are `proposed`, `accepted`, `dismissed`, and `cancelled`. Origins are `owner` and `validated_output`. Event kinds are `proposed`, `edited`, `dismissed`, `accepted`, and `cancelled`. Channels are `web` and `telegram`. `actor_id` is `owner`. Source foreign keys reference `sources(id)`. Topic foreign keys reference `topics(project_id, id)`. Migration snapshots the previous file before DDL and rejects a newer schema.
+user_version 9 adds `tasks`, `task_proposals`, and `task_events`. States are `proposed`, `accepted`, `dismissed`, and `cancelled`. Origins are `owner` and `validated_output`. Event kinds are `proposed`, `edited`, `dismissed`, `accepted`, and `cancelled`. Channels are `web` and `telegram`; `telegram` appears only on events recorded before ADR 0085. `actor_id` is `owner`. Source foreign keys reference `sources(id)`. Topic foreign keys reference `topics(project_id, id)`. Migration snapshots the previous file before DDL and rejects a newer schema.
 
 Deterministic evidence: `tests/tasks.test.ts` with a fake clock, local SQLite, and no live model calls. See [ADR 0016](../adr/0016-task-acceptance-without-execution.md).

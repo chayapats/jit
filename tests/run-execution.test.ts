@@ -75,13 +75,12 @@ async function fixture(options: Options = {}) {
     { now, timers: clock.timers, boxes }); queueRef = queue; queues.push(queue);
   const app = new Application(store, config, { now, jobs: queue, boxes });
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
-  const telegram = app.issueAdapterActor(token, "telegram");
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการลงมือทำ" } }).project;
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "แก้โค้ด" } }).topic;
   const role = (name: string, kind: "coordinator" | "specialist") => app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(),
     expectedRevision: app.team(auth.actor).ownerRevision, payload: { roleId: null, name, kind, responsibility: `${name} ทำงานในโครงการ`, enabled: true, route: grok } }).role!.id;
   const jitId = role("จิต", "coordinator"), techId = role("เทคโนโลยี", "specialist");
-  return { box, config, store, clock, runtime, boxes, port, queue, app, auth, telegram, project, topic, jitId, techId, seen };
+  return { box, config, store, clock, runtime, boxes, port, queue, app, auth, project, topic, jitId, techId, seen };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
@@ -96,7 +95,7 @@ function restrict(f: Fixture, roleId: string, level: AccessLevel | null): Access
   return f.app.execute(f.auth.actor, { kind: "access.role.restrict", requestId: rid(), projectId: f.project.id, expectedRevision: revision, payload: { roleId, level } });
 }
 function halt(f: Fixture): AccessReceipt {
-  return f.app.execute(f.telegram, { kind: "execution.halt", requestId: rid(), projectId: f.project.id, expectedRevision: access(f).haltRevision, payload: { reason: "หยุดก่อน" } });
+  return f.app.execute(f.auth.actor, { kind: "execution.halt", requestId: rid(), projectId: f.project.id, expectedRevision: access(f).haltRevision, payload: { reason: "หยุดก่อน" } });
 }
 function send(f: Fixture, text: string) {
   const topic = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic;
@@ -188,7 +187,7 @@ test("a workspace run edits files and runs commands in the box, and the results 
   }
   expect(JSON.stringify(calls)).not.toContain("สวัสดีจาก box");
   expect(f.app.toolCalls(f.auth.actor, f.project.id, { runId: request.runId, limit: 1 })).toHaveLength(1);
-  expect(f.app.toolCalls(f.telegram, f.project.id)).toHaveLength(2);
+  expect(f.app.toolCalls(f.auth.actor, f.project.id)).toHaveLength(2);
   expect(backupImageTables.execution_tool_calls).toBe("include");
   // The box session was released: the box stays only until the idle sweep.
   expect(f.boxes.busy(f.project.id)).toBe(false);

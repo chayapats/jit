@@ -8,7 +8,7 @@
         "playwright-core": "1.64.1",
         "react": "19.3.0",
         "react-dom": "19.3.0",
-        "schway": "file:vendor/schway-1.0.0-rc.2-aac2fc0.tgz",
+        "schway": "file:vendor/schway-1.0.0-rc.2-39194f7.tgz",
       },
       "devDependencies": {
         "@types/bun": "1.4.3",
@@ -125,7 +125,7 @@
 
     "scheduler": ["scheduler@0.28.0", "", {}, "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw=="],
 
-    "schway": ["schway@vendor/schway-1.0.0-rc.2-aac2fc0.tgz", { "dependencies": { "@opentui/core": "^0.5.11", "@sinclair/typebox": "^0.34.52", "@types/semver": "^7.8.0", "ajv": "^8.20.0", "openai": "^7.20.0", "semver": "^7.8.5" }, "bin": { "schway": "./bin/schway" } }, "sha512-RKh2VlgQXqlkuLQkQixs1b/59fYS0wOM0oPiRMIt7aA2dXWAyOFsMxvt/puYAR2SvWkpJkjCIuSJTWeSqtVX9g=="],
+    "schway": ["schway@vendor/schway-1.0.0-rc.2-39194f7.tgz", { "dependencies": { "@opentui/core": "^0.5.11", "@sinclair/typebox": "^0.34.52", "@types/semver": "^7.8.0", "ajv": "^8.20.0", "openai": "^7.20.0", "semver": "^7.8.5" }, "bin": { "schway": "./bin/schway" } }, "sha512-yZmEKHsJ7DZaCJbxmqX+J7q81312ZeV8iymPlHV+4KQb70FrCLI0jpOVeEA+OVe1Jozf8kNYiqQuEXG7O8DX4w=="],
 
     "semver": ["semver@7.8.5", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
 
