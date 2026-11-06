@@ -369,7 +369,7 @@ export async function composeS15(options: S15CompositionOptions) {
         const workspace = resources.find(resource => resource.id === options.vm.resource.id) ?? resources[0];
         return { policyRevision: current.revision, policyExpiresAt: Math.min(current.expiresAt, current.budget?.expiresAt ?? current.expiresAt), purposes, resources, defaults: purposes[0] && workspace ? { purposeId: purposes[0].id, resourceIds: [workspace.id], access: 'read' as const } : null };
       },
-      conversation: { submitRoutine: (actor, command, pin) => conversation.submitRoutine(actor, command, pin), row: (actor, id) => conversationRequestView(conversation, actor, id), stop: (actor, id) => conversation.stop(actor, id) },
+      conversation: { submitRoutine: (actor, command, pin) => conversation.submitRoutine(actor, command, pin), row: (actor, id) => conversationRequestView(conversation, actor, id), stop: (actor, id) => conversation.stop(actor, id), saved: id => store.db.query('SELECT 1 FROM requests WHERE id=?').get(id) !== null },
       ...(files ? { files: { committed: (actor: OwnerActor) => committedArtifacts(conversation, files!, actor).map(item => ({ artifact: item.artifact, parents: item.parents.map(parent => parent.id) })), adopt: (actor: OwnerActor, input: import('../s16/files/types').FileArtifactInputCommand) => files!.adoptArtifact(actor, input) } } : {}),
       ...(options.routines.feedLabel ? { feedLabel: options.routines.feedLabel } : {}) }) : undefined;
     if (routines) cleanup.push(() => routines.close());

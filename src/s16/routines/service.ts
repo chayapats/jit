@@ -410,15 +410,14 @@ export class RoutineService<Actor> {
       if (!actor) { this.#settle(routine.id, occurrence.id, "refused", "owner_changed"); continue; }
       // After the end date nothing new is submitted. A claim whose CHAT request was already saved is recovered;
       // one that never reached CHAT is refused and its run returned.
-      if (occurrence.state === "dispatching" && this.now() >= routine.draft.limits.endsAt) {
-        let saved = false;
-        try { this.options.conversation.row(actor, occurrence.requestId!); saved = true; } catch { saved = false; }
-        if (!saved) { this.#settle(routine.id, occurrence.id, "refused", "expired"); continue; }
-        try { this.#submit(actor, routine, occurrence, this.#files(actor, routine, occurrence)); } catch { continue; }
+      // A claim whose CHAT request was already saved is recorded as submitted and recovered from CHAT's own
+      // saved command; it never adopts its input again. After the end date an unsaved claim is refused instead.
+      if (occurrence.state === "dispatching" && occurrence.requestId && this.options.conversation.saved(occurrence.requestId)) {
         const recovered = occurrence;
         safe(() => this.journal.tx(() => { const current = this.occurrences(routine.id).find(row => row.id === recovered.id)!; if (current.state === "dispatching") { current.state = "submitted"; current.code = null; this.#saveOccurrence(current); } }));
-        continue;
+        this.#resubmit.add(recovered.id); this.#recover(); continue;
       }
+      if (occurrence.state === "dispatching" && this.now() >= routine.draft.limits.endsAt) { this.#settle(routine.id, occurrence.id, "refused", "expired"); continue; }
       let files: { id: string; sha256: string }[] | null;
       try { files = this.#files(actor, routine, occurrence); }
       catch (error) { this.#settle(routine.id, occurrence.id, "refused", error instanceof AppError ? error.code : "file_unavailable"); continue; }
@@ -474,11 +473,22 @@ export class RoutineService<Actor> {
       const occurrence = row ? JSON.parse(row.json) as RoutineOccurrence : null, routine = occurrence ? this.routine(occurrence.routineId) : null;
       if (!occurrence || !routine || !occurrence.requestId || !["submitted", "running"].includes(occurrence.state)) { this.#resubmit.delete(occurrenceId); continue; }
       const actor = this.options.owner(routine.owner); if (!actor) continue;
+      if (!this.options.conversation.saved(occurrence.requestId)) { this.#resubmit.delete(occurrenceId); continue; }
       try {
         if (routine.state === "stopped") this.options.conversation.stop(actor, occurrence.requestId);
-        else this.#submit(actor, routine, occurrence, this.#files(actor, routine, occurrence));
+        else {
+          // Reproduce the exact original command from CHAT's saved file receipts; a withdrawn input is not re-adopted.
+          const saved = this.options.conversation.row(actor, occurrence.requestId);
+          this.#submit(actor, routine, occurrence, occurrence.input ? (saved.files?.inputs ?? []).map(file => ({ id: file.id, sha256: file.sha256 })) : null);
+        }
         this.#resubmit.delete(occurrenceId);
-      } catch { /* Retried next wake; CHAT's own record decides the outcome. */ }
+      } catch (error) {
+        const code = error instanceof AppError || error instanceof PolicyError ? error.code : "conversation_unavailable";
+        if (["conversation_unavailable", "continuity_capacity", "service_closed"].includes(code)) continue;
+        // CHAT refuses to re-register it: fence the saved request so observation settles it instead of waiting forever.
+        try { this.options.conversation.stop(actor, occurrence.requestId); } catch { /* Already terminal. */ }
+        this.#resubmit.delete(occurrenceId);
+      }
     }
   }
   #notify(routine: Routine, occurrence: RoutineOccurrence): void { if (!occurrence.notified && attentionStates.has(occurrence.state)) { occurrence.notified = true; routine.attention++; } }

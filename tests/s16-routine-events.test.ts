@@ -222,3 +222,36 @@ test("stopping a routine fences a claimed submit instead of resubmitting it afte
   expect(detail.occurrences.map(row => [row.state, row.code])).toEqual([["stopped", "aborted"]]);
   expect(f.service.conversation.view(f.owner, claimed.requestId!).state).toBe("stopped"); expect(f.workInputs).toEqual([]);
 }, 30000);
+
+test("a saved file run whose input is withdrawn before recovery settles instead of stalling", async () => {
+  const f = await fixture({ files: true });
+  f.interpretation = { intent: "execute", purposeId: "purpose", resourceIds: ["computer"], access: "reversible_write", subject: null };
+  const text = "Launch: Friday.\n";
+  const pending = await f.json<FileUpload>(await f.request("/api/s16/client/conversations/routine_chat/uploads", "POST", { requestId: rid("up"), conversationId: "routine_chat", name: "notes.txt", bytes: Buffer.byteLength(text), sha256: hash(text) }), 201);
+  const notes = (await f.json<FileUpload>(await f.raw(`/api/s16/client/uploads/${pending.id}/bytes`, text))).receipt!;
+  const produce = async (file: { id: string; sha256: string }, output: string, ask: string) => {
+    const command: ConversationFileCommand = { contract: "s16-conversation/v2", requestId: rid("msg"), conversationId: "routine_chat", text: ask, continuation: null, files: [{ id: file.id, sha256: file.sha256 }] };
+    f.replies.push({ tools: [{ name: "file_read", arguments: { id: file.id, offset: 0 } }, { name: "file_create", arguments: { name: "brief.md", text: output } }], text: "Created." });
+    expect((await f.request("/api/s16/client/conversations/routine_chat/messages", "POST", command)).status).toBe(202);
+    await f.service.conversation.drain(); return f.service.conversation.view(f.owner, command.requestId).artifacts![0]!;
+  };
+  const original = await produce(notes, "# Brief\nFriday.\n", "Summarize these notes and create a downloadable Markdown brief.");
+  const routine = await eventRoutine(f, { conversationId: "routine_chat", instruction: "Review the attached file and then create a revised Markdown summary file.", scope: { purposeId: "purpose", resourceIds: ["computer"], access: "reversible_write" } });
+  await source(f, routine.id, { kind: "artifact", artifactId: original.id });
+  f.advance(1000);
+  const input = (await f.json<FileUpload>(await f.request(`/api/s16/client/artifacts/${original.id}/inputs`, "POST", { requestId: rid("adopt"), conversationId: "routine_chat", sha256: original.sha256 }), 201)).receipt!;
+  await produce(input, "# Brief\nMonday.\n", "Review the attached file. Changes: Monday. Then create a revised Markdown file.");
+  // CHAT saves the run, then the process is lost before the routine records it.
+  const ports = f.service.routines!.options.conversation, submit = ports.submitRoutine;
+  ports.submitRoutine = (actor, command, pin) => { submit(actor, command, pin); throw new AppError("conversation_unavailable", 503); };
+  f.service.routines!.tick(); f.service.routines!.dispatch();
+  const claimed = (await f.detail(routine.id)).occurrences[0]!;
+  expect(claimed.state).toBe("dispatching"); expect(f.service.conversation.view(f.owner, claimed.requestId!).state).toBe("queued");
+  // The owner withdraws the original source before recovery; re-adoption would now fail.
+  expect((await f.request(`/api/s16/client/uploads/${notes.id}/withdraw`, "POST", {})).status).toBe(200);
+  await f.reopen(); await f.wake(); await f.wake();
+  const settled = (await f.detail(routine.id)).occurrences[0]!;
+  expect(["dispatching", "submitted", "running"]).not.toContain(settled.state);
+  expect(settled.state).toBe("needs_you"); expect(requests(f).filter(id => id.startsWith("ro_"))).toEqual([claimed.requestId]);
+  expect((await f.detail(routine.id)).summary.display).not.toBe("running");
+}, 60000);

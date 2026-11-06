@@ -93,6 +93,8 @@ export interface RoutineServiceOptions<Actor> {
     submitRoutine(actor: Actor, command: unknown, pin: ConversationRoutinePin): ConversationReceipt;
     row(actor: Actor, requestId: string): ConversationOwnerRow;
     stop(actor: Actor, requestId: string): void;
+    /** Whether CHAT durably saved this request ID; a read of the protected journal that starts nothing. */
+    saved(requestId: string): boolean;
   };
   /** Committed current artifacts and same-conversation adoption, when S16 files are composed. */
   files?: { committed(actor: Actor): { artifact: FileArtifact; parents: string[] }[]; adopt(actor: Actor, input: FileArtifactInputCommand): FileUpload };
