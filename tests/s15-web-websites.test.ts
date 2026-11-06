@@ -17,8 +17,9 @@ function setup(state: { engine: S15WebsiteEngine; sites: S15ApprovedWebsite[] } 
   const port: S15WebWebsites<WebActor> = {
     status: () => state!.engine,
     list: () => state!.sites,
-    add(_a, _id, input) { calls.push(`add:${input}`); if (input.startsWith("http://")) throw new BrowserError("website_https_required"); if (input === "full.example") throw new BrowserError("website_list_full"); if (input === "history.example") throw new BrowserError("website_history_full"); const site = { origin: "https://example.com", revision: 1, addedAt: at }; state!.sites = [...state!.sites, site]; return site; },
+    add(_a, _id, input) { calls.push(`add:${input}`); if (input.startsWith("http://")) throw new BrowserError("website_https_required"); if (input === "full.example") throw new BrowserError("website_list_full"); if (input === "history.example") throw new BrowserError("website_history_full"); const site = { origin: "https://example.com", revision: 1, addedAt: at, tier: "sensitive" as const }; state!.sites = [...state!.sites, site]; return site; },
     remove(_a, _id, origin, revision) { calls.push(`remove:${origin}:${revision}`); if (revision !== 1) throw new BrowserError("website_changed"); state!.sites = state!.sites.filter(site => site.origin !== origin); },
+    setTier(_a, _id, origin, revision, tier) { calls.push(`tier:${origin}:${revision}:${tier}`); if (origin.includes("bank")) throw new BrowserError("website_sensitive_only"); const old = state!.sites.find(site => site.origin === origin)!; const next = { ...old, tier, revision: revision + 1 }; state!.sites = state!.sites.map(site => site.origin === origin ? next : site); return next; },
     retry() { calls.push("retry"); state!.engine = { state: "provisioning", step: "verify", version: "156.0.8078.4" }; },
   };
   const f = webFixture(() => state ? { websites: port } : {}); fixtures.push(f); return f;
@@ -35,7 +36,7 @@ test("not composed: the page explains itself and its forms do not exist", async 
 });
 
 for (const locale of ["th", "en"] as const) test(`ready with approved websites (${locale}): status, rows with remove, add form and limits`, async () => {
-  const f = setup({ engine: ready, sites: [{ origin: "https://docs.example.org", revision: 3, addedAt: at }] });
+  const f = setup({ engine: ready, sites: [{ origin: "https://docs.example.org", revision: 3, addedAt: at, tier: "sensitive" }] });
   const html = await page(f, locale);
   expect(html).toContain(escaped(T("s15.websites.engine_ready", locale))); expect(html).toContain(escaped(T("s15.websites.engine_version", locale).replace("{version}", "156.0.8078.4")));
   expect(html).toContain(">https://docs.example.org<"); expect(html).toContain('name="revision" value="3"');
@@ -118,4 +119,16 @@ for (const locale of ["th", "en"] as const) test(`the two list limits refuse wit
   expect(history).not.toContain(escaped(T("s15.code.website_list_full", locale)));
   // The lifetime refusal names the real way forward instead of "remove a website".
   expect(T("s15.code.website_history_full", locale)).toContain("/var/lib/jit-s15/state/browser-sites.sqlite");
+});
+
+test("AUTH16-01: the owner marks a website Use freely or Keep protected for the exact revision; sensitive sites refuse", async () => {
+  const calls: string[] = [], f = setup({ engine: ready, sites: [{ origin: "https://docs.example.org", revision: 1, addedAt: at, tier: "sensitive" }, { origin: "https://www.examplebank.com", revision: 1, addedAt: at, tier: "sensitive" }] }, calls);
+  let html = await page(f, "en");
+  expect(html).toContain(escaped(T("s15.websites.tier_sensitive", "en"))); expect(html).toContain(escaped(T("s15.websites.make_trusted", "en")));
+  const trusted = await f.post("/s15/forms/websites/tier", { origin: "https://docs.example.org", revision: "1", tier: "trusted" });
+  expect(trusted.status).toBe(303); expect(calls).toContain("tier:https://docs.example.org:1:trusted");
+  html = await page(f, "th"); expect(html).toContain(T("s15.websites.tier_trusted", "th")); expect(html).toContain(T("s15.websites.make_sensitive", "th"));
+  const refused = await f.post("/s15/forms/websites/tier", { origin: "https://www.examplebank.com", revision: "1", tier: "trusted" }, { "accept-language": "en" });
+  expect(refused.status).toBe(409); expect(await refused.text()).toContain(escaped(T("s15.code.website_sensitive_only", "en")));
+  expect((await f.post("/s15/forms/websites/tier", { origin: "https://docs.example.org", revision: "2", tier: "everyone" })).status).toBe(400);
 });

@@ -29,7 +29,7 @@ test('owner entries normalize to one exact public HTTPS origin or refuse with a 
 test('the journal keeps approvals with revisions across reopen; removal binds the revision the owner saw', () => {
   const root = directory(); let clock = 1_800_000_000_000; const sites = open(root, () => clock);
   expect(sites.list()).toEqual([]); expect(sites.allows('https://example.com')).toBe(false);
-  const added = sites.add('https://example.com/some/page'); expect(added).toEqual({ origin: 'https://example.com', revision: 1, addedAt: clock });
+  const added = sites.add('https://example.com/some/page'); expect(added).toEqual({ origin: 'https://example.com', revision: 1, addedAt: clock, tier: 'sensitive' });
   clock += 5; expect(sites.add('example.com')).toEqual(added);
   sites.add('docs.example.org'); expect(sites.list().map(s => s.origin)).toEqual(['https://docs.example.org', 'https://example.com']);
   expect(sites.allows('https://example.com')).toBe(true); expect(sites.allows('http://example.com')).toBe(false); expect(sites.allows('https://example.com:444')).toBe(false);
@@ -37,11 +37,11 @@ test('the journal keeps approvals with revisions across reopen; removal binds th
   expect(code(() => sites.remove('example.com', 1))).toBe('website_invalid');
   sites.remove('https://example.com', 1); expect(sites.allows('https://example.com')).toBe(false);
   expect(code(() => sites.remove('https://example.com', 1))).toBe('website_changed');
-  clock += 10; expect(sites.add('https://example.com')).toEqual({ origin: 'https://example.com', revision: 2, addedAt: clock });
+  clock += 10; expect(sites.add('https://example.com')).toEqual({ origin: 'https://example.com', revision: 2, addedAt: clock, tier: 'sensitive' });
   // The process lease refuses a second writer; a reopen sees the same list.
   expect(() => new ApprovedWebsites(join(root, 'browser-sites.sqlite'), 'fixture')).toThrow();
   sites.close(); const reopened = open(root);
-  expect(reopened.list()).toEqual([{ origin: 'https://docs.example.org', revision: 1, addedAt: 1_800_000_000_005 }, { origin: 'https://example.com', revision: 2, addedAt: clock }]);
+  expect(reopened.list()).toEqual([{ origin: 'https://docs.example.org', revision: 1, addedAt: 1_800_000_000_005, tier: 'sensitive' }, { origin: 'https://example.com', revision: 2, addedAt: clock, tier: 'sensitive' }]);
 });
 
 test('catalog identities: recipients follow approval, website sources stay public and active after removal', () => {
@@ -135,4 +135,24 @@ test('disclosure resolves an approved origin to its recipient and source; unlist
   expect(d.catalogs.recipient(sites.recipient('https://example.com')!)).toEqual({ ref: sites.recipient('https://example.com')!, active: true });
   // Other routes are untouched.
   expect(d.routes.filter(r => r.id !== d.browserRoute)).toEqual(base.routes.filter(r => r.id !== base.browserRoute));
+});
+
+// AUTH16-01 (S16-D09): website trust tiers.
+test('the owner marks the exact approval trusted; identity, email and banking sites stay sensitive; trusted sites leave the protected browser', () => {
+  const root = directory(); let clock = 1_800_000_000_000; const sites = open(root, () => clock);
+  const docs = sites.add('docs.example.org'); expect(docs.tier).toBe('sensitive'); expect(sites.tier('https://docs.example.org')).toBe('sensitive');
+  expect(code(() => sites.setTier('https://docs.example.org', 2, 'trusted'))).toBe('website_changed');
+  const trusted = sites.setTier('https://docs.example.org', 1, 'trusted'); expect(trusted).toMatchObject({ tier: 'trusted', revision: 2 });
+  expect(sites.tier('https://docs.example.org')).toBe('trusted'); expect(sites.recipient('https://docs.example.org/a')?.revision).toBe(2);
+  for (const sensitive of ['accounts.google.com', 'mail.google.com', 'www.kasikornbank.com', 'www.paypal.com', 'login.example.net']) {
+    const site = sites.add(sensitive); expect(code(() => sites.setTier(site.origin, site.revision, 'trusted'))).toBe('website_sensitive_only');
+  }
+  const policy = approvedWebsitePolicy(sites), get = (url: string) => ({ method: 'GET', url, contentType: '', bodyBase64: '', navigation: true });
+  expect(policy.classify(get('https://docs.example.org/'), 'general')).toEqual({ kind: 'unsupported', code: 'website_trusted_vm' });
+  expect(policy.observable('https://docs.example.org/', 'general')).toBe(false);
+  sites.setTier('https://docs.example.org', 2, 'sensitive'); expect(policy.classify(get('https://docs.example.org/'), 'general')).toEqual({ kind: 'read', private: false });
+  // Re-adding after removal starts sensitive again.
+  const current = sites.setTier('https://docs.example.org', 3, 'trusted'); sites.remove(current.origin, current.revision); clock += 1;
+  expect(sites.add('docs.example.org').tier).toBe('sensitive');
+  sites.close();
 });

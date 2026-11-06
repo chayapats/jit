@@ -229,7 +229,8 @@ export interface S15WebResumes<Actor> {
 /** Pinned Chromium state for Resources → Websites; `library` is a validated shared-object name. */
 export type S15WebsiteEngine = import("../browser/chromium").ProtectedChromiumStatus;
 /** One owner-approved website; `revision` binds a removal to the approval the owner saw. */
-export interface S15ApprovedWebsite { origin: string; revision: number; addedAt: number }
+/** `tier` (S16-D09): `trusted` sites are used in the working VM browser; everything else stays in the protected browser. */
+export interface S15ApprovedWebsite { origin: string; revision: number; addedAt: number; tier: 'trusted' | 'sensitive' }
 /**
  * BROW15-02 owner seam over the protected approved-website journal. Composition verifies the owner on every
  * call. Changes apply to the next browser request without a restart; nothing here grants sending, sign-in
@@ -241,6 +242,8 @@ export interface S15WebWebsites<Actor> {
   /** Normalizes a pasted link or name to its HTTPS origin; refuses `website_*` codes. */
   add(actor: Actor, requestId: string, input: string): S15ApprovedWebsite;
   remove(actor: Actor, requestId: string, origin: string, revision: number): void;
+  /** AUTH16-01: marks exactly the seen approval revision trusted or sensitive; refuses `website_sensitive_only`/`website_changed`. */
+  setTier?(actor: Actor, requestId: string, origin: string, revision: number, tier: 'trusted' | 'sensitive'): S15ApprovedWebsite;
   /** Re-runs a failed Chromium provisioning; verified files are re-checked, not downloaded again. */
   retry(actor: Actor): void;
 }

@@ -83,7 +83,7 @@ export interface S15CompositionOptions {
      * status, exposed only through the owner-verified Resources → Websites port. An installation composed
      * before its browser existed gains a fresh `browser.sqlite` once, with no other store change.
      */
-    approved?: { sites: Pick<ApprovedWebsites, 'list' | 'add' | 'remove'>; engine: Pick<ProtectedChromium, 'status' | 'retry'> } };
+    approved?: { sites: Pick<ApprovedWebsites, 'list' | 'add' | 'remove'> & Partial<Pick<ApprovedWebsites, 'setTier'>>; engine: Pick<ProtectedChromium, 'status' | 'retry'> } };
   google?: GoogleEffectsOptions;
   github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void; routeAuth?: { lifecycle: import('schway/host').HostCredentialLifecycle; fetch?: HostAuthFetch } }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
@@ -469,6 +469,7 @@ export async function composeS15(options: S15CompositionOptions) {
         list: (actor: OwnerActor) => { policy.owner.current(actor); return approved.sites.list(); },
         add: (actor: OwnerActor, _requestId: string, input: string) => { policy.owner.current(actor); return approved.sites.add(input); },
         remove: (actor: OwnerActor, _requestId: string, origin: string, revision: number) => { policy.owner.current(actor); approved.sites.remove(origin, revision); },
+        setTier: (actor: OwnerActor, _requestId: string, origin: string, revision: number, tier: 'trusted' | 'sensitive') => { policy.owner.current(actor); if (!approved.sites.setTier) throw new AppError('not_found', 404); return approved.sites.setTier(origin, revision, tier); },
         retry: (actor: OwnerActor) => { policy.owner.current(actor); void approved.engine.retry().catch(() => {}); },
       }))(options.browser.approved) } : {}),
       ...(github && gh?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),

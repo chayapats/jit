@@ -604,6 +604,13 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
           return redirect(`/resources/websites?removed=${encodeURIComponent(fields.origin!)}#s15-web-list`);
         }
+        if (url.pathname === "/s15/forms/websites/tier") {
+          only(fields, ["csrf", "requestId", "origin", "revision", "tier"]);
+          if (!/^[1-9]\d{0,8}$/.test(fields.revision!) || (fields.tier !== "trusted" && fields.tier !== "sensitive") || !websites.setTier) throw new AppError("invalid_body");
+          try { websites.setTier(actor, fields.requestId!, fields.origin!, Number(fields.revision), fields.tier); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
+          return redirect(`/resources/websites#s15-web-list`);
+        }
         if (url.pathname === "/s15/forms/websites/retry") {
           only(fields, ["csrf", "requestId"]);
           try { websites.retry(actor); }
