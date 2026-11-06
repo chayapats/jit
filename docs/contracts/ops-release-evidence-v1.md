@@ -16,7 +16,7 @@ Owner: Jit #34 (OPS04). Contract: `ops.release_evidence/v1`, record schemas `jit
 | J01 | `groups`, `memory-queries` | team dispatch and coordinator synthesis (bun test evidence) |
 | J02 | `memory-queries`, `schedules` | task acceptance and memory correction (bun test evidence) |
 | J03 | `pr-snapshots`, `pr-alerts` | — (fully drilled) |
-| J04 | `deliveries` | Telegram project commands (bun test evidence); no Bot API traffic |
+| J04 | `deliveries` | In-app delivery intents only; no transport and no sends ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)) |
 | J05 | `quota-wait`, `cancel` | service restart and reboot reconciliation (OPS05 human evidence) |
 | crash | `backup`, `quarantine`, `upgrade-preflight` | crash-at-every-boundary matrices (bun test evidence) |
 | trust | `network`, `export` | GitHub-write, shell and forged-command refusals (bun test evidence) |

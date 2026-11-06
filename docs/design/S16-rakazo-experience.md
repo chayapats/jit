@@ -122,7 +122,7 @@ E = inspected existing operation, not proof of every composed client path. P = P
 | Durable work / routine / delegation | E: `ResponsibilityPort` and GET `/s15/responsibilities/:id` read-only projection, TEAM handoff/leases. P: complete client schedule/event configuration, worker lifecycle and cross-client notifications; projection read must never start work. |
 | Connections / model selection | E: resources projection and S15 model/effects services, `web/types.ts` ports, mail/Google effect adapters. P: general connection catalog/auth lifecycle, MCP/API schema review, skill import and expanded supported route clients. Existing adapters do not prove universal connectors. |
 | Bots / search / archive/export | E: current conversation/resource/memory projections. P: full Bot lifecycle, authorized cross-object search and immutable-artifact index; no hidden project authority. |
-| Voice / native clients / messaging files | E: existing Web/Telegram and durable work concepts. P: voice lifecycle/usage, packaged desktop/mobile sessions and capability-aware attachment delivery. No native availability claimed here. |
+| Voice / native clients / notifications | E: existing Web and durable work concepts. P: voice lifecycle/usage, packaged desktop/mobile sessions and Web Push notifications (S16-D10; Telegram removed). No native availability claimed here. |
 
 ## Architecture recommendation and actual reuse
 
@@ -198,7 +198,7 @@ These are scenarios to implement and run, not tests claimed passed by documentat
 | AC15 | Permission denial, dictation edit/cancel, playback interruption and continuous call reconnect respect finite budget; speech cannot approve — VOICE16/CALL16. |
 | AC16 | Packaged desktop connects/updates/recovers; installation alone never enrolls host computer — DESKTOP16. |
 | AC17 | Mobile file send, foreground reconnect, exact review, preview and needs-you push on actual devices — MOBILE16. |
-| AC18 | Bound messaging retries reuse delivery identity; unsupported attachment/approval capabilities link to authenticated client — CHANNEL16. |
+| AC18 | Web Push retries reuse durable notice identities; a notification only links to the authenticated conversation and never approves or starts work — NOTIFY16 (S16-D10). |
 | AC19 | Second backend advertises truthful capabilities; stop/recovery and state portability tested with settlement evidence — COMPUTER16. |
 | AC20 | Cross-object search filters withdrawn/private data, library revision navigation, labels do not widen authorization — ART16/SPACE16. |
 | AC21 | Upgrade/backup/export/restore preserve policies/withdrawals/usage/unknowns; rollback cannot rewind authority; third-party notices ship — OPS16/BASE16. |

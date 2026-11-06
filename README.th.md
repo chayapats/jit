@@ -44,7 +44,7 @@ S14 uses `JIT_S14_DATABASE=.local/s14/application.sqlite` and `JIT_S14_ORIGIN=ht
 
 ## Retained legacy pilot (explicit --legacy)
 
-The following historical descriptions, screenshots, project/scripted/Telegram/webhook/local-CLI features and configuration apply only to legacy. `bun run owner:reset` is legacy-only. S14 has no new reset or conversion flow.
+The following historical descriptions, screenshots, project/scripted/webhook/local-CLI features and configuration apply only to legacy. `bun run owner:reset` is legacy-only. S14 has no new reset or conversion flow.
 
 ## Jit คืออะไร
 
@@ -63,16 +63,15 @@ Jit ใช้ [Schway](https://github.com/chayapats/schway) เป็น executi
 | **ตรวจ PR แบบส่วนตัว** | จิตอ่าน PR ใหม่โดยไม่รันโค้ด แล้วแจ้งสิ่งที่พบพร้อมหลักฐานให้คุณคนเดียว |
 | **เงียบเป็นค่าเริ่มต้น** | งานตามตารางเวลาที่ไม่มีอะไรใหม่จะไม่ส่งข้อความ และคุณได้แจ้งเตือนครั้งเดียวเมื่องานทั้งชุดจบ เลือกได้ว่าจะรับทุกเรื่องหรือเฉพาะเรื่องที่รอคุณ |
 | **รันงานใน sandbox** | แต่ละโครงการมี rootless Podman box ของตัวเอง ระดับสิทธิ์มี Read, Workspace และ Full และมีแต่คุณที่เพิ่มระดับได้ การ push, deploy และ external effect อื่นๆ ต้องรอให้คุณอนุมัติผ่าน approval card ก่อน |
-| **เข้าถึงได้หลายทาง** | Web, CLI บน loopback (`jit ask`), signed webhooks และ `.ics` feed ของตารางงาน ช่องทาง Telegram เขียนไว้แล้ว แต่ build นี้ยังไม่มี Bot API transport ที่ใช้งานจริง |
+| **เข้าถึงได้หลายทาง** | Web, CLI บน loopback (`jit ask`), signed webhooks และ `.ics` feed ของตารางงาน Jit ไม่มีช่องทาง Telegram แล้ว (ถอดออกเมื่อ 2026-11-06 ตาม [ADR 0085](docs/adr/0085-remove-telegram-web-push-notifications.md)) |
 
 ## ทำงานอย่างไร
 
 ```mermaid
 flowchart LR
   you([คุณ]) --> web[Web / PWA]
-  you --> tg[Telegram]
   you --> cli[CLI และ webhooks]
-  web & tg & cli --> jit{{Jit}}
+  web & cli --> jit{{Jit}}
   jit --> db[(SQLite<br/>บนเครื่องคุณ)]
   jit --> schway[Schway<br/>agent loop]
   schway --> models[Codex / Grok<br/>subscriptions]
@@ -88,7 +87,7 @@ flowchart LR
 
 ## สถานะ
 
-Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว Jit ไม่ผูกกับอุปกรณ์ใด เครื่องอ้างอิงที่เล็กที่สุดคือ Raspberry Pi 5 และเมื่อ 2026-10-28 การติดตั้งบน Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset และ Telegram ยังปิดไว้จนกว่าจะมี transport จริง แต่ละ installation รองรับ owner คนเดียว
+Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว Jit ไม่ผูกกับอุปกรณ์ใด เครื่องอ้างอิงที่เล็กที่สุดคือ Raspberry Pi 5 และเมื่อ 2026-10-28 การติดตั้งบน Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset แต่ละ installation รองรับ owner คนเดียว
 
 ## เริ่มต้นใช้งาน
 
@@ -117,7 +116,7 @@ Jit อ่านค่าจาก environment variables ค่าที่ใ�
 | `JIT_RUN_PORT` | `scripted` | `scripted` (fixtures) หรือ `schway` (route จริง) |
 | `JIT_SESSION_SECONDS` | `28800` | อายุ browser session |
 
-ดูรายการทั้งหมดพร้อมขีดจำกัดได้ที่ [`src/config.ts`](src/config.ts) ซึ่งรวมค่าของ jobs, Telegram และ execution box
+ดูรายการทั้งหมดพร้อมขีดจำกัดได้ที่ [`src/config.ts`](src/config.ts) ซึ่งรวมค่าของ jobs และ execution box
 
 > [!IMPORTANT]
 > ถ้าจะเข้าจากเครื่องอื่น ให้วาง Jit หลัง HTTPS reverse proxy บน VPN ที่คงค่า `Host` ไว้ อย่าเปิด backend port ออกไปตรงๆ Jit ไม่เชื่อ `Forwarded` headers และการอยู่บน VPN ไม่ถือเป็นตัวตนของ owner

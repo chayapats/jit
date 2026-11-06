@@ -2,12 +2,14 @@
 
 Owner: Jit #116 (REL04). Contract: `delivery.attention_levels/v1`. Implementation: `src/delivery/attention.ts`, `src/delivery/outbox.ts` (`resolveDeliveryIntent`), `src/team/work-group.ts`, hooks in `src/team/jit-reply.ts`, `src/team/jit-dispatch.ts`, `src/team/dispatch.ts`, `src/jobs/schedules.ts`, `src/pr/alerts.ts`, `src/application.ts`, `src/ops/lifecycle.ts`, Web in `src/web.ts` and `settingsPage` (`src/web-layout.ts`). Requires `delivery.outbox/v1`, `app.jit_reply/v1`, `app.team_dispatch/v1`, `app.dispatch_allowance/v1`, `jobs.quiet_outcomes/v1` and `jobs.attempt_fence/v1`. FR-28, FR-09, FR-11, FR-15, NFR-05, NFR-10. Read alongside [ADR 0032](../adr/0032-quiet-outcomes-and-attention-levels.md) ("Attention levels", "Notify once") and [ADR 0014](../adr/0014-delivery-outbox.md).
 
+**Telegram removed (2026-11-06, [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)).** Only the `web` channel remains. Its level now filters which in-app outbox notices are created (`needs-me` by default). The outbox has no push transport (`delivery.outbox/v1`): intents are in-app attention records and are never sent. A saved `telegram` level row is inert: nothing reads, migrates or deletes it.
+
 The level decides only which delivery intents are *created*. It never hides, deletes or rewrites a report, decision, reply, specialist result or history row, and a level change never cancels an intent that already exists. ADR 0014 is unchanged: one logical intent per notice, remote outcomes stay separate, `unknown` is never retried blindly.
 
 ## Exact public surface
 
 ```ts
-type AttentionChannel = "telegram" | "web";
+type AttentionChannel = "web";
 type AttentionLevel = "all" | "needs-me";
 type AttentionClass = "needs_owner" | "informational";
 interface AttentionSetting { channel; level; revision: number; updatedAt: number | null }
@@ -40,9 +42,9 @@ Schema 35 adds `attention_levels(channel PRIMARY KEY CHECK IN ('telegram','web')
 
 `attention.set` is revisioned per channel (the expected revision is that channel's row), idempotent by request id (`request_id_conflict` on a different payload), validated (`invalid_attention`: exact payload keys, known channel and level), audited, and refused during upgrade or restore fences like every owner command. It accepts the Web channel's owner session.
 
-HTTP: `GET /settings` renders section `#attention` with one form per channel (no script needed); `POST /settings/attention` (form → 303 `/settings#attention`); `GET`/`POST /api/settings/attention` (JSON, CSRF header). Labels are `settings.attention*` in Thai and English.
+HTTP: `GET /settings` renders section `#attention` with the Web channel's form (no script needed); `POST /settings/attention` (form → 303 `/settings#attention`); `GET`/`POST /api/settings/attention` (JSON, CSRF header). Labels are `settings.attention*` in Thai and English.
 
-Web/PWA has no push transport (`web.pwa/v1`), and every outbox intent goes to Telegram. The Web level is stored, revisioned and shown, but filters nothing until a Web notification channel exists; the settings page says so (`settings.attention_web_note`).
+Web/PWA has no push transport in the legacy/S14 runtime (`web.pwa/v1`). The Web level filters which in-app notices are created; the notices appear on the project's delivery pages. Web Push belongs to the S15/S16 stack (NOTIFY16-01) and is not part of this contract.
 
 ## Classification of every intent producer
 
@@ -51,7 +53,6 @@ Web/PWA has no push transport (`web.pwa/v1`), and every outbox intent goes to Te
 | Producer | Class | Under `needs-me` |
 | --- | --- | --- |
 | `delivery.commit` owner command (report or reminder) | `needs_owner` (the owner asked for this notice explicitly; its receipt always carries the intent) | created |
-| Telegram-eligible approval card (`notifyApprovalCard`) | always delivered directly through outbox (owner decision required) | created once per card when bound |
 | Schedule reminder (`scheduleReminderWork`) | `needs_owner` (the owner's own text; ADR 0032 lists reminders as always delivered) | created |
 | Schedule summary `report` | `needs_owner` (explicit owner request) | created once per occurrence |
 | Schedule summary `failed`, provider error (REL01) | `needs_owner` (failure) | created |
@@ -80,10 +81,10 @@ Coordinator decision proposals and task proposals create no intent in this build
 
 When a stall stops waiting, the evaluation that observes it resolves its intent in that same transaction with `resolveDeliveryIntent`:
 
-- unsent (`waiting`, `queued`, `claimed` before the sender was invoked) → `cancelled`, `failureReason` = the reason, attempts interrupted;
-- already sent, `unknown`, `failed` or in flight → outcome kept, `resolution = { reason, at }`, revision + 1; a `failed` intent loses its safe automatic retry, and an in-flight send that comes back `telegram_unavailable` is not retried (`recordDeliveryResult` checks `resolution`). Nothing claims the remote message was withdrawn, and the delivery detail page says so (`delivery.resolved_*`).
+- an in-app intent (never sent) → `cancelled`, `failureReason` = the reason;
+- a historical intent stored before ADR 0085 as sent, `unknown` or `failed` → outcome kept, `resolution = { reason, at }`, revision + 1. Nothing claims a remote message was withdrawn, and the delivery detail page says so (`delivery.resolved_*`).
 
-The reason is `owner_answered` when an owner command caused it (accept, dismiss, answer now, resume, stop, skip, stop-all, from any channel) and `no_longer_waiting` when the item closed by itself (for example a deadline). Final notices are never resolved by condition.
+The reason is `owner_answered` when an owner command caused it (accept, dismiss, answer now, resume, stop, skip, stop-all) and `no_longer_waiting` when the item closed by itself (for example a deadline). Final notices are never resolved by condition.
 
 ## Restart safety
 
@@ -93,8 +94,8 @@ All state is committed: group rows, decided notice keys and intents. The service
 
 - Hide or delete reports, decisions or history based on the level.
 - Retroactively cancel intents on a level change (a stricter level only stops new informational intents).
-- Retry `unknown` deliveries blindly (ADR 0014); resolution never re-sends.
+- Send or resend anything; resolution never sends.
 
 ## Deterministic evidence
 
-`tests/attention-levels.test.ts` (scripted run port, fixture Telegram sender, no network): a reply that dispatches 3 specialists has 0 intents until all settle and exactly 1 after the team reply commits, also after sweeps and a reopen; one specialist stopped and one skipped still give 1 intent, and late callbacks add none; `needs-me` filters a plain team report and keeps the history, creates one intent for a proposal card, one for a failed team reply and one for a route wait; switching `all` → `needs-me` mid-group never cancels the existing intent and switching back creates nothing late; accepting a proposal on Web cancels its unsent intent, and once sent marks it resolved (shown on the detail page, never re-sent); dismiss, resume and stop-all resolve their notices; a restart while the group is queued gives exactly 1 intent; a crash with an admitted role notifies it as blocked once; `attention.set` revision, replay, conflict, validation, audit, form and JSON with CSRF, Thai and English labels and backup classification. `tests/schedule-quiet-outcomes.test.ts` and `tests/pr-alerts.test.ts`: owner-configured reports and finding alerts create one intent under saved and unset `needs-me`; replay creates no duplicate. Failed schedules and reminders still notify. `tests/attention-levels.test.ts`: team progress and plain final replies stay quiet with saved and unset `needs-me`, while blockers and proposals notify.
+`tests/attention-levels.test.ts` (scripted run port, no network): a reply that dispatches 3 specialists has 0 intents until all settle and exactly 1 after the team reply commits, also after sweeps and a reopen; one specialist stopped and one skipped still give 1 intent, and late callbacks add none; `needs-me` filters a plain team report and keeps the history, creates one intent for a proposal card, one for a failed team reply and one for a route wait; switching `all` → `needs-me` mid-group never cancels the existing intent and switching back creates nothing late; accepting a proposal on Web cancels its in-app intent; dismiss, resume and stop-all resolve their notices; a restart while the group is queued gives exactly 1 intent; a crash with an admitted role notifies it as blocked once; `attention.set` revision, replay, conflict, validation, audit, form and JSON with CSRF, Thai and English labels and backup classification. `tests/schedule-quiet-outcomes.test.ts` and `tests/pr-alerts.test.ts`: owner-configured reports and finding alerts create one intent under saved and unset `needs-me`; replay creates no duplicate. Failed schedules and reminders still notify. `tests/attention-levels.test.ts`: team progress and plain final replies stay quiet with saved and unset `needs-me`, while blockers and proposals notify.

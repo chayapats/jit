@@ -7,7 +7,7 @@ The complete self-hosted scope is required. Rows below are delivery slices, not 
 ## Initial facts
 
 - Main base: `76e15e9f`; no open PRs and no existing Rakazo/S16 issue were found at initial inspection, before opening #392/#393.
-- S15 code already supplies protected conversation/policy/model/team/memory/VM/work/GitHub/effect/adoption services, Web and Telegram. It is opt-in. Inspect current code, not historical preparation-document statuses, before reusing it.
+- S15 code already supplies protected conversation/policy/model/team/memory/VM/work/GitHub/effect/adoption services and Web. Its Telegram channel is removed by NOTIFY16-01 (ADR 0085). It is opt-in. Inspect current code, not historical preparation-document statuses, before reusing it.
 - At initial main inspection, the provisioned browser was static/public/approved-origin only and chat uploads were unavailable. The current draft stack adds uploads; the modern browser gap remains. Rakazo's `packages/chat-ui` depends on its contracts/core/UI packages and React; it is not a drop-in dependency for Jit's existing SSR renderer.
 - S15 #340/#341 remain open. Their pending model/account/device/live evidence is neither waived nor a blocker to unrelated deterministic S16 development.
 - Stack choices are open for improvement. Shared React clients and a protected Jit API are a candidate, not a requirement to preserve the old Web stack or import the whole upstream backend.
@@ -94,7 +94,7 @@ The [machine-auditable coverage index](S16-rakazo-experience-coverage.json) reco
 
 ### Implementation and evidence distinctions
 
-- **Baseline reused:** S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser/Telegram and adoption services; S14/legacy continuity. Their existing implementation is not new S16 acceptance.
+- **Baseline reused:** S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser and adoption services (Telegram removed, ADR 0085); S14/legacy continuity. Their existing implementation is not new S16 acceptance.
 - **Implemented on draft:** DOC/UX #393/#394 (#398), API #395 (#399), UTF-8 #400 (#403), binary/image #401 (#404). The authored research is reused; no large Mobbin search is repeated. Reuse attribution already exists for two modules; #405 completes reusable validation.
 - **Planned:** #402 and all new deterministic implementation slices. File memory/history fences remain enabled. A generic resource ancestry label does not satisfy exact file-recipient/history checks.
 - **Pending live evidence:** #431 and exact adoption #432. Human labels describe required participation, not satisfied prerequisites. Real Linux parser/image account/device evidence is pending; fixtures and browser viewport tests are not native-device acceptance. S15 #340/#341 keep their separate scope.

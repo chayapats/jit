@@ -3,6 +3,8 @@ status: accepted for TG01 engineering choices (Jit #12)
 scope: Telegram owner binding and durable long-poll inbox
 ---
 
+> Superseded 2026-11-06 by [ADR 0085](0085-remove-telegram-web-push-notifications.md): Telegram is removed from Jit.
+
 # Bind numeric Telegram identity and persist updates before offset advance
 
 ## Confirmed decisions and required behavior

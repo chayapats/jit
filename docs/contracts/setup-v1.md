@@ -162,7 +162,7 @@ It never advances setup, selects another route or changes billing.
 - `POST /[api/]setup/sign-in/:provider/:flowId/cancel`: `surface`, revision,
   request id and CSRF. HTML redirects to the safe status URL.
 - Every mutation uses session, exact fields, Origin, CSRF, receipts and audit.
-  Local API, Telegram and fabricated/model actors are rejected.
+  Local API and fabricated/model actors are rejected.
 - Local store reads have a five-second deadline. Schway's start deadline is 30 seconds; polling ends by the earlier provider
   expiry or ten minutes. The Web enhancement reads status every 1.5 seconds with
   a five-second request timeout and returns to provider cards on ready. Transient

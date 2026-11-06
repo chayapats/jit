@@ -8,10 +8,9 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 
 | Section | Page | What it holds |
 | --- | --- | --- |
-| General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged), the local API switch (`app.local_api/v1`), notification levels per channel (`#attention`, `delivery.attention_levels/v1`, from REL04) and font licences |
+| General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged), the local API switch (`app.local_api/v1`), the Web notification level (`#attention`, `delivery.attention_levels/v1`, from REL04) and font licences |
 | Team and models | `/settings/team` | Installation roles, default route and role routes |
 | Team dispatch | `/settings/dispatch` | Each project's dispatch allowance (`app.dispatch_allowance/v1`, from BOT04): one owner form per project |
-| Telegram | `/settings/telegram` | Binding and inbox status (read only), each project's notification requests |
 | Calendar feed | `/settings/feed` | The read-only `.ics` schedule feed (`app.schedule_feed/v1`, from REL08): New URL, Turn off and the include-purpose option |
 | Backups | `/settings/backups`, `/settings/backups/:id` | `ops.backup_manifest/v1` inventory and detail |
 | Upgrades | `/settings/upgrades`, `/settings/upgrades/:id` | `ops.schema_migrations/v1` journals |
@@ -24,8 +23,8 @@ Every settings page shows the settings sub-navigation.
 - **Moved pages.** `GET /team`, `/backups[/:id]`, `/upgrades[/:id]` and `/restores[/:id]` answer `308` to the same path under `/settings`, keeping the query string. The redirect is static and runs before sign-in, so it reveals nothing.
 - **Commands do not move.** Forms on the new pages still post to `/team/roles`, `/team/routes`, `/backups`, `/upgrades[/:id]` and `/restores[/:id]`, with the same session, `Origin`, CSRF, `requestId`, revision and receipt rules. Only the no-script `303` after a post now points at the settings page. `POST` to a `/settings/...` page path is `404`, so there is no second command endpoint. The restore gate now sends ordinary pages to `/settings/restores`.
 - **JSON API paths do not move** (`/api/team`, `/api/backups`, `/api/upgrades`, `/api/restores`, …).
-- **Project pages stay.** Exports and deletions (`/projects/:id/exports…`, `/projects/:id/memory/deletions…`) and notifications (`/projects/:id/delivery…`) keep their URLs and render inside the settings frame, under Project data and Telegram respectively.
-- **Telegram status** comes from `Application.telegramStatus(actor)`. It is the same projection the Telegram channel uses (`readTelegramStatus`): binding state, credential presence, gap state, inbox counts and the next action. Binding and revocation stay outside the Web UI.
+- **Project pages stay.** Exports and deletions (`/projects/:id/exports…`, `/projects/:id/memory/deletions…`) and in-app notification history (`/projects/:id/delivery…`) keep their URLs. Exports and deletions render inside the settings frame under Project data.
+- **Telegram removed.** The Telegram section and `/settings/telegram` were removed with [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md).
 
 `routeInventory` lists every page URL that existed before UX02 with its kind: `redirect` (to a settings page), `settings` (renders in the settings frame), `panel` (a full page the topic panel links to) or `page` (unchanged). `tests/web-ux02.test.ts` walks the table. A new or moved page must be added there.
 
@@ -62,7 +61,7 @@ UX01's `app.js` sent no requests. UX02 adds exactly two same-origin `GET`s, both
 `tests/web-ux02.test.ts` covers the following:
 
 - the route inventory, with every old URL redirecting or rendering, query strings kept, redirects before sign-in, the API unmoved and no `POST` on settings page paths;
-- forms on settings pages posting to the original endpoints with the same `role.save` receipt and stale-revision refusal, the settings sub-navigation in Thai and English, and the Telegram status page being read only;
+- forms on settings pages posting to the original endpoints with the same `role.save` receipt and stale-revision refusal, and the settings sub-navigation in Thai and English;
 - the panel being closed and empty on the topic page, the server focus order, each tab rendering, tab validation, project scope, no API variant, sign-in, and no state change;
 - search bounds (limits, `more`, 100 code points, control characters, repeated `q`), name and title scope only (no message text), escaping, both-language command matching, and authorization;
 - palette markup (a closed dialog, dictionary labels, the query field first in focus order);

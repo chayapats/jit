@@ -229,7 +229,7 @@ Opt-in live acceptance is **not run by the implementation agent**:
   operator must trust and review the build inputs and resulting release.
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
 - Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
-- Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
+- Credentials: Jit no longer reads a Telegram bot token ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)). An old token file or secret is left in place and never read; revoke the bot at BotFather. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
 - `runPort: "schway"`: Schway reads Grok/Codex logins from the identity's own Secret Service. The identity needs a lingering user manager (`loginctl enable-linger <identity>`), a Secret Service on its session bus (for example a `gnome-keyring-daemon` user service), a collection unlocked at user-session start, and its own `/login` per route (Pi runbook Round B). The unit then binds only `/run/user/<uid>/bus` and starts after `user@<uid>.service`; plan blocks with `enable-service-user-session-bus` while that socket is missing. Never copy another user's keyring or CLI credentials.
 
 ## 1. Build and prepare the artifact
@@ -337,9 +337,9 @@ journalctl --namespace=jit -u jit.service                # bounded by journald@j
 
 - The first start turns the install seed into the real OPS02 ledger checkpoint at `ledgerPath`. From then on, a missing, replaced, tampered or relocated checkpoint blocks activation (`Service blocked at quarantine: lifecycle ledger ...`). Restore the file from its configured location or copy the verified checkpoint to a new location; never hand-edit it or reseed it.
 - Start runs `serve --service-config`: preflight, quarantine/ledger, schema/upgrade, engine and artifact gates, reconciliation, then listening. A blocked gate exits with `Service blocked at <gate>: ... (next: ...)`; resolve it, never bypass it. `bun src/main.ts preflight --service-config /etc/jit/service-config.json` shows all gates read-only.
-- Status: `running` needs the scheduler owned by the supervised process; `observed-ready` appears only with explicit live evidence. `channels: blocked` means Telegram is enabled but its secret or transport is unavailable; `routes.verified` is always 0 here.
+- Status: `running` needs the scheduler owned by the supervised process; `observed-ready` appears only with explicit live evidence. `routes.verified` is always 0 here.
 - Stop drains cooperatively within `stopTimeoutSeconds`; systemd kills after `TimeoutStopSec`. Interrupted work and uncertain sends are recorded as interrupted/`unknown` and reconciled on the next start; never treat them as stopped or sent.
-- Telegram (`channels.telegram: enabled`) fails closed in this build: no live Bot API transport ships, so preflight reports `install-supported-telegram-transport`. Leave it `disabled` until a supported transport exists.
+- Telegram was removed ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)). A `channels.telegram` entry in an existing service config is accepted for compatibility and ignored; the installer no longer writes it.
 - Run-port: `runPort: "schway"` makes the unit set `JIT_RUN_PORT=schway`; the pinned bridge must verify before admission, without falling back to another route or billing path.
 
 ## 5. Upgrade and rollback

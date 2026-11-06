@@ -100,4 +100,4 @@ Owner ลองใช้ Jit บน Pi เมื่อ 2026-10-29 แล้ว�
 
 ## Out of scope
 
-Telegram transport (ยังไม่มี live transport), ให้ LLM reviewer อนุมัติ action แทน owner (ขัดหลัก authority) และการบันทึก memory โดยไม่ผ่านการยืนยันของ owner
+Telegram transport (ถอดออกทั้งหมดเมื่อ 2026-11-06 ตาม [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md)), ให้ LLM reviewer อนุมัติ action แทน owner (ขัดหลัก authority) และการบันทึก memory โดยไม่ผ่านการยืนยันของ owner

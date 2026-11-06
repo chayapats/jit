@@ -3,6 +3,8 @@ status: accepted for TG03 engineering choices (Jit #13)
 scope: private delivery intents and honest send outcomes
 ---
 
+> Telegram transport removed 2026-11-06 by [ADR 0085](0085-remove-telegram-web-push-notifications.md): the outbox keeps in-app intents but sends nothing, and resend is gone.
+
 # Record one logical intent, and keep remote outcomes separate
 
 ## Confirmed decisions and required behavior

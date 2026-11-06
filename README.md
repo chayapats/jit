@@ -98,7 +98,7 @@ bun run owner:reset                     # legacy only; no S14 reset command
 ./install.sh --legacy --uninstall       # retains both installations' data
 ```
 
-Project access levels, scripted replies, `jit ask`/`pending`, signed webhooks, Telegram and the legacy schedule feed describe this retained runtime. They are not S14 capabilities. Legacy still uses `JIT_DATABASE` (`.local/jit.sqlite`), `JIT_ORIGIN`/`JIT_PORT` (3000) and `JIT_RUN_PORT` (`scripted` by default); see [`src/config.ts`](src/config.ts). Existing canonical `serve --service-config <legacy-config>` and upgrade descriptors remain supported without adding flags to old builds. Service operator commands select the exact installation via config; S14 uses `--config /etc/jit-s14/service-config.json`, with no auto-discovery or switch to another installation.
+Project access levels, scripted replies, `jit ask`/`pending`, signed webhooks and the legacy schedule feed describe this retained runtime. They are not S14 capabilities. Legacy still uses `JIT_DATABASE` (`.local/jit.sqlite`), `JIT_ORIGIN`/`JIT_PORT` (3000) and `JIT_RUN_PORT` (`scripted` by default); see [`src/config.ts`](src/config.ts). Existing canonical `serve --service-config <legacy-config>` and upgrade descriptors remain supported without adding flags to old builds. Service operator commands select the exact installation via config; S14 uses `--config /etc/jit-s14/service-config.json`, with no auto-discovery or switch to another installation.
 
 > [!IMPORTANT]
 > For remote access, put Jit behind an HTTPS reverse proxy on your VPN that preserves `Host`. Never expose the backend port directly. Jit does not trust `Forwarded` headers, and being on the VPN does not count as owner identity.

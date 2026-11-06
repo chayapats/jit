@@ -69,7 +69,7 @@ a concrete next action. A re-run repeats safe steps and preserves durable data.
 | Attachments | `/var/lib/jit/state/attachments` mode 0700, outside Web root; ATT01 owns runtime quotas/reserve enforcement |
 | Service config | `/etc/jit/service-config.json`, root:service GID 0640, directory 0750; existing trusted field values retained, formatting canonicalized by the service package |
 | Route defaults | Existing `builtInModels` recommendations for Codex/Grok; `runPort: schway`; configured model selection is not login or verification (FR-13); owner still chooses a route in Web |
-| Network/channels | `127.0.0.1:3000`, Telegram disabled; private ingress remains an explicit owner step |
+| Network | `127.0.0.1:3000`; no `channels` entry is written; private ingress remains an explicit owner step |
 | Service memory | RAM/3, floored to whole MiB, bounded 256 MiB–8 GiB |
 | Journald | Disk/1000, bounded 16–256 MiB, retained 14 days; supervisor restart ceilings use service-package defaults |
 | Box recommendations | RAM/4 bounded 256 MiB–8 GiB per box, CPUs/2 bounded 0.5–4; capacity RAM/4096 MiB bounded 1–8; recorded in `installer-state.json` until a real execution image is configured |

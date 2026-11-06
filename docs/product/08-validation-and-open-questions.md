@@ -37,4 +37,4 @@ See [contract/design resolutions](../contracts/s14-authority-and-design-resoluti
 
 Coding: exact repository bindings, enforced package/network paths, immutable diff/test evidence, trusted push/PR adapters and unknown-outcome reconciliation.
 
-Personal assistance: first connector/provider scopes, OAuth feasibility, account visibility, calendar timezone/recurrence, draft approval and send/event idempotency/read-back. Do not assume Gmail, Calendar or Telegram transport is already available from a configured entry.
+Personal assistance: first connector/provider scopes, OAuth feasibility, account visibility, calendar timezone/recurrence, draft approval and send/event idempotency/read-back. Do not assume Gmail or Calendar transport is already available from a configured entry.

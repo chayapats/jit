@@ -11,7 +11,7 @@ means Built-in (`searxng`, null, revision 0). The original selected vendor and
 revision are retained when a key disappears. Selection of Tavily/Exa requires a
 live `web_search_key` with `secret: set`. Built-in cannot reference a key.
 `web.provider.set` remains the revisioned, receipted, audited Web-only command;
-Telegram/local API return `web_settings_requires_web`. Unknown trusted registered
+The local API returns `web_settings_requires_web`. Unknown trusted registered
 provider ids remain supported by WEB01, but the settings form permits only the
 three product providers. No model-facing settings writer is introduced.
 

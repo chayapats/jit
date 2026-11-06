@@ -78,6 +78,8 @@ Dependency graph ตรวจแล้วไม่มีวงจร มี nati
 
 ### Telegram
 
+TG01–TG03 are historical. Telegram was removed on 2026-11-06 ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md), NOTIFY16-01 [#441](https://github.com/chayapats/jit/issues/441)); TG03's outbox remains as in-app attention without a transport.
+
 | Ticket | ผลลัพธ์ | Direct blockers | ผู้ทำ |
 | --- | --- | --- | --- |
 | [TG01](https://github.com/chayapats/jit/issues/12) | Bind the numeric Telegram owner and durably ingest authorized updates | [JOB02](https://github.com/chayapats/jit/issues/9) | Agent |
@@ -241,7 +243,7 @@ Parent: [S11 / Jit #123](https://github.com/chayapats/jit/issues/123) ([spec](..
 | [EXE06](https://github.com/chayapats/jit/issues/132) | `[Standard]` | Pi resource evidence for execution boxes, required before Full is enabled | [EXE05](https://github.com/chayapats/jit/issues/130) | Human |
 | [EXE07](https://github.com/chayapats/jit/issues/133) | `[Frontier]` | External effects run only through approval cards, effect tools and connections | [EXE05](https://github.com/chayapats/jit/issues/130), [EXE08](https://github.com/chayapats/jit/issues/129) | Agent |
 | [EXE09](https://github.com/chayapats/jit/issues/134) | `[Standard]` | Approval cards in the topic and Settings › Approvals with auto-approve rules | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
-| [EXE10](https://github.com/chayapats/jit/issues/135) | `[Standard]` | Approval cards reach the bound Telegram chat with Approve/Deny buttons | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
+| [EXE10](https://github.com/chayapats/jit/issues/135) | `[Standard]` | Approval cards reach the bound Telegram chat with Approve/Deny buttons (removed 2026-11-06, ADR 0085) | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
 | [EXE12](https://github.com/chayapats/jit/issues/136) | `[Frontier]` | Agents propose MCP server installs, the owner approves in Web, and the gateway runs them in the box | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
 | [EXE14](https://github.com/chayapats/jit/issues/137) | `[Frontier]` | Browser-use in the box with a per-project profile, a pause before submit/confirm, and owner takeover | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
 | [EXE13](https://github.com/chayapats/jit/issues/138) | `[Standard]` | MCP install proposal card and Settings › MCP servers with per-tool auto-approve | [EXE12](https://github.com/chayapats/jit/issues/136) | Agent |

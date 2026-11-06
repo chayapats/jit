@@ -2,6 +2,8 @@
 
 > S14 target status: Historical implemented S11 baseline. S14 proposes Bot-owned computers/grants/sharing in place of per-project scopes; supported engine/tool boundaries and exact-action authority remain. See [S14](S14-bot-first-local-assistant.md).
 
+> Telegram removed 2026-11-06 ([ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md), S16-D10): the Telegram requirements below are historical; Web is the only owner channel. Requirement IDs are unchanged.
+
 Tracker: https://github.com/chayapats/jit/issues/123
 
 Owner: Jit. Status: owner ยืนยันการตัดสินใจทั้งหมดเมื่อ 2026-10-28 และสั่งให้แตก ticket ภาษาอังกฤษ พร้อมใส่ prefix model tier ไว้หน้าชื่อ spec นี้พร้อมแตก ticket แล้ว Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md) และ [S10](S10-reliability-and-owner-integrations.md) Requirements: [PRD FR-35–FR-40, NFR-14 และ NFR-01 ที่ปรับขอบเขตเป็น MVP](../product/02-prd.md) Schway contract: [schway#429](https://github.com/chayapats/schway/issues/429)

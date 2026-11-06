@@ -14,7 +14,7 @@ Uses `app.access_level/v1` (channel attribution), `ops.execution_config/v1` (`ex
 
 ## Commands
 
-All are `{ kind, requestId, projectId: null, expectedRevision, payload }` through `Application.execute`, with an owner receipt and one `audit` row; a replayed request id returns the first receipt. **Every command, and the list, is Web only**: the Telegram channel and the local API (`local-api`) get `connection_requires_web` (403), and nothing reaches the vault.
+All are `{ kind, requestId, projectId: null, expectedRevision, payload }` through `Application.execute`, with an owner receipt and one `audit` row; a replayed request id returns the first receipt. **Every command, and the list, is Web only**: the local API (`local-api`) gets `connection_requires_web` (403), and nothing reaches the vault.
 
 | Command | `expectedRevision` | Rules |
 | --- | --- | --- |
@@ -47,7 +47,7 @@ The only reader of a value. It has no route, command or read model. `purpose` mu
 
 ## Tests
 
-`tests/connections.test.ts`: lifecycle and file modes, symlink and mode refusal, colliding vault locations, Web-only checks for Telegram and the local API plus the JSON API, release purposes and audit, backup image and export inspection, log/delivery/prompt/box-output redaction fixtures that echo a value, boot fingerprinting, migration 32 → 34 and dictionaries.
+`tests/connections.test.ts`: lifecycle and file modes, symlink and mode refusal, colliding vault locations, Web-only checks for the local API plus the JSON API, release purposes and audit, backup image and export inspection, log/delivery/prompt/box-output redaction fixtures that echo a value, boot fingerprinting, migration 32 → 34 and dictionaries.
 
 ## Not in v1
 

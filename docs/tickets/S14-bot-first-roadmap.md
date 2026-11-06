@@ -38,7 +38,7 @@ BOT14-01 and AUTH14-01 are independently useful new-store paths; they must not w
 - [LIFE14-01](https://github.com/chayapats/jit/issues/259): connect owner-scoped email/calendar read access, triage and produce a sourced morning brief under an explicit routine. Inaccessible sources and stale calendar data remain visible.
 - [LIFE14-02](https://github.com/chayapats/jit/issues/260): draft a message/event and approve exact recipient/content/timezone/change before send or calendar mutation. Record unknown delivery separately, revoke connections promptly and never treat email content as authority.
 
-B/C remain required deliverables even though Phase A gates the first usable release. Provider-specific OAuth scope and connector feasibility are ticket decisions, not assumptions that Gmail/Calendar or Telegram transport already works.
+B/C remain required deliverables even though Phase A gates the first usable release. Provider-specific OAuth scope and connector feasibility are ticket decisions, not assumptions that Gmail/Calendar transport already works.
 
 ## Publication and ownership
 
