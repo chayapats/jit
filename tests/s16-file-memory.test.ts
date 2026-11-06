@@ -20,10 +20,11 @@ const fact = "Working knowledge: The launch day is Friday.\n";
 async function world(tune?: (options: S15CompositionOptions) => S15CompositionOptions) {
   const captures: ModelRequest[] = []; let inputId = "", phase = "file", calls = 0, offsets = [0];
   let wait: { entered: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> } | null = null;
+  // Match the fact text, not a weekday: Schway adds the local date and weekday to every model request.
   const model: Model = { provider: "codex-subscription", id: "fixture-model", async *stream(request) {
     captures.push(request); const body = JSON.stringify(request);
     if (phase === "answer" && wait) { const held = wait; wait = null; held.entered.resolve(); await held.release.promise; }
-    const step = calls++; const parts = phase === "file" ? step < offsets.length ? [{ type: "tool_call" as const, id: "read" + step, name: "file_read", arguments: { id: inputId, offset: offsets[step]! } }] : step === offsets.length ? [{ type: "tool_call" as const, id: "create", name: "file_create", arguments: { name: "summary.md", text: body.includes("Friday") ? "Launch day: Friday.\n" : "No observed launch day.\n" } }] : [{ type: "text" as const, text: "Created a summary from the observed file." }] : [{ type: "text" as const, text: body.includes("Monday") ? "The launch day is Monday." : body.includes("Friday") ? "The launch day is Friday." : "No launch memory is available." }];
+    const step = calls++; const parts = phase === "file" ? step < offsets.length ? [{ type: "tool_call" as const, id: "read" + step, name: "file_read", arguments: { id: inputId, offset: offsets[step]! } }] : step === offsets.length ? [{ type: "tool_call" as const, id: "create", name: "file_create", arguments: { name: "summary.md", text: body.includes("launch day is Friday") ? "Launch day: Friday.\n" : "No observed launch day.\n" } }] : [{ type: "text" as const, text: "Created a summary from the observed file." }] : [{ type: "text" as const, text: body.includes("launch day is Monday") ? "The launch day is Monday." : body.includes("launch day is Friday") ? "The launch day is Friday." : "No launch memory is available." }];
     yield { type: "message_complete", message: { type: "assistant", id: "m" + captures.length, content: parts } };
   } };
   const f = await composedFixture("default", false, undefined, options => {
