@@ -4,6 +4,8 @@ date: 2026-11-03
 scope: CHAN15-01, WORK15-02; FR-04/10/11/14/15/17/18/19/22/23/26/28; NFR-05/07/08/10; S15-AC01/07/15
 ---
 
+> Superseded 2026-11-06 by [ADR 0085](0085-remove-telegram-web-push-notifications.md): Telegram is removed from Jit.
+
 # S15 Telegram owner channel and durable stall-reply resume
 
 ## Confirmed decisions and required behavior

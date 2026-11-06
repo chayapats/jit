@@ -4,7 +4,7 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Product target:** [S16](docs/specs/S16-rakazo-experience.md) is the owner-confirmed direction as of 2026-11-05: deliver the Rakazo-style persistent teammate experience comprehensively, retaining Jit + Schway and adapting useful upstream code/concepts. Files/artifacts, general browser/desktop work, connections/MCP/plugins/skills, delegation/routines/memory, voice and Web/desktop/mobile clients have required acceptance coverage. The owner explicitly permits changing existing stacks and incidental constraints for a simpler or better result; [ADR 0074](docs/adr/0074-rakazo-reuse-and-product-convergence.md) records engineering alternatives and reuse/license boundaries. Concrete stack choices are proposals, not accepted implementations.
 
-**Retained authority baseline:** [S15](docs/specs/S15-conversational-autonomy.md), confirmed 2026-11-02, establishes normal conversational work within standing policy, shared team resources, automatic sourced memory and protected human-required gates. Product-default GitHub publication requires approval; an explicitly configured personal workflow may publish, remediate and auto-merge eligible selected work, while production still waits. S16 does not silently replace these owner decisions or turn a current static-browser limitation into the product ceiling. [ADR 0064](docs/adr/0064-conversational-authority-and-protected-control-plane.md) retains its versioned proof obligations; imported upstream source is never execution authority.
+**Retained authority baseline:** [S15](docs/specs/S15-conversational-autonomy.md), confirmed 2026-11-02, establishes normal conversational work within standing policy, shared team resources, automatic sourced memory and protected human-required gates. On 2026-11-06 the owner amended it with the Grok-style decisions S16-D06–D11 ([ADR 0084](docs/adr/0084-s16-grok-style-default-autonomy.md)): default autonomy, a short human-required list approved in the conversation, GitHub publication and merge after required checks as the product default (production still waits) and two website trust tiers. [ADR 0064](docs/adr/0064-conversational-authority-and-protected-control-plane.md) retains its versioned proof obligations for the remaining gates; imported upstream source is never execution authority.
 
 **Implemented runtime:** New unconfigured source runs/installations still default to [S14](docs/specs/S14-bot-first-local-assistant.md). Original architecture ADRs 0045–0048 remain proposed and are refined by accepted scoped implementation ADRs 0049–0063; their status does not certify an untested build. The project-centric S09–S13 runtime is retained through explicit `--legacy` and existing legacy service configs. The separate [owner-Pi cutover evidence](docs/evidence/s14-owner-pi-cutover.md) records the actual first reply, full legacy-byte preservation and prior-release rollback at `5eec7aa`, including complete post-reply R4 equality. Do not infer S15 implementation, another host's acceptance or permission to reinterpret existing private data from the new target. No hidden Project is an authorization root.
 
@@ -26,7 +26,7 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Protected control plane:** The authority/state/credential/effect boundary that working agents, including a guest administrator, cannot alter or impersonate. Physical placement and enforcement are proposed engineering, not established by a sibling process or a prompt.
 
-**Standing policy:** Authenticated owner configuration of purposes, team resources, action classes, allowed routes/models, finite budgets and human-required gates. It avoids repeated per-task setup without authorizing a different task. A personal exception is explicit configuration, not the product default or a grant embedded in this repository.
+**Standing policy:** Authenticated owner configuration of purposes, team resources, action classes, allowed routes/models, finite budgets and human-required gates. It avoids repeated per-task setup without authorizing a different task. Installed policies keep their meaning until the owner accepts a new proposal; repository text never grants a rule.
 
 **Default standing-policy proposal (S15, POLICY15-02):** The first standing policy Jit offers on an installation with no configured policy. It is derived from what the installation actually has, with the product-default gates and a finite, renewable expiry. It is only a proposal: the owner's one exact press installs it, and a changed resource set produces a new proposal instead of changing installed rules. See ADR 0073.
 
@@ -48,7 +48,7 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Stall-reply resume binding (S15 opt-in, WORK15-02):** A durable protected record that an owner's reply to a paused responsibility should resume it once that reply's own CHAT request completes. It is created with the reply, settles at most once in the service drain (after restart, without a page view) and only through WORK's resume checks. It names the responsibility; it is not authority, and model output or quoted text cannot create one. See `src/s15/work/resume.ts`.
 
-**Bound owner channel (S15 opt-in, CHAN15-01):** A companion transport, currently Telegram, bound to the owner's stable numeric account and private chat by a one-time code issued in the authenticated Web UI. Bound messages are ordinary owner conversation requests under the same standing policy; the channel also notifies. It never approves held actions, installs policy or widens scope; approval stays on the exact Web slip. See ADR 0072 and `src/s15/telegram/`.
+**Web Push notification (S16-D10):** A minimal, non-private notice (generic localized title and an opaque path) sent from the installed PWA's push subscription for needs-you, non-quiet routine outcomes and finished work. Durable notice identities prevent duplicates. Opening it lands on the authenticated conversation; it never approves or starts work. Telegram and every other messaging channel were removed on 2026-11-06 (ADR 0085); installed Telegram tables are inert.
 
 **Task acceptance:** The owner's decision to retain an obligation. Acceptance alone does not start execution.
 
@@ -96,9 +96,11 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Bot computer (S14):** A persistent logical computer on the owner's host, with isolated workspace/browser components and finite resources. Identity survives idle process stop. Each process/input generation fences prior handles and associated late results. S15's working VM/team default replaces the product requirement for a private computer per Bot, not this implemented record's meaning.
 
-**Execution box:** The isolated workspace/process boundary of a Bot computer. No Jit/provider/channel/vault credentials, application state, backups, host home or control socket enter it.
+**Execution box:** The isolated workspace/process boundary of a Bot computer. No Jit/provider/vault credentials, sensitive-site sessions, application state, backups, host home or control socket enter it. Trusted-site sessions (S16-D09) are the owner-accepted exception.
 
-**Browser profile:** Website session state in a protected browser component. S15 permits mediated team use of approved accounts; raw cookies/tokens remain outside working shell/MCP/prompts/exports. S14 profiles remain Bot-private. Website login is not permission to bypass action approval.
+**Browser profile:** Website session state. Sensitive sites keep it in the protected browser component, outside working shell/MCP/prompts/exports, with mediated team use. A trusted site (S16-D09) keeps it in the working VM browser. S14 profiles remain Bot-private. Website login is not permission to bypass a human-required gate.
+
+**Trusted website (S16-D09):** A site the owner marked "use freely" at the login handoff or in settings. Its session lives in the working VM browser and the Bot uses it like the owner would; the human-required list is followed by tool policy and instructions there but is not bypass-resistant. Banking, payment, primary email, identity providers and any unmarked site are sensitive.
 
 **Approved website (S15):** An exact public HTTPS origin the owner added in the Web (Resources → Websites). The protected browser may read it with credential-free GET navigations; unlisted origins are refused. It is not a sign-in, a send/payment approval or consent to disclose private data, which keep their own gates.
 
@@ -110,13 +112,13 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **External effect:** An action leaving the execution boundary, including remote edits, communications, publication, payments and deletion. S15 distinguishes ordinary reversible authorized edits, narrowly captured standing exceptions and human-required actions. S14 retains exact-effect approval contracts. Unknown tools/actions cannot bypass the applicable mediation.
 
-**Human-required action:** An action held for owner authority under current policy: outbound communication without a standing exception, a general financial transaction, production deployment, a new private-data recipient or an unapproved major change. Final approval binds the actual action; captured recurring/standing rules remain purpose/resource/amount/frequency bounded.
+**Human-required action:** An action held for owner authority under the S16-D07 list: payments/purchases/transfers/new billing or accounts/budget increases; a message to another person that the Bot initiated or that reaches a recipient the owner did not name; a public post; production deployment; a destructive, bulk or hard-to-reverse change to real data outside the working VM; a password/account/credential/permission/approval-policy change; the first disclosure of private data to a new recipient (remembered after approval). Login/2FA/CAPTCHA is an owner handoff. Final approval binds the actual action; recurring rules remain purpose/resource/amount/frequency bounded.
 
 **Disclosure lineage (S15 opt-in):** The protected source/resource revisions and public/private/personal/business restrictions accumulated by work. Derived text, screenshots, artifacts and shared-VM inputs inherit ancestry even without citations. An exact new-recipient approval releases one prepared disclosure and never declassifies the source or approves that recipient generally. Registry destination control does not prevent content/covert-channel disclosure through allowed destinations; see [s15-private-data/v1](docs/contracts/s15-private-data-v1.md).
 
 **Major change:** A change with destructive/bulk or difficult-to-reverse data impact, authority/authentication/credential/approval impact, breaking dependent API/behavior, important service restructuring or a new business obligation. Impact, not changed-line count, determines the need for an unresolved owner decision. Investigation can proceed inside existing authority.
 
-**Approval card:** A revision-bound, single-use, expiring owner decision for one exact external action/content/destination. It is not a task acceptance or model confirmation.
+**Approval card:** A revision-bound, single-use, expiring owner decision for one exact external action/content/destination, shown in the conversation with Approve/Decline (S16-D08). One press executes that exact action once. It is not a task acceptance or model confirmation; typed replies, page content and notifications never approve.
 
 **Repository grant:** An owner-controlled revisioned resource binding one Bot, exact repository origin and commit, optionally an explicit registry host scope. It is not repository content or a model plan.
 
@@ -140,7 +142,7 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Quiet run:** A scheduled run with typed no_update outcome: retained history, no notification. It cannot hide a failure.
 
-**Attention level:** Per-channel owner policy for notifications. It changes delivery, not report visibility or authority.
+**Attention level:** Owner policy for notifications. It changes delivery, not report visibility or authority.
 
 **Result contract:** Status, Result, Evidence and an actionable unblock reason when needed. A model's done text is insufficient.
 

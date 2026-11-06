@@ -1,6 +1,6 @@
 {
   "schema": "jit.s16-backlog-coverage/v1",
-  "audited_at": "2026-11-05",
+  "audited_at": "2026-11-06",
   "baseline": "17b814220371cd1e2126be2ec9bd9753537f69e6",
   "main_baseline": "76e15e9faece6b321a242725f161271fe1c20cf2",
   "meaning": "Coverage ownership, not implementation or live acceptance. Native blocker edges denote required deliveries for final acceptance; independent contract investigation may proceed sooner.",
@@ -25,14 +25,15 @@
     "MODEL16-01": 421,
     "VOICE16-01": 422,
     "CALL16-01": 423,
-    "CHANNEL16-01": 424,
+    "NOTIFY16-01": 441,
     "DESKTOP16-01": 425,
     "MOBILE16-01": 426,
     "COMPUTER16-01": 427,
     "SPACE16-01": 428,
     "OPS16-01": 429,
     "EVID16-01": 430,
-    "CUT16-01": 432
+    "CUT16-01": 432,
+    "AUTH16-01": 442
   },
   "acceptance_owners": {
     "S16-AC01": [
@@ -45,7 +46,8 @@
       395,
       406,
       430,
-      431
+      431,
+      442
     ],
     "S16-AC03": [
       396,
@@ -77,13 +79,15 @@
       408,
       409,
       430,
-      431
+      431,
+      442
     ],
     "S16-AC07": [
       408,
       410,
       430,
-      431
+      431,
+      442
     ],
     "S16-AC08": [
       402,
@@ -106,7 +110,8 @@
     "S16-AC11": [
       417,
       430,
-      431
+      431,
+      442
     ],
     "S16-AC12": [
       418,
@@ -142,9 +147,9 @@
       431
     ],
     "S16-AC18": [
-      424,
       430,
-      431
+      431,
+      441
     ],
     "S16-AC19": [
       427,
@@ -213,14 +218,14 @@
       414,
       415,
       416,
-      424,
       425,
       428,
       429,
       430,
       431,
       432,
-      433
+      433,
+      441
     ],
     "FR-05": [
       405,
@@ -249,7 +254,8 @@
       430,
       431,
       432,
-      433
+      433,
+      442
     ],
     "FR-08": [
       405,
@@ -262,10 +268,10 @@
       405,
       414,
       415,
-      424,
       430,
       431,
-      432
+      432,
+      441
     ],
     "FR-10": [
       405,
@@ -280,7 +286,8 @@
       428,
       430,
       431,
-      432
+      432,
+      442
     ],
     "FR-11": [
       405,
@@ -288,11 +295,12 @@
       415,
       422,
       423,
-      424,
       426,
       430,
       431,
-      432
+      432,
+      441,
+      442
     ],
     "FR-12": [
       405,
@@ -334,12 +342,13 @@
       415,
       418,
       419,
-      424,
       427,
       429,
       430,
       431,
-      432
+      432,
+      441,
+      442
     ],
     "FR-16": [
       405,
@@ -363,7 +372,8 @@
       430,
       431,
       432,
-      433
+      433,
+      442
     ],
     "FR-18": [
       405,
@@ -479,11 +489,11 @@
       405,
       414,
       415,
-      424,
       426,
       430,
       431,
-      432
+      432,
+      441
     ],
     "FR-29": [
       405,
@@ -495,10 +505,11 @@
     ],
     "FR-30": [
       405,
-      424,
       430,
       431,
-      432
+      432,
+      441,
+      442
     ],
     "FR-31": [
       405,
@@ -547,7 +558,6 @@
       418,
       419,
       420,
-      424,
       425,
       426,
       427,
@@ -555,7 +565,9 @@
       429,
       430,
       431,
-      432
+      432,
+      441,
+      442
     ],
     "FR-36": [
       405,
@@ -576,11 +588,12 @@
       419,
       422,
       423,
-      424,
       426,
       430,
       431,
-      432
+      432,
+      441,
+      442
     ],
     "FR-38": [
       405,
@@ -595,14 +608,15 @@
       421,
       422,
       423,
-      424,
       425,
       426,
       429,
       430,
       431,
       432,
-      433
+      433,
+      441,
+      442
     ],
     "FR-39": [
       405,
@@ -623,7 +637,8 @@
       427,
       430,
       431,
-      432
+      432,
+      442
     ],
     "FR-41": [
       405,
@@ -692,14 +707,14 @@
       419,
       422,
       423,
-      424,
       425,
       426,
       429,
       430,
       431,
       432,
-      433
+      433,
+      441
     ],
     "NFR-06": [
       405,
@@ -715,12 +730,12 @@
       421,
       422,
       423,
-      424,
       427,
       430,
       431,
       432,
-      433
+      433,
+      441
     ],
     "NFR-07": [
       405,
@@ -737,14 +752,15 @@
       420,
       422,
       423,
-      424,
       425,
       426,
       428,
       430,
       431,
       432,
-      433
+      433,
+      441,
+      442
     ],
     "NFR-08": [
       405,
@@ -769,12 +785,12 @@
       421,
       422,
       423,
-      424,
       426,
       429,
       430,
       431,
-      432
+      432,
+      441
     ],
     "NFR-10": [
       405,
@@ -785,7 +801,8 @@
       430,
       431,
       432,
-      433
+      433,
+      442
     ],
     "NFR-11": [
       405,
@@ -843,7 +860,8 @@
       430,
       431,
       432,
-      433
+      433,
+      442
     ]
   },
   "issues": [
@@ -890,7 +908,9 @@
         429,
         430,
         431,
-        432
+        432,
+        441,
+        442
       ],
       "status": "scope-parent",
       "acceptance": [
@@ -1028,8 +1048,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        395,
-        394
+        394,
+        395
       ],
       "children": [
         400,
@@ -1204,8 +1224,8 @@
       ],
       "parent": 397,
       "blocked_by": [
-        408,
-        395
+        395,
+        408
       ],
       "children": [],
       "status": "planned",
@@ -1223,8 +1243,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        408,
-        395
+        395,
+        408
       ],
       "children": [],
       "status": "planned",
@@ -1281,8 +1301,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        411,
-        402
+        402,
+        411
       ],
       "children": [],
       "status": "planned",
@@ -1466,8 +1486,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        422,
-        406
+        406,
+        422
       ],
       "children": [],
       "status": "planned",
@@ -1479,17 +1499,17 @@
       "number": 424,
       "url": "https://github.com/chayapats/jit/issues/424",
       "key": "CHANNEL16-01",
-      "state": "open",
+      "state": "closed",
       "labels": [
         "needs-triage"
       ],
       "parent": 392,
       "blocked_by": [
-        400,
-        395
+        395,
+        400
       ],
       "children": [],
-      "status": "planned",
+      "status": "superseded-not-planned (owner 2026-11-06, ADR 0085; replaced by #441)",
       "acceptance": [
         18
       ]
@@ -1542,8 +1562,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        411,
-        410
+        410,
+        411
       ],
       "children": [],
       "status": "planned",
@@ -1561,8 +1581,8 @@
       ],
       "parent": 392,
       "blocked_by": [
-        412,
         407,
+        412,
         416
       ],
       "children": [],
@@ -1592,11 +1612,11 @@
         420,
         421,
         423,
-        424,
         425,
         426,
         427,
-        428
+        428,
+        441
       ],
       "children": [],
       "status": "planned",
@@ -1628,13 +1648,13 @@
         420,
         421,
         423,
-        424,
         425,
         426,
         427,
         428,
         429,
-        433
+        433,
+        441
       ],
       "children": [],
       "status": "planned",
@@ -1745,10 +1765,47 @@
         3,
         4
       ]
+    },
+    {
+      "number": 441,
+      "url": "https://github.com/chayapats/jit/issues/441",
+      "key": "NOTIFY16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [],
+      "children": [],
+      "status": "scoped (owner decision 2026-11-06)",
+      "acceptance": [
+        2,
+        9,
+        18
+      ]
+    },
+    {
+      "number": 442,
+      "url": "https://github.com/chayapats/jit/issues/442",
+      "key": "AUTH16-01",
+      "state": "open",
+      "labels": [
+        "needs-triage"
+      ],
+      "parent": 392,
+      "blocked_by": [],
+      "children": [],
+      "status": "scoped (owner decision 2026-11-06)",
+      "acceptance": [
+        2,
+        6,
+        7,
+        11
+      ]
     }
   ],
   "baseline_reuse": [
-    "S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser/Telegram/adoption",
+    "S15 POLICY/DATA15/TEAM/MEM/WORK/MODEL/VM/browser/adoption (Telegram removed 2026-11-06, ADR 0085)",
     "S14/legacy continuity"
   ],
   "next_eligible": [
@@ -1764,7 +1821,7 @@
     341
   ],
   "validation": {
-    "issue_count": 38,
+    "issue_count": 40,
     "new_issue_count": 29,
     "updated_existing_count": 9,
     "native_parent_edges": 37,
