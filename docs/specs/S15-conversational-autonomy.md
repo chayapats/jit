@@ -2,6 +2,8 @@
 
 Status: owner-confirmed product direction, 2026-11-02. The owner accepted the combined baseline after a 23-question interview and a consolidated read-back. This document records requirements, not implemented capabilities or an execution grant.
 
+**Superseded in part, 2026-11-06:** the owner's Grok-style decisions [S16-D06–D11](S16-rakazo-experience.md) replace S15-D05, S15-D06, the product default of S15-D17, the personal-only scope of S15-D18 and the per-recipient part of S15-D20, and remove the Telegram channel (CHAN15-01). See [ADR 0084](../adr/0084-s16-grok-style-default-autonomy.md) and [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). The decisions below are kept as the historical record.
+
 This is the current product target where it conflicts with [S14](S14-bot-first-local-assistant.md). S14 remains the implemented default runtime; its contracts, schema, release evidence and legacy compatibility retain their existing meaning. Tracker: [S15 #316](https://github.com/chayapats/jit/issues/316); [delivery graph](../tickets/S15-conversational-autonomy-roadmap.md) and [ticket manifest](../tickets/s15/manifest.json). S14 [#244](https://github.com/chayapats/jit/issues/244) is the historical parent, not an S15 implementation ticket.
 
 Domain definitions live in [CONTEXT.md](../../CONTEXT.md). Existing FR-01–FR-42 and NFR-01–NFR-14 retain their identifiers in the [PRD](../product/02-prd.md). [ADR 0064](../adr/0064-conversational-authority-and-protected-control-plane.md) separates confirmed boundaries from proposed engineering and unresolved proof obligations.

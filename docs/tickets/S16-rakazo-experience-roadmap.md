@@ -38,7 +38,8 @@ All runtime slices currently require Frontier judgment. Split Standard tickets o
 | MODEL16-01 [#421](https://github.com/chayapats/jit/issues/421) | Configure and select additional approved Schway routes/models with actual usage/pins and continuity | [#395](https://github.com/chayapats/jit/issues/395), [#402](https://github.com/chayapats/jit/issues/402) | AC14 |
 | VOICE16-01 [#422](https://github.com/chayapats/jit/issues/422) | Dictate and speak replies with configured providers/local voice, finite costs and interruption | [#395](https://github.com/chayapats/jit/issues/395), [#417](https://github.com/chayapats/jit/issues/417) | AC15 |
 | CALL16-01 [#423](https://github.com/chayapats/jit/issues/423) | Hold a continuous voice conversation with interruption and the same authority/approval semantics | [#422](https://github.com/chayapats/jit/issues/422), [#406](https://github.com/chayapats/jit/issues/406) | AC15 |
-| CHANNEL16-01 [#424](https://github.com/chayapats/jit/issues/424) | Use bound messaging with real attachment/result/needs-me delivery and capability-aware review links | [#400](https://github.com/chayapats/jit/issues/400), [#395](https://github.com/chayapats/jit/issues/395) | AC18 |
+| NOTIFY16-01 [#441](https://github.com/chayapats/jit/issues/441) | Remove Telegram entirely and deliver needs-you, non-quiet routine outcomes and finished work through Web Push from the PWA (replaces CHANNEL16-01 #424, closed as not planned 2026-11-06) | None | AC02/09/18 |
+| AUTH16-01 [#442](https://github.com/chayapats/jit/issues/442) | Grok-style default autonomy: short human-required list approved by a one-press in-chat card, GitHub publication/merge by default, trusted/sensitive website tiers | None; browser tiers coordinate with [#408](https://github.com/chayapats/jit/issues/408)/[#409](https://github.com/chayapats/jit/issues/409) | AC02/06/07/11 |
 | DESKTOP16-01 [#425](https://github.com/chayapats/jit/issues/425) | Package a desktop client of the same Jit service with supported install/update and native privilege boundaries | [#395](https://github.com/chayapats/jit/issues/395), [#400](https://github.com/chayapats/jit/issues/400) | AC16 |
 | MOBILE16-01 [#426](https://github.com/chayapats/jit/issues/426) | Package a mobile client of the same service with files, approvals, reconnect and native notifications | [#395](https://github.com/chayapats/jit/issues/395), [#400](https://github.com/chayapats/jit/issues/400) | AC17 |
 | COMPUTER16-01 [#427](https://github.com/chayapats/jit/issues/427) | Add a second useful computer backend under a tested capability/settlement/state-portability contract | [#411](https://github.com/chayapats/jit/issues/411), [#410](https://github.com/chayapats/jit/issues/410) | AC19 |
@@ -48,6 +49,16 @@ All runtime slices currently require Frontier judgment. Split Standard tickets o
 | CUT16-01 [#432](https://github.com/chayapats/jit/issues/432) | Adopt the tested release on the named installation under an exact owner-reviewed transition | [#429](https://github.com/chayapats/jit/issues/429), [#430](https://github.com/chayapats/jit/issues/430), [#431](https://github.com/chayapats/jit/issues/431) | AC21/22 |
 
 The file delivery is split into text #400, isolated binary #401 and working-computer processing #433; #402 supplies precise ancestry. The dependencies above are the verified native final-delivery edges, with scope details in each issue. Runtime/API work should not depend on unrelated voice or native packaging. Human credentials are separated from implementation and requested only at the concrete live-test boundary.
+
+## Owner revision — 2026-11-06
+
+The owner chose Grok-style autonomy and removed Telegram: [S16-D06–D11](../specs/S16-rakazo-experience.md), [ADR 0084](../adr/0084-s16-grok-style-default-autonomy.md), [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Consequences for this graph:
+
+- CHANNEL16-01 #424 is closed as not planned; NOTIFY16-01 #441 owns AC18, now notifications rather than messaging surfaces. #429/#430 depend on #441 instead.
+- AUTH16-01 #442 owns the new default policy, in-chat approval and website tiers.
+- The protected browser is required only for sensitive sites; public and trusted-site browsing uses the working VM browser. #397/#408/#409/#410 carry the narrowed scope.
+- GitHub publication/merge after required checks is the product default; "product-default versus opt-in personal GitHub" wording in older issue bodies is replaced by the S16-D07 list.
+- References to Telegram or messaging channels above and in older documents are historical.
 
 ## Upstream reuse candidates
 
