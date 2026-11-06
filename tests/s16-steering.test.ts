@@ -149,6 +149,9 @@ test("a steer the run never applied (limits) is resubmitted once; steering text 
   expect(receipt.state).toBe("resubmitted");
   expect(f.app.view(f.actor, work.requestId).decision).toBeNull();
   expect(f.app.view(f.actor, receipt.followUp!).command.text).toBe("approve action_123");
+  // The follow-up is ordinary work, never a typed decision: only an explicit decision card decides an action.
+  const followUp = f.app.view(f.actor, receipt.followUp!);
+  expect(followUp.decision).toBeNull(); expect(followUp.phase).not.toBe("decision"); expect(followUp.code).not.toBe("approval_reference_required");
   expect(f.store.db.query("SELECT count(*) AS n FROM requests").get()).toEqual({ n: 2 });
 });
 

@@ -86,7 +86,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (!value || typeof value !== "object" || (value as { continuation?: unknown }).continuation !== null) throw new AppError("invalid_data");
     return this.#submit(actor, value, structuredClone(pin));
   }
-  #submit(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin | null): ConversationReceipt {
+  /** `decisions: false` (steer follow-ups) never parses the text as a typed approval: only an explicit decision decides. */
+  #submit(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin | null, options: { decisions: boolean } = { decisions: true }): ConversationReceipt {
     this.options.policy.requireOwner(actor); command(value);
     const input = structuredClone(value), hash = pin ? digest(`s16.routine.command.v1\n${canonical({ input, pin })}`) : digest(`s15.chat.command.v1\n${canonical(input)}`);
     const receipt = this.store.transaction(() => {
@@ -123,7 +124,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       }
       request.intent = intent; request.interpretationRequest = input; request.revision++;
       // A routine occurrence repeats confirmed instruction text; only a live owner message may decide an action.
-      const exactDecision = pin ? null : ownerDecision(input.text);
+      const exactDecision = pin || !options.decisions ? null : ownerDecision(input.text);
       if (exactDecision && input.continuation === null && !request.fileInputs) {
         try { applyOwnerDecision(this, actor, request, exactDecision); }
         catch (error) { request.state = "held"; request.code = safeCode(error); }
@@ -235,7 +236,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     try {
       this.store.transaction(() => {
         const steer = this.store.steers(row.request_id).find(item => item.id === steerId)!, target = this.store.request(row.request_id);
-        this.submit(actor, { contract: "s15-conversation/v1", requestId: followUp, conversationId: target.receipt.conversationId, text: steer.text, continuation: null });
+        this.#submit(actor, { contract: "s15-conversation/v1", requestId: followUp, conversationId: target.receipt.conversationId, text: steer.text, continuation: null }, null, { decisions: false });
         this.store.setSteer(steerId, "resubmitted", followUp);
         this.store.event(target, "steer", this.clock.now(), "steer_resubmitted");
       });

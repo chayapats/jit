@@ -16,11 +16,12 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
   const gate = Promise.withResolvers<void>();
   f.replies.push({ tools: [{ name: "read", arguments: { path: "status.txt" } }], text: "Checked the computer.", gate: gate.promise });
   const context = await browser.newContext({ viewport: { width, height: 900 }, locale, timezoneId: "Asia/Bangkok" });
-  const errors: string[] = [], external: string[] = [];
+  const errors: string[] = [], external: string[] = [], steerBodies: { requestId: string }[] = [];
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url()); if (url.origin !== "http://localhost:3099") { external.push(request.url()); await route.abort(); return; }
     const headers = { ...request.headers(), host: "localhost:3099" };
     const response = request.method() === "POST" ? await f.request(url.pathname + url.search, "POST", request.postDataJSON(), headers) : await f.request(url.pathname + url.search, request.method(), undefined, headers);
+    if (url.pathname.endsWith("/steers")) { steerBodies.push(request.postDataJSON() as { requestId: string }); if (steerBodies.length === 1) { await route.abort(); return; } }
     await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
   });
   const page = await context.newPage(); page.on("pageerror", error => errors.push(error.message));
@@ -40,6 +41,12 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     expect(await noOverflow()).toBe(true);
     await composer.fill("Also list the files you looked at.");
     await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();
+    // The first response is lost after the service recorded the steer: the composer keeps it and resends the same ID.
+    await page.waitForFunction(() => (document.getElementById("message") as HTMLTextAreaElement | null)?.disabled === true);
+    expect(steerBodies).toHaveLength(1);
+    await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();
+    await page.waitForFunction(() => !(document.getElementById("message") as HTMLTextAreaElement | null)?.value);
+    expect(steerBodies.map(body => body.requestId)).toEqual([steerBodies[0]!.requestId, steerBodies[0]!.requestId]);
     const steers = page.getByRole("list", { name: copy["s16.steer.label"] });
     await steers.getByText("Also list the files you looked at.", { exact: true }).waitFor();
     await steers.getByText(copy["s16.steer.sent"], { exact: true }).waitFor();
@@ -47,6 +54,7 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     await page.getByRole("button", { name: copy["s16.common.refresh"] }).click();
     await steers.getByText(copy["s16.steer.applied"], { exact: true }).waitFor({ timeout: 15000 });
     expect(f.workInputs.some(input => input.includes("Also list the files you looked at."))).toBe(true);
+    expect(await steers.locator("li").count()).toBe(1);
     await page.getByRole("button", { name: copy["s16.chat.send"], exact: true }).waitFor();
     // Notifications: the owner-facing control is present with an honest device state.
     if (width === 390) await page.getByRole("button", { name: copy["s16.common.menu"] }).first().click();
