@@ -2,6 +2,7 @@ import type { HostClock, HostRunUsage, Model, ToolDefinition } from "schway/host
 import type { ActionRef, ActionSlip, ApprovalInput, Observation, PendingDecisionInput } from "../policy";
 import type { FileArtifact, FileReceipt, FileReference } from "../../s16/files/types";
 import type { FileSourcePin } from "../file-lineage";
+import type { ModelStepSteering } from "../model/types";
 
 /** Authenticated ordinary text only. Attachments/history are data supplied separately by trusted adapters. */
 export interface ConversationTextCommand {
@@ -16,6 +17,24 @@ export interface ConversationFileCommand extends Omit<ConversationTextCommand, "
   contract: "s16-conversation/v2"; continuation: null; files: readonly FileReference[];
 }
 export type ConversationCommand = ConversationTextCommand | ConversationFileCommand;
+/**
+ * `s16-conversation-steer/v1` (CHAT16-02): authenticated owner text that steers one unfinished request (`target`, its
+ * root request ID) in the same conversation. It is owner input inside that request's frozen scope and never decides a
+ * held action.
+ */
+export interface ConversationSteerCommand { contract: "s16-conversation-steer/v1"; requestId: string; conversationId: string; target: string; text: string }
+/**
+ * Durable steer lifecycle. `queued`: stored, not yet handed to the live run. `sent`: accepted by the run, waiting for its
+ * next boundary. `applied`: committed into the run's native history. `resubmitted`: delivered instead as exactly one
+ * ordinary follow-up message (`followUp`). `unapplied`: never applied and not resubmitted (no live owner registration,
+ * for example after a restart); the owner can send it again. `uncertain`: the run may have recorded it, so it is never
+ * resubmitted automatically.
+ */
+export type ConversationSteerState = "queued" | "sent" | "applied" | "resubmitted" | "unapplied" | "uncertain";
+/** Current disposition of one steer command; a repeated request ID returns the same steer's current state. */
+export interface ConversationSteerReceipt { contract: "s16-conversation-steer-receipt/v1"; requestId: string; conversationId: string; target: string; state: ConversationSteerState; followUp: string | null }
+/** Owner projection of one steer: the owner's own text and its current disposition. */
+export interface ConversationSteer { id: string; target: string; text: string; state: ConversationSteerState; followUp: string | null; at: number }
 /** Exact owner decision posted from a reviewed slip. It names one action revision and hash; it is never model output. */
 export interface ConversationDecisionCommand {
   contract: "s15-conversation-decision/v1";
@@ -101,7 +120,7 @@ export interface ConversationReceipt { contract: "s15-conversation-receipt/v1"; 
 /** Control events contain no model/tool payload; result content is read through a fresh publication guard. */
 export interface ConversationEvent {
   sequence: number; requestId: string; conversationId: string; at: number;
-  kind: "received" | "admitted" | "progress" | "needs_me" | "evidence" | "result" | "stopped" | "decision";
+  kind: "received" | "admitted" | "progress" | "needs_me" | "evidence" | "result" | "stopped" | "decision" | "steer";
   code: string | null;
 }
 /** A service-observed tool invocation, never a model-authored citation or claim of success. */
@@ -172,7 +191,9 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[]) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
-  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  /** Most requests that run at once (default 2); one conversation never runs two requests at the same time. */
+  maxConcurrentRuns?: number;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }

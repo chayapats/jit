@@ -3,7 +3,7 @@ import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync } from 
 import { dirname } from "node:path";
 import { AppError } from "../../errors";
 import { canonical, identity } from "./validation";
-import type { ConversationEvent, ConversationEvidence, ConversationRequest } from "./types";
+import type { ConversationEvent, ConversationEvidence, ConversationRequest, ConversationSteer } from "./types";
 
 const applicationId = 0x4a495435;
 /**
@@ -56,6 +56,8 @@ export class ConversationStore {
         this.db.query("INSERT INTO identity VALUES (?)").run(installationId);
       }).immediate();
       if (this.db.query<{ id: string }, []>("SELECT id FROM identity").get()?.id !== installationId) throw new AppError("continuity_unavailable", 503);
+      // CHAT16-02 steers: added in place by this release; an older binary ignores the table and its rows.
+      this.db.exec("CREATE TABLE IF NOT EXISTS steers (id TEXT PRIMARY KEY REFERENCES commands(id), request_id TEXT NOT NULL REFERENCES requests(id), state TEXT NOT NULL, follow_up TEXT, at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS request_steers ON steers(request_id)");
     } catch (error) { this.db!?.close(); this.#lock.close(); throw error; }
   }
   /** Synchronous writer boundary; no model, tool or async callback is permitted inside it. */
@@ -83,6 +85,13 @@ export class ConversationStore {
   }
   /** Evidence comes from actual tool returns or guarded model-input send admission, never model claims. */
   evidence(requestId: string): ConversationEvidence[] { return [...(this.request(requestId).inputEvidence ?? []), ...this.db.query<{ evidence_json: string }, [string]>("SELECT evidence_json FROM tool_calls WHERE request_id=? AND evidence_json IS NOT NULL ORDER BY rowid").all(requestId).map(row => JSON.parse(row.evidence_json) as ConversationEvidence)]; }
+  /** Steers of one request in acceptance order, with the owner's own text from its immutable command. */
+  steers(requestId: string): ConversationSteer[] {
+    return this.db.query<{ id: string; request_id: string; state: ConversationSteer["state"]; follow_up: string | null; at: number; command_json: string }, [string]>("SELECT s.id,s.request_id,s.state,s.follow_up,s.at,c.command_json FROM steers s JOIN commands c ON c.id=s.id WHERE s.request_id=? ORDER BY s.rowid").all(requestId)
+      .map(row => ({ id: row.id, target: row.request_id, text: (JSON.parse(row.command_json) as { text: string }).text, state: row.state, followUp: row.follow_up, at: row.at }));
+  }
+  /** Moves one steer to its next disposition inside the caller's transaction. */
+  setSteer(id: string, state: ConversationSteer["state"], followUp: string | null = null): void { this.db.query("UPDATE steers SET state=?,follow_up=coalesce(?,follow_up) WHERE id=?").run(state, followUp, id); }
   /** Finite custody refuses new ingress without evicting dedupe identities or claims. */
   capacity(): void {
     const count = this.db.query<{ n: number }, []>("SELECT count(*) AS n FROM commands").get()!.n;

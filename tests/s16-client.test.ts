@@ -19,7 +19,7 @@ const client = (f: Fixture, fetch = transport(f)) => new JitClient({ origin, fet
 test("the shared client performs a real composed VM call and returns only guarded owner evidence", async () => {
   const f = await fixture(), c = client(f), boot = await c.bootstrap();
   expect(boot).not.toHaveProperty("csrf");
-  expect(boot.capabilities).toMatchObject({ textMessages: true, progress: "control_events", exactDecisions: true, liveSteering: false, uploads: { available: false }, artifacts: { available: false } });
+  expect(boot.capabilities).toMatchObject({ textMessages: true, progress: "control_events", exactDecisions: true, liveSteering: true, uploads: { available: false }, artifacts: { available: false } });
   const command = c.prepareMessage("conversation", "Run the requested command in the working computer");
   const receipt = await c.send(command); expect(receipt.requestId).toBe(command.requestId);
   await f.service.conversation.drain();

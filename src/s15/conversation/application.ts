@@ -1,4 +1,5 @@
-import type { HostClock, ToolDefinition } from "schway/host";
+import type { HostClock, HostSteerInput, HostSteerResult, HostSteeringReport, ToolDefinition } from "schway/host";
+import type { ModelStepSteering } from "../model/types";
 import { AppError } from "../../errors";
 import { PolicyError, type ActionRef, type ActionSlip } from "../policy";
 import { applyOwnerDecision, ownerDecision, rememberActionPresentation } from "./decisions";
@@ -7,7 +8,7 @@ import { groundConversationIntent } from "./intent";
 import { runConversation } from "./schway";
 import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
-import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationRoutinePin, ConversationTools } from "./types";
+import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
 
 const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
@@ -46,6 +47,11 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   #closing = false;
   #running = new Map<string, AbortController>();
   #owners = new Map<string, { actor: OwnerActor; commandId: string }>();
+  /** Live steer sinks of running requests: the run's Schway steer function once its first send is authorized. */
+  #steerSinks = new Map<string, { steer: ((input: HostSteerInput) => HostSteerResult) | null }>();
+  /** Process-local owner of each steer that may still need one ordinary follow-up; never rebuilt from storage. */
+  #steerActors = new Map<string, OwnerActor>();
+  #wake: (() => void) | null = null;
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
     if (options.memory?.fileContract && (!store.fileMemory || !options.guardInterpretation)) throw new AppError("file_memory_required", 503);
     if (!options.memory?.fileContract && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileMemory')='text' LIMIT 1").get()) throw new AppError("file_memory_required", 503);
@@ -54,6 +60,11 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (!options.files && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileInputs')='array' LIMIT 1").get()) throw new AppError("files_required", 503);
     // Store lifetime holds the exclusive process lock; another live worker cannot be declared lost.
     this.store.transaction(() => {
+      // A steer handed to a lost run may be in its native history; one never handed has no live owner to resubmit it.
+      for (const row of this.store.db.query<{ id: string; request_id: string; state: ConversationSteerState }, []>("SELECT id,request_id,state FROM steers WHERE state IN ('queued','sent')").all()) {
+        const next = row.state === "sent" ? "uncertain" : "unapplied"; this.store.setSteer(row.id, next);
+        this.store.event(this.store.request(row.request_id), "steer", this.clock.now(), `steer_${next}`);
+      }
       for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='running'").all()) {
         const request = this.store.request(row.id); request.state = "reconcile_only"; request.code = "context_lost"; request.revision++;
         this.store.save(request); this.store.event(request, "needs_me", this.clock.now(), request.code);
@@ -144,6 +155,105 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     // Process-local actor registration is never reconstructed from a serialized owner identity.
     if (this.store.request(receipt.rootRequestId).state === "queued") this.#owners.set(receipt.rootRequestId, { actor, commandId: this.store.request(receipt.rootRequestId).interpretationRequest.requestId });
     return receipt;
+  }
+  /**
+   * `s16-conversation-steer/v1` (CHAT16-02): authenticated owner text that steers one unfinished request of this
+   * conversation. It is owner input inside that request's frozen scope: tools, resources and access stay as admitted,
+   * and it never decides a held action. While the request runs, the text is handed to its live Schway run
+   * (`schway.host.steering/v1`), which applies it at the next tool boundary. Whatever that run reports unapplied becomes
+   * exactly one ordinary follow-up message; a steer the run may have recorded stays `uncertain` and is never resent. A
+   * request that is no longer running (held, settled, stopped) receives the text at once as one ordinary follow-up,
+   * except a stopped request, whose steers are only recorded. A repeated request ID returns the same steer's state.
+   */
+  steer(actor: OwnerActor, value: unknown): ConversationSteerReceipt {
+    this.options.policy.requireOwner(actor); canonical(value);
+    exact(value, ["contract", "requestId", "conversationId", "target", "text"]);
+    const input = structuredClone(value) as unknown as ConversationSteerCommand;
+    if (input.contract !== "s16-conversation-steer/v1") throw new AppError("invalid_contract");
+    identity(input.requestId); identity(input.conversationId); identity(input.target); content(input.text);
+    const hash = digest(`s16.chat.steer.v1\n${canonical(input)}`);
+    const live = this.store.transaction(() => {
+      const prior = this.store.db.query<{ payload_hash: string; root_id: string }, [string]>("SELECT payload_hash,root_id FROM commands WHERE id=?").get(input.requestId);
+      if (prior) { this.owner(actor, this.store.request(prior.root_id)); if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409); return null; }
+      if (this.#closing) throw new AppError("conversation_unavailable", 503);
+      this.store.capacity();
+      const target = this.store.request(input.target); this.owner(actor, target);
+      if (target.receipt.conversationId !== input.conversationId || target.receipt.rootRequestId !== input.target) throw new AppError("outside_scope", 403);
+      const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId: input.requestId, rootRequestId: input.target, conversationId: input.conversationId, receivedAt: this.clock.now() };
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?,?,?)").run(input.requestId, hash, input.target, canonical(receipt), canonical(input));
+      this.store.db.query("INSERT INTO steers VALUES (?,?,?,NULL,?)").run(input.requestId, input.target, "queued", receipt.receivedAt);
+      this.store.event(target, "steer", receipt.receivedAt, "steer_queued");
+      this.options.beforeCommit?.();
+      // Only a request this process will still run can take the steer; its work phase opens the live sink.
+      return target.phase !== "decision" && (this.#steerSinks.has(input.target) || target.state === "queued" && this.#owners.has(input.target));
+    });
+    if (live !== null) {
+      this.#steerActors.set(input.requestId, actor);
+      if (!live) this.#followUp(input.requestId);
+      else this.#deliverSteers(input.target);
+    }
+    return this.steerReceipt(actor, input.requestId);
+  }
+  /** Current owner-checked disposition of one steer command. */
+  steerReceipt(actor: OwnerActor, steerId: string): ConversationSteerReceipt {
+    this.options.policy.requireOwner(actor); identity(steerId);
+    const row = this.store.db.query<{ request_id: string }, [string]>("SELECT request_id FROM steers WHERE id=?").get(steerId);
+    if (!row) throw new AppError("not_found", 404);
+    const target = this.store.request(row.request_id); this.owner(actor, target);
+    const steer = this.store.steers(row.request_id).find(item => item.id === steerId)!;
+    return { contract: "s16-conversation-steer-receipt/v1", requestId: steerId, conversationId: target.receipt.conversationId, target: row.request_id, state: steer.state, followUp: steer.followUp };
+  }
+  /** Hands every still-queued steer of a live run to it, in acceptance order. */
+  #deliverSteers(requestId: string): void {
+    for (const row of this.store.steers(requestId)) {
+      const sink = this.#steerSinks.get(requestId);
+      if (!sink?.steer) return;
+      if (row.state !== "queued") continue;
+      let result: HostSteerResult;
+      try { result = sink.steer({ id: row.id, text: row.text }); } catch { result = { kind: "rejected", id: row.id, reason: "limit" }; }
+      if (result.kind === "queued" || result.kind === "applied") this.#setSteer(row.id, result.kind === "queued" ? "sent" : "applied");
+      else if (result.kind === "rejected" && result.reason === "uncertain") this.#setSteer(row.id, "uncertain");
+      else this.#followUp(row.id);
+    }
+  }
+  #setSteer(steerId: string, state: ConversationSteerState, followUp: string | null = null): void {
+    this.store.transaction(() => {
+      const row = this.store.db.query<{ request_id: string; state: ConversationSteerState }, [string]>("SELECT request_id,state FROM steers WHERE id=?").get(steerId);
+      if (!row || row.state === state || ["applied", "resubmitted", "unapplied", "uncertain"].includes(row.state)) return;
+      this.store.setSteer(steerId, state, followUp);
+      this.store.event(this.store.request(row.request_id), "steer", this.clock.now(), `steer_${state}`);
+    });
+    if (state !== "queued" && state !== "sent") this.#steerActors.delete(steerId);
+  }
+  /** Resends one never-applied steer as exactly one ordinary message, or records it unapplied without a live owner. */
+  #followUp(steerId: string): void {
+    const actor = this.#steerActors.get(steerId);
+    const row = this.store.db.query<{ request_id: string; state: ConversationSteerState }, [string]>("SELECT request_id,state FROM steers WHERE id=?").get(steerId);
+    if (!row || (row.state !== "queued" && row.state !== "sent")) return;
+    if (!actor || this.store.request(row.request_id).state === "stopped" || this.#closing) { this.#setSteer(steerId, "unapplied"); return; }
+    const followUp = `${steerId.slice(0, 100)}_f${digest(`s16.chat.steer.follow-up.v1\n${steerId}`).slice(0, 16)}`;
+    try {
+      this.store.transaction(() => {
+        const steer = this.store.steers(row.request_id).find(item => item.id === steerId)!, target = this.store.request(row.request_id);
+        this.submit(actor, { contract: "s15-conversation/v1", requestId: followUp, conversationId: target.receipt.conversationId, text: steer.text, continuation: null });
+        this.store.setSteer(steerId, "resubmitted", followUp);
+        this.store.event(target, "steer", this.clock.now(), "steer_resubmitted");
+      });
+      this.#steerActors.delete(steerId);
+      this.#wakeDrain();
+    } catch { this.#setSteer(steerId, "unapplied"); }
+  }
+  /** Settles a finished run's steers from its exact Schway report; anything handed without a report is uncertain. */
+  #closeSteers(requestId: string, report: HostSteeringReport | null | undefined): void {
+    this.#steerSinks.delete(requestId);
+    const applied = new Set(report?.applied.map(item => item.id) ?? []), unapplied = new Set(report?.unapplied.map(item => item.id) ?? []);
+    for (const row of this.store.steers(requestId)) {
+      if (row.state === "queued") this.#followUp(row.id);
+      else if (row.state !== "sent") continue;
+      else if (applied.has(row.id)) this.#setSteer(row.id, "applied");
+      else if (unapplied.has(row.id)) this.#followUp(row.id);
+      else this.#setSteer(row.id, "uncertain");
+    }
   }
   /**
    * Typed exact owner decision from an authenticated slip form (`s15-conversation-decision/v1`). The posted
@@ -280,25 +390,40 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     });
     this.#running.get(requestId)?.abort();
   }
-  /** Wakes one local durable queue drain. Concurrent callers share it; a claim is committed before I/O. */
+  /**
+   * Wakes the local durable queue drain. Concurrent callers share it; a claim is committed before I/O. Up to
+   * `maxConcurrentRuns` requests (default 2) run at once, never two of one conversation, so an independent
+   * conversation proceeds while another waits or works. The promise settles once nothing runnable remains.
+   */
   drain(): Promise<void> {
-    if (this.#draining) return this.#draining;
+    if (this.#draining) { this.#wakeDrain(); return this.#draining; }
     const done = Promise.withResolvers<void>(); this.#draining = done.promise;
+    const max = Math.max(1, Math.min(this.options.maxConcurrentRuns ?? 2, 8));
     void (async () => {
+      const active = new Map<string, Promise<void>>();
+      let failure: unknown = null;
       try {
         while (!this.#closing) {
+          const busy = new Set([...active.keys()].map(id => this.store.request(id).receipt.conversationId));
           // Only process-local authenticated registrations are runnable after restart.
-          const id = [...this.#owners.keys()].find(id => this.store.request(id).state === "queued");
-          if (!id) break;
-          if (this.store.request(id).phase === "decision") await this.runDecision(id);
-          else await this.run(id);
+          const id = active.size >= max ? undefined : [...this.#owners.keys()].find(id => !active.has(id) && this.store.request(id).state === "queued" && !busy.has(this.store.request(id).receipt.conversationId));
+          if (id) {
+            const run = (this.store.request(id).phase === "decision" ? this.runDecision(id) : this.run(id)).catch(error => { failure ??= error; }).finally(() => active.delete(id));
+            active.set(id, run); continue;
+          }
+          if (!active.size) break;
+          const woken = new Promise<void>(resolve => { this.#wake = resolve; });
+          await Promise.race([...active.values(), woken]);
+          this.#wake = null;
         }
-        done.resolve();
-      } catch (error) { done.reject(error); }
-      finally { this.#draining = null; }
+        await Promise.all(active.values());
+        if (failure) done.reject(failure); else done.resolve();
+      } catch (error) { await Promise.allSettled(active.values()); done.reject(error); }
+      finally { this.#draining = null; this.#wake = null; }
     })();
     return done.promise;
   }
+  #wakeDrain(): void { this.#wake?.(); }
   private async runDecision(id: string): Promise<void> {
     try {
       const request = this.store.transaction(() => {
@@ -319,6 +444,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   private async run(id: string): Promise<void> {
     const registration = this.#owners.get(id);
     const abort = new AbortController(); this.#running.set(id, abort);
+    // CHAT16-02: steers wait here until the work run's first authorized send opens its live Schway sink.
+    this.#steerSinks.set(id, { steer: null });
+    let steerReport: HostSteeringReport | null | undefined;
+    const steering: ModelStepSteering = {
+      open: steer => { const sink = this.#steerSinks.get(id); if (sink && !abort.signal.aborted) { sink.steer = steer; this.#deliverSteers(id); } },
+      settle: report => { const sink = this.#steerSinks.get(id); if (sink) sink.steer = null; steerReport = report; },
+    };
     let tools: ConversationTools | undefined, cancel: Promise<void> | undefined;
     let startedAt = this.clock.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -472,7 +604,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         current.inputEvidence ??= []; if (current.inputEvidence.some(row => row.id === evidence.id)) return;
         if (current.inputEvidence.length >= 64) throw new AppError("output_limit"); current.inputEvidence.push(evidence); this.store.save(current); this.store.event(current, "evidence", this.clock.now());
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput, steering }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, steering, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         guard: () => guard("model"),
         // Usage evidence is kept on a failed run too; publication below still requires completion.
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),
@@ -511,6 +643,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       try { await tools?.close(); } catch { /* Adapter retains unsettled capacity; no retries or raw diagnostics. */ }
       this.options.memory?.release(id);
       this.#running.delete(id);
+      try { this.#closeSteers(id, steerReport); } catch { /* Steers keep their stored state; a later boot settles them. */ }
       if (this.#owners.get(id)?.commandId === registration?.commandId) this.#owners.delete(id);
     }
   }

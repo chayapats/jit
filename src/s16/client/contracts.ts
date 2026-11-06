@@ -1,4 +1,4 @@
-import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt } from "../../s15/conversation/types";
+import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt, ConversationSteerCommand, ConversationSteerReceipt } from "../../s15/conversation/types";
 import type { ConversationListEntry, ConversationNeedsYou, ConversationOwnerRow, ConversationOwnerView } from "../../s15/conversation/owner-view";
 import type { FileArtifact, FileLimits } from "../files/types";
 
@@ -9,7 +9,8 @@ export interface ClientCapabilities {
   textMessages: true;
   progress: "control_events";
   exactDecisions: boolean;
-  liveSteering: false;
+  /** CHAT16-02: true when an unfinished request accepts `s16-conversation-steer/v1` and requests of different conversations run concurrently. */
+  liveSteering: boolean;
   uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: boolean; memoryContract?: "s16-file-memory/v1"; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
   /** `library`/`revisions`/`html` are additive: absent on older services, which keep conversation cards only. */
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
@@ -40,6 +41,8 @@ export interface ClientEvents { contract: "s16-client-events/v1"; conversationId
 export type ClientMessage = ConversationCommand;
 export type ClientDecision = ConversationDecisionCommand;
 export type ClientReceipt = ConversationReceipt;
+export type ClientSteer = ConversationSteerCommand;
+export type ClientSteerReceipt = ConversationSteerReceipt;
 
 /** Finite complete JSON response bound shared by the protected adapter and browser/native transport. */
 export const clientResponseBytes = 8 * 1024 * 1024;
