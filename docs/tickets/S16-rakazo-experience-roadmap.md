@@ -50,6 +50,8 @@ All runtime slices currently require Frontier judgment. Split Standard tickets o
 
 The file delivery is split into text #400, isolated binary #401 and working-computer processing #433; #402 supplies precise ancestry. The dependencies above are the verified native final-delivery edges, with scope details in each issue. Runtime/API work should not depend on unrelated voice or native packaging. Human credentials are separated from implementation and requested only at the concrete live-test boundary.
 
+CHAT16-02 [#406](https://github.com/chayapats/jit/issues/406) adds owner steering of running work over Schway's new `schway.host.steering/v1` and concurrent conversations: see the [steering contract](../contracts/s16-steering-v1.md) and [ADR 0086](../adr/0086-s16-live-steering-and-concurrent-conversations.md). NOTIFY16-01 [#441](https://github.com/chayapats/jit/issues/441) removes Telegram from every runtime and adds Web Push from the PWA: see the [notifications contract](../contracts/s16-notifications-v1.md) and [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Live provider/device evidence remains #431.
+
 ## Owner revision — 2026-11-06
 
 The owner chose Grok-style autonomy and removed Telegram: [S16-D06–D11](../specs/S16-rakazo-experience.md), [ADR 0084](../adr/0084-s16-grok-style-default-autonomy.md), [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Consequences for this graph:

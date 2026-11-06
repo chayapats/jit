@@ -74,6 +74,8 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Routine occurrence (S16, ROUT16-01/02):** One scheduled, Run-now, signed-event or file-revision wake of an owner-confirmed routine. It enters CHAT through the protected `submitRoutine` ingress with an immutable purpose/resource/access pin and is admitted under the current standing policy; the routine itself grants nothing. A routine has at most one pending occurrence (later triggers coalesce into it) and runs one obligation at a time: an exact approval or unknown outcome holds the next run. See `src/s16/routines/` and the [routines contract](docs/contracts/s16-routines-v1.md).
 
+**Steer (S16, CHAT16-02):** An authenticated owner message that adjusts one unfinished request of the same conversation. It is owner input inside that request's frozen scope and never decides a held action. A live run applies it at its next boundary through Schway's `schway.host.steering/v1`; otherwise it becomes exactly one ordinary follow-up, or stays `unapplied`/`uncertain` when it cannot be resent safely. Requests of different conversations run concurrently. See the [steering contract](docs/contracts/s16-steering-v1.md).
+
 **Decision:** A conclusion explicitly selected by the owner, retaining the proposal and evidence it resolves. An agent vote or recommendation is not a decision.
 
 **Memory claim:** A retained statement with source/revision, originating Bot/conversation, fact-or-inference status and lifecycle state. It is not the entire transcript or unqualified truth.
