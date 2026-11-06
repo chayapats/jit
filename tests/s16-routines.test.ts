@@ -225,3 +225,22 @@ test("the read-only calendar feed matches enabled occurrences, rotates, revokes 
   await f.command({ kind: "routine.stop", routineId: routine.id, expectedRevision: routine.revision });
   expect(await (await f.request(new URL(again.url!).pathname)).text()).not.toContain("VEVENT");
 }, 30000);
+
+test("an existing installation gains the routine store only when routines are explicitly enabled", async () => {
+  const { composedFixture } = await import("./fixtures/s15-composition");
+  let enabled = false;
+  const f = await composedFixture("default", false, undefined, base => enabled ? { ...base, routines: {} } : base);
+  try {
+    expect(f.service.routines).toBeUndefined();
+    expect((await f.request("/api/s16/client/routines")).status).toBe(503);
+    expect((await f.request("/hooks/s16/routines/rs_x", "POST", {})).status).not.toBe(202);
+    const boot = await (await f.request("/api/s16/client/bootstrap")).json() as ClientBootstrap;
+    expect(boot.capabilities.routines).toEqual({ available: false, code: "routines_unavailable" }); expect(boot.routines).toBeUndefined();
+    enabled = true; await f.reopen();
+    expect(f.service.routines).toBeDefined();
+    expect(JSON.parse(readFileSync(join(f.directory, "composition.json"), "utf8")).stores).toContain("routines.sqlite");
+    expect((await (await f.request("/api/s16/client/routines")).json() as ClientRoutineList).routines).toEqual([]);
+    // Turning the option off again refuses rather than silently dropping a listed store.
+    enabled = false; await expect(f.reopen()).rejects.toThrow();
+  } finally { enabled = true; await f.close().catch(() => {}); }
+}, 30000);

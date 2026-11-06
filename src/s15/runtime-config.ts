@@ -25,6 +25,8 @@ export interface S15RuntimeConfig {
   files?: boolean | BinaryFileConfig;
   /** Explicit versioned sourced-file memory; omission preserves previously accepted file semantics. */
   fileMemory?: boolean;
+  /** Explicit S16 routines (`s16-routines/v1`); omission keeps an installation without routines or reaction routes. */
+  routines?: boolean;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -66,6 +68,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.files !== undefined && typeof value.files !== 'boolean') validateBinaryFileConfig(value.files);
   if (value.files && !value.disclosure) throw new AppError('invalid_s15_config');
   if (value.fileMemory !== undefined && typeof value.fileMemory !== 'boolean' || value.fileMemory && !value.files) throw new AppError('invalid_s15_config');
+  if (value.routines !== undefined && typeof value.routines !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }
