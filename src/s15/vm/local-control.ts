@@ -32,6 +32,8 @@ export function assertVmmLayout(vmm: QemuVmmOptions): void {
 export interface LocalVmControlOptions extends Omit<QemuHostOptions, "proxySocket"> {
   /** Destination-only proxy metadata sink (session, host, byte counts). */
   proxyLog?: (entry: VmProxyLog) => void;
+  /** AUTH16-01: let the guest reach public DNS names through the proxy (default true; ADR 0084 residual). */
+  publicWeb?: boolean;
   resolve?: (host: string) => Promise<readonly { address: string; family: number }[]>;
   connect?: (address: string, port: number) => Socket;
   /** Listening socket for the shared layout's proxy path, inherited from the installer's socket unit (VM15-03). */
@@ -61,10 +63,11 @@ export async function startLocalVmControl(store: VmStore, options: LocalVmContro
   // controller-owned `control/` directory, group-connectable (0660) by that identity only.
   if (options.vmm) assertVmmLayout(options.vmm);
   const proxySocket = options.vmm ? vmmLayout(options.vmm.directory).proxySocket : join(options.directory, "proxy.sock");
-  const { proxyLog, resolve, connect, proxySocketFd, ...host } = options;
+  // AUTH16-01 (ADR 0084, S16-D09): the working VM browser reaches the public web by default (recorded residual).
+  const { proxyLog, resolve, connect, proxySocketFd, publicWeb, ...host } = options;
   if (proxySocketFd !== undefined && !options.vmm) vmFail("vm_invalid_setup");
   const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", port: 0, socketPath: proxySocket, socketMode: options.vmm ? 0o660 : 0o600, ...(proxySocketFd !== undefined ? { socketFd: proxySocketFd } : {}), guestHostname: qemuGuestNetwork.proxy, guestPort: qemuGuestNetwork.proxyPort,
-    ...(saved ? { hosts: JSON.parse(saved.data) as string[] } : {}), log: proxyLog ?? (() => {}), ...(resolve ? { resolve } : {}), ...(connect ? { connect } : {}) });
+    ...(saved ? { hosts: JSON.parse(saved.data) as string[] } : {}), publicWeb: publicWeb ?? true, log: proxyLog ?? (() => {}), ...(resolve ? { resolve } : {}), ...(connect ? { connect } : {}) });
   // `/dev/kvm` readiness is the QEMU identity's access, probed through its launcher, never the controller's.
   const probe = host.probe ?? (options.vmm ? vmmHostProbe(options.vmm) : undefined);
   return { host: { ...host, proxySocket, ...(probe ? { probe } : {}) }, lease: (sessionId, expiresAt, authorize) => proxy.lease(sessionId, expiresAt, authorize), setHosts: hosts => proxy.setHosts(hosts), close: () => proxy.close() };
