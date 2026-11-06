@@ -47,3 +47,5 @@ The only added retained conversation field is the optional typed-decision finger
 Deterministic composed tests exercise an actual registered VM tool, lost-response recovery/restart, duplicate/conflicting sends, exact approval with one send, private-source withdrawal, independent stop, auth/origin/CSRF/cursor checks, post-stream reauthentication, stale client generations and browser bundling without server/engine imports. The VM/provider transports are controlled fixtures; this is not new live-host, device, provider or complete-product acceptance.
 
 The artifact library, provenance, revision inputs and the sandboxed HTML viewer use the separate [artifact library contract](s16-artifacts-v1.md) and additive optional `artifacts.library`, `artifacts.revisions` and `artifacts.html` capability fields.
+
+Routines, signed/file reactions and the calendar feed use the separate [routines contract](s16-routines-v1.md), the additive optional `routines` capability and `routines.attention` bootstrap fields, and the additive `routine` label on conversation owner rows. Clients without them keep working unchanged.
