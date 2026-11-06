@@ -42,8 +42,16 @@ export interface DefaultSelection { selection: Selection; recipient: Ref; charge
 /** Every class an adapter can derive. Only ordinary edits and guest administration run under the ordinary rule;
  * the rest are matched by it only so the owner can approve each exact action (POLICY's per-class human gates). */
 export const s15DefaultRuleClasses: readonly ActionClass[] = Object.freeze(['ordinary_edit', 'guest_local_admin', 'guest_system_admin', 'new_egress', 'communication', 'financial', 'github_publish', 'github_merge', 'production', 'disclosure', 'major_change']);
-/** Classes that always wait for the owner's exact approval under the product default. */
-export const s15HeldClasses: readonly ActionClass[] = Object.freeze(['communication', 'github_publish', 'github_merge', 'production', 'financial', 'disclosure', 'new_egress', 'major_change']);
+/**
+ * Classes that wait for the owner's exact approval under the product default (S16-D07, ADR 0084). `communication`
+ * stays listed because a send the Bot starts itself, or to anyone the owner did not name, still waits; GitHub
+ * publication and merge after required checks no longer do (a production consequence still does).
+ */
+export const s15HeldClasses: readonly ActionClass[] = Object.freeze(['communication', 'production', 'financial', 'disclosure', 'new_egress', 'major_change']);
+/** Rule ids of the AUTH16-01 product defaults (contract revision 3). */
+export const s16DefaultRuleIds = Object.freeze({ namedSends: 'owner_named_sends', github: 'github_after_checks' });
+/** GitHub operations the product default publishes or merges without approval once its evidence holds. */
+export const s16GithubDefaultOperations: readonly string[] = Object.freeze(['merge', 'pr_create', 'pr_update', 'push', 'review_reply']);
 
 /**
  * Compose the exact default standing policy. Returns null when no route is approved or nothing to work on exists.
@@ -65,8 +73,15 @@ export function s15DefaultPolicy(input: {
   const purposes = [structuredClone(s15DefaultRefs.work), structuredClone(s15DefaultRefs.interpretation)];
   const ordinary: Rule = { id: 'owner_requested_work', mode: 'ordinary', purposes: [structuredClone(s15DefaultRefs.work)], bots: [structuredClone(input.bot)], resources, recipients, selections,
     adapters: adapters.length ? adapters : ['working_vm'], operations: operations.length ? operations : ['vm_write'], classes: [...s15DefaultRuleClasses], expiresAt, recurrence: null };
+  // AUTH16-01 (S16-D07 b, d): owner-named sends and GitHub work after required checks run without approval.
+  const named: Rule = { ...structuredClone(ordinary), id: s16DefaultRuleIds.namedSends, mode: 'owner_named_send', recipients: [], classes: ['ordinary_edit', 'communication'] };
+  const repositories = input.resources.filter(r => r.kind === 'repository' && r.adapters.some(a => a.id === 's15_github'));
+  const githubOps = [...new Set(repositories.flatMap(r => r.adapters.filter(a => a.id === 's15_github').flatMap(a => a.operations)))].filter(op => s16GithubDefaultOperations.includes(op)).sort();
+  const rules: Rule[] = [ordinary, named];
+  if (repositories.length && githubOps.length) rules.push({ id: s16DefaultRuleIds.github, mode: 'github_default', purposes: [structuredClone(s15DefaultRefs.work)], bots: [structuredClone(input.bot)], resources: unique(repositories.map(r => structuredClone(r.ref))), recipients: [], selections: selections.map(x => structuredClone(x)),
+    adapters: ['s15_github'], operations: githubOps, classes: ['communication', 'github_merge', 'github_publish'], expiresAt, recurrence: null });
   const policy: PolicyInput = { purposes, interpretationPurpose: structuredClone(s15DefaultRefs.interpretation), bots: [structuredClone(input.bot)], resources, recipients, selections,
-    budget: input.budget ? structuredClone(input.budget) : null, rules: [ordinary], expiresAt };
+    budget: input.budget ? structuredClone(input.budget) : null, rules, expiresAt };
   for (const rule of input.carry ?? []) {
     if (rule.mode !== 'personal_github_publish' && rule.mode !== 'personal_github_merge' && rule.mode !== 'recurring_payment') continue;
     if (rule.expiresAt <= input.now || policy.rules.some(r => r.id === rule.id)) continue;

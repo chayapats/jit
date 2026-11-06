@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { containsRegisteredSecret } from '../../security/secret-fingerprints';
-import type { ActionClass, ActionDraft, BudgetVector, PolicyInput, Ref, Rule, Selection, Usage, WorkRequest } from './types';
+import type { ActionClass, ActionDraft, BudgetVector, PolicyInput, Ref, Rule, RuleMode, Selection, Usage, WorkRequest } from './types';
 
 /** Safe public refusal code. No raw provider error, payload or credential is included. */
 export class PolicyError extends Error { constructor(readonly code: string) { super(code); this.name = 'PolicyError'; } }
@@ -56,9 +56,10 @@ export function canonical(value: unknown): string {
 /** Domain-separated exact record identity, never authentication. */
 export const digest = (domain: string, value: unknown): string => createHash('sha256').update(domain + '\n' + canonical(value)).digest('hex');
 const classes: ActionClass[] = ['ordinary_edit', 'guest_local_admin', 'guest_system_admin', 'new_egress', 'communication', 'financial', 'github_publish', 'github_merge', 'production', 'disclosure', 'major_change'];
+const ruleModes: readonly RuleMode[] = ['ordinary', 'communication', 'personal_github_publish', 'personal_github_merge', 'recurring_payment', 'deny', 'owner_named_send', 'github_default'];
 export function rule(v: unknown): asserts v is Rule {
   exact(v, ['id', 'mode', 'purposes', 'bots', 'resources', 'recipients', 'selections', 'adapters', 'operations', 'classes', 'expiresAt', 'recurrence'], ['github']); id(v.id);
-  if (!['ordinary', 'communication', 'personal_github_publish', 'personal_github_merge', 'recurring_payment', 'deny'].includes(v.mode as string)) fail('invalid_rule');
+  if (!ruleModes.includes(v.mode as RuleMode)) fail('invalid_rule');
   refs(v.purposes); refs(v.bots); refs(v.resources); refs(v.recipients); array(v.selections, selection, true); array(v.adapters, id, true); array(v.operations, id, true); array(v.classes, x => { if (!classes.includes(x as ActionClass)) fail('invalid_rule'); }, true); nat(v.expiresAt, true);
   if (!(v.purposes as Ref[]).length || !(v.bots as Ref[]).length) fail('invalid_rule');
   if (v.mode === 'recurring_payment') {
@@ -73,8 +74,9 @@ export function policy(v: unknown): asserts v is PolicyInput {
   if (v.budget !== null) { exact(v.budget, ['currency', 'startsAt', 'expiresAt', 'ceiling', 'concurrency']); currency(v.budget.currency); nat(v.budget.startsAt); nat(v.budget.expiresAt, true); vector(v.budget.ceiling); nat(v.budget.concurrency, true); if (v.budget.startsAt >= v.budget.expiresAt) fail('invalid_budget'); }
 }
 export function workRequest(v: unknown): asserts v is WorkRequest {
-  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences', 'access', 'readLimit']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
+  exact(v, ['requestId', 'intent', 'purpose', 'bot', 'resources', 'recipients', 'selection', 'selectionPin', 'expiresAt'], ['subject', 'fences', 'access', 'readLimit', 'named']); id(v.requestId); if (!['inspect', 'execute', 'accept_obligation'].includes(v.intent as string)) fail('invalid_intent'); ref(v.purpose); ref(v.bot); refs(v.resources); refs(v.recipients); selection(v.selection); if (v.selectionPin !== null) selection(v.selectionPin); nat(v.expiresAt, true);
   if (v.readLimit !== undefined) nat(v.readLimit);
+  if (v.named !== undefined) { refs(v.named); if (!(v.named as Ref[]).length || (v.named as Ref[]).some(x => !contains(v.recipients as Ref[], x))) fail('invalid_shape'); }
   if (v.access !== undefined && (!['read', 'reversible_write', 'effect'].includes(v.access as string) || (v.intent !== 'execute' && v.access !== 'read'))) fail('invalid_intent');
   if (v.fences !== undefined) fences(v.fences);
   if (v.subject !== undefined && v.subject !== null) { exact(v.subject, ['resource', 'issue']); ref(v.subject.resource); nat(v.subject.issue, true); }

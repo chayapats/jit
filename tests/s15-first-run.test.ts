@@ -45,7 +45,7 @@ test('POLICY15-02: a fresh installer config shows an installable default proposa
   expect(policy.recipients.map(r => r.id)).toEqual(['codex_provider']);
   expect(policy.selections).toEqual([f.config.conversation.selection]);
   expect(policy.budget).toBeNull();
-  expect(policy.rules.map(r => r.mode)).toEqual(['ordinary']);
+  expect(policy.rules.map(r => r.mode)).toEqual(['ordinary', 'owner_named_send']);
   expect(policy.rules.some(r => r.mode.startsWith('personal_github'))).toBe(false);
   expect(policy.expiresAt - f.now).toBeGreaterThan(179 * 86_400_000); expect(policy.expiresAt - f.now).toBeLessThanOrEqual(180 * 86_400_000);
   // The same click registered the exact TEAM list, so setup has nothing left.
