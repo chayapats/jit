@@ -11,9 +11,9 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `aac2fc0afdfe53f0a5076cb9d3edfaf33d280581` (Schway main, merged via Schway #457 with tree `b63729cd5bc0a55b1fa9364ec57d28dec21a65d2`; closes schway#455). It keeps `schway.host.release/v2` and adds schway.host.route-renewal/v1 (`HostAuthBinding.renew`, `renewAuthRoute`) on top of the previous pin `0a10abedcd72aae7c92371fee277af7d90d4e52c` (main `4163e60`, MODEL15-02: dispatch-authorization/v1, provider-requests/v1, effort/v1 and output-cap/v1), which itself extended `697bf406a84c8d1deb8d4a6d71876ea1003be5b3` (core-tools, web-tools, device-sign-in, image-input, model-catalog, credential-lifecycle and session-inventory).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-aac2fc0.tgz`,
-  SHA-256 `2801a5a4a322faabba276a0f607f39027784e2e1e73b720937c77b0f4f0027ae`.
+  `39194f7439d3f97900477cfac22bbd7164937530` (Schway main, merged via Schway #457 with tree `b63729cd5bc0a55b1fa9364ec57d28dec21a65d2`; closes schway#455). It keeps `schway.host.release/v2` and adds schway.host.route-renewal/v1 (`HostAuthBinding.renew`, `renewAuthRoute`) on top of the previous pin `0a10abedcd72aae7c92371fee277af7d90d4e52c` (main `4163e60`, MODEL15-02: dispatch-authorization/v1, provider-requests/v1, effort/v1 and output-cap/v1), which itself extended `697bf406a84c8d1deb8d4a6d71876ea1003be5b3` (core-tools, web-tools, device-sign-in, image-input, model-catalog, credential-lifecycle and session-inventory).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-39194f7.tgz`,
+  SHA-256 `58c80215fa0d8330c73c07674038ae50aed5dd5e69cc9d95e5d421e689091b8a`.
 - Credential upgrade fence (schway#428): this build saves and deletes credentials under an OS-released SQLite lock. Once it writes a credential under an account, every older untagged lock-directory build (including the previous `697bf40` pin) fails all credential saves and deletes under that account, token renewal included. Every Jit install and Schway CLI that shares a service identity must upgrade together; recovery is Schway `docs/credentials.md`.
 - Behavior set `schway.host.release/v2` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,

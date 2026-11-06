@@ -72,8 +72,8 @@ import { SCHWAY_PINNED_REVISION } from "../schway-version";
 export { SCHWAY_PINNED_REVISION } from "../schway-version";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-aac2fc0.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "2801a5a4a322faabba276a0f607f39027784e2e1e73b720937c77b0f4f0027ae";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-39194f7.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "58c80215fa0d8330c73c07674038ae50aed5dd5e69cc9d95e5d421e689091b8a";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */

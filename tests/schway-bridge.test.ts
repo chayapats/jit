@@ -98,7 +98,7 @@ test("pinned artifact gate reports the exact vendored release", () => {
 });
 
 test("vendored tarball matches the pinned sha256", () => {
-  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-aac2fc0.tgz"));
+  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-39194f7.tgz"));
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
 });
 
