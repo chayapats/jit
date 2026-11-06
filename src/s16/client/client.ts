@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand,type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
@@ -257,6 +257,33 @@ export class JitClient {
     const data = await this.call("/routines/commands", "POST", command, signal, command.requestId);
     if (!record(data) || data.contract !== "s16-routine-receipt/v1") throw new JitClientError("client_protocol_invalid", null, "unknown", command.requestId);
     return data as unknown as ClientRoutineReceipt;
+  }
+  /** Installation push key and this owner's device count. The first read creates the installation key; nothing else changes. */
+  async notificationSettings(signal?: AbortSignal): Promise<ClientNotificationSettings> {
+    const data = await this.call("/notifications", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-notifications/v1" || typeof data.publicKey !== "string" || !/^[A-Za-z0-9_-]{87}$/.test(data.publicKey) || !count(data.devices) || !count(data.limit)) return invalid();
+    return data as unknown as ClientNotificationSettings;
+  }
+  /** Whether the device whose push endpoint hashes to `endpointSha256` is subscribed for this owner. */
+  async notificationDevice(endpointSha256: string, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    if (!sha256(endpointSha256)) throw new JitClientError("invalid_identity", null, "not_sent");
+    return this.device(await this.call(`/notifications/devices/${endpointSha256}`, "GET", undefined, signal), "response");
+  }
+  /** Store this device's push subscription. Idempotent per endpoint, so an unknown outcome may simply be sent again. */
+  async subscribeNotifications(command: ClientNotificationSubscribeCommand, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    const device = this.device(await this.call("/notifications/subscribe", "POST", structuredClone(command), signal), "unknown");
+    if (!device.subscribed) throw new JitClientError("client_protocol_invalid", null, "unknown");
+    return device;
+  }
+  /** Remove this device's subscription. Idempotent per endpoint. */
+  async unsubscribeNotifications(endpoint: string, signal?: AbortSignal): Promise<ClientNotificationDevice> {
+    const device = this.device(await this.call("/notifications/unsubscribe", "POST", { endpoint }, signal), "unknown");
+    if (device.subscribed) throw new JitClientError("client_protocol_invalid", null, "unknown");
+    return device;
+  }
+  private device(data: unknown, outcome: "response" | "unknown"): ClientNotificationDevice {
+    if (!record(data) || data.contract !== "s16-notification-device/v1" || typeof data.subscribed !== "boolean") throw new JitClientError("client_protocol_invalid", null, outcome);
+    return data as unknown as ClientNotificationDevice;
   }
   /** Drop authority material when a native session signs out; callers also discard private projections. */
   clear(): void { this.#csrf = null; this.#sessionGeneration++; }

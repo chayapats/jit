@@ -49,3 +49,5 @@ Deterministic composed tests exercise an actual registered VM tool, lost-respons
 The artifact library, provenance, revision inputs and the sandboxed HTML viewer use the separate [artifact library contract](s16-artifacts-v1.md) and additive optional `artifacts.library`, `artifacts.revisions` and `artifacts.html` capability fields.
 
 Routines, signed/file reactions and the calendar feed use the separate [routines contract](s16-routines-v1.md), the additive optional `routines` capability and `routines.attention` bootstrap fields, and the additive `routine` label on conversation owner rows. Clients without them keep working unchanged.
+
+Web Push notices, device subscriptions and the `/s16/sw.js` worker use the separate [notifications contract](s16-notifications-v1.md) and the additive optional `notifications` capability field. Clients without it keep working unchanged.

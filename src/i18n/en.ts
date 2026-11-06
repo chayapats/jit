@@ -5989,4 +5989,12 @@ export const en: Record<MessageKey, string> = {
   "s16.routine.error.feed_already_enabled": "The calendar feed is already on.",
   "s16.routine.error.feed_not_enabled": "The calendar feed is off.",
   "s16.routine.error.occurrence_not_waiting": "That run no longer needs you.",
+  "s16.notify.needs_you.title": "Jit needs you",
+  "s16.notify.needs_you.body": "Open the conversation to review and decide.",
+  "s16.notify.result.title": "Jit finished",
+  "s16.notify.result.body": "Open the conversation to see the result.",
+  "s16.notify.routine.title": "Routine update",
+  "s16.notify.routine.body": "Open it to see the latest run.",
+  "s16.notify.generic.title": "Jit",
+  "s16.notify.generic.body": "Open Jit to see what changed.",
 };

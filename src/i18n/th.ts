@@ -5993,4 +5993,12 @@ export const th = {
   "s16.routine.error.feed_already_enabled": "ปฏิทินเปิดอยู่แล้ว",
   "s16.routine.error.feed_not_enabled": "ปฏิทินปิดอยู่",
   "s16.routine.error.occurrence_not_waiting": "รอบนั้นไม่ต้องการคุณแล้ว",
+  "s16.notify.needs_you.title": "จิตรอคุณอยู่",
+  "s16.notify.needs_you.body": "เปิดบทสนทนาเพื่อดูและตัดสินใจ",
+  "s16.notify.result.title": "จิตทำงานเสร็จแล้ว",
+  "s16.notify.result.body": "เปิดบทสนทนาเพื่อดูผลลัพธ์",
+  "s16.notify.routine.title": "งานประจำมีผลใหม่",
+  "s16.notify.routine.body": "เปิดเพื่อดูผลของรอบล่าสุด",
+  "s16.notify.generic.title": "จิต",
+  "s16.notify.generic.body": "เปิดจิตเพื่อดูสิ่งที่เปลี่ยนไป",
 } as const;
