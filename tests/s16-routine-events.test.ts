@@ -252,6 +252,6 @@ test("a saved file run whose input is withdrawn before recovery settles instead 
   await f.reopen(); await f.wake(); await f.wake();
   const settled = (await f.detail(routine.id)).occurrences[0]!;
   expect(["dispatching", "submitted", "running"]).not.toContain(settled.state);
-  expect(settled.state).toBe("needs_you"); expect(requests(f).filter(id => id.startsWith("ro_"))).toEqual([claimed.requestId]);
+  expect(settled.state).toBe("needs_you"); expect(requests(f).filter(id => id.startsWith("ro_"))).toEqual([claimed.requestId!]);
   expect((await f.detail(routine.id)).summary.display).not.toBe("running");
 }, 60000);
