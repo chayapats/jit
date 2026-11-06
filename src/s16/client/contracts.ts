@@ -15,6 +15,8 @@ export interface ClientCapabilities {
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
   /** Additive field: owner memory search/detail/correct/forget over the existing MEM authority. */
   memory?: { available: false; code: "memory_unavailable" } | { available: true; contract: "s16-client-memory/v1" };
+  /** Additive field: owner-confirmed routines (`s16-routines/v1`). Reactions list the source kinds this service composes. */
+  routines?: { available: false; code: "routines_unavailable" } | { available: true; contract: "s16-client-routines/v1"; reactions: { signed: true; github: true; artifacts: boolean }; feed: true };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
@@ -23,6 +25,8 @@ export interface ClientBootstrap {
   capabilities: ClientCapabilities;
   conversations: ConversationListEntry[];
   needsYou: { conversationId: string; entry: ConversationNeedsYou }[];
+  /** Additive: unseen non-quiet routine outcomes. Quiet runs never count. */
+  routines?: { attention: number };
 }
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
 export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView }
@@ -106,3 +110,4 @@ export interface ClientArtifactInput { id: string; name: string; mime: string; b
 export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item: ClientArtifactItem; inputs: ClientArtifactInput[]; revisions: ClientArtifactItem[]; familyTotal: number; preview: "escaped_text" | "sandboxed_html" }
 /** Explicit owner command copying one exact committed artifact into a new input of its own conversation. */
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }
+export type { RoutineDetail as ClientRoutineDetail, RoutineList as ClientRoutineList, RoutineOptions as ClientRoutineOptions, RoutineProposal as ClientRoutineProposal, RoutineReceipt as ClientRoutineReceipt, RoutineDraft as ClientRoutineDraft, RoutineOccurrence as ClientRoutineOccurrence, RoutineSummary as ClientRoutineSummary, RoutineSourceView as ClientRoutineSource } from "../routines/types";

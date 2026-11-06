@@ -2,6 +2,8 @@ import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, ren
 import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
 import { createS16WebHandler } from '../s16/web/handler';
+import { RoutineService, routineQuietDecision } from '../s16/routines/service';
+import { committedArtifacts } from '../s16/artifacts';
 import { FileStore } from '../s16/files/store';
 import { createFileWorkflow } from '../s16/files/workflow';
 import type { FileLineagePort } from './file-lineage';
@@ -10,7 +12,7 @@ import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type
 import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels, type WorkActor } from './policy';
 import { canonical, equal, unknownUsage } from './policy/validation';
-import { ConversationApplication, ConversationStore, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
+import { ConversationApplication, ConversationStore, conversationRequestView, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
 import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool, VmStore, LocalVmProvisioning, createVmApi, isVmLocalManagement, placeWorkingVm, probeLocalVmHost, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
@@ -49,6 +51,9 @@ export interface S15CompositionOptions {
   /** Explicit S16 file byte custody; requires DATA15. Does not change installed standing rules. */
   files?: { limits?: FileLimits; parserRuntime?: import("../attachments/sanitizer-runtime").AttachmentSanitizerRuntime; imageProbes?: readonly import("schway/host").HostImageProbeRecord[]; memory?: boolean };
   recurring?: RecurringRuleOptions;
+  /** Explicit S16 routines (`s16-routines/v1`): owner-confirmed schedules and signed/file reactions. Opt-in; it adds
+   * `routines.sqlite` and changes no installed standing policy. `feedLabel` names calendar events when routine names stay private. */
+  routines?: { feedLabel?: string };
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -113,7 +118,7 @@ export async function composeS15(options: S15CompositionOptions) {
   let githubConnections: GithubConnections | undefined;
   if (webGithubEnabled && options.disclosure) options = { ...options, disclosure: webGithubDisclosure(options.disclosure, { connections: () => githubConnections, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -126,7 +131,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -342,7 +347,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
         try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority })], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, ...(images ? { images: images.hooks } : {}) });
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
@@ -352,6 +357,22 @@ export async function composeS15(options: S15CompositionOptions) {
     const resumes = openResumeBindings<OwnerActor>({ store, conversation: { submit: (actor, command) => conversation.submit(actor, command) },
       work: { project: (actor, id) => work.project(actor, id), resume: (actor, id, source) => { work.resume(actor, id, source); } },
       principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true, false), now: clockNow });
+    // S16 routines: occurrences post through CHAT's protected routine ingress and re-establish only this owner's
+    // authority; a changed owner generation refuses instead of running under a new owner.
+    const routines = options.routines ? new RoutineService<OwnerActor>({ path: join(root, 'routines.sqlite'), installationId: options.installationId, create: options.create || created.includes('routines.sqlite'), keyPath: join(root, 'routine-hooks.key'), origin: options.origin, now: clockNow,
+      principal: principalOf, owner: snapshot => channelOwner(snapshot, () => true, false),
+      catalog: owner => {
+        const current = policy.owner.current(owner); if (!current) return null;
+        const labels = new Map(team.resources(owner).resources.filter(item => item.active).map(item => [item.id, item] as const));
+        const purposes = current.purposes.filter(purpose => purpose.id !== current.interpretationPurpose?.id).map(purpose => ({ id: purpose.id, label: purpose.id, kind: null }));
+        const resources = current.resources.filter(resource => labels.has(resource.id)).map(resource => ({ id: resource.id, label: labels.get(resource.id)!.label, kind: labels.get(resource.id)!.kind }));
+        const workspace = resources.find(resource => resource.id === options.vm.resource.id) ?? resources[0];
+        return { policyRevision: current.revision, policyExpiresAt: Math.min(current.expiresAt, current.budget?.expiresAt ?? current.expiresAt), purposes, resources, defaults: purposes[0] && workspace ? { purposeId: purposes[0].id, resourceIds: [workspace.id], access: 'read' as const } : null };
+      },
+      conversation: { submitRoutine: (actor, command, pin) => conversation.submitRoutine(actor, command, pin), row: (actor, id) => conversationRequestView(conversation, actor, id), stop: (actor, id) => conversation.stop(actor, id) },
+      ...(files ? { files: { committed: (actor: OwnerActor) => committedArtifacts(conversation, files!, actor).map(item => ({ artifact: item.artifact, parents: item.parents.map(parent => parent.id) })), adopt: (actor: OwnerActor, input: import('../s16/files/types').FileArtifactInputCommand) => files!.adoptArtifact(actor, input) } } : {}),
+      ...(options.routines.feedLabel ? { feedLabel: options.routines.feedLabel } : {}) }) : undefined;
+    if (routines) cleanup.push(() => routines.close());
     const telegram = options.telegram ? openTelegramChannel({ installationId: options.installationId, origin: options.origin, store, vault: options.telegram.vault, transport: options.telegram.transport,
       conversation: { submit: (actor, command) => conversation.submit(actor, command), publish: (actor, id, consume) => conversation.publish(actor, id, consume), slips: (actor, actions) => conversationPolicy.actionSlips?.(actor, actions) ?? [] },
       resumes, work: { list: actor => work.list(actor), project: (actor, id) => work.project(actor, id) }, principal: principalOf,
@@ -518,7 +539,7 @@ export async function composeS15(options: S15CompositionOptions) {
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -536,10 +557,10 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    return { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram,
+    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, telegram, routines,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Telegram ingress is
        * submitted first, stall-reply resumes settle after CHAT, and channel notices are derived last. */
-      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } await conversation.drain(); try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },
+      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { telegram?.process(); } catch { /* Retried next wake. */ } try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); try { telegram?.observe(); } catch { /* Retried next wake. */ } } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {
@@ -556,6 +577,9 @@ export async function composeS15(options: S15CompositionOptions) {
             if (Object.keys(body).sort().join() !== 'expectedRevision,requestId,resource') throw new AppError('invalid_body');
             return Response.json(team.register(owner, body.requestId, body.expectedRevision, body.resource));
           }
+          // Signed reaction ingress and the read-only calendar take no session; each verifies its own secret.
+          if (routines && path.startsWith('/hooks/s16/routines/')) { const id = path.slice('/hooks/s16/routines/'.length); const result = await routines.receive(id, request); if (result.status === 202) void composed.drain().catch(() => {}); return Response.json(result.body, { status: result.status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...result.headers } }); }
+          if (routines && path.startsWith('/feeds/s16/routines/')) { const match = /^\/feeds\/s16\/routines\/([A-Za-z0-9_-]{43})\.ics$/.exec(path); const body = request.method === 'GET' && match ? routines.feed(match[1]!) : null; return body === null ? new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } }) : new Response(body, { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'" } }); }
           if (path === '/s16' || path.startsWith('/s16/')) return s16Web(request);
           if (path.startsWith('/api/s15/')) return chatHandler(request);
           if (path.startsWith('/api/s16/client/')) return clientHandler(request);
@@ -569,5 +593,6 @@ export async function composeS15(options: S15CompositionOptions) {
       /** Await all model/tool cleanup before releasing protected stores. Unknown VM/effects remain fenced. */
       async close() { if (closing) return; closing = true; await conversation.shutdown(); await draining; await files?.close(); for (const close of cleanup.reverse()) await close(); },
     };
+    return composed;
   } catch (error) { for (const close of cleanup.reverse()) try { await close(); } catch {} throw error; }
 }

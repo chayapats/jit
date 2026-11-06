@@ -36,6 +36,13 @@ export interface ConversationIntent {
 }
 /** Structured isolated interpretation is an untrusted proposal within the current approved catalog. */
 export interface ConversationScope { purposeId: string; resourceIds: string[]; access: "read" | "reversible_write" | "effect" }
+/**
+ * `s16-routine-run/v1`: protected routine occurrence pin, set only by the routine service through
+ * `ConversationApplication.submitRoutine`. Interpretation is narrowed to this owner-confirmed purpose,
+ * resources and access ceiling; the occurrence text never decides a held action. It confers no authority:
+ * admission still runs under current standing policy.
+ */
+export interface ConversationRoutinePin { contract: "s16-routine-run/v1"; routineId: string; occurrenceId: string; purposeId: string; resourceIds: string[]; access: ConversationScope["access"]; quiet: boolean }
 /** Exact current owner identity returned by the protected authentication service, never by a client body. */
 export interface ConversationOwner { id: string; generation: number }
 /** Persisted authority reference is data. Only the owning policy service can open a live work context. */
@@ -123,6 +130,8 @@ export interface ConversationRequest {
   /** Frozen ingress semantics; enabling memory later never promotes previously accepted file work. */
   fileMemory?: "s16-file-memory/v1";
   artifacts?: FileArtifact[];
+  /** Present only on a routine occurrence; the original pin is immutable for the request's lifetime. */
+  routine?: ConversationRoutinePin;
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   /** Usage evidence of the latest interpretation run, kept on failure too. Absent before MODEL15-02. */
   interpretationUsage?: HostRunUsage;

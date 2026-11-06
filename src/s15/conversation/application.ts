@@ -7,12 +7,13 @@ import { groundConversationIntent } from "./intent";
 import { runConversation } from "./schway";
 import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
-import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationTools } from "./types";
+import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationRoutinePin, ConversationTools } from "./types";
 
 const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
   "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
+const accessRank = { read: 0, reversible_write: 1, effect: 2 } as const;
 const safeCode = (error: unknown): string => (error instanceof AppError || error instanceof PolicyError) && safeCodes.has(error.code) ? error.code : "conversation_unavailable";
 const clock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new AppError("aborted")); return; }
@@ -60,9 +61,23 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     });
   }
   /** Ordinary authenticated text starts clear work immediately; duplicate ingress returns its original receipt. */
-  submit(actor: OwnerActor, value: unknown): ConversationReceipt {
+  submit(actor: OwnerActor, value: unknown): ConversationReceipt { return this.#submit(actor, value, null); }
+  /**
+   * Protected routine occurrence ingress (`s16-routine-run/v1`). Only the routine service calls this, with the
+   * owner-confirmed pin of one occurrence. The pin narrows interpretation to its purpose, resources and access
+   * ceiling and is part of the request identity: the same request ID with another pin or as an ordinary
+   * message is a conflict. The text never decides a held action and cannot continue a clarification.
+   */
+  submitRoutine(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin): ConversationReceipt {
+    canonical(pin); exact(pin, ["contract", "routineId", "occurrenceId", "purposeId", "resourceIds", "access", "quiet"]);
+    if (pin.contract !== "s16-routine-run/v1" || !Array.isArray(pin.resourceIds) || !pin.resourceIds.length || pin.resourceIds.length > 64 || new Set(pin.resourceIds).size !== pin.resourceIds.length || !["read", "reversible_write", "effect"].includes(pin.access) || typeof pin.quiet !== "boolean") throw new AppError("invalid_data");
+    [pin.routineId, pin.occurrenceId, pin.purposeId, ...pin.resourceIds].forEach(identity);
+    if (!value || typeof value !== "object" || (value as { continuation?: unknown }).continuation !== null) throw new AppError("invalid_data");
+    return this.#submit(actor, value, structuredClone(pin));
+  }
+  #submit(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin | null): ConversationReceipt {
     this.options.policy.requireOwner(actor); command(value);
-    const input = structuredClone(value), hash = digest(`s15.chat.command.v1\n${canonical(input)}`);
+    const input = structuredClone(value), hash = pin ? digest(`s16.routine.command.v1\n${canonical({ input, pin })}`) : digest(`s15.chat.command.v1\n${canonical(input)}`);
     const receipt = this.store.transaction(() => {
       const owner = this.options.policy.requireOwner(actor);
       const prior = this.store.db.query<{ payload_hash: string; receipt_json: string; root_id: string }, [string]>("SELECT payload_hash,receipt_json,root_id FROM commands WHERE id=?").get(input.requestId);
@@ -84,6 +99,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         intent = this.clarification(request.command, input, intent);
       } else {
         request = { receipt, command: input, interpretationRequest: input, owner, revision: 0, intent, state: "held", code: null, authority: null, phase: "interpretation", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null };
+        if (pin) request.routine = pin;
         if (input.contract === "s16-conversation/v2") {
           if (!this.options.files) throw new AppError("upload_unavailable", 503);
           this.store.requireFileContract();
@@ -95,7 +111,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(input.requestId, input.conversationId, request.state, canonical(request));
       }
       request.intent = intent; request.interpretationRequest = input; request.revision++;
-      const exactDecision = ownerDecision(input.text);
+      // A routine occurrence repeats confirmed instruction text; only a live owner message may decide an action.
+      const exactDecision = pin ? null : ownerDecision(input.text);
       if (exactDecision && input.continuation === null && !request.fileInputs) {
         try { applyOwnerDecision(this, actor, request, exactDecision); }
         catch (error) { request.state = "held"; request.code = safeCode(error); }
@@ -346,7 +363,12 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         guard("model"); const current = this.store.request(id), actor = registration!.actor;
         this.owner(actor, current);
         const selectedSubjects = interpretationContext.messages.filter(message => message.role === "owner").map(message => groundConversationIntent(message.text)).filter(intent => intent.kind === "accept" || intent.kind === "execute").flatMap(intent => intent.subject ? [intent.subject] : []);
-        current.intent = freezeInterpretation(interpreted.text, current.intent, { purposes: current.interpretation!.purposes, resources: current.interpretation!.resources, selectedSubjects, fileOutput: current.command.contract === "s16-conversation/v2" });
+        // A routine occurrence may only interpret within its owner-confirmed pin; it can narrow, never broaden.
+        const pin = current.routine, purposes = pin ? current.interpretation!.purposes.filter(purpose => purpose === pin.purposeId) : current.interpretation!.purposes;
+        const resources = pin ? current.interpretation!.resources.filter(resource => pin.resourceIds.includes(resource)) : current.interpretation!.resources;
+        if (pin && (!purposes.length || !resources.length)) throw new AppError("outside_scope");
+        current.intent = freezeInterpretation(interpreted.text, current.intent, { purposes, resources, selectedSubjects, fileOutput: current.command.contract === "s16-conversation/v2" });
+        if (pin && current.intent.scope && accessRank[current.intent.scope.access] > accessRank[pin.access]) throw new AppError("outside_scope");
         if (current.fileInputs && current.intent.kind === "answer") throw new AppError("file_work_required");
         if (current.intent.kind === "ambiguous" || current.intent.kind === "accept") {
           current.state = current.intent.kind === "accept" ? "accepted" : "held"; current.code = current.intent.kind === "accept" ? null : "material_ambiguity";
