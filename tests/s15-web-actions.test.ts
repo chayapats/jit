@@ -18,7 +18,7 @@ test("a held message shows a compact slip in the thread and Needs you, and the f
   const slip = latest(f);
   expect(slip).toMatchObject({ state: "pending", canApprove: true });
   const chat = (await f.html(`/chats/${conversationId}`)).html;
-  expect(chat).toContain("จิตขอส่งข้อความ"); expect(chat).toContain("ข้อความถึงผู้อื่น"); expect(chat).toContain(`href="/actions/${slip.action.id}"`); expect(chat).toContain("ดูทั้งหมดและตัดสินใจ");
+  expect(chat).toContain("จิตขอส่งข้อความ"); expect(chat).toContain("ข้อความที่ Bot เริ่มเอง"); expect(chat).toContain(`href="/actions/${slip.action.id}"`); expect(chat).toContain("ดูทั้งหมดและตัดสินใจ");
   // The thread never carries the decision itself.
   expect(chat).not.toContain("/s15/forms/action/decide");
   const needs = (await f.html("/needs")).html;
@@ -116,21 +116,35 @@ test("an unknown outcome is never retried: only a read-only check and an owner s
   expect(f.f.calls).toBe(1);
 });
 
-test("chat approval binds to the single pending item; two pending items ask which one and nothing runs", async () => {
+test("typed chat approval never decides (S16-D08); only the exact one-press command approves the chosen slip once", async () => {
   const f = setup(); await f.hold({}, "Send first prepared note");
   await f.html(`/chats/${conversationId}`);
-  f.app.submit(f.owner, { contract: "s15-conversation/v1", requestId: crypto.randomUUID().replaceAll("-", ""), conversationId, text: "อนุมัติ", continuation: null }); await f.app.drain();
-  expect(f.f.calls).toBe(1);
-  const one = slips(f)[0]!, page = (await f.html(`/actions/${one.action.id}`)).html;
-  expect(page).toContain("อนุมัติจากข้อความของคุณ"); expect(page).toContain(`/chats/${conversationId}#s15-row-`);
+  const typed = async (text: string) => { f.app.submit(f.owner, { contract: "s15-conversation/v1", requestId: crypto.randomUUID().replaceAll("-", ""), conversationId, text, continuation: null }); await f.app.drain(); };
+  const one = slips(f)[0]!;
+  await typed("อนุมัติ");
+  // Typed text is an ordinary message: no row records a decision, nothing is approved or sent.
+  expect(f.f.calls).toBe(0); expect(approvals(f)).toBe(0);
+  expect(f.ports.conversation.view(f.owner, conversationId).rows.every(row => row.decision === null)).toBe(true);
+  expect(slips(f).find(slip => slip.action.id === one.action.id)!.state).toBe("pending");
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(one), decision: "approve" })).status).toBe(303); await f.app.drain();
+  expect(f.f.calls).toBe(1); expect(approvals(f)).toBe(1);
+  const page = (await f.html(`/actions/${one.action.id}`)).html;
+  expect(page).toContain("คุณอนุมัติจากหน้านี้"); expect(page).not.toContain("อนุมัติจากข้อความของคุณ");
   await f.hold({}, "Send second prepared note"); await f.hold({}, "Send third prepared note");
   await f.html(`/chats/${conversationId}`);
-  f.app.submit(f.owner, { contract: "s15-conversation/v1", requestId: crypto.randomUUID().replaceAll("-", ""), conversationId, text: "approve", continuation: null }); await f.app.drain();
-  expect(f.f.calls).toBe(1);
+  const before = slips(f).filter(slip => slip.state === "pending").map(slip => slip.action.id);
+  await typed("approve");
+  expect(f.f.calls).toBe(1); expect(approvals(f)).toBe(1);
   const chat = (await f.html(`/chats/${conversationId}`)).html;
-  expect(chat).toContain("หมายถึงอันไหน"); expect(chat).toContain("ยังไม่มีอะไรถูกทำ");
-  const pending = slips(f).filter(slip => slip.state === "pending");
-  expect(pending).toHaveLength(2); for (const slip of pending) expect(chat).toContain(`href="/actions/${slip.action.id}"`);
+  expect(chat).not.toContain("หมายถึงอันไหน");
+  const pending = slips(f).filter(slip => before.includes(slip.action.id) && slip.state === "pending");
+  // The fixture model prepares a held send for every ordinary message, so typed "อนุมัติ" left its own pending slip too.
+  expect(before).toHaveLength(3); expect(pending.map(slip => slip.action.id)).toEqual(before);
+  const [chosen, other] = pending as [ActionSlip, ActionSlip];
+  expect((await f.post("/s15/forms/action/decide", { ...refFields(chosen), decision: "approve" })).status).toBe(303); await f.app.drain();
+  expect(f.f.calls).toBe(2); expect(approvals(f)).toBe(2);
+  expect(f.query<{ action_id: string }>("SELECT action_id FROM approvals").map(row => row.action_id)).toContain(chosen.action.id);
+  expect(slips(f).find(slip => slip.action.id === other.action.id)!.state).toBe("pending");
 });
 
 test("a held payment shows exact payee, account and amount, pays once, and can become a separate recurring rule that deviations still hold", async () => {
