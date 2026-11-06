@@ -21,6 +21,8 @@ export function cardPayload(slip: Pick<ActionSlip, "payloadBytesBase64">): Json 
   try { const bytes = Uint8Array.from(atob(slip.payloadBytesBase64), c => c.charCodeAt(0)); return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Json; } catch { return null; }
 }
 const base64Text = (value: string) => { try { return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(atob(value), c => c.charCodeAt(0))); } catch { return ""; } };
+/** Decoded byte length of base64 text: padding characters carry no data. */
+const base64Bytes = (value: string) => { const clean = value.replace(/\s/g, ""), pad = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0; return Math.max(0, Math.floor(clean.length * 3 / 4) - pad); };
 /** Exact amount in minor units with the trusted currency precision; no float arithmetic. */
 export function cardAmount(minor: string, minorUnit: number, currency: string): string {
   const digits = minor.replace(/^0+(?=\d)/, "").padStart(minorUnit + 1, "0");
@@ -59,7 +61,7 @@ function cardRows(p: Record<string, unknown> | null, kind: CardKind, slip: Actio
     const event = record(record(p.calendar)?.event);
     if (event) { add("when", [text(event.start), text(event.end)].filter(Boolean).join(" – ")); add("where", text(event.location)); add("attendees", list(event.attendees).join(", ")); }
     const files = (Array.isArray(p.attachments) ? p.attachments : []).map(record).filter((f): f is Record<string, unknown> => !!f);
-    add("attachments", files.map(f => `${text(f.name)} (${text(f.mediaType)}, ${Math.floor(text(f.dataBase64).length * 3 / 4).toLocaleString()} bytes)`).join(", "));
+    add("attachments", files.map(f => `${text(f.name)} (${text(f.mediaType)}, ${base64Bytes(text(f.dataBase64)).toLocaleString()} bytes)`).join(", "));
   }
   const t = slip.action.transaction; if (t) { add("payee", t.payee.id); add("account", t.account.id); add("quote", `${t.quoteId} · ${t.quoteVersion}`); }
   if (p?.contract === "s15-github-effect/v1") {

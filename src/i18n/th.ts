@@ -5583,6 +5583,8 @@ export const th = {
   "s15.recipients.remembered_note": "หลังอนุมัติครั้งแรก ข้อมูลส่วนตัวไปถึงผู้รับเหล่านี้ได้ในจุดประสงค์เดิมโดยไม่ต้องถามอีก",
   "s15.recipients.remembered_none": "ยังไม่มี ครั้งแรกที่ข้อมูลส่วนตัวจะไปถึงผู้รับใหม่ คุณจะอนุมัติในแชท",
   "s15.recipients.remembered_on": "จำไว้เมื่อ",
+  "s15.recipients.purpose": "จุดประสงค์",
+  "s15.recipients.source": "แหล่งข้อมูล",
   "s15.recipients.forget": "ลืม",
   "s15.recipients.forget_label": "ลืม {name}",
   "s15.recipients.saved": "ลืมแล้ว ครั้งหน้าจะถามคุณอีก",

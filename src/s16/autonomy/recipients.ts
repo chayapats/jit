@@ -162,16 +162,19 @@ export class RecipientDirectory {
       scope.dataClasses.add(source.classification); scopes.set(id, scope);
     }
     if (!scopes.size) return;
+    // The cache changes only after the whole journal transaction committed.
+    const written: RememberedRecord[] = [];
     this.#journal.tx(() => {
       for (const recipient of d.recipients) for (const scope of scopes.values()) {
         const grantId = sha('s16.recipient.grant.v1', JSON.stringify([recipient.id, recipient.revision, d.purpose.id, d.purpose.revision, scope.resource.id, scope.resource.revision])).slice(0, 32);
         const old = this.#remembered.get(grantId), keep = old?.active ? old.dataClasses : [];
-        if (!old && this.#people.size + this.#remembered.size >= recipientDirectoryLimit) throw new PolicyError('recipient_list_full');
+        if (!old && this.#people.size + this.#remembered.size + written.length >= recipientDirectoryLimit) throw new PolicyError('recipient_list_full');
         const now = this.#now(), next: RememberedRecord = { kind: 'remembered', grantId, recipient: structuredClone(recipient), purpose: structuredClone(d.purpose), resource: structuredClone(scope.resource),
           dataClasses: [...new Set([...keep, ...scope.dataClasses])].sort() as DataClass[], active: true, revision: (old?.revision ?? 0) + 1, rememberedAt: now, expiresAt: now + rememberedRecipientLifetimeMs };
-        this.#journal.put(`r_${grantId}`, next); this.#remembered.set(grantId, next);
+        this.#journal.put(`r_${grantId}`, next); written.push(next);
       }
     });
+    for (const record of written) this.#remembered.set(record.grantId, record);
   }
   /** Current registered grants for the owner's settings list. */
   remembered(): RememberedRecipient[] {

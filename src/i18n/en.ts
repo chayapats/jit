@@ -5579,6 +5579,8 @@ export const en: Record<MessageKey, string> = {
   "s15.recipients.remembered_note": "After the first approval, private data may go to these recipients for the same purpose without asking again.",
   "s15.recipients.remembered_none": "None yet. The first time private data goes to a new recipient, you approve it in the chat.",
   "s15.recipients.remembered_on": "Remembered",
+  "s15.recipients.purpose": "Purpose",
+  "s15.recipients.source": "Source",
   "s15.recipients.forget": "Forget",
   "s15.recipients.forget_label": "Forget {name}",
   "s15.recipients.saved": "Forgotten. Next time this asks you again.",

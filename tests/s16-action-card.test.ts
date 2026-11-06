@@ -16,7 +16,7 @@ test("calendar invites show title, time, place, attendees and description", () =
   expect(Object.fromEntries(facts.rows)).toEqual({ when: "2026-11-07T10:00:00+07:00 – 2026-11-07T11:00:00+07:00", where: "Room 2", attendees: "alice@example.test" });
 });
 test("email attachments, payment account and GitHub pull/thread are shown", () => {
-  expect(rows(slip(["communication"], { contract: "s15-google-effect/v1", kind: "mail", message: { to: ["a@example.test"], cc: [], bcc: [], subject: "s", body: "b" }, attachments: [{ name: "q.pdf", mediaType: "application/pdf", dataBase64: "AAAA" }] })).attachments).toBe("q.pdf (application/pdf, 3 bytes)");
+  expect(rows(slip(["communication"], { contract: "s15-google-effect/v1", kind: "mail", message: { to: ["a@example.test"], cc: [], bcc: [], subject: "s", body: "b" }, attachments: [{ name: "q.pdf", mediaType: "application/pdf", dataBase64: "AAA=" }] })).attachments).toBe("q.pdf (application/pdf, 2 bytes)");
   const pay = rows(slip(["financial"], { contract: "fixture" }, { transaction: { payee: ref("payee"), account: ref("card"), currency: "USD", minorUnit: 2, amountMinor: "500", quoteId: "q1", quoteVersion: "v1", quoteExpiresAt: 1 } }));
   expect(pay).toMatchObject({ payee: "payee", account: "card", quote: "q1 · v1" });
   const gh = rows(slip(["github_publish", "communication"], { contract: "s15-github-effect/v1", repository: "o/r", issue: 442, branch: "jit/442", head: "a".repeat(40), operation: { kind: "review_reply", pull: 445, thread: "t1", body: "Fixed" } }, { github: { repository: ref("repo"), target: "main" } }));
