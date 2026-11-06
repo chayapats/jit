@@ -283,3 +283,30 @@ test("a report-every-result routine shows a typed no_update as a visible result"
   expect(detail.occurrences[0]).toMatchObject({ state: "succeeded", notified: true }); expect(detail.summary.routine.attention).toBe(1);
   expect(f.workInputs.some(input => input.includes("This scheduled run belongs to an owner-confirmed routine"))).toBe(false);
 }, 30000);
+
+test("a claimed run that never reached CHAT is not started after the end date", async () => {
+  const f = await fixture();
+  const routine = await f.create(f.draft({ limits: { maxRuns: 5, endsAt: at("2026-03-02T09:30:00Z") } }));
+  const ports = f.service.routines!.options.conversation, submit = ports.submitRoutine;
+  ports.submitRoutine = () => { throw new AppError("conversation_unavailable", 503); };
+  f.advance(at("2026-03-02T09:00:01Z") - f.now); f.service.routines!.tick(); f.service.routines!.dispatch();
+  expect((await f.detail(routine.id)).occurrences[0]).toMatchObject({ state: "dispatching", code: "retry_1" });
+  ports.submitRoutine = submit;
+  f.advance(at("2026-03-02T09:30:00Z") - f.now); await f.wake(); await f.wake();
+  const detail = await f.detail(routine.id);
+  expect(detail.occurrences.map(row => [row.state, row.code])).toEqual([["refused", "expired"]]);
+  expect(detail.summary.routine).toMatchObject({ state: "ended", endedReason: "expired", runsUsed: 0 }); expect(requests(f)).toEqual([]);
+}, 30000);
+
+test("a claimed run CHAT already saved is recovered after the end date, not started anew", async () => {
+  const f = await fixture();
+  const routine = await f.create(f.draft({ limits: { maxRuns: 5, endsAt: at("2026-03-02T09:30:00Z") } }));
+  const ports = f.service.routines!.options.conversation, submit = ports.submitRoutine;
+  ports.submitRoutine = (actor, command, pin) => { submit(actor, command, pin); throw new AppError("conversation_unavailable", 503); };
+  f.advance(at("2026-03-02T09:00:01Z") - f.now); f.service.routines!.tick(); f.service.routines!.dispatch();
+  ports.submitRoutine = submit;
+  f.advance(at("2026-03-02T09:30:00Z") - f.now); await f.wake(); await f.wake();
+  const detail = await f.detail(routine.id);
+  expect(detail.occurrences.map(row => row.state)).toEqual(["succeeded"]); expect(requests(f)).toHaveLength(1);
+  expect(detail.summary.routine).toMatchObject({ state: "ended", endedReason: "expired", runsUsed: 1 });
+}, 30000);
