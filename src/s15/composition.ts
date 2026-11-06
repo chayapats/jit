@@ -464,6 +464,13 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
       // BROW15-02 Resources → Websites: every read and command re-verifies the owner through POLICY first.
+      ...(options.recipients ? { recipients: (directory => ({
+        list: (actor: OwnerActor) => { policy.owner.current(actor);
+          return { people: directory.people().map(p => ({ address: p.address, label: p.label, addedAt: p.addedAt })),
+            remembered: directory.remembered().map(r => ({ recipientId: r.recipient.id, label: directory.label(r.recipient.id), purposeId: r.purpose.id, dataClasses: [...r.dataClasses], rememberedAt: r.rememberedAt, revision: r.revision })) }; },
+        forget: (actor: OwnerActor, _requestId: string, recipientId: string, revision: number) => { policy.owner.current(actor); directory.forget(recipientId, revision); },
+        forgetPerson: (actor: OwnerActor, _requestId: string, address: string) => { policy.owner.current(actor); directory.forgetPerson(address); },
+      }))(options.recipients) } : {}),
       ...(browser && options.browser?.approved ? { websites: (approved => ({
         status: (actor: OwnerActor) => { policy.owner.current(actor); return approved.engine.status(); },
         list: (actor: OwnerActor) => { policy.owner.current(actor); return approved.sites.list(); },

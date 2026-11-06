@@ -37,6 +37,8 @@ export interface S15WebPorts<Actor extends object> {
   browsers?: S15WebBrowser<Actor>[];
   /** BROW15-02 provisioned browser status and the owner's approved-website list. Absent: not composed here. */
   websites?: S15WebWebsites<Actor>;
+  /** AUTH16-01 installation-wide people the owner named and remembered private-data recipients. Absent until composed. */
+  recipients?: S15WebRecipients<Actor>;
   /** F13 recurring-payment rules over POLICY (`createRecurringRules`). Absent until composed. */
   recurring?: S15WebRecurring<Actor>;
   /** GIT15-04 Web GitHub connection (token, repository selection, removal). Absent: configured or not composed. */
@@ -236,6 +238,12 @@ export interface S15ApprovedWebsite { origin: string; revision: number; addedAt:
  * call. Changes apply to the next browser request without a restart; nothing here grants sending, sign-in
  * or private disclosure, which keep their own gates.
  */
+/** AUTH16-01 (S16-D07 b, g) owner settings list; forgetting needs the exact registration revision. */
+export interface S15WebRecipients<Actor> {
+  list(actor: Actor): { people: { address: string; label: string | null; addedAt: number }[]; remembered: { recipientId: string; label: string; purposeId: string; dataClasses: string[]; rememberedAt: number; revision: number }[] };
+  forget(actor: Actor, requestId: string, recipientId: string, revision: number): void;
+  forgetPerson(actor: Actor, requestId: string, address: string): void;
+}
 export interface S15WebWebsites<Actor> {
   status(actor: Actor): S15WebsiteEngine;
   list(actor: Actor): S15ApprovedWebsite[];

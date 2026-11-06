@@ -161,6 +161,8 @@ export class RecipientDirectory {
     const old = this.#remembered.get(recipientId); if (!old?.active || old.revision !== revision) throw new PolicyError('recipient_changed');
     const next = { ...old, active: false }; this.#journal.tx(() => this.#journal.put(`r_${sha('s16.recipient.remembered.v1', recipientId).slice(0, 40)}`, next)); this.#remembered.set(recipientId, next);
   }
+  /** Owner-readable name of a recipient ref: a person's address, otherwise the protected id. */
+  label(recipientId: string): string { for (const p of this.#people.values()) if (this.#ref(p.key).id === recipientId) return p.label ? `${p.label} (${p.address})` : p.address; return recipientId; }
   /** Policy/disclosure catalog lookup for `person_…` refs; unknown ids are null. */
   catalog(kind: CatalogKind, id: string): { ref: Ref; active: boolean } | null {
     if (kind !== 'recipient' || !id.startsWith(`person_${this.#epoch}_`)) return null;
