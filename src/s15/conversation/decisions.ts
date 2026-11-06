@@ -5,14 +5,8 @@ import type { ConversationRequest } from "./types";
 import { canonical, digest } from "./validation";
 
 interface Presentation { action: ActionRef; sourceRequestId: string; expiresAt: number }
-/** Exact original-owner decision grammar. Quotes, extra instructions and model output cannot match it. */
-export function ownerDecision(text: string): { decision: "approve" | "deny"; actionId: string | null } | null {
-  const value = text.trim().toLowerCase();
-  if (/^(?:approve|approved|approve it|yes|yes approve|อนุมัติ|อนุมัติเลย|ตกลง)[.!\s]*$/u.test(value)) return { decision: "approve", actionId: null };
-  if (/^(?:deny|reject|do not approve|ไม่อนุมัติ)[.!\s]*$/u.test(value)) return { decision: "deny", actionId: null };
-  const selected = /^(approve|deny|อนุมัติ|ไม่อนุมัติ)\s+(?:action\s+)?([a-zA-Z0-9_-]{1,128})[.!\s]*$/iu.exec(text.trim());
-  return selected ? { decision: selected[1]!.toLowerCase() === "approve" || selected[1] === "อนุมัติ" ? "approve" : "deny", actionId: selected[2]! } : null;
-}
+/** One exact owner decision. S16-D08: it comes only from the one-press decision command, never from typed text. */
+export interface OwnerDecisionInput { decision: "approve" | "deny"; actionId: string | null }
 
 /** Retains only exact owner-presented refs, never payload/approval authority. Used at the synchronous owner read boundary. */
 export function rememberActionPresentation<Owner, Work>(app: ConversationApplication<Owner, Work>, request: ConversationRequest, slips: readonly ActionSlip[]): void {
@@ -30,7 +24,7 @@ export function rememberActionPresentation<Owner, Work>(app: ConversationApplica
  * Explicit IDs can select only a previously presented exact revision. Approval queues only that action,
  * never another model loop or a widened work grant. Duplicate commands use the original receipt.
  */
-export function applyOwnerDecision<Owner, Work>(app: ConversationApplication<Owner, Work>, actor: Owner, request: ConversationRequest, decision: NonNullable<ReturnType<typeof ownerDecision>>): void {
+export function applyOwnerDecision<Owner, Work>(app: ConversationApplication<Owner, Work>, actor: Owner, request: ConversationRequest, decision: OwnerDecisionInput): void {
   const policy = app.options.policy;
   request.phase = "decision";
   if (!policy.decidePending || !policy.decideAction) throw new AppError("approval_reference_required", 409);
