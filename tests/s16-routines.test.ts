@@ -256,7 +256,7 @@ test("a run submitted but not yet claimed before a restart is resubmitted once a
   await f.reopen(); await f.wake(); await f.wake();
   const detail = await f.detail(routine.id);
   expect(detail.occurrences.map(row => [row.id, row.state])).toEqual([[submitted.id, "succeeded"]]);
-  expect(requests(f)).toEqual([submitted.requestId]); expect(detail.summary.routine.runsUsed).toBe(1);
+  expect(requests(f)).toEqual([submitted.requestId!]); expect(detail.summary.routine.runsUsed).toBe(1);
 }, 30000);
 
 test("the final run keeps the routine active and stoppable until it settles", async () => {
