@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
@@ -224,6 +224,39 @@ export class JitClient {
       && record(scope) && (scope.kind === "team" && Object.keys(scope).length === 1 || scope.kind === "bot" && identifier(scope.botId))
       && record(source) && ["owner_message", "work", "historical"].includes(source.kind as string) && (source.conversationId === null || identifier(source.conversationId)) && count(source.at) && count(source.files)
       && link(value.supersedes) && link(value.correction) && count(value.createdAt) && (value.lastUsedAt === null || count(value.lastUsedAt)) && count(value.contexts);
+  }
+  /** Owner routines with derived display state. Reading never ticks, dispatches or marks anything seen. */
+  async routines(signal?: AbortSignal): Promise<ClientRoutineList> {
+    const data = await this.call("/routines", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-routines/v1" || !Array.isArray(data.routines) || !count(data.attention) || !record(data.feed)) return invalid();
+    return data as unknown as ClientRoutineList;
+  }
+  async routine(routineId: string, signal?: AbortSignal): Promise<ClientRoutineDetail> {
+    const data = await this.call(`/routines/${id(routineId)}`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-routine/v1" || !record(data.summary) || !record(data.summary.routine) || data.summary.routine.id !== routineId || !Array.isArray(data.occurrences) || !Array.isArray(data.sources) || !Array.isArray(data.next)) return invalid();
+    return data as unknown as ClientRoutineDetail;
+  }
+  /** Current review-sheet choices from live standing policy. */
+  async routineOptions(signal?: AbortSignal): Promise<ClientRoutineOptions> {
+    const data = await this.call("/routines/options", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-routine-options/v1" || typeof data.available !== "boolean" || !Array.isArray(data.purposes) || !Array.isArray(data.resources)) return invalid();
+    return data as unknown as ClientRoutineOptions;
+  }
+  /** Server-computed review of an unsaved draft. It stores nothing and grants nothing. */
+  async proposeRoutine(draft: ClientRoutineDraft, signal?: AbortSignal): Promise<ClientRoutineProposal> {
+    const data = await this.call("/routines/proposals", "POST", draft, signal);
+    if (!record(data) || data.contract !== "s16-routine-proposal/v1" || !sha256(data.proposalHash) || !Array.isArray(data.next) || !record(data.draft)) throw new JitClientError("client_protocol_invalid", null, "response");
+    return data as unknown as ClientRoutineProposal;
+  }
+  /**
+   * One exact routine or feed command. It never retries: after an unknown outcome the caller replays the
+   * same request ID, which returns the original receipt (without any one-time secret or URL).
+   */
+  async routineCommand(command: Record<string, unknown> & { kind: string; requestId: string }, signal?: AbortSignal): Promise<ClientRoutineReceipt> {
+    id(command.requestId);
+    const data = await this.call("/routines/commands", "POST", command, signal, command.requestId);
+    if (!record(data) || data.contract !== "s16-routine-receipt/v1") throw new JitClientError("client_protocol_invalid", null, "unknown", command.requestId);
+    return data as unknown as ClientRoutineReceipt;
   }
   /** Drop authority material when a native session signs out; callers also discard private projections. */
   clear(): void { this.#csrf = null; this.#sessionGeneration++; }

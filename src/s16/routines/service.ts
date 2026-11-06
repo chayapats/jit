@@ -13,7 +13,7 @@ import type { Routine, RoutineDetail, RoutineDraft, RoutineFeedView, RoutineList
 
 /** Fixed `s16-routines/v1` bounds. */
 export const routineLimits = Object.freeze({
-  routines: 32, maxRuns: 366, maxDays: 366, nameBytes: 80, instructionBytes: 4000, history: 400, triggers: 16, sources: 8,
+  routines: 32, maxRuns: 366, maxDays: 366, nameBytes: 240, instructionBytes: 4000, history: 400, triggers: 16, sources: 8,
   hookBodyBytes: 262144, hookRequests: 30, hookWindowMs: 60000, deliveryRetentionMs: 7 * 86400000, keyRetentionMs: 30 * 86400000,
   signedSkewMs: 300000, githubFreshnessMs: 24 * 3600000, skipGraceMs: 10 * 60000, feedHorizonMs: 30 * 86400000, feedEvents: 5000, dispatchRetries: 5,
 });

@@ -20,7 +20,7 @@ export async function routineFixture(options: { files?: boolean; start?: number;
   const model: Model = { provider: "codex-subscription", id: "fixture-model", async *stream(request) {
     workInputs.push(JSON.stringify(request));
     // A run that ended at a held tool call never asked for its final text: a fresh run starts a new reply.
-    if (!((request as { items?: { type: string }[] }).items ?? []).some(item => item.type !== "user")) step = 0;
+    if (!(request.items ?? []).some(item => item.type !== "user")) step = 0;
     if (step === 0) current = replies.shift() ?? { tools: [{ name: "read", arguments: { path: "status.txt" } }], text: "Completed with observed tool evidence." };
     // A held reply never completes on its own; only the run's abort signal (stop) ends it.
     if (current!.hold) { step = 0; await new Promise((_resolve, reject) => { const signal = (request as { signal?: AbortSignal }).signal; if (signal?.aborted) reject(new Error("aborted")); signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }); }); }
@@ -37,7 +37,7 @@ export async function routineFixture(options: { files?: boolean; start?: number;
     const verify = base.owner.verifyOwner;
     // Read-only inspection needs `stat`, which the shared fixture transport does not script.
     const transport = base.vm.transport;
-    const vm = { ...base.vm, transport: () => { const t = transport(); const invoke = t.invoke.bind(t); t.invoke = async (request, input) => { if (request.op === "stat") { input.beforeStart(); return { type: "file" }; } return invoke(request, input); }; return t; } };
+    const vm = { ...base.vm, transport: (endpoint: Parameters<NonNullable<typeof transport>>[0]) => { const t = transport!(endpoint); const invoke = t.invoke.bind(t); t.invoke = async (request, input) => { if (request.op === "stat") { input.beforeStart(); return { type: "file" }; } return invoke(request, input); }; return t; } };
     return { ...base, vm, routines: {}, ...(options.files ? { files: {} } : {}), model: { ...base.model, scripted: () => model }, owner: { ...base.owner, verifyOwner: proof => { const owner = verify(proof); return owner && { ...owner, expiresAt: far }; } } };
   });
   for (const approval of f.recipientApprovals) approval.expiresAt = far;
