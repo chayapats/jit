@@ -54,6 +54,9 @@ export class RoutineService<Actor> {
   readonly journal: DurableJournal;
   readonly #rate: FixedWindowRate;
   readonly #now: () => number;
+  /** Occurrences submitted by an earlier process. CHAT's runnable registration is process-local, so each is
+   * resubmitted once with its original request ID and pin; CHAT dedupes and only re-registers a queued request. */
+  readonly #resubmit = new Set<string>();
   constructor(readonly options: RoutineServiceOptions<Actor>) {
     this.journal = new DurableJournal(options.path, options.installationId, options.create, 0x52543136);
     this.#now = options.now ?? Date.now;
@@ -66,6 +69,7 @@ export class RoutineService<Actor> {
       CREATE TABLE IF NOT EXISTS deliveries_v1 (source_id TEXT NOT NULL, delivery_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY (source_id, delivery_id));
       CREATE TABLE IF NOT EXISTS event_keys_v1 (routine_id TEXT NOT NULL, key TEXT NOT NULL, first_at INTEGER NOT NULL, count INTEGER NOT NULL, occurrence_id TEXT NOT NULL, PRIMARY KEY (routine_id, key));
       CREATE TABLE IF NOT EXISTS feed_v1 (id INTEGER PRIMARY KEY CHECK (id = 1), owner_id TEXT, token_hash TEXT, names INTEGER NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER);`);
+    for (const row of db.query<{ id: string }, []>("SELECT id FROM occurrences_v1 WHERE state IN ('submitted','running')").all()) this.#resubmit.add(row.id);
   }
   now(): number { return this.#now(); }
 
@@ -283,18 +287,22 @@ export class RoutineService<Actor> {
       if (pending.triggers.length < routineLimits.triggers) pending.triggers.push(trigger);
       this.#saveOccurrence(pending); return pending;
     }
-    if (routine.runsUsed >= routine.draft.limits.maxRuns || rows.length >= routineLimits.history) return null;
+    if (routine.runsUsed >= routine.draft.limits.maxRuns || this.now() >= routine.draft.limits.endsAt) return null;
     const occurrence: RoutineOccurrence = { contract: "s16-routine-occurrence/v1", id: uid("oc"), routineId: routine.id, seq: (rows.at(-1)?.seq ?? 0) + 1, trigger: trigger.kind, ...structuredClone(fields), triggers: [trigger],
       state: "pending", code: null, requestId: null, committedAt: this.now(), dispatchedAt: null, settledAt: null, acknowledged: false, notified: false };
-    this.#saveOccurrence(occurrence); return occurrence;
+    this.#saveOccurrence(occurrence);
+    // Bound the journal without limiting admission: only the oldest rows that consumed no run are discarded.
+    this.journal.db.query(`DELETE FROM occurrences_v1 WHERE routine_id=? AND state IN ('refused','dropped') AND id NOT IN (SELECT id FROM occurrences_v1 WHERE routine_id=? ORDER BY seq DESC LIMIT ?)`).run(routine.id, routine.id, routineLimits.history);
+    return occurrence;
   }
   /** Terminal transitions that need no owner input: exhausted budget, end date, consumed one-time schedule. */
   #end(routine: Routine): void {
     if (routine.state !== "active") return;
-    const rows = this.occurrences(routine.id), pending = rows.some(row => row.state === "pending"), busy = rows.some(row => blocking.has(row.state));
+    // Outstanding work keeps the routine active (and stoppable) until it settles; nothing new is admitted meanwhile.
+    const rows = this.occurrences(routine.id), pending = rows.some(row => row.state === "pending"), busy = rows.some(row => blocking.has(row.state) || row.state === "unknown" && !row.acknowledged);
     let reason: Routine["endedReason"] = null;
-    if (this.now() >= routine.draft.limits.endsAt) { reason = "expired"; this.#drop(routine, "expired"); }
-    else if (routine.runsUsed >= routine.draft.limits.maxRuns && !pending) reason = "exhausted";
+    if (this.now() >= routine.draft.limits.endsAt) { this.#drop(routine, "expired"); if (!busy) reason = "expired"; }
+    else if (routine.runsUsed >= routine.draft.limits.maxRuns && !pending && !busy) reason = "exhausted";
     else if (routine.draft.schedule?.kind === "once" && !nextInstant(routine.draft.schedule, routine.draft.timezone, routine.anchor, routine.cursor) && !pending && !busy && !this.sources(routine.id).some(source => source.state === "active")) reason = "completed";
     if (!reason) return;
     routine.state = "ended"; routine.endedReason = reason; routine.revision++;
@@ -381,6 +389,7 @@ export class RoutineService<Actor> {
    */
   dispatch(): number {
     let submitted = 0;
+    this.#recover();
     const candidates = this.journal.db.query<{ routine_id: string }, []>("SELECT DISTINCT routine_id FROM occurrences_v1 WHERE state IN ('pending','dispatching')").all();
     for (const { routine_id } of candidates) {
       const routine = this.routine(routine_id); if (!routine) continue;
@@ -399,15 +408,9 @@ export class RoutineService<Actor> {
       }
       const actor = this.options.owner(routine.owner);
       if (!actor) { this.#settle(routine.id, occurrence.id, "refused", "owner_changed"); continue; }
-      let files: { id: string; sha256: string }[] | null = null;
-      if (occurrence.input) {
-        try {
-          if (!this.options.files) throw new AppError("artifact_unavailable");
-          const upload = this.options.files.adopt(actor, { requestId: `ra_${occurrence.id.slice(3)}`, conversationId: routine.draft.conversationId, artifact: { ...occurrence.input } });
-          if (upload.state !== "ready" || !upload.receipt) throw new AppError(upload.code ?? "file_unavailable");
-          files = [{ id: upload.receipt.id, sha256: upload.receipt.sha256 }];
-        } catch (error) { this.#settle(routine.id, occurrence.id, "refused", error instanceof AppError ? error.code : "file_unavailable"); continue; }
-      }
+      let files: { id: string; sha256: string }[] | null;
+      try { files = this.#files(actor, routine, occurrence); }
+      catch (error) { this.#settle(routine.id, occurrence.id, "refused", error instanceof AppError ? error.code : "file_unavailable"); continue; }
       const claimed = safe(() => this.journal.tx(() => {
         const current = this.occurrences(routine.id).find(row => row.id === occurrence!.id)!, owner = this.routine(routine.id)!;
         if (current.state === "dispatching") return current;
@@ -417,10 +420,7 @@ export class RoutineService<Actor> {
         owner.runsUsed++; this.#saveRoutine(owner); return current;
       }));
       if (!claimed) continue;
-      const command = files ? { contract: "s16-conversation/v2", requestId: claimed.requestId!, conversationId: routine.draft.conversationId, text: routine.draft.instruction, continuation: null, files }
-        : { contract: "s15-conversation/v1", requestId: claimed.requestId!, conversationId: routine.draft.conversationId, text: routine.draft.instruction, continuation: null };
-      const pin: ConversationRoutinePin = { contract: "s16-routine-run/v1", routineId: routine.id, occurrenceId: claimed.id, purposeId: routine.draft.scope.purposeId, resourceIds: [...routine.draft.scope.resourceIds], access: routine.draft.scope.access, quiet: routine.draft.quiet };
-      try { this.options.conversation.submitRoutine(actor, command, pin); }
+      try { this.#submit(actor, routine, claimed, files); }
       catch (error) {
         const code = error instanceof AppError || error instanceof PolicyError ? error.code : "conversation_unavailable";
         const retry = ["conversation_unavailable", "continuity_capacity", "service_closed"].includes(code);
@@ -439,6 +439,35 @@ export class RoutineService<Actor> {
       submitted++;
     }
     return submitted;
+  }
+  /** The exact original command and pin of one occurrence; resubmission must reproduce both byte for byte. */
+  #submit(actor: Actor, routine: Routine, occurrence: RoutineOccurrence, files: { id: string; sha256: string }[] | null): void {
+    const base = { requestId: occurrence.requestId!, conversationId: routine.draft.conversationId, text: routine.draft.instruction, continuation: null };
+    const command = files ? { contract: "s16-conversation/v2", ...base, files } : { contract: "s15-conversation/v1", ...base };
+    const pin: ConversationRoutinePin = { contract: "s16-routine-run/v1", routineId: routine.id, occurrenceId: occurrence.id, purposeId: routine.draft.scope.purposeId, resourceIds: [...routine.draft.scope.resourceIds], access: routine.draft.scope.access, quiet: routine.draft.quiet };
+    this.options.conversation.submitRoutine(actor, command, pin);
+  }
+  /** Adopted input of a file occurrence; the adoption request ID is deterministic, so a repeat returns the same receipt. */
+  #files(actor: Actor, routine: Routine, occurrence: RoutineOccurrence): { id: string; sha256: string }[] | null {
+    if (!occurrence.input) return null;
+    if (!this.options.files) throw new AppError("artifact_unavailable");
+    const upload = this.options.files.adopt(actor, { requestId: `ra_${occurrence.id.slice(3)}`, conversationId: routine.draft.conversationId, artifact: { ...occurrence.input } });
+    if (upload.state !== "ready" || !upload.receipt) throw new AppError(upload.code ?? "file_unavailable");
+    return [{ id: upload.receipt.id, sha256: upload.receipt.sha256 }];
+  }
+  /** Re-register requests an earlier process submitted. A stopped routine's request is stopped instead. */
+  #recover(): void {
+    for (const occurrenceId of [...this.#resubmit]) {
+      const row = this.journal.db.query<Row, [string]>("SELECT json FROM occurrences_v1 WHERE id=?").get(occurrenceId);
+      const occurrence = row ? JSON.parse(row.json) as RoutineOccurrence : null, routine = occurrence ? this.routine(occurrence.routineId) : null;
+      if (!occurrence || !routine || !occurrence.requestId || !["submitted", "running"].includes(occurrence.state)) { this.#resubmit.delete(occurrenceId); continue; }
+      const actor = this.options.owner(routine.owner); if (!actor) continue;
+      try {
+        if (routine.state === "stopped") this.options.conversation.stop(actor, occurrence.requestId);
+        else this.#submit(actor, routine, occurrence, this.#files(actor, routine, occurrence));
+        this.#resubmit.delete(occurrenceId);
+      } catch { /* Retried next wake; CHAT's own record decides the outcome. */ }
+    }
   }
   #notify(routine: Routine, occurrence: RoutineOccurrence): void { if (!occurrence.notified && attentionStates.has(occurrence.state)) { occurrence.notified = true; routine.attention++; } }
   #settle(routineId: string, occurrenceId: string, state: RoutineOccurrence["state"], code: string | null): void {
@@ -459,7 +488,9 @@ export class RoutineService<Actor> {
       const actor = this.options.owner(routine.owner); if (!actor) continue;
       let row: ConversationOwnerRow;
       try { row = this.options.conversation.row(actor, occurrence.requestId); } catch { continue; }
-      const [state, code] = occurrenceOutcome(row);
+      const [mapped, code] = occurrenceOutcome(row);
+      // A "report every result" routine treats a typed no_update as an ordinary visible result.
+      const state = mapped === "quiet" && !routine.draft.quiet ? "succeeded" : mapped;
       if (state === occurrence.state && code === occurrence.code) continue;
       safe(() => this.journal.tx(() => {
         const current = this.occurrences(routine.id).find(item => item.id === occurrence.id)!, owner = this.routine(routine.id)!;

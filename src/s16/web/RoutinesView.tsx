@@ -47,6 +47,8 @@ export function RoutinesView({ client, t, locale, available, artifacts, initialR
   const date = (value: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { dateStyle: "medium", timeStyle: "short" }).format(value);
   const fail = (error: unknown) => { if (code(error) === "client_response_stale") return true; if (privateFailure(error)) { onFailure(error); return true; } return false; };
   useEffect(() => { if (seed) setSheet(seed); }, [seed?.nonce]);
+  // A periodic refresh must not dismiss an open stop confirmation; only another selection does.
+  useEffect(() => { setConfirmStop(false); }, [selected]);
   useEffect(() => {
     if (!available) return;
     const stop = new AbortController(); setListState(value => list ? value : "loading");
@@ -55,7 +57,7 @@ export function RoutinesView({ client, t, locale, available, artifacts, initialR
     return () => { stop.abort(); clearInterval(timer); };
   }, [available, reload]);
   useEffect(() => {
-    onSelect?.(selected); setConfirmStop(false);
+    onSelect?.(selected);
     if (!selected || !available) { setDetail(null); return; }
     const stop = new AbortController(); setDetailState(value => detail?.summary.routine.id === selected ? value : "loading");
     client.routine(selected, stop.signal).then(data => { if (!stop.signal.aborted) { setDetail(data); setDetailState("ready"); } }).catch(error => { if (!stop.signal.aborted && !fail(error)) setDetailState("error"); });
@@ -80,13 +82,13 @@ export function RoutinesView({ client, t, locale, available, artifacts, initialR
     }
   }
   function open(routineId: string, origin: HTMLElement | null) {
-    returnFocus.current = origin; setMinted(null); setNotice(value => value?.state === "pending" || value?.state === "unknown" ? value : null); setSelected(routineId);
+    returnFocus.current = origin; setMinted(value => value?.kind === "feed" ? value : null); setNotice(value => value?.state === "pending" || value?.state === "unknown" ? value : null); setSelected(routineId);
     const summary = list?.routines.find(row => row.routine.id === routineId);
     // Opening a routine with unseen outcomes is the owner's explicit acknowledgement that they looked.
     if (summary && summary.routine.attention > 0) void client.routineCommand({ kind: "routine.seen", requestId: uid(), routineId, expectedRevision: summary.routine.revision }).then(() => setReload(value => value + 1)).catch(error => { fail(error); });
     requestAnimationFrame(() => heading.current?.focus());
   }
-  function close() { const id = selected; setSelected(null); setMinted(null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-routine-id="${id}"]`)?.focus(); }); }
+  function close() { const id = selected; setSelected(null); setMinted(value => value?.kind === "feed" ? value : null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-routine-id="${id}"]`)?.focus(); }); }
 
   const dayName = (day: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { weekday: "short", timeZone: "UTC" }).format(Date.UTC(2026, 10, 8 + day));
   const describe = (rec: RoutineRecurrence | null) => !rec ? t("s16.routine.repeat.noneLong") : rec.kind === "once" ? t("s16.routine.describe.once", { date: rec.date, time: rec.time }) : rec.kind === "daily" ? t("s16.routine.describe.daily", { time: rec.time })
@@ -117,7 +119,7 @@ export function RoutinesView({ client, t, locale, available, artifacts, initialR
           <p className="memory-labels">{display(row)}<span>{describe(row.routine.draft.schedule)}</span>{row.sources > 0 && <span>{t("s16.routine.reactionsCount", { count: row.sources })}</span>}</p>
           <small>{row.next ? <>{t("s16.routine.next")}: {instant(row.next, row.routine.draft.timezone)}</> : t("s16.routine.noNext")} · {t("s16.routine.runsLeft", { count: row.remainingRuns })}</small>
         </button></li>)}</ul>)}
-      {list && <FeedPanel t={t} feed={list.feed} run={run} minted={!selected && minted?.kind === "feed" ? minted.url : null} />}
+      {list && <FeedPanel t={t} feed={list.feed} run={run} minted={minted?.kind === "feed" ? minted.url : null} />}
     </div>
     {selected && <aside className="memory-detail routine-detail" aria-labelledby="routine-detail-title">
       <header className="routine-detail-header"><h2 id="routine-detail-title" ref={heading} tabIndex={-1}>{routine?.draft.name ?? t("s16.common.loading")}</h2><button type="button" aria-label={t("s16.common.close")} onClick={close}>×</button></header>
@@ -215,6 +217,7 @@ function RoutineSheet({ client, t, seed, describe, instant, access, onClose, onS
   const [options, setOptions] = useState<ClientRoutineOptions | null>(null), [state, setState] = useState<Load>("loading");
   const [form, setForm] = useState<Form>(() => ({ name: Array.from(seed.instruction.trim().replace(/\s+/g, " ")).slice(0, 40).join("") || "", instruction: seed.instruction, conversationId: seed.conversationId, repeat: repeatOf(suggested),
     time: suggested && "time" in suggested ? suggested.time : "09:00", date: localDate(Date.now() + 86400000), days: suggested?.kind === "weekly" ? suggested.days : [1], minutes: suggested?.kind === "interval" ? suggested.minutes : 60, timezone: browserZone(), misfire: "coalesce", quiet: true, maxRuns: 30, endDate: localDate(Date.now() + 90 * 86400000), purposeId: "", resourceIds: [], access: "read" }));
+  const [saving, setSaving] = useState<{ kind: "routine.confirm"; requestId: string; draft: ClientRoutineDraft; proposalHash: string } | null>(null);
   const [proposal, setProposal] = useState<ClientRoutineProposal | null>(null), [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const dialog = useRef<HTMLDivElement>(null), first = useRef<HTMLInputElement>(null), requestId = useRef(uid());
   useEffect(() => {
@@ -238,13 +241,22 @@ function RoutineSheet({ client, t, seed, describe, instant, access, onClose, onS
     catch (failure) { if (!onFailure(failure)) setError(code(failure)); }
     finally { setBusy(false); }
   }
+  /** Save exactly the reviewed proposal. An unknown outcome keeps that exact command for "Check again" and
+   * blocks editing until it resolves; a definitive refusal releases the identity so a changed draft gets a new one. */
   async function save() {
     if (!proposal) return;
-    setBusy(true); setError(null);
-    try { const receipt = await client.routineCommand({ kind: "routine.confirm", requestId: requestId.current, draft: proposal.draft, proposalHash: proposal.proposalHash }); if (receipt.routine) onSaved(receipt.routine.id); }
-    catch (failure) { if (!onFailure(failure)) { setError(code(failure)); if (code(failure) === "stale_proposal") { setProposal(null); requestId.current = uid(); } } }
+    const command = saving ?? { kind: "routine.confirm", requestId: requestId.current, draft: proposal.draft, proposalHash: proposal.proposalHash };
+    setBusy(true); setError(null); setSaving(command);
+    try { const receipt = await client.routineCommand(command); setSaving(null); if (receipt.routine) onSaved(receipt.routine.id); }
+    catch (failure) {
+      if (onFailure(failure)) return;
+      setError(code(failure));
+      if (!(failure instanceof JitClientError) || failure.outcome === "unknown") return;
+      setSaving(null); requestId.current = uid(); if (code(failure) === "stale_proposal") setProposal(null);
+    }
     finally { setBusy(false); }
   }
+  function edit() { if (saving) return; requestId.current = uid(); setProposal(null); setError(null); }
   const field = (id: string, label: MessageKey, input: ReactElement) => <div className="routine-field"><label htmlFor={id}>{t(label)}</label>{input}</div>;
   return <div className="routine-overlay" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div ref={dialog} className="routine-sheet" role="dialog" aria-modal="true" aria-labelledby="routine-sheet-title">
@@ -297,7 +309,7 @@ function RoutineSheet({ client, t, seed, describe, instant, access, onClose, onS
         </ul>
         {proposal.next.length ? <><h3>{t("s16.routine.nextRuns")}</h3><ol className="memory-facts">{proposal.next.map(item => <li key={item.at}>{instant(item, proposal.draft.timezone)}</li>)}</ol>{proposal.draft.schedule?.kind === "interval" && <p className="limits">{t("s16.routine.sheet.intervalNote")}</p>}</> : <p className="limits">{t("s16.routine.repeat.noneLong")}</p>}
         {error && <div className="notice" role="alert"><p>{t(errorKey(error))}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        <div className="memory-actions"><button type="button" className="primary" disabled={busy} onClick={() => void save()}>{t(busy ? "s16.routine.saving" : "s16.routine.sheet.save")}</button><button type="button" onClick={() => setProposal(null)}>{t("s16.routine.sheet.edit")}</button></div>
+        <div className="memory-actions">{saving && !busy && <p className="limits" role="status">{t("s16.routine.unknown")}</p>}<button type="button" className="primary" disabled={busy} onClick={() => void save()}>{t(busy ? "s16.routine.saving" : saving ? "s16.memory.checkAgain" : "s16.routine.sheet.save")}</button><button type="button" disabled={!!saving} onClick={edit}>{t("s16.routine.sheet.edit")}</button></div>
       </div>}
     </div>
   </div>;

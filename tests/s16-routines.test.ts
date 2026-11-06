@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { AppError } from "../src/errors";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { routineFixture, at, far, rid, type RoutineFixture } from "./fixtures/s16-routines";
@@ -243,4 +244,42 @@ test("an existing installation gains the routine store only when routines are ex
     // Turning the option off again refuses rather than silently dropping a listed store.
     enabled = false; await expect(f.reopen()).rejects.toThrow();
   } finally { enabled = true; await f.close().catch(() => {}); }
+}, 30000);
+
+test("a run submitted but not yet claimed before a restart is resubmitted once and runs", async () => {
+  const f = await fixture();
+  const routine = await f.create(f.draft());
+  f.advance(at("2026-03-02T09:00:01Z") - f.now); f.service.routines!.tick(); f.service.routines!.dispatch();
+  const submitted = (await f.detail(routine.id)).occurrences[0]!;
+  expect(submitted.state).toBe("submitted"); expect(f.service.conversation.view(f.owner, submitted.requestId!).state).toBe("queued");
+  // CHAT's runnable registration is process-local; the restarted service must re-register the same request.
+  await f.reopen(); await f.wake(); await f.wake();
+  const detail = await f.detail(routine.id);
+  expect(detail.occurrences.map(row => [row.id, row.state])).toEqual([[submitted.id, "succeeded"]]);
+  expect(requests(f)).toEqual([submitted.requestId]); expect(detail.summary.routine.runsUsed).toBe(1);
+}, 30000);
+
+test("the final run keeps the routine active and stoppable until it settles", async () => {
+  const f = await fixture();
+  const routine = await f.create(f.draft({ limits: { maxRuns: 1, endsAt: f.now + 30 * 86400000 } }));
+  const ports = f.service.routines!.options.conversation, submit = ports.submitRoutine;
+  let failures = 1;
+  ports.submitRoutine = (actor, command, pin) => { if (failures-- > 0) throw new AppError("conversation_unavailable", 503); return submit(actor, command, pin); };
+  f.advance(at("2026-03-02T09:00:01Z") - f.now); f.service.routines!.tick(); f.service.routines!.dispatch();
+  let detail = await f.detail(routine.id);
+  expect(detail.occurrences[0]).toMatchObject({ state: "dispatching", code: "retry_1" }); expect(detail.summary.routine.state).toBe("active");
+  // A temporary failure of the last run is retried, not ended and fenced.
+  await f.wake(); await f.wake();
+  detail = await f.detail(routine.id);
+  expect(detail.occurrences.map(row => row.state)).toEqual(["succeeded"]); expect(detail.summary.routine).toMatchObject({ state: "ended", endedReason: "exhausted", runsUsed: 1 });
+}, 30000);
+
+test("a report-every-result routine shows a typed no_update as a visible result", async () => {
+  const f = await fixture();
+  const routine = await f.create(f.draft({ quiet: false, schedule: { kind: "interval", minutes: 60 } }));
+  f.replies.push({ tools: [{ name: "read", arguments: { path: "status.txt" } }], text: '{"outcome":"no_update"}' });
+  f.advance(3600001); await f.wake();
+  const detail = await f.detail(routine.id);
+  expect(detail.occurrences[0]).toMatchObject({ state: "succeeded", notified: true }); expect(detail.summary.routine.attention).toBe(1);
+  expect(f.workInputs.some(input => input.includes("This scheduled run belongs to an owner-confirmed routine"))).toBe(false);
 }, 30000);
