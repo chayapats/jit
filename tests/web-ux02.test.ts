@@ -115,7 +115,7 @@ test("web.settings_ia/v1 route inventory: every pre-UX02 page URL redirects to i
   }
   expect(legacyRedirect("/backups/x")).toBeNull();
   expect(legacyRedirect("/settings/backups")).toBeNull();
-  expect(settingsPageHandler("/settings/telegram")).toBeNull();
+  expect(settingsPageHandler("/settings/notifications")).toBeNull();
   expect(settingsPageHandler(`/settings/restores/${unknown}`)).toBe(`/restores/${unknown}`);
   // New settings paths are pages only: posting to them is not a second command endpoint.
   expect((await postForm(f, "/settings/backups", { csrf: f.auth.csrf, requestId: crypto.randomUUID(), expectedRevision: "0" })).status).toBe(404);
@@ -149,12 +149,12 @@ test("settings pages keep every command on its original endpoint with the same a
     const page = await (await get(f, "/settings")).text();
     for (const section of settingsSections) expect(page).toContain(`<a href="${section.href}"${section.id === "general" ? ' aria-current="page"' : ""}>${dictionaries[language][section.label]}</a>`);
   }
-  // Telegram status is read only: rendering it changes nothing.
-  const before = f.store.read(tx => tx.get("SELECT revision, state FROM telegram_binding WHERE id = 1"));
-  const telegram = await (await get(f, "/settings/telegram")).text();
-  expect(telegram).toContain(dictionaries.en["telegram.unbound"]);
-  expect(telegram).not.toMatch(/<form\b[^>]*method="post"[^>]*action="\/(?!logout)/);
-  expect(f.store.read(tx => tx.get("SELECT revision, state FROM telegram_binding WHERE id = 1"))).toEqual(before);
+  // Notifications is read only: it lists each project's in-app notices and posts nothing.
+  const receipts = f.store.read(tx => tx.get("SELECT count(*) AS n FROM command_receipts"));
+  const notifications = await (await get(f, "/settings/notifications")).text();
+  expect(notifications).toContain(dictionaries.en["settings.notifications_note"]);
+  expect(notifications).not.toMatch(/<form\b[^>]*method="post"[^>]*action="\/(?!logout)/);
+  expect(f.store.read(tx => tx.get("SELECT count(*) AS n FROM command_receipts"))).toEqual(receipts);
 });
 
 test("topic right panel: closed by default, a separate page without script, one tab read per request", async () => {
@@ -248,8 +248,8 @@ test("⌘K query is bounded, read only, scoped to names and titles, and requires
   }
   expect((await get(f, `/search?q=${"a".repeat(searchLimits.query + 1)}`)).status).toBe(400);
   // A query that matches only navigation commands lists them without claiming there are no results.
-  const commandsOnly = await (await get(f, `/search?q=${encodeURIComponent("Telegram")}`)).text();
-  expect(commandsOnly).toContain('href="/settings/telegram"');
+  const commandsOnly = await (await get(f, `/search?q=${encodeURIComponent("Notifications")}`)).text();
+  expect(commandsOnly).toContain('href="/settings/notifications"');
   expect(commandsOnly).not.toContain(`role="status">${dictionaries.en["search.no_results"]}`);
   expect(await (await get(f, "/search?q=nothing-matches-this")).text()).toContain(`<p class="empty-list" role="status">${dictionaries.en["search.no_results"]}</p>`);
   // Authorization: no session, no results; a forged cookie is refused the same way.

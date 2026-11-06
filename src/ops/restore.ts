@@ -104,13 +104,12 @@ export interface RestoreReplay {
   attemptsFenced: number;
   deliveriesHeld: { id: string; projectId: string; priorStatus: string }[];
   /** External integrations keep the live authority: a restore never silently re-enables one. */
-  integrations: { telegramBinding: "unchanged" | "adopted_live"; prMonitorsAdopted: number };
+  integrations: { prMonitorsAdopted: number };
   revision: { live: number; image: number; restored: number };
 }
 
 /** Live external-integration authority captured before replay (identity and state only). */
 export interface LiveIntegrations {
-  binding: Record<string, unknown> | null;
   monitors: Map<string, { revision: number; state: string; record_json: string }>;
 }
 
@@ -154,7 +153,7 @@ export interface RestoreReport {
     sourcesPurged: number; claimsPurged: number; claimsForgotten: number; suppressionsApplied: number; ledgerOnlySuppressions: number;
     contextsRetired: number; contextsAlreadyDeleted: number; contextsScheduledForDeletion: number; contextsUnknownCitation: number;
     jobsFenced: number; attemptsFenced: number; deliveriesHeld: number;
-    telegramBinding: "unchanged" | "adopted_live"; prMonitorsAdopted: number;
+    prMonitorsAdopted: number;
   } | null;
   pending: { jobsAwaitingOwnerResume: number; unknownDeliveries: number; nativeDeletesPending: number };
   discarded: { liveOnlyProjects: number; liveOnlySources: number; liveOnlyContexts: number };
@@ -405,7 +404,7 @@ export function restoreReport(journal: RestoreJournal): RestoreReport {
       contextsRetired: replay.contexts.retired, contextsAlreadyDeleted: replay.contexts.deletedLive, contextsScheduledForDeletion: replay.contexts.deleteScheduled,
       contextsUnknownCitation: replay.contexts.unknownCitation ?? 0,
       jobsFenced: replay.jobsFenced.length, attemptsFenced: replay.attemptsFenced, deliveriesHeld: replay.deliveriesHeld.length,
-      telegramBinding: replay.integrations?.telegramBinding ?? "unchanged", prMonitorsAdopted: replay.integrations?.prMonitorsAdopted ?? 0,
+      prMonitorsAdopted: replay.integrations?.prMonitorsAdopted ?? 0,
     } : null,
     pending: {
       jobsAwaitingOwnerResume: validation?.pendingJobs.length ?? replay?.jobsFenced.length ?? 0,
@@ -417,7 +416,7 @@ export function restoreReport(journal: RestoreJournal): RestoreReport {
       "the restored backup and other retained backups still hold data deleted after they were taken until retention prunes them",
       "live writes after the backup are discarded by activation (counts under discarded)",
       "native sessions are not restored from snapshots; post-backup native sessions stay with the engine and are listed as live-only contexts",
-      "Telegram and provider copies are outside Jit and are not recalled",
+      "provider copies are outside Jit and are not recalled",
     ],
     generation: { liveRevision: journal.live?.revision ?? null, restoredRevision: replay?.revision.restored ?? null, sessionsRevoked: journal.activation.sessionsRevoked },
     activation: { allowed: journal.state === "validated", blockers: journal.state === "validated" ? [] : blockers },
@@ -740,7 +739,7 @@ function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts
     state: "pending", attempts: 0, maxAttempts: 5, tombstones: [],
     contexts: contexts.map(c => ({ ...c, state: "pending", attempts: 0, reason, nextAction: "reconcile_managed_delete_then_verify", updatedAt: now })),
     exports: [], scopes: [], backupsRetained: [], attachments,
-    residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
+    residuals: ["provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
     reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", createdAt: now, updatedAt: now,
   };
   tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, 'pending', 0, ?)",
@@ -787,7 +786,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
     const replay: RestoreReplay = { appliedDeletions: 0, appliedSuppressions: 0, ledgerOnlySuppressions: 0, notInImage: 0,
       purgedSources: 0, purgedClaims: 0, forgottenClaims: 0, contexts: { retired: 0, deletedLive: 0, deleteScheduled: 0, unknownCitation: 0 },
       deleteOperations: [], jobsFenced: [], attemptsFenced: 0, deliveriesHeld: [],
-      integrations: { telegramBinding: "unchanged", prMonitorsAdopted: 0 },
+      integrations: { prMonitorsAdopted: 0 },
       revision: { live: liveRevision, image: readRevision(tx), restored: 0 } };
     const needles = new Set<string>();
     const needle = (value: unknown) => { if (typeof value === "string" && Array.from(value).length >= 8 && value !== redactedText) needles.add(value); };
@@ -930,7 +929,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       scrubFreeTextOccurrences(tx, scrub.slice(i, i + 500));
       scrubOutputSources(tx, scrub.slice(i, i + 500));
     }
-    // Local notification copies quoting a purged payload (they are also held below and never sent automatically).
+    // Local notification copies quoting a purged payload (legacy transport intents are also held below; nothing sends them).
     for (const table of ["delivery_intents", "delivery_reports"] as const) {
       // `sequence`/`id` may alias the rowid; select it under an explicit alias.
       for (const row of tx.all<{ rowid_: number; json: string }>(`SELECT rowid AS rowid_, record_json AS json FROM ${table}`)) {
@@ -984,16 +983,18 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);
       tx.run("UPDATE jobs SET state = 'waiting', occupies = 0, record_json = ? WHERE id = ?", JSON.stringify(job), row.id);
     }
-    // Outbox: a restored unsent notification may already have been sent after the backup; never replay it blindly.
+    // Outbox: an intent recorded while the removed push transport existed (ADR 0085) may have been sent after the
+    // backup, so its outcome becomes unknown. An in-app-only intent was never sendable and is left as it is.
     for (const row of tx.all<{ id: string; projectId: string; json: string }>("SELECT id, project_id AS projectId, record_json AS json FROM delivery_intents")) {
       let intent: { status?: string; retryable?: boolean; remote?: string; revision?: number; nextAction?: string; updatedAt?: number };
       try { intent = JSON.parse(row.json); } catch { continue; }
+      if (intent.nextAction === "in_app_only") continue;
       const unsent = ["waiting", "queued", "claimed"].includes(intent.status ?? "") || (intent.status === "failed" && intent.retryable === true);
       if (!unsent) continue;
       replay.deliveriesHeld.push({ id: row.id, projectId: row.projectId, priorStatus: intent.status ?? "unknown" });
       tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify({ ...intent, status: "unknown",
         remote: intent.remote === "none" || !intent.remote ? "uncertain" : intent.remote, retryable: false, failureReason: "restored_outcome_unknown",
-        nextAction: "inspect_restored_intent_then_resend_explicitly", revision: (intent.revision ?? 0) + 1, updatedAt: Math.max(intent.updatedAt ?? 0, now) }), row.id);
+        nextAction: "inspect_restored_intent", revision: (intent.revision ?? 0) + 1, updatedAt: Math.max(intent.updatedAt ?? 0, now) }), row.id);
     }
     for (const row of tx.all<{ id: string; json: string }>("SELECT id, record_json AS json FROM delivery_attempts")) {
       let attempt: { state?: string; outcome?: string };
@@ -1002,21 +1003,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       tx.run("UPDATE delivery_attempts SET record_json = ? WHERE id = ?", JSON.stringify({ ...attempt, state: "interrupted",
         outcome: attempt.outcome === "none" ? "unknown" : attempt.outcome, reason: "restored_attempt_fenced" }), row.id);
     }
-    // External integrations: a binding or monitor revoked/paused after the backup is never re-enabled by the restore.
-    if (live.binding && hasTable(tx, "telegram_binding")) {
-      const image = tx.get<Record<string, unknown>>("SELECT * FROM telegram_binding WHERE id = 1");
-      const differs = !image || ["state", "telegram_user_id", "telegram_chat_id", "revision"].some(key => image[key] !== live.binding![key]);
-      if (differs) {
-        const b = live.binding;
-        tx.run(`INSERT INTO telegram_binding (id, revision, state, telegram_user_id, telegram_chat_id, username_hint, challenge_nonce, challenge_expires_at, bound_at, proof_json)
-          VALUES (1, ?, ?, ?, ?, ?, NULL, NULL, ?, ?) ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, state = excluded.state,
-          telegram_user_id = excluded.telegram_user_id, telegram_chat_id = excluded.telegram_chat_id, username_hint = excluded.username_hint,
-          challenge_nonce = NULL, challenge_expires_at = NULL, bound_at = excluded.bound_at, proof_json = excluded.proof_json`,
-        Math.max(Number(image?.revision ?? 0), Number(b.revision ?? 0)) + 1, String(b.state ?? "unbound"), (b.telegram_user_id ?? null) as number | null,
-        (b.telegram_chat_id ?? null) as number | null, (b.username_hint ?? null) as string | null, (b.bound_at ?? null) as number | null, String(b.proof_json ?? "{}"));
-        replay.integrations.telegramBinding = "adopted_live";
-      }
-    }
+    // External integrations: a monitor revoked/paused after the backup is never re-enabled by the restore.
     if (hasTable(tx, "pr_monitors")) {
       for (const monitor of tx.all<{ id: string; revision: number; record_json: string }>("SELECT id, revision, record_json FROM pr_monitors WHERE state = 'active'")) {
         const current = live.monitors.get(monitor.id);
@@ -1063,7 +1050,6 @@ export function applyRestoreLedger(ctx: RestoreContext, journal: RestoreJournal,
   const liveContexts = new Map(ctx.store.read(tx => tx.all<{ id: string; generation: number; state: string }>("SELECT id, generation, state FROM team_contexts"))
     .map(c => [`${c.id}:${c.generation}`, c.state]));
   const live: LiveIntegrations = ctx.store.read(tx => ({
-    binding: hasTable(tx, "telegram_binding") ? tx.get<Record<string, unknown>>("SELECT * FROM telegram_binding WHERE id = 1") : null,
     monitors: new Map(hasTable(tx, "pr_monitors")
       ? tx.all<{ id: string; revision: number; state: string; record_json: string }>("SELECT id, revision, state, record_json FROM pr_monitors").map(m => [m.id, m])
       : []),
@@ -1202,8 +1188,10 @@ export function validateRestore(ctx: RestoreContext, journal: RestoreJournal, re
       check(checks, "outbox_held", () => {
         let claimable = 0;
         for (const row of tx.all<{ json: string }>("SELECT record_json AS json FROM delivery_intents")) {
-          const intent = JSON.parse(row.json) as { status?: string; retryable?: boolean };
+          const intent = JSON.parse(row.json) as { status?: string; retryable?: boolean; nextAction?: string };
           if (intent.status === "unknown") unknownOutbox++;
+          // An in-app-only intent (ADR 0085) has no transport and can never be claimed.
+          if (intent.nextAction === "in_app_only") continue;
           if (["waiting", "queued", "claimed"].includes(intent.status ?? "") || (intent.status === "failed" && intent.retryable)) claimable++;
         }
         const sending = tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_attempts WHERE json_extract(record_json, '$.state') IN ('authorized', 'claimed', 'sending')")!.n;

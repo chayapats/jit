@@ -107,7 +107,7 @@ export interface ExportPreview {
 /** Installation limits an Application may tighten (tests use small ceilings). */
 export interface ExportLimits { maxExports: number; maxBytes: number }
 
-const residualExternal = ["telegram_delivery_copies_not_exported_or_deleted", "provider_session_copies_not_exported"];
+const residualExternal = ["provider_session_copies_not_exported"];
 const lifecycleNote = "รวมเฉพาะ generation ที่ยัง active; ที่ถูกลบ/ลืม/แก้อยู่ใน exclusions";
 const disclosureFor = (scope: ExportScope): ExportDisclosure => ({ restorableBackup: false, externalCopiesDeleted: false,
   attachments: "metadata_only", secrets: "excluded", nativeSessions: "excluded", rawHistory: scope.includeHistory ? "included" : "metadata_only" });

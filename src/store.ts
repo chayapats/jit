@@ -248,6 +248,8 @@ export class TransactionStore {
             CREATE TABLE job_reconciliation (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
             PRAGMA user_version = 5;
           `);
+          // Schema 6 tables of the Telegram channel removed by ADR 0085. The DDL stays so every store keeps the same
+          // versioned schema; nothing reads or writes these tables any more.
           if (current < 6) this.#db.exec(`
             CREATE TABLE telegram_binding (
               id INTEGER PRIMARY KEY CHECK (id = 1),

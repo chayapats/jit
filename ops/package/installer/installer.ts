@@ -238,7 +238,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     ledgerPath: join(home, "ledger/checkpoint.json"), backupDirectory: join(home, "backups"), secretRefs: [],
     routes: [{ route: "codex", model: builtInModels.codex, configured: true }, { route: "grok", model: builtInModels.grok, configured: true }],
     network: { bindHost: "127.0.0.1", port: s14 ? 3001 : 3000, vpnInterface: null }, resources: { memoryMaxBytes: defaults.memoryMaxBytes,
-      logBytes: defaults.logBytes, retentionDays: 14, maxRestarts: 5, restartWindowSeconds: 300 }, runPort: "schway", channels: { telegram: "disabled" },
+      logBytes: defaults.logBytes, retentionDays: 14, maxRestarts: 5, restartWindowSeconds: 300 }, runPort: "schway",
   });
   if (desired.serviceUser !== name || (desired.runtime === "s14") !== s14 || desired.stateDirectory !== join(home, "state") || desired.executablePath !== join(prefix, "current") ||
       desired.workingDirectory !== join(home, "work") || desired.backupDirectory !== join(home, "backups") || desired.ledgerPath !== join(home, "ledger/checkpoint.json")) throw new InstallerFailure("configuration", "operate this custom installation with ops.service_package/v1 instead");

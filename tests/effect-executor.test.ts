@@ -94,7 +94,6 @@ test("an approved push sends exactly the pinned SHAs through the bundle, the mir
   const card = f.app.approvalCard(f.auth.actor, f.project.id, cardId);
   expect(card.action).toEqual({ kind: "effect.git_push", remote: { name: "origin", url: "https://github.com/owner/repo.git", revision: 1 }, repository: ".",
     updates: [{ ref: "refs/heads/main", oldSha: first, newSha: second }], commits: [{ sha: second, summary: "add the answer" }] });
-  expect(card.telegramEligible).toBe(true);
   // Nothing moved before the decision.
   expect(remoteHead(bare)).toBe(first);
   const done = await approve(f, cardId);

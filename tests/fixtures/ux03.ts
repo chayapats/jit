@@ -128,7 +128,7 @@ export async function ux03Installation(options: { root?: string; origin?: string
   const routes = [
     "/", `${g}`, `/projects/${general.projectId}`, p, t, `${t}/panel`, ...["memory", "tasks", "jobs", "pr", "team"].map(tab => `${t}/panel?tab=${tab}`),
     `${p}/tasks`, `${p}/tasks/${task.id}`, `${p}/jobs`, `${p}/memory`, `${p}/team`, `${p}/pr/reports`, `${p}/schedules`, `${p}/delivery`, `${p}/exports`,
-    "/search", "/search?q=โครงการ", "/settings", "/settings/team", "/settings/dispatch", "/settings/telegram", "/settings/backups", "/settings/upgrades",
+    "/search", "/search?q=โครงการ", "/settings", "/settings/team", "/settings/dispatch", "/settings/notifications", "/settings/backups", "/settings/upgrades",
     "/settings/restores", "/settings/data",
   ];
   const close = async () => { queue.close(); await queue.idle(); store.close(); if (!options.root) rmSync(root, { recursive: true, force: true }); };

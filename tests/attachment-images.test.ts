@@ -159,8 +159,6 @@ test("Web probe requires session, Origin, CSRF and quota confirmation; receipt r
   } } } });
   const token = await app.login("fixture-exe07-owner-password"), auth = app.authenticate(token), web = createWebHandler(app);
   const command = { requestId: rid(), projectId: null, expectedRevision: app.team(auth.actor).ownerRevision, provider: "grok" as const, model: "fixture-grok-exact", confirmed: true };
-  const telegram = app.issueAdapterActor(token, "telegram");
-  await expect(app.probeImages(telegram, command)).rejects.toMatchObject({ code: "channel_not_authorized" });
   const post = (body: unknown, headers: Record<string, string> = {}) => web(new Request(`${f.config.origin}/api/team/image-probe`, {
     method: "POST", headers: { host: new URL(f.config.origin).host, origin: f.config.origin, cookie: `jit_session=${token}`, "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   }));

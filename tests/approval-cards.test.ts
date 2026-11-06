@@ -53,7 +53,7 @@ test("an effect tool only creates a pending card; without a decision no effect e
   expect(result.isError).toBeUndefined();
   expect(body.state).toBe("pending_approval");
   const card = f.app.approvalCard(f.auth.actor, f.project.id, body.cardId);
-  expect(card).toMatchObject({ state: "pending", revision: 1, kind: "effect.deploy", telegramEligible: true, decision: null, receipt: null,
+  expect(card).toMatchObject({ state: "pending", revision: 1, kind: "effect.deploy", decision: null, receipt: null,
     action: { kind: "effect.deploy", target: { name: "production", url: "https://deploy.example.test/hooks/jit", revision: 1 }, ref: "main" },
     roleId: f.jitId, topicId: f.topic.id, expiresAt: card.createdAt + cardLifetimeMs });
   expect(card.digest).toBe(actionDigest(card.action));
@@ -123,34 +123,23 @@ test("digest and revision mismatches, expiry, denial and replays do nothing", as
     payload: { cardId: second.id, digest: second.digest, decision: "maybe" } } as never)).toThrow("invalid_approval_command");
 });
 
-test("channel rules: Telegram decides single-action cards only; the local API, rules and targets are refused outside Web", async () => {
+test("channel rules: only Web decides; the local API, rules and targets are refused outside Web", async () => {
   const { f, propose } = await proposing();
   setLevel(f, "full");
   setDeploy(f, connection(f, "deploy_secret", deployToken()));
   const remoteConnection = connection(f, "github_token", `ghp_${rid().replaceAll("-", "")}`);
   setRemote(f, remoteConnection);
-  // A deploy card is one action: Telegram may decide it.
-  const deploy = f.app.approvalCard(f.auth.actor, f.project.id, (JSON.parse((await propose(effectToolNames["effect.deploy"], { target: "production" })).content) as { cardId: string }).cardId);
-  expect(deploy.telegramEligible).toBe(true);
-  expect(decide(f, deploy, "deny", f.telegram).card).toMatchObject({ state: "denied", decision: { channel: "telegram" } });
-  // A comment card from the local API (a host script, not the owner in Web) is refused.
+  // A comment card from the local API (a host script, not the owner in Web) is refused, even for a single action.
   f.app.execute(f.auth.actor, { kind: "local_api.set", requestId: rid(), projectId: null, expectedRevision: f.app.localApi(f.auth.actor).revision, payload: { enabled: true } });
   const local = f.app.issueLocalApiActor()!.actor;
+  const deploy = f.app.approvalCard(f.auth.actor, f.project.id, (JSON.parse((await propose(effectToolNames["effect.deploy"], { target: "production" })).content) as { cardId: string }).cardId);
+  rejects(() => decide(f, deploy, "deny", local), "approval_requires_web", 403);
   const comment = f.app.approvalCard(f.auth.actor, f.project.id, (JSON.parse((await propose(effectToolNames["effect.github_comment"], { remote: "origin", issueNumber: 7, body: "ขอบคุณครับ" })).content) as { cardId: string }).cardId);
   rejects(() => decide(f, comment, "approve", local), "approval_requires_web", 403);
-  // A multi-ref push is not a single action: Telegram is refused.
-  const multi = f.store.transaction(tx => {
-    const now = f.clock.now;
-    tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, telegram_eligible, created_at, expires_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'effect.git_push', '{}', ?, 1, 'pending', 0, ?, ?, ?)`, rid(), f.project.id, f.topic.id, rid(), rid(), f.jitId, "a".repeat(64), now, now + cardLifetimeMs, now);
-    return tx.get<{ id: string }>("SELECT id FROM approval_cards WHERE telegram_eligible = 0")!.id;
-  });
-  const card = f.store.read(tx => readCard(tx, f.project.id, multi));
-  rejects(() => decide(f, card, "approve", f.telegram), "approval_requires_web", 403);
-  // Rules and targets widen power: Telegram and the local API cannot write them.
-  rejects(() => setRule(f, "effect.deploy", { target: "production" }, true, f.telegram), "approval_rule_requires_web", 403);
+  expect(decide(f, deploy, "deny").card).toMatchObject({ state: "denied", decision: { channel: "web" } });
+  // Rules and targets widen power: the local API cannot write them.
   rejects(() => setRule(f, "effect.deploy", { target: "production" }, true, local), "approval_rule_requires_web", 403);
-  rejects(() => f.app.execute(f.telegram, { kind: "effect.target.set", requestId: rid(), projectId: f.project.id, expectedRevision: 1,
+  rejects(() => f.app.execute(local, { kind: "effect.target.set", requestId: rid(), projectId: f.project.id, expectedRevision: 1,
     payload: { target: "deploy", name: "production", url: "https://evil.example.test/", connectionId: remoteConnection } }), "approval_rule_requires_web", 403);
   // A git remote needs a GitHub token; a deploy target a deploy secret.
   rejects(() => setDeploy(f, remoteConnection, "staging"), "effect_connection_kind_mismatch", 409);

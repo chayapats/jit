@@ -6,8 +6,13 @@ import type { AppTransaction } from "./store";
 import { readDecisionModel } from "./team/decisions";
 import type { DecisionReadModel } from "./team/types";
 
-/** Ingress label stored on a task receipt. Telegram transport itself is not this slice. */
-export type TaskChannel = "web" | "telegram";
+/** Ingress label stored on a task receipt. Web is the only owner channel. */
+export type TaskChannel = "web";
+/**
+ * Ingress label read back from task history. Rows recorded before the Telegram channel was removed
+ * (ADR 0085) may carry `telegram`; they are kept as-is and no command is accepted from it.
+ */
+export type RecordedTaskChannel = TaskChannel | "telegram";
 export type TaskState = "proposed" | "accepted" | "ready_for_review" | "completed" | "dismissed" | "cancelled" | "superseded";
 export type TaskOrigin = "owner" | "validated_output";
 export type TaskEventKind =
@@ -28,7 +33,7 @@ export interface CompletionPolicy { kind: CompletionPolicyKind; workType: "user_
 
 /** Owner revisioned confirmation that closes an obligation with optional cited evidence. */
 export interface TaskCompletion {
-  actorId: "owner"; channel: TaskChannel; proposalId: string; proposalRevision: number;
+  actorId: "owner"; channel: RecordedTaskChannel; proposalId: string; proposalRevision: number;
   evidence: SourceReference[]; note: string | null; completedAt: number;
 }
 
@@ -88,7 +93,7 @@ export interface TaskProposal {
 }
 /** Owner acceptance of one proposal revision. The actor is the installation owner, never a model. */
 export interface TaskAcceptance {
-  actorId: "owner"; channel: TaskChannel; proposalId: string; proposalRevision: number; acceptedAt: number;
+  actorId: "owner"; channel: RecordedTaskChannel; proposalId: string; proposalRevision: number; acceptedAt: number;
 }
 /**
  * app.task_read_model/v1
@@ -103,7 +108,7 @@ export interface TaskRecord {
 }
 /** Append-only owner action. A refused start is not recorded, because that command commits nothing. */
 export interface TaskEvent {
-  sequence: number; taskId: string; kind: TaskEventKind; actorId: "owner"; channel: TaskChannel;
+  sequence: number; taskId: string; kind: TaskEventKind; actorId: "owner"; channel: RecordedTaskChannel;
   proposalId: string | null; proposalRevision: number | null; reason: string | null; createdAt: number;
 }
 /** Current task, its proposal history, policy, evidence artifacts, and the exact source the current revision cites. */
@@ -119,7 +124,7 @@ export interface TaskList {
   closed: TaskRecord[];
   hasMore: Record<"proposed" | "accepted" | "readyForReview" | "completed" | "inactive", boolean>;
 }
-/** Authoritative project continuity for memory, team, and Telegram adapters without inference. */
+/** Authoritative project continuity for memory and team adapters without inference. */
 export interface ProjectContinuity {
   projectId: string; obligations: TaskList; activeObligations: TaskRecord[];
   decisions: Array<{ topicId: string; model: DecisionReadModel }>; queriedAt: number;
@@ -316,7 +321,7 @@ export function registerTaskEvidenceArtifact(tx: AppTransaction, input: {
  * `task.start` always rejects. No command inserts a job, a run, or a tool request.
  */
 export function applyTask(tx: AppTransaction, command: TaskCommand, channel: TaskChannel, now: number, maximumBytes: number): TaskReceipt {
-  if (channel !== "web" && channel !== "telegram") throw new AppError("channel_not_authorized", 403);
+  if (channel !== "web") throw new AppError("channel_not_authorized", 403);
   if (command.kind === "task.propose") return propose(tx, command, channel, now, maximumBytes);
   const task = requireTask(tx, command.projectId, command.payload.taskId);
   if (task.revision !== command.expectedRevision || (proposalId(command) !== null && proposalId(command) !== task.currentProposalId)) {

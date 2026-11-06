@@ -21,7 +21,6 @@ import type { ClaimReference, MemoryClaim } from "../src/memory/types";
 import type { SourceReference } from "../src/sources";
 import { JobQueue } from "../src/jobs/queue";
 import { tickSchedules } from "../src/jobs/schedules";
-import { DeliveryWorker } from "../src/delivery";
 import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
@@ -383,9 +382,6 @@ test("the durable fence disables admission, schedules, delivery and other owner 
   expect(f.rt.store.read(tx => queue(f).available(tx))).toBe(false);
   expect(() => queue(f).pump()).not.toThrow();
   expect(tickSchedules(f.rt.store, queue(f), f.config, epoch)).toEqual([]);
-  const worker = new DeliveryWorker(f.rt.store, { sender: { send: () => { throw new Error("must not send"); } } });
-  expect(worker.claimNext()).toBeNull();
-  worker.close();
   // Rollback releases the fence and resumes a reconciled scheduler.
   const rolled = (await stepCmd(f, "upgrade.rollback", prepared.id)).journal;
   expect(rolled).toMatchObject({ state: "rolled_back", reconcile: { reconciled: true } });

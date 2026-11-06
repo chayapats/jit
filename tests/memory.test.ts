@@ -154,7 +154,6 @@ test("malformed or unfinished output, quota and bounded truncation stay visibly 
 test("project and owner authorization, missing external source and wrong lineage are refused", async () => {
   const f = await fixture();
   expect(() => f.app.execute({ ownerId: "owner", channel: "web" }, command(f))).toThrow("authentication_required");
-  expect(() => f.app.memory(f.app.issueAdapterActor(f.token, "telegram"), f.project.id)).toThrow("channel_not_authorized");
   const other = f.app.execute(f.auth.actor, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: 1, payload: { name: "same name" } }).project;
   expect(() => f.app.execute(f.auth.actor, { ...command(f), projectId: other.id, expectedRevision: other.revision })).toThrow("topic_not_found");
   const external = f.store.transaction(tx => registerExternalSource(tx, { projectId: f.project.id, descriptor: { kind: "external", system: "fixture", resourceType: "spec", resourceId: "unimported" }, committedAt: epoch }));

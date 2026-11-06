@@ -6,7 +6,7 @@ import { assertExecutionAllowed } from "./access";
 /**
  * app.takeover/v1 (EXE14, ADR 0039) — the owner controls the project box's browser and desktop.
  *
- * `takeover.start` and `takeover.end` are Web only (`takeover_requires_web`; Telegram, the local API and models are
+ * `takeover.start` and `takeover.end` are Web only (`takeover_requires_web`; the local API and models are
  * refused) and revisioned by the project's takeover revision. While a takeover is active every agent browser and
  * computer tool call — and every approved browser or computer card — fails `takeover_active`. The owner's own input
  * (`takeover.click`, `takeover.type`, `takeover.key`) is Web only and needs the active takeover it names.

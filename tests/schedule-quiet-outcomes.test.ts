@@ -272,16 +272,16 @@ test("reminders never quiet", async () => {
   expect(f.app.schedule(f.auth.actor, f.project.id, created.id).occurrences[0]).toMatchObject({ state: "complete" });
 });
 
-/** delivery.attention_levels/v1 (REL04): the Telegram level through the owner command. */
-function setTelegramLevel(f: Fixture, level: "all" | "needs-me") {
+/** delivery.attention_levels/v1 (REL04): the outbox level through the owner command. */
+function setOutboxLevel(f: Fixture, level: "all" | "needs-me") {
   return f.app.execute(f.auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null,
-    expectedRevision: f.app.attentionLevels(f.auth.actor).telegram.revision, payload: { channel: "telegram", level } }).attention;
+    expectedRevision: f.app.attentionLevels(f.auth.actor).web.revision, payload: { channel: "web", level } }).attention;
 }
 
 for (const saved of [false, true]) test(`needs-me: owner-configured schedule reports notify once (saved=${saved})`, async () => {
   const f = await fixture();
-  if (saved) setTelegramLevel(f, "needs-me");
-  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: saved ? 1 : 0 });
+  if (saved) setOutboxLevel(f, "needs-me");
+  expect(f.app.attentionLevels(f.auth.actor).web).toMatchObject({ level: "needs-me", revision: saved ? 1 : 0 });
   f.control.next = () => fixtureOutcome("complete", '{"outcome":"report","text":"มีงานใหม่สองเรื่อง"}');
   const report = f.app.execute(f.auth.actor, summary(f)).schedule;
   f.clock.now = epoch + 60_000;
@@ -302,14 +302,14 @@ for (const saved of [false, true]) test(`needs-me: owner-configured schedule rep
 
 test("needs-me never filters reminders, and returning to all notifies the next summary (REL04)", async () => {
   const f = await fixture();
-  setTelegramLevel(f, "needs-me");
+  setOutboxLevel(f, "needs-me");
   const created = f.app.execute(f.auth.actor, reminder(f, { recurrence: { kind: "once", at: epoch + 60_000 } })).schedule;
   f.clock.now = epoch + 60_000;
   tickSchedules(f.store, f.queue, f.config, f.clock.now);
   await drain(f);
   expect(intents(f).map(intent => intent.payload.kind)).toEqual(["reminder"]);
   expect(f.app.schedule(f.auth.actor, f.project.id, created.id).occurrences[0]!.deliveryIntentId).not.toBeNull();
-  setTelegramLevel(f, "all");
+  setOutboxLevel(f, "all");
   f.control.next = () => fixtureOutcome("complete", "รายงานประจำวัน");
   f.app.execute(f.auth.actor, summary(f, { recurrence: { kind: "once", at: f.clock.now + 60_000 } }));
   f.clock.now += 60_000;

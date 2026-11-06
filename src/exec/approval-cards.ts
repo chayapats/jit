@@ -339,7 +339,7 @@ export function approvalCommandIdentity(command: ApprovalCommand): string {
 
 /**
  * Web-only power: auto-approve rules and effect targets widen what can happen without a per-card decision, so only
- * the owner in Web writes them (`approval_rule_requires_web`, 403); Telegram, the local API and models never do.
+ * the owner in Web writes them (`approval_rule_requires_web`, 403); the local API and models never do.
  */
 export function requireApprovalConfigChannel(channel: string): void {
   if (channel !== "web") throw new AppError("approval_rule_requires_web", 403);
@@ -457,11 +457,11 @@ export function matchingRule(tx: AppTransaction, projectId: string, action: Effe
 export interface CardDecision { decision: "approve" | "deny"; channel: string; ruleRevision: number | null; decidedAt: number }
 /** The executor's outcome receipt: technical evidence only, never a credential. */
 export interface CardReceipt { outcome: "succeeded" | "failed" | "unknown"; reason: string | null; detail: Record<string, unknown>; finishedAt: number }
-/** app.approval_cards/v1 read model. `telegramEligible` is true only for a single action (EXE10 renders it). */
+/** app.approval_cards/v1 read model. */
 export interface ApprovalCard {
   id: string; projectId: string; topicId: string; runId: string; jobId: string; roleId: string;
   kind: EffectKind; action: EffectAction; digest: string; revision: number; state: CardState; reason: string | null;
-  decision: CardDecision | null; receipt: CardReceipt | null; telegramEligible: boolean;
+  decision: CardDecision | null; receipt: CardReceipt | null;
   createdAt: number; expiresAt: number; updatedAt: number; startedAt: number | null;
   /** Content-free count of all matched calls held by this card. */
   outboundBlocks?: number;
@@ -469,7 +469,7 @@ export interface ApprovalCard {
 
 interface CardRow {
   id: string; project_id: string; topic_id: string; run_id: string; job_id: string; role_id: string; kind: EffectKind; action_json: string; digest: string;
-  revision: number; state: CardState; reason: string | null; decision_json: string | null; receipt_json: string | null; telegram_eligible: number;
+  revision: number; state: CardState; reason: string | null; decision_json: string | null; receipt_json: string | null;
   created_at: number; expires_at: number; updated_at: number; started_at: number | null;
 }
 function project(row: CardRow, now: number | null): ApprovalCard {
@@ -479,7 +479,7 @@ function project(row: CardRow, now: number | null): ApprovalCard {
     id: row.id, projectId: row.project_id, topicId: row.topic_id, runId: row.run_id, jobId: row.job_id, roleId: row.role_id, kind: row.kind,
     action: JSON.parse(row.action_json) as EffectAction, digest: row.digest, revision: row.revision, state: expired ? "expired" : row.state,
     reason: expired ? "expired" : row.reason, decision: row.decision_json ? JSON.parse(row.decision_json) : null,
-    receipt: row.receipt_json ? JSON.parse(row.receipt_json) : null, telegramEligible: row.telegram_eligible === 1,
+    receipt: row.receipt_json ? JSON.parse(row.receipt_json) : null,
     createdAt: row.created_at, expiresAt: row.expires_at, updatedAt: row.updated_at, startedAt: row.started_at,
   };
 }
@@ -524,11 +524,6 @@ export function expireCards(tx: AppTransaction, projectId: string, now: number):
   }
 }
 
-/** Whether a card may be decided from Telegram: exactly one action (one ref for a push). */
-export function telegramEligible(action: EffectAction): boolean {
-  return !action.outbound && action.kind !== "outbound_release" && (action.kind !== "effect.git_push" || action.updates.length === 1);
-}
-
 /** Who and what proposed a card: the run, its job, topic and role. */
 export interface CardOrigin { projectId: string; topicId: string; runId: string; jobId: string; roleId: string }
 
@@ -546,7 +541,8 @@ export function createCard(tx: AppTransaction, origin: CardOrigin, action: Effec
   tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason, decision_json, receipt_json,
     telegram_eligible, created_at, expires_at, updated_at, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', NULL, NULL, NULL, ?, ?, ?, ?, NULL)`,
     id, origin.projectId, origin.topicId, origin.runId, origin.jobId, origin.roleId, action.kind, canonicalJson(action), actionDigest(action),
-    telegramEligible(action) ? 1 : 0, now, now + cardLifetimeMs, now);
+    // The legacy NOT NULL eligibility column is inert since the Telegram channel was removed (ADR 0085); always 0.
+    0, now, now + cardLifetimeMs, now);
   const card = readCard(tx, origin.projectId, id);
   if (action.outbound) writeAttachmentEvent(tx, { projectId: origin.projectId, attachmentId: action.outbound.attachmentId ?? null, kind: "outbound_block", status: "refused", reason: "outbound_blocked",
     runId: origin.runId, jobId: origin.jobId, detail: { channel: action.kind, count: action.outbound.chars, cardId: id }, createdAt: now });
@@ -557,15 +553,14 @@ export function createCard(tx: AppTransaction, origin: CardOrigin, action: Effec
 
 /**
  * `approval.decide`: the owner's decision on one pending card. Rules, in order: the card must belong to the project
- * (`approval_card_not_found`); Telegram may decide only a single-action card and the local API none
- * (`approval_requires_web`, 403); a used card is `approval_card_not_pending` and an expired one
+ * (`approval_card_not_found`); only Web decides, never the local API (`approval_requires_web`, 403); a used card is `approval_card_not_pending` and an expired one
  * `approval_card_expired` (recording the expiry); `expectedRevision` must be the card revision (`stale_revision`)
  * and `digest` the card's action digest (`approval_digest_mismatch`). Approval also needs the proposing role to still
  * have the card's {@link cardLevel} in an unhalted project. Approval moves the card to `executing` in this transaction; denial to `denied`.
  */
 export function decideCard(tx: AppTransaction, command: DecideCardCommand, channel: string, now: number, options: { executor: boolean }): ApprovalCard {
   const card = readCard(tx, command.projectId, command.payload.cardId);
-  if (channel !== "web" && !(channel === "telegram" && card.telegramEligible)) throw new AppError("approval_requires_web", 403);
+  if (channel !== "web") throw new AppError("approval_requires_web", 403);
   if (card.state === "expired") throw new AppError("approval_card_expired", 409);
   if (card.state !== "pending") throw new AppError("approval_card_not_pending", 409, { state: card.state });
   if (now >= card.expiresAt) { transition(tx, card, "expired", now, { reason: "expired" }); throw new AppError("approval_card_expired", 409); }

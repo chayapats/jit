@@ -4,9 +4,6 @@ import { join } from "node:path";
 import { Application, type OwnerActor } from "../application";
 import { readConfig } from "../config";
 import type { AppConfig } from "../config";
-import { DeliveryWorker } from "../delivery/outbox";
-import type { DeliverySendInput, DeliverySendResult, DeliverySender, SenderScript } from "../delivery/sender";
-import { TelegramChannel } from "../telegram";
 import { JobQueue } from "../jobs/queue";
 import { scheduleReminderWork, tickSchedules } from "../jobs/schedules";
 import type { JobLimits, WorkDefinition } from "../jobs/types";
@@ -199,26 +196,11 @@ let drillInFlight = false;
 /** Bounded wait for an aborted leg to settle before teardown. */
 const abortGraceMs = 1000;
 
-/** Fixture Telegram transport selected by dedupe key, so other intents (PR alerts) never consume a drill script. */
-class DrillSender implements DeliverySender {
-  readonly modes = new Map<string, SenderScript>();
-  calls = 0;
-  #messageId = 0;
-  send(input: DeliverySendInput): DeliverySendResult {
-    this.calls++;
-    const mode = this.modes.get(input.dedupeKey) ?? "accept";
-    if (mode === "reject") return { outcome: "failed", reason: "telegram_rejected", retryable: false };
-    if (mode === "safe_failure") return { outcome: "failed", reason: "telegram_unavailable", retryable: true };
-    if (mode === "timeout_after_accept") return { outcome: "unknown" };
-    return { outcome: "sent", messageId: ++this.#messageId };
-  }
-}
-
 /**
  * Runs the bounded fixture load drill against disposable state. Every adapter
  * is scripted: PR reads come from an in-memory GitHub fixture, specialist and
- * synthesis runs from the scripted run port, deliveries from a scripted sender,
- * native snapshots from a fixture engine. No fetch, no sockets, no live
+ * synthesis runs from the scripted run port, deliveries are in-app outbox
+ * intents (there is no push transport, ADR 0085), native snapshots from a fixture engine. No fetch, no sockets, no live
  * inference and no paid APIs. Global fetch is replaced with a throwing stub for
  * the duration so any network escape fails loudly. Every leg state is derived
  * from what actually executed; gates that cannot execute are recorded with the
@@ -302,7 +284,7 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
   let stopAckMs: number | null = null;
   const enqueuedAt = new Map<string, number>(), admittedAt = new Map<string, number>();
   let deliveryAttempts = 0;
-  let sent = 0, unknown = 0, failed = 0, succeededJobs = 0, waitingJobs = 0, cancelledJobs = 0;
+  let succeededJobs = 0, waitingJobs = 0, cancelledJobs = 0;
   let prReports = 0, alertIntents = 0, exportBytes = 0, backupBytes = 0;
   let commandAckMaxMs = 0, requestMaxMs = 0, commands = 0;
   let verifiedBackupId: string | null = null;
@@ -310,8 +292,7 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
   const fixtureEngine = native === fixtureNativePort;
 
   try {
-    const appConfig: AppConfig = readConfig({ JIT_DATABASE: join(stateDir, "app.sqlite"),
-      JIT_TELEGRAM_BOT_TOKEN_PATH: join(stateDir, "telegram-bot.token") });
+    const appConfig: AppConfig = readConfig({ JIT_DATABASE: join(stateDir, "app.sqlite") });
     store = new TransactionStore(appConfig.databasePath);
     const liveStore = store;
     let releaseGate!: () => void;
@@ -449,7 +430,7 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
         : { state: "failed", detail: `candidates=${candidates.length} snapshots=${snapshots} expected=${config.prSnapshots}` };
     });
 
-    await timed("pr-alerts", "Scripted specialist/synthesis runs; alert intents are admitted before any Telegram binding exists.", async signal => {
+    await timed("pr-alerts", "Scripted specialist/synthesis runs; alert intents are admitted as in-app notices.", async signal => {
       if (candidates.length === 0) return { state: "not-run", detail: "no captured PR snapshots to review" };
       let reviews = 0;
       for (let start = 0; start < candidates.length; start += wave) {
@@ -486,47 +467,24 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
       return { state: "passed", detail: `queries=${config.memoryQueries} claims=${claims}` };
     });
 
-    await timed("deliveries", "Fixture Telegram binding and transport; the DeliveryWorker claims, sends and records every committed intent. No Bot API traffic.", async signal => {
+    await timed("deliveries", "Owner delivery.commit of in-app outbox intents; there is no push transport, so none is sent or attempted.", async signal => {
       if (projectIds.length === 0) return { state: "not-run", detail: "no groups to deliver to" };
-      // Owner binding through the Telegram channel's own bind/confirm commands (fixture identities, no Bot API).
-      const channel = new TelegramChannel(liveStore, appConfig, { now });
-      const owner = channel.authenticate(ownerToken);
-      const pending = command(() => channel.execute(owner, { kind: "telegram.bind", requestId: crypto.randomUUID(),
-        expectedRevision: channel.status(owner).binding.revision, payload: { telegramUserId: 4242, telegramChatId: 7777 } }));
-      command(() => channel.execute(owner, { kind: "telegram.confirm", requestId: crypto.randomUUID(), expectedRevision: pending.binding.revision,
-        payload: { telegramUserId: 4242, telegramChatId: 7777, challengeNonce: pending.binding.challengeNonce! } }));
-      const modes = ["accept", "timeout_after_accept", "safe_failure", "reject"] as const;
-      const sender = new DrillSender();
       const intentIds: string[] = [];
       for (let n = 0; n < config.deliveries; n++) {
         signal.throwIfAborted();
         const projectId = projectIds[n % projectIds.length]!;
         const key = `drill/delivery-${String(n + 1).padStart(4, "0")}`;
-        sender.modes.set(key, modes[n % modes.length]!);
         intentIds.push(command(() => app.execute(actor, { kind: "delivery.commit", requestId: crypto.randomUUID(), projectId,
           expectedRevision: revisionOf(projectId), payload: { kind: "report", text: `Drill delivery ${n + 1}`, dedupeKey: key } })).intent.id);
         advance(100);
       }
-      const worker = new DeliveryWorker(liveStore, { sender, now });
-      try {
-        // Bounded: each pump handles at most 32 claims; safe retries are bounded by the intent's own retry budget.
-        for (let round = 0; round < 16; round++) {
-          signal.throwIfAborted();
-          if (worker.pump().length === 0) break;
-          advance(1000);
-        }
-      } finally { worker.close(); }
       const persisted = liveStore.read(tx => intentIds.map(id => ({
         intent: JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", id)!.record_json) as { status: string; nextAction: string },
         attempts: tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_attempts WHERE intent_id = ?", id)!.n })));
-      sent = persisted.filter(p => p.intent.status === "sent").length;
-      unknown = persisted.filter(p => p.intent.status === "unknown").length;
-      failed = persisted.filter(p => p.intent.status === "failed").length;
       deliveryAttempts = persisted.reduce((sum, p) => sum + p.attempts, 0);
-      if (persisted.some(p => p.intent.nextAction === "safe_retry_limit_reached")) limits.add("delivery-retry");
-      const settled = sent + unknown + failed;
-      return { state: settled === config.deliveries ? "passed" : "failed",
-        detail: `sent=${sent} unknown=${unknown} failed=${failed} attempts=${deliveryAttempts} unsettled=${config.deliveries - settled}` };
+      const inApp = persisted.filter(p => p.intent.status === "waiting" && p.intent.nextAction === "in_app_only").length;
+      return { state: inApp === config.deliveries && deliveryAttempts === 0 ? "passed" : "failed",
+        detail: `recorded=${persisted.length} inApp=${inApp} attempts=${deliveryAttempts}` };
     });
 
     await timed("schedules", "Reminder occurrences ticked with an explicit clock, not host time.", async () => {
@@ -654,12 +612,12 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
     const measurements: DrillMeasurements = { peakRssBytes: peakRss(), stateBytesBefore,
       stateBytesAfter, stateGrowthBytes, diskPressure,
       queueWaitMaxMs: waits.length ? Math.max(...waits) : 0, queueWaitP95Ms: percentile(waits, 0.95), queueWaitSamples: waits.length,
-      stopAckMs, fetchCalls, sentDeliveries: sent, unknownDeliveries: unknown, failedDeliveries: failed, deliveryAttempts,
+      stopAckMs, fetchCalls, sentDeliveries: 0, unknownDeliveries: 0, failedDeliveries: 0, deliveryAttempts,
       succeededJobs, waitingJobs, cancelledJobs, prReports, alertIntents, exportBytes, backupBytes,
       commandAckMaxMs, requestMaxMs, commands };
     const fixtureHonesty = [
       "PR reads come from an in-memory GitHub fixture and reviews from the scripted run port; no model judged any code.",
-      "Deliveries ran through the DeliveryWorker over a fixture binding and scripted transport; no Bot API evidence is claimed.",
+      "Deliveries are in-app outbox intents only; there is no push transport, so nothing was sent.",
       "peakRssBytes is the process high-water RSS (getrusage maxrss), so it includes memory in use before the drill started.",
       "Queue wait covers owner-enqueued drill jobs only (enqueue receipt to first work invocation); schedule-produced jobs are not sampled.",
       fixtureEngine

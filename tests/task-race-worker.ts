@@ -2,14 +2,14 @@ import { parentPort, workerData } from "node:worker_threads";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import { TransactionStore } from "../src/store";
-import type { TaskChannel, TaskCommand } from "../src/tasks";
+import type { TaskCommand } from "../src/tasks";
 
-const data = workerData as { path: string; token: string; channel: TaskChannel; now: number; command: TaskCommand };
+const data = workerData as { path: string; token: string; now: number; command: TaskCommand };
 const store = new TransactionStore(data.path);
 const app = new Application(store, readConfig({ JIT_DATABASE: data.path }), { now: () => data.now });
 parentPort!.on("message", () => {
   try {
-    const actor = app.issueAdapterActor(data.token, data.channel);
+    const actor = app.authenticate(data.token).actor;
     const receipt = app.execute(actor, data.command);
     store.close();
     parentPort!.postMessage({ ok: true, state: receipt.task.state, id: receipt.task.id });

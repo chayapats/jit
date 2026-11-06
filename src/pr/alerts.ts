@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { MIN_MESSAGE_BYTES } from "../config";
 import { AppError } from "../errors";
-import { commitAttentionIntent, readDeliveryIntent, registerDeliveryGuard, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { commitAttentionIntent, readDeliveryIntent, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
 import { containsCredential, redactCredentials } from "../security/credentials";
 import { neutralizeDestinations } from "../security/destinations";
 import { requireId } from "../sources";
@@ -20,7 +20,7 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
 const destinationLike = /t\.me\/|telegram\.me|chat_id|sendMessage/i;
 
-/** Delivery guard name under which PR alert intents are rechecked immediately before send. */
+/** Guard name stored on every PR alert intent; `pr-alert/` dedupe keys require it. */
 export const PR_ALERT_GUARD = "pr-alert" as const;
 
 /** Version of the explicit default policy; persisted owner revisions count up from here. */
@@ -527,44 +527,6 @@ export function admitCommittedReportAlerts(
   }
 }
 
-/**
- * `pr-alert` delivery guard: rechecks the linked report immediately before claim/send and when a
- * result lands. Stale revisions, closed/superseded candidates, revoked monitoring, owner rotation,
- * failed/incomplete reports, owner dismissal and a current policy that no longer qualifies the
- * finding all retire the intent. Paused monitoring holds it waiting.
- */
-export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
-  const link = readAlertLink(tx, intent.id) ?? backfillLegacyAlertLink(tx, intent);
-  if (!link) {
-    // Quarantine: the outbox cancels it; any credential in its stored text is redacted first.
-    scrubDeliveryIntentText(tx, intent, redactCredentials);
-    return { current: false, reason: "legacy_alert_unverifiable" };
-  }
-  if (link.projectId !== intent.projectId) return { current: false, reason: "alert_link_missing" };
-  let report: PrivateReport;
-  try { report = readReport(tx, link.projectId, link.reportId); }
-  catch { return { current: false, reason: "authority_unavailable" }; }
-  if (report.stale) {
-    const reason = report.staleReason ?? "report_stale";
-    return { current: false, reason, hold: reason === "monitoring_not_active" };
-  }
-  if (report.status === "failed" || report.status === "incomplete" || report.status === "running") return { current: false, reason: `report_${report.status}` };
-  if (report.baseSha !== link.baseSha || report.headSha !== link.headSha || report.policyVersion !== link.triggerPolicyVersion) {
-    return { current: false, reason: "revision_changed" };
-  }
-  const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
-  if (ownerGeneration !== link.ownerGeneration) return { current: false, reason: "authorization_changed" };
-  const dismissed = dismissals(readAnnotations(tx, report.id));
-  if (dismissed.report) return { current: false, reason: "report_dismissed" };
-  if (dismissed.findings.has(link.findingId)) return { current: false, reason: "finding_dismissed" };
-  const matches = report.findings.filter(item => item.id === link.findingId);
-  if (matches.length > 1) return { current: false, reason: "duplicate_finding_id" };
-  const finding = matches[0];
-  if (!finding) return { current: false, reason: "finding_missing" };
-  if (!findingQualifies(report, finding, readAlertPolicy(tx, link.projectId))) return { current: false, reason: "alert_policy_changed" };
-  return { current: true };
-}
-
 const LEGACY_KEY = /^pr-alert\/([a-f0-9-]{36})\/([a-z0-9][a-z0-9_-]{0,63})\/v([1-9][0-9]{0,8})\/([a-f0-9]{12})\/([1-9][0-9]{0,8})$/;
 
 /**
@@ -572,8 +534,8 @@ const LEGACY_KEY = /^pr-alert\/([a-f0-9-]{36})\/([a-z0-9][a-z0-9_-]{0,63})\/v([1
  * It is verifiable only when its dedupe key names an existing report/finding/head/trigger policy in
  * the same project and its stored text is exactly what today's sanitized payload builder produces
  * for that finding (so no credential or PR-supplied destination can ride along). Verified intents get
- * an `AlertLink` (decision `legacy-backfill`) and are then rechecked like any guarded alert; anything
- * else returns null and the outbox cancels it visibly as `legacy_alert_unverifiable`.
+ * an `AlertLink` (decision `legacy-backfill`) and are then retired like any linked alert; anything
+ * else returns null and the quarantine sweep cancels it visibly as `legacy_alert_unverifiable`.
  */
 export function backfillLegacyAlertLink(tx: AppTransaction, intent: DeliveryIntent): AlertLink | null {
   const match = LEGACY_KEY.exec(intent.dedupeKey);
@@ -628,8 +590,6 @@ export function quarantineLegacyPrAlerts(tx: AppTransaction, now: number): strin
   }
   return quarantined;
 }
-
-registerDeliveryGuard(PR_ALERT_GUARD, prAlertCurrentness);
 
 /** Canonical identity for `pr.alert_policy.set`; extra fields and evidence-disabling shapes are rejected. */
 export function alertPolicyIdentity(command: SetAlertPolicyCommand): string {

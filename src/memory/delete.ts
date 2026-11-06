@@ -1032,7 +1032,7 @@ function inventoryDigest(tx: AppTransaction, scope: DeletionScope, inventory: In
 }
 
 const deleteNote = "การลบถอน source ต้นฉบับ output ที่สืบทอดจากมัน เนื้อความ derived ที่อ้างมัน บริบทที่บันทึกไว้และ native session ที่เกี่ยวข้องออกจาก local serving ทั้งหมด " +
-  "native session ลบได้ทั้ง session เท่านั้น งานที่รับรอง มติ และการตั้งค่าไม่ถูกเปลี่ยนโดยปริยาย สำรองข้อมูลเดิมยังเก็บข้อมูลที่ถูกลบตาม retention ของมัน ส่วน Telegram/provider copies ไม่ได้ถูกลบโดยคำสั่งนี้ และไม่ใช่การลบเชิง forensic";
+  "native session ลบได้ทั้ง session เท่านั้น งานที่รับรอง มติ และการตั้งค่าไม่ถูกเปลี่ยนโดยปริยาย สำรองข้อมูลเดิมยังเก็บข้อมูลที่ถูกลบตาม retention ของมัน ส่วน provider copies ไม่ได้ถูกลบโดยคำสั่งนี้ และไม่ใช่การลบเชิง forensic";
 
 function sourceText(tx: AppTransaction, lineage: SourceReference): string {
   const row = tx.get<{ text: string | null }>("SELECT content_text AS text FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
@@ -1421,7 +1421,7 @@ function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsR
       : { scope: "retained_backups", state: "none", detail: "no recorded backup was taken after this data was committed" },
     { scope: "local_exports", state: exportState, detail: exports.length
       ? `${exports.filter(e => e.state === "purged").length}/${exports.length} affected export artifacts purged` : "no local export holds this data" },
-    { scope: "external_copies", state: "not_attempted", detail: "Telegram delivery and provider session copies are not deleted by this command" },
+    { scope: "external_copies", state: "not_attempted", detail: "provider session copies are not deleted by this command" },
   ];
 }
 
@@ -1586,7 +1586,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
     state: "pending", attempts: 0, maxAttempts: deletePolicy.maxAttempts,
     tombstones, contexts, exports, scopes: [], attachments: inventory.attachments,
     backupsRetained,
-    residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge", ...(preview.scope.kind === "project" ? ["execution_workspaces_retained"] : [])],
+    residuals: ["provider_session_copies_not_deleted", "retained_backups_require_retention_purge", ...(preview.scope.kind === "project" ? ["execution_workspaces_retained"] : [])],
     reason: null, nextAction: "", createdAt: now, updatedAt: now,
   }, now);
   tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, ?, ?, ?)",

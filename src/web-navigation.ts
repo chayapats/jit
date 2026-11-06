@@ -8,7 +8,6 @@ import { webSearchKeyLabels, type WebSettings } from "./web-tools/settings";
 import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
 import { dictionaries, tr, type MessageKey } from "./i18n";
-import type { TelegramStatus } from "./telegram/types";
 import type { DispatchAllowance } from "./team/allowance";
 import type { ScheduleFeed } from "./schedule-feed";
 import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type RoleAccess } from "./exec/access";
@@ -111,24 +110,10 @@ export function topicPanelPage(project: Project, topic: Topic, topics: Topic[], 
     <div class="panel-content">${panelContent(project, topic, data)}</div></section></div>`, { breadcrumb: { title: topic.title ?? tr("common.topic_unavailable"), href: topicBase } });
 }
 
-const telegramNext = (): Record<string, string> => ({
-  configure_bot_token_secret: tr("telegram.next_configure_token"), inspect_possible_missing_inputs: tr("telegram.next_inspect_gap"),
-  bind_numeric_owner: tr("telegram.next_bind"), confirm_challenge_or_wait: tr("telegram.next_confirm"), inspect_failed_inbox: tr("telegram.next_failed"),
-  inspect_unauthorized_events: tr("telegram.next_unauthorized"), poll_and_inspect: tr("telegram.next_ok"), inspect_binding: tr("telegram.next_inspect"),
-});
-
-/** Settings › Telegram: binding and inbox status (read only) and each project's notification requests. */
-export function settingsTelegramPage(status: TelegramStatus, workspace: NavigationWorkspace, csrf: string): string {
-  const states: Record<TelegramStatus["binding"]["state"], string> = { unbound: tr("telegram.unbound"), pending: tr("telegram.pending"), bound: tr("telegram.bound") };
-  const yesNo = (value: boolean) => value ? tr("telegram.yes") : tr("telegram.no");
-  return shell(tr("settings.telegram"), { workspace, csrf, section: "settings", settings: "telegram" }, `<div class="content settings-content">
-    <section class="settings-section" aria-labelledby="telegram-title"><h2 id="telegram-title">${tr("telegram.companion")}</h2><p>${tr("telegram.note")}</p>
-    <dl class="settings-facts"><dt>${tr("telegram.binding")}</dt><dd><span class="job-status" data-state="${status.binding.state === "bound" ? "accepted" : status.binding.state === "pending" ? "waiting" : "disabled"}">${states[status.binding.state]}</span></dd>
-      <dt>${tr("telegram.credential")}</dt><dd>${yesNo(status.botCredentialConfigured)}</dd>
-      <dt>${tr("telegram.gap")}</dt><dd>${status.poll.gapState === "none" ? tr("telegram.no_gap") : tr("telegram.possible_gap")}</dd>
-      <dt>${tr("telegram.inbox")}</dt><dd>${tr("telegram.unauthorized")} ${status.unauthorizedCount} · ${tr("telegram.failed")} ${status.failedCount} · ${tr("telegram.pending_inbox")} ${status.pendingAuthorizedCount}</dd>
-      <dt>${tr("telegram.next_action")}</dt><dd>${telegramNext()[status.nextAction] ?? tr("telegram.next_inspect")}</dd></dl></section>
-    <section class="settings-section" aria-labelledby="notifications-title"><h2 id="notifications-title">${tr("common.notifications")}</h2><p>${tr("telegram.notifications_note")}</p>
+/** Settings › Notifications: each project's in-app notices (delivery.outbox/v1). There is no push channel (ADR 0085). */
+export function settingsNotificationsPage(workspace: NavigationWorkspace, csrf: string): string {
+  return shell(tr("common.notifications"), { workspace, csrf, section: "settings", settings: "notifications" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="notifications-title"><h2 id="notifications-title">${tr("common.notifications")}</h2><p>${tr("settings.notifications_note")}</p>
     ${workspace.projects.length ? `<nav class="settings-links" aria-labelledby="notifications-title">${workspace.projects.map(p => `<a href="/projects/${p.id}/delivery">${icon("info")}<span>${escape(p.name)}</span></a>`).join("")}</nav>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
     ${workspace.hasMore ? `<p><a href="/">${tr("common.view_all_projects")}</a></p>` : ""}</section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }

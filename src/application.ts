@@ -34,8 +34,6 @@ import { conversationIdentity, mutateConversation, readMessages, readTopic, read
   type ChatReceipt, type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type StartChatCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { executePromotion, isPromotionCommand, promotionIdentity, readTopicPromotion, requireTopicOpen, type PromotionCommand, type PromotionReceipt, type TopicPromotionView } from "./promotion";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
-import { readTelegramStatus } from "./telegram/channel";
-import type { TelegramStatus } from "./telegram/types";
 import type { SessionReconciliation } from "./jobs/reconcile";
 import type { Job, JobStopOutcome } from "./jobs/types";
 import { readAttempts } from "./jobs/attempts";
@@ -79,7 +77,7 @@ import type { RoleRoute, DecisionCommand, DecisionReadModel, DecisionReceipt, Te
 import { coordinatorSynthesisWorkId } from "./team/types";
 import {
   attentionIdentity, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readAttentionLevels, readDeliveryIntent,
-  readDeliveryReport, resendDeliveryIntent, retireDeliveryReport, writeAttentionLevel, type AttentionLevels, type AttentionReceipt, type SetAttentionCommand,
+  readDeliveryReport, retireDeliveryReport, writeAttentionLevel, type AttentionLevels, type AttentionReceipt, type SetAttentionCommand,
 } from "./delivery";
 import { evaluateTopicWorkGroups, evaluateWorkGroup, workGroupOfJob } from "./team/work-group";
 import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
@@ -97,7 +95,7 @@ import type {
 } from "./pr/types";
 import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
-  DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
+  DeliveryRetireReceipt, RetireDeliveryCommand,
 } from "./delivery";
 import {
   applyTask, countOwnerTaskQueue, isTaskCommand, readProjectContinuity, readTaskCompletionPolicy, readTaskList, readTaskModel, readTopicTasks, taskIdentity,
@@ -485,21 +483,6 @@ export class Application {
     return token;
   }
 
-  /**
-   * Issues an owner actor for a trusted adapter that already checked its own identity and holds a live session.
-   * `telegram` labels the supported task, follow-up and reply boundary. It does not verify inbound identity or bypass revision and dedup rules.
-   * Forged `{ ownerId, channel }` objects are not registered and cannot execute commands.
-   */
-  issueAdapterActor(sessionToken: string, channel: TaskChannel): OwnerActor {
-    if (channel !== "web" && channel !== "telegram") throw new AppError("invalid_channel");
-    if (!validToken(sessionToken)) throw new AppError("authentication_required", 401);
-    const key = digest(sessionToken);
-    this.store.read(tx => this.#session(tx, key));
-    const actor: OwnerActor = Object.freeze({ ownerId: "owner", channel });
-    this.#actors.set(actor, key);
-    return actor;
-  }
-
   /** Resolves a live server session into an opaque actor and a separate anti-CSRF token. */
   authenticate(token: string): { actor: OwnerActor; csrf: string } {
     if (!validToken(token)) throw new AppError("authentication_required", 401);
@@ -518,14 +501,14 @@ export class Application {
 
   /** Revokes this browser session, including actors issued before logout. */
   logout(actor: OwnerActor): void {
-    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor, ["web", "telegram"], false); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
+    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor, ["web"], false); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
   }
 
   /** Returns one bounded owner projection; project names never select authorization identities. */
   workspace(actor: OwnerActor, offset = 0): Workspace {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000000) throw new AppError("invalid_offset");
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       const rows = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
         FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE ${liveProjectSql("p")} ORDER BY p.created_at, p.id LIMIT ? OFFSET ?`,
       this.config.pageSize + 1, offset);
@@ -640,7 +623,7 @@ export class Application {
     if (!Array.isArray(projectIds) || projectIds.length > 50) throw new AppError("invalid_project_list");
     for (const id of projectIds) requireId(id);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       // Close reviews use the task list's current-evidence projection, so badge and task page agree.
       const tasks = countOwnerTaskQueue(tx, projectIds, 500);
       const result: Record<string, ProjectAttention> = Object.fromEntries(projectIds.map(id => [id, { ...tasks[id]!, resumes: 0 }]));
@@ -707,15 +690,10 @@ export class Application {
     });
   }
 
-  /** telegram.owner_binding/v1 status for the settings page: a read only; binding and revocation keep their own commands. */
-  telegramStatus(actor: OwnerActor): TelegramStatus {
-    return this.store.read(tx => { this.#requireOwner(tx, actor); return readTelegramStatus(tx, this.config); });
-  }
-
   /** Resolves a project by stable identity under the authenticated owner, never by its name. */
   project(actor: OwnerActor, projectId: string): Project {
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       return this.#project(tx, projectId);
     });
   }
@@ -724,7 +702,7 @@ export class Application {
   topics(actor: OwnerActor, projectId: string, after = 0) {
     requireId(projectId); requireCursor(after);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       return { project: this.#project(tx, projectId), ...readTopics(tx, projectId, after, this.config.pageSize) };
     });
   }
@@ -733,7 +711,7 @@ export class Application {
   conversation(actor: OwnerActor, projectId: string, topicId: string, after = 0) {
     requireId(projectId); requireId(topicId); requireCursor(after);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId), topic = readTopic(tx, projectId, topicId);
       return { project, topic, ...readMessages(tx, projectId, topicId, after, this.config.pageSize) };
     });
@@ -746,7 +724,7 @@ export class Application {
   replies(actor: OwnerActor, projectId: string, topicId: string, messageIds: readonly string[]): Map<string, JitReplyView> {
     requireId(projectId); requireId(topicId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
       return readRepliesFor(tx, projectId, topicId, messageIds);
     });
   }
@@ -786,13 +764,13 @@ export class Application {
   /** app.access_level/v1: the project's access level and kill switch state; `read`, revision 0, not halted by default. */
   projectAccess(actor: OwnerActor, projectId: string): ProjectAccess {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readProjectAccess(tx, projectId, this.config); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readProjectAccess(tx, projectId, this.config); });
   }
 
   /** app.access_level/v1: the latest restrict-only override of every restricted role, with its effective level. */
   roleAccess(actor: OwnerActor, projectId: string): RoleAccess[] {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readRoleAccess(tx, projectId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readRoleAccess(tx, projectId); });
   }
 
   /** app.dispatch_allowance/v1: the project's current allowance, or the product default (revision 0). */
@@ -924,7 +902,7 @@ export class Application {
 
   /** app.general_space/v1: the installation's one General space, or null before setup creates it. */
   generalSpace(actor: OwnerActor): GeneralSpace | null {
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); return readGeneralSpace(tx); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readGeneralSpace(tx); });
   }
 
   /**
@@ -934,7 +912,7 @@ export class Application {
   promotion(actor: OwnerActor, projectId: string, topicId: string): TopicPromotionView {
     requireId(projectId); requireId(topicId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
       return readTopicPromotion(tx, projectId, topicId);
     });
   }
@@ -1194,7 +1172,6 @@ export class Application {
   execute(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt;
   execute(actor: OwnerActor, command: ForgetMemoryCommand): SuppressionReceipt;
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
-  execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
   execute(actor: OwnerActor, command: SetAlertPolicyCommand): AlertPolicyReceipt;
@@ -1206,8 +1183,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind === "message.send" && !this.config.attachments.enabled) {
       const ids = (command.payload as unknown as { attachmentIds?: unknown })?.attachmentIds;
       if (ids !== undefined && (!Array.isArray(ids) || ids.length > 0)) {
@@ -1219,7 +1196,7 @@ export class Application {
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
     // while it is present, no managed write is admitted.
     if (this.#upgradeBusy || upgradeFenced(this.store.path)) {
-      this.store.read(tx => this.#requireOwner(tx, actor, ["web", "telegram"]));
+      this.store.read(tx => this.#requireOwner(tx, actor));
       throw new AppError(readUpgradeFence(this.store.path)?.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
     }
     // app.general_space/v1: until the ceremony commits Jit's greeting, the General space takes no project command
@@ -1227,7 +1204,7 @@ export class Application {
     const scope = (command as { projectId?: unknown } | null)?.projectId;
     if (typeof scope === "string" && command.kind !== "job.stop" && command.kind !== "job.resume") {
       this.store.read(tx => {
-        this.#requireOwner(tx, actor, ["web", "telegram"]);
+        this.#requireOwner(tx, actor);
         // Completion is monotonic, so this check cannot go stale before the command's own transaction.
         if (readGeneralSpace(tx)?.projectId === scope && !setupComplete(tx)) throw new AppError("setup_incomplete", 409);
       });
@@ -1245,7 +1222,7 @@ export class Application {
     if (command?.kind === "schedule.create" || command?.kind === "schedule.pause" || command?.kind === "schedule.resume" ||
       command?.kind === "schedule.edit" || command?.kind === "schedule.revoke") return this.#scheduleCommand(actor, command as ScheduleCommand);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
-    if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
+    if (command?.kind === "delivery.commit" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "project.rename") return this.#renameProject(actor, command);
     if (command?.kind === "ui.preferences.set") return this.#setPreferences(actor, command);
@@ -1928,7 +1905,7 @@ export class Application {
   tasks(actor: OwnerActor, projectId: string): { project: Project; topics: ReturnType<typeof readTopics>["items"] } & TaskList {
     requireId(projectId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       return { project: this.#project(tx, projectId), ...readTaskList(tx, projectId, this.config.pageSize), topics: readTopics(tx, projectId, 0, this.config.pageSize).items };
     });
   }
@@ -1940,7 +1917,7 @@ export class Application {
   task(actor: OwnerActor, projectId: string, taskId: string): { project: Project; topic: ReturnType<Application["conversation"]>["topic"] } & TaskReadModel {
     requireId(projectId); requireId(taskId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       const model = readTaskModel(tx, projectId, taskId);
       return { project: this.#project(tx, projectId), topic: readTopic(tx, projectId, model.task.topicId), ...model };
     });
@@ -1953,7 +1930,7 @@ export class Application {
   continuity(actor: OwnerActor, projectId: string): { project: Project } & ProjectContinuity {
     requireId(projectId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       return { project: this.#project(tx, projectId), ...readProjectContinuity(tx, projectId, this.config.pageSize, this.#now()) };
     });
   }
@@ -1962,7 +1939,7 @@ export class Application {
   taskCompletionPolicy(actor: OwnerActor, projectId: string, taskId: string): { project: Project; policy: ReturnType<typeof readTaskCompletionPolicy> } {
     requireId(projectId); requireId(taskId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       return { project: this.#project(tx, projectId), policy: readTaskCompletionPolicy(tx, projectId, taskId) };
     });
   }
@@ -1971,7 +1948,7 @@ export class Application {
   #taskCommand(actor: OwnerActor, command: TaskCommand): TaskReceipt {
     const payloadHash = taskIdentity(command, this.config.messageBytes);
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TaskReceipt; }
@@ -2021,7 +1998,7 @@ export class Application {
   #teamCommand(actor: OwnerActor, command: TeamCommand): TeamReceipt {
     const payloadHash = teamIdentity(command, this.config.team);
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, command.kind === "team.dispatch" ? ["web", "telegram"] : ["web"]);
+      this.#requireOwner(tx, actor);
       if (command.projectId) this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamReceipt; }
@@ -2271,24 +2248,22 @@ export class Application {
         stop: authority?.stop_json ? JSON.parse(authority.stop_json) as JobStopOutcome : null }; });
   }
 
-  #deliveryCommand(actor: OwnerActor, command: DeliveryCommand): DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
+  #deliveryCommand(actor: OwnerActor, command: DeliveryCommand): DeliveryReceipt | DeliveryRetireReceipt {
     const payloadHash = deliveryCommandIdentity(command, this.config.messageBytes);
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, command.kind === "delivery.commit" ? ["web", "telegram"] : ["web"]);
+      this.#requireOwner(tx, actor);
       this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) {
         if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return JSON.parse(prior.result_json) as DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
+        return JSON.parse(prior.result_json) as DeliveryReceipt | DeliveryRetireReceipt;
       }
       const now = this.#now();
       const result = command.kind === "delivery.commit"
         // delivery.attention_levels/v1: the owner asked for this notice explicitly, so every level creates it.
         ? commitDeliveryIntent(tx, { projectId: command.projectId, kind: command.payload.kind, text: command.payload.text, dedupeKey: command.payload.dedupeKey, maxBytes: this.config.messageBytes, expectedProjectRevision: command.expectedRevision,
           attention: { class: "needs_owner", item: null, workGroupId: null } }, now)
-        : command.kind === "delivery.resend"
-          ? resendDeliveryIntent(tx, command.projectId, command.payload.intentId, command.expectedRevision, now)
-          : retireDeliveryReport(tx, command.projectId, command.payload.reportId, command.payload.action, command.expectedRevision, now);
+        : retireDeliveryReport(tx, command.projectId, command.payload.reportId, command.payload.action, command.expectedRevision, now);
       this.#beforeCommit?.("delivery");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
@@ -2563,15 +2538,15 @@ export class Application {
   }
 
   /**
-   * app.access_level/v1: the only writer of access levels, role overrides and the kill switch. Accepted from `web`,
-   * `telegram` and local API owner actors; widening and resume are refused for every channel but `web`
+   * app.access_level/v1: the only writer of access levels, role overrides and the kill switch. Accepted from `web`
+   * and local API owner actors; widening and resume are refused for every channel but `web`
    * (exec/access.ts), and the local API counts as `local-api`, never `web`. Revisioned,
    * idempotent by request id (a replay returns the first receipt) and audited in the state transaction.
    */
   #accessCommand(actor: OwnerActor, command: AccessCommand): AccessReceipt {
     const payloadHash = digest(accessCommandIdentity(command));
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as AccessReceipt; }
       const now = this.#now();
@@ -2608,18 +2583,18 @@ export class Application {
 
   /** app.connections/v1: every connection's metadata, never a value. Web only. */
   connections(actor: OwnerActor): ConnectionView[] {
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); requireConnectionChannel(this.#commandChannel(actor)); return readConnections(tx); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); requireConnectionChannel(this.#commandChannel(actor)); return readConnections(tx); });
   }
 
   /**
-   * app.connections/v1 owner commands: Web only (`connection_requires_web` for Telegram and the local API), committed
+   * app.connections/v1 owner commands: Web only (`connection_requires_web` for the local API), committed
    * with a receipt and audit row in the state transaction. A receipt never contains a value, and the receipt identity of
    * a secret-bearing command never includes one.
    */
   #connectionCommand(actor: OwnerActor, command: ConnectionCommand): ConnectionReceipt {
     const payloadHash = digest(connectionCommandIdentity(command));
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as ConnectionReceipt; }
       const channel = this.#commandChannel(actor);
@@ -2641,12 +2616,12 @@ export class Application {
    */
   toolCalls(actor: OwnerActor, projectId: string, options: { before?: number; limit?: number; runId?: string } = {}): ToolCallView[] {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readToolCalls(tx, projectId, options); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readToolCalls(tx, projectId, options); });
   }
 
   /**
-   * app.approval_cards/v1, app.auto_approve/v1 and effect targets. `approval.decide` is accepted from Web for every
-   * card and from Telegram for single-action cards only (`approval_requires_web` otherwise, including the local API);
+   * app.approval_cards/v1, app.auto_approve/v1 and effect targets. `approval.decide` is accepted from Web only
+   * (`approval_requires_web` for the local API);
    * it is bound to the card's revision and digest and is single use. Rules and targets are Web only
    * (`approval_rule_requires_web`). Each command commits a receipt and audit row in its transaction; an approval moves
    * the card to `executing` there, and the executor runs it once after commit (a replayed request never runs it again).
@@ -2655,9 +2630,9 @@ export class Application {
     const payloadHash = digest(approvalCommandIdentity(command));
     let replay = false;
     // A decision on an expired card is refused and rolled back, so the expiry is recorded in its own transaction first.
-    if (command.kind === "approval.decide") this.store.transaction(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId); expireCards(tx, command.projectId, this.#now()); });
+    if (command.kind === "approval.decide") this.store.transaction(tx => { this.#requireOwner(tx, actor); this.#project(tx, command.projectId); expireCards(tx, command.projectId, this.#now()); });
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); replay = true; return JSON.parse(prior.result_json) as ApprovalReceipt; }
       const now = this.#now(), channel = this.#commandChannel(actor);
@@ -2678,15 +2653,14 @@ export class Application {
 
   /**
    * app.mcp_servers/v1 owner commands. `mcp.install.accept` and `mcp.install.revise` are Web only
-   * (`mcp_install_requires_web` for Telegram and the local API); reject and remove only take power away and are also
-   * accepted from Telegram. Each commits a receipt and audit row; an accepted server is handed to the installer after
+   * (`mcp_install_requires_web` for the local API); reject and remove only take power away. Each commits a receipt and audit row; an accepted server is handed to the installer after
    * commit (a replay never installs again).
    */
   #mcpCommand(actor: OwnerActor, command: McpCommand): McpReceipt {
     const payloadHash = digest(mcpCommandIdentity(command));
     let replay = false;
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); replay = true; return JSON.parse(prior.result_json) as McpReceipt; }
       const now = this.#now();
@@ -2703,14 +2677,14 @@ export class Application {
   }
 
   /**
-   * app.takeover/v1 `takeover.start` / `takeover.end`: Web only (`takeover_requires_web` for Telegram and the local
+   * app.takeover/v1 `takeover.start` / `takeover.end`: Web only (`takeover_requires_web` for the local
    * API), revisioned, with a receipt and audit row. While a takeover is active every agent browser and computer call
    * fails `takeover_active`.
    */
   #takeoverCommand(actor: OwnerActor, command: TakeoverCommand): TakeoverReceipt {
     const payloadHash = digest(takeoverCommandIdentity(command));
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TakeoverReceipt; }
       const now = this.#now();
@@ -2731,7 +2705,7 @@ export class Application {
     const payloadHash = digest(takeoverCommandIdentity(command));
     let replay = false, input: ReturnType<typeof takeoverInput> | null = null;
     const receipt = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); replay = true; return JSON.parse(prior.result_json) as TakeoverInputReceipt; }
       input = takeoverInput(tx, command, this.#commandChannel(actor));
@@ -2751,7 +2725,7 @@ export class Application {
   #webCommand(actor: OwnerActor, command: WebCommand): WebReceipt {
     const payloadHash = digest(webCommandIdentity(command));
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#requireOwner(tx, actor);
       if (this.#commandChannel(actor) !== "web") throw new AppError("web_settings_requires_web", 403);
       if (command.projectId !== null) this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
@@ -2825,12 +2799,12 @@ export class Application {
 
   /**
    * exec.computer/v1 `computer.settings.set`: turns `computer.confirmEveryAction` on or off. Web only in both directions
-   * (`computer_setting_requires_web` for Telegram and the local API), revisioned, with a receipt and audit row.
+   * (`computer_setting_requires_web` for the local API), revisioned, with a receipt and audit row.
    */
   #computerCommand(actor: OwnerActor, command: SetComputerSettingsCommand): ComputerSettingsReceipt {
     const payloadHash = digest(computerCommandIdentity(command));
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as ComputerSettingsReceipt; }
       const now = this.#now();
@@ -2845,13 +2819,13 @@ export class Application {
   /** exec.computer/v1 read model: the project's `computer.confirmEveryAction` (on until the owner turns it off in Web). */
   computerSettings(actor: OwnerActor, projectId: string): ComputerSettings {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readComputerSettings(tx, projectId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readComputerSettings(tx, projectId); });
   }
 
   /** app.takeover/v1 read model: whether the owner holds a takeover of the project's box. */
   takeover(actor: OwnerActor, projectId: string): TakeoverView {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readTakeover(tx, projectId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readTakeover(tx, projectId); });
   }
 
   /** exec.browser/v1 read API (for EXE15): the project's stored screenshots, newest first. Web only; metadata never holds a URL. */
@@ -2881,19 +2855,19 @@ export class Application {
   /** app.mcp_servers/v1 read model: the project's MCP install proposals, newest first (at most 50). */
   mcpProposals(actor: OwnerActor, projectId: string): McpProposalView[] {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readMcpProposals(tx, projectId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readMcpProposals(tx, projectId); });
   }
 
   /** app.mcp_servers/v1 read model: the project's MCP servers (not removed), with their latest tool listing. Never a value. */
   mcpServers(actor: OwnerActor, projectId: string): McpServerView[] {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readMcpServers(tx, projectId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readMcpServers(tx, projectId); });
   }
 
   /** app.approval_cards/v1 read model: the project's cards, newest first (at most 100), with lazy expiry. */
   approvalCards(actor: OwnerActor, projectId: string, options: { state?: CardState; limit?: number; topicId?: string } = {}): ApprovalCard[] {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readCards(tx, projectId, { ...options, now: this.#now() }); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readCards(tx, projectId, { ...options, now: this.#now() }); });
   }
 
   /**
@@ -2904,7 +2878,7 @@ export class Application {
   topicApprovalCards(actor: OwnerActor, projectId: string, topicId: string): ApprovalCard[] {
     requireId(projectId); requireId(topicId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, projectId);
       const now = this.#now(), seen = new Set<string>(), cards: ApprovalCard[] = [];
       for (const page of readCards(tx, projectId, { topicId, limit: 100, now })) {
         if (seen.has(page.id)) continue;
@@ -2921,27 +2895,27 @@ export class Application {
   /** One approval card of the project (`approval_card_not_found`), with lazy expiry. */
   approvalCard(actor: OwnerActor, projectId: string, cardId: string): ApprovalCard {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readCard(tx, projectId, cardId, this.#now()); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readCard(tx, projectId, cardId, this.#now()); });
   }
 
   /** app.auto_approve/v1 rules and the owner-named effect targets of a project. Metadata only, never a credential. */
   effectSettings(actor: OwnerActor, projectId: string): { rules: AutoApproveRule[]; remotes: GitRemote[]; deploys: DeployTarget[] } {
     requireId(projectId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return { rules: readAutoApproveRules(tx, projectId), ...readEffectTargets(tx, projectId) }; });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return { rules: readAutoApproveRules(tx, projectId), ...readEffectTargets(tx, projectId) }; });
   }
 
   /** exec.box_runtime/v1: the project's box reset revision and whether a box is held or busy in this process. */
   boxStatus(actor: OwnerActor, projectId: string): BoxView {
     requireId(projectId);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, projectId);
       return { projectId, ...readBoxResets(tx, projectId), holding: this.#boxes?.holding().includes(projectId) ?? false,
         busy: executionAttemptAdmitted(tx, projectId) || (this.#boxes?.busy(projectId) ?? false) };
     });
   }
 
   /**
-   * exec.box_runtime/v1 `execution.box.reset`: Web only — the Telegram channel and the local API (`local-api`) are
+   * exec.box_runtime/v1 `execution.box.reset`: Web only — the local API (`local-api`) is
    * `box_reset_requires_web` (403). Validates the revision and refuses `box_busy` while an execution attempt of the
    * project is admitted or the box is in use, removes the box (and with `wipeWorkspace` its workspace) through the
    * manager, then commits the reset revision, receipt and audit row while the manager still holds the reset, so no
@@ -2951,7 +2925,7 @@ export class Application {
   async #boxResetCommand(actor: OwnerActor, command: ResetBoxCommand): Promise<BoxResetReceipt> {
     const payloadHash = digest(boxCommandIdentity(command));
     const check = (tx: AppTransaction): BoxResetReceipt | null => {
-      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as BoxResetReceipt; }
       if (this.#commandChannel(actor) !== "web") throw new AppError("box_reset_requires_web", 403);
