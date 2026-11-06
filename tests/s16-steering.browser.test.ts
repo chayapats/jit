@@ -11,7 +11,7 @@ beforeAll(async () => { if (process.env.JIT_S16_BROWSER_TESTS === "1") browser =
 afterAll(async () => { await browser?.close(); }, 30000);
 
 browserTest.each([1440, 390])("actual S16 steering of running work and notification control at width %i", async width => {
-  const f = await routineFixture({ start: Date.now(), notifications: {} });
+  const f = await routineFixture({ start: Date.now(), notifications: {}, files: true });
   const copy = width === 1440 ? en : th, locale = width === 1440 ? "en-US" : "th-TH";
   const gate = Promise.withResolvers<void>();
   f.replies.push({ tools: [{ name: "read", arguments: { path: "status.txt" } }], text: "Checked the computer.", gate: gate.promise });
@@ -39,13 +39,15 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     await page.getByText(copy["s16.steer.hint"], { exact: false }).waitFor({ timeout: 15000 });
     await page.getByRole("button", { name: copy["s16.steer.newChat"], exact: true }).waitFor();
     expect(await noOverflow()).toBe(true);
+    const attach = page.getByRole("button", { name: `＋ ${copy["s16.files.attach"]}` });
+    expect(await attach.isDisabled()).toBe(false);
     await composer.fill("Also list the files you looked at.");
     await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();
     // The first response is lost after the service recorded the steer: the composer keeps it and resends the same ID.
     await page.waitForFunction(() => (document.getElementById("message") as HTMLTextAreaElement | null)?.disabled === true);
     expect(steerBodies).toHaveLength(1);
     // No file can join the draft while the retained steer is unresolved.
-    expect(await page.getByRole("button", { name: `＋ ${copy["s16.files.attach"]}` }).isDisabled()).toBe(true);
+    expect(await attach.isDisabled()).toBe(true);
     await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();
     await page.waitForFunction(() => !(document.getElementById("message") as HTMLTextAreaElement | null)?.value);
     expect(steerBodies.map(body => body.requestId)).toEqual([steerBodies[0]!.requestId, steerBodies[0]!.requestId]);
@@ -57,6 +59,7 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     await steers.getByText(copy["s16.steer.applied"], { exact: true }).waitFor({ timeout: 15000 });
     expect(f.workInputs.some(input => input.includes("Also list the files you looked at."))).toBe(true);
     expect(await steers.locator("li").count()).toBe(1);
+    expect(await attach.isDisabled()).toBe(false);
     await page.getByRole("button", { name: copy["s16.chat.send"], exact: true }).waitFor();
     // Notifications: the owner-facing control is present with an honest device state.
     if (width === 390) await page.getByRole("button", { name: copy["s16.common.menu"] }).first().click();
