@@ -34,7 +34,7 @@ function legacyInstallation(): string {
   old.exec(`UPDATE telegram_binding SET revision = 3, state = 'pending', telegram_user_id = 42, telegram_chat_id = 77, challenge_nonce = '${nonce}', challenge_expires_at = ${epoch + 900_000} WHERE id = 1;
     UPDATE telegram_poll SET next_offset = 12, last_poll_at = ${epoch} WHERE id = 1;
     INSERT INTO telegram_inbox (update_id, telegram_user_id, telegram_chat_id, message_id, callback_id, content_kind, classification, binding_revision, text_content, raw_json, status, failure_reason, process_attempts, committed_at, processed_at)
-      VALUES (11, 42, 77, 5, NULL, 'text', 'authorized_owner', 3, 'สวัสดี', '{}', 'processed', NULL, 1, ${epoch}, ${epoch});
+      VALUES (11, 42, 77, 5, NULL, 'text', 'authorized_owner', 3, 'hello', '{}', 'processed', NULL, 1, ${epoch}, ${epoch});
     CREATE TABLE telegram_control_replies (sequence INTEGER PRIMARY KEY REFERENCES telegram_inbox(sequence), text TEXT NOT NULL, status TEXT NOT NULL,
       binding_revision INTEGER NOT NULL, owner_generation INTEGER NOT NULL, chat_id INTEGER NOT NULL, attempts INTEGER NOT NULL, deadline INTEGER NOT NULL, message_id INTEGER, reason TEXT);
     INSERT INTO telegram_control_replies VALUES (1, 'ok', 'sent', 3, 1, 77, 1, ${epoch}, 6, NULL);
@@ -63,9 +63,9 @@ test("legacy runtime: a store with Telegram tables and rows migrates, serves, ba
   const token = await app.login(password), auth = app.authenticate(token);
   expect(app.attentionLevels(auth.actor)).toEqual({ web: { channel: "web", level: "needs-me", revision: 0, updatedAt: null } });
   // Delivery is in-app only: no worker, attempt or binding is involved.
-  const project = app.execute(auth.actor, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: app.workspace(auth.actor).revision, payload: { name: "โครงการเดิม" } }).project;
+  const project = app.execute(auth.actor, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: app.workspace(auth.actor).revision, payload: { name: "Existing project" } }).project;
   const saved = app.execute(auth.actor, { kind: "delivery.commit", requestId: rid(), projectId: project.id, expectedRevision: project.revision,
-    payload: { kind: "report", text: "รายงานหลังเลิกใช้ช่องทางเดิม", dedupeKey: "report:notify16:0001" } });
+    payload: { kind: "report", text: "Report after the channel was removed", dedupeKey: "report:notify16:0001" } });
   expect(saved.intent).toMatchObject({ status: "waiting", nextAction: "in_app_only", remote: "none" });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_attempts")!.n)).toBe(0);
   // The settings page for the removed channel is gone; notifications live in the app.
@@ -89,7 +89,7 @@ test("legacy runtime: a store with Telegram tables and rows migrates, serves, ba
   writeFileSync(restoredPath, image.bytes, { mode: 0o600 });
   const restored = new TransactionStore(restoredPath); stores.push(restored);
   expect(restored.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
-  expect(restored.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", project.id))).toEqual({ name: "โครงการเดิม" });
+  expect(restored.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", project.id))).toEqual({ name: "Existing project" });
   expect(restored.read(tx => tx.get("SELECT state, challenge_nonce AS nonce FROM telegram_binding WHERE id = 1"))).toEqual({ state: "pending", nonce: null });
   const restoredApp = new Application(restored, readConfig({ JIT_DATABASE: restoredPath }), { now: () => epoch });
   await restoredApp.setupOwner(password);

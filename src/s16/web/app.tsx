@@ -76,7 +76,7 @@ function App() {
    * revision request. Nothing is sent: the owner still reviews the text and presses Send. */
   async function reviseArtifact(item: ClientArtifactItem) {
     const id = item.conversationId, epoch = privacyEpoch.current, view = viewTurn.current, current = drafts[id];
-    if (current?.pending || current?.recoveryId) { navigate(id); return; }
+    if (current?.pending || current?.recoveryId || current?.pendingSteer) { navigate(id); return; }
     // Refuse before copying when the next message has no room, instead of opening a draft without the file.
     const room = (draft: Draft | undefined) => !capabilities?.available || (draft?.chips.length ?? 0) < capabilities.limits.messageFiles && (draft?.chips.reduce((sum, chip) => sum + chip.bytes, 0) ?? 0) + item.artifact.bytes <= capabilities.limits.messageBytes;
     if (!room(current)) throw new JitClientError("file_message_limit", 413, "not_sent");
@@ -85,7 +85,7 @@ function App() {
     if (upload.state !== "ready" || !upload.receipt) throw new JitClientError(upload.code ?? "file_unavailable", 409, "response");
     const receipt = upload.receipt, start = t("s16.artifact.reviseStart"), template = start + t("s16.artifact.reviseEnd");
     const latest = draftsRef.current[id];
-    if (latest?.pending || latest?.recoveryId) return;
+    if (latest?.pending || latest?.recoveryId || latest?.pendingSteer) return;
     if (!latest?.chips.some(chip => chip.receipt?.id === receipt.id)) {
       if (!room(latest)) throw new JitClientError("file_message_limit", 413, "response");
       change(id, draft => draft.chips.some(chip => chip.receipt?.id === receipt.id) ? draft : { ...draft, text: draft.text.trim() ? draft.text : template, chips: [...draft.chips, { key: uid(), name: receipt.name, bytes: receipt.bytes, state: "ready", receipt, uploadId: upload.id }] });
@@ -151,7 +151,8 @@ function App() {
     finally { clearInterval(timer); polling.abort(); if (transfers.current.get(chip.key) === transfer) transfers.current.delete(chip.key); }
   }
   function choose(files: FileList | null) {
-    if (!files || !capabilities?.available || pendingId) return;
+    // A retained steer resends text only; no file may join the draft until it resolves.
+    if (!files || !capabilities?.available || pendingId || draft.pendingSteer) return;
     const id = conversation, selected = [...files];
     if (draft.chips.length + selected.length > capabilities.limits.messageFiles || draft.chips.reduce((sum, chip) => sum + chip.bytes, 0) + selected.reduce((sum, file) => sum + file.size, 0) > capabilities.limits.messageBytes) { setError("file_message_limit"); return; }
     const chips = selected.map(file => ({ key: uid(), file, name: file.name, bytes: file.size, state: "selected" as const })); change(id, draft => ({ ...draft, chips: [...draft.chips, ...chips] }));
@@ -167,7 +168,7 @@ function App() {
     if (chip.uploadId && chip.file) try { await client.withdrawUpload(chip.uploadId); } catch (error) { hidePrivate(error); }
   }
   async function selectReceipt(receipt: FileReceipt) {
-    if (pendingId || !capabilities?.available || draft.chips.some(chip => chip.receipt?.id === receipt.id)) return;
+    if (pendingId || draft.pendingSteer || !capabilities?.available || draft.chips.some(chip => chip.receipt?.id === receipt.id)) return;
     const id = conversation, epoch = privacyEpoch.current;
     try {
       const current = await client.uploadStatus(receipt.id);
@@ -175,7 +176,7 @@ function App() {
       if (current.state !== "ready" || !current.receipt || current.conversationId !== id || current.receipt.sha256 !== receipt.sha256) throw new JitClientError("file_unavailable", 409, "response");
       if (draft.chips.length >= capabilities.limits.messageFiles || draft.chips.reduce((sum, chip) => sum + chip.bytes, 0) + current.receipt.bytes > capabilities.limits.messageBytes) throw new JitClientError("file_message_limit", 413, "not_sent");
       const chip: Chip = { key: uid(), name: current.receipt.name, bytes: current.receipt.bytes, state: "ready", receipt: current.receipt, uploadId: current.id };
-      change(id, draft => draft.pending || draft.recoveryId || draft.chips.some(selected => selected.receipt?.id === receipt.id) || draft.chips.length >= capabilities.limits.messageFiles || draft.chips.reduce((sum, selected) => sum + selected.bytes, 0) + chip.bytes > capabilities.limits.messageBytes ? draft : { ...draft, chips: [...draft.chips, chip] }); composer.current?.focus();
+      change(id, draft => draft.pending || draft.recoveryId || draft.pendingSteer || draft.chips.some(selected => selected.receipt?.id === receipt.id) || draft.chips.length >= capabilities.limits.messageFiles || draft.chips.reduce((sum, selected) => sum + selected.bytes, 0) + chip.bytes > capabilities.limits.messageBytes ? draft : { ...draft, chips: [...draft.chips, chip] }); composer.current?.focus();
     } catch (error) { if (epoch === privacyEpoch.current) hidePrivate(error); }
   }
   async function sendSteer() {

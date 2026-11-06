@@ -44,6 +44,8 @@ browserTest.each([1440, 390])("actual S16 steering of running work and notificat
     // The first response is lost after the service recorded the steer: the composer keeps it and resends the same ID.
     await page.waitForFunction(() => (document.getElementById("message") as HTMLTextAreaElement | null)?.disabled === true);
     expect(steerBodies).toHaveLength(1);
+    // No file can join the draft while the retained steer is unresolved.
+    expect(await page.getByRole("button", { name: `＋ ${copy["s16.files.attach"]}` }).isDisabled()).toBe(true);
     await page.getByRole("button", { name: copy["s16.steer.send"], exact: true }).click();
     await page.waitForFunction(() => !(document.getElementById("message") as HTMLTextAreaElement | null)?.value);
     expect(steerBodies.map(body => body.requestId)).toEqual([steerBodies[0]!.requestId, steerBodies[0]!.requestId]);
