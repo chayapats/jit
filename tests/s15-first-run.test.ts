@@ -28,7 +28,7 @@ test('POLICY15-02: a fresh installer config shows an installable default proposa
   expect(setup.status).toBe(200);
   expect(setup.html).toContain('Standing rules Jit proposes for this installation');
   expect(setup.html).toContain('No money budget needed');
-  expect(setup.html).toContain('No personal GitHub exception');
+  expect(setup.html).toContain('merges after required checks run without asking');
   expect(setup.html).toContain('OpenAI Codex');
   expect(setup.html).toContain('No GitHub repository is connected.');
   const proposal = f.service.policy.owner.proposePolicy(f.owner(), null); expect(proposal.installable).toBe(false);
@@ -45,7 +45,7 @@ test('POLICY15-02: a fresh installer config shows an installable default proposa
   expect(policy.recipients.map(r => r.id)).toEqual(['codex_provider']);
   expect(policy.selections).toEqual([f.config.conversation.selection]);
   expect(policy.budget).toBeNull();
-  expect(policy.rules.map(r => r.mode)).toEqual(['ordinary']);
+  expect(policy.rules.map(r => r.mode)).toEqual(['ordinary', 'owner_named_send']);
   expect(policy.rules.some(r => r.mode.startsWith('personal_github'))).toBe(false);
   expect(policy.expiresAt - f.now).toBeGreaterThan(179 * 86_400_000); expect(policy.expiresAt - f.now).toBeLessThanOrEqual(180 * 86_400_000);
   // The same click registered the exact TEAM list, so setup has nothing left.
@@ -205,7 +205,7 @@ test('GIT15-04: an installation created before the GitHub store existed adds it 
 
 test('POLICY15-02/GIT15-04: Thai and English pages render the review and the GitHub connect form', async () => {
   const f = await fixture();
-  const th = await f.page('/setup', 'th'); expect(th.html).toContain('กฎประจำที่จิตเสนอสำหรับเครื่องนี้'); expect(th.html).toContain('ไม่ต้องตั้งงบเงิน'); expect(th.html).toContain('ไม่มีข้อยกเว้น GitHub ส่วนตัว');
+  const th = await f.page('/setup', 'th'); expect(th.html).toContain('กฎประจำที่จิตเสนอสำหรับเครื่องนี้'); expect(th.html).toContain('ไม่ต้องตั้งงบเงิน'); expect(th.html).toContain('ส่วน deploy ขึ้น production ยังรอคุณ');
   const en = await f.page('/setup', 'en'); expect(en.html).toContain('Standing rules Jit proposes for this installation');
   const ghTh = await f.page('/resources/github', 'th'); expect(ghTh.html).toContain('ตรวจและเชื่อม'); expect(ghTh.html).toContain('type="password"'); expect(ghTh.html).not.toContain('value="github_pat_');
   const ghEn = await f.page('/resources/github', 'en'); expect(ghEn.html).toContain('Check and connect');

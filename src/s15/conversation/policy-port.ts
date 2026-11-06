@@ -1,5 +1,5 @@
 import { AppError } from "../../errors";
-import { PolicyError, type BudgetVector, type OwnerActor, type Ref, type Selection, type S15PolicyService, type WorkActor, type WorkAuthority } from "../policy";
+import { PolicyError, type BudgetVector, type OwnerActor, type PreparedAction, type Ref, type Selection, type S15PolicyService, type WorkActor, type WorkAuthority } from "../policy";
 import { canonical, digest, integer } from "./validation";
 import type { ConversationAuthority, ConversationPolicy } from "./types";
 
@@ -29,6 +29,11 @@ export function createConversationPolicy(host: S15PolicyService, input: {
   modelCallUpperBound: ModelCallBound;
   /** Protected repository catalog distinguishes the selected issue resource from an accompanying VM. */
   subjectResourceIds?: readonly string[];
+  /** AUTH16-01: binds the recipients one live owner message names (S16 recipient directory). Never called for a routine. */
+  namedRecipients?: (text: string) => Ref[];
+  /** AUTH16-01 (S16-D07 g): called after POLICY recorded an exact owner approval, with the approved revision. A failure
+   * here never undoes or blocks that decision. */
+  onApproved?: (action: PreparedAction) => void;
 }): ConversationPolicy<OwnerActor, ConversationPolicyWork> {
   const config = structuredClone({ ownerId: input.ownerId, bot: input.bot, selection: input.selection, route: input.route, limits: input.limits, modelCallUpperBound: input.modelCallUpperBound });
   const invoke = <T>(call: () => T): T => { try { return call(); } catch (error) { throw mapped(error); } };
@@ -59,7 +64,10 @@ export function createConversationPolicy(host: S15PolicyService, input: {
         // Every model send can also read each selected image; this requests finite capacity only.
         // Current POLICY and the owner's read ceiling still authorize every physical read.
         const readLimit = Math.min(config.limits.toolCalls + images * config.limits.modelCalls, policy.budget?.ceiling.reads ?? host.control.subscriptionLimits()?.tools?.reads ?? 0);
-        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients: policy.recipients, selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit, subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
+        // S16-D07 b: only the owner's own message names recipients, and only under a policy the owner accepted with that rule.
+        const named = reads?.ownerMessage === true && input.namedRecipients && policy.rules.some(rule => rule.mode === "owner_named_send") ? invoke(() => input.namedRecipients!(request.text)) : [];
+        const recipients = [...policy.recipients, ...named.filter(n => !policy.recipients.some(r => r.id === n.id))];
+        const admitted = invoke(() => host.owner.admit(actor, { requestId: `cw_${digest(request.requestId)}`, intent: intent.kind === "execute" ? "execute" : "inspect", access: scope.access, purpose, bot: config.bot, resources, recipients, ...(named.length ? { named } : {}), selection: config.selection, selectionPin: config.selection, expiresAt: Math.min(policy.expiresAt, policy.budget?.expiresAt ?? policy.expiresAt), readLimit, subject: intent.subject ? { resource: subjects[0]!, issue: Number(intent.subject.slice(6)) } : null }));
         if (!admitted.work) throw new AppError("outside_scope");
         return { state: "admitted", authority: snapshot(admitted.work) };
       } catch (error) { const code = mapped(error).code; return { state: code === "outside_scope" ? "proposed" : "held", code }; }
@@ -74,7 +82,12 @@ export function createConversationPolicy(host: S15PolicyService, input: {
     guard(work) { invoke(() => host.work.guard(work.actor)); },
     actionSlips(actor, actions) { return invoke(() => actions.map(action => host.owner.actionSlip(actor, action))); },
     decidePending(actor, input) { invoke(() => host.owner.decidePending(actor, input)); },
-    decideAction(actor, input) { invoke(() => host.owner.decide(actor, input)); },
+    decideAction(actor, decision) {
+      invoke(() => host.owner.decide(actor, decision));
+      // The exact approval is already recorded and must still queue its action. Remembering the recipient is a
+      // convenience only: if it fails (for example a full list), the next first disclosure simply asks again.
+      if (decision.decision === "approve" && input.onApproved) { try { input.onApproved(host.owner.actionSlip(actor, decision.action).action); } catch { /* narrows only */ } }
+    },
     dispatchAction(reference, action) { return host.work.dispatch(invoke(() => host.control.bindWork(reference.id)), action).catch(error => { throw mapped(error); }); },
     stopWork(actor, reference, requestId) { invoke(() => host.owner.revoke(actor, `cs_${digest(requestId)}`, { kind: "work", id: reference.id })); },
     reserveModel(work, slot) {

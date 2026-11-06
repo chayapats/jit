@@ -1,3 +1,4 @@
+import { ruleLists } from "./setup";
 import { tr, trMaybe } from "../../i18n";
 import { ownerStrip } from "../../s14/web-pages";
 import type { ActionSlip, Rule, StandingPolicy } from "../policy";
@@ -57,7 +58,7 @@ export function rulesBody(page: S15RulesPage): string {
   const policy = page.policy;
   const saved = page.saved ? `<div role="status">${banner("ok", tr(key(`s15.rules.saved.${page.saved}`)))}</div>` : "";
   const summary = `<section class="s-card" aria-labelledby="s15-rules-summary"><h2 id="s15-rules-summary">${tr("s15.rules.title")}</h2>${policy ? `<p>${fill("s15.rules.active", { n: policy.revision })} · ${tr("s15.rules.expires")} ${clock(policy.expiresAt)}</p>` : `<p>${tr("s15.rules.none")} <a class="s-link-text" href="/setup#s15-setup-rules">${tr("s15.nav.setup")}</a></p>`}
-    <div class="s15-rule-lists"><div><h3>${tr("s15.setup.does_alone")}</h3><ul>${["research", "computer", "edits", "accounts", "models"].map(k => `<li>${tr(key(`s15.setup.alone.${k}`))}</li>`).join("")}</ul></div><div><h3>${tr("s15.setup.always_asks")}</h3><ul>${["messages", "github", "merge", "production", "payments", "recipients", "major", "new_accounts"].map(k => `<li>${tr(key(`s15.setup.asks.${k}`))}</li>`).join("")}</ul></div></div></section>`;
+    ${ruleLists(false, policy)}</section>`;
   const recurringRules = policy?.rules.filter(r => r.mode === "recurring_payment" && r.recurrence) ?? [];
   const add = page.recurring ? (page.recurring.payments.length ? `<h3>${tr("s15.rules.recurring_add")}</h3><p class="s-sub">${tr("s15.rules.recurring_add_lead")}</p><ul class="s15-facts">${page.recurring.payments.map(({ slip }) => { const t = slip.action.transaction!; return `<li><a class="s-link-text" href="/rules/recurring?from=${e(slip.action.id)}&amp;r=${slip.action.revision}">${mono(t.payee.id)} · ${e(exactAmount(t.amountMinor, t.minorUnit, t.currency))}</a></li>`; }).join("")}</ul>` : `<p class="s-sub">${tr("s15.rules.recurring_no_payees")}</p>`) : notYet("s15.rules.recurring_not_composed");
   const recurring = `<section class="s-card" id="s15-rules-recurring" aria-labelledby="s15-rules-recurring-t"><h2 id="s15-rules-recurring-t">${tr("s15.rules.recurring_title")}</h2>${recurringRules.length ? `<ul class="s15-rule-list">${recurringRules.map(r => recurringRow(r, page)).join("")}</ul>` : `<p class="s-sub">${tr("s15.rules.recurring_none")}</p>`}${add}</section>`;

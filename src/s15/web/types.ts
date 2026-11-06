@@ -37,6 +37,8 @@ export interface S15WebPorts<Actor extends object> {
   browsers?: S15WebBrowser<Actor>[];
   /** BROW15-02 provisioned browser status and the owner's approved-website list. Absent: not composed here. */
   websites?: S15WebWebsites<Actor>;
+  /** AUTH16-01 installation-wide people the owner named and remembered private-data recipients. Absent until composed. */
+  recipients?: S15WebRecipients<Actor>;
   /** F13 recurring-payment rules over POLICY (`createRecurringRules`). Absent until composed. */
   recurring?: S15WebRecurring<Actor>;
   /** GIT15-04 Web GitHub connection (token, repository selection, removal). Absent: configured or not composed. */
@@ -229,18 +231,27 @@ export interface S15WebResumes<Actor> {
 /** Pinned Chromium state for Resources → Websites; `library` is a validated shared-object name. */
 export type S15WebsiteEngine = import("../browser/chromium").ProtectedChromiumStatus;
 /** One owner-approved website; `revision` binds a removal to the approval the owner saw. */
-export interface S15ApprovedWebsite { origin: string; revision: number; addedAt: number }
+/** `tier` (S16-D09): `trusted` sites are used in the working VM browser; everything else stays in the protected browser. */
+export interface S15ApprovedWebsite { origin: string; revision: number; addedAt: number; tier: 'trusted' | 'sensitive' }
 /**
  * BROW15-02 owner seam over the protected approved-website journal. Composition verifies the owner on every
  * call. Changes apply to the next browser request without a restart; nothing here grants sending, sign-in
  * or private disclosure, which keep their own gates.
  */
+/** AUTH16-01 (S16-D07 b, g) owner settings list; forgetting needs the exact registration revision. */
+export interface S15WebRecipients<Actor> {
+  list(actor: Actor): { people: { address: string; label: string | null; addedAt: number }[]; remembered: { grantId: string; label: string; purposeId: string; resourceId: string; dataClasses: string[]; rememberedAt: number; revision: number }[] };
+  forget(actor: Actor, requestId: string, grantId: string, revision: number): void;
+  forgetPerson(actor: Actor, requestId: string, address: string): void;
+}
 export interface S15WebWebsites<Actor> {
   status(actor: Actor): S15WebsiteEngine;
   list(actor: Actor): S15ApprovedWebsite[];
   /** Normalizes a pasted link or name to its HTTPS origin; refuses `website_*` codes. */
   add(actor: Actor, requestId: string, input: string): S15ApprovedWebsite;
   remove(actor: Actor, requestId: string, origin: string, revision: number): void;
+  /** AUTH16-01: marks exactly the seen approval revision trusted or sensitive; refuses `website_sensitive_only`/`website_changed`. */
+  setTier?(actor: Actor, requestId: string, origin: string, revision: number, tier: 'trusted' | 'sensitive'): S15ApprovedWebsite;
   /** Re-runs a failed Chromium provisioning; verified files are re-checked, not downloaded again. */
   retry(actor: Actor): void;
 }

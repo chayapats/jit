@@ -76,8 +76,10 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     options.activityGuard?.();
     return usablePolicy();
   }
+  /** AUTH16-01: an owner-named recipient widens a work's recipients only under a policy whose owner accepted an `owner_named_send` rule. */
+  function namedAllowed(p: T.StandingPolicy, r: T.WorkRequest, x: T.Ref): boolean { return !!r.named && v.contains(r.named, x) && p.rules.some(rule => rule.mode === 'owner_named_send'); }
   function checkRequest(p: T.StandingPolicy, r: T.WorkRequest): void {
-    if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
+    if (!v.contains(p.purposes, r.purpose) || !v.contains(p.bots, r.bot) || !v.contains(p.selections, r.selection) || r.resources.some(x => !v.contains(p.resources, x)) || r.recipients.some(x => !v.contains(p.recipients, x) && !namedAllowed(p, r, x)) || (r.subject && !v.contains(r.resources, r.subject.resource))) v.fail('outside_scope');
     currentRef('purpose', r.purpose); currentRef('bot', r.bot); currentRef('route', r.selection.route); currentRef('model', r.selection.model);
     r.resources.forEach(x => currentRef('resource', x)); r.recipients.forEach(x => currentRef('recipient', x)); r.fences?.forEach(x => currentRef(x.kind, x.ref));
     if (r.readLimit !== undefined && r.readLimit > readCeiling(p)) v.fail('outside_scope');
@@ -165,7 +167,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!continuation && recovery && ledger.get('SELECT reservation_id FROM recovery_reads WHERE active=1')) v.fail('recovery_busy');
   }
   function matching(r: T.Rule, w: T.WorkAuthority, a: T.PreparedAction): boolean {
-    return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && (a.recipients.every(x => v.contains(r.recipients, x)) || a.classes.some(c => c === 'new_egress' || c === 'disclosure')) && (!r.mode.startsWith('personal_github') || (!!r.github && !!a.github && v.equal(r.github.repository, a.github.repository) && r.github.target === a.github.target));
+    return time() < r.expiresAt && v.contains(r.purposes, w.request.purpose) && v.contains(r.bots, w.request.bot) && v.contains(r.selections, w.request.selection) && r.adapters.includes(a.adapter) && r.operations.includes(a.operation) && a.classes.every(x => r.classes.includes(x)) && a.resources.every(x => v.contains(r.resources, x)) && (r.mode === 'owner_named_send' ? !!w.request.named && a.recipients.some(x => v.contains(w.request.named!, x)) && a.recipients.every(x => v.contains(w.request.named!, x) || v.contains(r.recipients, x)) : (a.recipients.every(x => v.contains(r.recipients, x) || (r.mode === 'ordinary' && !!w.request.named && v.contains(w.request.named, x))) || a.classes.some(c => c === 'new_egress' || c === 'disclosure'))) && (!r.mode.startsWith('personal_github') || (!!r.github && !!a.github && v.equal(r.github.repository, a.github.repository) && r.github.target === a.github.target));
   }
   function recurringMatch(r: T.Rule, a: T.PreparedAction, continuation: boolean, identityOnly = false): boolean {
     const t = a.transaction, f = r.recurrence;
@@ -197,12 +199,18 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         }
         if (approved) continue;
         let candidates: T.Rule[] = [];
-        if (c === 'communication') candidates = rules.filter(r => r.mode === 'communication' || (r.mode === 'personal_github_publish' && a.classes.includes('github_publish')));
+        if (c === 'communication') candidates = rules.filter(r => r.mode === 'communication' || r.mode === 'owner_named_send' || ((r.mode === 'personal_github_publish' || r.mode === 'github_default') && a.classes.includes('github_publish')));
         if (c === 'financial') { candidates = rules.filter(r => r.mode === 'recurring_payment' && recurringMatch(r, a, continuation, true)); if (candidates.length === 1 && !recurringMatch(candidates[0]!, a, continuation)) candidates = []; }
-        if (c === 'github_publish' || c === 'github_merge') candidates = rules.filter(r => r.mode === (c === 'github_publish' ? 'personal_github_publish' : 'personal_github_merge'));
-        if (c === 'github_publish' || c === 'github_merge' || (c === 'communication' && candidates.some(r => r.mode === 'personal_github_publish'))) {
+        if (c === 'github_publish' || c === 'github_merge') candidates = rules.filter(r => r.mode === (c === 'github_publish' ? 'personal_github_publish' : 'personal_github_merge') || r.mode === 'github_default');
+        // A product default (AUTH16-01) and a carried personal rule may both match; the default never widens the personal one.
+        if (candidates.length > 1 && candidates.some(r => r.mode === 'github_default') && candidates.some(r => r.mode !== 'github_default')) candidates = candidates.filter(r => r.mode !== 'github_default');
+        if (c === 'communication' && candidates.length > 1 && a.classes.includes('github_publish') && candidates.some(r => r.mode === 'github_default') && candidates.some(r => r.mode !== 'github_default')) candidates = candidates.filter(r => r.mode !== 'github_default');
+        if (c === 'github_publish' || c === 'github_merge' || (c === 'communication' && candidates.some(r => r.mode === 'personal_github_publish' || r.mode === 'github_default'))) {
           const g = a.github, subject = w.request.subject;
-          if (!g || !subject || !v.equal(subject.resource, g.repository) || subject.issue !== g.issue || !g.checksPassed || !g.reviewsPassed || !g.acceptancePassed) candidates = [];
+          // Personal rules are bound to the selected issue and passing local evidence. The product default publishes
+          // on its repositories without that, but a merge still needs the target's required checks and reviews.
+          const personal = candidates.some(r => r.mode.startsWith('personal_github'));
+          if (!g || (personal && (!subject || !v.equal(subject.resource, g.repository) || subject.issue !== g.issue || !g.checksPassed || !g.reviewsPassed || !g.acceptancePassed)) || (c === 'github_merge' && (!g.checksPassed || !g.reviewsPassed))) candidates = [];
           if (g && g.production !== 'none') {
             if (g.production !== 'protected_gate' || !g.deploymentFence || !a.fences.some(f => v.equal(f, g.deploymentFence))) return { state: 'hold', code: 'production_approval_required' };
             currentRef(g.deploymentFence.kind, g.deploymentFence.ref);
@@ -341,7 +349,9 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
       contract: 's15-policy-proposal/v1', ownerGeneration: options.ownerGeneration(), expectedRevision: current?.revision ?? 0, policy: clone(input),
       rows: [
         { id: 'ordinary', text: 'Requested research, reversible edits and work inside the expendable VM use current purpose, resource and model policy.', mode: 'ordinary' },
-        { id: 'held', text: 'Communications, publication, payments, production, new private-data recipients and major changes require exact approval unless an eligible standing rule applies.', mode: 'approval_required' },
+        { id: 'held', text: 'Payments, production, Bot-initiated or unnamed-recipient messages, new private-data recipients and major changes require exact approval unless an eligible standing rule applies.', mode: 'approval_required' },
+        { id: 'named_sends', text: 'Messages the owner asks for in the conversation, to the recipients the owner named, are sent without approval.', mode: input?.rules.some(r => r.mode === 'owner_named_send') ? 'ordinary' : 'off' },
+        { id: 'github_default', text: 'GitHub push, pull requests, review replies and merges after the target\'s required checks and reviews run without approval; production still waits.', mode: input?.rules.some(r => r.mode === 'github_default') ? 'ordinary' : 'off' },
         { id: 'github_personal', text: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'Personal GitHub exceptions are explicitly configured in the exact rules below.' : 'Personal GitHub publication and merge exceptions are configured separately and start disabled.', mode: input?.rules.some(r => r.mode.startsWith('personal_github')) ? 'ordinary' : 'off' },
       ],
       fields: subscriptionOnly ? technical : [
@@ -428,7 +438,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
         const w = parse<T.WorkAuthority>(ledger.get('SELECT json FROM works WHERE id=?', a.workId)); if (!w) v.fail('authority_revoked');
         const p = policyCurrent(); checkRequest(p, w.request);
         a.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
-        a.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
+        a.recipients.forEach(r => { if (!v.contains(p.recipients, r) && !namedAllowed(p, w.request, r)) v.fail('outside_scope'); currentRef('recipient', r); });
         if (!options.catalogs.allows(clone(w), clone(a))) v.fail('outside_scope');
         const bound = clone(adapter.reconcileUpperBound ?? { ...v.zero(), calls: 1, reads: 1 });
         v.vector(bound); if (bound.calls < 1 || bound.reads < 1) v.fail('cost_unknown');
@@ -447,7 +457,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
           if (!work) v.fail('authority_revoked');
           const p = policyCurrent(); checkRequest(p, work.request);
           current.resources.forEach(r => { if (!v.contains(p.resources, r)) v.fail('outside_scope'); currentRef('resource', r); });
-          current.recipients.forEach(r => { if (!v.contains(p.recipients, r)) v.fail('outside_scope'); currentRef('recipient', r); });
+          current.recipients.forEach(r => { if (!v.contains(p.recipients, r) && !namedAllowed(p, work.request, r)) v.fail('outside_scope'); currentRef('recipient', r); });
           current.fences.forEach(f => currentRef(f.kind, f.ref));
           if (!options.catalogs.allows(clone(work), clone(current))) v.fail('outside_scope');
           budgetCheck(start.reservation!.upperBound, true, true, undefined, work);

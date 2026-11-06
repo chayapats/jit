@@ -47,6 +47,9 @@ export interface S15OwnerAuthentication {
 export interface S15CompositionOptions {
   runtime: 's15'; directory: string; create: boolean; installationId: string; origin: string;
   owner: S15OwnerAuthentication; catalogs: CatalogPort;
+  /** AUTH16-01 installation-wide recipient directory (owner-named people, remembered private-data recipients). The
+   * caller also resolves its refs in `catalogs` and its bindings/approvals in DATA15; composition closes it. */
+  recipients?: import('../s16/autonomy/recipients').RecipientDirectory;
   conversation: Omit<Parameters<typeof createConversationPolicy>[1], 'ownerGeneration'>;
   model: Pick<ModelOptions, 'registry' | 'limits' | 'scripted'>;
   disclosure?: ComposedDisclosure;
@@ -80,7 +83,7 @@ export interface S15CompositionOptions {
      * status, exposed only through the owner-verified Resources → Websites port. An installation composed
      * before its browser existed gains a fresh `browser.sqlite` once, with no other store change.
      */
-    approved?: { sites: Pick<ApprovedWebsites, 'list' | 'add' | 'remove'>; engine: Pick<ProtectedChromium, 'status' | 'retry'> } };
+    approved?: { sites: Pick<ApprovedWebsites, 'list' | 'add' | 'remove'> & Partial<Pick<ApprovedWebsites, 'setTier'>>; engine: Pick<ProtectedChromium, 'status' | 'retry'> } };
   google?: GoogleEffectsOptions;
   github?: { repositories: readonly GithubRepository[]; gateway: ProtectedGithubGateway; limits: GithubLimits; catalogPurpose?: Ref; workspace(input: { policy: S15PolicyService; vm: import('./vm').WorkingVmPort; disclosure?: import('./disclosure').DisclosureService; guardModel?(work: import('./policy').WorkAuthority, request: unknown): void; beforeRead?(work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue): void; recordRead?(actor: import('./policy').WorkActor): void; routeAuth?: { lifecycle: import('schway/host').HostCredentialLifecycle; fetch?: HostAuthFetch } }): GithubWorkspace };
   /** Additional reviewed protected adapters, for example the fixture-only payment transport. */
@@ -156,6 +159,7 @@ export async function composeS15(options: S15CompositionOptions) {
     for (const name of storeNames) { if (added.includes(name)) continue; const s = lstatSync(join(root, name)); if (!s.isFile() || s.isSymbolicLink() || s.mode & 0o077) throw new AppError('continuity_unavailable'); }
   }
   const cleanup: (() => void | Promise<void>)[] = [];
+  if (options.recipients) { const directory = options.recipients; cleanup.push(() => directory.close()); }
   // A failed additive boot removes only stores it created itself, so the next boot sees the same state.
   if (created.length) cleanup.push(() => { if (!added.length) return; for (const name of created) for (const suffix of ['', '-wal', '-shm', '.runtime-lock.sqlite']) rmSync(join(root, `${name}${suffix}`), { force: true }); });
   let closing = false;
@@ -301,7 +305,8 @@ export async function composeS15(options: S15CompositionOptions) {
       return auth.actor;
     };
     const subjectIds = new Proxy([] as string[], { get: (_target, key) => { const ids = githubIds(), value = Reflect.get(ids, key); return typeof value === 'function' ? value.bind(ids) : value; } });
-    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation });
+    const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
+      ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}) });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
@@ -459,11 +464,19 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(recurring ? { recurring: s15RecurringPort<OwnerActor>(recurring, actor => actor) } : {}),
       ...(browser && options.browser?.ownerUi ? { browsers: [{ ...options.browser.ownerUi, owner: browser.owner }] } : {}),
       // BROW15-02 Resources → Websites: every read and command re-verifies the owner through POLICY first.
+      ...(options.recipients ? { recipients: (directory => ({
+        list: (actor: OwnerActor) => { policy.owner.current(actor);
+          return { people: directory.people().map(p => ({ address: p.address, label: p.label, addedAt: p.addedAt })),
+            remembered: directory.remembered().map(r => ({ grantId: r.grantId, label: directory.label(r.recipient.id), purposeId: r.purpose.id, resourceId: r.resource.id, dataClasses: [...r.dataClasses], rememberedAt: r.rememberedAt, revision: r.revision })) }; },
+        forget: (actor: OwnerActor, _requestId: string, grantId: string, revision: number) => { policy.owner.current(actor); directory.forget(grantId, revision); },
+        forgetPerson: (actor: OwnerActor, _requestId: string, address: string) => { policy.owner.current(actor); directory.forgetPerson(address); },
+      }))(options.recipients) } : {}),
       ...(browser && options.browser?.approved ? { websites: (approved => ({
         status: (actor: OwnerActor) => { policy.owner.current(actor); return approved.engine.status(); },
         list: (actor: OwnerActor) => { policy.owner.current(actor); return approved.sites.list(); },
         add: (actor: OwnerActor, _requestId: string, input: string) => { policy.owner.current(actor); return approved.sites.add(input); },
         remove: (actor: OwnerActor, _requestId: string, origin: string, revision: number) => { policy.owner.current(actor); approved.sites.remove(origin, revision); },
+        setTier: (actor: OwnerActor, _requestId: string, origin: string, revision: number, tier: 'trusted' | 'sensitive') => { policy.owner.current(actor); if (!approved.sites.setTier) throw new AppError('not_found', 404); return approved.sites.setTier(origin, revision, tier); },
         retry: (actor: OwnerActor) => { policy.owner.current(actor); void approved.engine.retry().catch(() => {}); },
       }))(options.browser.approved) } : {}),
       ...(github && gh?.catalogPurpose ? { github: { capture: (owner: OwnerActor) => github.personalCapture(owner, githubCatalogActor(owner)), install: (owner: OwnerActor, input: Parameters<typeof github.installPersonal>[2]) => github.installPersonal(owner, githubCatalogActor(owner), input), revoke: (owner: OwnerActor, input: Parameters<typeof github.revokePersonal>[1]) => github.revokePersonal(owner, input) } } : {}),
@@ -540,7 +553,16 @@ export async function composeS15(options: S15CompositionOptions) {
         { id: 'github', kind: 'service' as const, label: 'GitHub', state: githubConnections!.current()?.state === 'connected' ? 'configured' as const : 'not_connected' as const, uses: ['github' as const], signInHref: '/resources/github' }] } } : {}) },
       { origin: options.origin, cookieName, loginPath: '/s14/login', ...(options.clock ? { now: options.clock.now } : {}) });
     const chatHandler = createConversationHandler(conversation, { origin: options.origin, cookieName, authentication });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    // AUTH16-01: an installed default policy without the revision-3 rules shows the accept banner; it is never rewritten here.
+    const policyUpdate = (actor: OwnerActor) => {
+      if (!options.defaultPolicy) return false;
+      try {
+        const current = policy.owner.current(actor), proposed = defaultPolicyInput(actor, null)?.input;
+        if (!current || !proposed) return false;
+        return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
+      } catch { return false; }
+    };
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);

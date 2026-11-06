@@ -22,6 +22,7 @@ import { RemoteVmManagement } from './vm/remote';
 import { equal } from './policy/validation';
 import type { GoogleEffectAccount } from './effects';
 import { openProvisionedBrowser, type BrowserSitePolicy, type ProvisionedBrowser } from './browser';
+import { RecipientDirectory } from '../s16/autonomy/recipients';
 import { githubConnectionRuntime, githubRuntime } from './github/runtime';
 import { s15GithubRecipient } from './github/connection';
 import { s15DefaultCatalog, s15SubscriptionModels } from './policy/defaults';
@@ -94,8 +95,10 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     if (!config.browser && config.disclosure) provisioned = openProvisionedBrowser({ directory: config.directory, installationId: config.installationId });
     // POLICY15-02: the runtime registers the default purposes and the approved routes' provider recipients; explicit rows win.
     const defaultCatalog = s15DefaultCatalog(config.models);
+    // AUTH16-01: installation-wide people the owner addressed and remembered private-data recipients (ADR 0084).
+    const recipients = new RecipientDirectory(join(config.directory, 'recipients.sqlite'), config.installationId);
     const catalogs: S15CompositionOptions['catalogs'] = {
-      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
+      current: (kind, id) => (kind === 'lineage' ? git?.current(id) ?? config.disclosure?.sources.find(s => s.ref.id === id) : null) ?? config.catalog.find(row => row.kind === kind && row.ref.id === id) ?? provisioned?.catalog(kind, id) ?? recipients.catalog(kind, id) ?? defaultCatalog.find(row => row.kind === kind && row.ref.id === id) ?? null,
       allows: (work, action) => {
         const resources = action?.resources ?? work.request.resources;
         return resources.every(resource => { const restriction = config.resourceBots.find(r => r.resourceId === resource.id); return !restriction || restriction.botIds.includes(work.request.bot.id); });
@@ -119,8 +122,9 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.routines ? { routines: {} } : {}),
       ...(config.notifications ? { notifications: {} } : {}),
       ...(config.files ? { files: { ...(typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {}), ...(config.fileMemory ? { memory: true } : {}) } } : {}),
+      recipients,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
-      ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, config.google?.recipients ?? [], config.github ? undefined : { ...s15GithubRecipient })) } : {}),
+      ...(config.disclosure ? { disclosure: (configured => provisioned ? provisioned.disclosure(configured) : configured)(runtimeDisclosure(config.disclosure, config.models, catalogs, () => [...(config.google?.recipients ?? []), ...recipients.bindings()], config.github ? undefined : { ...s15GithubRecipient }, () => recipients.approvals())) } : {}),
       // POLICY15-02: approved subscription routes need no owner budget; the registry bounds each work. Without a configured
       // policy the owner reviews a default proposal; GIT15-04: without a configured GitHub the owner connects it in the Web.
       subscriptionModels: s15SubscriptionModels(models, config.team?.maxConcurrentOperations ?? 2),
@@ -141,7 +145,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));
           return ownerApp.personal.token(current, () => { ownerStore.read(tx => ownerApp.personal.connection(tx, current.id, current.revision)); }); },
-        recipients: () => config.google!.recipients, attachment: () => null, bounds: config.google.bounds, now: Date.now } } : {}),
+        recipients: () => [...config.google!.recipients, ...recipients.bindings()], bindRecipient: address => recipients.bind(address), attachment: () => null, bounds: config.google.bounds, now: Date.now } } : {}),
     });
     if (initialize) {
       // SETUP15-01: on a KVM controller the owner's `setup --s15` creates, starts and enrolls the default

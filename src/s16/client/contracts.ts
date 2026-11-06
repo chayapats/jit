@@ -30,6 +30,8 @@ export interface ClientBootstrap {
   needsYou: { conversationId: string; entry: ConversationNeedsYou }[];
   /** Additive: unseen non-quiet routine outcomes. Quiet runs never count. */
   routines?: { attention: number };
+  /** Additive (AUTH16-01): the owner's installed rules predate the current default proposal; nothing changes until accepted at /rules. */
+  policyUpdate?: boolean;
 }
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
 export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView }

@@ -38,6 +38,13 @@ export interface VmRegistryProxyOptions {
   /** Port the guest uses in its lease URL when it differs from the listener (fixed guest-forward port). */
   guestPort?: number;
   bytesPerSession?: number; maxConnections?: number; connectionMs?: number;
+  /**
+   * AUTH16-01 (S16-D09, ADR 0084): the working VM browser may reach the public web, so public and trusted-site work
+   * functions. A public DNS name outside the registry list is then allowed on 443 (CONNECT) or 80 (GET/HEAD) after the
+   * same public-address check, without a registry disclosure lease. Recorded residual: private data the guest already
+   * holds can leave through such a site; Jit-mediated paths keep their disclosure gates. Off unless set.
+   */
+  publicWeb?: boolean;
   log: (entry: VmProxyLog) => void;
   resolve?: (host: string) => Promise<readonly { address: string; family: number }[]>;
   connect?: (address: string, port: number) => Socket;
@@ -54,11 +61,19 @@ export function vmPublicAddress(address: string): boolean {
   }
   return false;
 }
+const nonPublicSuffixes = ["localhost", "local", "localdomain", "internal", "intranet", "lan", "home", "corp", "private", "test", "example", "invalid", "onion", "arpa", "alt"];
+/** A public DNS name the public-web mode may resolve: no IP literal, single label or reserved/private suffix. */
+export function vmPublicWebHost(host: string): boolean {
+  const labels = host.split(".");
+  return !isIP(host) && labels.length >= 2 && host.length <= 253 && labels.every(label => /^(?!-)[a-z0-9-]{1,63}(?<!-)$/.test(label)) && /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/.test(labels.at(-1)!)
+    && !nonPublicSuffixes.some(suffix => host === suffix || host.endsWith(`.${suffix}`));
+}
 /** Starts a protected finite CONNECT/HTTP proxy. TLS is passthrough: registries see metadata/content; this is not a disclosure firewall. */
 export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Promise<{
   port: number; lease(sessionId: string, expiresAt: number, authorize?: (host: string) => void): VmProxyLease; setHosts(hosts: readonly string[]): void; close(): Promise<void>;
 }> {
   const hosts = new Set(options.hosts ?? defaultVmRegistryHosts);
+  const publicWeb = options.publicWeb === true;
   if (!hosts.size || hosts.size > 128 || [...hosts].some(h => !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h))) vmFail("vm_invalid_setup");
   vmInteger(options.port, 65535, 0); if (options.guestPort !== undefined) vmInteger(options.guestPort, 65535);
   if (options.socketPath !== undefined && (!options.socketPath.startsWith("/") || Buffer.byteLength(options.socketPath) > 100 || options.guestPort === undefined)) vmFail("vm_invalid_setup");
@@ -99,24 +114,25 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
         host = destination.hostname.toLowerCase(); port = 80;
       }
       const denied = () => { options.log({ sessionId, host: redactCredentials(host), sentBytes: 0, receivedBytes: 0, state: "denied" }); refuse(); };
-      if (!hosts.has(host)) return denied();
-      try { session.authorize?.(host); } catch { return denied(); }
+      const registry = hosts.has(host), authorize = registry ? session.authorize : undefined;
+      if (!registry && !(publicWeb && vmPublicWebHost(host))) return denied();
+      try { authorize?.(host); } catch { return denied(); }
       // Reserve before asynchronous DNS so concurrent requests cannot all pass the same capacity check.
       session.sockets.add(client); client.once("close", () => session.sockets.delete(client));
       let addresses; try { addresses = await resolve(host); } catch { session.sockets.delete(client); return refuse(502); }
       if (!addresses.length || addresses.some(a => !vmPublicAddress(a.address)) || !sessions.has(sessionId) || Date.now() >= session.expiresAt || client.destroyed) { session.sockets.delete(client); return denied(); }
-      try { session.authorize?.(host); } catch { return denied(); }
+      try { authorize?.(host); } catch { return denied(); }
       const remote = upstream(addresses[0]!.address, port); sockets.add(remote);
       let sentBytes = 0, receivedBytes = 0, logged = false;
       const record = () => { if (logged) return; logged = true; options.log({ sessionId, host: redactCredentials(host), sentBytes, receivedBytes, state: "closed" }); };
       client.on("close", () => { remote.destroy(); session.sockets.delete(client); record(); });
       remote.on("close", () => { sockets.delete(remote); client.destroy(); record(); });
       remote.on("error", () => { refuse(502); remote.destroy(); }); remote.setTimeout(30000, () => remote.destroy());
-      const charge = (count: number) => { let current = true; try { session.authorize?.(host); } catch { current = false; } session.bytes += count; if (!current || session.bytes > maxBytes || Date.now() >= session.expiresAt || !sessions.has(sessionId)) { client.destroy(); remote.destroy(); return false; } return true; };
+      const charge = (count: number) => { let current = true; try { authorize?.(host); } catch { current = false; } session.bytes += count; if (!current || session.bytes > maxBytes || Date.now() >= session.expiresAt || !sessions.has(sessionId)) { client.destroy(); remote.destroy(); return false; } return true; };
       client.on("data", b => { sentBytes += b.length; charge(b.length); }); remote.on("data", b => { receivedBytes += b.length; charge(b.length); });
       remote.once("connect", () => {
         if (!sessions.has(sessionId) || client.destroyed || Date.now() >= session.expiresAt) { remote.destroy(); return; }
-        try { session.authorize?.(host); } catch { remote.destroy(); return; }
+        try { authorize?.(host); } catch { remote.destroy(); return; }
         if (match[1] === "CONNECT") { client.write("HTTP/1.1 200 Connection Established\r\n\r\n"); if (rest.length && charge(rest.length)) { sentBytes += rest.length; remote.write(rest); } }
         else {
           const safe = ["user-agent", "accept", "range", "if-modified-since", "if-none-match", "cache-control"].flatMap(k => headers.has(k) ? [`${k}: ${headers.get(k)}`] : []);

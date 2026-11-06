@@ -16,8 +16,22 @@ export const approvedWebsiteLimit = 200;
  * removing does not free a place here; re-adding a website approved before needs no new place.
  */
 export const approvedWebsiteHistoryLimit = 500;
-/** One owner-approved HTTPS origin the protected browser may read. `revision` advances on every re-approval. */
-export interface ApprovedWebsite { origin: string; revision: number; addedAt: number }
+/**
+ * Website trust tier (S16-D09, ADR 0084). `sensitive` (the default) keeps the site's session in the protected browser
+ * outside the working VM behind request mediation; `trusted` ("use freely") means the Bot uses the site in the working
+ * VM browser, where a session it signs into lives in the VM profile and is not bypass-resistant (accepted residual).
+ */
+export type WebsiteTier = 'trusted' | 'sensitive';
+/** One owner-approved HTTPS origin the protected browser may read. `revision` advances on every re-approval or tier change. */
+export interface ApprovedWebsite { origin: string; revision: number; addedAt: number; tier: WebsiteTier }
+
+/** Identity providers, primary email, banking and payment hosts: always sensitive, never usable freely in the VM. */
+const sensitiveOnlyHosts = ['accounts.google.com', 'mail.google.com', 'myaccount.google.com', 'pay.google.com', 'login.microsoftonline.com', 'login.live.com', 'account.microsoft.com', 'outlook.live.com', 'outlook.office.com', 'appleid.apple.com', 'icloud.com', 'paypal.com', 'stripe.com', 'wise.com', 'revolut.com', 'id.me', 'okta.com', 'auth0.com', 'login.yahoo.com', 'mail.yahoo.com', 'proton.me', 'github.com'];
+/** True for a site that must stay in the protected browser whatever the owner marks (`website_sensitive_only`). */
+export function websiteSensitiveOnly(origin: string): boolean {
+  let host: string; try { host = new URL(origin).hostname; } catch { return true; }
+  return sensitiveOnlyHosts.some(h => host === h || host.endsWith(`.${h}`)) || host.split('.').some(label => /bank|banking|wallet|payment|pay$/.test(label) && label !== 'paysite') || /^(?:login|signin|sso|auth|id|accounts?)\./.test(host);
+}
 
 // Reserved, special-use and conventional private DNS names (RFC 2606/6761/6762/8375 and common LAN suffixes).
 const nonPublicSuffixes = ['localhost', 'local', 'localdomain', 'internal', 'intranet', 'lan', 'home', 'corp', 'private', 'test', 'example', 'invalid', 'onion', 'arpa', 'alt'];
@@ -45,7 +59,7 @@ export function approvedWebsiteOrigin(input: unknown): string {
 }
 
 const digest = (origin: string) => createHash('sha256').update(`s15.browser.website.v1\0${origin}`).digest('hex');
-interface SiteRecord { kind: 'site'; origin: string; revision: number; active: boolean; addedAt: number; changedAt: number }
+interface SiteRecord { kind: 'site'; origin: string; revision: number; active: boolean; addedAt: number; changedAt: number; tier?: WebsiteTier }
 interface MetaRecord { kind: 'meta'; epoch: string }
 
 /**
@@ -76,9 +90,25 @@ export class ApprovedWebsites {
   }
   /** Currently approved websites, sorted by origin. */
   list(): ApprovedWebsite[] {
-    return [...this.#cache.values()].filter(r => r.active).sort((a, b) => a.origin.localeCompare(b.origin)).map(r => ({ origin: r.origin, revision: r.revision, addedAt: r.addedAt }));
+    return [...this.#cache.values()].filter(r => r.active).sort((a, b) => a.origin.localeCompare(b.origin)).map(r => ({ origin: r.origin, revision: r.revision, addedAt: r.addedAt, tier: r.tier ?? 'sensitive' }));
   }
-  current(origin: string): ApprovedWebsite | null { const r = this.#cache.get(origin); return r?.active ? { origin: r.origin, revision: r.revision, addedAt: r.addedAt } : null; }
+  current(origin: string): ApprovedWebsite | null { const r = this.#cache.get(origin); return r?.active ? { origin: r.origin, revision: r.revision, addedAt: r.addedAt, tier: r.tier ?? 'sensitive' } : null; }
+  /** Request-time tier of an exact approved origin; unknown or removed origins are sensitive. */
+  tier(origin: string): WebsiteTier { const r = this.#cache.get(origin); return r?.active && r.tier === 'trusted' ? 'trusted' : 'sensitive'; }
+  /**
+   * Owner marks exactly the approval revision they saw as trusted or sensitive. Identity, email, banking and payment
+   * sites refuse `trusted` with `website_sensitive_only`; a changed approval refuses with `website_changed`.
+   */
+  setTier(origin: unknown, revision: number, tier: WebsiteTier): ApprovedWebsite {
+    if (typeof origin !== 'string' || approvedWebsiteOrigin(origin) !== origin || !Number.isSafeInteger(revision) || revision < 1 || (tier !== 'trusted' && tier !== 'sensitive')) throw new BrowserError('website_invalid');
+    if (tier === 'trusted' && websiteSensitiveOnly(origin)) throw new BrowserError('website_sensitive_only');
+    const record = this.#write(() => {
+      const old = this.#cache.get(origin); if (!old?.active || old.revision !== revision) throw new BrowserError('website_changed');
+      if ((old.tier ?? 'sensitive') === tier) return old;
+      const next: SiteRecord = { ...old, tier, revision: old.revision + 1, changedAt: this.#now() }; this.#journal.put(this.#key(origin), next); return next;
+    });
+    return { origin: record.origin, revision: record.revision, addedAt: record.addedAt, tier: record.tier ?? 'sensitive' };
+  }
   /** Request-time check: an exact origin string, so `http:` or another port never matches an HTTPS approval. */
   allows(origin: string): boolean { return !!this.#cache.get(origin)?.active; }
   /** Approves one website. Re-adding an approved website changes nothing and returns it. */
@@ -88,10 +118,10 @@ export class ApprovedWebsites {
       const old = this.#cache.get(origin); if (old?.active) return old;
       if ([...this.#cache.values()].filter(r => r.active).length >= approvedWebsiteLimit) throw new BrowserError('website_list_full');
       if (!old && this.#cache.size >= approvedWebsiteHistoryLimit) throw new BrowserError('website_history_full');
-      const now = this.#now(), next: SiteRecord = { kind: 'site', origin, revision: (old?.revision ?? 0) + 1, active: true, addedAt: now, changedAt: now };
+      const now = this.#now(), next: SiteRecord = { kind: 'site', origin, revision: (old?.revision ?? 0) + 1, active: true, addedAt: now, changedAt: now, tier: 'sensitive' };
       this.#journal.put(this.#key(origin), next); return next;
     });
-    return { origin: record.origin, revision: record.revision, addedAt: record.addedAt };
+    return { origin: record.origin, revision: record.revision, addedAt: record.addedAt, tier: record.tier ?? 'sensitive' };
   }
   /** Removes exactly the approval revision the owner saw; a changed or absent approval refuses with `website_changed`. */
   remove(origin: unknown, revision: number): void {
@@ -145,13 +175,17 @@ function originOf(url: string): string | null { try { return new URL(url).origin
  * other request to an approved origin stays unknown (refused). Any request to an unlisted origin refuses
  * with `website_not_approved`, which the owner resolves by adding the website, never by approving a page.
  * There are no sign-in documents or session observations: signing in needs configured protected semantics.
+ * A site the owner marked trusted refuses with `website_trusted_vm`: the Bot uses it in the working VM browser.
  */
-export function approvedWebsitePolicy(sites: Pick<ApprovedWebsites, 'allows'>): BrowserSitePolicy {
+export function approvedWebsitePolicy(sites: Pick<ApprovedWebsites, 'allows'> & Partial<Pick<ApprovedWebsites, 'tier'>>): BrowserSitePolicy {
+  // S16-D09: a trusted site is used in the working VM browser, so the protected browser never accumulates its session.
+  const protectedSite = (origin: string) => sites.allows(origin) && sites.tier?.(origin) !== 'trusted';
   return {
     loginDocuments: [], session: null,
-    observable: url => { const origin = originOf(url); return !!origin && sites.allows(origin); },
+    observable: url => { const origin = originOf(url); return !!origin && protectedSite(origin); },
     classify(request) {
       let url: URL; try { url = new URL(request.url); } catch { return null; }
+      if (sites.tier?.(url.origin) === 'trusted') return { kind: 'unsupported', code: 'website_trusted_vm' };
       if (!sites.allows(url.origin)) return { kind: 'unsupported', code: 'website_not_approved' };
       return request.method === 'GET' && request.navigation && !request.bodyBase64 && !url.search ? { kind: 'read', private: false } : null;
     },

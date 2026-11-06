@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { connect, createServer, type Server } from "node:net";
-import { defaultVmRegistryHosts, startVmRegistryProxy, vmPublicAddress, type VmProxyLog } from "../src/s15/vm/proxy";
+import { defaultVmRegistryHosts, startVmRegistryProxy, vmPublicAddress, vmPublicWebHost, type VmProxyLog } from "../src/s15/vm/proxy";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0)) await close(); });
 async function exchange(port: number, input: string): Promise<string> {
@@ -54,4 +54,27 @@ test("a pending DNS lookup reserves the session connection slot and failure rele
   expect(await exchange(proxy.port, request)).toContain("403"); expect(lookups).toBe(1); expect(connects).toBe(0);
   dns.reject(new Error("DNS failure")); expect(await first).toContain("502");
   expect(await exchange(proxy.port, request)).toContain("ok"); expect(lookups).toBe(2); expect(connects).toBe(1);
+});
+
+// AUTH16-01 (S16-D09, ADR 0084): public-web mode for the working VM browser.
+test.each([["example.com", true], ["shop.example.co.th", true], ["1.2.3.4", false], ["intranet", false], ["printer.local", false], ["host.internal", false], ["bad_label.com", false]] as const)("public-web host %s → %s", (host, expected) => {
+  expect(vmPublicWebHost(host)).toBe(expected);
+});
+test("public-web mode reaches a public site without a registry lease, but still refuses private addresses and is off by default", async () => {
+  const upstream = createServer(socket => { socket.once("data", () => socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")); });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve)); cleanups.push(() => new Promise(resolve => upstream.close(() => resolve())));
+  const port = (upstream.address() as { port: number }).port, logs: VmProxyLog[] = [], authorized: string[] = [];
+  const answers: Record<string, string> = { "news.example.com": "93.184.216.34", "rebind.example.com": "10.0.0.5" };
+  const start = (publicWeb: boolean) => startVmRegistryProxy({ hostname: "127.0.0.1", guestHostname: "127.0.0.1", port: 0, hosts: ["registry.test"], publicWeb, log: e => logs.push(e),
+    resolve: async host => [{ address: answers[host] ?? "93.184.216.34", family: 4 }], connect: () => connect(port, "127.0.0.1") });
+  const off = await start(false); cleanups.unshift(off.close);
+  const offLease = off.lease("work_off", Date.now() + 10000);
+  expect(await exchange(off.port, input("http://news.example.com/", auth(offLease.environment.HTTP_PROXY!), "GET"))).toContain("403");
+  const on = await start(true); cleanups.unshift(on.close);
+  const lease = on.lease("work_on", Date.now() + 10000, host => { authorized.push(host); });
+  expect(await exchange(on.port, input("http://news.example.com/", auth(lease.environment.HTTP_PROXY!), "GET"))).toContain("ok");
+  expect(authorized).toEqual([]);
+  expect(await exchange(on.port, input("http://rebind.example.com/", auth(lease.environment.HTTP_PROXY!), "GET"))).toContain("403");
+  expect(await exchange(on.port, input("http://10.0.0.5/", auth(lease.environment.HTTP_PROXY!), "GET"))).toContain("403");
+  expect(logs.filter(l => l.state === "denied").map(l => l.host)).toEqual(["news.example.com", "rebind.example.com", "10.0.0.5"]);
 });

@@ -12,14 +12,26 @@ export interface OperatingBudget { currency: string; startsAt: number; expiresAt
 export type ActionClass = 'ordinary_edit' | 'guest_local_admin' | 'guest_system_admin' | 'new_egress' | 'communication' | 'financial' | 'github_publish' | 'github_merge' | 'production' | 'disclosure' | 'major_change';
 /** A separately owner-approved finite recurring obligation. Frequency is minimum elapsed milliseconds between claims. */
 export interface RecurringPaymentRule { payee: Ref; account: Ref; currency: string; minorUnit: number; amountCeilingMinor: string; minIntervalMs: number; maxPayments: number; totalCeilingMinor: string; startsAt: number }
+/**
+ * Rule modes. AUTH16-01 (contract revision 3, ADR 0084) adds two product-default modes:
+ * `owner_named_send` satisfies `communication` only when every person reached is one the owner's own message named
+ * (`WorkRequest.named`), never for a routine or Bot-initiated send; its own `recipients` list only the carrier
+ * services (mail provider, GitHub) that deliver the send, never people; `github_default` satisfies
+ * `github_publish`/`github_merge` (and a review reply's `communication`) on the rule's repositories once the
+ * adapter's evidence says the target's required checks and reviews passed. Neither satisfies production.
+ */
+export type RuleMode = 'ordinary' | 'communication' | 'personal_github_publish' | 'personal_github_merge' | 'recurring_payment' | 'deny' | 'owner_named_send' | 'github_default';
 /** Entire-action scope; rules never union partial permissions. Ordinary rules cannot satisfy human gates. */
-export interface Rule { id: string; mode: 'ordinary' | 'communication' | 'personal_github_publish' | 'personal_github_merge' | 'recurring_payment' | 'deny'; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; adapters: string[]; operations: string[]; classes: ActionClass[]; expiresAt: number; recurrence: RecurringPaymentRule | null; github?: { repository: Ref; target: string; requiredChecks?: string[]; requiredApprovals?: number; requireCodeOwners?: boolean } | null }
+export interface Rule { id: string; mode: RuleMode; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; adapters: string[]; operations: string[]; classes: ActionClass[]; expiresAt: number; recurrence: RecurringPaymentRule | null; github?: { repository: Ref; target: string; requiredChecks?: string[]; requiredApprovals?: number; requireCodeOwners?: boolean } | null }
 /** Owner-installed ceilings. Personal GitHub rules and recurring payments are absent unless explicitly approved. */
 export interface StandingPolicy { contract: 's15-standing-policy/v1'; revision: number; ownerGeneration: number; purposes: Ref[]; bots: Ref[]; resources: Ref[]; recipients: Ref[]; selections: Selection[]; budget: OperatingBudget | null; rules: Rule[]; expiresAt: number; interpretationPurpose?: Ref | null }
 /** Protected owner configuration, never a model-provided current-policy object. Recurring rules use their separate approval command. */
 export type PolicyInput = Omit<StandingPolicy, 'contract' | 'revision' | 'ownerGeneration'>;
 /** Actual authenticated ingress interpretation. Acceptance retains an obligation but creates no execution authority. */
-export interface WorkRequest { requestId: string; intent: 'inspect' | 'execute' | 'accept_obligation'; access?: 'read' | 'reversible_write' | 'effect'; purpose: Ref; bot: Ref; resources: Ref[]; recipients: Ref[]; selection: Selection; selectionPin: Selection | null; expiresAt: number; readLimit?: number; fences?: Fence[]; subject?: { resource: Ref; issue: number } | null }
+export interface WorkRequest { requestId: string; intent: 'inspect' | 'execute' | 'accept_obligation'; access?: 'read' | 'reversible_write' | 'effect'; purpose: Ref; bot: Ref; resources: Ref[]; recipients: Ref[]; selection: Selection; selectionPin: Selection | null; expiresAt: number; readLimit?: number; fences?: Fence[]; subject?: { resource: Ref; issue: number } | null;
+  /** AUTH16-01: recipients the owner's own authenticated message named (exact address or one unambiguous contact), bound
+   * at admission and also listed in `recipients`. Absent for routines, steer follow-ups, resumes and every other ingress. */
+  named?: Ref[] }
 /** Durable narrowed authority; a transport logout does not revoke this independently bounded work. */
 export interface WorkAuthority { id: string; mode: 'interpretation' | 'work'; readLimit: number; ownerGeneration: number; policyRevision: number; policyHash: string; request: WorkRequest; createdAt: number; expiresAt: number }
 /** Deduplicated authenticated ingress result. No actor or capability is serialized in a receipt. */

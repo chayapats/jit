@@ -101,9 +101,14 @@ test('S15-AC06/07: solo calendar edit dispatches and exact email approval sends 
   f.script = [{ type: 'tool_call', id: 'email', name: 'gmail_prepare_send', arguments: { ...mail } }];
   const held = await f.chat('Send the prepared email to the recipient');
   expect(f.google.sent.size).toBe(0); expect(held.slips[0]).toMatchObject({ state: 'pending', canApprove: true });
-  const approved = await f.chat('อนุมัติ', 'email_approval');
-  expect(approved.state).toBe('accepted'); expect(f.google.sent.size).toBe(1);
-  await f.chat('อนุมัติ', 'email_approval'); expect(f.google.sent.size).toBe(1);
+  // S16-D08: typed approval is an ordinary message and never sends; only the exact one-press decision does.
+  f.script = [{ type: 'text', text: 'Noted; nothing was decided.' }];
+  const typed = await f.chat('อนุมัติ');
+  expect(typed.decision).toBeNull(); expect(f.google.sent.size).toBe(0);
+  const slip = held.slips[0]!, fields = { requestId: 'email_approval', conversationId: 'conversation', actionId: slip.action.id, revision: String(slip.action.revision), actionHash: slip.action.actionHash, decision: 'approve' };
+  expect((await f.form('/s15/forms/action/decide', fields)).status).toBe(303); await f.service.conversation.drain();
+  expect(f.service.conversation.view(f.owner, 'email_approval').state).toBe('accepted'); expect(f.google.sent.size).toBe(1);
+  await f.form('/s15/forms/action/decide', fields); await f.service.conversation.drain(); expect(f.google.sent.size).toBe(1);
 });
 
 for (const kind of ['document', 'task', 'business', 'disclosure'] as const) test(`S15-AC05/06/09/11: composed native-form ${kind} boundary`, async () => {

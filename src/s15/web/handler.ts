@@ -12,6 +12,7 @@ import { fullSlip, slipKind, slipPayload, type S15SlipDecision } from "./actions
 import { browserNeedsYou, takeoverView, type S15BrowserInfo, type S15BrowserProgress } from "./browser";
 import { dutyCard, dutyNeedsYou, workBody, type S15WorkRow } from "./duties";
 import { accountsBody, needsBody, recoveryBody, restoreSection, teamPendingCard, type S15NeedItem } from "./resources";
+import { recipientsBody } from "./recipients";
 import { websitesBody, type S15WebsitesSaved } from "./websites";
 import { recurringProposalBody, rulesBody } from "./rules";
 import { parsePaymentAmount } from "../payments";
@@ -227,6 +228,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         let pending = null; try { pending = team ? teamPending() : null; } catch (error) { if (codeOf(error) === "authentication_required") throw error; pending = null; }
         return render(() => shell(nav("/resources/accounts"), tr("s15.resources.title"), accountsBody({ team, accounts: accounts(), browsers: browsers(), csrf, teamPending: teamPendingCard({ pending, csrf, back: "resources", registered: !!state.registered, refused: state.refused ?? null }) })), status);
       };
+      const recipientsPage = (refused: string | null, saved: boolean, status = 200) => render(() => shell(nav("/resources/recipients"), tr("s15.recipients.title"), recipientsBody({ lists: ports.recipients ? ports.recipients.list(actor) : null, csrf, refused, saved })), status);
       // BROW15-02: a saved notice is shown only when the current list agrees with it.
       const websitesPage = (state: { refused?: { code: string; at: "add" | "list" }; entry?: string } = {}, status = 200) => {
         const websites = ports.websites, sites = websites ? websites.list(actor) : null, engine = websites ? websites.status(actor) : null;
@@ -343,6 +345,7 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         if (url.pathname === "/rules/recurring") return recurringPage(url.searchParams.get("from"), url.searchParams.get("r"));
         if (url.pathname === "/resources/accounts") return accountsPage({ registered: url.searchParams.get("team") === "registered" });
         if (url.pathname === "/resources/websites") return websitesPage();
+        if (url.pathname === "/resources/recipients") return recipientsPage(null, url.searchParams.get("forgot") === "1");
         if (url.pathname === "/resources/github") return githubPage();
         if (url.pathname === "/recovery") {
           const all = needs(), adoption = ports.adoption ? (() => { try { return ports.adoption!(actor); } catch (error) { if (codeOf(error) === "authentication_required") throw error; return null; } })() : null;
@@ -586,6 +589,15 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         } catch (error) { if (codeOf(error) === "authentication_required") throw error; if (codeOf(error) === "vm_setup_expired") { progress.setup = null; progress.check = null; } return back(codeOf(error), 409); }
         throw new AppError("not_found", 404);
       }
+      if (url.pathname === "/s15/forms/recipients/forget" || url.pathname === "/s15/forms/recipients/forget-person") {
+        const recipients = ports.recipients; if (!recipients) throw new AppError("not_found", 404);
+        const person = url.pathname.endsWith("-person");
+        only(fields, person ? ["csrf", "requestId", "address"] : ["csrf", "requestId", "grantId", "revision"]);
+        if (!person && !/^[1-9]\d{0,8}$/.test(fields.revision!)) throw new AppError("invalid_body");
+        try { if (person) recipients.forgetPerson(actor, fields.requestId!, fields.address!); else recipients.forget(actor, fields.requestId!, fields.grantId!, Number(fields.revision)); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return recipientsPage(codeOf(error), false, 409); }
+        return redirect("/resources/recipients?forgot=1");
+      }
       if (url.pathname.startsWith("/s15/forms/websites/")) {
         // BROW15-02 owner commands over the protected approved-website list and the pinned Chromium.
         const websites = ports.websites; if (!websites) throw new AppError("not_found", 404);
@@ -603,6 +615,13 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           try { websites.remove(actor, fields.requestId!, fields.origin!, revision); }
           catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
           return redirect(`/resources/websites?removed=${encodeURIComponent(fields.origin!)}#s15-web-list`);
+        }
+        if (url.pathname === "/s15/forms/websites/tier") {
+          only(fields, ["csrf", "requestId", "origin", "revision", "tier"]);
+          if (!/^[1-9]\d{0,8}$/.test(fields.revision!) || (fields.tier !== "trusted" && fields.tier !== "sensitive") || !websites.setTier) throw new AppError("invalid_body");
+          try { websites.setTier(actor, fields.requestId!, fields.origin!, Number(fields.revision), fields.tier); }
+          catch (error) { if (codeOf(error) === "authentication_required") throw error; return websitesPage({ refused: { code: codeOf(error), at: "list" } }, 409); }
+          return redirect(`/resources/websites#s15-web-list`);
         }
         if (url.pathname === "/s15/forms/websites/retry") {
           only(fields, ["csrf", "requestId"]);

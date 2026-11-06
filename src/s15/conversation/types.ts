@@ -82,7 +82,7 @@ export interface ConversationPolicy<OwnerActor, WorkContext> {
     | { state: "held"; code: string };
   /** Synchronous idempotent admission under current policy. Reads is a trusted accepted-image count
    * for capacity calculation, not model input, new permission or an override of the owner ceiling. */
-  admit(actor: OwnerActor, request: ConversationCommand, intent: ConversationIntent, reads?: { imageInputs: number }):
+  admit(actor: OwnerActor, request: ConversationCommand, intent: ConversationIntent, reads?: { imageInputs: number; /** AUTH16-01: true only for a live owner message (not a routine occurrence). */ ownerMessage?: boolean }):
     | { state: "admitted"; authority: ConversationAuthority }
     | { state: "held" | "proposed"; code: string };
   /** Reopens work authority only; it cannot reconstruct a claimed model/tool dispatch after process loss. */

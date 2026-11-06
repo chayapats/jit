@@ -4,16 +4,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "schway/host";
-import { PolicyError, type ActionAdapter, type OwnerActor, type ReadHandler, type PrepareInput, type WorkActor } from "../src/s15/policy";
+import { PolicyError, type ActionAdapter, type ActionRef, type OwnerActor, type ReadHandler, type PrepareInput, type WorkActor } from "../src/s15/policy";
 import { unknownUsage, zero } from "../src/s15/policy/validation";
 import { ConversationApplication, ConversationStore, conversationOwnerView, createConversationPolicy, createConversationPolicyTools } from "../src/s15/conversation";
-import type { ConversationCommand } from "../src/s15/conversation/types";
+import type { ConversationCommand, ConversationDecisionCommand } from "../src/s15/conversation/types";
 import { fixture as policyFixture, ref, selection } from "./fixtures/s15-policy";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const dispose of cleanup.splice(0).reverse()) dispose(); });
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const message = (text: string): ConversationCommand => ({ contract: "s15-conversation/v1", requestId: id(), conversationId: "conversation", text, continuation: null });
+/** S16-D08: the only decision path is the exact one-press command naming one presented revision and hash. */
+const decision = (slip: { action: ActionRef }, verdict: "approve" | "deny" = "approve", requestId = id()): ConversationDecisionCommand => ({ contract: "s15-conversation-decision/v1", requestId, conversationId: "conversation", action: { id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash }, decision: verdict });
 
 function fixture(options: { injection?: boolean; readText?: string; unknownSend?: boolean; failCommit?: () => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-chat-policy-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
@@ -97,18 +99,22 @@ test("real POLICY: held action projects the complete exact slip and one chat app
   const view = conversationOwnerView(f.app, f.owner, "conversation"), slip = view.needsYou[0]!.slip!;
   expect(slip).toMatchObject({ contract: "s15-action-slip/v1", state: "pending", canApprove: true, reasonCode: "approval_required" });
   expect(JSON.parse(Buffer.from(slip.payloadBytesBase64, "base64").toString())).toEqual({ to: "fixture-recipient", body: command.text });
-  const approve = message("อนุมัติ"); const receipt = f.app.submit(f.owner, approve); expect(f.app.submit(f.owner, approve)).toEqual(receipt); await f.app.drain();
+  const approve = decision(slip); const receipt = f.app.decide(f.owner, approve); expect(f.app.decide(f.owner, approve)).toEqual(receipt); await f.app.drain();
   expect(f.counts().sends).toBe(1); expect(f.app.store.request(approve.requestId).decision).toMatchObject({ action: { id: slip.action.id, revision: slip.action.revision, actionHash: slip.action.actionHash }, observation: { outcome: "succeeded" } });
-  f.app.submit(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  f.app.decide(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
   expect(f.query("SELECT id FROM approvals")).toHaveLength(1); expect(f.query("SELECT effect_key FROM claims")).toHaveLength(1);
 });
 
-test("real POLICY: several pending items ask which one; explicit presented selection approves only that item", async () => {
+test("real POLICY: with several pending items typed approval decides nothing; the exact presented command approves only that item", async () => {
   const f = fixture(); await f.send("Send first prepared note"); await f.send("Send second prepared note");
   const view = conversationOwnerView(f.app, f.owner, "conversation"), slips = view.needsYou.map(entry => entry.slip!);
-  expect(slips).toHaveLength(2); const ambiguous = message("Approve"); f.app.submit(f.owner, ambiguous); await f.app.drain();
-  expect(f.app.store.request(ambiguous.requestId)).toMatchObject({ state: "held", code: "approval_reference_required" }); expect(f.query("SELECT id FROM approvals")).toHaveLength(0);
-  const choose = message(`approve ${slips[0]!.action.id}`); f.app.submit(f.owner, choose); await f.app.drain();
+  expect(slips).toHaveLength(2);
+  for (const text of ["Approve", "อนุมัติ", `approve ${slips[0]!.action.id}`]) {
+    const typed = message(text); f.app.submit(f.owner, typed); await f.app.drain();
+    expect(f.app.store.request(typed.requestId).decision).toBeNull();
+  }
+  expect(f.query("SELECT id FROM approvals")).toHaveLength(0); expect(f.counts().sends).toBe(0);
+  f.app.decide(f.owner, decision(slips[0]!)); await f.app.drain();
   expect(f.counts().sends).toBe(1); expect(f.query<{ action_id: string }>("SELECT action_id FROM approvals").map(row => row.action_id)).toEqual([slips[0]!.action.id]);
   const other = slips[1]!.action;
   expect(f.f.service.owner.actionSlip(f.owner, { id: other.id, revision: other.revision, actionHash: other.actionHash }).state).toBe("pending");
@@ -122,27 +128,38 @@ test("real POLICY: quoted approval and retrieved instructions cannot approve or 
 });
 
 test("real POLICY: restart retains pending presentation and duplicate approval never resends an effect", async () => {
-  const f = fixture(), work = await f.send(); const before = f.counts(); conversationOwnerView(f.app, f.owner, "conversation");
+  const f = fixture(), work = await f.send(); const before = f.counts(), slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
   await f.reopen(); f.app.submit(f.owner, work); await f.app.drain(); expect(f.counts()).toEqual(before);
-  const approve = message("Approve it"), receipt = f.app.submit(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
-  await f.reopen(); expect(f.app.submit(f.owner, approve)).toEqual(receipt); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  const approve = decision(slip), receipt = f.app.decide(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  await f.reopen(); expect(f.app.decide(f.owner, approve)).toEqual(receipt); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  expect(f.query("SELECT id FROM approvals")).toHaveLength(1);
   expect(f.app.view(f.owner, work.requestId).slips[0]!.state).toBe("succeeded");
 });
 
-test("real POLICY: unknown dispatch after approval stays reconcile-only across restart and new approval text", async () => {
-  const f = fixture({ unknownSend: true }); await f.send(); conversationOwnerView(f.app, f.owner, "conversation");
-  const approve = message("Approve"); f.app.submit(f.owner, approve); await f.app.drain(); expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
-  await f.reopen(); f.app.submit(f.owner, approve); f.app.submit(f.owner, message("Approve")); await f.app.drain();
+test("real POLICY: unknown dispatch after approval stays reconcile-only across restart, a duplicate, a new decision and approval text", async () => {
+  const f = fixture({ unknownSend: true }); await f.send(); const slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
+  const approve = decision(slip); f.app.decide(f.owner, approve); await f.app.drain(); expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
+  await f.reopen(); f.app.decide(f.owner, approve); expect(() => f.app.decide(f.owner, decision(slip))).toThrow("stale_action");
+  f.app.submit(f.owner, message("Approve")); await f.app.drain();
+  expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only"); expect(f.query("SELECT id FROM approvals")).toHaveLength(1);
   expect(f.counts().sends).toBe(1); expect(f.f.service.control.usage().unsettled).toBe(1);
 });
 
-test("real POLICY: approval requires an exact owner-presented slip and quoted words never decide it", async () => {
-  const f = fixture(); await f.send();
-  const unseen = message("Approve"); f.app.submit(f.owner, unseen); await f.app.drain();
-  expect(f.app.store.request(unseen.requestId)).toMatchObject({ state: "held", code: "approval_reference_required" });
-  conversationOwnerView(f.app, f.owner, "conversation");
-  const quote = message('"Approve"'); f.app.submit(f.owner, quote); await f.app.drain();
+test("real POLICY: approval requires an exact owner-presented slip and typed or quoted words never decide it", async () => {
+  // Typed words are ordinary messages here (scripted as edits), so leave budget headroom for the final exact approval.
+  const f = fixture(); f.f.input.budget!.ceiling.calls = 1000; f.f.input.budget!.ceiling.spendMinor = "1000"; f.f.install();
+  const work = await f.send(), unseen = f.app.store.request(work.requestId).actions[0]!;
+  expect(() => f.app.decide(f.owner, decision({ action: unseen }))).toThrow("stale_action");
+  const typedUnseen = message("Approve"); f.app.submit(f.owner, typedUnseen); await f.app.drain();
+  expect(f.app.store.request(typedUnseen.requestId).decision).toBeNull();
+  const slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
+  for (const text of ['"Approve"', "Approve", "อนุมัติ", `approve ${slip.action.id}`]) {
+    const typed = message(text); f.app.submit(f.owner, typed); await f.app.drain();
+    expect(f.app.store.request(typed.requestId).decision).toBeNull();
+  }
   expect(f.query("SELECT id FROM approvals")).toHaveLength(0); expect(f.counts().sends).toBe(0);
+  f.app.decide(f.owner, decision(slip)); await f.app.drain();
+  expect(f.query("SELECT id FROM approvals")).toHaveLength(1); expect(f.counts().sends).toBe(1);
 });
 
 test("real POLICY: changed prepared bytes cannot consume approval of the last-presented revision", async () => {
@@ -150,8 +167,8 @@ test("real POLICY: changed prepared bytes cannot consume approval of the last-pr
   const original = f.preparations.at(-1)!; f.f.draft = { ...f.f.draft, payload: { to: "fixture-recipient", body: "changed final text" } };
   const changed = f.f.service.work.prepare(original.actor, original.input);
   expect(changed.action.id).toBe(slip.action.id); expect(changed.action.revision).toBe(slip.action.revision + 1);
-  const approve = message(`Approve ${slip.action.id}`); f.app.submit(f.owner, approve); await f.app.drain();
-  expect(f.app.store.request(approve.requestId)).toMatchObject({ state: "held", code: "stale_action" });
+  const approve = decision(slip); expect(() => f.app.decide(f.owner, approve)).toThrow("stale_action");
+  expect(() => f.app.store.request(approve.requestId)).toThrow();
   expect(f.query("SELECT id FROM approvals")).toHaveLength(0); expect(f.counts().sends).toBe(0);
 });
 
@@ -173,40 +190,39 @@ test("real POLICY: ingress rollback and a later retry reuse one stable inference
 });
 
 test("real POLICY: known action outcome survives a crash before CHAT outcome commit without replay", async () => {
-  const f = fixture(); await f.send(); conversationOwnerView(f.app, f.owner, "conversation");
-  const approve = message("Approve"); f.app.submit(f.owner, approve); await f.app.drain();
+  const f = fixture(); await f.send(); const slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
+  const approve = decision(slip); f.app.decide(f.owner, approve); await f.app.drain();
   const interrupted = f.app.store.request(approve.requestId); interrupted.state = "running"; interrupted.decision!.observation = null;
   f.app.store.transaction(() => f.app.store.save(interrupted));
   await f.reopen();
   expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
   expect(f.app.view(f.owner, approve.requestId).decision!.observation!.outcome).toBe("succeeded");
   expect(conversationOwnerView(f.app, f.owner, "conversation").rows.at(-1)!.state).toBe("done");
-  f.app.submit(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
-  expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only");
+  f.app.decide(f.owner, approve); await f.app.drain(); expect(f.counts().sends).toBe(1);
+  expect(f.app.store.request(approve.requestId).state).toBe("reconcile_only"); expect(f.query("SELECT id FROM approvals")).toHaveLength(1);
 });
 
-test("P1-6: more than 64 historical authorities do not block current bare or explicit decisions", async () => {
+test("P1-6: more than 64 historical authorities do not block current exact approve or deny decisions", async () => {
   const f = fixture(); f.f.input.budget!.ceiling.calls = 1000; f.f.input.budget!.ceiling.spendMinor = "1000"; f.f.install();
   for (let i = 0; i < 65; i++) { f.app.submit(f.owner, message("Create a hello file")); await f.app.drain(); }
-  await f.send(); conversationOwnerView(f.app, f.owner, "conversation");
-  const approve = message("Approve"); f.app.submit(f.owner, approve); await f.app.drain();
+  await f.send(); const first = conversationOwnerView(f.app, f.owner, "conversation").needsYou.find(entry => entry.slip?.state === "pending")!.slip!;
+  const approve = decision(first); f.app.decide(f.owner, approve); await f.app.drain();
   expect(f.app.store.request(approve.requestId).decision!.observation!.outcome).toBe("succeeded"); expect(f.counts().sends).toBe(1);
   await f.send(); const slip = conversationOwnerView(f.app, f.owner, "conversation").needsYou.find(entry => entry.slip?.state === "pending")!.slip!;
-  const deny = message(`deny ${slip.action.id}`); f.app.submit(f.owner, deny); await f.app.drain();
+  const deny = decision(slip, "deny"); f.app.decide(f.owner, deny); await f.app.drain();
   expect(f.app.store.request(deny.requestId).decision!.decision).toBe("deny"); expect(f.counts().sends).toBe(1);
 }, 30000);
 
-test("P1-7: an unreadable historical presentation cannot block unrelated explicit or bare decisions", async () => {
+test("P1-7: an unreadable historical presentation cannot block unrelated exact decisions", async () => {
   const f = fixture(); f.f.draft = { ...f.f.draft, fences: [{ kind: "lineage", ref: ref("source") }] };
   const old = await f.send(); const oldSlip = conversationOwnerView(f.app, f.owner, "conversation").needsYou[0]!.slip!;
   f.f.catalog.get("lineage:source")!.active = false; f.f.draft = { ...f.f.draft, fences: [] };
   const fresh = await f.send(); const current = f.app.view(f.owner, fresh.requestId).slips[0]!;
-  const explicit = message(`approve ${current.action.id}`); f.app.submit(f.owner, explicit); await f.app.drain();
+  f.app.decide(f.owner, decision(current)); await f.app.drain();
   expect(f.counts().sends).toBe(1);
-  const another = await f.send(); f.app.view(f.owner, another.requestId);
-  const bare = message("Approve"); f.app.submit(f.owner, bare); await f.app.drain(); expect(f.counts().sends).toBe(2);
-  const withdrawn = message(`approve ${oldSlip.action.id}`); f.app.submit(f.owner, withdrawn); await f.app.drain();
-  expect(f.app.store.request(withdrawn.requestId)).toMatchObject({ state: "held", code: "lineage_withdrawn" });
+  const another = await f.send(), next = f.app.view(f.owner, another.requestId).slips[0]!;
+  f.app.decide(f.owner, decision(next)); await f.app.drain(); expect(f.counts().sends).toBe(2);
+  expect(() => f.app.decide(f.owner, decision(oldSlip))).toThrow("lineage_withdrawn"); await f.app.drain();
   expect(f.query<{ action_id: string }>("SELECT action_id FROM approvals").some(row => row.action_id === oldSlip.action.id)).toBe(false);
   expect(f.app.view(f.owner, old.requestId).slips).toEqual([]);
 });

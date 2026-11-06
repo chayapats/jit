@@ -62,7 +62,7 @@ test("the handoff §10.2 core keys used by UX15-01 keep their authored Thai and 
     ["s15.intent.inspect", "ตรวจดูอย่างเดียว ไม่แก้ไขอะไร", "Looking only. Nothing will be changed."], ["s15.intent.execute", "เริ่มทำแล้ว", "Started"],
     ["s15.progress.title", "ความคืบหน้า (ยังไม่ใช่หลักฐาน)", "Progress (not evidence yet)"], ["s15.readiness.no_pick", "จิตจะไม่เลือกเองว่าจะทำข้อไหน", "Jit won’t choose which one to do"],
     ["s15.vm.option_b", "จิตมีสิทธิ์เต็มในเครื่องนี้ ข้อมูลสำคัญ รหัสผ่าน และการส่งออกไปข้างนอกอยู่นอกเครื่องนี้เสมอ ถ้าเครื่องพัง ย้อนกลับจาก snapshot ได้", "Jit has full control of this machine. Your important data, passwords and anything that leaves for the outside world stay outside it. If it breaks, it can be restored from a snapshot."],
-    ["s15.setup.budget_required", "ใส่งบใช้งานก่อน จิตจะไม่เดาตัวเลขให้", "Enter a usage budget first. Jit won’t guess a number for you."], ["s15.setup.personal_off", "โปรไฟล์ GitHub ส่วนตัว: ปิดอยู่ ตั้งได้ที่ กฎประจำ", "Personal GitHub profile: off. Set it up under Standing rules."],
+    ["s15.setup.budget_required", "ใส่งบใช้งานก่อน จิตจะไม่เดาตัวเลขให้", "Enter a usage budget first. Jit won’t guess a number for you."], ["s15.setup.personal_off", "การ deploy ขึ้น production จาก GitHub ยังรอคุณเสมอ", "Production deploys from GitHub still wait for you."],
     ["s15.budget.unknown", "ไม่ทราบ", "Unknown"], ["s15.model.no_switch", "จิตไม่เปลี่ยนไปใช้บัญชีอื่นเอง", "Jit won’t switch to another account on its own"],
   ];
   for (const [key, thai, english] of authored) { expect((dictionaries.th as Record<string, string>)[key]).toBe(thai); expect((dictionaries.en as Record<string, string>)[key]).toBe(english); }
