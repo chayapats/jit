@@ -67,6 +67,11 @@ export class ComputerDirectory<Owner extends object> {
     // Controller boot: a private computer whose setup was interrupted resumes; a failed one waits for "Try again".
     if (options.local) for (const row of options.scopes.all()) if (row.retiredAt === null && !this.enrolled(row.vmId)) { try { this.job(row.vmId).ensure(); } catch { /* Visible as setup_failed. */ } }
   }
+  private asleep(vm: string): boolean {
+    const row = this.options.store.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(vm);
+    const value = row ? JSON.parse(row.data) as { state: string; reason: string | null } : null;
+    return value?.state === "stopped" && value.reason === vmIdleReason;
+  }
   private enrolled(vm: string): boolean { return !!this.options.store.db.query("SELECT 1 FROM vm_registry WHERE id=?").get(vm); }
   private job(vm: string): LocalVmProvisioning {
     let job = this.#jobs.get(vm);
@@ -147,19 +152,19 @@ export class ComputerDirectory<Owner extends object> {
     try {
       const scope = this.options.scopes.scope(vm);
       if (command.kind === "sleep") {
-        // An interrupted earlier run of this same command may already have put the computer to sleep.
-        const current = this.options.store.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(vm);
-        const asleep = !!prior && !!current && (JSON.parse(current.data) as { state: string; reason: string | null }).state === "stopped" && (JSON.parse(current.data) as { reason: string | null }).reason === vmIdleReason;
-        if (!asleep) await this.options.vm.sleepNow(actor, vm);
+        // Asleep already (for example an interrupted earlier run of this command): the outcome holds, nothing acts.
+        if (!this.asleep(vm)) await this.options.vm.sleepNow(actor, vm);
       } else {
         if (scope.kind !== "private") throw new AppError("computer_not_private", 409);
         if (command.kind === "retry_private") { if (this.enrolled(vm) || !this.options.scopes.assigned(scope.botId).includes(vm)) throw new AppError("computer_setup_not_failed", 409); this.job(vm).start(); }
         else this.options.scopes.retire(vm);
       }
-      this.options.requireOwner(actor);
+      // The action happened: record that before anything else can fail, so a retry returns this result.
       this.options.store.db.query("UPDATE s16_computer_commands SET state='done' WHERE id=?").run(id);
     } catch (error) {
-      this.options.store.db.query("DELETE FROM s16_computer_commands WHERE id=? AND state='pending'").run(id);
+      // A sleep that took effect although its caller saw an error is still done; any other failure releases the id.
+      if (command.kind === "sleep" && this.asleep(vm)) this.options.store.db.query("UPDATE s16_computer_commands SET state='done' WHERE id=?").run(id);
+      else this.options.store.db.query("DELETE FROM s16_computer_commands WHERE id=? AND state='pending'").run(id);
       throw error;
     } finally { this.#inflight.delete(id); }
     return result(vm);

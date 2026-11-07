@@ -149,6 +149,13 @@ test('TEAM16-01: a computer command reserves its request id before acting and a 
   await f.reopen();
   const retried = await f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, requestId: 'interrupted' });
   expect(retried.status).toBe(200); expect(f.service.vmStore.db.query("SELECT state FROM s16_computer_commands WHERE id='interrupted'").get()).toEqual({ state: 'done' });
+  // A sleep whose owner session ends while the hypervisor stops still keeps its identity: the retry succeeds.
+  await f.service.vm.start(f.owner, 'vm');
+  const late = f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, requestId: 'late_owner' }); await Bun.sleep(5);
+  f.generation = 2; stop(); expect((await late).status).not.toBe(200);
+  f.generation = 1;
+  expect(f.service.vmStore.db.query("SELECT state FROM s16_computer_commands WHERE id='late_owner'").get()).toEqual({ state: 'done' });
+  expect((await f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, requestId: 'late_owner' })).status).toBe(200);
   // A failed action releases its id: the same command can be tried again.
   const busy = admit(f, 'busy_sleep', 0), session = await open(f, busy);
   await f.service.vm.start(f.owner, 'vm').catch(() => {});
