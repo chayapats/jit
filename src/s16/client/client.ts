@@ -1,5 +1,6 @@
 import { clientResponseBytes, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
+import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
 export class JitClientError extends Error {
@@ -237,6 +238,26 @@ export class JitClient {
       && record(scope) && (scope.kind === "team" && Object.keys(scope).length === 1 || scope.kind === "bot" && identifier(scope.botId))
       && record(source) && ["owner_message", "work", "historical"].includes(source.kind as string) && (source.conversationId === null || identifier(source.conversationId)) && count(source.at) && count(source.files)
       && link(value.supersedes) && link(value.correction) && count(value.createdAt) && (value.lastUsedAt === null || count(value.lastUsedAt)) && count(value.contexts);
+  }
+  /** TEAM16-01 working computers: shared/private computers, their observed state and each Bot's computer. Reading starts or stops nothing. */
+  async computers(signal?: AbortSignal): Promise<ComputersView> {
+    const data = await this.call("/computers", "GET", undefined, signal);
+    if (!this.computersView(data)) return invalid();
+    return data;
+  }
+  /** Explicit owner computer command. It never retries; after an unknown outcome resend the same command (same `requestId`). */
+  async computerCommand(command: ComputerCommand, signal?: AbortSignal): Promise<ComputerCommandResult> {
+    const input = structuredClone(command);
+    if (input.contract !== "s16-computer-command/v1" || !identifier(input.requestId) || !identifier("botId" in input ? input.botId : input.vmId)) throw new JitClientError("invalid_computer_command", null, "not_sent", input.requestId);
+    const data = await this.call("/computers/commands", "POST", input, signal, input.requestId);
+    if (!record(data) || data.contract !== "s16-computer-command-result/v1" || data.requestId !== input.requestId || !identifier(data.vmId) || !this.computersView(data.view)) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return data as unknown as ComputerCommandResult;
+  }
+  private computersView(data: unknown): data is ComputersView {
+    if (!record(data) || data.contract !== "s16-client-computers/v1" || data.idleStopMs !== null && !count(data.idleStopMs) || !Array.isArray(data.computers) || data.computers.length > 64 || !Array.isArray(data.bots) || data.bots.length > 64 || !record(data.privateCreation)) return false;
+    const states = ["running", "sleeping", "starting", "stopping", "stopped", "setting_up", "setup_failed", "attention"];
+    return data.computers.every(item => record(item) && identifier(item.id) && typeof item.isDefault === "boolean" && record(item.scope) && (item.scope.kind === "shared" || item.scope.kind === "private" && identifier(item.scope.botId)) && states.includes(item.state as string) && (item.reason === null || typeof item.reason === "string") && count(item.activeSessions) && count(item.capacity) && count(item.works) && (item.sleepsAt === null || count(item.sleepsAt)))
+      && data.bots.every(bot => record(bot) && identifier(bot.id) && typeof bot.main === "boolean" && record(bot.computer) && (bot.computer.kind === "shared" || bot.computer.kind === "private" && identifier(bot.computer.vmId)));
   }
   /** Owner routines with derived display state. Reading never ticks, dispatches or marks anything seen. */
   async routines(signal?: AbortSignal): Promise<ClientRoutineList> {

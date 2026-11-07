@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { ConnectionVault } from "../../exec/connections";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
-import { defaultLocalVmResources, detectLocalVmHost, localVmHostProbe, validateLocalVmResources, type LocalVmHostFacts, type LocalVmResources } from "./local";
+import { defaultLocalVmResources, privateLocalVmResources, detectLocalVmHost, localVmHostProbe, validateLocalVmResources, type LocalVmHostFacts, type LocalVmResources } from "./local";
 import { LimaVmManagement, ProxmoxVmManagement } from "./management";
 import { QemuVmManagement, type QemuHostOptions, type QemuVmIdentity } from "./qemu";
 import type { VmStore } from "./store";
@@ -16,7 +16,7 @@ import { vmFail, vmId, vmRecord } from "./validation";
 export type VmManagerInput = { kind: "lima"; instance: string } | {
   kind: "proxmox"; baseUrl: string; node: string; vmid: number; token: string; proxy: { address: string; port: number };
 } | { kind: "qemu" };
-type StoredManager = Exclude<VmManagerInput, { kind: "proxmox" | "qemu" }> | Omit<Extract<VmManagerInput, { kind: "proxmox" }>, "token"> | ({ kind: "qemu" } & QemuVmIdentity);
+type StoredManager = Exclude<VmManagerInput, { kind: "proxmox" | "qemu" }> | Omit<Extract<VmManagerInput, { kind: "proxmox" }>, "token"> | ({ kind: "qemu"; /** TEAM16-01: the private member this local VM was created for; absent for the default. */ forVm?: string } & QemuVmIdentity);
 /** Owner-visible local VM sizing: current values (applied at next start), host defaults and controller-side host facts. */
 export interface LocalVmResourceView {
   managerId: string; resources: LocalVmResources; defaults: LocalVmResources | null; appliesAt: "next_start";
@@ -32,6 +32,8 @@ function pickLoopbackPort(): number {
 }
 /** Persistent adapter registry. VM/model APIs receive opaque IDs, never a token, endpoint or management object. */
 export class VmManagers extends Map<string, VmManagement> {
+  /** Local managers created for a TEAM16-01 private member, by manager id. */
+  readonly #privateLocal = new Map<string, string>();
   constructor(readonly options: { store: VmStore; vault: ConnectionVault; requireOwner: (actor: object) => void;
     limaEnvironment?: Readonly<Record<string, string>>; fetch?: typeof fetch;
     /** Trusted local-VM host configuration; absent means this controller does not create local VMs. */
@@ -44,7 +46,8 @@ export class VmManagers extends Map<string, VmManagement> {
     if (input.kind === "qemu") {
       // A persisted local VM needs this controller's protected host configuration; without it no adapter is installed.
       if (!this.options.local) return null;
-      const { kind: _kind, ...identity } = input, manager = new QemuVmManagement(identity, this.options.local);
+      const { kind: _kind, forVm, ...identity } = input, manager = new QemuVmManagement(identity, this.options.local);
+      if (forVm) this.#privateLocal.set(id, forVm);
       this.set(id, manager); return manager;
     }
     const manager = input.kind === "lima" ? new LimaVmManagement({ instance: input.instance, ...(this.options.limaEnvironment ? { env: this.options.limaEnvironment } : {}) }) :
@@ -110,8 +113,20 @@ export class VmManagers extends Map<string, VmManagement> {
   }
   /** Id of this controller's Jit-created local VM manager, if one is registered. */
   localManagerId(): string | null {
-    for (const [id, manager] of this) if (manager instanceof QemuVmManagement) return id;
+    for (const [id, manager] of this) if (manager instanceof QemuVmManagement && !this.#privateLocal.has(id)) return id;
     return null;
+  }
+  /** Whether this controller can create local VMs at all. */
+  get canCreateLocal(): boolean { return !!this.options.local; }
+  /**
+   * TEAM16-01 protected setup-job entry point for one private member: returns the local VM manager created
+   * for exactly `vmId`, registering it (smaller private sizing, its own name/MAC/port/disk) only when absent,
+   * so a resumed job never creates a second machine. Trusted composition calls it; it is not an owner API.
+   */
+  ensureLocalFor(forVmId: string): string {
+    vmId(forVmId);
+    for (const [id, forVm] of this.#privateLocal) if (forVm === forVmId) return id;
+    return this.createLocal(forVmId);
   }
   /**
    * Protected setup-job entry point (SETUP15-01): returns this controller's single local VM manager,
@@ -121,13 +136,13 @@ export class VmManagers extends Map<string, VmManagement> {
   ensureLocal(): string {
     return this.localManagerId() ?? this.createLocal();
   }
-  private createLocal(): string {
+  private createLocal(forVm?: string): string {
     if (!this.options.local) vmFail("vm_management_unavailable", 503);
     if (this.size >= 64) vmFail("vm_setup_capacity");
     const host = this.localHost();
     if (!host.kvm || !host.qemu || !host.architecture) vmFail("vm_host_unsupported", 422);
-    const id = crypto.randomUUID(), resources = defaultLocalVmResources(host), mac = `52:54:00:${[...randomBytes(3)].map(b => b.toString(16).padStart(2, "0")).join(":")}`;
-    const data = { kind: "qemu" as const, name: `jit-work-${randomBytes(6).toString("hex")}`, architecture: host.architecture, mac, sshPort: this.options.local.port?.() ?? pickLoopbackPort(), resources };
+    const id = crypto.randomUUID(), resources = forVm ? privateLocalVmResources(host) : defaultLocalVmResources(host), mac = `52:54:00:${[...randomBytes(3)].map(b => b.toString(16).padStart(2, "0")).join(":")}`;
+    const data = { kind: "qemu" as const, name: `jit-work-${randomBytes(6).toString("hex")}`, architecture: host.architecture, mac, sshPort: this.options.local.port?.() ?? pickLoopbackPort(), resources, ...(forVm ? { forVm } : {}) };
     this.load(id, data); this.options.store.db.query("INSERT INTO vm_managers VALUES (?,?)").run(id, JSON.stringify(data));
     return id;
   }

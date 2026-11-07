@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { WorkingVmPort, VmSession } from '../vm';
 import type { VmStore } from '../vm/store';
 import type { WorkActor } from '../policy';
@@ -35,12 +36,19 @@ export function reconcileVmLeases(team: TeamService, store: VmStore): string[] {
  * its VM attempt/session, so unknown cleanup stays fenced until the VM journal holds protected stop proof
  * (guest scope empty, or hypervisor stop from owner recovery), including after restart. The lock is
  * partitioned by the exact pool member (`input.vmId`), so a session on one working computer never blocks
- * or fences a sibling member of the same team working-computer resource. */
-export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resourceId: string, store: VmStore): WorkingVmPort {
+ * or fences a sibling member of the same team working-computer resource.
+ *
+ * With `partition: 'workspace'` (explicit S16 computers, TEAM16-01) the lock is the exact member *and* work:
+ * each work owns its own workspace directory on the member, so two works (of the same or different Bots)
+ * run concurrently within the member's session capacity while one work's attempts stay serialized. System
+ * administration remains exclusive through the VM service's own session admission. */
+export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resourceId: string, store: VmStore, options: { partition?: 'member' | 'workspace' } = {}): WorkingVmPort {
+  const partition = (input: { vmId: string; workId: string; mode?: 'work' | 'system' }) => options.partition !== 'workspace' || input.mode === 'system' ? input.vmId
+    : `w${createHash('sha256').update(`${input.vmId}\0${input.workId}`).digest('hex').slice(0, 40)}`;
   return { async openAttempt(actor, input) {
     const context = team.bind(actor as WorkActor);
     if (input.access === 'inspect') { team.resource(context, resourceId, 'read'); return vm.openAttempt(actor, input); }
-    const lease = team.acquire(context, [resourceId], 'write', 3600000, input.vmId);
+    const lease = team.acquire(context, [resourceId], 'write', 3600000, partition(input));
     const ready = Promise.withResolvers<VmSession>(), closed = Promise.withResolvers<void>();
     const subject: VmSubject = { kind: 'vm_session', vmId: input.vmId, workId: input.workId, attemptId: input.attemptId, sessionId: null };
     const lifecycle = team.dispatch(lease, async () => {
@@ -57,7 +65,11 @@ export function coordinateWorkingVm(vm: WorkingVmPort, team: TeamService, resour
     void lifecycle.catch(() => { try { reconcileVmLeases(team, store); } catch { /* Stays fenced. */ } });
     const session = await ready.promise;
     let closing: Promise<void> | null = null;
+    const transfer = session.transfer;
     return { ...session, definitions: session.definitions.map(definition => ({ ...definition, async execute(value, call) { team.guardLease(lease); const result = await definition.execute(value, call); team.guardLease(lease); return result; } })),
+      ...(transfer ? { transfer: Object.freeze({
+        async put(file: Parameters<typeof transfer.put>[0]) { team.guardLease(lease); const path = await transfer.put(file); team.guardLease(lease); return path; },
+        async take(path: string) { team.guardLease(lease); const bytes = await transfer.take(path); team.guardLease(lease); return bytes; } }) } : {}),
       cancel: () => session.cancel(), close: () => closing ??= (async () => { try { await session.close(); } finally { closed.resolve(); } await lifecycle; })() };
   } };
 }

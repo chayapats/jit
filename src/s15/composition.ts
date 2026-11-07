@@ -1,6 +1,8 @@
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
+import { ComputerScopes } from '../s16/computers/scopes';
+import { ComputerDirectory } from '../s16/computers/service';
 import { createS16WebHandler } from '../s16/web/handler';
 import { RoutineService, routineQuietDecision } from '../s16/routines/service';
 import { NotificationService } from '../s16/notifications/service';
@@ -17,6 +19,7 @@ import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type Ca
 import { canonical, equal, unknownUsage } from './policy/validation';
 import { ConversationApplication, ConversationStore, conversationRequestView, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
 import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool, VmStore, LocalVmProvisioning, createVmApi, isVmLocalManagement, placeWorkingVm, probeLocalVmHost, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
+import { privateLocalVmResources } from './vm/local';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
 import type { ApprovedWebsites } from './browser/sites';
@@ -63,6 +66,10 @@ export interface S15CompositionOptions {
    * created on first use, and changes no installed standing policy. `fetch` is the push transport (tests inject a fake
    * push service); `resultAfterMs` is how long a request must take before its finished result is announced. */
   notifications?: { fetch?: (request: Request) => Promise<Response>; limits?: Partial<NotificationLimits>; resultAfterMs?: number };
+  /** Explicit S16 working computers (`s16-computers/v1`, TEAM16-01): per-work workspace leases, owner-chosen private
+   * computers for a Bot, and idle release after `idleStopMs` (on-demand start). Opt-in; it changes no installed policy.
+   * `sweepMs` is the idle-check period (0: only explicit `computers.sweep()` calls, for deterministic tests). */
+  computers?: { idleStopMs: number; sweepMs?: number };
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -175,7 +182,9 @@ export async function composeS15(options: S15CompositionOptions) {
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
     // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
     // enrollment records in the protected VM journal, never a hand-written list.
-    const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}) });
+    // TEAM16-01: protected private assignments live in the same VM journal as the pool rows they constrain.
+    const scopes = options.computers ? new ComputerScopes(vmStore, options.vm.id, options.clock?.now ?? Date.now) : null;
+    const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}), ...(scopes ? { scope: scopes, wakeable: true } : {}) });
     // GIT15-04: the GitHub service recipient is current only while the Web connection exists.
     const disclosureCatalogs = options.disclosure ? { ...options.disclosure.catalogs, source: (value: Ref) => files?.source(value.id) ?? options.disclosure!.catalogs.source(value), recipient: (value: Ref) => { const row = githubConnections?.recipient(value.id); return row ? (equal(row.ref, value) ? row : null) : options.disclosure!.catalogs.recipient(value); } } : undefined;
     const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, catalogs: disclosureCatalogs!, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
@@ -214,6 +223,8 @@ export async function composeS15(options: S15CompositionOptions) {
       await files.parser?.recover();
     }
     const fileWorkflow = files ? createFileWorkflow({ store: files, resource: options.vm.resource, policy: () => policy, disclosure: () => disclosure,
+      // FILE16-01C: file work reaches the same placed, TEAM-coordinated working computer as ordinary VM work.
+      ...(options.computers ? { computer: { vm: { openAttempt: (actor, input) => workingVm.openAttempt(actor, input) }, vmId: options.vm.id, resourceId: options.vm.resource.id } } : {}),
       guardResource(current, write) { team.resource(team.bind(current.actor), options.vm.resource.id, write ? 'write' : 'read'); },
       request(workId) { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
     const channelOwner = (snapshot: ResumeOwnerSnapshot, current: () => boolean): OwnerActor | null => {
@@ -261,14 +272,15 @@ export async function composeS15(options: S15CompositionOptions) {
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}),
-      ...(localVm ? { proxyLease: localVm.lease } : {}) });
+      ...(localVm ? { proxyLease: localVm.lease } : {}), ...(options.computers ? { idle: { stopAfterMs: options.computers.idleStopMs } } : {}) });
     if (localVm) {
       // A local VM survives controller restarts; re-attach and re-verify it (or restart it after a host reboot) in the background.
       const reattach = new AbortController(), reattaching = vm.reattach(reattach.signal).catch(() => {});
       cleanup.push(async () => { reattach.abort(); await reattaching; });
     }
     // Placement runs before the TEAM lease so the lease, its fence and its stop-proof link name the exact member.
-    const workingVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore), pool);
+    const workingVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore, { partition: options.computers ? 'workspace' : 'member' }), pool,
+      options.computers ? actor => policy.work.guard(actor as WorkActor).request.bot.id : undefined);
     // Protected TEAM/VM reconciliation: leases left unknown by a crash or by recovery are released only on
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
@@ -282,6 +294,20 @@ export async function composeS15(options: S15CompositionOptions) {
       host: () => probeLocalVmHost(localVm.host.directory, localVm.host.probe), manager: () => managers.ensureLocal(),
       enroll: input => enrollment.provisionLocal(input), ...(options.clock ? { now: options.clock.now } : {}) }) : null;
     if (provisioning) cleanup.push(() => provisioning.close());
+    // TEAM16-01: owner directory of shared/private working computers, private setup jobs and idle release.
+    const localHostProbe = () => probeLocalVmHost(localVm!.host.directory, localVm!.host.probe);
+    const computers = scopes ? new ComputerDirectory<OwnerActor>({ store: vmStore, pool, scopes, vm, requireOwner, status: (owner, id) => enrollment.status(owner, id),
+      bots: owner => { const current = policy.owner.current(owner); return (current?.bots ?? [options.conversation.bot]).map(bot => ({ id: bot.id, main: bot.id === options.conversation.bot.id })); },
+      ...(localVm && managers instanceof VmManagers ? { local: {
+        unavailable() { const host = localHostProbe(); if (host.state !== 'ready') return host.code; try { privateLocalVmResources(host.facts); return null; } catch (error) { return error instanceof AppError ? error.code : 'vm_host_too_small'; } },
+        job: (id: string) => new LocalVmProvisioning({ store: vmStore, vmId: id, host: localHostProbe, manager: () => managers.ensureLocalFor(id), enroll: input => enrollment.provisionLocal(input), ...(options.clock ? { now: options.clock.now } : {}) }),
+        isLocal(id: string) { try { const row = vmStore.registration(id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); } catch { return false; } },
+      } } : {}) }) : null;
+    if (computers) cleanup.push(() => computers.close());
+    if (options.computers && options.computers.sweepMs !== 0) {
+      const timer = setInterval(() => { void vm.sleepIdle().catch(() => {}); }, options.computers.sweepMs ?? 60_000); timer.unref?.();
+      cleanup.push(() => clearInterval(timer));
+    }
     const checkedManagers = new Map<string, string | null>();
     const unboundAdapter = (id: string) => { const manager = managers.get(id); return !!manager && !isVmLocalManagement(manager) && !enrolledManagers().has(id); };
     const enrolledManagers = () => new Set(vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_registry').all().map(row => (JSON.parse(row.data) as { managerId: string | null }).managerId));
@@ -562,7 +588,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -580,7 +606,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, models, work, github, browser, authentication, resumes, routines,
+    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, models, work, github, browser, authentication, resumes, routines,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

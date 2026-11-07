@@ -20,6 +20,8 @@ export interface ClientCapabilities {
   routines?: { available: false; code: "routines_unavailable" } | { available: true; contract: "s16-client-routines/v1"; reactions: { signed: true; github: true; artifacts: boolean }; feed: true };
   /** Additive field: Web Push notices (`s16-notifications/v1`) and the fixed service worker/scope that receives them. */
   notifications?: { available: false; code: "notifications_unavailable" } | { available: true; contract: "s16-notifications/v1"; transport: "web_push"; serviceWorker: "/s16/sw.js"; scope: "/s16/" };
+  /** TEAM16-01 working computers; `files` is FILE16-01C staging/collection inside file work. */
+  computers?: { available: false; code: "computers_unavailable" } | { available: true; contract: "s16-client-computers/v1"; idleStopMs: number | null; files: boolean };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {

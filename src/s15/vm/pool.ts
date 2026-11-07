@@ -13,8 +13,19 @@ export interface VmPoolOptions {
   /** Runtime per-VM session ceiling (`VmLimits.maxSessions`); each member's own maximum is also applied. */
   maxSessions?: number;
   now?: () => number;
+  /**
+   * TEAM16-01 computer scopes (explicit S16 computers). `privateBot` names the Bot a member is privately
+   * assigned to (null: shared); a private member never becomes shared. `assigned` lists a Bot's current
+   * (not retired) private members, including one still being set up. Both read protected journal state,
+   * never a model or guest claim. Absent, every member is shared and placement ignores Bots.
+   */
+  scope?: { privateBot(vm: string): string | null; assigned(botId: string): readonly string[] };
+  /** TEAM16-01: members Jit stopped for idleness are placeable; the VM service starts them on demand. */
+  wakeable?: boolean;
 }
 interface Candidate { id: string; state: string; networkIsolated: boolean; bindingMac?: string; maxSessions: number; reason: string | null }
+/** Registry reason the VM service writes when it stopped an idle member itself (`vmIdleReason`). */
+const idleReason = "vm_idle";
 
 /**
  * The team's working computer as a pool of enrolled VMs (POOL15-01). Members are the protected enrollment
@@ -67,23 +78,35 @@ export class VmPool {
    * single VM gives: `vm_capacity` when ready members are full, `vm_drained` when every ready member is
    * drained, otherwise the default member id so the VM service reports its own exact reason.
    */
-  place(workId: string): string {
+  place(workId: string, botId?: string): string {
+    const scope = this.options.scope;
+    if (scope && botId === undefined) vmFail("outside_scope", 403);
+    const sleeping = (row: Candidate) => !!this.options.wakeable && row.state === "stopped" && row.reason === idleReason && !!row.bindingMac;
     const bound = this.holder(workId);
     if (bound) {
+      // A work's workspace never moves, and a private member never serves another Bot's work.
+      const owner = scope?.privateBot(bound) ?? null;
+      if (owner !== null && owner !== botId) vmFail("outside_scope", 403);
       const row = this.rows().find(candidate => candidate.id === bound);
-      if (row?.state === "stopped") vmFail("vm_stopped", 423);
+      if (row?.state === "stopped" && !sleeping(row)) vmFail("vm_stopped", 423);
       return bound;
     }
-    const ready = this.rows().filter(row => row.state === "ready" && row.networkIsolated && !!row.bindingMac);
+    // TEAM16-01: a Bot with a private computer uses only it (waiting while it is set up); other Bots use shared members.
+    const own = scope ? scope.assigned(botId!) : [];
+    const rows = this.rows().filter(row => !scope || (own.length ? own.includes(row.id) && scope.privateBot(row.id) === botId : scope.privateBot(row.id) === null));
+    if (own.length && !rows.length) vmFail("vm_private_preparing", 423);
+    const ready = rows.filter(row => row.state === "ready" && row.networkIsolated && !!row.bindingMac || sleeping(row));
     const open = ready.filter(row => !this.drained(row.id));
-    const scored = open.map(row => ({ row, active: this.active(row.id), capacity: this.capacity(row) })).filter(item => !item.active.system && item.active.count < item.capacity);
+    const scored = open.map(row => ({ row, active: this.active(row.id), capacity: this.capacity(row), asleep: sleeping(row) })).filter(item => !item.active.system && item.active.count < item.capacity);
     if (!scored.length) {
       if (open.length) vmFail("vm_capacity");
       if (ready.length) vmFail("vm_drained", 423);
-      return this.id;
+      // The VM service reports the exact reason; a private Bot's work never falls back to a shared member.
+      return own.length ? rows[0]!.id : this.id;
     }
-    // Lowest load ratio first; exact integer comparison (a/b < c/d ⇔ a·d < c·b), then the default member.
-    scored.sort((a, b) => a.active.count * b.capacity - b.active.count * a.capacity || Number(b.row.id === this.id) - Number(a.row.id === this.id));
+    // A running member before one that must be started; then lowest load ratio (exact integer comparison,
+    // a/b < c/d ⇔ a·d < c·b), then the default member.
+    scored.sort((a, b) => Number(a.asleep) - Number(b.asleep) || a.active.count * b.capacity - b.active.count * a.capacity || Number(b.row.id === this.id) - Number(a.row.id === this.id));
     return scored[0]!.row.id;
   }
   /** Records the member now holding this work's workspace. The first binding wins and is never moved. */
@@ -122,14 +145,14 @@ export class VmPool {
  * An execution session binds the work's affinity once it opened; inspection reads from the holder (or a
  * placed member for work with no workspace yet) without creating affinity.
  */
-export function placeWorkingVm(port: WorkingVmPort, pool: VmPool): WorkingVmPort {
+export function placeWorkingVm(port: WorkingVmPort, pool: VmPool, bot?: (actor: object) => string): WorkingVmPort {
   const chains = new Map<string, Promise<unknown>>();
   return { async openAttempt(actor, input) {
     if (input.vmId !== pool.id) vmFail("vm_policy_denied", 403);
     vmId(input.workId);
     const previous = chains.get(input.workId) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(async (): Promise<VmSession> => {
-      const vm = pool.place(input.workId);
+      const vm = pool.place(input.workId, bot?.(actor));
       const session = await port.openAttempt(actor, { ...input, vmId: vm });
       if ((input.access ?? "execute") === "execute") {
         try { pool.bind(input.workId, vm); } catch (error) { await session.close().catch(() => {}); throw error; }

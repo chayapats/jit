@@ -40,7 +40,7 @@ const ref = (id: string) => ({ id, revision: 1, generation: 1 });
  * the approved Codex subscription route for the owner's single device login (live availability follows that
  * login), no policy, budget or personal GitHub rule, and the Jit-managed local working computer whose QEMU runs
  * as the separate identity (`vmm: null` on a host without local VM support: the owner enrolls their own VM in
- * the Web instead). Web Push notifications are composed (NOTIFY16-01). `browser: null` selects the provisioned protected browser (BROW15-02): pinned Chromium that
+ * the Web instead). Web Push notifications (NOTIFY16-01) and S16 working computers (TEAM16-01) are composed. `browser: null` selects the provisioned protected browser (BROW15-02): pinned Chromium that
  * the controller verifies itself and the owner's approved-website list in the Web. GitHub and Google stay off.
  */
 export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmmOptions | null; origin?: string }): S15RuntimeConfig {
@@ -50,6 +50,8 @@ export function s15InstallerConfig(input: { installationId: string; vmm: QemuVmm
   return parseS15RuntimeConfig({ contract: "s15-runtime/v1", installationId: input.installationId, directory: s15Installation.state, origin: input.origin ?? s15Installation.origin, policy: null,
     // NOTIFY16-01: Web Push is on by default; nothing is sent until the owner turns it on for a device.
     notifications: true,
+    // TEAM16-01: per-work workspaces, owner-chosen private computers and 30-minute idle release.
+    computers: true,
     catalog: [{ kind: "bot", ref: ref("jit"), active: true }, { kind: "resource", ref: ref("computer"), active: true }, { kind: "route", ref: selection.route, active: true }, { kind: "model", ref: selection.model, active: true }], resourceBots: [],
     conversation: { ownerId: "owner", bot: ref("jit"), selection, route: { provider: "codex", model: "gpt-6.1-sol" }, limits: { modelCalls: 6, toolCalls: 16, outputBytes: 32768, activeMs: 300000 }, modelCallUpperBound: bound },
     models: [{ selection, provider: "codex", modelId: "gpt-6.1-sol", account: ref("codex_account"), billing: ref("codex_subscription"), recipient: ref("codex_provider"), charge: "subscription", availability: "available", efforts: ["high"], effortEvidence: "requested_only", upperBound: bound, rank: { ordinary: 0, difficult: 0 } }],

@@ -51,6 +51,18 @@ export function defaultLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "m
 }
 
 /**
+ * TEAM16-01 sizing of an additional Jit-created private working computer: about half of the default working
+ * VM (at least 1 vCPU / 2 GiB, memory in 256 MiB steps) with a 40 GiB sparse disk, so it can run next to the
+ * shared computer on the reference host (10 vCPU / 20 GiB gives 2 vCPU / 4.5 GiB). Idle release stops either
+ * one when unused. The same host refusals as the default apply.
+ */
+export function privateLocalVmResources(host: Pick<LocalVmHostFacts, "cpus" | "memoryBytes" | "diskTotalBytes" | "diskFreeBytes">): LocalVmResources {
+  const base = defaultLocalVmResources(host), diskGiB = 40;
+  if (host.diskFreeBytes - localVmDiskReserve(host.diskTotalBytes) < diskGiB * GiB) vmFail("vm_disk_insufficient", 422);
+  return { cpus: Math.max(localVmMinimum.cpus, Math.floor(base.cpus / 2)), memoryMiB: Math.max(localVmMinimum.memoryMiB, Math.floor(base.memoryMiB / 2 / 256) * 256), diskGiB };
+}
+
+/**
  * Validates an owner edit. CPUs stay within the host count, memory leaves at least 2 GiB to the controller
  * (multiples of 256 MiB), and disks only grow, within 2 TiB and the free space left after the installer reserve.
  * `appliedDiskGiB` is the size the image actually has; all outstanding growth beyond it must fit.
