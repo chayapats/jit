@@ -6146,7 +6146,7 @@ export const en: Record<MessageKey, string> = {
   "s16.computers.empty": "No computer yet. Jit sets one up during installation.",
   "s16.nav.allBots": "All Bots",
   "s16.bots.title": "Bots",
-  "s16.bots.lead": "Each Bot has its own responsibility, conversations and memory. A new Bot uses the team's computer, connected apps and rules, so there is nothing else to set up.",
+  "s16.bots.lead": "Each Bot has its own responsibility, conversations and memory. A new Bot uses the computer, connected apps and rules of the team, so there is nothing else to set up.",
   "s16.bots.mainName": "Jit",
   "s16.bots.mainBadge": "Main Bot",
   "s16.bots.new": "New Bot",
