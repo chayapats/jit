@@ -261,6 +261,17 @@ export class FileStore<Actor> {
     if (upload.receipt.contract === "s16-file-receipt/v2") { const derived = this.readPath(this.path(upload.id) + ".derived", upload.receipt.representation.bytes); if (hash(derived) !== upload.receipt.representation.sha256) throw new AppError("file_integrity_failed", 409); return { receipt: upload.receipt, text: upload.receipt.representation.mime === "text/plain" ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(derived) : "" }; }
     return { receipt: upload.receipt, text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) };
   }
+  /**
+   * FILE16-01C: exact original bytes of one selected ready input, for staging into the working computer
+   * (the untrusted processing boundary). Same ownership/readiness/hash checks as `read`; callers still
+   * supply the owning work, lineage and disclosure guards.
+   */
+  original(actor: Actor, conversationId: string, reference: FileReference): { receipt: FileReceipt; bytes: Uint8Array } {
+    const { receipt } = this.read(actor, conversationId, reference);
+    const bytes = this.readPath(this.path(receipt.id), receipt.bytes);
+    if (hash(bytes) !== reference.sha256) throw new AppError("file_integrity_failed", 409);
+    return { receipt, bytes };
+  }
   /** Current sanitized image bytes for the trusted Schway resolver; never raw original bytes. */
   image(actor: Actor, conversationId: string, reference: FileReference): { content: ImageContent; bytes: Uint8Array } {
     const { receipt } = this.read(actor, conversationId, reference);

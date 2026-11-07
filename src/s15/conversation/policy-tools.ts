@@ -19,6 +19,22 @@ export interface ConversationPolicyAction extends Metadata {
   access: "reversible_write" | "effect"; adapter: string;
   proposal(input: unknown): unknown;
 }
+/**
+ * One exact POLICY action from a conversation tool: prepare through the registered adapter, record the action
+ * on the request, dispatch only an `allow` decision, then require a publishable success. A held action stays
+ * for the owner's in-chat card; nothing here approves or retries it.
+ */
+export async function runConversationAction(host: S15PolicyService, work: ConversationPolicyWork, input: { guard: () => void; onAction?: (action: { id: string; revision: number; actionHash: string }) => void }, slot: string, adapter: string, proposal: unknown): Promise<{ action: { id: string; revision: number; actionHash: string }; status: "succeeded" }> {
+  const prepared = host.work.prepare(work.actor, { slot, adapter, proposal });
+  const ref = { id: prepared.action.id, revision: prepared.action.revision, actionHash: prepared.action.actionHash };
+  if (!input.onAction) throw new AppError("adapter_unproven");
+  input.onAction(ref);
+  if (prepared.decision.state !== "allow") throw new AppError(prepared.decision.code);
+  input.guard(); const observation = await host.work.dispatch(work.actor, ref);
+  if (observation.outcome !== "succeeded") throw new AppError(observation.code ?? "reconciliation_required");
+  input.guard(); host.control.publishable(work.actor, ref);
+  return { action: ref, status: "succeeded" };
+}
 const unknownUsage = () => ({ attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null });
 const code = (error: unknown) => error instanceof PolicyError || error instanceof AppError ? error.code : "conversation_unavailable";
 
@@ -35,17 +51,7 @@ export function createConversationPolicyTools(host: S15PolicyService, registrati
       definition: { name: entry.name, description: entry.description, inputSchema: entry.inputSchema, execution: "exclusive", effect: entry.access === "read" ? "read-only" : "mutating",
         async execute(value) {
           input.guard(); const slot = `ct_${digest(`${work.authority.id}:${++sequence}`)}`;
-          if (entry.access !== "read") {
-            const prepared = host.work.prepare(work.actor, { slot, adapter: entry.adapter, proposal: entry.proposal(value) });
-            const ref = { id: prepared.action.id, revision: prepared.action.revision, actionHash: prepared.action.actionHash };
-            if (!input.onAction) throw new AppError("adapter_unproven");
-            input.onAction(ref);
-            if (prepared.decision.state !== "allow") throw new AppError(prepared.decision.code);
-            input.guard(); const observation = await host.work.dispatch(work.actor, ref);
-            if (observation.outcome !== "succeeded") throw new AppError(observation.code ?? "reconciliation_required");
-            input.guard(); host.control.publishable(work.actor, ref);
-            return { content: JSON.stringify({ action: ref, status: observation.outcome }) };
-          }
+          if (entry.access !== "read") return { content: JSON.stringify(await runConversationAction(host, work, input, slot, entry.adapter, entry.proposal(value))) };
           const payload = JSON.parse(canonical(entry.payload(value))) as JsonValue, pinned = canonical(payload);
           const admitted = host.work.reserveRead(work.actor, { requestId: slot, resource: entry.resource, operation: entry.operation, exactPayload: payload, upperBound: entry.upperBound, fences: entry.fences });
           if (admitted.state !== "allow") throw new AppError(admitted.code);
