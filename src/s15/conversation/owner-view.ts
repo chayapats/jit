@@ -31,7 +31,13 @@ export interface ConversationOwnerRow {
   steers: ConversationSteer[];
   /** Owner decision this message recorded on one exact action revision, with its dispatch observation when known. */
   decision: { action: ActionRef; decision: "approve" | "deny"; outcome: Observation["outcome"] | null } | null;
+  /** DELEG16-01: on a delegated child, its originating request and assignee. `ownerMessage` then holds the assigning Bot's task text. */
+  delegation?: { parentRequestId: string; parentConversationId: string; kind: "peer" | "temporary"; botId: string; fromBotId: string };
+  /** DELEG16-01: assignments this request handed to peers or temporary workers, in order. States are the children's own. */
+  children?: ConversationChild[];
 }
+/** One delegated child of a request. The task is the assigning Bot's text; the result is read in the child conversation. */
+export interface ConversationChild { requestId: string; conversationId: string; kind: "peer" | "temporary"; botId: string; task: string; state: ConversationOwnerRow["state"]; code: string | null }
 /** Safe hold entry with the real POLICY owner-only exact prepared payload projection. */
 export interface ConversationNeedsYou { id: string; requestId: string; code: string; kind: "question" | "action" | "reconciliation"; slip: ActionSlip | null }
 /** Bounded read-only owner projection; no polling/reconnect action can admit work or approve a slip. */
@@ -86,7 +92,17 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
       ...(request.routine ? { routine: { routineId: request.routine.routineId, occurrenceId: request.routine.occurrenceId, quiet: request.routine.quiet } } : {}),
       steers: app.store.steers(id),
+      ...(request.delegation ? { delegation: { parentRequestId: request.delegation.parentRequestId, parentConversationId: request.delegation.parentConversationId, kind: request.delegation.kind, botId: request.delegation.botId, fromBotId: request.delegation.fromBotId } } : {}),
+      ...(() => { const children = childRows(app, id); return children.length ? { children } : {}; })(),
       decision: request.decision ? { action: { ...request.decision.action }, decision: request.decision.decision, outcome: request.decision.observation?.outcome ?? null } : null };
+}
+
+/** Children read from protected state only; a child's text and state never come from the parent's model output. */
+function childRows<Actor, Work>(app: ConversationApplication<Actor, Work>, parentId: string): ConversationChild[] {
+  return app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.delegation.parentRequestId')=? ORDER BY json_extract(record_json,'$.delegation.ordinal') LIMIT 16").all(parentId).map(({ id }) => {
+    const child = app.store.request(id), pin = child.delegation!;
+    return { requestId: id, conversationId: child.receipt.conversationId, kind: pin.kind, botId: pin.botId, task: child.command.text, state: state(child), code: child.code };
+  });
 }
 
 /** One guarded owner row independent of the bounded conversation window; never exposes the raw journal. */
@@ -109,7 +125,8 @@ export function conversationPendingNeeds<Actor, Work>(app: ConversationApplicati
 /** Recent conversations for the authenticated owner, newest first. Reading starts no model, tool or queue. */
 export function conversationList<Actor, Work>(app: ConversationApplication<Actor, Work>, actor: Actor, limit = 32): ConversationListEntry[] {
   const owner = app.options.policy.requireOwner(actor);
-  const rows = app.store.db.query<{ conversation_id: string; latest: number }, [number]>("SELECT conversation_id, max(rowid) AS latest FROM requests GROUP BY conversation_id ORDER BY latest DESC LIMIT ?").all(Math.max(1, Math.min(limit, 64)));
+  // Delegated child conversations open from their parent's card, never as top-level chats.
+  const rows = app.store.db.query<{ conversation_id: string; latest: number }, [number]>("SELECT conversation_id, max(rowid) AS latest FROM requests WHERE json_type(record_json,'$.delegation') IS NULL GROUP BY conversation_id ORDER BY latest DESC LIMIT ?").all(Math.max(1, Math.min(limit, 64)));
   return rows.flatMap(row => {
     const first = app.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid LIMIT 1").get(row.conversation_id)!;
     const latest = app.store.db.query<{ id: string }, [number]>("SELECT id FROM requests WHERE rowid=?").get(row.latest)!;

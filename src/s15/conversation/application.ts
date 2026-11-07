@@ -8,9 +8,9 @@ import { groundConversationIntent } from "./intent";
 import { runConversation } from "./schway";
 import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
-import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
+import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationDelegationPin, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
 
-const safeCodes = new Set(["material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
+const safeCodes = new Set(["bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
   "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
@@ -65,6 +65,11 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         const next = row.state === "sent" ? "uncertain" : "unapplied"; this.store.setSteer(row.id, next);
         this.store.event(this.store.request(row.request_id), "steer", this.clock.now(), `steer_${next}`);
       }
+      // A delegated child that never started has no live owner registration and its parent is reconcile-only now.
+      for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='queued' AND json_type(record_json,'$.delegation')='object'").all()) {
+        const request = this.store.request(row.id); request.state = "blocked"; request.code = "context_lost"; request.revision++;
+        this.store.save(request); this.store.event(request, "stopped", this.clock.now(), request.code);
+      }
       for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='running'").all()) {
         const request = this.store.request(row.id); request.state = "reconcile_only"; request.code = "context_lost"; request.revision++;
         this.store.save(request); this.store.event(request, "needs_me", this.clock.now(), request.code);
@@ -86,6 +91,58 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (!value || typeof value !== "object" || (value as { continuation?: unknown }).continuation !== null) throw new AppError("invalid_data");
     return this.#submit(actor, value, structuredClone(pin));
   }
+  /**
+   * DELEG16-01 protected assignment ingress. Only the trusted delegation tool calls this, while the parent request is
+   * running. In one transaction it charges the child's finite slice to the parent's own model/tool counters (never
+   * refunded), checks the per-request and concurrent bounds and records the queued child with its immutable pin. The
+   * child inherits the parent's frozen purpose, resources and access, never more. `bind` records the child
+   * conversation's Bot before the child exists. Children are numbered per parent, so a repeated call never doubles.
+   */
+  submitDelegation(actor: OwnerActor, input: { parentRequestId: string; kind: ConversationDelegationPin["kind"]; botId: string; fromBotId: string; task: string; selection?: import("../policy").Selection; sourceId: string | null; bind(conversationId: string): void }, bounds: { perRequest: number; concurrent: number }): ConversationReceipt {
+    this.options.policy.requireOwner(actor); identity(input.parentRequestId); identity(input.botId); identity(input.fromBotId); content(input.task, 16384);
+    if (input.sourceId !== null) identity(input.sourceId);
+    if (!["peer", "temporary"].includes(input.kind)) throw new AppError("invalid_data");
+    const receipt = this.store.transaction(() => {
+      const parent = this.store.request(input.parentRequestId); this.owner(actor, parent);
+      if (this.#closing) throw new AppError("conversation_unavailable", 503);
+      if (parent.state !== "running" || parent.phase !== "work" || !parent.authority || !parent.intent.scope || parent.delegation || parent.code) throw new AppError("delegation_unavailable", 409);
+      const children = this.store.db.query<{ state: string }, [string]>("SELECT state FROM requests WHERE json_extract(record_json,'$.delegation.parentRequestId')=?").all(parent.receipt.rootRequestId);
+      if (children.length >= bounds.perRequest) throw new AppError("budget_exhausted", 409);
+      if (children.filter(child => child.state === "queued" || child.state === "running").length >= bounds.concurrent) throw new AppError("capacity_busy", 409);
+      // No computer session can be free for a child while ordinary work (waiting parents included) holds them all.
+      if (this.#delegationCapacity() === 0) throw new AppError("capacity_busy", 409);
+      const limits = parent.authority.limits, slice = { modelCalls: Math.max(2, Math.floor(limits.modelCalls / 3)), toolCalls: Math.max(1, Math.floor(limits.toolCalls / 3)) };
+      // Shared finite budget: the parent keeps at least one model call to report; the slice is never refunded.
+      if (parent.modelCalls + slice.modelCalls >= limits.modelCalls || parent.toolCalls + slice.toolCalls > limits.toolCalls) throw new AppError("budget_exhausted", 409);
+      this.store.capacity();
+      const ordinal = children.length + 1, key = digest(`s16.delegation.child.v1\n${parent.receipt.rootRequestId}\n${ordinal}`);
+      const childId = `dl_${key.slice(0, 40)}`, conversationId = `dc_${key.slice(0, 40)}`;
+      input.bind(conversationId);
+      this.options.admitConversation?.(conversationId);
+      parent.modelCalls += slice.modelCalls; parent.toolCalls += slice.toolCalls; parent.revision++; this.store.save(parent);
+      const scope = parent.intent.scope, command: ConversationCommand = { contract: "s15-conversation/v1", requestId: childId, conversationId, text: input.task, continuation: null };
+      const pin: ConversationDelegationPin = { contract: "s16-delegation-run/v1", parentRequestId: parent.receipt.rootRequestId, parentConversationId: parent.receipt.conversationId, ordinal, kind: input.kind, botId: input.botId, fromBotId: input.fromBotId, purposeId: scope.purposeId, resourceIds: [...scope.resourceIds], access: scope.access, limits: slice, ...(input.kind === "temporary" && input.selection ? { selection: structuredClone(input.selection) } : {}), sourceId: input.sourceId };
+      const intent: ConversationIntent = { kind: scope.access === "read" ? "inspect" : "execute", subject: null, instruction: input.task, scope: { purposeId: scope.purposeId, resourceIds: [...scope.resourceIds], access: scope.access } };
+      const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId: childId, rootRequestId: childId, conversationId, receivedAt: this.clock.now() };
+      const request: ConversationRequest = { receipt, command, interpretationRequest: command, owner: { ...parent.owner }, revision: 1, intent, state: "queued", code: null, authority: null, phase: "work", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null, delegation: pin };
+      this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(childId, conversationId, request.state, canonical(request));
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?,?,?)").run(childId, digest(`s16.delegation.command.v1\n${canonical({ command, pin })}`), childId, canonical(receipt), canonical(command));
+      this.store.event(request, "received", this.clock.now());
+      this.store.event(request, "admitted", this.clock.now());
+      this.options.beforeCommit?.();
+      return receipt;
+    });
+    this.#owners.set(receipt.rootRequestId, { actor, commandId: receipt.requestId });
+    this.#wakeDrain();
+    return receipt;
+  }
+  /** Children that may run now: the pool, bounded by computer sessions that no running ordinary request may hold. */
+  #delegationCapacity(): number {
+    const pool = Math.max(1, Math.min(this.options.maxDelegatedRuns ?? 3, 8));
+    if (!this.options.delegationSessions) return pool;
+    const sessions = this.options.delegationSessions(), ordinary = this.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM requests WHERE state='running' AND json_type(record_json,'$.delegation') IS NULL").get()!.n;
+    return Math.max(0, Math.min(pool, (Number.isSafeInteger(sessions) ? sessions : 0) - ordinary));
+  }
   /** `decision` comes only from the exact one-press decision command (`decide`); typed text never decides. */
   #submit(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin | null, decision: OwnerDecisionInput | null = null): ConversationReceipt {
     this.options.policy.requireOwner(actor); command(value);
@@ -99,6 +156,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         return JSON.parse(prior.receipt_json) as ConversationReceipt;
       }
       if (this.#closing) throw new AppError("conversation_unavailable", 503);
+      // BOT16-01: an archived Bot's conversation accepts nothing new (messages, clarifications, routine runs).
+      this.options.admitConversation?.(input.conversationId);
       this.store.capacity();
       let intent = groundConversationIntent(input.text, { fileOutput: input.contract === "s16-conversation/v2" });
       let request: ConversationRequest;
@@ -390,6 +449,10 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       this.store.save(request); this.store.event(request, "stopped", this.clock.now(), "aborted");
     });
     this.#running.get(requestId)?.abort();
+    // DELEG16-01: stopping the originating request stops its unfinished children; a child's stop leaves its siblings.
+    for (const child of this.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.delegation.parentRequestId')=? AND state IN ('queued','running','held','proposed')").all(requestId)) {
+      try { this.stop(actor, child.id); } catch { /* Settled meanwhile. */ }
+    }
   }
   /**
    * Wakes the local durable queue drain. Concurrent callers share it; a claim is committed before I/O. Up to
@@ -400,16 +463,21 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (this.#draining) { this.#wakeDrain(); return this.#draining; }
     const done = Promise.withResolvers<void>(); this.#draining = done.promise;
     const max = Math.max(1, Math.min(this.options.maxConcurrentRuns ?? 2, 8));
+    const delegatedPool = () => this.#delegationCapacity();
     void (async () => {
-      const active = new Map<string, Promise<void>>();
+      const active = new Map<string, Promise<void>>(), children = new Set<string>();
       let failure: unknown = null;
       try {
         while (!this.#closing) {
           const busy = new Set([...active.keys()].map(id => this.store.request(id).receipt.conversationId));
-          // Only process-local authenticated registrations are runnable after restart.
-          const id = active.size >= max ? undefined : [...this.#owners.keys()].find(id => !active.has(id) && this.store.request(id).state === "queued" && !busy.has(this.store.request(id).receipt.conversationId));
+          // Only process-local authenticated registrations are runnable after restart. Delegated children use their own
+          // finite pool: a parent waiting on its children holds an ordinary slot and must not starve them.
+          const delegated = delegatedPool();
+          const runnable = (id: string) => { const request = this.store.request(id); return !active.has(id) && request.state === "queued" && !busy.has(request.receipt.conversationId) && (request.delegation ? children.size < delegated : active.size - children.size < max); };
+          const id = [...this.#owners.keys()].find(runnable);
           if (id) {
-            const run = (this.store.request(id).phase === "decision" ? this.runDecision(id) : this.run(id)).catch(error => { failure ??= error; }).finally(() => active.delete(id));
+            if (this.store.request(id).delegation) children.add(id);
+            const run = (this.store.request(id).phase === "decision" ? this.runDecision(id) : this.run(id)).catch(error => { failure ??= error; }).finally(() => { active.delete(id); children.delete(id); });
             active.set(id, run); continue;
           }
           if (!active.size) break;
@@ -468,7 +536,11 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     const cancelTools = () => { if (tools && !cancel) cancel = Promise.resolve().then(() => tools!.cancel()).catch(() => {}); };
     abort.signal.addEventListener("abort", cancelTools, { once: true });
     try {
-      let request = this.store.transaction(() => {
+      let request: ConversationRequest;
+      // DELEG16-01: a delegated child has no interpretation call; its pin already fixes the narrowed scope.
+      if (this.store.request(id).delegation) request = this.store.transaction(() => this.admitDelegation(id, registration?.actor));
+      else {
+      request = this.store.transaction(() => {
         const request = this.store.request(id);
         if (request.state !== "queued" || !request.interpretation) throw new AppError("already_claimed", 409);
         const actor = registration?.actor; if (!actor) throw new AppError("authentication_required", 401);
@@ -520,14 +592,16 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.store.event(current, current.state === "running" ? "admitted" : "needs_me", this.clock.now(), current.code);
         this.options.beforeCommit?.(); return current;
       });
+      }
       if (request.state !== "running") return;
       work = this.options.policy.open(request.authority!); guard("model");
       clearTimeout(timer); startedAt = this.clock.now(); timer = setTimeout(() => abort.abort(), request.authority!.limits.activeMs);
       // Persist continuity dependency before MEM can retain/withdraw anything. A later boot without
       // that protected service must refuse rather than replay raw owner/history or publish old data.
-      if (this.options.memory && (!request.fileInputs || request.fileMemory)) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
+      if (this.options.memory && !request.delegation && (!request.fileInputs || request.fileMemory)) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
       const ingress = this.store.db.query<{ receipt_json: string }, [string]>("SELECT receipt_json FROM commands WHERE id=?").get(request.interpretationRequest.requestId)!;
-      const memory = request.fileInputs && !request.fileMemory ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
+      // A delegated child works from its assignment only: no sourced memory is retrieved or retained for it.
+      const memory = request.delegation || request.fileInputs && !request.fileMemory ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
       if (memory) {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
@@ -647,6 +721,31 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       try { this.#closeSteers(id, steerReport); } catch { /* Steers keep their stored state; a later boot settles them. */ }
       if (this.#owners.get(id)?.commandId === registration?.commandId) this.#owners.delete(id);
     }
+  }
+  /** Claims one queued delegated child and admits it under current policy inside its pin; a refusal blocks it. */
+  private admitDelegation(id: string, actor: OwnerActor | undefined): ConversationRequest {
+    const current = this.store.request(id);
+    if (current.state !== "queued" || !current.delegation) throw new AppError("already_claimed", 409);
+    if (!actor) throw new AppError("authentication_required", 401);
+    this.owner(actor, current);
+    const pin = current.delegation;
+    let code: string | null = null;
+    try {
+      if (this.store.request(pin.parentRequestId).state !== "running") throw new AppError("parent_unavailable", 409);
+      this.options.admitConversation?.(current.receipt.conversationId);
+      const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs: 0, ownerMessage: false, delegation: { ...pin.limits, ...(pin.selection ? { selection: pin.selection } : {}) } });
+      if (decision.state !== "admitted") code = safeCodes.has(decision.code) ? decision.code : "policy_match_required";
+      else {
+        const admitted = authority(decision.authority);
+        if (admitted.purposeId !== pin.purposeId || admitted.resources.some(resource => !pin.resourceIds.includes(resource))) throw new AppError("outside_scope");
+        current.authority = admitted; current.state = "running";
+      }
+    } catch (error) { code = safeCode(error); }
+    if (code) { current.state = "blocked"; current.code = code; }
+    current.revision++; this.store.save(current);
+    this.store.event(current, current.state === "running" ? "progress" : "stopped", this.clock.now(), current.code);
+    this.options.beforeCommit?.();
+    return current;
   }
   private interpretationContext(request: ConversationRequest, work: WorkContext): { messages: { role: "owner" | "assistant"; text: string }[]; fragments: { id: string; text: string }[] } {
     const context: { role: "owner" | "assistant"; text: string }[] = []; let bytes = 0;

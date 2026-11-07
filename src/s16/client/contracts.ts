@@ -22,13 +22,18 @@ export interface ClientCapabilities {
   notifications?: { available: false; code: "notifications_unavailable" } | { available: true; contract: "s16-notifications/v1"; transport: "web_push"; serviceWorker: "/s16/sw.js"; scope: "/s16/" };
   /** TEAM16-01 working computers; `files` is FILE16-01C staging/collection inside file work. */
   computers?: { available: false; code: "computers_unavailable" } | { available: true; contract: "s16-client-computers/v1"; idleStopMs: number | null; files: boolean };
+  /** BOT16-01 persistent Bots (`s16-client-bots/v1`); `delegation` is DELEG16-01 Bot-to-Bot assignments. */
+  bots?: { available: false; code: "bots_unavailable" } | { available: true; contract: "s16-client-bots/v1"; delegation: boolean };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
   contract: "s16-client-bootstrap/v1";
   csrf: string;
   capabilities: ClientCapabilities;
-  conversations: ConversationListEntry[];
+  /** With Bots, each entry also names the Bot the conversation talks to. */
+  conversations: (ConversationListEntry & { botId?: string })[];
+  /** Additive (BOT16-01): the roster for navigation; names are the owner's own text (empty = the main Bot's default name). */
+  bots?: { id: string; name: string; main: boolean; state: "active" | "archived" }[];
   needsYou: { conversationId: string; entry: ConversationNeedsYou }[];
   /** Additive: unseen non-quiet routine outcomes. Quiet runs never count. */
   routines?: { attention: number };
@@ -36,7 +41,7 @@ export interface ClientBootstrap {
   policyUpdate?: boolean;
 }
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
-export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView }
+export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView; /** Additive (BOT16-01): the conversation's Bot. */ botId?: string }
 /** One currently authorized request, including requests older than the bounded conversation window. */
 export interface ClientRequest { contract: "s16-client-request/v1"; conversationId: string; receipt: ConversationReceipt; row: ConversationOwnerRow }
 /** Monotonic conversation-bound metadata, used only to invalidate and refresh owner projections. */
@@ -121,3 +126,4 @@ export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }
 export type { RoutineDetail as ClientRoutineDetail, RoutineList as ClientRoutineList, RoutineOptions as ClientRoutineOptions, RoutineProposal as ClientRoutineProposal, RoutineReceipt as ClientRoutineReceipt, RoutineDraft as ClientRoutineDraft, RoutineOccurrence as ClientRoutineOccurrence, RoutineSummary as ClientRoutineSummary, RoutineSourceView as ClientRoutineSource } from "../routines/types";
 export type { NotificationSettings as ClientNotificationSettings, NotificationDevice as ClientNotificationDevice, NotificationSubscribeCommand as ClientNotificationSubscribeCommand, NotificationPayload as ClientNotificationPayload, NoticeKind as ClientNoticeKind } from "../notifications/types";
+export type { BotsView as ClientBotsView, BotDetail as ClientBotDetail, BotView as ClientBot, BotProposal as ClientBotProposal, BotDraft as ClientBotDraft, BotExport as ClientBotExport, BotCommand as ClientBotCommand, BotReceipt as ClientBotReceipt } from "../bots/types";

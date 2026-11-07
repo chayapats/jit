@@ -32,6 +32,8 @@ export interface S15RuntimeConfig {
   /** Explicit S16 working computers (`s16-computers/v1`, TEAM16-01): per-work leases, private computers and 30-minute
    * idle release with on-demand start. Omission keeps S15 working-computer behavior. */
   computers?: boolean;
+  /** Explicit S16 persistent Bots and delegation (`s16-bots/v1`, BOT16-01/DELEG16-01). Omission keeps the single main Bot. */
+  bots?: boolean;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -76,6 +78,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.routines !== undefined && typeof value.routines !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.notifications !== undefined && typeof value.notifications !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.computers !== undefined && typeof value.computers !== 'boolean') throw new AppError('invalid_s15_config');
+  if (value.bots !== undefined && typeof value.bots !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }

@@ -38,7 +38,9 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Persona:** Owner-authored configuration of address, language and tone. It is trusted configuration, not model-authored memory.
 
-**Bot proposal:** A revisioned draft for creating or changing a permanent Bot. Accepting it does not grant accounts or wider tools.
+**Bot proposal:** A revisioned draft for creating or changing a permanent Bot. Accepting it does not grant accounts or wider tools. In S16 (ADR 0088) the owner accepts one exact proposal with one press, from the chat card the main Bot drafted or from the New Bot form; acceptance adds the Bot to the standing policy with the team defaults, and any change to the draft, the rules or the listed resources needs a new acceptance.
+
+**Persistent Bot (S16):** A Bot the owner accepted from a proposal, with its own name, responsibility, route choice and conversations. One conversation talks to one Bot, fixed when the conversation starts. Archiving stops its unfinished work and refuses new messages while keeping its history and memory; restoring brings back the same identity. The main Bot cannot be archived.
 
 **Conversation:** A durable discussion with one or more Bot participants. Membership, a display label and an @mention do not grant execution or resource access.
 
@@ -63,6 +65,8 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 **Capability policy:** The owner-controlled ceiling on a Bot's tools/resources. A model may restrict it but cannot widen it. A work grant does not bypass the ceiling.
 
 **Delegation:** A bounded assignment to an enabled Bot under the originating authority and current restrictions. S15 may use team-shared approved resources without another sharing ceremony. It grants no new purpose, account, provider or permanent Bot. S14 retains its per-Bot capability/share intersection.
+
+**Temporary worker (S16):** A short-lived helper a Bot starts through delegation. It works as the assigning Bot, with that Bot's route, only on the task text and inside the parent request's scope and charged slice; it has no memory and is never kept as a Bot. A *peer* assignment instead goes to another persistent Bot that accepts assignments (ADR 0088).
 
 **Context handoff:** A labelled subset of accessible command, evidence and memory references supplied to a delegated run. It is not unrestricted transcript/session sharing.
 

@@ -114,6 +114,10 @@ The [machine-auditable coverage index](S16-rakazo-experience-coverage.json) reco
 
 TEAM16-01 [#411](https://github.com/chayapats/jit/issues/411) and FILE16-01C [#433](https://github.com/chayapats/jit/issues/433) are implemented together behind explicit `computers: true` ([ADR 0087](../adr/0087-s16-shared-private-computers-and-file-processing.md), [contract](../contracts/s16-computers-v1.md)): per-work workspace leases, owner-chosen private computers (separate VMs), 30-minute idle release with on-demand start, the Computers page, and staging attachments into the computer with exact collection of a text result. Deterministic composed tests and real-bundle browser tests cover them; live nested-VM evidence remains with #431. Multi-Bot creation stays with #412.
 
+### BOT16-01 and DELEG16-01 delivery (2026-11-07)
+
+BOT16-01 [#412](https://github.com/chayapats/jit/issues/412) and DELEG16-01 [#413](https://github.com/chayapats/jit/issues/413) are implemented together behind explicit `bots: true` ([ADR 0088](../adr/0088-s16-persistent-bots-and-delegation.md), [contract](../contracts/s16-bots-v1.md)): exact Bot proposals from the chat or the New Bot form, team defaults through one standing-policy revision that does not stop other Bots' running work, one Bot per conversation with its route and responsibility, archive/restore, credential-free duplicate/export/import, and bounded peer/temporary delegation with a parent-charged budget and TEAM/DATA15 ancestry checks before every child send. Deterministic composed tests and real-bundle browser tests cover them; live per-route evidence remains with #431.
+
 ### Next work and concrete blockers
 
 1. #408 is ready for its bounded modern-browser mediation investigation, after rechecking ownership. It must deliver real dynamic-site/effect bypass evidence and a reviewed contract before #409. Existing generic click types/static GET do not satisfy AC06.

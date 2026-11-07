@@ -1285,7 +1285,7 @@
         411
       ],
       "children": [],
-      "status": "planned",
+      "status": "implemented-deterministic (ADR 0088; live evidence #431)",
       "acceptance": [
         1,
         20
@@ -1305,7 +1305,7 @@
         411
       ],
       "children": [],
-      "status": "planned",
+      "status": "implemented-deterministic (ADR 0088; live evidence #431)",
       "acceptance": [
         8
       ]

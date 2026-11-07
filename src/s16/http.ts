@@ -11,6 +11,7 @@ import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
 import type { NotificationService } from "./notifications/service";
 import type { ComputerDirectory } from "./computers/service";
+import type { BotDirectory } from "./bots/service";
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -20,7 +21,7 @@ import type { ComputerDirectory } from "./computers/service";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -52,7 +53,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
-      computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files) } : { available: false, code: "computers_unavailable" } };
+      computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files) } : { available: false, code: "computers_unavailable" },
+      bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" } };
   };
   return async request => {
     try {
@@ -167,6 +169,21 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST" && computer[1] === "commands") { const input = await body(request); return json(await options.computers.command(currentOwner() as Actor & object, input)); }
         throw new AppError("method_rejected", 405);
       }
+      const bot = /^\/api\/s16\/client\/bots(?:\/(proposals|imports|commands|[A-Za-z0-9_-]{1,128})(?:\/(export|duplicate))?)?$/.exec(url.pathname);
+      if (bot) {
+        if (!options.bots) throw new AppError("bots_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        const fixed = ["proposals", "imports", "commands"].includes(bot[1] ?? "");
+        if (request.method === "GET" && !bot[1]) return json(options.bots.view(currentOwner()));
+        if (request.method === "GET" && bot[1] && !fixed && !bot[2]) return json(options.bots.detail(currentOwner(), bot[1]));
+        if (request.method === "GET" && bot[1] && !fixed && bot[2] === "export") return json(options.bots.exportBot(currentOwner(), bot[1]));
+        // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
+        if (request.method === "POST" && bot[1] === "proposals" && !bot[2]) { const input = await body(request); exact(input, ["draft"]); return json(options.bots.propose(currentOwner(), input.draft), 201); }
+        if (request.method === "POST" && bot[1] === "imports" && !bot[2]) { const input = await body(request); exact(input, ["export"]); return json(options.bots.importBot(currentOwner(), input.export), 201); }
+        if (request.method === "POST" && bot[1] && !fixed && bot[2] === "duplicate") { const input = await body(request); exact(input, ["name"]); return json(options.bots.duplicate(currentOwner(), bot[1], input.name), 201); }
+        if (request.method === "POST" && bot[1] === "commands" && !bot[2]) { const input = await body(request); const receipt = options.bots.command(currentOwner(), input); return json(receipt); }
+        throw new AppError("method_rejected", 405);
+      }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
       if (memory) {
         if (!options.memory) throw new AppError("memory_unavailable", 503);
@@ -183,14 +200,15 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       if (url.pathname === "/api/s16/client/bootstrap" && request.method === "GET") {
         if (url.search) throw new AppError("invalid_body");
         const caps = await capabilities(), current = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1)); app.options.policy.requireOwner(current.actor);
-        return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, capabilities: caps, conversations: conversationList(app, current.actor, 64), needsYou: conversationPendingNeeds(app, current.actor), ...(options.routines ? { routines: { attention: options.routines.list(current.actor).attention } } : {}), ...(options.policyUpdate?.(current.actor) ? { policyUpdate: true } : {}) } satisfies ClientBootstrap);
+        const bound = options.bots, conversations = conversationList(app, current.actor, 64).map(entry => bound ? { ...entry, botId: bound.conversationBot(entry.conversationId) } : entry);
+        return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, capabilities: caps, conversations, ...(bound ? { bots: bound.view(current.actor).bots.map(item => ({ id: item.id, name: item.name, main: item.main, state: item.state })) } : {}), needsYou: conversationPendingNeeds(app, current.actor), ...(options.routines ? { routines: { attention: options.routines.list(current.actor).attention } } : {}), ...(options.policyUpdate?.(current.actor) ? { policyUpdate: true } : {}) } satisfies ClientBootstrap);
       }
       const conversation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})(?:\/(messages|events|decisions|steers))?$/.exec(url.pathname);
       if (conversation) {
         const conversationId = conversation[1]!;
         if (request.method === "GET" && !conversation[2]) {
           if (url.search) throw new AppError("invalid_body");
-          return json({ contract: "s16-client-snapshot/v1", conversation: conversationOwnerView(app, authenticated.actor, conversationId) });
+          return json({ contract: "s16-client-snapshot/v1", conversation: conversationOwnerView(app, authenticated.actor, conversationId), ...(options.bots ? { botId: options.bots.conversationBot(conversationId) } : {}) });
         }
         if (request.method === "GET" && conversation[2] === "events") {
           if ([...url.searchParams.keys()].some(key => key !== "after") || url.searchParams.getAll("after").length > 1 || !/^(?:0|[1-9]\d{0,15})$/.test(url.searchParams.get("after") ?? "0")) throw new AppError("cursor_invalid", 409);

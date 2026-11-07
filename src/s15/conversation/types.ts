@@ -62,6 +62,24 @@ export interface ConversationScope { purposeId: string; resourceIds: string[]; a
  * admission still runs under current standing policy.
  */
 export interface ConversationRoutinePin { contract: "s16-routine-run/v1"; routineId: string; occurrenceId: string; purposeId: string; resourceIds: string[]; access: ConversationScope["access"]; quiet: boolean }
+/**
+ * `s16-delegation-run/v1` (DELEG16-01, ADR 0088): protected pin of one Bot-to-Bot assignment, set only by
+ * `ConversationApplication.submitDelegation`. The child runs inside its parent's frozen purpose, resources and access
+ * ceiling with the finite slice charged to the parent; the task text was written by the assigning Bot, so it is data
+ * inside that scope and never decides a held action. A child has no interpretation call, no memory and no further
+ * delegation. `peer` runs as another enabled persistent Bot; `temporary` runs as the assigning Bot and is not kept.
+ */
+export interface ConversationDelegationPin {
+  contract: "s16-delegation-run/v1";
+  parentRequestId: string; parentConversationId: string; ordinal: number;
+  kind: "peer" | "temporary"; botId: string; fromBotId: string;
+  purposeId: string; resourceIds: string[]; access: ConversationScope["access"];
+  limits: { modelCalls: number; toolCalls: number };
+  /** Temporary worker only: the parent work's route, kept even if the Bot's route changes meanwhile. */
+  selection?: import("../policy").Selection;
+  /** TEAM source holding the task text and its privacy ancestry; handed off to the child before its model sends. */
+  sourceId: string | null;
+}
 /** Exact current owner identity returned by the protected authentication service, never by a client body. */
 export interface ConversationOwner { id: string; generation: number }
 /** Persisted authority reference is data. Only the owning policy service can open a live work context. */
@@ -82,7 +100,8 @@ export interface ConversationPolicy<OwnerActor, WorkContext> {
     | { state: "held"; code: string };
   /** Synchronous idempotent admission under current policy. Reads is a trusted accepted-image count
    * for capacity calculation, not model input, new permission or an override of the owner ceiling. */
-  admit(actor: OwnerActor, request: ConversationCommand, intent: ConversationIntent, reads?: { imageInputs: number; /** AUTH16-01: true only for a live owner message (not a routine occurrence). */ ownerMessage?: boolean }):
+  admit(actor: OwnerActor, request: ConversationCommand, intent: ConversationIntent, reads?: { imageInputs: number; /** AUTH16-01: true only for a live owner message (not a routine occurrence). */ ownerMessage?: boolean;
+    /** DELEG16-01: the finite slice a delegated child was charged to its parent; it caps the child's own limits. */ delegation?: { modelCalls: number; toolCalls: number; /** A temporary worker's parent route. */ selection?: import("../policy").Selection } }):
     | { state: "admitted"; authority: ConversationAuthority }
     | { state: "held" | "proposed"; code: string };
   /** Reopens work authority only; it cannot reconstruct a claimed model/tool dispatch after process loss. */
@@ -151,6 +170,8 @@ export interface ConversationRequest {
   artifacts?: FileArtifact[];
   /** Present only on a routine occurrence; the original pin is immutable for the request's lifetime. */
   routine?: ConversationRoutinePin;
+  /** Present only on a delegated child; immutable for the request's lifetime. */
+  delegation?: ConversationDelegationPin;
   modelCalls: number; toolCalls: number; result: string | null; usage: HostRunUsage | null;
   /** Usage evidence of the latest interpretation run, kept on failure too. Absent before MODEL15-02. */
   interpretationUsage?: HostRunUsage;
@@ -194,6 +215,13 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Most requests that run at once (default 2); one conversation never runs two requests at the same time. */
   maxConcurrentRuns?: number;
+  /** DELEG16-01: delegated children run in their own finite pool (default 3) so a waiting parent cannot starve them. */
+  maxDelegatedRuns?: number;
+  /** DELEG16-01: work sessions of the working computer, read on every scheduling pass. Children run only in sessions
+   * no running ordinary request (a waiting parent included) may hold; with none free a new assignment is refused. */
+  delegationSessions?: () => number;
+  /** BOT16-01 ingress fence: throws when the conversation's Bot is archived or unavailable. Called for every new request. */
+  admitConversation?: (conversationId: string) => void;
   /** Commit-fault seam for deterministic rollback tests; production leaves it absent. */
   beforeCommit?: () => void;
 }

@@ -13,6 +13,8 @@ export interface ComputersViewProps {
   files: boolean;
   /** Shared private-content withholding for authentication/authorization failures. */
   onFailure(error: unknown): void;
+  /** BOT16-01: owner-written names of persistent Bots, keyed by Bot ID. */
+  names?: Record<string, string>;
 }
 type Pending = { command: ComputerCommand; state: "pending" | "unknown" | "error"; code?: string } | { command: ComputerCommand; state: "done" };
 type Confirm = { kind: "create"; bot: ComputerBotView } | { kind: "retire"; bot: ComputerBotView; vmId: string };
@@ -26,14 +28,14 @@ const tones: Record<ComputerView["state"], string> = { running: "ok", sleeping: 
  * private-computer creation/retirement and "sleep now". Every change is one explicit command that is never
  * retried silently; an unknown outcome is rechecked with the same command identity.
  */
-export function ComputersView({ client, t, locale, available, files, onFailure }: ComputersViewProps) {
+export function ComputersView({ client, t, locale, available, files, onFailure, names }: ComputersViewProps) {
   const [data, setData] = useState<ComputersData | null>(null), [loadError, setLoadError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null), [confirm, setConfirm] = useState<Confirm | null>(null), [reload, setReload] = useState(0);
   // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
   const commands = useRef(0);
   const notice = useRef<HTMLDivElement>(null), confirmRef = useRef<HTMLDivElement>(null), returnFocus = useRef<HTMLElement | null>(null);
   const time = (value: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { timeStyle: "short" }).format(value);
-  const botName = (id: string) => data?.bots.find(bot => bot.id === id)?.main ? t("s16.computers.mainBot") : id;
+  const botName = (id: string) => data?.bots.find(bot => bot.id === id)?.main ? t("s16.computers.mainBot") : names?.[id] || id;
 
   useEffect(() => {
     if (!available) return;

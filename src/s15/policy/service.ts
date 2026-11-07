@@ -85,12 +85,35 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (r.readLimit !== undefined && r.readLimit > readCeiling(p)) v.fail('outside_scope');
     if (r.selectionPin && !v.equal(r.selectionPin, r.selection)) v.fail('selection_pinned');
   }
+  /**
+   * BOT16-01 (ADR 0088): a newer revision that differs from the work's own revision only in which other Bots it names
+   * (adding a persistent Bot) leaves this work's authority unchanged. Compared from the work's
+   * Bot point of view: every other Bot reference is dropped from the top-level and rule Bot lists of both revisions,
+   * and everything else, including this Bot's own memberships, must be identical. An unchanged reinstall is not exempt.
+   */
+  function sameForBot(w: T.WorkAuthority, p: T.StandingPolicy): boolean {
+    if (w.policyRevision >= p.revision || p.revision - w.policyRevision > 256 || w.ownerGeneration !== p.ownerGeneration) return false;
+    const view = (x: T.StandingPolicy) => { const own = (refs: T.Ref[]) => refs.filter(r => r.id === w.request.bot.id);
+      return v.canonical({ ...x, revision: 0, bots: own(x.bots), rules: x.rules.map(r => ({ ...r, bots: own(r.bots) })) }); };
+    let previous = parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', w.policyRevision));
+    if (!previous || w.policyHash !== v.digest('s15.policy.v1', previous)) return false;
+    // Every step from the work's revision to the current one must be exempt: one non-exempt revision in between
+    // (a reinstall or any other change) made the work stale for good, whatever later revisions look like.
+    for (let revision = w.policyRevision + 1; revision <= p.revision; revision++) {
+      const next = revision === p.revision ? p : parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', revision));
+      if (!next || next.ownerGeneration !== w.ownerGeneration) return false;
+      // An owner's reinstall of the same rules still starts fresh: only a change to other Bots' membership is exempt.
+      if (v.canonical({ ...previous, revision: 0 }) === v.canonical({ ...next, revision: 0 }) || view(previous) !== view(next)) return false;
+      previous = next;
+    }
+    return true;
+  }
   function currentWork(workId: string): T.WorkAuthority {
     const row = ledger.get<{ json: string; revoked: number }>('SELECT json,revoked FROM works WHERE id=?', workId);
     if (!row || row.revoked) v.fail('authority_revoked');
     const w = JSON.parse(row.json) as T.WorkAuthority; const p = policyCurrent();
     if (w.ownerGeneration !== options.ownerGeneration()) v.fail('authority_revoked');
-    if (w.policyRevision !== p.revision || w.policyHash !== v.digest('s15.policy.v1', p)) v.fail('stale_authority');
+    if ((w.policyRevision !== p.revision || w.policyHash !== v.digest('s15.policy.v1', p)) && !sameForBot(w, p)) v.fail('stale_authority');
     if (time() >= w.expiresAt) v.fail('expired');
     checkRequest(p, w.request);
     if (!options.catalogs.allows(clone(w), null)) v.fail('outside_scope');

@@ -124,6 +124,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.notifications ? { notifications: {} } : {}),
       // TEAM16-01: owner decision 2026-11-07, a working computer with no open session sleeps after 30 minutes.
       ...(config.computers ? { computers: { idleStopMs: s16ComputerIdleStopMs } } : {}),
+      // BOT16-01/DELEG16-01: persistent Bots the owner accepts and bounded Bot-to-Bot assignments.
+      ...(config.bots ? { bots: {} } : {}),
       ...(config.files ? { files: { ...(typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {}), ...(config.fileMemory ? { memory: true } : {}) } } : {}),
       recipients,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,
