@@ -93,10 +93,12 @@ export class VmPolicyIntegration {
       return base.current(kind, id);
     } };
   }
-  private checkScope(work: WorkAuthority, op: Pick<VmPolicyOperation, "vmId" | "workId" | "attemptId" | "generation">): void {
+  private checkScope(work: WorkAuthority, op: Pick<VmPolicyOperation, "vmId" | "workId" | "attemptId" | "generation">, idleStopped = false): void {
     const row = this.options.store.registration(op.vmId), resource = this.options.resource(op.vmId);
     if (work.mode !== "work" || work.id !== op.workId || !this.options.attemptCurrent(work, op.attemptId) ||
       !work.request.resources.some(r => same(r, resource))) vmFail("vm_policy_denied", 403);
+    // TEAM16-01: admission may pass for a VM Jit stopped for idleness; the service starts it and re-asserts as ready.
+    if (idleStopped && row.generation === op.generation && row.state === "stopped" && row.reason === "vm_idle") return;
     if (row.generation !== op.generation || row.state !== "ready" || !row.networkIsolated) vmFail("vm_fenced", 403);
   }
   private lookup(payload: unknown): Invocation {
@@ -166,7 +168,7 @@ export class VmPolicyIntegration {
       },
       assertCurrent: (actor: object, scope: Parameters<VmPolicyPort["assertCurrent"]>[1]) => {
         const work = policy.work.guard(actor as WorkActor), row = this.options.store.registration(scope.vmId);
-        this.checkScope(work, { ...scope, generation: row.generation });
+        this.checkScope(work, { ...scope, generation: row.generation }, true);
         if (scope.mode === "system" && (work.request.intent !== "execute" || work.request.access === "read")) vmFail("vm_inspect_only", 403);
       },
       claim: async (actor: object, operation: Readonly<VmPolicyOperation>): Promise<VmPolicyClaim> => {

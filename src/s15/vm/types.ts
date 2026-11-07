@@ -95,6 +95,18 @@ export interface VmSession {
   cancel(): Promise<void>;
   /** Idempotent exact-unit cleanup; uncertainty fences the shared VM and retains its capacity. */
   close(): Promise<void>;
+  /**
+   * FILE16-01C host-only bounded byte transfer inside this session's work root, present only for execution
+   * sessions. Each call is one separately claimed VM write/read under the session's current guards. `put`
+   * writes under a service-chosen `inputs/<id>/<name>` path; `take` reads one regular file (no symlink in any
+   * path component) within the work root. Neither is a model tool; the protected file workflow owns them.
+   */
+  readonly transfer?: VmTransfer;
+}
+/** Bounded protected byte transfer of one execution session; see `VmSession.transfer`. */
+export interface VmTransfer {
+  put(input: { id: string; name: string; bytes: Uint8Array }): Promise<string>;
+  take(path: string): Promise<Uint8Array>;
 }
 /** Conversation-facing port. A system session takes an exclusive VM lease and requires a protected snapshot. */
 export interface WorkingVmPort {

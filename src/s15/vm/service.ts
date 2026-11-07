@@ -5,8 +5,8 @@ import { createVmBackend } from "./backend";
 import { VmStore, type VmRegistration } from "./store";
 import { VmSshTransport } from "./transport";
 import { probeVmDirectEgress } from "./network";
-import { defaultVmLimits, type VmEvidence, type VmLimits, type VmManagement, type VmPolicyOperation, type VmPolicyPort, type VmSession, type WorkingVmPort } from "./types";
-import { vmCanonical, vmFail, vmHash, vmId, vmLimits, vmPath, vmInteger } from "./validation";
+import { defaultVmLimits, type VmEvidence, type VmLimits, type VmManagement, type VmPolicyOperation, type VmPolicyPort, type VmSession, type VmTransfer, type WorkingVmPort } from "./types";
+import { vmBytes, vmCanonical, vmFail, vmHash, vmId, vmLimits, vmPath, vmInteger, vmRecord } from "./validation";
 import { fetchVmArtifact, type VmArtifactRequest } from "./acquisition";
 import type { VmProxyLease } from "./proxy";
 import { vmIdentityMatches } from "./binding";
@@ -22,6 +22,20 @@ export interface WorkingVmOptions {
   artifactFetch?: typeof fetchVmArtifact;
   snapshotRetention?: number;
   expiryTimer?: (milliseconds: number, expire: () => void) => () => void;
+  /**
+   * TEAM16-01 idle release (explicit S16 computers only). A hypervisor-managed VM with no open session for
+   * `stopAfterMs` is stopped by protected host lifecycle (`sleepIdle`) and keeps its disk; the next placed
+   * work starts it again under a new generation after the same identity/egress re-verification as an owner
+   * start. Absent, VMs are never stopped or started without the owner (S15 behavior).
+   */
+  idle?: { stopAfterMs: number };
+}
+/** Registry reason of a VM that Jit stopped for idleness; only such a VM is started again on demand. */
+export const vmIdleReason = "vm_idle";
+/** Safe file name for a staged input: no separators, controls or leading dot; bounded and never empty. */
+export function vmStagedName(name: string): string {
+  const cleaned = (typeof name === "string" ? name : "").normalize("NFC").replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^[._]+/, "").slice(0, 96);
+  return cleaned && cleaned !== "_" ? cleaned : "file";
 }
 interface LiveSession { id: string; vmId: string; workId: string; attemptId: string; generation: number; mode: "work" | "system";
   unit: string; root: string; temporary: string; deadline: number; calls: number; cancelled: boolean; closed: boolean;
@@ -38,9 +52,13 @@ export class WorkingVmService implements WorkingVmPort {
   readonly #health = new Map<string, Promise<void>>();
   readonly #managementBusy = new Set<string>();
   #reattaching: Promise<void> | null = null;
+  readonly #waking = new Map<string, Promise<void>>();
+  readonly #sleeping = new Map<string, Promise<void>>();
   constructor(readonly options: WorkingVmOptions) {
     this.#limits = vmLimits(options.limits ?? { ...defaultVmLimits }); this.#now = options.now ?? Date.now; this.#clock = options.monotonic ?? (() => performance.now());
     vmInteger(options.snapshotRetention ?? 3, 8);
+    if (options.idle) vmInteger(options.idle.stopAfterMs, 7 * 86_400_000, 60_000);
+    options.store.db.exec("CREATE TABLE IF NOT EXISTS vm_activity (vm_id TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // Existing process-local contexts are not reconstructed. Claims survive, mutation authority does not.
     options.store.transaction(() => {
       const orphans = options.store.db.query<{ vm_id: string }, []>("SELECT DISTINCT vm_id FROM vm_sessions WHERE state<>'closed'").all();
@@ -81,7 +99,16 @@ export class WorkingVmService implements WorkingVmPort {
     const access = input.access ?? "execute"; if (access !== "inspect" && access !== "execute" || access === "inspect" && input.mode === "system") vmFail("vm_invalid_setup");
     const mode = input.mode ?? "work"; if (mode !== "work" && mode !== "system") vmFail("vm_invalid_setup");
     if (input.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (this.options.idle) {
+      // Join an idle stop or start already in progress before checking readiness; waiting starts nothing.
+      await this.#sleeping.get(input.vmId)?.catch(() => {});
+      await this.#waking.get(input.vmId)?.catch(() => {});
+    }
     this.options.policy.assertCurrent(actor, { ...input, mode });
+    if (this.options.idle) {
+      const before = this.options.store.registration(input.vmId);
+      if (before.state === "stopped" && before.reason === vmIdleReason) { await this.wake(before); this.options.policy.assertCurrent(actor, { ...input, mode }); }
+    }
     const id = uuid(), unit = `jit-${id}.slice`, row = this.options.store.registration(input.vmId);
     if (this.#managementBusy.has(row.id)) vmFail("vm_capacity");
     if (!row.bindingMac) vmFail("vm_identity_unproven");
@@ -95,6 +122,7 @@ export class WorkingVmService implements WorkingVmPort {
       const active = this.options.store.db.query<{ mode: string }, [string]>("SELECT mode FROM vm_sessions WHERE vm_id=? AND state<>'closed'").all(row.id);
       if (active.length >= Math.min(r.maxSessions, this.#limits.maxSessions) || active.some(s => s.mode === "system") || mode === "system" && active.length) vmFail("vm_capacity");
       this.options.store.db.query("INSERT INTO vm_sessions VALUES (?,?,?,?,?,?,?,?)").run(id, row.id, input.workId, input.attemptId, mode, "opening", unit, row.generation);
+      this.touch(row.id);
     });
     let s: LiveSession | undefined; let managementStarted = false;
     try {
@@ -133,7 +161,25 @@ export class WorkingVmService implements WorkingVmPort {
       // Fixed, work-root-only infrastructure setup is separately claimed; it cannot dispatch a domain edit/shell.
       await call({ op: "init" }, "read");
       const backend = createVmBackend({ call, protocolError: () => this.uncertain(state.vmId, "vm_protocol_invalid", state.generation) }, root, temporary, this.#limits, {}, access);
-      const session: VmSession = Object.freeze({ id, backend,
+      const transfer: VmTransfer | undefined = access === "execute" ? Object.freeze({
+        put: async (file: { id: string; name: string; bytes: Uint8Array }) => {
+          guard(); vmId(file.id);
+          if (!(file.bytes instanceof Uint8Array) || file.bytes.length > this.#limits.fileBytes) vmFail("vm_output_limit");
+          const path = vmPath(`${root}/inputs/${file.id}/${vmStagedName(file.name)}`, [root]);
+          await call({ op: "write", path, data: Buffer.from(file.bytes).toString("base64"), createParents: true }, "write"); guard();
+          return path;
+        },
+        take: async (input: string) => {
+          // A relative path names a file under the work root; either way it must stay inside it.
+          const path = typeof input === "string" && !input.startsWith("/") ? `${root}/${input}` : input;
+          guard(); vmPath(path, [root]); if (path === root) vmFail("vm_path_denied", 403);
+          const response = await call({ op: "read", path }, "read");
+          let bytes: Uint8Array;
+          try { vmRecord(response, ["data"]); bytes = vmBytes(response.data, this.#limits.fileBytes); } catch { this.uncertain(state.vmId, "vm_protocol_invalid", state.generation); vmFail("vm_protocol_invalid"); }
+          guard(); return bytes;
+        },
+      }) : undefined;
+      const session: VmSession = Object.freeze({ id, backend, ...(transfer ? { transfer } : {}),
         definitions: Object.freeze(coreToolDefinitions(backend).filter(definition => access === "execute" || ["read", "grep", "find", "ls"].includes(definition.name)).map(definition => ({ ...definition, execute: async (value: unknown, context: Parameters<typeof definition.execute>[1]) => {
           guard(); const result = await definition.execute(value, context); guard(); return result;
         } }))),
@@ -277,10 +323,105 @@ export class WorkingVmService implements WorkingVmPort {
       this.options.store.transaction(() => {
         for (const evidence of this.options.store.evidence(s.id)) { evidence.execution = "guest_scope_empty"; this.options.store.saveEvidence(evidence); }
         this.options.store.db.query("UPDATE vm_sessions SET state='closed' WHERE id=?").run(s.id);
+        this.touch(s.vmId);
       });
       this.retireLive(s);
     })();
     return s.closing;
+  }
+  private touch(vm: string): void { this.options.store.db.query("INSERT INTO vm_activity VALUES (?,?) ON CONFLICT(vm_id) DO UPDATE SET at=excluded.at").run(vm, this.#now()); }
+  /** Last protected session open/close of `vm` (null before the first session); guest activity is not observed. */
+  lastActivity(vm: string): number | null { vmId(vm); return this.options.store.db.query<{ at: number }, [string]>("SELECT at FROM vm_activity WHERE vm_id=?").get(vm)?.at ?? null; }
+  /** Configured idle release, or null when this composition never stops VMs by itself. */
+  get idleStopAfterMs(): number | null { return this.options.idle?.stopAfterMs ?? null; }
+  /**
+   * Protected idle sweep (TEAM16-01). Stops every ready, hypervisor-managed VM whose manager can start it
+   * again, which has no open/stopping/unknown session and whose last session ended `stopAfterMs` ago. A VM
+   * with no recorded activity starts its idle clock now. Returns the VMs actually stopped. Failures fence
+   * the VM as uncertain; nothing is retried in a loop.
+   */
+  async sleepIdle(): Promise<string[]> {
+    const idle = this.options.idle; if (!idle) return [];
+    const stopped: string[] = [];
+    for (const { id } of this.options.store.db.query<{ id: string }, []>("SELECT id FROM vm_registry ORDER BY id").all()) {
+      const row = this.options.store.registration(id), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
+      if (row.state !== "ready" || !manager?.start || !row.bindingMac || this.#managementBusy.has(id)) continue;
+      if (this.options.store.db.query("SELECT 1 FROM vm_sessions WHERE vm_id=? AND state<>'closed' LIMIT 1").get(id)) continue;
+      const last = this.lastActivity(id);
+      if (last === null) { this.touch(id); continue; }
+      if (this.#now() - last < idle.stopAfterMs) continue;
+      try { await this.sleep(row, manager); stopped.push(id); } catch { /* sleep() fenced the VM. */ }
+    }
+    return stopped;
+  }
+  /** Owner request to release one idle VM now; refuses while any session is open. */
+  async sleepNow(actor: object, vm: string): Promise<void> {
+    if (!this.options.requireOwner) vmFail("vm_owner_required", 403);
+    this.options.requireOwner(actor); vmId(vm); const row = this.options.store.registration(vm), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
+    if (!this.options.idle || !manager?.start || !row.bindingMac) vmFail("vm_management_unavailable");
+    if (row.state !== "ready") vmFail(row.reason ?? "vm_fenced");
+    if (this.#managementBusy.has(vm)) vmFail("vm_capacity");
+    await this.sleep(row, manager);
+  }
+  private sleep(row: VmRegistration, manager: VmManagement): Promise<void> {
+    const running = this.#sleeping.get(row.id); if (running) return running;
+    const promise = (async () => {
+      this.#managementBusy.add(row.id);
+      try {
+        this.options.store.transaction(() => {
+          const current = this.options.store.registration(row.id);
+          if (current.state !== "ready" || current.generation !== row.generation || this.options.store.db.query("SELECT 1 FROM vm_sessions WHERE vm_id=? AND state<>'closed' LIMIT 1").get(row.id)) vmFail("vm_capacity");
+          // A new generation fences any handle that could still refer to the running machine.
+          current.generation++; current.state = "uncertain"; current.reason = "vm_idle_stopping"; this.options.store.save(current);
+          row.generation = current.generation;
+        });
+        this.#checked.delete(row.id); this.#health.delete(row.id);
+        try {
+          await this.checkManager(row, manager);
+          await manager.stop();
+          if ((await manager.inspect()).state !== "stopped") vmFail("vm_stop_unconfirmed");
+        } catch (error) { this.uncertain(row.id, "vm_stop_unconfirmed", row.generation); throw error; }
+        this.options.store.transaction(() => {
+          const current = this.options.store.registration(row.id); if (current.generation !== row.generation) vmFail("vm_fenced");
+          current.state = "stopped"; current.reason = vmIdleReason; current.boot = null; current.networkIsolated = false; this.options.store.save(current);
+          this.options.store.db.query("INSERT INTO vm_events(vm_id,kind,generation) VALUES (?,'idle_stop',?)").run(row.id, row.generation);
+        });
+      } finally { this.#managementBusy.delete(row.id); }
+    })().finally(() => { if (this.#sleeping.get(row.id) === promise) this.#sleeping.delete(row.id); });
+    this.#sleeping.set(row.id, promise); return promise;
+  }
+  /**
+   * Protected on-demand start of a VM Jit stopped for idleness. Concurrent placements share one start. The
+   * started machine must show the enrolled identity, NIC binding, pinned SSH guest and refused direct egress
+   * before the VM is ready again; otherwise it stays fenced. Owner-stopped VMs are never started here.
+   */
+  private wake(row: VmRegistration): Promise<void> {
+    const running = this.#waking.get(row.id); if (running) return running;
+    const promise = (async () => {
+      const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
+      if (!manager?.start || !row.bindingMac) vmFail("vm_stopped", 423);
+      if (this.#managementBusy.has(row.id)) vmFail("vm_capacity"); this.#managementBusy.add(row.id);
+      try {
+        await this.checkManager(row, manager);
+        this.options.store.transaction(() => {
+          const current = this.options.store.registration(row.id);
+          if (current.state !== "stopped" || current.reason !== vmIdleReason || current.generation !== row.generation) vmFail("vm_fenced");
+          current.generation++; current.state = "uncertain"; current.reason = "vm_waking"; this.options.store.save(current); row.generation = current.generation;
+        });
+        try {
+          await manager.start(); const machine = await manager.inspect();
+          if (machine.state !== "running" || machine.identity !== row.machineIdentity || machine.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
+          if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
+          this.options.store.transaction(() => {
+            const current = this.options.store.registration(row.id); if (current.generation !== row.generation) vmFail("vm_fenced");
+            current.boot = machine.boot; current.state = "ready"; current.reason = null; current.networkIsolated = true; current.networkCheckedAt = this.#now(); this.options.store.save(current);
+            this.options.store.db.query("INSERT INTO vm_events(vm_id,kind,generation) VALUES (?,'idle_start',?)").run(row.id, row.generation);
+          });
+          this.#checked.set(row.id, this.#clock()); this.touch(row.id);
+        } catch (error) { this.uncertain(row.id, error instanceof AppError ? error.code : "vm_management_unavailable", row.generation); throw error; }
+      } finally { this.#managementBusy.delete(row.id); }
+    })().finally(() => { if (this.#waking.get(row.id) === promise) this.#waking.delete(row.id); });
+    this.#waking.set(row.id, promise); return promise;
   }
   /** Downloads an exact separately authorized artifact, then performs a separately claimed bounded guest write. */
   async acquire(actor: object, session: VmSession, input: VmArtifactRequest & { path: string }): Promise<void> {

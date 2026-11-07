@@ -110,6 +110,10 @@ The [machine-auditable coverage index](S16-rakazo-experience-coverage.json) reco
 - [LIVE16-01 #431](https://github.com/chayapats/jit/issues/431): Collect exact-build Linux, account and native-device evidence.
 - [FILE16-01C #433](https://github.com/chayapats/jit/issues/433): Use attached files in bounded computer work and collect output.
 
+### TEAM16-01 and FILE16-01C delivery (2026-11-07)
+
+TEAM16-01 [#411](https://github.com/chayapats/jit/issues/411) and FILE16-01C [#433](https://github.com/chayapats/jit/issues/433) are implemented together behind explicit `computers: true` ([ADR 0087](../adr/0087-s16-shared-private-computers-and-file-processing.md), [contract](../contracts/s16-computers-v1.md)): per-work workspace leases, owner-chosen private computers (separate VMs), 30-minute idle release with on-demand start, the Computers page, and staging attachments into the computer with exact collection of a text result. Deterministic composed tests and real-bundle browser tests cover them; live nested-VM evidence remains with #431. Multi-Bot creation stays with #412.
+
 ### Next work and concrete blockers
 
 1. #408 is ready for its bounded modern-browser mediation investigation, after rechecking ownership. It must deliver real dynamic-site/effect bypass evidence and a reviewed contract before #409. Existing generic click types/static GET do not satisfy AC06.

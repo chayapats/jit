@@ -2,7 +2,7 @@ import type { VmEvidence, VmSession, WorkingVmPort } from "../vm";
 import { AppError } from "../../errors";
 import { identity } from "./validation";
 import type { ConversationPolicyWork } from "./policy-port";
-import type { ConversationToolPort } from "./types";
+import type { ConversationToolPort, ConversationTools } from "./types";
 
 /** Stable CHAT export alias for the real VM15 retained guest-evidence contract. */
 export type ConversationVmEvidence = VmEvidence;
@@ -31,14 +31,24 @@ export function createConversationVmTools<Worker extends object>(vm: Conversatio
   return { async open(work, input) {
     input.guard();
     if (!work.authority.request.resources.some(resource => resource.id === resourceId)) throw new AppError("outside_scope", 403);
-    const session = await vm.openAttempt(work.actor, { vmId, workId: work.authority.id, attemptId: `chat_${work.authority.id}`, signal: input.signal, mode: "work", access: input.mode });
-    try { input.guard(); }
-    catch (error) { await session.cancel().catch(() => {}); await session.close().catch(() => {}); throw error; }
-    const definitions = session.definitions.filter(definition => reads.has(definition.name) || input.mode === "execute" && writes.has(definition.name));
-    return { tools: definitions.map(definition => ({ access: reads.has(definition.name) ? "read" : "reversible_write", definition: { ...definition,
-      // Public core schemas carry TypeBox symbols; only their JSON schema crosses the model boundary.
-      inputSchema: JSON.parse(JSON.stringify(definition.inputSchema)), async execute(value, context) {
-      input.guard(); const result = await definition.execute(value, context); input.guard(); return result;
-    } } })), cancel: () => session.cancel(), close: () => session.close() };
+    const session = await openConversationVmSession(vm, vmId, work, input);
+    return { tools: conversationVmSessionTools(session, input), cancel: () => session.cancel(), close: () => session.close() };
   } };
+}
+
+/** Opens the conversation's VM attempt (`chat_<work>`) and closes it again if the work stopped meanwhile. */
+export async function openConversationVmSession<Worker extends object>(vm: ConversationWorkingVm, vmId: string, work: ConversationPolicyWork<Worker>, input: { mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void }): Promise<VmSession> {
+  const session = await vm.openAttempt(work.actor, { vmId, workId: work.authority.id, attemptId: `chat_${work.authority.id}`, signal: input.signal, mode: "work", access: input.mode });
+  try { input.guard(); }
+  catch (error) { await session.cancel().catch(() => {}); await session.close().catch(() => {}); throw error; }
+  return session;
+}
+/** Public core tools of an open VM session, filtered by access class and guarded at every call. */
+export function conversationVmSessionTools(session: VmSession, input: { mode: "inspect" | "execute"; guard: () => void }): ConversationTools["tools"] {
+  const definitions = session.definitions.filter(definition => reads.has(definition.name) || input.mode === "execute" && writes.has(definition.name));
+  return definitions.map(definition => ({ access: reads.has(definition.name) ? "read" : "reversible_write", definition: { ...definition,
+    // Public core schemas carry TypeBox symbols; only their JSON schema crosses the model boundary.
+    inputSchema: JSON.parse(JSON.stringify(definition.inputSchema)), async execute(value, context) {
+    input.guard(); const result = await definition.execute(value, context); input.guard(); return result;
+  } } }));
 }

@@ -10,6 +10,7 @@ import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from
 import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
 import type { NotificationService } from "./notifications/service";
+import type { ComputerDirectory } from "./computers/service";
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -19,7 +20,7 @@ import type { NotificationService } from "./notifications/service";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -50,7 +51,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
-      notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" } };
+      notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
+      computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files) } : { available: false, code: "computers_unavailable" } };
   };
   return async request => {
     try {
@@ -154,6 +156,15 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
         if (request.method === "POST" && notify[1] === "subscribe") { const input = await body(request); return json(options.notifications.subscribe(currentOwner(), input)); }
         if (request.method === "POST" && notify[1] === "unsubscribe") { const input = await body(request); return json(options.notifications.unsubscribe(currentOwner(), input)); }
+        throw new AppError("method_rejected", 405);
+      }
+      const computer = /^\/api\/s16\/client\/computers(?:\/(commands))?$/.exec(url.pathname);
+      if (computer) {
+        if (!options.computers) throw new AppError("computers_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !computer[1]) return json(options.computers.view(currentOwner() as Actor & object));
+        // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
+        if (request.method === "POST" && computer[1] === "commands") { const input = await body(request); return json(await options.computers.command(currentOwner() as Actor & object, input)); }
         throw new AppError("method_rejected", 405);
       }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
