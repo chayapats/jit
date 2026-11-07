@@ -3,6 +3,9 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ComputerDirectory } from '../s16/computers/service';
+import { BotDirectory } from '../s16/bots/service';
+import { createBotTools } from '../s16/bots/delegation';
+import { delegationLimits } from '../s16/bots/types';
 import { createS16WebHandler } from '../s16/web/handler';
 import { RoutineService, routineQuietDecision } from '../s16/routines/service';
 import { NotificationService } from '../s16/notifications/service';
@@ -70,6 +73,9 @@ export interface S15CompositionOptions {
    * computers for a Bot, and idle release after `idleStopMs` (on-demand start). Opt-in; it changes no installed policy.
    * `sweepMs` is the idle-check period (0: only explicit `computers.sweep()` calls, for deterministic tests). */
   computers?: { idleStopMs: number; sweepMs?: number };
+  /** Explicit S16 persistent Bots and delegation (`s16-bots/v1`, BOT16-01/DELEG16-01, ADR 0088). Opt-in; it adds
+   * `bots.sqlite`. A new Bot joins the standing policy only when the owner accepts its exact proposal. */
+  bots?: Record<string, never>;
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -132,7 +138,7 @@ export async function composeS15(options: S15CompositionOptions) {
   let githubConnections: GithubConnections | undefined;
   if (webGithubEnabled && options.disclosure) options = { ...options, disclosure: webGithubDisclosure(options.disclosure, { connections: () => githubConnections, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -145,7 +151,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -205,6 +211,8 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubIds = () => (gh?.repositories ?? []).map(r => r.resource.id);
     let policy!: S15PolicyService;
     let team!: TeamService;
+    // BOT16-01: created Bots' catalog identities and exclusions; constructed once POLICY exists.
+    let bots: BotDirectory<OwnerActor> | undefined;
     // Protected channel principals (WORK15-02 settlement). Each proof is a process-local object whose check
     // re-reads its durable binding on every POLICY owner verification; none is serializable, and a changed
     // owner generation refuses at once.
@@ -233,6 +241,8 @@ export async function composeS15(options: S15CompositionOptions) {
       try { return policy.owner.authenticate(proof); } catch { return null; }
     };
     const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => {
+        // A created, archived or restored Bot's identity is the directory's; an archived Bot is inactive everywhere.
+        const bot = kind === 'bot' ? bots?.catalog(id) : null; if (bot) return bot;
         // A Web-connected repository that was unselected or whose connection was removed is inactive whatever TEAM says.
         const connected = kind === 'resource' ? githubConnections?.resource(id) : kind === 'recipient' ? githubConnections?.recipient(id) : kind === 'lineage' ? files?.source(id) ?? webGithub?.current(id) ?? githubSourceRow(id) : null;
         if (connected && !connected.active) return connected;
@@ -242,7 +252,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (connected && teamRow && !equal(teamRow.ref, connected.ref)) return connected;
         return teamRow ?? connected ?? options.catalogs.current(kind, id);
       },
-      allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) };
+      allows: (work, action) => options.catalogs.allows(work, action) && !!team && team.allowsWork(work) && (!bots || bots.allows(work, action?.resources ?? work.request.resources)) };
     const baseGithubAdapter = gh && githubStore ? createGithubActionAdapter({ store: githubStore, gateway: gh.gateway, limits: gh.limits, now: options.clock?.now ?? Date.now, policy: () => policy }) : undefined;
     const githubAdapter = baseGithubAdapter && disclosure && options.disclosure?.githubRoute ? disclosure.protectAdapter(baseGithubAdapter, options.disclosure.githubRoute) : baseGithubAdapter;
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
@@ -264,6 +274,32 @@ export async function composeS15(options: S15CompositionOptions) {
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
+    if (options.bots) {
+      const unfinished = new Set(['queued', 'running', 'held', 'proposed']);
+      bots = new BotDirectory<OwnerActor>({ path: join(root, 'bots.sqlite'), installationId: options.installationId, create: options.create || created.includes('bots.sqlite'), now: clockNow, policy,
+        main: { bot: options.conversation.bot, selection: options.conversation.selection }, configured: id => options.catalogs.current('bot', id),
+        selections: owner => { const current = policy.owner.current(owner); return options.model.registry.list().filter(r => current?.selections.some(s => equal(s, r.selection))).map(r => ({ selection: structuredClone(r.selection), label: `${r.provider} · ${r.modelId} · ${r.selection.effort}` })); },
+        resources: owner => { const current = policy.owner.current(owner); if (!current) return []; return team.resources(owner).resources.filter(item => item.active && current.resources.some(r => r.id === item.id)).map(item => ({ id: item.id, label: item.label, kind: item.kind })).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0); },
+        routes: () => options.model.registry.list().map(r => ({ selection: structuredClone(r.selection), provider: r.provider, modelId: r.modelId })),
+        conversations: {
+          started: conversationId => store.db.query('SELECT 1 FROM requests WHERE conversation_id=? LIMIT 1').get(conversationId) !== null,
+          unfinished: (owner, botId, conversationIds) => {
+            const ids = new Set(conversationIds);
+            return store.db.query<{ id: string; conversation_id: string; state: string; bot: string | null }, []>("SELECT id, conversation_id, state, json_extract(record_json,'$.delegation.botId') AS bot FROM requests WHERE state IN ('queued','running','held','proposed') ORDER BY rowid DESC LIMIT 1024").all()
+              .filter(row => unfinished.has(row.state) && (ids.has(row.conversation_id) || row.bot === botId)).map(row => { conversation.receipt(owner, row.id); return { requestId: row.id, conversationId: row.conversation_id }; });
+          },
+          recent: (owner, conversationIds) => conversationIds.flatMap(conversationId => {
+            const first = store.db.query<{ id: string }, [string]>('SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid LIMIT 1').get(conversationId); if (!first) return [];
+            const latest = store.db.query<{ id: string }, [string]>('SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1').get(conversationId)!;
+            const opening = conversation.view(owner, first.id), last = store.request(latest.id);
+            return [{ conversationId, firstMessage: opening.command.text, latestAt: last.receipt.receivedAt, assignment: !!opening.delegation }];
+          }).sort((a, b) => b.latestAt - a.latestAt),
+          stop: (owner, requestId) => conversation.stop(owner, requestId),
+        },
+        routines: { active: (owner, conversationIds) => routines ? routines.list(owner).routines.filter(item => item.routine.state === 'active' && conversationIds.includes(item.routine.draft.conversationId)).map(item => ({ id: item.routine.id, name: item.routine.draft.name, revision: item.routine.revision })) : [],
+          pause: (owner, routineId, revision) => { routines?.command(owner, { kind: 'routine.pause', requestId: `bot_pause_${routineId}_${revision}`, routineId, expectedRevision: revision }); } } });
+      cleanup.push(() => bots!.close());
+    }
     if (options.vm.local && !options.vm.managementVault) throw new AppError('vm_management_unavailable', 503);
     // Local working VMs: protected registry proxy on a controller-only socket, reached only by the QEMU guest-forward.
     const localVm = options.vm.local ? await startLocalVmControl(vmStore, { directory: join(root, 'vm-local'), ...options.vm.local }) : null;
@@ -332,10 +368,12 @@ export async function composeS15(options: S15CompositionOptions) {
     };
     const subjectIds = new Proxy([] as string[], { get: (_target, key) => { const ids = githubIds(), value = Reflect.get(ids, key); return typeof value === 'function' ? value.bind(ids) : value; } });
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
-      ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}) });
+      ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}),
+      ...(bots ? { bots: { resolve: (conversationId: string, selections: readonly import('./policy').Selection[]) => bots!.resolve(conversationId, selections) } } : {}) });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
+    let botTools: ReturnType<typeof createBotTools> | undefined;
     const work = openWorkService({ runtime: 's15', path: join(root, 'work.sqlite'), create: options.create, installationId: options.installationId, policy,
       conversation: { view: (owner, id) => conversation.view(owner, id) }, remainingCalls: workId => {
         const current = policy.control.policyForWork(workId), used = policy.control.reservations(workId).reduce((n, row) => n + row.upperBound.calls, 0);
@@ -351,6 +389,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // Repository ports follow the live selection; each stays scoped to its one repository resource.
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []), ...(options.tools ?? [])];
     conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+      ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: () => { let sessions = 2; try { sessions = vmStore.registration(options.vm.id).maxSessions; } catch { /* Not enrolled yet. */ } return Math.max(1, Math.min(delegationLimits.installationConcurrent, sessions - 1)); } } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
         const standing = policy.control.policyForWork(current.authority.id);
@@ -369,6 +408,7 @@ export async function composeS15(options: S15CompositionOptions) {
         try {
           for (const registration of ports()) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, { ...input, guard: scopedGuard }));
           if (google || browser) opened.push(await effects.tools.open(current, { ...input, guard: scopedGuard }));
+          if (botTools) opened.push(await botTools.port.open(current, { ...input, guard: scopedGuard }));
           return { tools: opened.flatMap(p => p.tools).map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
@@ -377,12 +417,13 @@ export async function composeS15(options: S15CompositionOptions) {
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
         try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: input.countModelCall, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : []), ...(botTools?.ownerDecisions(input.work, input.request) ?? [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: () => { input.countModelCall(); botTools?.beforeChildSend(input.work, input.request); }, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
         return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
+    if (bots) botTools = createBotTools({ conversation, directory: bots, policy, team, memory, ...(disclosure ? { disclosure } : {}), owner: snapshot => channelOwner({ ownerId: snapshot.id, generation: snapshot.generation }, () => true) });
     // WORK15-02: the owner's own completed stall reply resumes its named responsibility, after restart too.
     const resumes = openResumeBindings<OwnerActor>({ store, conversation: { submit: (actor, command) => conversation.submit(actor, command) },
       work: { project: (actor, id) => work.project(actor, id), resume: (actor, id, source) => { work.resume(actor, id, source); } },
@@ -459,7 +500,7 @@ export async function composeS15(options: S15CompositionOptions) {
       // One budget covers every metered route, so they must share one known currency; otherwise nothing is offered.
       const money = meteredCurrency(scope.selections);
       const budget = s15NeedsBudget(scope.selections) && entry && money.currency && entry.currency === money.currency ? s15MeteredBudget({ now, policyExpiresAt: now + lifetimeMs, currency: entry.currency, spendMinor: entry.spendMinor, periodId: entry.periodId, concurrency: options.defaultPolicy.concurrency }) : null;
-      const build = (value: import('./policy').OperatingBudget | null) => s15DefaultPolicy({ now, bot: scope.bot!, resources: scope.resources, selections: scope.selections, extraRecipients: scope.extraRecipients, budget: value, carry: current?.rules ?? [], lifetimeMs });
+      const build = (value: import('./policy').OperatingBudget | null) => s15DefaultPolicy({ now, bot: scope.bot!, extraBots: bots?.createdRefs() ?? [], resources: scope.resources, selections: scope.selections, extraRecipients: scope.extraRecipients, budget: value, carry: current?.rules ?? [], lifetimeMs });
       // Scope comparison keeps the installed budget unless the owner typed a new one: a metered policy that is
       // installed and unchanged is current, and a new amount is asked for only to change or renew it.
       return { scope, money, input: build(budget), scopeInput: build(budget ?? (s15NeedsBudget(scope.selections) ? current?.budget ?? null : null)), current };
@@ -588,7 +629,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(bots ? { bots } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -606,7 +647,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, models, work, github, browser, authentication, resumes, routines,
+    const composed = { policy, conversation, team, memory, files, bots, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, models, work, github, browser, authentication, resumes, routines,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

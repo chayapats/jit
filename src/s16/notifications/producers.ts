@@ -27,7 +27,7 @@ export function conversationNotices(port: { db: Database; row(owner: Notificatio
       `SELECT e.sequence, e.request_id, e.conversation_id, e.at, e.kind, json_extract(r.record_json,'$.owner.id') AS owner_id, json_extract(r.record_json,'$.owner.generation') AS generation,
         json_extract(r.record_json,'$.receipt.receivedAt') AS received_at
        FROM events e JOIN requests r ON r.id=e.request_id
-       WHERE e.sequence>? AND e.sequence<=? AND e.kind IN ('needs_me','result') AND json_extract(r.record_json,'$.routine') IS NULL ORDER BY e.sequence LIMIT ?`).all(cursor, end, batch);
+       WHERE e.sequence>? AND e.sequence<=? AND e.kind IN ('needs_me','result') AND json_extract(r.record_json,'$.routine') IS NULL AND (e.kind='needs_me' OR json_type(r.record_json,'$.delegation') IS NULL) ORDER BY e.sequence LIMIT ?`).all(cursor, end, batch);
     const notices: NoticeInput[] = [];
     for (const event of rows) {
       const owner = { ownerId: event.owner_id, generation: event.generation };

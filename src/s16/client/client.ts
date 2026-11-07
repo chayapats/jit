@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 
@@ -238,6 +238,47 @@ export class JitClient {
       && record(scope) && (scope.kind === "team" && Object.keys(scope).length === 1 || scope.kind === "bot" && identifier(scope.botId))
       && record(source) && ["owner_message", "work", "historical"].includes(source.kind as string) && (source.conversationId === null || identifier(source.conversationId)) && count(source.at) && count(source.files)
       && link(value.supersedes) && link(value.correction) && count(value.createdAt) && (value.lastUsedAt === null || count(value.lastUsedAt)) && count(value.contexts);
+  }
+  /** BOT16-01 owner Bots page: profiles, pending proposals and route/resource choices. Reading changes nothing. */
+  async bots(signal?: AbortSignal): Promise<ClientBotsView> {
+    const data = await this.call("/bots", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-bots/v1" || !Array.isArray(data.bots) || data.bots.length > 64 || !data.bots.every(bot => this.botView(bot)) || !Array.isArray(data.proposals) || data.proposals.length > 64 || !data.proposals.every(p => this.botProposal(p)) || !Array.isArray(data.selections) || !Array.isArray(data.resources) || !record(data.creation)) return invalid();
+    return data as unknown as ClientBotsView;
+  }
+  /** One Bot with its recent conversations and what archiving it would stop and pause. */
+  async bot(botId: string, signal?: AbortSignal): Promise<ClientBotDetail> {
+    const data = await this.call(`/bots/${id(botId)}`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-bot/v1" || !this.botView(data.bot) || !Array.isArray(data.conversations) || !record(data.impact) || !Array.isArray(data.impact.running) || !Array.isArray(data.impact.routines)) return invalid();
+    return data as unknown as ClientBotDetail;
+  }
+  /** Credential-free configuration export of one Bot. */
+  async botExport(botId: string, signal?: AbortSignal): Promise<ClientBotExport> {
+    const data = await this.call(`/bots/${id(botId)}/export`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-bot-export/v1" || typeof data.name !== "string") return invalid();
+    return data as unknown as ClientBotExport;
+  }
+  /** A new exact proposal from the owner's form or an edited card. Nothing is created until it is accepted. */
+  async proposeBot(draft: ClientBotDraft, signal?: AbortSignal): Promise<ClientBotProposal> { return this.proposal(await this.call("/bots/proposals", "POST", { draft: structuredClone(draft) }, signal)); }
+  /** Duplicate copies configuration only, as a new proposal. */
+  async duplicateBot(botId: string, name: string, signal?: AbortSignal): Promise<ClientBotProposal> { return this.proposal(await this.call(`/bots/${id(botId)}/duplicate`, "POST", { name }, signal)); }
+  /** Import turns an exported file into a new proposal; references this installation lacks are listed. */
+  async importBot(value: unknown, signal?: AbortSignal): Promise<ClientBotProposal> { return this.proposal(await this.call("/bots/imports", "POST", { export: value }, signal)); }
+  /** Exact owner Bot command. It never retries; after an unknown outcome resend the same command (same `requestId`). */
+  async botCommand(command: ClientBotCommand, signal?: AbortSignal): Promise<ClientBotReceipt> {
+    const input = structuredClone(command);
+    if (input.contract !== "s16-bot-command/v1" || !identifier(input.requestId)) throw new JitClientError("invalid_bot_command", null, "not_sent", input.requestId);
+    const data = await this.call("/bots/commands", "POST", input, signal, input.requestId);
+    if (!record(data) || data.contract !== "s16-bot-receipt/v1" || data.requestId !== input.requestId || data.kind !== input.kind || data.bot !== null && !this.botView(data.bot) || data.proposal !== null && !this.botProposal(data.proposal)) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return data as unknown as ClientBotReceipt;
+  }
+  private proposal(data: unknown): ClientBotProposal { if (!this.botProposal(data)) return invalid(); return data; }
+  private botView(value: unknown): value is ClientBot {
+    return record(value) && identifier(value.id) && count(value.revision) && ["main", "configured", "created"].includes(value.origin as string) && typeof value.main === "boolean" && typeof value.name === "string" && typeof value.responsibility === "string"
+      && ["active", "archived"].includes(value.state as string) && typeof value.assignments === "boolean" && Array.isArray(value.excluded) && value.excluded.every(identifier);
+  }
+  private botProposal(value: unknown): value is ClientBotProposal {
+    return record(value) && value.contract === "s16-bot-proposal/v1" && identifier(value.id) && sha256(value.proposalHash) && record(value.draft) && value.draft.contract === "s16-bot-draft/v1" && typeof value.draft.name === "string"
+      && ["pending", "accepted", "dismissed"].includes(value.state as string) && Array.isArray(value.resources) && Array.isArray(value.missing) && record(value.source);
   }
   /** TEAM16-01 working computers: shared/private computers, their observed state and each Bot's computer. Reading starts or stops nothing. */
   async computers(signal?: AbortSignal): Promise<ComputersView> {

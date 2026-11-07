@@ -218,6 +218,14 @@ export class MemoryService {
     });
   }
   /** Derived content read always rechecks original claim/resource/private scope before returning bytes. */
+  /**
+   * DELEG16-01: TEAM ancestry of one request's context packet (every claim it included and its file pins), so text an
+   * assigning Bot writes from that context keeps the same privacy labels when it is handed to another Bot.
+   */
+  contextLineage(context: TeamContext, packetId: string): { sourceIds: string[]; private: boolean; filePins: FileSourcePin[] } {
+    const derivative = this.derivative(context, packetId), claims = derivative.claimIds.map(id => this.claim(id));
+    return { sourceIds: [...new Set(claims.flatMap(claim => claim.provenance.teamSourceId ?? []))], private: claims.some(claim => claim.provenance.scope.kind === "bot"), filePins: filePins(derivative.filePins) };
+  }
   derivative(context: TeamContext, derivativeId: string): MemoryDerivative { this.guard(context, derivativeId); return JSON.parse(this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(derivativeId)!.record_json) as MemoryDerivative; }
   /** Ordinary CHAT history/replay cannot reintroduce forgotten/corrected source or retired summaries. */
   allowHistory(requestId: string, text: string): boolean {
