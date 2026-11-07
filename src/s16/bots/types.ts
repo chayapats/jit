@@ -38,6 +38,8 @@ export interface BotRecord {
   state: "active" | "archived";
   source: BotSource;
   createdAt: number; updatedAt: number; archivedAt: number | null;
+  /** Present while the archive command with this request ID has not finished stopping work and pausing routines. */
+  cleanup?: string;
 }
 
 /** An approved route choice shown to the owner. */

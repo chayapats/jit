@@ -98,7 +98,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
    * child inherits the parent's frozen purpose, resources and access, never more. `bind` records the child
    * conversation's Bot before the child exists. Children are numbered per parent, so a repeated call never doubles.
    */
-  submitDelegation(actor: OwnerActor, input: { parentRequestId: string; kind: ConversationDelegationPin["kind"]; botId: string; fromBotId: string; task: string; sourceId: string | null; bind(conversationId: string): void }, bounds: { perRequest: number; concurrent: number }): ConversationReceipt {
+  submitDelegation(actor: OwnerActor, input: { parentRequestId: string; kind: ConversationDelegationPin["kind"]; botId: string; fromBotId: string; task: string; selection?: import("../policy").Selection; sourceId: string | null; bind(conversationId: string): void }, bounds: { perRequest: number; concurrent: number }): ConversationReceipt {
     this.options.policy.requireOwner(actor); identity(input.parentRequestId); identity(input.botId); identity(input.fromBotId); content(input.task, 16384);
     if (input.sourceId !== null) identity(input.sourceId);
     if (!["peer", "temporary"].includes(input.kind)) throw new AppError("invalid_data");
@@ -109,6 +109,8 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       const children = this.store.db.query<{ state: string }, [string]>("SELECT state FROM requests WHERE json_extract(record_json,'$.delegation.parentRequestId')=?").all(parent.receipt.rootRequestId);
       if (children.length >= bounds.perRequest) throw new AppError("budget_exhausted", 409);
       if (children.filter(child => child.state === "queued" || child.state === "running").length >= bounds.concurrent) throw new AppError("capacity_busy", 409);
+      // No computer session can be free for a child while ordinary work (waiting parents included) holds them all.
+      if (this.#delegationCapacity() === 0) throw new AppError("capacity_busy", 409);
       const limits = parent.authority.limits, slice = { modelCalls: Math.max(2, Math.floor(limits.modelCalls / 3)), toolCalls: Math.max(1, Math.floor(limits.toolCalls / 3)) };
       // Shared finite budget: the parent keeps at least one model call to report; the slice is never refunded.
       if (parent.modelCalls + slice.modelCalls >= limits.modelCalls || parent.toolCalls + slice.toolCalls > limits.toolCalls) throw new AppError("budget_exhausted", 409);
@@ -119,7 +121,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       this.options.admitConversation?.(conversationId);
       parent.modelCalls += slice.modelCalls; parent.toolCalls += slice.toolCalls; parent.revision++; this.store.save(parent);
       const scope = parent.intent.scope, command: ConversationCommand = { contract: "s15-conversation/v1", requestId: childId, conversationId, text: input.task, continuation: null };
-      const pin: ConversationDelegationPin = { contract: "s16-delegation-run/v1", parentRequestId: parent.receipt.rootRequestId, parentConversationId: parent.receipt.conversationId, ordinal, kind: input.kind, botId: input.botId, fromBotId: input.fromBotId, purposeId: scope.purposeId, resourceIds: [...scope.resourceIds], access: scope.access, limits: slice, sourceId: input.sourceId };
+      const pin: ConversationDelegationPin = { contract: "s16-delegation-run/v1", parentRequestId: parent.receipt.rootRequestId, parentConversationId: parent.receipt.conversationId, ordinal, kind: input.kind, botId: input.botId, fromBotId: input.fromBotId, purposeId: scope.purposeId, resourceIds: [...scope.resourceIds], access: scope.access, limits: slice, ...(input.kind === "temporary" && input.selection ? { selection: structuredClone(input.selection) } : {}), sourceId: input.sourceId };
       const intent: ConversationIntent = { kind: scope.access === "read" ? "inspect" : "execute", subject: null, instruction: input.task, scope: { purposeId: scope.purposeId, resourceIds: [...scope.resourceIds], access: scope.access } };
       const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId: childId, rootRequestId: childId, conversationId, receivedAt: this.clock.now() };
       const request: ConversationRequest = { receipt, command, interpretationRequest: command, owner: { ...parent.owner }, revision: 1, intent, state: "queued", code: null, authority: null, phase: "work", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null, delegation: pin };
@@ -133,6 +135,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     this.#owners.set(receipt.rootRequestId, { actor, commandId: receipt.requestId });
     this.#wakeDrain();
     return receipt;
+  }
+  /** Children that may run now: the pool, bounded by computer sessions that no running ordinary request may hold. */
+  #delegationCapacity(): number {
+    const pool = Math.max(1, Math.min(this.options.maxDelegatedRuns ?? 3, 8));
+    if (!this.options.delegationSessions) return pool;
+    const sessions = this.options.delegationSessions(), ordinary = this.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM requests WHERE state='running' AND json_type(record_json,'$.delegation') IS NULL").get()!.n;
+    return Math.max(0, Math.min(pool, (Number.isSafeInteger(sessions) ? sessions : 0) - ordinary));
   }
   /** `decision` comes only from the exact one-press decision command (`decide`); typed text never decides. */
   #submit(actor: OwnerActor, value: unknown, pin: ConversationRoutinePin | null, decision: OwnerDecisionInput | null = null): ConversationReceipt {
@@ -454,7 +463,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (this.#draining) { this.#wakeDrain(); return this.#draining; }
     const done = Promise.withResolvers<void>(); this.#draining = done.promise;
     const max = Math.max(1, Math.min(this.options.maxConcurrentRuns ?? 2, 8));
-    const delegatedPool = () => { const value = typeof this.options.maxDelegatedRuns === "function" ? this.options.maxDelegatedRuns() : this.options.maxDelegatedRuns ?? 3; return Math.max(1, Math.min(Number.isSafeInteger(value) ? value : 1, 8)); };
+    const delegatedPool = () => this.#delegationCapacity();
     void (async () => {
       const active = new Map<string, Promise<void>>(), children = new Set<string>();
       let failure: unknown = null;
@@ -724,7 +733,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     try {
       if (this.store.request(pin.parentRequestId).state !== "running") throw new AppError("parent_unavailable", 409);
       this.options.admitConversation?.(current.receipt.conversationId);
-      const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs: 0, ownerMessage: false, delegation: pin.limits });
+      const decision = this.options.policy.admit(actor, current.command, current.intent, { imageInputs: 0, ownerMessage: false, delegation: { ...pin.limits, ...(pin.selection ? { selection: pin.selection } : {}) } });
       if (decision.state !== "admitted") code = safeCodes.has(decision.code) ? decision.code : "policy_match_required";
       else {
         const admitted = authority(decision.authority);

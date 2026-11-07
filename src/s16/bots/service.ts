@@ -37,6 +37,8 @@ export interface BotDirectoryOptions<Owner> {
     started(conversationId: string): boolean;
     /** Unfinished requests in the given conversations, plus delegated children assigned to the Bot. */
     unfinished(owner: Owner, botId: string, conversationIds: readonly string[]): { requestId: string; conversationId: string }[];
+    /** Recent top-level conversation IDs (newest first, bounded), for the main Bot's page. */
+    topLevel(): string[];
     /** Recent conversations (newest first) among the given IDs, for the Bot page. */
     recent(owner: Owner, conversationIds: readonly string[]): { conversationId: string; firstMessage: string; latestAt: number; assignment: boolean }[];
     stop(owner: Owner, requestId: string): void;
@@ -92,7 +94,9 @@ export class BotDirectory<Owner> {
     return this.store.db.query<{ bot_id: string }, [string]>("SELECT bot_id FROM bindings WHERE conversation_id=?").get(conversationId)?.bot_id ?? this.options.main.bot.id;
   }
   /** Conversations bound to a Bot (the main Bot's unbound conversations are not listed here). */
-  boundConversations(botId: string): string[] { return this.store.db.query<{ conversation_id: string }, [string]>("SELECT conversation_id FROM bindings WHERE bot_id=? ORDER BY rowid DESC LIMIT 512").all(botId).map(row => row.conversation_id); }
+  boundConversations(botId: string, limit = 512): string[] { return this.store.db.query<{ conversation_id: string }, [string, number]>("SELECT conversation_id FROM bindings WHERE bot_id=? ORDER BY rowid DESC LIMIT ?").all(botId, limit).map(row => row.conversation_id); }
+  /** Every conversation of a Bot, for lifecycle changes (archive stops and pauses everything, not a recent page). */
+  #lifecycleConversations(botId: string): string[] { return this.boundConversations(botId, Number.MAX_SAFE_INTEGER); }
   /**
    * Admission resolution for a conversation's Bot: its current catalog reference, the route new work uses and its
    * excluded resources. An archived Bot refuses (`bot_archived`) before anything is accepted.
@@ -129,7 +133,7 @@ export class BotDirectory<Owner> {
   view(owner: Owner): BotsView {
     this.#owner(owner);
     const selections = this.options.selections(owner), policy = this.#policy(owner);
-    const proposals = this.store.db.query<{ record_json: string }, []>("SELECT record_json FROM proposals ORDER BY rowid DESC LIMIT 64").all().map(row => JSON.parse(row.record_json) as BotProposal).filter(p => p.state === "pending").reverse();
+    const proposals = this.store.db.query<{ record_json: string }, []>("SELECT record_json FROM proposals WHERE json_extract(record_json,'$.state')='pending' ORDER BY rowid DESC LIMIT 64").all().map(row => JSON.parse(row.record_json) as BotProposal).reverse();
     return { contract: "s16-client-bots/v1", bots: this.#bots(owner).map(record => this.#view(record, selections)), proposals, selections, resources: this.options.resources(owner),
       creation: !policy ? { available: false, code: "policy_required" } : this.#records().filter(r => r.origin === "created").length >= botLimits.bots ? { available: false, code: "bot_capacity" } : { available: true } };
   }
@@ -137,10 +141,12 @@ export class BotDirectory<Owner> {
   detail(owner: Owner, botId: string): BotDetail {
     this.#owner(owner); const record = this.profile(botId);
     if (!record || !this.#bots(owner).some(r => r.id === botId)) throw new AppError("not_found", 404);
-    return { contract: "s16-client-bot/v1", bot: this.#view(record, this.options.selections(owner)), conversations: this.options.conversations.recent(owner, this.boundConversations(botId)).slice(0, 32), impact: this.impact(owner, botId) };
+    // The main Bot's conversations are the unbound ones; every other Bot's are its bindings.
+    const ids = this.isMain(botId) ? this.options.conversations.topLevel().filter(id => this.conversationBot(id) === botId) : this.boundConversations(botId, 64);
+    return { contract: "s16-client-bot/v1", bot: this.#view(record, this.options.selections(owner)), conversations: this.options.conversations.recent(owner, ids).slice(0, 32), impact: this.impact(owner, botId) };
   }
   impact(owner: Owner, botId: string): BotImpact {
-    const conversations = this.boundConversations(botId);
+    const conversations = this.#lifecycleConversations(botId);
     return { running: this.options.conversations.unfinished(owner, botId, conversations), routines: (this.options.routines?.active(owner, conversations) ?? []).map(({ id, name }) => ({ id, name })) };
   }
 
@@ -206,7 +212,8 @@ export class BotDirectory<Owner> {
   exportBot(owner: Owner, botId: string): BotExport {
     this.#owner(owner); const record = this.profile(botId); if (!record) throw new AppError("not_found", 404);
     const route = record.selection ? this.options.routes().find(r => same(r.selection, record.selection)) : undefined, labels = new Map(this.options.resources(owner).map(r => [r.id, r.label] as const));
-    return { contract: "s16-bot-export/v1", name: record.name, responsibility: record.responsibility, model: route ? { provider: route.provider, modelId: route.modelId, effort: route.selection.effort } : null,
+    // The main Bot's default name is localized by the client; an export always carries a usable name.
+    return { contract: "s16-bot-export/v1", name: record.name || (this.isMain(record.id) ? "Jit" : record.id), responsibility: record.responsibility, model: route ? { provider: route.provider, modelId: route.modelId, effort: route.selection.effort } : null,
       excluded: record.excluded.map(id => ({ id, label: labels.get(id) ?? id })), assignments: record.assignments, exportedAt: this.options.now() };
   }
   /** Import validates a bounded export and turns it into a new proposal; unknown references are listed, never guessed. */
@@ -232,7 +239,11 @@ export class BotDirectory<Owner> {
     return this.#propose(owner, draft, { kind: "import" }, missing, resources, policy.revision);
   }
 
-  /** Exact owner commands. Each runs once per request ID; a changed payload under the same ID refuses. */
+  /**
+   * Exact owner commands. Each runs once per request ID; a changed payload under the same ID refuses. The directory
+   * change and its receipt commit in one transaction, so a retry after a crash returns the first result. An archive's
+   * cleanup (stops, routine pauses) runs after its commit and is finished by the same command's retry or by restore.
+   */
   command(owner: Owner, raw: unknown): BotReceipt {
     canonical(raw);
     if (!raw || typeof raw !== "object" || (raw as { contract?: unknown }).contract !== "s16-bot-command/v1") throw new AppError("invalid_bot_command");
@@ -243,53 +254,53 @@ export class BotDirectory<Owner> {
     const hash = digest(`s16.bot.command.v1\n${canonical(command)}`);
     const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT payload_hash,result_json FROM commands WHERE id=?").get(command.requestId);
     if (prior) { this.#owner(owner); if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as BotReceipt; }
-    const receipt = this.#execute(owner, command);
-    this.store.transaction(() => { if (!this.store.db.query("SELECT 1 FROM commands WHERE id=?").get(command.requestId)) this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(command.requestId, hash, canonical(receipt)); });
-    return receipt;
+    this.#owner(owner);
+    return this.#execute(owner, command, hash);
+  }
+  /** Inside the caller's transaction: record the command's receipt with its change. */
+  #done(command: BotCommand, hash: string, receipt: BotReceipt): BotReceipt {
+    if (this.store.db.query("SELECT 1 FROM commands WHERE id=?").get(command.requestId)) throw new AppError("request_id_conflict", 409);
+    this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(command.requestId, hash, canonical(receipt)); return receipt;
   }
   #receipt(command: BotCommand, bot: BotRecord | null, proposal: BotProposal | null, owner: Owner, stopped = 0, paused = 0): BotReceipt {
     return { contract: "s16-bot-receipt/v1", requestId: command.requestId, kind: command.kind, bot: bot ? this.#view(bot, this.options.selections(owner)) : null, proposal, stopped, paused };
   }
-  #execute(owner: Owner, command: BotCommand): BotReceipt {
-    this.#owner(owner);
+  #execute(owner: Owner, command: BotCommand, hash: string): BotReceipt {
     switch (command.kind) {
-      case "bot.accept": return this.#accept(owner, command);
+      case "bot.accept": return this.#accept(owner, command, hash);
       case "bot.dismiss": {
         identity(command.proposalId);
-        const proposal = this.store.transaction(() => { const value = this.#proposal(command.proposalId); if (!value) throw new AppError("not_found", 404); if (value.state !== "pending") throw new AppError("stale_proposal", 409); value.state = "dismissed"; this.#saveProposal(value); return value; });
-        return this.#receipt(command, null, proposal, owner);
+        return this.store.transaction(() => { const value = this.#proposal(command.proposalId); if (!value) throw new AppError("not_found", 404); if (value.state !== "pending") throw new AppError("stale_proposal", 409); value.state = "dismissed"; this.#saveProposal(value); return this.#done(command, hash, this.#receipt(command, null, value, owner)); });
       }
       case "bot.update": {
         identity(command.botId); integer(command.expectedRevision, 0);
         if (typeof command.assignments !== "boolean") throw new AppError("invalid_bot");
         const name = this.#name(command.name), responsibility = this.#responsibility(command.responsibility);
         if (command.selection !== null && !this.options.selections(owner).some(choice => same(choice.selection, command.selection))) throw new AppError("selection_unavailable", 409);
-        const record = this.store.transaction(() => {
+        return this.store.transaction(() => {
           const current = this.profile(command.botId);
           if (!current || !this.#bots(owner).some(r => r.id === command.botId)) throw new AppError("not_found", 404);
           if (current.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
           if (current.state !== "active") throw new AppError("bot_archived", 409);
           const next: BotRecord = { ...current, revision: current.revision + 1, name, responsibility, selection: command.selection ? structuredClone(command.selection) : null, assignments: command.assignments, updatedAt: this.options.now(), ...(current.revision === 0 ? { createdAt: this.options.now() } : {}) };
-          this.#save(next); return next;
+          this.#save(next); return this.#done(command, hash, this.#receipt(command, next, null, owner));
         });
-        return this.#receipt(command, record, null, owner);
       }
-      case "bot.archive": return this.#archive(owner, command);
-      case "bot.restore": return this.#restore(owner, command);
+      case "bot.archive": return this.#archive(owner, command, hash);
+      case "bot.restore": return this.#restore(owner, command, hash);
       case "conversation.bind": {
         identity(command.conversationId); identity(command.botId);
         const record = this.profile(command.botId);
         if (!record || !this.#bots(owner).some(r => r.id === command.botId)) throw new AppError("not_found", 404);
         if (record.state !== "active") throw new AppError("bot_archived", 409);
-        this.store.transaction(() => {
+        return this.store.transaction(() => {
           const bound = this.store.db.query<{ bot_id: string }, [string]>("SELECT bot_id FROM bindings WHERE conversation_id=?").get(command.conversationId);
-          if (bound) { if (bound.bot_id !== command.botId) throw new AppError("conversation_bot_fixed", 409); return; }
+          if (bound) { if (bound.bot_id !== command.botId) throw new AppError("conversation_bot_fixed", 409); }
           // A conversation keeps the Bot it started with: an unbound started conversation belongs to the main Bot.
-          if (this.options.conversations.started(command.conversationId)) { if (!this.isMain(command.botId)) throw new AppError("conversation_bot_fixed", 409); return; }
-          if (this.isMain(command.botId)) return;
-          this.store.capacity(); this.store.db.query("INSERT INTO bindings VALUES (?,?)").run(command.conversationId, command.botId);
+          else if (this.options.conversations.started(command.conversationId)) { if (!this.isMain(command.botId)) throw new AppError("conversation_bot_fixed", 409); }
+          else if (!this.isMain(command.botId)) { this.store.capacity(); this.store.db.query("INSERT INTO bindings VALUES (?,?)").run(command.conversationId, command.botId); }
+          return this.#done(command, hash, this.#receipt(command, record, null, owner));
         });
-        return this.#receipt(command, record, null, owner);
       }
     }
   }
@@ -309,7 +320,7 @@ export class BotDirectory<Owner> {
     const { contract: _contract, revision, ownerGeneration: _generation, ...input } = structuredClone(current);
     this.options.policy.owner.install(owner as never, `bot_${digest(requestId).slice(0, 40)}`, revision, transform(input));
   }
-  #accept(owner: Owner, command: Extract<BotCommand, { kind: "bot.accept" }>): BotReceipt {
+  #accept(owner: Owner, command: Extract<BotCommand, { kind: "bot.accept" }>, hash: string): BotReceipt {
     identity(command.proposalId); if (typeof command.proposalHash !== "string" || !/^[a-f0-9]{64}$/.test(command.proposalHash)) throw new AppError("invalid_bot_command");
     const proposal = this.#proposal(command.proposalId);
     if (!proposal) throw new AppError("not_found", 404);
@@ -331,45 +342,60 @@ export class BotDirectory<Owner> {
     const now = this.options.now();
     const record: BotRecord = { contract: "s16-bot/v1", id, revision: 1, origin: "created", ref, name: proposal.draft.name, responsibility: proposal.draft.responsibility, selection: proposal.draft.selection, excluded: [...proposal.draft.excluded], assignments: proposal.draft.assignments,
       state: "active", source: structuredClone(proposal.source), createdAt: now, updatedAt: now, archivedAt: null };
-    const accepted = this.store.transaction(() => {
+    return this.store.transaction(() => {
       const current = this.#proposal(proposal.id)!; if (current.state !== "pending") throw new AppError("stale_proposal", 409);
-      this.store.capacity(); this.#save(record); current.state = "accepted"; current.botId = id; this.#saveProposal(current); return current;
+      this.store.capacity(); this.#save(record); current.state = "accepted"; current.botId = id; this.#saveProposal(current);
+      return this.#done(command, hash, this.#receipt(command, record, current, owner));
     });
-    return this.#receipt(command, record, accepted, owner);
   }
-  #archive(owner: Owner, command: Extract<BotCommand, { kind: "bot.archive" | "bot.restore" }>): BotReceipt {
+  /** Stops every unfinished request of the Bot and pauses every active routine of its conversations. Idempotent. */
+  #cleanup(owner: Owner, botId: string): { stopped: number; paused: number } {
+    let stopped = 0, paused = 0;
+    const conversations = this.#lifecycleConversations(botId);
+    for (const item of this.options.conversations.unfinished(owner, botId, conversations)) { try { this.options.conversations.stop(owner, item.requestId); stopped++; } catch { /* Already settled or fenced by POLICY. */ } }
+    for (const routine of this.options.routines?.active(owner, conversations) ?? []) { this.options.routines!.pause(owner, routine.id, routine.revision); paused++; }
+    return { stopped, paused };
+  }
+  #archive(owner: Owner, command: Extract<BotCommand, { kind: "bot.archive" | "bot.restore" }>, hash: string): BotReceipt {
     identity(command.botId); integer(command.expectedRevision, 0);
     if (this.isMain(command.botId)) throw new AppError("bot_main_required", 409);
     const record = this.store.transaction(() => {
       const current = this.profile(command.botId);
       if (!current || !this.#bots(owner).some(r => r.id === command.botId)) throw new AppError("not_found", 404);
+      // The same command interrupted after its commit: finish its cleanup instead of refusing the retry.
+      if (current.state === "archived" && current.cleanup === command.requestId && current.revision === command.expectedRevision + 1) return current;
       if (current.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
       if (current.state !== "active") throw new AppError("bot_archived", 409);
       const ref = current.ref ?? this.options.configured(current.id)?.ref ?? null;
       if (!ref) throw new AppError("bot_unavailable", 409);
       // The catalog identity turns inactive here, before any stop below: POLICY refuses this Bot's work at its next guard.
-      const next: BotRecord = { ...current, revision: current.revision + 1, ref: structuredClone(ref), state: "archived", updatedAt: this.options.now(), archivedAt: this.options.now() };
+      const next: BotRecord = { ...current, revision: current.revision + 1, ref: structuredClone(ref), state: "archived", cleanup: command.requestId, updatedAt: this.options.now(), archivedAt: this.options.now() };
       this.#save(next); return next;
     });
-    let stopped = 0, paused = 0;
-    const conversations = this.boundConversations(record.id);
-    for (const item of this.options.conversations.unfinished(owner, record.id, conversations)) { try { this.options.conversations.stop(owner, item.requestId); stopped++; } catch { /* Already settled or fenced by POLICY. */ } }
-    for (const routine of this.options.routines?.active(owner, conversations) ?? []) { try { this.options.routines!.pause(owner, routine.id, routine.revision); paused++; } catch { /* Its ingress refuses an archived Bot anyway. */ } }
-    return this.#receipt(command, record, null, owner, stopped, paused);
+    const counts = this.#cleanup(owner, record.id);
+    return this.store.transaction(() => {
+      const latest = this.#record(record.id)!, { cleanup: _done, ...next } = latest;
+      if (latest.cleanup === command.requestId) this.#save(next);
+      return this.#done(command, hash, this.#receipt(command, next, null, owner, counts.stopped, counts.paused));
+    });
   }
-  #restore(owner: Owner, command: Extract<BotCommand, { kind: "bot.archive" | "bot.restore" }>): BotReceipt {
+  #restore(owner: Owner, command: Extract<BotCommand, { kind: "bot.archive" | "bot.restore" }>, hash: string): BotReceipt {
     identity(command.botId); integer(command.expectedRevision, 0);
+    const before = this.#record(command.botId);
+    if (!before) throw new AppError("not_found", 404);
+    if (before.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    if (before.state !== "archived" || !before.ref) throw new AppError("bot_not_archived", 409);
+    // An archive whose cleanup was interrupted is finished first, so no routine it should have paused runs again.
+    if (before.cleanup) this.#cleanup(owner, before.id);
     // The same identity returns, so the Bot's history and sourced memory are readable again. Nothing it had unfinished
     // resumes: archive revoked those works, and a settled or reconcile-only request never runs again by itself.
-    const record = this.store.transaction(() => {
-      const current = this.#record(command.botId);
-      if (!current) throw new AppError("not_found", 404);
-      if (current.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      if (current.state !== "archived" || !current.ref) throw new AppError("bot_not_archived", 409);
-      const next: BotRecord = { ...current, revision: current.revision + 1, state: "active", updatedAt: this.options.now(), archivedAt: null };
-      this.#save(next); return next;
+    return this.store.transaction(() => {
+      const current = this.#record(command.botId)!;
+      if (current.revision !== command.expectedRevision || current.state !== "archived") throw new AppError("stale_revision", 409);
+      const { cleanup: _cleanup, ...rest } = current;
+      const next: BotRecord = { ...rest, revision: current.revision + 1, state: "active", updatedAt: this.options.now(), archivedAt: null };
+      this.#save(next); return this.#done(command, hash, this.#receipt(command, next, null, owner));
     });
-    return this.#receipt(command, record, null, owner);
   }
 
 }

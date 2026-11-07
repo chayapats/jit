@@ -285,9 +285,10 @@ export async function composeS15(options: S15CompositionOptions) {
           started: conversationId => store.db.query('SELECT 1 FROM requests WHERE conversation_id=? LIMIT 1').get(conversationId) !== null,
           unfinished: (owner, botId, conversationIds) => {
             const ids = new Set(conversationIds);
-            return store.db.query<{ id: string; conversation_id: string; state: string; bot: string | null }, []>("SELECT id, conversation_id, state, json_extract(record_json,'$.delegation.botId') AS bot FROM requests WHERE state IN ('queued','running','held','proposed') ORDER BY rowid DESC LIMIT 1024").all()
+            return store.db.query<{ id: string; conversation_id: string; state: string; bot: string | null }, []>("SELECT id, conversation_id, state, json_extract(record_json,'$.delegation.botId') AS bot FROM requests WHERE state IN ('queued','running','held','proposed') ORDER BY rowid DESC").all()
               .filter(row => unfinished.has(row.state) && (ids.has(row.conversation_id) || row.bot === botId)).map(row => { conversation.receipt(owner, row.id); return { requestId: row.id, conversationId: row.conversation_id }; });
           },
+          topLevel: () => store.db.query<{ conversation_id: string }, []>("SELECT conversation_id, max(rowid) AS latest FROM requests WHERE json_type(record_json,'$.delegation') IS NULL GROUP BY conversation_id ORDER BY latest DESC LIMIT 64").all().map(row => row.conversation_id),
           recent: (owner, conversationIds) => conversationIds.flatMap(conversationId => {
             const first = store.db.query<{ id: string }, [string]>('SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid LIMIT 1').get(conversationId); if (!first) return [];
             const latest = store.db.query<{ id: string }, [string]>('SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1').get(conversationId)!;
@@ -369,7 +370,14 @@ export async function composeS15(options: S15CompositionOptions) {
     const subjectIds = new Proxy([] as string[], { get: (_target, key) => { const ids = githubIds(), value = Reflect.get(ids, key); return typeof value === 'function' ? value.bind(ids) : value; } });
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
       ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}),
-      ...(bots ? { bots: { resolve: (conversationId: string, selections: readonly import('./policy').Selection[]) => bots!.resolve(conversationId, selections) } } : {}) });
+      ...(bots ? { bots: (() => {
+        // A Bot's own route also carries its interpretation send; an unknown route keeps the installation's default pair.
+        const route = (selection: import('./policy').Selection) => { const found = options.model.registry.current(selection); return found ? { provider: found.provider, model: found.modelId } : null; };
+        return { route, resolve: (conversationId: string, selections: readonly import('./policy').Selection[]) => {
+          const resolved = bots!.resolve(conversationId, selections), found = route(resolved.selection);
+          return found ? { ...resolved, route: found } : { ...resolved, selection: structuredClone(options.conversation.selection), route: { ...options.conversation.route } };
+        } };
+      })() } : {}) });
     const effects = createEffectsConversationTools(policy, { ...(google ? { google: google.tools } : {}), ...(browser ? { browser, browserResourceId: options.browser!.resource.id } : {}) }); cleanup.push(() => effects.close());
     conversationPolicy.dispatchAction = effects.dispatchAction;
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
@@ -389,7 +397,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // Repository ports follow the live selection; each stays scoped to its one repository resource.
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []), ...(options.tools ?? [])];
     conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
-      ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: () => { let sessions = 2; try { sessions = vmStore.registration(options.vm.id).maxSessions; } catch { /* Not enrolled yet. */ } return Math.max(1, Math.min(delegationLimits.installationConcurrent, sessions - 1)); } } : {}),
+      ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: delegationLimits.installationConcurrent, delegationSessions: () => { try { return vmStore.registration(options.vm.id).maxSessions; } catch { return 0; } } } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
         const standing = policy.control.policyForWork(current.authority.id);

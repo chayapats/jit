@@ -12,14 +12,14 @@ type Fixture = Awaited<ReturnType<typeof composedFixture>>;
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 
 /** Scripted model: a parent with `delegate` calls it once; anything else runs one VM command and reports its result. */
-function botModel(plan: { delegate?: () => unknown; gate?: Map<string, Promise<void>> }) {
+function botModel(plan: { delegate?: () => unknown; delegateWhen?: string; gate?: Map<string, Promise<void>> }) {
   const prompts: string[] = [];
   const model: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) {
     const text = JSON.stringify(request); prompts.push(text);
     const last = request.items.at(-1);
     const reply = (content: ({ type: 'tool_call'; id: string; name: string; arguments: Record<string, unknown> } | { type: 'text'; text: string })[]) => ({ type: 'message_complete' as const, message: { type: 'assistant' as const, id: uid(), content } });
     if (last?.type === 'tool_result') { yield reply([{ type: 'text', text: `Finished: ${last.content.slice(0, 400)}` }]); return; }
-    if (plan.delegate && request.tools?.some(tool => tool.name === 'delegate')) { yield reply([{ type: 'tool_call', id: uid(), name: 'delegate', arguments: plan.delegate() as Record<string, unknown> }]); return; }
+    if (plan.delegate && request.tools?.some(tool => tool.name === 'delegate') && (!plan.delegateWhen || text.includes(plan.delegateWhen))) { yield reply([{ type: 'tool_call', id: uid(), name: 'delegate', arguments: plan.delegate() as Record<string, unknown> }]); return; }
     for (const [marker, wait] of plan.gate ?? []) if (text.includes(marker)) await wait;
     const bash = request.tools?.some(tool => tool.name === 'bash');
     yield reply([bash ? { type: 'tool_call', id: uid(), name: 'bash', arguments: { command: 'printf child' } } : { type: 'tool_call', id: uid(), name: 'read', arguments: { path: 'notes.txt' } }]);
@@ -278,4 +278,59 @@ test('BOT16-01: an acceptance interrupted after its policy install records the s
   expect(receipt.bot!.id).toBe(installed.bots.find(b => b.id.startsWith('bot_'))!.id);
   expect(f.service.policy.owner.current(f.owner)!.revision).toBe(installed.revision);
   expect(directory.command(f.owner, accept)).toEqual(receipt);
+});
+
+test('BOT16-01: a work made stale by an intervening reinstall stays stale when a later revision only adds a Bot', async () => {
+  const f = await bots();
+  const work = f.service.policy.owner.admit(f.owner, { requestId: 'old', intent: 'execute', access: 'reversible_write', purpose: f.policyInput.purposes[0]!, bot: f.policyInput.bots[0]!, resources: [f.policyInput.resources[0]!], recipients: [], selection: f.choice, selectionPin: null, expiresAt: 800000 }).work!;
+  const actor = f.service.policy.control.bindWork(work.id);
+  const current = f.service.policy.owner.current(f.owner)!, { contract: _c, revision, ownerGeneration: _g, ...input } = current;
+  f.service.policy.owner.install(f.owner, 'same_again', revision, input);
+  expect(() => f.service.policy.work.guard(actor)).toThrow('stale_authority');
+  await createBot(f, 'Ledger');
+  expect(() => f.service.policy.work.guard(actor)).toThrow('stale_authority');
+});
+
+test('BOT16-01: an archive interrupted during cleanup is finished by its retry or by restore, never leaving routines active', async () => {
+  const f = await bots(), directory = f.service.bots!, bot = await createBot(f, 'Ledger');
+  const paused: string[] = []; let failOnce = true;
+  directory.options.routines = { active: (_owner, ids) => paused.includes('r1') || !ids.length ? [] : [{ id: 'r1', name: 'Daily', revision: 1 }], pause: (_owner, id) => { if (failOnce) { failOnce = false; throw new Error('crash'); } paused.push(id); } };
+  await json(await command(f, { kind: 'conversation.bind', conversationId: 'ledger_chat', botId: bot.id }));
+  const archive = { contract: 's16-bot-command/v1' as const, requestId: 'archive_once', kind: 'bot.archive' as const, botId: bot.id, expectedRevision: bot.revision };
+  expect(() => directory.command(f.owner, archive)).toThrow('crash');
+  expect(directory.profile(bot.id)).toMatchObject({ state: 'archived', cleanup: 'archive_once' });
+  // Restore cannot skip the unfinished cleanup.
+  const restore = (revision: number) => directory.command(f.owner, { contract: 's16-bot-command/v1', requestId: `restore_${revision}`, kind: 'bot.restore', botId: bot.id, expectedRevision: revision });
+  const retried = directory.command(f.owner, archive);
+  expect(retried).toMatchObject({ paused: 1, bot: { state: 'archived' } });
+  expect(directory.profile(bot.id)!.cleanup).toBeUndefined();
+  expect(directory.command(f.owner, archive)).toEqual(retried);
+  expect(restore(retried.bot!.revision).bot!.state).toBe('active');
+  expect(paused).toEqual(['r1']);
+});
+
+test('BOT16-01: the main Bot page lists its unbound conversations and its export imports again', async () => {
+  const { model } = botModel({});
+  const f = await bots(model);
+  expect((await run(f, 'main_chat', 'Update the main notes')).state).toBe('completed');
+  const detail = await json<BotDetail>(await f.request('/api/s16/client/bots/bot'));
+  expect(detail.conversations.map(c => c.conversationId)).toEqual(['main_chat']);
+  const exported = await json<BotExport>(await f.request('/api/s16/client/bots/bot/export'));
+  expect(exported.name).toBe('Jit');
+  expect((await f.request('/api/s16/client/bots/imports', 'POST', { export: exported })).status).toBe(201);
+});
+
+test('DELEG16-01: with every computer session held by ordinary work, a new assignment is refused instead of failing later', async () => {
+  let release!: () => void;
+  const gate = new Map([['HOLD', new Promise<void>(resolve => { release = resolve; })]]);
+  const { model } = botModel({ delegate: () => ({ assignments: [{ to: 'temporary', task: 'Help please.' }] }), delegateWhen: 'with a helper', gate });
+  const f = await bots(model);
+  const held = await say(f, 'other_chat', 'Update HOLD the other work'); expect(held.response.status).toBe(202);
+  const draining = f.service.conversation.drain();
+  for (let i = 0; i < 400 && !f.service.conversation.store.request(held.requestId).authority; i++) await new Promise(r => setTimeout(r, 5));
+  const parent = await say(f, 'conversation', 'Update this with a helper'); expect(parent.response.status).toBe(202);
+  for (let i = 0; i < 400 && !f.service.conversation.store.evidence(parent.requestId).some(e => e.tool === 'delegate'); i++) await new Promise(r => setTimeout(r, 5));
+  release(); await draining;
+  const output = JSON.parse(f.service.conversation.store.evidence(parent.requestId).find(e => e.tool === 'delegate')!.content) as { assignments: { state: string; code: string | null }[] };
+  expect(output.assignments).toEqual([{ to: 'temporary', state: 'not_started', code: 'capacity_busy', result: null } as never]);
 });

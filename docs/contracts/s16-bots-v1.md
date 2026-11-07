@@ -12,23 +12,23 @@ BOT16-01 (#412) and DELEG16-01 (#413). Decision record: [ADR 0088](../adr/0088-s
 
 | Table | Meaning |
 | --- | --- |
-| `bots(id PK, record_json)` | `s16-bot/v1` profile. `ref` is the POLICY catalog identity for created Bots (and for a configured Bot once archived). |
+| `bots(id PK, record_json)` | `s16-bot/v1` profile. `ref` is the POLICY catalog identity for created Bots (and for a configured Bot once archived). `cleanup` holds an archive's request ID until its stops and routine pauses finish. |
 | `proposals(id PK, record_json)` | `s16-bot-proposal/v1`, states `pending`, `accepted`, `dismissed`. At most 64 pending. |
 | `bindings(conversation_id PK, bot_id)` | Conversation's Bot. Update/delete triggers refuse (`binding_immutable`). Unbound: the main Bot. |
-| `commands(id PK, payload_hash, result_json)` | Owner command idempotency (`request_id_conflict` on a changed body). |
+| `commands(id PK, payload_hash, result_json)` | Owner command idempotency (`request_id_conflict` on a changed body), written in the same transaction as the change. |
 
 Bounds: name 1–60 characters, responsibility up to 2000, at most 32 created Bots, 32 exclusions, exports up to 16 KiB.
 
 ## POLICY
 
 - `bot.accept` installs `revision + 1` of the current standing policy with the new `Ref` appended to `bots` and to every rule naming the main Bot whose mode is not `personal_github_publish`, `personal_github_merge` or `recurring_payment`. POLICY receipt id: `bot_` + 40 hex of SHA-256 of the command `requestId`.
-- A work admitted under revision *r* stays current under revision *s > r* when the two revisions are not canonically identical (ignoring `revision`) and are identical after removing every Bot other than the work's own from `bots` and from each rule's `bots`.
+- A work admitted under revision *r* stays current under revision *s > r* (at most 256 apart) when every consecutive pair of revisions from *r* to *s* is not canonically identical (ignoring `revision`) and is identical after removing every Bot other than the work's own from `bots` and from each rule's `bots`.
 - The composed catalog answers `bot` from the directory first. Archived: `{ ref, active: false }`. Catalog `allows` refuses any resource in the work Bot's `excluded`.
 - The default-policy proposal (`s15DefaultPolicy`) takes `extraBots`: the created Bots' refs in creation order, given every default rule.
 
 ## Conversations
 
-- `ConversationPolicy` (`createConversationPolicy({ bots })`) resolves `{ bot, selection, excluded }` per `conversationId`. `selection` is the Bot's choice when it is still in the policy's selections, else `conversation.selection`. Work `selectionPin` is that selection; physical reservations use the work's own selection.
+- `ConversationPolicy` (`createConversationPolicy({ bots })`) resolves `{ bot, selection, route, excluded }` per `conversationId`; interpretation and work both use that selection and route. `selection` is the Bot's choice when it is still in the policy's selections, else `conversation.selection`. Work `selectionPin` is that selection; physical reservations use the work's own selection.
 - `ConversationOptions.admitConversation(conversationId)` runs for every new request (message, clarification, routine occurrence, assignment) and refuses `bot_archived` / `bot_unavailable`.
 - Owner decisions for a work include `{"bot":{"name","responsibility"}}` when the profile has either, and `{"assignment":{…}}` for a child.
 
@@ -36,9 +36,9 @@ Bounds: name 1–60 characters, responsibility up to 2000, at most 32 created Bo
 
 | Field | Value |
 | --- | --- |
-| Pin | `s16-delegation-run/v1`: `parentRequestId`, `parentConversationId`, `ordinal`, `kind` (`peer`/`temporary`), `botId`, `fromBotId`, `purposeId`, `resourceIds`, `access`, `limits {modelCalls, toolCalls}`, `sourceId` |
+| Pin | `s16-delegation-run/v1`: `parentRequestId`, `parentConversationId`, `ordinal`, `kind` (`peer`/`temporary`), `botId`, `fromBotId`, `purposeId`, `resourceIds`, `access`, `limits {modelCalls, toolCalls}`, `selection` (temporary only: the parent work's route), `sourceId` |
 | Child ids | `dl_` / `dc_` + 40 hex of SHA-256 of `s16.delegation.child.v1\n<parent>\n<ordinal>` |
-| Bounds | 6 children per request, 3 unfinished per request, 3 per tool call, task up to 4000 characters, installation pool `clamp(1, 3, default member maxSessions − 1)` |
+| Bounds | 6 children per request, 3 unfinished per request, 3 per tool call, task up to 4000 characters; children run in a pool of `clamp(0, 3, default member maxSessions − running ordinary requests)` and a new assignment refuses `capacity_busy` while that is 0 |
 | Slice | modelCalls `max(2, ⌊L.modelCalls/3⌋)`, toolCalls `max(1, ⌊L.toolCalls/3⌋)`, charged to the parent; refused `budget_exhausted` unless the parent keeps one model call |
 | Refusals | `delegation_unavailable` (parent not running in its work phase, a child, or settled), `capacity_busy`, `budget_exhausted`, `bot_unavailable` (peer not active or not accepting), `private_context` (Bot-private ancestry to a peer) |
 | Tool output | `{"assignments":[{"to","state","code","result"}]}`; `state` is the child request state, `not_started`, or `withheld` when its publication guard refused |

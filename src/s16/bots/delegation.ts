@@ -85,7 +85,7 @@ export function createBotTools(options: BotToolOptions) {
             const kind = to === "temporary" ? "temporary" as const : "peer" as const;
             if (kind === "peer") { identity(to); if (!peers(owner, self).some(bot => bot.id === to)) throw new AppError("bot_unavailable", 409); }
             const botId = kind === "peer" ? to : self, sourceId = capture(work, parentOf(work.authority.id), task, kind);
-            const receipt = conversation.submitDelegation(owner, { parentRequestId: parent.receipt.rootRequestId, kind, botId, fromBotId: self, task, sourceId, bind: conversationId => directory.bindAssignment(conversationId, botId) }, delegationLimits);
+            const receipt = conversation.submitDelegation(owner, { parentRequestId: parent.receipt.rootRequestId, kind, botId, fromBotId: self, task, sourceId, ...(kind === "temporary" ? { selection: work.authority.request.selection } : {}), bind: conversationId => directory.bindAssignment(conversationId, botId) }, delegationLimits);
             started.push({ index: results.length, requestId: receipt.rootRequestId });
             results.push({ to, state: "running", code: null, result: null, requestId: receipt.rootRequestId });
           } catch (error) { results.push({ to, state: "not_started", code: error instanceof AppError ? error.code : "delegation_unavailable", result: null, requestId: null }); }
