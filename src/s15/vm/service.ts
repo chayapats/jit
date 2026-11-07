@@ -99,9 +99,13 @@ export class WorkingVmService implements WorkingVmPort {
     const access = input.access ?? "execute"; if (access !== "inspect" && access !== "execute" || access === "inspect" && input.mode === "system") vmFail("vm_invalid_setup");
     const mode = input.mode ?? "work"; if (mode !== "work" && mode !== "system") vmFail("vm_invalid_setup");
     if (input.signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (this.options.idle) {
+      // Join an idle stop or start already in progress before checking readiness; waiting starts nothing.
+      await this.#sleeping.get(input.vmId)?.catch(() => {});
+      await this.#waking.get(input.vmId)?.catch(() => {});
+    }
     this.options.policy.assertCurrent(actor, { ...input, mode });
     if (this.options.idle) {
-      await this.#sleeping.get(input.vmId);
       const before = this.options.store.registration(input.vmId);
       if (before.state === "stopped" && before.reason === vmIdleReason) { await this.wake(before); this.options.policy.assertCurrent(actor, { ...input, mode }); }
     }

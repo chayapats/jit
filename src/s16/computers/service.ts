@@ -59,8 +59,11 @@ export interface ComputerDirectoryOptions<Owner extends object> {
  */
 export class ComputerDirectory<Owner extends object> {
   readonly #jobs = new Map<string, LocalVmProvisioning>();
+  /** Command identities whose action is running in this process. */
+  readonly #inflight = new Set<string>();
   constructor(readonly options: ComputerDirectoryOptions<Owner>) {
-    options.store.db.exec("CREATE TABLE IF NOT EXISTS s16_computer_commands (id TEXT PRIMARY KEY, hash TEXT NOT NULL, vm_id TEXT NOT NULL)");
+    // `state` is `pending` while (or if a crash interrupted) the action, `done` once it finished.
+    options.store.db.exec("CREATE TABLE IF NOT EXISTS s16_computer_commands (id TEXT PRIMARY KEY, hash TEXT NOT NULL, vm_id TEXT NOT NULL, state TEXT NOT NULL)");
     // Controller boot: a private computer whose setup was interrupted resumes; a failed one waits for "Try again".
     if (options.local) for (const row of options.scopes.all()) if (row.retiredAt === null && !this.enrolled(row.vmId)) { try { this.job(row.vmId).ensure(); } catch { /* Visible as setup_failed. */ } }
   }
@@ -98,37 +101,68 @@ export class ComputerDirectory<Owner extends object> {
     const unavailable = this.options.local ? this.options.local.unavailable() : "computer_local_unavailable";
     return { contract: "s16-client-computers/v1", idleStopMs: stopAfter, computers, bots, privateCreation: unavailable === null ? { available: true } : { available: false, code: unavailable } };
   }
-  /** One exact authenticated owner command; a repeated `requestId` with the same body returns its first result. */
+  /**
+   * One exact authenticated owner command. Its `requestId` is reserved before anything acts: a different body
+   * under it is `request_id_conflict`, the same body while it runs is `command_in_progress`, and the same body
+   * after it finished returns its first result. A command interrupted by a restart is finished by its retry
+   * (each action is idempotent); a failed action releases the identity so the same command can be tried again.
+   */
   async command(actor: Owner, input: unknown): Promise<ComputerCommandResult> {
     this.options.requireOwner(actor);
-    const command = parseComputerCommand(input), hash = digest(canonical(command));
-    const prior = this.options.store.db.query<{ hash: string; vm_id: string }, [string]>("SELECT hash, vm_id FROM s16_computer_commands WHERE id=?").get(command.requestId);
-    if (prior) { if (prior.hash !== hash) throw new AppError("request_id_conflict", 409); return { contract: "s16-computer-command-result/v1", requestId: command.requestId, vmId: prior.vm_id, view: this.view(actor) }; }
-    let vm: string;
+    const command = parseComputerCommand(input), hash = digest(canonical(command)), id = command.requestId;
+    const result = (vm: string): ComputerCommandResult => ({ contract: "s16-computer-command-result/v1", requestId: id, vmId: vm, view: this.view(actor) });
+    const prior = this.options.store.db.query<{ hash: string; vm_id: string; state: string }, [string]>("SELECT hash, vm_id, state FROM s16_computer_commands WHERE id=?").get(id);
+    if (prior) {
+      if (prior.hash !== hash) throw new AppError("request_id_conflict", 409);
+      if (prior.state === "done") return result(prior.vm_id);
+      if (this.#inflight.has(id)) throw new AppError("command_in_progress", 409);
+    }
     if (command.kind === "create_private") {
+      // Scope row, reservation and completion commit together; only the resumable setup job runs afterwards.
+      if (prior) { this.job(prior.vm_id).ensure(); this.options.store.db.query("UPDATE s16_computer_commands SET state='done' WHERE id=?").run(id); return result(prior.vm_id); }
       if (!this.options.bots(actor).some(bot => bot.id === command.botId)) throw new AppError("outside_scope", 403);
       const code = this.options.local ? this.options.local.unavailable() : "computer_local_unavailable";
       if (code) throw new AppError(code, 409);
-      vm = this.options.pool.nextId(true);
+      const vm = this.options.pool.nextId(true);
       this.options.store.transaction(() => {
         this.options.requireOwner(actor);
+        if (this.options.store.db.query("SELECT 1 FROM s16_computer_commands WHERE id=?").get(id)) throw new AppError("command_in_progress", 409);
         this.options.scopes.assignPrivate(vm, command.botId);
-        this.options.store.db.query("INSERT INTO s16_computer_commands VALUES (?,?,?)").run(command.requestId, hash, vm);
+        this.options.store.db.query("INSERT INTO s16_computer_commands VALUES (?,?,?,'done')").run(id, hash, vm);
       });
       this.job(vm).start();
-    } else {
-      vm = command.vmId;
+      return result(vm);
+    }
+    const vm = command.vmId;
+    const finished = this.options.store.transaction(() => {
+      this.options.requireOwner(actor);
+      const row = this.options.store.db.query<{ hash: string; state: string }, [string]>("SELECT hash, state FROM s16_computer_commands WHERE id=?").get(id);
+      if (row && row.hash !== hash) throw new AppError("request_id_conflict", 409);
+      if (row?.state === "done") return true;
+      if (this.#inflight.has(id)) throw new AppError("command_in_progress", 409);
+      if (!row) this.options.store.db.query("INSERT INTO s16_computer_commands VALUES (?,?,?,'pending')").run(id, hash, vm);
+      this.#inflight.add(id); return false;
+    });
+    if (finished) return result(vm);
+    try {
       const scope = this.options.scopes.scope(vm);
-      if (command.kind === "sleep") await this.options.vm.sleepNow(actor, vm);
-      else {
+      if (command.kind === "sleep") {
+        // An interrupted earlier run of this same command may already have put the computer to sleep.
+        const current = this.options.store.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(vm);
+        const asleep = !!prior && !!current && (JSON.parse(current.data) as { state: string; reason: string | null }).state === "stopped" && (JSON.parse(current.data) as { reason: string | null }).reason === vmIdleReason;
+        if (!asleep) await this.options.vm.sleepNow(actor, vm);
+      } else {
         if (scope.kind !== "private") throw new AppError("computer_not_private", 409);
         if (command.kind === "retry_private") { if (this.enrolled(vm) || !this.options.scopes.assigned(scope.botId).includes(vm)) throw new AppError("computer_setup_not_failed", 409); this.job(vm).start(); }
         else this.options.scopes.retire(vm);
       }
       this.options.requireOwner(actor);
-      this.options.store.db.query("INSERT OR IGNORE INTO s16_computer_commands VALUES (?,?,?)").run(command.requestId, hash, vm);
-    }
-    return { contract: "s16-computer-command-result/v1", requestId: command.requestId, vmId: vm, view: this.view(actor) };
+      this.options.store.db.query("UPDATE s16_computer_commands SET state='done' WHERE id=?").run(id);
+    } catch (error) {
+      this.options.store.db.query("DELETE FROM s16_computer_commands WHERE id=? AND state='pending'").run(id);
+      throw error;
+    } finally { this.#inflight.delete(id); }
+    return result(vm);
   }
   /** Awaits in-process setup jobs (tests and orderly shutdown). */
   async settled(): Promise<void> { await Promise.all([...this.#jobs.values()].map(job => job.settled())); }

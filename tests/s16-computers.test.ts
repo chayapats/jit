@@ -8,6 +8,7 @@ import { s15InstallerConfig } from '../ops/package/installer/s15';
 import { s16ComputerIdleStopMs } from '../src/s16/computers/defaults';
 import type { S15CompositionOptions } from '../src/s15/composition';
 import { composedFixture } from './fixtures/s15-composition';
+import { canonical, digest } from '../src/s15/conversation/validation';
 import { FakeQemuHost } from './fixtures/s15-qemu';
 
 // TEAM16-01 under the real composition: per-work workspace leases, private computers that never become shared,
@@ -116,6 +117,44 @@ test('TEAM16-01: an idle computer sleeps after the idle period, keeps its state 
   expect(f.service.vmStore.db.query("SELECT kind FROM vm_events WHERE kind LIKE 'idle_%' ORDER BY sequence").all()).toEqual([{ kind: 'idle_stop' }, { kind: 'idle_start' }]);
   const running = (await (await f.request('/api/s16/client/computers')).json()).computers[0];
   expect(running.state).toBe('running'); expect(running.sleepsAt).toBe(f.now + minute);
+});
+
+test('TEAM16-01: works arriving while a sleeping computer starts join that one start instead of failing', async () => {
+  let starts = 0, release!: () => void;
+  const f = await computers(o => { const base = o.vm.managers.get('manager')!; return { ...o, vm: { ...o.vm, managers: new Map([['manager', { ...base, async start() { starts++; await new Promise<void>(resolve => { release = resolve; }); await base.start!(); } }]]) } }; }, minute);
+  // The first sweep starts the idle clock of a computer that never had a session.
+  expect(await f.service.vm.sleepIdle()).toEqual([]); f.advance(2 * minute); expect(await f.service.vm.sleepIdle()).toEqual(['vm']);
+  const a = admit(f, 'wake_a', 0), b = admit(f, 'wake_b', 1);
+  const first = open(f, a); await Bun.sleep(5);
+  expect(f.service.vmStore.registration('vm').reason).toBe('vm_waking');
+  const second = open(f, b); await Bun.sleep(5); release();
+  const [x, y] = await Promise.all([first, second]);
+  expect(starts).toBe(1); expect(f.liveVm).toBe(2);
+  await x.close(); await y.close();
+});
+
+test('TEAM16-01: a computer command reserves its request id before acting and a retry finishes an interrupted one', async () => {
+  let stop!: () => void;
+  const f = await computers(o => { const base = o.vm.managers.get('manager')!; return { ...o, vm: { ...o.vm, managers: new Map([['manager', { ...base, async stop() { await new Promise<void>(resolve => { stop = resolve; }); await base.stop(); } }]]) } }; });
+  const sleep = { contract: 's16-computer-command/v1', requestId: 'sleep_once', kind: 'sleep', vmId: 'vm' };
+  const running = f.request('/api/s16/client/computers/commands', 'POST', sleep); await Bun.sleep(5);
+  // While it runs, the same id with another body conflicts and the same body is in progress; neither acts.
+  expect((await f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, kind: 'retire_private' })).status).toBe(409);
+  const again = await f.request('/api/s16/client/computers/commands', 'POST', sleep);
+  expect(again.status).toBe(409); expect((await again.json()).error).toBe('command_in_progress');
+  stop(); expect((await running).status).toBe(200);
+  expect((await f.request('/api/s16/client/computers/commands', 'POST', sleep)).status).toBe(200);
+  // A restart after the computer slept but before the command was marked done: the retry reports success.
+  f.service.vmStore.db.query("INSERT INTO s16_computer_commands VALUES ('interrupted', ?, 'vm', 'pending')").run(digest(canonical({ ...sleep, requestId: 'interrupted' })));
+  await f.reopen();
+  const retried = await f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, requestId: 'interrupted' });
+  expect(retried.status).toBe(200); expect(f.service.vmStore.db.query("SELECT state FROM s16_computer_commands WHERE id='interrupted'").get()).toEqual({ state: 'done' });
+  // A failed action releases its id: the same command can be tried again.
+  const busy = admit(f, 'busy_sleep', 0), session = await open(f, busy);
+  await f.service.vm.start(f.owner, 'vm').catch(() => {});
+  const refused = await f.request('/api/s16/client/computers/commands', 'POST', { ...sleep, requestId: 'while_busy' });
+  expect(refused.status).toBe(409); expect(f.service.vmStore.db.query("SELECT 1 FROM s16_computer_commands WHERE id='while_busy'").get()).toBeNull();
+  await session.close();
 });
 
 test('TEAM16-01: an owner-stopped computer is never started by work, and a failed stop fences the computer', async () => {

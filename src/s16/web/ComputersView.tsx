@@ -29,6 +29,8 @@ const tones: Record<ComputerView["state"], string> = { running: "ok", sleeping: 
 export function ComputersView({ client, t, locale, available, files, onFailure }: ComputersViewProps) {
   const [data, setData] = useState<ComputersData | null>(null), [loadError, setLoadError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null), [confirm, setConfirm] = useState<Confirm | null>(null), [reload, setReload] = useState(0);
+  // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
+  const commands = useRef(0);
   const notice = useRef<HTMLDivElement>(null), confirmRef = useRef<HTMLDivElement>(null), returnFocus = useRef<HTMLElement | null>(null);
   const time = (value: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { timeStyle: "short" }).format(value);
   const botName = (id: string) => data?.bots.find(bot => bot.id === id)?.main ? t("s16.computers.mainBot") : id;
@@ -38,7 +40,8 @@ export function ComputersView({ client, t, locale, available, files, onFailure }
     const stop = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
-        const next = await client.computers(stop.signal); setData(next); setLoadError(null);
+        const turn = commands.current, next = await client.computers(stop.signal);
+        if (turn === commands.current) { setData(next); setLoadError(null); }
         // Poll quickly only while something is changing; otherwise refresh the idle clock occasionally.
         const moving = next.computers.some(item => ["starting", "stopping", "setting_up"].includes(item.state));
         timer = setTimeout(() => void load(), moving ? 3000 : 30000);
@@ -55,8 +58,8 @@ export function ComputersView({ client, t, locale, available, files, onFailure }
   useEffect(() => { if (pending && pending.state !== "pending") notice.current?.focus(); }, [pending?.state]);
 
   async function send(command: ComputerCommand) {
-    setPending({ command, state: "pending" });
-    try { const result = await client.computerCommand(command); setData(result.view); setPending({ command, state: "done" }); }
+    commands.current++; setPending({ command, state: "pending" });
+    try { const result = await client.computerCommand(command); commands.current++; setData(result.view); setPending({ command, state: "done" }); }
     catch (error) {
       if (privateFailure(error)) { onFailure(error); return; }
       setPending(error instanceof JitClientError && error.outcome === "unknown" ? { command, state: "unknown" } : { command, state: "error", code: code(error) });

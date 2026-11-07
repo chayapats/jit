@@ -81,7 +81,8 @@ export class VmPool {
   place(workId: string, botId?: string): string {
     const scope = this.options.scope;
     if (scope && botId === undefined) vmFail("outside_scope", 403);
-    const sleeping = (row: Candidate) => !!this.options.wakeable && row.state === "stopped" && row.reason === idleReason && !!row.bindingMac;
+    // A member Jit stopped for idleness, or one it is starting right now, is placeable: the VM service starts or joins its start.
+    const sleeping = (row: Candidate) => !!this.options.wakeable && !!row.bindingMac && (row.state === "stopped" && row.reason === idleReason || row.state === "uncertain" && row.reason === "vm_waking");
     const bound = this.holder(workId);
     if (bound) {
       // A work's workspace never moves, and a private member never serves another Bot's work.
