@@ -302,7 +302,7 @@ describe("owner screen API under the real composition", () => {
     expect(view).toMatchObject({ contract: "s16-computer-screen/v1", vmId: "vm", available: true, state: "agent", generation: 0, scope: { kind: "shared" } });
     const frame = await f.request("/api/s16/client/computers/vm/screen/frame?generation=0");
     expect(frame.status).toBe(200); expect(frame.headers.get("content-type")).toBe("image/png"); expect(frame.headers.get("cache-control")).toBe("private, no-store");
-    expect(new Uint8Array(await frame.arrayBuffer())).toEqual(png());
+    expect([...new Uint8Array(await frame.arrayBuffer())]).toEqual([...png()]);
     expect((await f.request("/api/s16/client/computers/vm/screen/frame?generation=1")).status).toBe(409);
     expect((await f.request("/api/s16/client/computers/vm/screen/frame?generation=0&x=1")).status).toBe(400);
     expect((await f.request("/api/s16/client/computers/vm/screen?x=1")).status).toBe(400);

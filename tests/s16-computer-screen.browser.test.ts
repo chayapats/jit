@@ -12,6 +12,8 @@ const browserTest = process.env.JIT_S16_BROWSER_TESTS === "1" ? test : test.skip
 let browser: Browser;
 beforeAll(async () => { if (process.env.JIT_S16_BROWSER_TESTS === "1") browser = await chromium.launch({ executablePath: process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true }); });
 afterAll(async () => { await browser?.close(); }, 30000);
+/** Waits (bounded) until the scripted device recorded `count` inputs. */
+async function inputs(sent: unknown[], count: number): Promise<void> { for (let i = 0; i < 100 && sent.length < count; i++) await Bun.sleep(50); expect(sent).toHaveLength(count); }
 
 /** A real 1280×800 PNG (solid colour) so the browser decodes and lays out an actual frame. */
 async function frame(): Promise<Uint8Array> {
@@ -55,18 +57,18 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await panel.getByText(copy["s16.screen.state.owner"], { exact: true }).waitFor();
     const box = (await image.boundingBox())!;
     await image.click({ position: { x: box.width / 2, y: box.height / 4 } });
-    await expect.poll(() => sent.length).toBe(1);
+    await inputs(sent, 1);
     expect(sent[0]).toMatchObject({ kind: "click", button: "left", double: false });
     const click = sent[0] as Extract<VmScreenInput, { kind: "click" }>;
     expect(Math.abs(click.x - 640)).toBeLessThanOrEqual(2); expect(Math.abs(click.y - 200)).toBeLessThanOrEqual(2);
     const field = panel.getByLabel(copy["s16.screen.typeLabel"]);
     expect(await field.getAttribute("type")).toBe("password");
     await field.fill("Owner-Pass1"); await panel.getByRole("button", { name: copy["s16.screen.send"], exact: true }).click();
-    await expect.poll(() => sent.length).toBe(2);
+    await inputs(sent, 2);
     expect(sent[1]).toEqual({ kind: "text", text: "Owner-Pass1" }); expect(await field.inputValue()).toBe("");
     // Keyboard capture: Enter on the focused screen region reaches the computer as one key.
     await panel.locator(".screen-frame").focus(); await page.keyboard.press("Enter");
-    await expect.poll(() => sent.length).toBe(3);
+    await inputs(sent, 3);
     expect(sent[2]).toEqual({ kind: "key", keys: ["ret"] });
     expect(await noOverflow()).toBe(true);
     await panel.getByRole("button", { name: copy["s16.screen.handBack"] }).click();
