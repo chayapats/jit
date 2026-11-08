@@ -1,5 +1,6 @@
 import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionCommand, type ClientConnectionReceipt, type ClientSource, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
+import type { ScreenCommand, ScreenCommandResult, ScreenView } from "../computers/screen";
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
@@ -314,6 +315,49 @@ export class JitClient {
     const data = await this.call("/computers/commands", "POST", input, signal, input.requestId);
     if (!record(data) || data.contract !== "s16-computer-command-result/v1" || data.requestId !== input.requestId || !identifier(data.vmId) || !this.computersView(data.view)) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
     return data as unknown as ComputerCommandResult;
+  }
+  /** DESK16-01 screen state of one computer. Reading changes nothing (an expired owner lease is reported fenced). */
+  async screen(vmId: string, signal?: AbortSignal): Promise<ScreenView> {
+    if (!identifier(vmId)) throw new JitClientError("invalid_screen_command", null, "not_sent");
+    const data = await this.call(`/computers/${vmId}/screen`, "GET", undefined, signal);
+    if (!this.screenView(data) || data.vmId !== vmId) return invalid();
+    return data;
+  }
+  /**
+   * One PNG frame under the generation the owner last saw (`stale_screen` after any takeover, fence or
+   * hand-back). The bytes stay in memory for display only; nothing is cached or stored.
+   */
+  async screenFrame(vmId: string, generation: number, signal?: AbortSignal): Promise<Blob> {
+    if (!identifier(vmId) || !count(generation)) throw new JitClientError("invalid_screen_command", null, "not_sent");
+    const session = this.#sessionGeneration;
+    let response: Response;
+    try { response = await this.#fetch(new Request(`${this.origin}/api/s16/client/computers/${vmId}/screen/frame?generation=${generation}`, { credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}) })); }
+    catch { throw new JitClientError(signal?.aborted ? "aborted" : "connection_lost", null, "not_sent"); }
+    if (session !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, "response"); }
+    if (response.status === 401 || response.status === 403) this.clear();
+    if (!response.ok) { let code = "screen_unavailable"; try { const data = await this.json(response, "GET", null); code = safeCode(record(data) ? data.error : null); } catch { /* The status alone decides. */ } throw new JitClientError(code, response.status, "response"); }
+    if (response.redirected || response.headers.get("content-type") !== "image/png") { await response.body?.cancel().catch(() => {}); return invalid(); }
+    const blob = await response.blob();
+    if (session !== this.#sessionGeneration) throw new JitClientError("client_response_stale", response.status, "response");
+    if (blob.size < 33 || blob.size > 8 * 1_048_576) return invalid();
+    return new Blob([blob], { type: "image/png" });
+  }
+  /**
+   * One exact screen command. It never retries: after an unknown outcome resend the same command (same
+   * `requestId`). Typed text is sent once in this body and never kept by the client.
+   */
+  async screenCommand(command: ScreenCommand, signal?: AbortSignal): Promise<ScreenCommandResult> {
+    const input = structuredClone(command);
+    if (input.contract !== "s16-screen-command/v1" || !identifier(input.requestId) || !identifier(input.vmId) || !count(input.generation)) throw new JitClientError("invalid_screen_command", null, "not_sent", input.requestId);
+    const data = await this.call("/computers/screen/commands", "POST", input, signal, input.requestId);
+    if (!record(data) || data.contract !== "s16-screen-command-result/v1" || data.requestId !== input.requestId || !this.screenView(data.view) || data.view.vmId !== input.vmId) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return data as unknown as ScreenCommandResult;
+  }
+  private screenView(data: unknown): data is ScreenView {
+    return record(data) && data.contract === "s16-computer-screen/v1" && identifier(data.vmId) && typeof data.available === "boolean" && (data.code === null || typeof data.code === "string")
+      && count(data.width) && count(data.height) && ["agent", "settling", "owner", "fenced"].includes(data.state as string) && count(data.generation)
+      && (data.takeoverId === null || identifier(data.takeoverId)) && (data.expiresAt === null || count(data.expiresAt)) && typeof data.agentBusy === "boolean"
+      && record(data.scope) && (data.scope.kind === "shared" || data.scope.kind === "private" && identifier(data.scope.botId));
   }
   private computersView(data: unknown): data is ComputersView {
     if (!record(data) || data.contract !== "s16-client-computers/v1" || data.idleStopMs !== null && !count(data.idleStopMs) || !Array.isArray(data.computers) || data.computers.length > 64 || !Array.isArray(data.bots) || data.bots.length > 64 || !record(data.privateCreation)) return false;

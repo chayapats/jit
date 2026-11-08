@@ -124,6 +124,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.notifications ? { notifications: {} } : {}),
       // TEAM16-01: owner decision 2026-11-07, a working computer with no open session sleeps after 30 minutes.
       ...(config.computers ? { computers: { idleStopMs: s16ComputerIdleStopMs } } : {}),
+      // DESK16-01: watch and take over a desktop working computer.
+      ...(config.computers && config.desktop ? { screen: {} } : {}),
       // BOT16-01/DELEG16-01: persistent Bots the owner accepts and bounded Bot-to-Bot assignments.
       ...(config.bots ? { bots: {} } : {}),
       // CONN16-01/MCP16-01/OPEN16-01: apps and tool sources the owner connects; secrets stay in the protected vault.
@@ -147,7 +149,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
         ...(config.github ? [{ id: 'github', kind: 'service' as const, label: 'GitHub', state: 'configured' as const, uses: ['github' as const], signInHref: null }] : []),
         ...(config.google ? [{ id: 'google', kind: 'service' as const, label: 'Google', state: account(config.google.mailConnectionId) || account(config.google.calendarConnectionId) ? 'configured' as const : 'not_connected' as const, uses: ['email_read' as const, 'email_draft' as const, 'calendar' as const], signInHref: '/settings/google' }] : []),
       ]; } } },
-      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: config.vm.vmm ? { vmm: config.vm.vmm, ...(proxySocketFd !== null ? { proxySocketFd } : {}) } : {} } : {}) },
+      vm: { id: vmPool.poolId, resource: config.vm.resource, managers, managementVault: vault, upperBound: () => config.vm.upperBound, destination: host => config.disclosure?.acquisitions.find(r => new URL(r.origin).hostname === host)?.recipient ?? null, ...(vmPool.local ? { local: { ...(config.vm.vmm ? { vmm: config.vm.vmm, ...(proxySocketFd !== null ? { proxySocketFd } : {}) } : {}), ...(config.computers && config.desktop ? { desktop: true } : {}) } } : {}) },
       ...(config.browser ? { browser: { mode: 'static', resource: config.browser.resource, fences: [], executablePath: config.browser.executablePath, site, upperBound: config.browser.upperBound, ...(config.browser.ownerUi ? { ownerUi: config.browser.ownerUi } : {}) } } : provisioned ? { browser: provisioned.options() } : {}),
       ...(config.google ? { google: { runtime: 's15', google: new GooglePersonal(), mailAccount: () => account(config.google!.mailConnectionId), calendarAccount: () => account(config.google!.calendarConnectionId),
         async token(binding, scope) { const current = ownerStore.read(tx => s15GoogleConnection(config.google!.resources, binding, scope, id => ownerApp.personal.connection(tx, id)));

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale, MessageKey } from "../../i18n";
 import { JitClientError, type JitClient } from "../client";
 import type { ComputerBotView, ComputerCommand, ComputersView as ComputersData, ComputerView } from "../computers/service";
+import { ComputerScreen } from "./ComputerScreen";
 import type { Copy } from "./copy";
 
 /** Props for the owner computers surface (TEAM16-01). Data comes only from the protected client. */
@@ -15,6 +16,8 @@ export interface ComputersViewProps {
   onFailure(error: unknown): void;
   /** BOT16-01: owner-written names of persistent Bots, keyed by Bot ID. */
   names?: Record<string, string>;
+  /** DESK16-01: the owner can watch a running computer's screen and take control. */
+  screen?: boolean;
 }
 type Pending = { command: ComputerCommand; state: "pending" | "unknown" | "error"; code?: string } | { command: ComputerCommand; state: "done" };
 type Confirm = { kind: "create"; bot: ComputerBotView } | { kind: "retire"; bot: ComputerBotView; vmId: string };
@@ -28,7 +31,8 @@ const tones: Record<ComputerView["state"], string> = { running: "ok", sleeping: 
  * private-computer creation/retirement and "sleep now". Every change is one explicit command that is never
  * retried silently; an unknown outcome is rechecked with the same command identity.
  */
-export function ComputersView({ client, t, locale, available, files, onFailure, names }: ComputersViewProps) {
+export function ComputersView({ client, t, locale, available, files, onFailure, names, screen }: ComputersViewProps) {
+  const [watching, setWatching] = useState<string | null>(null), watchButton = useRef<HTMLButtonElement | null>(null);
   const [data, setData] = useState<ComputersData | null>(null), [loadError, setLoadError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null), [confirm, setConfirm] = useState<Confirm | null>(null), [reload, setReload] = useState(0);
   // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
@@ -116,8 +120,10 @@ export function ComputersView({ client, t, locale, available, files, onFailure, 
         {item.reason && <details><summary>{t("s16.common.details")}</summary><code>{item.reason}</code></details>}
         <div className="actions">
           {item.state === "running" && item.activeSessions === 0 && data.idleStopMs !== null && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "sleep", vmId: item.id })}>{t("s16.computers.sleepNow")}</button>}
+          {screen && item.state === "running" && watching !== item.id && <button type="button" onClick={event => { watchButton.current = event.currentTarget; setWatching(item.id); }}>{t("s16.screen.watch")}</button>}
           {item.state === "setup_failed" && !item.retired && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "retry_private", vmId: item.id })}>{t("s16.computers.retry")}</button>}
         </div>
+        {screen && watching === item.id && <ComputerScreen client={client} t={t} vmId={item.id} title={title(item)} onFailure={onFailure} onClose={() => { setWatching(null); requestAnimationFrame(() => { if (watchButton.current?.isConnected) watchButton.current.focus(); }); }} />}
       </article></li>)}</ul>
     </>}
   </section>;

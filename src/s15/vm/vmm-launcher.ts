@@ -17,10 +17,10 @@ const tokens = { NAME: "name", CPUS: "cpus", MEMORY: "memory", MAC: "mac", PORT:
  * The QEMU argv for one architecture as shell words, derived from `qemuArgv` itself with placeholder values,
  * so the launcher and the controller's `/proc` re-verification can never disagree on the restricted profile.
  */
-function qemuWords(vmm: QemuVmmOptions, architecture: "x86_64" | "aarch64"): string {
+function qemuWords(vmm: QemuVmmOptions, architecture: "x86_64" | "aarch64", desktop = false): string {
   const layout = vmmLayout(vmm.directory);
   const argv = qemuArgv({ name: "@@NAME@@", architecture, machineDirectory: `${layout.machines}/@@NAME@@`, cpus: "@@CPUS@@" as unknown as number,
-    memoryMiB: "@@MEMORY@@" as unknown as number, mac: "@@MAC@@", sshPort: "@@PORT@@" as unknown as number, proxySocket: layout.proxySocket });
+    memoryMiB: "@@MEMORY@@" as unknown as number, mac: "@@MAC@@", sshPort: "@@PORT@@" as unknown as number, proxySocket: layout.proxySocket, ...(desktop ? { desktop } : {}) });
   return argv.map(arg => arg.split(/(@@[A-Z]+@@)/).map(part => {
     const token = /^@@([A-Z]+)@@$/.exec(part)?.[1] as keyof typeof tokens | undefined;
     if (token) { if (!tokens[token]) throw new Error("vmm_launcher_unknown_token"); return `"$${tokens[token]}"`; }
@@ -126,17 +126,23 @@ case "$op" in
     [ "$#" -eq 0 ] || refuse
     rm -rf -- "$dir" ;;
   start)
-    [ "$#" -eq 5 ] || refuse
-    arch=$1 cpus=$2 memory=$3 mac=$4 port=$5
+    # A sixth word selects the DESK16-01 desktop profile; nothing else is accepted there.
+    [ "$#" -eq 5 ] || { [ "$#" -eq 6 ] && [ "$6" = desktop ]; } || refuse
+    arch=$1 cpus=$2 memory=$3 mac=$4 port=$5 profile=headless
+    if [ "$#" -eq 6 ]; then profile=desktop; fi
     nat "$cpus" 3 && nat "$memory" 7 && nat "$port" 5 || refuse
     [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || refuse
     case "$mac" in 52:54:00:${hex(2)}:${hex(2)}:${hex(2)}) ;; *) refuse ;; esac
     rm -f -- "$dir/qmp.sock"
-    case "$arch" in
-      x86_64) exec ${unit} \\
+    case "$arch:$profile" in
+      x86_64:headless) exec ${unit} \\
         ${qemuWords(vmm, "x86_64")} ;;
-      aarch64) exec ${unit} \\
+      aarch64:headless) exec ${unit} \\
         ${qemuWords(vmm, "aarch64")} ;;
+      x86_64:desktop) exec ${unit} \\
+        ${qemuWords(vmm, "x86_64", true)} ;;
+      aarch64:desktop) exec ${unit} \\
+        ${qemuWords(vmm, "aarch64", true)} ;;
       *) refuse ;;
     esac ;;
   *) refuse ;;

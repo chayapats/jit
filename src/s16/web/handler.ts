@@ -10,7 +10,7 @@ export async function createS16WebHandler(authenticate: (request: Request) => Pr
   const built = await Bun.build({ entrypoints: [new URL("./app.tsx", import.meta.url).pathname], target: "browser", minify: true, metafile: true, define: { "process.env.NODE_ENV": JSON.stringify("production") } });
   if (!built.success || built.outputs.length !== 1 || !built.metafile) throw new AppError("client_build_unavailable", 503);
   const script = browserLicenseHeader(resolve(import.meta.dir, "../../.."), built.metafile.inputs) + await built.outputs[0]!.text(), style = readFileSync(new URL("./style.css", import.meta.url), "utf8");
-  const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'", Vary: "Cookie, Accept-Language" };
+  const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src blob:; frame-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'", Vary: "Cookie, Accept-Language" };
   const worker = s16WorkerScript();
   return async request => {
     const url = new URL(request.url);

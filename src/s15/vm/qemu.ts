@@ -7,6 +7,7 @@ import { vmHostCommand } from "./host";
 import { detectLocalVmHost, ensureLocalVmImage, localVmDownload, localVmHostProbe, localVmImages, localVmTools, type LocalVmDownload, type LocalVmHostProbe, type LocalVmImage, type LocalVmResources } from "./local";
 import type { VmProxyLease } from "./proxy";
 import { qmpExchange, type QmpCommand, type QmpExchange } from "./qmp";
+import { vmScreenCommands, vmScreenFrame, vmScreenHeight, vmScreenWidth, type VmScreenDevice, type VmScreenInput } from "./screen";
 import { VmSshTransport } from "./transport";
 import type { VmEndpoint, VmHostCommand, VmMachineState, VmManagement } from "./types";
 import { vmFail, vmInteger } from "./validation";
@@ -25,6 +26,12 @@ export const qemuGuestNetwork = Object.freeze({ net: "192.168.5.0/24", host: "19
 export interface QemuMachineSpec {
   name: string; architecture: "x86_64" | "aarch64"; machineDirectory: string;
   cpus: number; memoryMiB: number; mac: string; sshPort: number; proxySocket: string;
+  /**
+   * DESK16-01 desktop profile: one virtio display at the fixed screen size plus a virtio tablet and keyboard.
+   * Frames and input travel only through the controller's QMP socket; `-display none` keeps every display
+   * server (VNC, SPICE, GTK) absent. Omitted, the argv is byte-for-byte the headless profile.
+   */
+  desktop?: boolean;
 }
 /**
  * The complete QEMU argv for a working VM: KVM, one virtio disk (per-VM qcow2 overlay), one read-only
@@ -44,10 +51,13 @@ export function qemuArgv(spec: QemuMachineSpec): string[] {
     "-drive", `if=none,id=disk0,file=${d}/disk.qcow2,format=qcow2,cache=none,discard=unmap`, "-device", "virtio-blk-pci,drive=disk0,bootindex=0",
     "-drive", `if=none,id=seed,file=${d}/seed.img,format=raw,readonly=on`, "-device", "virtio-blk-pci,drive=seed",
     "-netdev", `user,id=net0,restrict=on,ipv6=off,net=${qemuGuestNetwork.net},host=${qemuGuestNetwork.host},hostfwd=tcp:127.0.0.1:${spec.sshPort}-:22,guestfwd=tcp:${qemuGuestNetwork.proxy}:${qemuGuestNetwork.proxyPort}-cmd:${localVmTools.nc} -U ${spec.proxySocket}`,
-    "-device", `virtio-net-pci,netdev=net0,mac=${spec.mac}`];
+    "-device", `virtio-net-pci,netdev=net0,mac=${spec.mac}`,
+    ...(spec.desktop ? ["-device", `${spec.architecture === "x86_64" ? "virtio-vga" : "virtio-gpu-pci"},xres=${vmScreenWidth},yres=${vmScreenHeight}`, "-device", "virtio-tablet-pci", "-device", "virtio-keyboard-pci"] : [])];
 }
 /** Hypervisor facts read from an actual argv. `exact` is true only when it is byte-for-byte the restricted profile. */
-export interface QemuArgvFacts { cpus?: number; memoryMiB?: number; mac?: string; sshPort?: number; exact: boolean }
+export interface QemuArgvFacts { cpus?: number; memoryMiB?: number; mac?: string; sshPort?: number; exact: boolean;
+  /** True only when `exact` holds for the desktop profile; a headless VM keeps working and shows no screen. */
+  desktop?: boolean }
 /** Parses a running QEMU argv (from `/proc/<pid>/cmdline`) against the expected protected identity. */
 export function qemuArgvFacts(argv: readonly string[], expected: Pick<QemuMachineSpec, "name" | "architecture" | "machineDirectory" | "proxySocket">): QemuArgvFacts {
   const value = (flag: string) => argv.filter(a => a === flag).length === 1 ? argv[argv.indexOf(flag) + 1] : undefined;
@@ -59,8 +69,11 @@ export function qemuArgvFacts(argv: readonly string[], expected: Pick<QemuMachin
   const port = forwards === 1 ? /(?:^|,)hostfwd=tcp:127\.0\.0\.1:([0-9]{1,5})-:22(?:,|$)/.exec(netdev)?.[1] : undefined;
   const facts: QemuArgvFacts = { exact: false, ...(cpus ? { cpus } : {}), ...(memory ? { memoryMiB: Number(memory) } : {}), ...(mac ? { mac } : {}), ...(port ? { sshPort: Number(port) } : {}) };
   if (facts.cpus && facts.memoryMiB && facts.mac && facts.sshPort) {
-    const rebuilt = qemuArgv({ ...expected, cpus: facts.cpus, memoryMiB: facts.memoryMiB, mac: facts.mac, sshPort: facts.sshPort });
-    facts.exact = rebuilt.length === argv.length && rebuilt.every((a, i) => a === argv[i]);
+    // Either fixed profile is exact: a VM started before the desktop profile was enabled stays verifiable.
+    for (const desktop of [false, true]) {
+      const rebuilt = qemuArgv({ ...expected, cpus: facts.cpus, memoryMiB: facts.memoryMiB, mac: facts.mac, sshPort: facts.sshPort, desktop });
+      if (rebuilt.length === argv.length && rebuilt.every((a, i) => a === argv[i])) { facts.exact = true; if (desktop) facts.desktop = true; }
+    }
   }
   return facts;
 }
@@ -92,6 +105,11 @@ export interface QemuHostOptions {
    * into the shared, controller-owned image directory. Absent, QEMU runs as the controller identity.
    */
   vmm?: QemuVmmOptions;
+  /**
+   * DESK16-01: start this controller's VMs with the desktop profile (explicit S16 opt-in). A VM already running
+   * headless keeps running and reports `vm_desktop_restart_required` until its next start.
+   */
+  desktop?: boolean;
 }
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
 export interface QemuVmIdentity { name: string; architecture: "x86_64" | "aarch64"; mac: string; sshPort: number; resources: LocalVmResources }
@@ -160,7 +178,7 @@ export class QemuVmManagement implements VmLocalManagement {
   private get stateFile() { return join(this.machineDirectory, "state.json"); }
   private get image(): LocalVmImage { return (this.host.images ?? localVmImages)[this.identity.architecture]; }
   private spec(resources: LocalVmResources = this.#resources): QemuMachineSpec {
-    return { name: this.identity.name, architecture: this.identity.architecture, machineDirectory: this.hypervisorDirectory, cpus: resources.cpus, memoryMiB: resources.memoryMiB, mac: this.identity.mac, sshPort: this.identity.sshPort, proxySocket: this.host.proxySocket };
+    return { name: this.identity.name, architecture: this.identity.architecture, machineDirectory: this.hypervisorDirectory, cpus: resources.cpus, memoryMiB: resources.memoryMiB, mac: this.identity.mac, sshPort: this.identity.sshPort, proxySocket: this.host.proxySocket, ...(this.host.desktop ? { desktop: true } : {}) };
   }
   /** Resource values for the next start. Editing them never changes a running guest. */
   get resources(): LocalVmResources { return { ...this.#resources }; }
@@ -198,7 +216,7 @@ export class QemuVmManagement implements VmLocalManagement {
       if (op === "resize") return vmmCommand(vmm, ["resize", name, String(operation[1])]);
       if (op === "create") { const sha = /\/([a-f0-9]{64})\.qcow2$/.exec(operation[1])?.[1]; if (!sha || operation[1] !== join(vmmLayout(vmm.directory).images, `${sha}.qcow2`)) vmFail("vm_image_unverified"); return vmmCommand(vmm, ["create", name, sha, String(operation[2])]); }
       if (op === "snapshot") return vmmCommand(vmm, ["snapshot", name, operation[1], operation[2]]);
-      if (op === "start") { const r = operation[1]; return vmmCommand(vmm, ["start", name, this.identity.architecture, String(r.cpus), String(r.memoryMiB), this.identity.mac, String(this.identity.sshPort)]); }
+      if (op === "start") { const r = operation[1]; return vmmCommand(vmm, ["start", name, this.identity.architecture, String(r.cpus), String(r.memoryMiB), this.identity.mac, String(this.identity.sshPort), ...(this.host.desktop ? ["desktop"] : [])]); }
       return vmmCommand(vmm, [op, name]);
     }
     if (op === "show") return ["systemctl", "--user", "show", this.unit, "--property=LoadState", "--property=ActiveState", "--property=MainPID"];
@@ -251,6 +269,41 @@ export class QemuVmManagement implements VmLocalManagement {
     const exact = facts.exact && unit.active && pid === unit.pid && facts.mac === this.identity.mac && facts.sshPort === this.identity.sshPort;
     return { state: "running", identity, boot: `${pid}:${this.#proc.startTicks(pid)}`, cpuCount: facts.cpus ?? 0, memoryBytes: (facts.memoryMiB ?? 0) * 1_048_576, diskBytes,
       network: exact ? "proxy-only" : "unproven", ...(facts.mac ? { nicMac: facts.mac } : {}), ...(facts.sshPort ? { sshEndpoint: { host: "127.0.0.1", port: facts.sshPort } } : {}) };
+  }
+  /**
+   * DESK16-01 host-side screen of this exact VM: QMP `screendump` (PNG) and `input-send-event` on the
+   * controller-only socket. Only a running QEMU whose argv is exactly the desktop profile has a screen; frames
+   * are written into this VM's hypervisor directory, read once and removed (VM15-03 leaves the file to the QEMU
+   * identity, which overwrites it on the next capture). One capture runs at a time.
+   */
+  screen(): VmScreenDevice {
+    const self = this; let capturing: Promise<unknown> = Promise.resolve();
+    const running = async (): Promise<string | null> => {
+      if (!this.host.desktop) return "vm_desktop_unavailable";
+      const unit = await this.unitState(), argv = unit.active ? this.ours(unit.pid) : null;
+      if (!argv) return "vm_not_running";
+      return qemuArgvFacts(argv, this.spec()).desktop ? null : "vm_desktop_restart_required";
+    };
+    return {
+      unavailable: running,
+      async capture() {
+        const turn = capturing.then(async () => {
+          const code = await running(); if (code) vmFail(code, 409);
+          const file = join(self.hypervisorDirectory, "screen.png");
+          if (!self.host.vmm) rmSync(file, { force: true });
+          await self.qmp([{ execute: "screendump", arguments: { filename: file, format: "png" } }], 10_000);
+          try { return vmScreenFrame(new Uint8Array(readFileSync(file))); }
+          catch (error) { if (error instanceof AppError) throw error; return vmFail("vm_screen_invalid", 502); }
+          finally { if (!self.host.vmm) rmSync(file, { force: true }); }
+        });
+        capturing = turn.catch(() => {});
+        return turn;
+      },
+      async send(input: VmScreenInput) {
+        const code = await running(); if (code) vmFail(code, 409);
+        await self.qmp(vmScreenCommands(input), 10_000);
+      },
+    };
   }
   private async until(test: () => Promise<boolean>, milliseconds: number, interval: number, signal?: AbortSignal): Promise<boolean> {
     const deadline = this.#now() + milliseconds;

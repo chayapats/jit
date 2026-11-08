@@ -85,6 +85,15 @@ describe('the argv-fixed launcher', () => {
     expect(existsSync(join(dir, 'qmp.sock'))).toBe(false);
   });
 
+  test.each(['x86_64', 'aarch64'] as const)('start with the desktop word builds the desktop QEMU argv byte-for-byte as qemuArgv for %s', async architecture => {
+    const { l, run } = launcher(), dir = machine(l);
+    mkdirSync(dir);
+    const result = await run(['start', identity.name, architecture, '5', '9216', identity.mac, '22022', 'desktop']);
+    const spec = { name: identity.name, architecture, machineDirectory: dir, cpus: 5, memoryMiB: 9216, mac: identity.mac, sshPort: 22022, proxySocket: l.proxySocket, desktop: true };
+    expect(result.code).toBe(0);
+    expect(result.recorded).toEqual(['systemd-run', '--user', '--quiet', '--collect', `--unit=${identity.name}.service`, '--property=Type=exec', '--property=TimeoutStopSec=15', '--property=UMask=0007', '--', ...qemuArgv(spec)]);
+  });
+
   test('seed stores stdin as the VM seed; remove deletes only that VM directory', async () => {
     const { l, run } = launcher(), dir = machine(l), other = join(l.machines, 'jit-work-ffffffffffff');
     mkdirSync(other); writeFileSync(join(other, 'disk.qcow2'), 'other VM');
@@ -104,7 +113,7 @@ describe('the argv-fixed launcher', () => {
       ['create', n, 'AB'.repeat(32), '60'], ['create', n, sha], ['create', n, `${sha}/../x`, '60'], ['snapshot', n, 'create', 'other'], ['snapshot', n, 'revert', tag],
       ['start', n, 'riscv64', '1', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '0', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '1000', '2048', identity.mac, '22022'],
       ['start', n, 'x86_64', '1', '2048', 'aa:bb:cc:dd:ee:ff', '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac, '80'], ['start', n, 'x86_64', '1', '2048', identity.mac, '70000'],
-      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['kvm', n], ['check', n], ['remove', n, '/']];
+      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'gui'], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'desktop', 'vnc'], ['kvm', n], ['check', n], ['remove', n, '/']];
     for (const args of refused) {
       const result = await run(args);
       expect({ args, code: result.code, recorded: result.recorded }).toEqual({ args, code: 64, recorded: null });

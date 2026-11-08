@@ -41,6 +41,8 @@ export class FakeQemuHost {
   guestReachable = false;
   guestMac: string | null = null;
   qmpDown = false;
+  /** DESK16-01: bytes QMP `screendump` writes (a 1280×800 PNG header by default). */
+  screenBytes: Uint8Array = (() => { const b = new Uint8Array(64); b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); const v = new DataView(b.buffer); v.setUint32(8, 13); b.set([73, 72, 68, 82], 12); v.setUint32(16, 1280); v.setUint32(20, 800); return b; })();
   /** Guest logins refused (pam_nologin) for this many SSH attempts after each boot. */
   bootingLogins = 0;
   #refused = 0;
@@ -63,6 +65,9 @@ export class FakeQemuHost {
       if (command.execute === 'blockdev-snapshot-internal-sync') { disk!.snapshots.push(String(command.arguments!.name)); return {}; }
       if (command.execute === 'blockdev-snapshot-delete-internal-sync') { disk!.snapshots = disk!.snapshots.filter(n => n !== command.arguments!.name); return {}; }
       if (command.execute === 'quit') { if (!this.stuck) this.kill(unit[0]); return {}; }
+      // QEMU writes the frame itself; a VM without a display device has no console surface to dump.
+      if (command.execute === 'screendump') { if (!argv.some(a => a.startsWith('virtio-vga') || a.startsWith('virtio-gpu-pci'))) throw new Error('vm_management_unavailable'); writeFileSync(String(command.arguments!.filename), this.screenBytes); return {}; }
+      if (command.execute === 'input-send-event') return {};
       throw new Error('unsupported');
     });
   };
