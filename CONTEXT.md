@@ -34,7 +34,11 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Default standing-policy proposal (S15, POLICY15-02):** The first standing policy Jit offers on an installation with no configured policy. It is derived from what the installation actually has, with the product-default gates and a finite, renewable expiry. It is only a proposal: the owner's one exact press installs it, and a changed resource set produces a new proposal instead of changing installed rules. See ADR 0073.
 
-**GitHub connection (S15, GIT15-04):** The owner's Web-pasted fine-grained token, held only in the protected vault, plus the revisioned list of repositories the owner selected for Jit. Selected repositories become team resources and default-proposal rows. The connection grants no publication; the product-default and personal GitHub profiles decide that.
+**GitHub connection (S15, GIT15-04):** The owner's Web-pasted fine-grained token, held only in the protected vault, plus the revisioned list of repositories the owner selected for Jit. Selected repositories become team resources and default-proposal rows. The connection grants no publication; the product-default and personal GitHub profiles decide that. In S16 (ADR 0089) the owner connects, reconnects and revokes it on the client's Connections page, and a selection or removal updates the standing rules through one connection-membership revision.
+
+**Tool source (S16):** An owner-added HTTPS MCP server, OpenAPI service or GraphQL endpoint with owner-written operations (ADR 0089). Its discovered tools are data until the owner's one-time **tool review** decides, per tool, *reads only*, *changes data* (the Bot runs it), *needs my approval each time* or *off*; a server's hints are only pre-selected suggestions and a GraphQL mutation can never be a read. A changed catalog keeps the source connected but every tool waits for a new review. A source is a team resource every Bot may use unless the Bot's settings exclude it.
+
+**Connection-membership revision (S16):** The standing-policy revision Jit installs after a tool review, a GitHub selection or a removal, only when the installed rules differ from the default proposal in nothing but connection membership. Work that does not use the changed connection stays current (ADR 0089); any other difference waits for the owner on the rules page.
 
 **Persona:** Owner-authored configuration of address, language and tone. It is trusted configuration, not model-authored memory.
 
@@ -162,7 +166,7 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Attachment:** An owner-supplied file sanitized out of process and always treated as untrusted data. Its contents cannot configure tools, routes or grants.
 
-**MCP proposal:** A revisioned source/version/command or endpoint proposal accepted by the owner. An advertised tool or readOnlyHint does not itself grant access.
+**MCP proposal:** A revisioned source/version/command or endpoint proposal accepted by the owner. An advertised tool or readOnlyHint does not itself grant access. In S16 an HTTPS MCP server is a tool source reviewed through the tool review; its sessions are per run and never shared (ADR 0089).
 
 **Local API:** An owner-enabled loopback API/CLI over the same authorized commands. It is not a general host shell.
 
