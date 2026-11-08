@@ -109,7 +109,7 @@ export interface BotExport {
 export type BotCommand =
   | { contract: "s16-bot-command/v1"; requestId: string; kind: "bot.accept"; proposalId: string; proposalHash: string }
   | { contract: "s16-bot-command/v1"; requestId: string; kind: "bot.dismiss"; proposalId: string }
-  | { contract: "s16-bot-command/v1"; requestId: string; kind: "bot.update"; botId: string; expectedRevision: number; name: string; responsibility: string; selection: Selection | null; assignments: boolean }
+  | { contract: "s16-bot-command/v1"; requestId: string; kind: "bot.update"; botId: string; expectedRevision: number; name: string; responsibility: string; selection: Selection | null; assignments: boolean; /** CONN16-01: the exact team resources (connections included) this Bot may not use; absent keeps them. */ excluded?: string[] }
   | { contract: "s16-bot-command/v1"; requestId: string; kind: "bot.archive" | "bot.restore"; botId: string; expectedRevision: number }
   | { contract: "s16-bot-command/v1"; requestId: string; kind: "conversation.bind"; conversationId: string; botId: string };
 /** Command result: the affected Bot and proposal, and for an archive what was stopped and paused. */

@@ -10,7 +10,7 @@ import type { Copy } from "./copy";
  * so the service returns the original receipt instead of deciding again. A changed revision refuses with
  * `stale_action` and the card asks for a refresh. Typed replies, page content and notifications never decide.
  */
-export type CardKind = "email" | "calendar" | "message" | "publish" | "reply" | "merge" | "production" | "payment" | "recipient" | "website" | "decision" | "generic";
+export type CardKind = "email" | "calendar" | "message" | "publish" | "reply" | "merge" | "production" | "payment" | "recipient" | "website" | "decision" | "tool" | "generic";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 const record = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -38,7 +38,9 @@ export function cardFacts(slip: ActionSlip): { kind: CardKind; to: string[]; cc:
   const mail = p?.contract === "s15-google-effect/v1" && p.kind === "mail" ? record(p.message) : null;
   const github = p?.contract === "s15-github-effect/v1" ? p : null, op = record(github?.operation);
   const website = p?.contract === "s15-browser-request/v1" ? p : null;
-  const kind: CardKind = has("financial") ? "payment" : has("production") ? "production" : has("github_merge") ? "merge" : has("major_change") ? "decision"
+  // CONN16-01: a reviewed connected-source tool the owner chose to approve call by call.
+  const tool = p?.contract === "s16-source-call/v1" ? p : null;
+  const kind: CardKind = has("financial") ? "payment" : has("production") ? "production" : has("github_merge") ? "merge" : tool ? "tool" : has("major_change") ? "decision"
     : has("github_publish") ? (text(op?.kind) === "review_reply" ? "reply" : "publish")
     : has("communication") ? (mail ? "email" : p?.contract === "s15-google-effect/v1" && p.kind === "calendar" ? "calendar" : website ? "website" : "message")
     : has("disclosure") || has("new_egress") ? "recipient" : website ? "website" : "generic";
@@ -46,8 +48,8 @@ export function cardFacts(slip: ActionSlip): { kind: CardKind; to: string[]; cc:
   return { kind, to: list(mail?.to), cc: list(mail?.cc), bcc: list(mail?.bcc), subject: mail ? text(mail.subject) : op ? text(op.title) || null : calendarEvent(p) ? text(calendarEvent(p)!.summary) || null : null,
     body: mail ? text(mail.body) : calendarEvent(p) ? text(calendarEvent(p)!.description) || null : op && typeof op.body === "string" ? op.body : website ? base64Text(text(website.bodyBase64)) || null : null,
     amount: t ? cardAmount(t.amountMinor, t.minorUnit, t.currency) : null,
-    target: g ? `${text(github?.repository) || g.repository.id} → ${g.target}` : null, operation: op ? text(op.kind) : a.operation,
-    request: website ? `${text(website.method)} ${text(website.url)}` : null,
+    target: g ? `${text(github?.repository) || g.repository.id} → ${g.target}` : tool ? `${text(tool.label)} · ${text(tool.endpoint)}` : null, operation: op ? text(op.kind) : a.operation,
+    request: website ? `${text(website.method)} ${text(website.url)}` : tool ? `${text(tool.title)}${text(tool.request) ? ` (${text(tool.request)})` : ""}` : null,
     // S16-D07 g: approving registers each first private-data recipient for later work.
     firstShare: has("disclosure") && a.disclosure?.dataClasses.some(c => c !== "public") ? a.disclosure.recipients.map(r => r.id) : [],
     rows: cardRows(p, kind, slip), payloadText: payload === null ? "" : JSON.stringify(payload, null, 2),

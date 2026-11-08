@@ -1,4 +1,4 @@
-import { clientResponseBytes, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
+import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionCommand, type ClientConnectionReceipt, type ClientSource, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 
@@ -279,6 +279,27 @@ export class JitClient {
   private botProposal(value: unknown): value is ClientBotProposal {
     return record(value) && value.contract === "s16-bot-proposal/v1" && identifier(value.id) && sha256(value.proposalHash) && record(value.draft) && value.draft.contract === "s16-bot-draft/v1" && typeof value.draft.name === "string"
       && ["pending", "accepted", "dismissed"].includes(value.state as string) && Array.isArray(value.resources) && Array.isArray(value.missing) && record(value.source);
+  }
+  /** CONN16-01 connections: GitHub, tool sources (with their review state) and open chat cards. Reading connects nothing. */
+  async connections(signal?: AbortSignal): Promise<ClientConnectionsView> {
+    const data = await this.call("/connections", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-connections/v1" || data.github !== null && !record(data.github) || !Array.isArray(data.sources) || data.sources.length > 64 || !data.sources.every(source => this.sourceView(source)) || !Array.isArray(data.requests) || data.requests.length > 64 || !record(data.limits) || typeof data.oauthRedirect !== "string") return invalid();
+    return data as unknown as ClientConnectionsView;
+  }
+  /**
+   * One exact connection command. It never retries: after an unknown outcome resend the same command (same `requestId`),
+   * which returns the original receipt. Secrets are sent once, in this body only, and never come back.
+   */
+  async connectionCommand(command: ClientConnectionCommand, signal?: AbortSignal): Promise<ClientConnectionReceipt> {
+    const input = structuredClone(command);
+    if (input.contract !== "s16-connection-command/v1" || !identifier(input.requestId)) throw new JitClientError("invalid_connection_command", null, "not_sent", input.requestId);
+    const data = await this.call("/connections/commands", "POST", input, signal, input.requestId);
+    if (!record(data) || data.contract !== "s16-connection-receipt/v1" || data.requestId !== input.requestId || data.kind !== input.kind || data.source !== null && !this.sourceView(data.source) || data.authorize !== null && (typeof data.authorize !== "string" || !/^https?:\/\//.test(data.authorize))) throw new JitClientError("client_protocol_invalid", null, "unknown", input.requestId);
+    return data as unknown as ClientConnectionReceipt;
+  }
+  private sourceView(value: unknown): value is ClientSource {
+    return record(value) && identifier(value.id) && count(value.revision) && ["mcp", "openapi", "graphql"].includes(value.kind as string) && typeof value.label === "string" && typeof value.endpoint === "string"
+      && ["authorizing", "needs_review", "active", "reconnect_required", "unavailable"].includes(value.state as string) && Array.isArray(value.tools) && value.tools.length <= 128 && Array.isArray(value.bots);
   }
   /** TEAM16-01 working computers: shared/private computers, their observed state and each Bot's computer. Reading starts or stops nothing. */
   async computers(signal?: AbortSignal): Promise<ComputersView> {

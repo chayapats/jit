@@ -25,8 +25,8 @@ export function command(value: unknown): asserts value is ConversationCommand {
   if (value.continuation !== null) { exact(value.continuation, ["requestId", "revision"]); identity(value.continuation.requestId); integer(value.continuation.revision, 1); }
 }
 /** Strict JSON body parser rejects duplicate keys before JSON.parse discards their provenance. */
-export function parseCommandJson(raw: string): unknown {
-  if (Buffer.byteLength(raw) > 32768) throw new AppError("body_too_large", 413);
+export function parseCommandJson(raw: string, max = 32768): unknown {
+  if (Buffer.byteLength(raw) > max) throw new AppError("body_too_large", 413);
   let index = 0;
   const ws = () => { while (/\s/.test(raw[index] ?? "") && index < raw.length) index++; };
   const string = (): string => {

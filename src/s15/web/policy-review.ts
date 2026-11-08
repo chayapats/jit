@@ -28,6 +28,7 @@ function rowValue(row: S15PolicyRow): string {
   if (row.kind === "model") return `<b>${e(row.label)}</b> <small>${tr(key(`s15.policy.charge.${row.detail === "metered" ? "metered" : "subscription"}`))}</small>`;
   if (row.kind === "recipient") return row.detail === "github" ? `<b>GitHub</b> <small>${tr("s15.policy.recipient.github")}</small>` : `<b>${e(providerName(row.label))}</b> <small>${tr("s15.policy.recipient.provider")}</small>`;
   if (row.kind === "repository") return `<b class="s-mono s15-break">${e(row.label)}</b>`;
+  if (row.kind === "connection") return `<b>${e(row.label)}</b> <small>${tr("s15.policy.connection_note")}</small>`;
   if (row.kind === "computer") return `${tr("s15.policy.computer_pool")} ${mono(row.label)}`;
   if (row.kind === "browser") return `${tr("s15.policy.browser")} <small>${tr("s15.policy.browser_note")}</small>`;
   return `<b>${e(row.label)}</b>`;
@@ -35,7 +36,7 @@ function rowValue(row: S15PolicyRow): string {
 
 /** The exact rows grouped by what they are; every group lists the identities the hash binds. */
 function rowsList(review: S15PolicyReview): string {
-  const groups: [string, S15PolicyRow["kind"][]][] = [["bot", ["bot"]], ["purpose", ["purpose"]], ["resources", ["computer", "browser", "repository"]], ["models", ["model"]], ["recipients", ["recipient"]]];
+  const groups: [string, S15PolicyRow["kind"][]][] = [["bot", ["bot"]], ["purpose", ["purpose"]], ["resources", ["computer", "browser", "repository", "connection"]], ["models", ["model"]], ["recipients", ["recipient"]]];
   const items = groups.map(([id, kinds]) => {
     const rows = review.rows.filter(row => kinds.includes(row.kind));
     const extra = id === "resources" && !rows.some(row => row.kind === "repository") ? `<li class="s-sub">${tr("s15.policy.no_repositories")} <a class="s-link-text" href="/resources/github">${tr("s15.policy.connect_github")}</a></li>` : "";

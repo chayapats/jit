@@ -12,6 +12,8 @@ import type { RoutineService } from "./routines/service";
 import type { NotificationService } from "./notifications/service";
 import type { ComputerDirectory } from "./computers/service";
 import type { BotDirectory } from "./bots/service";
+import type { ConnectionDirectory } from "./connections/service";
+import { connectionLimits } from "./connections/types";
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -21,7 +23,7 @@ import type { BotDirectory } from "./bots/service";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -29,13 +31,13 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
     if (Buffer.byteLength(text) > clientResponseBytes) { status = 413; text = JSON.stringify({ error: "client_response_limit" }); }
     return new Response(text, { status, headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer", Vary: "Cookie" } });
   };
-  const body = async (request: Request): Promise<unknown> => {
+  const body = async (request: Request, max = 32768): Promise<unknown> => {
     if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json") throw new AppError("unsupported_content_type", 415);
     const reader = request.body?.getReader(); if (!reader) throw new AppError("invalid_body");
     try {
       const chunks: Uint8Array[] = []; let length = 0;
-      for (;;) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.length; if (length > 32768) { await reader.cancel(); throw new AppError("body_too_large", 413); } chunks.push(chunk.value); }
-      try { return parseCommandJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); }
+      for (;;) { const chunk = await reader.read(); if (chunk.done) break; length += chunk.value.length; if (length > max) { await reader.cancel(); throw new AppError("body_too_large", 413); } chunks.push(chunk.value); }
+      try { return parseCommandJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)), max); }
       catch { throw new AppError("invalid_body"); }
     } finally { reader.releaseLock(); }
   };
@@ -54,7 +56,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
       computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files) } : { available: false, code: "computers_unavailable" },
-      bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" } };
+      bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
+      connections: options.connections ? { available: true, contract: "s16-client-connections/v1", kinds: ["mcp", "openapi", "graphql"], github: !!options.connections.options.github, oauth: true } : { available: false, code: "connections_unavailable" } };
   };
   return async request => {
     try {
@@ -182,6 +185,15 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST" && bot[1] === "imports" && !bot[2]) { const input = await body(request); exact(input, ["export"]); return json(options.bots.importBot(currentOwner(), input.export), 201); }
         if (request.method === "POST" && bot[1] && !fixed && bot[2] === "duplicate") { const input = await body(request); exact(input, ["name"]); return json(options.bots.duplicate(currentOwner(), bot[1], input.name), 201); }
         if (request.method === "POST" && bot[1] === "commands" && !bot[2]) { const input = await body(request); const receipt = options.bots.command(currentOwner(), input); return json(receipt); }
+        throw new AppError("method_rejected", 405);
+      }
+      const connection = /^\/api\/s16\/client\/connections(?:\/(commands))?$/.exec(url.pathname);
+      if (connection) {
+        if (!options.connections) throw new AppError("connections_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !connection[1]) return json(options.connections.view(currentOwner()));
+        // A source document (OpenAPI/GraphQL) may be up to 1 MiB; owner/session and CSRF are checked again after the body.
+        if (request.method === "POST" && connection[1] === "commands") { const input = await body(request, connectionLimits.documentBytes + 65_536); const owner = currentOwner(); return json(await options.connections.command(owner, input)); }
         throw new AppError("method_rejected", 405);
       }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
