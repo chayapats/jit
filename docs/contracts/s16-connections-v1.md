@@ -16,10 +16,11 @@ CONN16-01 (#417), MCP16-01 (#418) and OPEN16-01 (#419). Decision record: [ADR 00
 | `flows(id PK, state_hash UNIQUE, record_json)` | OAuth flows `pending` → `received` → `exchanging` → `complete` / `failed`; only the newest flow of a source can complete. |
 | `requests(id PK, record_json)` | Chat connection cards (`open`, `done`, `dismissed`). At most 64 open. |
 | `commands(id PK, payload_hash, result_json)` | Owner command idempotency; the hash binds a secret's or document's digest. A stored OAuth receipt omits the sign-in URL. |
+| `pending(id PK, payload_hash, source_id)` | A command whose first source change committed but whose receipt did not; the same request finishes it. |
 
 Vault keys (installation-scoped aliases): `source_<id>` holds a bearer/header secret or the OAuth token set; `source_flow_<flow>` holds a flow's state, PKCE verifier, client secret and, after the callback, the code.
 
-Bounds: 32 sources, 128 tools per source (16 list pages), documents and responses 1 MiB, results and arguments 64 KiB, schemas 32 KiB and depth 12, descriptions 1024 characters, request 30 s, call 120 s, OAuth flow 10 minutes, GraphQL depth 12 and 256 fields, 512 OpenAPI references.
+Bounds: 32 sources, 128 tools per source (16 list pages), documents and responses 1 MiB, results and arguments 64 KiB, schemas 16 000 bytes and depth 12, at most 64 tools offered per run, descriptions 1024 characters, request 30 s, call 120 s, OAuth flow 10 minutes, GraphQL depth 12 and 256 fields, 512 OpenAPI references.
 
 ## Identities
 
@@ -27,7 +28,7 @@ For a source `src_<k>` (24 hex from the adding request): resource `src_<k>`, DAT
 
 ## Owner API
 
-- `GET /api/s16/client/connections` → `s16-client-connections/v1`: `github` (`state`, `login`, expiry, accessible/selected repositories, `policy`), `sources` (`SourceView`: state, code, auth kind/header/issuer, catalog and reviewed hashes, `changed`, tools with `hint`, `suggested`, `allowed`, `decision` and request summary, skipped entries, Bots and whether each may use it, `policy`), open chat `requests`, `limits`, `oauthRedirect`. Never a secret, token, code or session identity.
+- `GET /api/s16/client/connections` → `s16-client-connections/v1`: `github` (`state`, `login`, expiry, accessible/selected repositories, `policy`), `sources` (`SourceView`: state, code, auth kind/header/issuer, catalog and reviewed hashes, `changed`, tools with `hint`, `suggested`, `allowed`, `decision` and request summary, skipped entries, Bots and whether each may use it, `policy`, `origin` conversation), open chat `requests`, `limits`, `oauthRedirect`. Never a secret, token, code or session identity.
 - `POST /api/s16/client/connections/commands` (`s16-connection-command/v1`) → `s16-connection-receipt/v1` (`source`, `github`, `authorize` for OAuth, `policy`: `installed` / `unchanged` / `review_required`).
 
 | Command | Effect |
