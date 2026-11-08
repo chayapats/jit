@@ -22,7 +22,7 @@ const files = (root: string): string[] => readdirSync(root).flatMap(name => { co
 /** Scripted MCP, OpenAPI, GraphQL and OAuth services on one loopback server, routed by host name. */
 function services() {
   const log: { host: string; method: string; path: string; auth: string | null; session: string | null; rpc: string | null; tool: string | null; args: unknown; idem: string | null }[] = [];
-  const state = { extra: 0, changed: false, gate: null as null | { reached(): void; release: Promise<void> }, sessions: 0, items: [] as unknown[], accessToken: 'oauth_access_' + 'Z1x2C3v4'.repeat(3), code: 'code_' + uid(), codeChallenge: '' as string, issued: false, registered: 0 };
+  const state = { listGate: null as null | { reached(): void; release: Promise<void> }, extra: 0, changed: false, gate: null as null | { reached(): void; release: Promise<void> }, sessions: 0, items: [] as unknown[], accessToken: 'oauth_access_' + 'Z1x2C3v4'.repeat(3), code: 'code_' + uid(), codeChallenge: '' as string, issued: false, registered: 0 };
   const tools = () => [
     { name: 'search', description: 'Search issues', inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'], additionalProperties: false }, annotations: { readOnlyHint: true } },
     { name: 'create_issue', description: 'Create an issue', inputSchema: { type: 'object', properties: { title: { type: 'string', maxLength: 80 } }, required: ['title'] } },
@@ -44,7 +44,7 @@ function services() {
       const method = body?.method;
       if (method === 'initialize') return rpc(body!.id, { protocolVersion: '2025-06-18', serverInfo: { name: 'tracker', version: '1' }, capabilities: { tools: {} } }, `sess-${++state.sessions}`);
       if (method === 'notifications/initialized') return new Response(null, { status: 202 });
-      if (method === 'tools/list') return rpc(body!.id, { tools: tools() });
+      if (method === 'tools/list') { if (state.listGate) { const gate = state.listGate; state.listGate = null; gate.reached(); await gate.release; } return rpc(body!.id, { tools: tools() }); }
       if (method === 'tools/call') {
         if (params.name === 'search') {
           if (state.gate && params.arguments?.q === 'block') { const gate = state.gate; gate.reached(); await gate.release; }
@@ -410,4 +410,31 @@ test('MCP16-01: a reviewed source with more tools than a run may offer still run
   expect(offered.length).toBeLessThanOrEqual(64);
   // The run's own tools come first; only source tools beyond the bound are left out.
   expect(offered.some(t => t.name === 'bash')).toBe(true);
+});
+
+test('MCP16-01: an OAuth redirect that arrives during another command never attaches to that command', async () => {
+  const svc = services();
+  // GitHub verification waits until the test releases it, so a redirect arrives while github.connect is queued.
+  let reached!: () => void; const arrived = new Promise<void>(resolve => { reached = resolve; });
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let gated = false;
+  const f = await firstRunFixture(o => ({ ...o, connections: { vault: o.githubWeb!.vault, network: svc.network }, githubWeb: { ...o.githubWeb!, fetch: (async (input: string | URL | Request, init?: RequestInit) => { if (gated) { gated = false; reached(); await gate; } return o.githubWeb!.fetch!(input, init); }) as typeof fetch } }));
+  fixtures.push(f);
+  const page = await f.page('/setup', 'en'), proposalHash = hashIn(page.html, 'proposalHash'), listHash = hashIn(page.html, 'listHash');
+  await f.form('/s15/forms/rules/install', { proposalHash: proposalHash!, ...(listHash ? { listHash } : {}), return: 'setup' });
+  const hosted = await receipt(f, { kind: 'source.add', sourceKind: 'mcp', label: 'Hosted', endpoint: svc.at('oauthmcp.example.com', '/mcp'), auth: { kind: 'oauth' }, document: null, origin: null });
+  const state = new URL(hosted.authorize!).searchParams.get('state')!;
+  gated = true;
+  const connectId = uid();
+  const connecting = command(f, { requestId: connectId, kind: 'github.connect', token: fixtureToken });
+  await arrived;
+  // The owner declines the other sign-in while the GitHub command waits on the network.
+  expect((await f.service.fetch(new Request(`http://localhost:3098/s16/connections/oauth/callback?state=${state}&error=access_denied`))).headers.get('location')).toBe(`/s16/connections#oauth=${hosted.source!.id}`);
+  const pending = () => f.service.connections!.store.db.query<{ id: string }, []>('SELECT id FROM pending').all();
+  expect(pending()).toEqual([]);
+  release();
+  const done = await json<ConnectionReceipt>(await connecting);
+  expect(done.github).toMatchObject({ state: 'connected', login: 'chayapats' });
+  expect(pending()).toEqual([]);
+  expect(f.service.connections!.record(hosted.source!.id)).toMatchObject({ state: 'reconnect_required', code: 'source_login_declined' });
 });

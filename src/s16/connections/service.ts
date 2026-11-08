@@ -73,8 +73,9 @@ export interface ConnectionDirectoryOptions<Owner> {
 export class ConnectionDirectory<Owner> {
   readonly store: ProtectedDataStore;
   #queue: Promise<unknown> = Promise.resolve();
-  /** The command being executed (commands are serialized): its first source change records it as pending. */
-  #active: { requestId: string; hash: string } | null = null;
+  /** The command being executed (commands are serialized) and the one source it changes: its first change of that
+   * source records it as pending. Changes from outside the queue (an OAuth redirect) never attach to it. */
+  #active: { requestId: string; hash: string; sourceId: string } | null = null;
   /** One OAuth refresh at a time per source, shared by every caller (rotating refresh tokens are single-use). */
   readonly #refreshing = new Map<string, Promise<StoredToken>>();
   constructor(readonly options: ConnectionDirectoryOptions<Owner>) {
@@ -95,8 +96,9 @@ export class ConnectionDirectory<Owner> {
   #save(record: SourceRecord): void {
     this.store.db.query("INSERT INTO sources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(record.id, canonical(record));
     // Recorded with the command's first change, so a retry after a stop finishes the command instead of conflicting.
-    if (this.#active) this.store.db.query("INSERT OR IGNORE INTO pending VALUES (?,?,?)").run(this.#active.requestId, this.#active.hash, record.id);
+    if (this.#active?.sourceId === record.id) this.store.db.query("INSERT OR IGNORE INTO pending VALUES (?,?,?)").run(this.#active.requestId, this.#active.hash, record.id);
   }
+  #sourceKey(requestId: string) { return digest("s16.source.id.v1", { installation: this.options.installationId, requestId }).slice(0, 24); }
   #key(sourceId: string) { return s15CredentialKey(this.options.installationId, `source_${sourceId}`); }
   #flowKey(flowId: string) { return s15CredentialKey(this.options.installationId, `source_flow_${flowId}`); }
 
@@ -286,7 +288,9 @@ export class ConnectionDirectory<Owner> {
     const prior = this.#prior(command.requestId, hash); if (prior) return prior;
     const pending = this.store.db.query<{ payload_hash: string; source_id: string }, [string]>("SELECT payload_hash, source_id FROM pending WHERE id=?").get(command.requestId);
     if (pending && pending.payload_hash !== hash) throw new AppError("request_id_conflict", 409);
-    this.#active = { requestId: command.requestId, hash };
+    // GitHub and card commands keep their own idempotency and change no source record.
+    const own = command.kind === "source.add" ? `src_${this.#sourceKey(command.requestId)}` : "sourceId" in command && typeof command.sourceId === "string" ? command.sourceId : null;
+    this.#active = own ? { requestId: command.requestId, hash, sourceId: own } : null;
     try { return pending ? await this.#resume(owner, command, hash, pending.source_id) : await this.#execute(owner, command, hash); }
     finally { this.#active = null; }
   }
@@ -319,7 +323,7 @@ export class ConnectionDirectory<Owner> {
         const endpoint = this.options.network.validate(command.endpoint === "" && base ? base : command.endpoint);
         let origin: SourceRecord["origin"] = { kind: "owner" };
         if (command.origin !== null) { exact(command.origin, ["conversationId", "requestId"]); identity(command.origin.conversationId); identity(command.origin.requestId); origin = { kind: "chat", conversationId: command.origin.conversationId, requestId: command.origin.requestId }; }
-        const key = digest("s16.source.id.v1", { installation: this.options.installationId, requestId: command.requestId }).slice(0, 24);
+        const key = this.#sourceKey(command.requestId);
         const id = `src_${key}`; if (this.record(id)) throw new AppError("request_id_conflict", 409);
         const stored = this.#storeSecret(id, auth);
         let record: SourceRecord = { contract: "s16-source/v1", id, revision: 1, kind: command.sourceKind, label, endpoint, auth: stored, state: "unavailable", code: "discovering",
