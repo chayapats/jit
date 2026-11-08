@@ -1,6 +1,6 @@
 import { tr } from "../i18n";
 import type { WorkView } from "./authority-types";
-import type { ExternalEvidence, WebOutcome, WebRead } from "./parallel-types";
+import type { ExternalEvidence, WebOutcome, WebProvider, WebRead } from "./parallel-types";
 import { announced, banner, botName, commandForm, e, flat, hidden, k, notice, ownerStrip, pill, shell, short, size, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14WebSettings, S14WorkResearch } from "./web-product-memory";
@@ -14,15 +14,21 @@ const webTools = ["web_search", "web_fetch"];
 const placeholders: Record<string, string> = { "[refused input]": "s14.evidence.subject_refused", "[outbound blocked]": "s14.evidence.subject_blocked", "[withdrawn context]": "s14.evidence.subject_withdrawn" };
 
 function modeWord(mode: WebRead["mode"]): string { return tr(mode === "anonymous" ? "s14.web.mode_anonymous" : "s14.web.mode_authenticated"); }
+/** Selected search provider; an absent setting or read means Parallel. */
+const providerOf = (item: { provider?: WebProvider }): WebProvider => item.provider ?? "parallel";
+const providerName = (provider: WebProvider): string => tr(provider === "keenable" ? "s14.web.provider_keenable" : "s14.web.provider_parallel");
+/** Provider-specific settings/outcome detail key; Parallel keeps the un-suffixed key. */
+const providerDetail = (base: string, provider: WebProvider): string => `${base}${provider === "keenable" ? "_keenable" : ""}`;
 function outcomeBanner(read: WebRead): string {
   if (read.outcome === "running") return "";
   const withdrawn = read.subject === "[withdrawn context]", key = withdrawn ? "withdrawn" : read.outcome === "quota" && read.mode === "authenticated" ? "quota_account" : read.outcome;
   if (read.outcome === "success") return "";
-  const tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(`s14.web_outcome.${key}_title`)), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
+  const suffix = providerOf(read) === "keenable" && (key === "quota" || key === "schema_changed" || key === "service_error") ? "_keenable" : "",
+    tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(`s14.web_outcome.${key}_title${suffix}`)), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
   // A vendor reset time is shown only when it was given; absent still reads as unknown, never as ready.
   const resets = read.outcome === "quota" && typeof read.retryAt === "number" ? `<p class="s-sub">${tr("s14.web_outcome.resets_at")} ${when(read.retryAt)}</p>` : "";
   const action = `${resets}${read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : ""}`;
-  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k(`s14.web_outcome.${key}_detail`))} ${left}`, action);
+  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k(`s14.web_outcome.${key}_detail${suffix}`))} ${left}`, action);
 }
 function usageRows(read: WebRead): string {
   if (read.usage === null) return `<span>${tr("s14.unknown")}</span>`;
@@ -48,7 +54,7 @@ function readCard(page: S14Page, read: WebRead): string {
   const subject = key ? `<p class="s-sub">${tr(k(key))}</p>` : `<pre class="s-exact">${e(read.subject)}</pre>`;
   const finished = read.finishedAt === null ? tr("s14.evidence.not_finished") : when(read.finishedAt);
   return `<article class="s-read" aria-label="${tr(k(`s14.evidence.tool.${read.tool}`))}"><div class="s-mem-hd"><b>${tr(k(`s14.evidence.tool.${read.tool}`))}</b><span class="s-grow"></span>${outcomePill(read.outcome)}</div>${subject}${outcomeBanner(read)}
-    <p class="s-meta">${e(botName(bot ?? { id: read.botId, name: read.botId }))} · ${modeWord(read.mode)} <span class="s-mono">r${read.settingRevision}</span> · ${tr("s14.evidence.left_machine")}: ${tr(read.dispatched ? "s14.evidence.yes" : "s14.evidence.no")} · ${tr("s14.evidence.requests")}: ${read.remoteRequests}<br>${when(read.requestedAt)} → ${finished}</p><p class="s-meta">${tr("s14.evidence.usage")}: ${usageRows(read)}</p>
+    <p class="s-meta">${e(botName(bot ?? { id: read.botId, name: read.botId }))} · ${providerName(providerOf(read))} · ${modeWord(read.mode)} <span class="s-mono">r${read.settingRevision}</span> · ${tr("s14.evidence.left_machine")}: ${tr(read.dispatched ? "s14.evidence.yes" : "s14.evidence.no")} · ${tr("s14.evidence.requests")}: ${read.remoteRequests}<br>${when(read.requestedAt)} → ${finished}</p><p class="s-meta">${tr("s14.evidence.usage")}: ${usageRows(read)}</p>
     ${missingRows(read)}${read.omittedResults ? `<p class="s-note">${tr("s14.evidence.omitted")} ${read.omittedResults}</p>` : ""}${read.evidence.length ? `<div class="s-stack">${read.evidence.map(sourceRow).join("")}</div>` : ""}</article>`;
 }
 function contextRows(page: S14Page, research: S14WorkResearch): string {
@@ -74,9 +80,9 @@ export function evidenceTab(page: S14Page, view: WorkView, research: S14WorkRese
   const reads = research?.reads ?? [], hasTools = view.grant?.tools.some(tool => webTools.includes(tool)) ?? false;
   if (!research || !reads.length) return `${banner("", tr(hasTools ? "s14.evidence.none_yet" : "s14.evidence.none_granted"), tr(hasTools ? "s14.evidence.none_yet_detail" : "s14.evidence.none_granted_detail"))}${research ? contextRows(page, research) : ""}`;
   const sent = reads.filter(read => read.dispatched), queries = sent.filter(read => read.tool === "web_search").length, urls = sent.length - queries, refused = reads.filter(read => !read.dispatched && read.outcome !== "running").length;
-  const modes = [...new Set(sent.map(read => read.mode))], gaps = reads.some(failed);
+  const modes = [...new Set(sent.map(read => read.mode))], providers = [...new Set(sent.map(read => providerOf(read)))], gaps = reads.some(failed);
   const exact = sent.filter(read => !placeholders[read.subject]).map(read => `<li class="s-mono">${e(read.subject)}</li>`).join("");
-  return `${banner("", `${tr("s14.evidence.left")}: ${queries} ${tr("s14.evidence.queries")} · ${urls} ${tr("s14.evidence.urls")}`, `${modes.length ? `${tr("s14.evidence.sent_to")} ${modes.map(modeWord).join(" · ")}. ` : ""}${tr("s14.evidence.guard_note")}`)}
+  return `${banner("", `${tr("s14.evidence.left")}: ${queries} ${tr("s14.evidence.queries")} · ${urls} ${tr("s14.evidence.urls")}`, `${modes.length ? `${tr("s14.evidence.sent_to")} ${providers.map(providerName).join(" · ")} · ${modes.map(modeWord).join(" · ")}. ` : ""}${tr("s14.evidence.guard_note")}`)}
     ${rollup(reads)}${banner(gaps ? "warn" : "", tr(gaps ? "s14.evidence.gaps" : "s14.evidence.no_gaps"), tr(gaps ? "s14.evidence.gaps_detail" : "s14.evidence.no_gaps_detail"))}
     <dl class="s-kv"><dt>${tr("s14.evidence.refused")}</dt><dd>${refused}</dd>${reportedUsage(reads)}</dl>${exact ? `<section class="s-stack" aria-labelledby="s14-sent"><h3 class="s-section-t" id="s14-sent">${tr("s14.evidence.exact_sent")}</h3><ul class="s-stack">${exact}</ul></section>` : ""}
     <section class="s-stack" aria-labelledby="s14-reads"><h3 class="s-section-t" id="s14-reads">${tr("s14.evidence.reads")}</h3>${reads.map(read => readCard(page, read)).join("")}${reads.length >= 256 ? `<p class="s-note">${tr("s14.evidence.limit_note")}</p>` : ""}</section>${contextRows(page, research)}`;
@@ -90,7 +96,7 @@ export function researchNotice(research: S14WorkResearch | null, href: string): 
 
 function stateBanner(view: S14WebSettings): string {
   const { setting, keyState } = view.read;
-  if (setting.mode === "anonymous") return banner("ok", tr("s14.web.free_title"), tr("s14.web.free_detail"));
+  if (setting.mode === "anonymous") return banner("ok", tr("s14.web.free_title"), tr(k(providerDetail("s14.web.free_detail", providerOf(setting)))));
   if (keyState === "present") return banner("warn", tr("s14.web.paid_title"), tr("s14.web.paid_detail"));
   return banner("danger", tr(keyState === "unsafe" ? "s14.web.key_unsafe" : "s14.web.key_gone"), tr("s14.web.key_gone_detail"));
 }
@@ -120,10 +126,21 @@ function accountSection(page: S14Page, view: S14WebSettings): string {
   const open = view.read.connections.some(item => item.state === "set");
   return setting.mode === "anonymous" ? `<details class="s-card s-more"${open ? " open" : ""}><summary>${tr("s14.web.account")}</summary><div>${body}</div></details>` : `<section class="s-card s-stack" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.web.account")}</h2>${body}</section>`;
 }
+/** Search provider picker: Parallel stays the default; Keenable is keyless free-mode only and never sees a Parallel key. */
+function providerSection(page: S14Page, view: S14WebSettings): string {
+  const { setting } = view.read, provider = providerOf(setting);
+  const use = (target: WebProvider, label: string) => ownerStrip(commandForm(page.csrf, "web.parallel.configure", setting.revision,
+    { mode: "anonymous", connectionId: null, billingAcknowledged: false, provider: target }, label), "");
+  const body = `<div class="s-stack"><p class="s-sub">${tr("s14.web.provider_lead")}</p><p class="s-meta">${tr("s14.web.provider_current")}: <b>${providerName(provider)}</b></p>` +
+    (setting.mode === "anonymous"
+      ? provider === "keenable" ? use("parallel", tr("s14.web.provider_use_parallel")) : use("keenable", tr("s14.web.provider_use_keenable"))
+      : `<p class="s-note">${tr("s14.web.provider_keyed_note")}</p>`) + `</div>`;
+  return `<details class="s-card s-more"><summary>${tr("s14.web.provider")}</summary><div>${body}</div></details>`;
+}
 /** Parallel settings: free mode needs nothing here, and a key is write-only, opt-in and never switches mode by itself. */
 export function webSettingsPage(page: S14Page, view: S14WebSettings): string {
-  const { setting, readiness } = view.read, paid = setting.mode === "authenticated";
-  const card = `<section class="s-card s-stack" aria-labelledby="s14-parallel"><div class="s-between"><div><h2 id="s14-parallel">Parallel</h2><p class="s-sub">${tr(paid ? "s14.web.mode_authenticated_detail" : "s14.web.mode_anonymous_detail")}</p></div>${pill(tr(paid ? "s14.web.mode_authenticated" : "s14.web.mode_anonymous"), paid ? "warn" : "strong")}</div>
-    <dl class="s-kv"><dt>${tr("s14.web.sends")}</dt><dd>${tr("s14.web.sends_detail")}</dd><dt>${tr("s14.web.reads")}</dt><dd>${tr("s14.web.reads_detail")}</dd><dt>${tr("s14.web.limit")}</dt><dd>${tr("s14.web.limit_detail")}</dd><dt>${tr("s14.web.bounds")}</dt><dd>${tr("s14.web.bounds_detail")}</dd><dt>${tr("s14.web.unavailable")}</dt><dd>${tr("s14.web.unavailable_detail")}</dd><dt>${tr("s14.web.readiness")}</dt><dd>${tr(k(`s14.web.readiness_${readiness}`))}</dd>${capabilityRow(page)}<dt>${tr("s14.web.revision")}</dt><dd class="s-mono">r${setting.revision}</dd></dl></section>`;
-  return shell(page, tr("s14.web.title"), `<div class="s-col">${receiptBanner(view)}${notice(view.notice)}${stateBanner(view)}${card}${accountSection(page, view)}<p><a class="s-link-text" href="/more">${tr("s14.web.back")}</a></p></div>`, { current: "more", subtitle: tr("s14.web.subtitle") });
+  const { setting, readiness } = view.read, paid = setting.mode === "authenticated", provider = providerOf(setting);
+  const card = `<section class="s-card s-stack" aria-labelledby="s14-parallel"><div class="s-between"><div><h2 id="s14-parallel">${providerName(provider)}</h2><p class="s-sub">${tr(k(paid ? "s14.web.mode_authenticated_detail" : providerDetail("s14.web.mode_anonymous_detail", provider)))}</p></div>${pill(tr(paid ? "s14.web.mode_authenticated" : "s14.web.mode_anonymous"), paid ? "warn" : "strong")}</div>
+    <dl class="s-kv"><dt>${tr("s14.web.sends")}</dt><dd>${tr(k(providerDetail("s14.web.sends_detail", provider)))}</dd><dt>${tr("s14.web.reads")}</dt><dd>${tr(k(providerDetail("s14.web.reads_detail", provider)))}</dd><dt>${tr("s14.web.limit")}</dt><dd>${tr(k(providerDetail("s14.web.limit_detail", provider)))}</dd><dt>${tr("s14.web.bounds")}</dt><dd>${tr("s14.web.bounds_detail")}</dd><dt>${tr("s14.web.unavailable")}</dt><dd>${tr("s14.web.unavailable_detail")}</dd><dt>${tr("s14.web.readiness")}</dt><dd>${tr(k(`s14.web.readiness_${readiness}`))}</dd>${capabilityRow(page)}<dt>${tr("s14.web.revision")}</dt><dd class="s-mono">r${setting.revision}</dd></dl></section>`;
+  return shell(page, tr("s14.web.title"), `<div class="s-col">${receiptBanner(view)}${notice(view.notice)}${stateBanner(view)}${card}${accountSection(page, view)}${providerSection(page, view)}<p><a class="s-link-text" href="/more">${tr("s14.web.back")}</a></p></div>`, { current: "more", subtitle: tr("s14.web.subtitle") });
 }

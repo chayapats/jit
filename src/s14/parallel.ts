@@ -10,7 +10,8 @@ import { record, save } from "./application";
 import type { Attempt, Work } from "./authority-types";
 import type { MemoryPacket, MemorySource } from "./memory-types";
 import { ParallelFailure, ParallelMcp, publicOutbound, type ParallelTimer, type ParallelTransport } from "./parallel-protocol";
-import type { ExternalEvidence, ParallelCommand, ParallelConnection, ParallelReceipt, ParallelSetting, WebOutcome, WebRead } from "./parallel-types";
+import { KeenableSearch } from "./keenable-protocol";
+import type { ExternalEvidence, ParallelCommand, ParallelConnection, ParallelReceipt, ParallelSetting, WebOutcome, WebProvider, WebRead } from "./parallel-types";
 import type { OwnerActor } from "./types";
 import { canonical, exact, identity, integer } from "./validation";
 
@@ -19,6 +20,9 @@ export interface ParallelWebOptions { transport?: ParallelTransport; vault?: Con
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const frame = (value: unknown) => `<untrusted_data>\n${JSON.stringify(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}\n</untrusted_data>`;
 const defaultTimer: ParallelTimer = (callback, ms) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); };
+
+/** Selected public web provider; an absent setting means Parallel so existing installs need no migration. */
+export const resolveProvider = (setting: Pick<ParallelSetting, "provider">): WebProvider => setting.provider ?? "parallel";
 
 /** Service-owned Parallel gateway; authority, outbound policy and actual evidence are checked before publication. */
 export class ParallelWeb {
@@ -74,10 +78,14 @@ export class ParallelWeb {
     }
     if (command.kind !== "web.parallel.configure") throw new AppError("unknown_command");
     const p = command.payload;
-    exact(p, ["mode", "connectionId", "billingAcknowledged"]);
+    if (Object.hasOwn(p, "provider")) exact(p, ["mode", "connectionId", "billingAcknowledged", "provider"]);
+    else exact(p, ["mode", "connectionId", "billingAcknowledged"]);
     const setting = record<ParallelSetting>(tx, "parallel_settings", "parallel");
     if (setting.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
     if (p.mode !== "anonymous" && p.mode !== "authenticated") throw new AppError("invalid_parallel_mode");
+    const provider: WebProvider = p.provider === undefined ? "parallel" : p.provider as WebProvider;
+    if (provider !== "parallel" && provider !== "keenable") throw new AppError("invalid_parallel_provider");
+    if (provider === "keenable" && p.mode !== "anonymous") throw new AppError("invalid_parallel_provider");
     if (p.mode === "anonymous") {
       if (p.connectionId !== null || p.billingAcknowledged !== false) throw new AppError("invalid_parallel_anonymous");
     } else {
@@ -86,7 +94,7 @@ export class ParallelWeb {
       if (p.billingAcknowledged !== true) throw new AppError("parallel_billing_acknowledgement_required", 403);
       if (connection.state !== "set" || !this.options.vault || this.options.vault.inspect(connection.id) !== "present") throw new AppError("parallel_key_unavailable", 503);
     }
-    Object.assign(setting, p); setting.revision++;
+    Object.assign(setting, p, { provider }); setting.revision++;
     save(tx, "parallel_settings", setting);
     return { ...receipt, setting };
   }
@@ -104,13 +112,15 @@ export class ParallelWeb {
   /** Stops a quota-hit work and older queued work; a later explicit work may probe only after any vendor retry deadline. */
   quota(tx: AppTransaction, workId: string): { readId: string; retryAt: number | null } | null {
     const work = record<Work>(tx, "work_items", workId), setting = record<ParallelSetting>(tx, "parallel_settings", "parallel");
+    const provider = resolveProvider(setting);
     const row = tx.get<{ record_json: string }>(`SELECT record_json FROM web_reads
       WHERE json_extract(record_json,'$.outcome')='quota' AND json_extract(record_json,'$.remoteRequests')>0
+      AND COALESCE(json_extract(record_json,'$.provider'),'parallel')=?
       AND json_extract(record_json,'$.mode')=?
       AND (?='anonymous' OR json_extract(record_json,'$.settingRevision')=?)
       AND (json_extract(record_json,'$.workId')=? OR json_extract(record_json,'$.finishedAt')>=?
         OR json_extract(record_json,'$.retryAt')>?) ORDER BY rowid DESC LIMIT 1`,
-    setting.mode, setting.mode, setting.revision, workId, work.createdAt, this.app.now());
+    provider, setting.mode, setting.mode, setting.revision, workId, work.createdAt, this.app.now());
     if (!row) return null;
     const read = JSON.parse(row.record_json) as WebRead;
     return { readId: read.id, retryAt: read.retryAt ?? null };
@@ -167,7 +177,7 @@ export class ParallelWeb {
     const attempt = this.app.store.read(tx => this.check(tx, attemptId, tool));
     const setting = this.app.store.read(tx => record<ParallelSetting>(tx, "parallel_settings", "parallel"));
     const row: WebRead = { id: id(), attemptId, workId: attempt.workId, botId: attempt.snapshot.bot.id, tool, subject: "[refused input]", dispatched: false, requestedAt: this.app.now(), finishedAt: null,
-      outcome: "running", mode: setting.mode, settingRevision: setting.revision, evidence: [], missing: [], failures: [], usage: null, omittedResults: 0, remoteRequests: 0, reason: null };
+      outcome: "running", mode: setting.mode, settingRevision: setting.revision, evidence: [], missing: [], failures: [], usage: null, omittedResults: 0, remoteRequests: 0, reason: null, provider: resolveProvider(setting) };
     // Reserve before accepting an input; refusals spend a call and cannot be retried outside the finite grant.
     this.app.authority.reserveTool(attemptId, tool);
     this.app.store.transaction(tx => {
@@ -180,7 +190,8 @@ export class ParallelWeb {
     signal.addEventListener("abort", cancel, { once: true });
     if (signal.aborted) abort.abort();
     const clear = (this.options.timer ?? defaultTimer)(() => { timedOut = true; abort.abort(); }, Math.min(this.options.deadlineMs ?? 15000, Math.max(1, attempt.snapshot.grant.expiresAt - this.app.now())));
-    let client: ParallelMcp | null = null;
+    let client: ParallelMcp | KeenableSearch | null = null;
+    const webProvider = resolveProvider(setting);
     let releaseBootstrap = () => {};
     try {
       const p = input as Record<string, unknown>;
@@ -192,6 +203,7 @@ export class ParallelWeb {
       row.subject = subject;
       const quota = this.app.store.read(tx => this.quota(tx, attempt.workId));
       if (quota) throw new ParallelFailure("quota", quota.retryAt);
+      if (webProvider === "keenable" && setting.mode !== "anonymous") throw new ParallelFailure("key_unavailable");
       let secret: string | null = null;
       if (setting.mode === "authenticated") {
         this.app.store.read(tx => this.check(tx, attemptId, tool, setting));
@@ -202,9 +214,25 @@ export class ParallelWeb {
         this.app.store.read(tx => this.guardOutbound(tx, attempt, subject, tool === "web_fetch"));
       }
       const work = this.app.store.read(tx => record<Work>(tx, "work_items", attempt.workId));
-      if (setting.mode === "anonymous") releaseBootstrap = await this.anonymousSessionTurn(work.conversationId, abort.signal);
+      if (setting.mode === "anonymous" && webProvider === "parallel") releaseBootstrap = await this.anonymousSessionTurn(work.conversationId, abort.signal);
       // Keyed reads return independent correlation; retain the anonymous conversation only for anonymous use.
-      const sessionId = setting.mode === "anonymous" ? this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null) : null;
+      const sessionId = setting.mode === "anonymous" && webProvider === "parallel" ? this.app.store.read(tx => tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId)?.vendor_id ?? null) : null;
+      if (webProvider === "keenable") {
+        client = new KeenableSearch({ now: () => this.app.now(),
+          ...(this.options.transport ? { transport: this.options.transport } : {}), maxBytes: this.options.responseBytes ?? 262144,
+          beforeRequest: method => {
+            if (abort.signal.aborted) throw new ParallelFailure(timedOut ? "deadline" : "cancelled");
+            this.app.store.transaction(tx => {
+              this.check(tx, attemptId, tool, setting);
+              this.guardOutbound(tx, attempt, subject, tool === "web_fetch");
+              const quota = this.quota(tx, attempt.workId);
+              if (quota) throw new ParallelFailure("quota", quota.retryAt);
+              row.remoteRequests = client!.requests + 1;
+              if (method === "tools/call") row.dispatched = true;
+              save(tx, "web_reads", row);
+            });
+          } });
+      } else {
       client = new ParallelMcp({ mode: setting.mode, secret, sessionId, model: attempt.snapshot.route.model, now: () => this.app.now(),
         onSessionId: value => this.app.store.transaction(tx => {
           const previous = tx.get<{ vendor_id: string }>("SELECT vendor_id FROM parallel_sessions WHERE conversation_id=?", work.conversationId);
@@ -224,10 +252,11 @@ export class ParallelWeb {
             save(tx, "web_reads", row);
           });
         } });
+      }
       let result;
       if (tool === "web_search") {
-        const provider: SearchProvider = client;
-        await provider.search(subject, { limit: 5, signal: abort.signal });
+        const searchProvider: SearchProvider = client;
+        await searchProvider.search(subject, { limit: 5, signal: abort.signal });
         result = client.last!;
       } else result = await client.call(tool, { url: subject, fullContent: p.fullContent as boolean }, abort.signal);
       if (abort.signal.aborted) throw new ParallelFailure(timedOut ? "deadline" : "cancelled");
@@ -236,7 +265,7 @@ export class ParallelWeb {
       row.missing = result.missing;
       row.failures = result.failures;
       row.evidence = result.evidence.map(e => ({ ...e, id: id(), revision: 1, generation: 1, workId: attempt.workId, attemptId, botId: attempt.snapshot.bot.id,
-        tool, provider: "parallel", mode: setting.mode, retrievedAt: this.app.now() }));
+        tool, provider: webProvider, mode: setting.mode, retrievedAt: this.app.now() }));
       row.outcome = result.partial ? "partial" : "success";
       if (tool === "web_fetch" && !row.evidence.length && row.failures.some(f => f.status === 403 || f.status === 451)) row.outcome = "blocked";
       row.finishedAt = this.app.now(); row.remoteRequests = client.requests;
@@ -282,13 +311,13 @@ export class ParallelWeb {
     const tools = [
       {
         name: "web_search" as const,
-        description: "Search public evidence through the selected Parallel mode. Queries leave this machine; failures never change identity or provider.",
+        description: "Search public evidence through the selected web provider. Queries leave this machine; failures never change identity or provider.",
         properties: { query: { type: "string", minLength: 1, maxLength: 8192 } },
         required: ["query"],
       },
       {
         name: "web_fetch" as const,
-        description: "Read one public URL through Parallel. Set fullContent explicitly; excerpts and unknown freshness remain labelled. Parallel performs remote retrieval; Jit does not validate its DNS.",
+        description: "Read one public URL through the selected web provider. Set fullContent explicitly; excerpts and unknown freshness remain labelled. The provider performs remote retrieval; Jit does not validate its DNS.",
         properties: { url: { type: "string", minLength: 1, maxLength: 8192 }, fullContent: { type: "boolean" } },
         required: ["url", "fullContent"],
       },
