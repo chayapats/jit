@@ -38,10 +38,22 @@ async function cancellable<T>(operation: Promise<T>, signal: AbortSignal): Promi
   } finally { if (cancel) signal.removeEventListener("abort", cancel); }
 }
 async function jsonBody(response: Response, signal: AbortSignal, cap: number): Promise<unknown> {
-  const raw = await cancellable(response.text(), signal);
-  // No silent content trimming: a response past the byte cap is an explicit oversize outcome.
-  if (Buffer.byteLength(raw) > cap) throw new ParallelFailure("oversize");
-  try { return JSON.parse(raw); } catch { throw new ParallelFailure("schema_changed"); }
+  if (!response.body) throw new ParallelFailure("schema_changed");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const chunk = await cancellable(reader.read(), signal);
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      // No silent content trimming: a response past the byte cap is an explicit oversize outcome.
+      if (size > cap) throw new ParallelFailure("oversize");
+      chunks.push(chunk.value);
+    }
+    const raw = Buffer.concat(chunks).toString("utf8");
+    try { return JSON.parse(raw); } catch { throw new ParallelFailure("schema_changed"); }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 function headers(): Record<string, string> {
   return { "content-type": "application/json", accept: "application/json", "X-Keenable-Title": keenableTitle };
@@ -126,16 +138,23 @@ export class KeenableSearch implements SearchProvider {
   private normalizeFetch(requested: string, fullContent: boolean, data: unknown): ParallelResult {
     const row = object(data), url = typeof row.url === "string" && row.url ? text(row.url, 8192) : requested;
     publicOutbound(url, true);
-    const body = typeof row.content === "string" && row.content ? row.content : typeof row.description === "string" ? row.description : "";
+    const full = typeof row.content === "string" && row.content ? row.content : null;
+    const body = full ?? (typeof row.description === "string" ? row.description : "");
     const content = text(body, 262144);
     const titleRaw = row.title === null || row.title === undefined ? "" : text(row.title, 4096);
     const cleaned = clean(titleRaw, content);
-    const evidence: ParallelResult["evidence"] = [{ requestedUrl: url === requested || publicWebUrl(url).href === publicWebUrl(requested).href ? requested : null,
+    const matches = url === requested || publicWebUrl(url).href === publicWebUrl(requested).href;
+    const hasText = cleaned.content.length > 0;
+    // A description-only response is an excerpt, never a full page; a different URL keeps the
+    // requested URL in missing so Evidence and report checks see the source gap.
+    const coverage = fullContent && full !== null ? "full_content_returned" : "excerpt";
+    const evidence: ParallelResult["evidence"] = [{ requestedUrl: matches ? requested : null,
       url, finalUrl: url !== requested ? url : null, title: cleaned.title, content: cleaned.content,
-      coverage: fullContent ? "full_content_returned" : "excerpt", publishedAt: null, reportedRetrievedAt: null,
+      coverage, publishedAt: null, reportedRetrievedAt: null,
       freshness: "unknown", cache: null, truncated: false, untrusted: true }];
-    const missing = cleaned.content.length > 0 ? [] : [requested];
-    return { evidence, missing, failures: [], usage: null, sessionId: null, omittedResults: 0, partial: missing.length > 0 };
+    const missing = matches && hasText ? [] : [requested];
+    const partial = missing.length > 0 || (fullContent && full === null);
+    return { evidence, missing, failures: [], usage: null, sessionId: null, omittedResults: 0, partial };
   }
 
   /** SearchProvider preserves the keyless identity; richer evidence remains in last for the trusted gateway. */

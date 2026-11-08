@@ -19,16 +19,22 @@ const providerOf = (item: { provider?: WebProvider }): WebProvider => item.provi
 const providerName = (provider: WebProvider): string => tr(provider === "keenable" ? "s14.web.provider_keenable" : "s14.web.provider_parallel");
 /** Provider-specific settings/outcome detail key; Parallel keeps the un-suffixed key. */
 const providerDetail = (base: string, provider: WebProvider): string => `${base}${provider === "keenable" ? "_keenable" : ""}`;
+/** Provider-aware outcome title; only quota has a provider-specific title, other error titles stay neutral. */
+function outcomeTitleKey(read: WebRead): string {
+  const key = read.subject === "[withdrawn context]" ? "withdrawn" : read.outcome === "quota" && read.mode === "authenticated" ? "quota_account" : read.outcome;
+  const suffix = providerOf(read) === "keenable" && key === "quota" ? "_keenable" : "";
+  return "s14.web_outcome." + key + "_title" + suffix;
+}
 function outcomeBanner(read: WebRead): string {
   if (read.outcome === "running") return "";
   const withdrawn = read.subject === "[withdrawn context]", key = withdrawn ? "withdrawn" : read.outcome === "quota" && read.mode === "authenticated" ? "quota_account" : read.outcome;
   if (read.outcome === "success") return "";
-  const suffix = providerOf(read) === "keenable" && (key === "quota" || key === "schema_changed" || key === "service_error") ? "_keenable" : "",
-    tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(`s14.web_outcome.${key}_title${suffix}`)), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
+  const detailSuffix = providerOf(read) === "keenable" && (key === "quota" || key === "schema_changed" || key === "service_error") ? "_keenable" : "",
+    tone = outcomeTone[read.outcome][0] === "danger" ? "danger" : "warn", title = tr(k(outcomeTitleKey(read))), left = read.dispatched ? tr("s14.evidence.was_sent") : tr("s14.evidence.not_sent");
   // A vendor reset time is shown only when it was given; absent still reads as unknown, never as ready.
   const resets = read.outcome === "quota" && typeof read.retryAt === "number" ? `<p class="s-sub">${tr("s14.web_outcome.resets_at")} ${when(read.retryAt)}</p>` : "";
   const action = `${resets}${read.outcome === "quota" || read.outcome === "key_unavailable" ? `<p><a class="s-link-text" href="/settings/web">${tr("s14.evidence.open_web_settings")}</a></p>` : ""}`;
-  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k(`s14.web_outcome.${key}_detail${suffix}`))} ${left}`, action);
+  return banner(tone as "warn" | "danger", title, `${tr(resets ? "s14.web_outcome.quota_known_detail" : k("s14.web_outcome." + key + "_detail" + detailSuffix))} ${left}`, action);
 }
 function usageRows(read: WebRead): string {
   if (read.usage === null) return `<span>${tr("s14.unknown")}</span>`;
@@ -91,7 +97,7 @@ export function evidenceTab(page: S14Page, view: WorkView, research: S14WorkRese
 export function researchNotice(research: S14WorkResearch | null, href: string): string {
   const reads = research?.reads ?? [], limited = reads.filter(failed); if (!limited.length) return "";
   const latest = limited.at(-1)!;
-  return banner("warn", `${tr("s14.evidence.progress_title")} ${limited.length}`, tr(k(`s14.web_outcome.${latest.outcome}_title`)), `<p><a class="s-link-text" href="${href}">${tr("s14.evidence.open")}</a></p>`);
+  return banner("warn", `${tr("s14.evidence.progress_title")} ${limited.length}`, tr(k(outcomeTitleKey(latest))), `<p><a class="s-link-text" href="${href}">${tr("s14.evidence.open")}</a></p>`);
 }
 
 function stateBanner(view: S14WebSettings): string {

@@ -146,3 +146,43 @@ test("oversize page content fails closed instead of being cut silently", async (
   expect(read.outcome).toBe("oversize");
   expect(read.evidence).toEqual([]);
 });
+
+test("a description-only answer to a full-content request stays an excerpt and the read is partial", async () => {
+  const f = await fixture(keenableWire(event => {
+    if (event.url.startsWith(keenableFetchEndpoint)) return Response.json({ url: "https://example.com/article", title: "Example article", content: "", description: "Short summary only" });
+    return undefined;
+  }));
+  useKeenable(f);
+  const read = await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true });
+  expect(read).toMatchObject({ outcome: "partial", provider: "keenable" });
+  expect(read.evidence[0]).toMatchObject({ coverage: "excerpt", requestedUrl: "https://example.com/article", content: "Short summary only" });
+  expect(read.evidence.some(item => item.coverage === "full_content_returned")).toBe(false);
+});
+
+test("a page returned for a different url keeps the requested url missing and the read partial", async () => {
+  const f = await fixture(keenableWire(event => {
+    if (event.url.startsWith(keenableFetchEndpoint)) return Response.json({ url: "https://example.com/elsewhere", title: "Elsewhere", content: "Some other page", description: "" });
+    return undefined;
+  }));
+  useKeenable(f);
+  const read = await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: false });
+  expect(read).toMatchObject({ outcome: "partial", provider: "keenable", missing: ["https://example.com/article"] });
+  expect(read.evidence[0]).toMatchObject({ requestedUrl: null, url: "https://example.com/elsewhere" });
+});
+
+test("a streamed body past the byte cap stops reading and cancels the stream", async () => {
+  let pulls = 0, cancelled = false;
+  const f = await fixture(keenableWire(event => {
+    if (!event.url.startsWith(keenableFetchEndpoint)) return undefined;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) { pulls++; controller.enqueue(new Uint8Array(512).fill(120)); },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "application/json" } });
+  }), { responseBytes: 1024 });
+  useKeenable(f);
+  const read = await f.app.parallel.read(f.attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true });
+  expect(read.outcome).toBe("oversize");
+  expect(read.evidence).toEqual([]);
+  expect(pulls).toBeLessThanOrEqual(5);
+  expect(cancelled).toBe(true);
+});
