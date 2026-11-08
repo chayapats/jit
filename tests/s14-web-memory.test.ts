@@ -137,6 +137,20 @@ test.each(["th", "en"] as const)("every WebOutcome is a word with an honest next
   const pane = await f.page(`/chats/${f.conversationId}?work=${work.id}&tab=evidence`); expect(pane).toContain('data-pane="open"'); expect(pane).toContain("query-quota"); expect(accessibilityProblems(pane, language)).toEqual([]);
 });
 
+test.each(["th", "en"] as const)("keenable reads name Keenable in quota titles on Evidence and Progress and never render a missing key (%s)", async language => {
+  const f = await fixture(language), { work, attempt } = research(f), { words } = f;
+  for (const outcome of ["schema_changed", "service_error", "quota"] as const) plant(f, attempt.id, work.id, { outcome, provider: "keenable", subject: "keenable-" + outcome });
+  const html = await f.page("/work/" + work.id + "?tab=evidence");
+  strict(html); expect(accessibilityProblems(html, language)).toEqual([]);
+  expect(html).toContain(words["s14.web_outcome.quota_title_keenable"]); expect(html).not.toContain(words["s14.web_outcome.quota_title"]);
+  expect(html).toContain(words["s14.web_outcome.schema_changed_title"]); expect(html).toContain(words["s14.web_outcome.service_error_title"]);
+  expect(html).toContain(words["s14.web_outcome.schema_changed_detail_keenable"]); expect(html).toContain(words["s14.web_outcome.service_error_detail_keenable"]);
+  const text = html.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]+>/g, " ");
+  expect(text).not.toMatch(/\bs14\.[a-z_]+\.?/); expect(text).not.toMatch(/undefined|NaN|\[object/);
+  const progress = await f.page("/work/" + work.id);
+  expect(progress).toContain(words["s14.web_outcome.quota_title_keenable"]); expect(progress).not.toContain(words["s14.web_outcome.quota_title"]);
+});
+
 test("a real fixture search and fetch show what left the machine, coverage and unknown usage without calling it complete", async () => {
   const f = await fixture(), { work, attempt } = research(f), { words } = f;
   await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" });

@@ -1,11 +1,13 @@
 import type { Envelope } from "./types";
 
+/** Supported public web providers; absent means Parallel so existing settings need no migration. */
+export type WebProvider = "parallel" | "keenable";
 /** Explicit owner choice; authenticated mode never falls back to an anonymous or another billed identity. */
-export interface ParallelSetting { id: "parallel"; revision: number; mode: "anonymous" | "authenticated"; connectionId: string | null; billingAcknowledged: boolean }
+export interface ParallelSetting { id: "parallel"; revision: number; mode: "anonymous" | "authenticated"; connectionId: string | null; billingAcknowledged: boolean; provider?: WebProvider }
 /** Vault metadata only; the credential value is never present in application state or query projections. */
 export interface ParallelConnection { id: string; revision: number; state: "set" | "removed" }
 /** Optional owner-selected credential configuration; anonymous mode requires no connection or billing acknowledgement. */
-export type ConfigureParallelCommand = Envelope<"web.parallel.configure", { mode: "anonymous" | "authenticated"; connectionId: string | null; billingAcknowledged: boolean }>;
+export type ConfigureParallelCommand = Envelope<"web.parallel.configure", { mode: "anonymous" | "authenticated"; connectionId: string | null; billingAcknowledged: boolean; provider?: WebProvider }>;
 /** Write-only credential ingress; retry identity deliberately excludes the credential and never hashes it. */
 export type SetParallelKeyCommand = Envelope<"web.parallel.key.set", { secret: string }>;
 /** Removes one optional credential without changing the selected mode or silently using another identity. */
@@ -19,7 +21,7 @@ export type WebOutcome = "success" | "partial" | "quota" | "schema_changed" | "s
 /** One untrusted evidence revision actually returned by a bounded search or page read. */
 export interface ExternalEvidence {
   id: string; revision: 1; generation: 1; workId: string; attemptId: string; botId: string;
-  tool: "web_search" | "web_fetch"; provider: "parallel"; mode: ParallelSetting["mode"];
+  tool: "web_search" | "web_fetch"; provider: WebProvider; mode: ParallelSetting["mode"];
   requestedUrl: string | null; url: string; finalUrl: string | null; title: string;
   content: string; coverage: "snippet" | "excerpt" | "full_content_returned";
   retrievedAt: number; publishedAt: string | null; reportedRetrievedAt: string | null;
@@ -33,6 +35,8 @@ export interface WebRead {
   mode: ParallelSetting["mode"]; settingRevision: number; evidence: ExternalEvidence[]; missing: string[];
   failures: { url: string; kind: string; status: number | null }[];
   usage: { name: string; count: number; costUsd: number }[] | null; omittedResults: number; remoteRequests: number; reason: string | null;
+  /** Selected provider; absent on old rows means Parallel. Quota fencing is scoped per provider. */
+  provider?: WebProvider;
   /** Parsed vendor Retry-After deadline on quota; absent/null means the reset time is unknown, never immediate readiness. */
   retryAt?: number | null;
 }

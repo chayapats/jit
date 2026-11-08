@@ -17,7 +17,7 @@ export class ParallelFailure extends AppError {
   constructor(readonly outcome: WebOutcome, readonly retryAt: number | null = null) { super(`parallel_${outcome}`, 503); }
 }
 
-function retryAt(headers: Headers, now: number): number | null {
+export function retryAt(headers: Headers, now: number): number | null {
   const value = headers.get("retry-after");
   if (!value || value.length > 128) return null;
   const date = /^\d+$/.test(value) ? now + Number(value) * 1000
