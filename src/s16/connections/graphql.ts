@@ -97,8 +97,13 @@ function parse(source: string): { operations: Operation[]; fragments: Map<string
   return { operations, fragments };
 }
 
-const scalar = (name: string): JsonValue => name === "Int" ? { type: "integer" } : name === "Float" ? { type: "number" } : name === "Boolean" ? { type: "boolean" } : name === "String" || name === "ID" ? { type: "string" } : {};
-const schemaOf = (ref: TypeRef): JsonValue => ref.kind === "list" ? { type: "array", items: schemaOf(ref.of) } : scalar(ref.name);
+const scalar = (name: string): string | null => name === "Int" ? "integer" : name === "Float" ? "number" : name === "Boolean" ? "boolean" : name === "String" || name === "ID" ? "string" : null;
+/** JSON Schema of a variable type, keeping nullability at every level (a nullable variable accepts an explicit null). */
+const schemaOf = (ref: TypeRef): JsonValue => {
+  const base = ref.kind === "list" ? "array" : scalar(ref.name);
+  if (base === null) return {};
+  return { type: ref.nonNull ? base : [base, "null"], ...(ref.kind === "list" ? { items: schemaOf(ref.of) } : {}) };
+};
 
 /** Import the owner's named operations. Each operation is one tool; skipped operations are named with a reason. */
 export function importGraphql(input: string): ImportResult {

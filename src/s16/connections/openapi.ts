@@ -67,15 +67,19 @@ export function importOpenApi(input: string): ImportResult {
         const shared = (resolve(item.parameters ?? []) as unknown[]).map(record).filter(Boolean) as Record<string, unknown>[];
         const own = (Array.isArray(operation.parameters) ? operation.parameters : []).map(record).filter(Boolean) as Record<string, unknown>[];
         const merged = [...shared.filter(p => !own.some(o => o.name === p.name && o.in === p.in)), ...own];
-        const properties: Record<string, JsonValue> = {}, required: string[] = [], parameters: { name: string; in: "path" | "query"; required: boolean }[] = [];
+        const properties: Record<string, JsonValue> = {}, required: string[] = [], parameters: { name: string; in: "path" | "query"; required: boolean; explode?: boolean }[] = [];
         for (const p of merged) {
           if (typeof p.name !== "string" || !/^[A-Za-z0-9_.\-[\]]{1,128}$/.test(p.name) || p.name === "body") throw new AppError("parameter_unsupported");
           if (p.in === "header" || p.in === "cookie") { if (p.required === true) throw new AppError("header_parameter_unsupported"); continue; }
           if (p.in !== "path" && p.in !== "query") throw new AppError("parameter_unsupported");
           const isRequired = p.in === "path" || p.required === true;
+          // Only the default encodings are built: path `simple` with scalar values, query `form` with scalars or arrays of
+          // scalars. Any other style, an object value or a `content` parameter cannot be encoded, so the operation is skipped.
+          const schema = record(p.schema), type = schema?.type, style = p.style ?? (p.in === "path" ? "simple" : "form");
+          if (p.content !== undefined || style !== (p.in === "path" ? "simple" : "form") || type === "object" || p.in === "path" && type === "array" || type === "array" && ["object", "array"].includes(String(record(schema!.items)?.type))) throw new AppError("parameter_encoding_unsupported");
           properties[p.name] = boundJson({ ...(record(p.schema) ?? { type: "string" }), ...(typeof p.description === "string" ? { description: text(p.description, 512) } : {}) }, 1);
           if (isRequired) required.push(p.name);
-          parameters.push({ name: p.name, in: p.in, required: isRequired });
+          parameters.push({ name: p.name, in: p.in, required: isRequired, ...(p.in === "query" && type === "array" ? { explode: p.explode !== false } : {}) });
         }
         for (const match of path.matchAll(/\{([^}]+)\}/g)) if (!parameters.some(p => p.in === "path" && p.name === match[1])) throw new AppError("path_unsupported");
         let body: "none" | "json" = "none", bodyRequired = false;
@@ -110,7 +114,8 @@ export function openApiRequest(endpoint: string, binding: Extract<SourceBinding,
     if (value === null || typeof value === "object" && !Array.isArray(value)) throw new AppError("source_arguments_invalid");
     const values = Array.isArray(value) ? value : [value];
     if (values.some(v => v === null || typeof v === "object")) throw new AppError("source_arguments_invalid");
-    if (p.in === "path") { if (Array.isArray(value)) throw new AppError("source_arguments_invalid"); path = path.replace(`{${p.name}}`, encodeURIComponent(String(value))); }
+    if (p.in === "path") { if (Array.isArray(value)) throw new AppError("source_arguments_invalid"); path = path.replaceAll(`{${p.name}}`, encodeURIComponent(String(value))); }
+    else if (Array.isArray(value) && p.explode === false) query.append(p.name, values.map(String).join(","));
     else for (const v of values) query.append(p.name, String(v));
   }
   const prefix = base.pathname.replace(/\/+$/, "");

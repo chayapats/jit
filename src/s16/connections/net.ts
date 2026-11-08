@@ -12,7 +12,10 @@ import { BrowserError } from "../../s15/browser/validation";
  */
 export interface SourceResponse { status: number; headers: Headers; text: string }
 /** One checked destination: `send` makes exactly one request to it. */
-export interface SourceRoute { send(init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal; timeoutMs: number; maxBytes: number }): Promise<SourceResponse>; close(): void }
+export interface SourceRoute { send(init: SendInit): Promise<SourceResponse>; close(): void }
+/** One request. `complete` (optional) is asked after every received chunk with the response content type and the text
+ * so far; returning true ends the read early (an event stream whose matching reply has arrived but stays open). */
+export interface SendInit { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal; timeoutMs: number; maxBytes: number; complete?: (contentType: string, text: string) => boolean }
 export interface SourceNetwork {
   /** Canonical endpoint URL, or `source_endpoint_invalid`. HTTPS only (fixtures may allow plain HTTP). */
   validate(url: string): string;
@@ -41,18 +44,20 @@ const mapped = (error: unknown): AppError => {
   return new AppError("source_unreachable", 502);
 };
 
-/** Read at most `max` bytes; a longer body refuses (`source_response_too_large`). */
-async function bounded(response: Response, max: number): Promise<string> {
+/** Read at most `max` bytes; a longer body refuses (`source_response_too_large`). `complete` may end the read early. */
+async function bounded(response: Response, max: number, complete?: SendInit["complete"]): Promise<string> {
   const reader = response.body?.getReader(); if (!reader) return "";
-  const chunks: Uint8Array[] = []; let length = 0;
+  const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  const decoder = new TextDecoder("utf-8"); let text = "", length = 0;
   try {
     for (;;) {
       const chunk = await reader.read(); if (chunk.done) break;
       length += chunk.value.length; if (length > max) { await reader.cancel().catch(() => {}); throw new AppError("source_response_too_large", 502); }
-      chunks.push(chunk.value);
+      text += decoder.decode(chunk.value, { stream: true });
+      if (complete?.(type, text)) { await reader.cancel().catch(() => {}); return text; }
     }
   } finally { reader.releaseLock(); }
-  return new TextDecoder("utf-8").decode(Buffer.concat(chunks));
+  return text + decoder.decode();
 }
 
 export function openSourceNetwork(ports: SourceNetworkPorts = {}): SourceNetwork {
@@ -74,7 +79,7 @@ export function openSourceNetwork(ports: SourceNetworkPorts = {}): SourceNetwork
           try { response = await route.fetch(target, { method: init.method, headers: init.headers, ...(init.body !== undefined ? { body: init.body } : {}), redirect: "manual", signal }); }
           catch (error) { throw mapped(error); }
           if (response.status >= 300 && response.status < 400) { await response.body?.cancel().catch(() => {}); throw new AppError("source_redirect_refused", 502); }
-          try { return { status: response.status, headers: response.headers, text: await bounded(response, init.maxBytes) }; }
+          try { return { status: response.status, headers: response.headers, text: await bounded(response, init.maxBytes, init.complete) }; }
           catch (error) { throw mapped(error); }
         },
         close() { route.close(); },

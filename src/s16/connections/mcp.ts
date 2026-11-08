@@ -62,7 +62,8 @@ export class McpHttpSession {
     if (id !== null) { if (!/^[\x21-\x7e]{1,256}$/.test(id)) throw new AppError("source_protocol_error", 502); session.#session = id; }
     const text = (value: unknown) => typeof value === "string" ? value.slice(0, 128) : null;
     session.server = { name: text(result.serverInfo?.name), version: text(result.serverInfo?.version), protocol: result.protocolVersion };
-    await session.#notify("notifications/initialized", signal);
+    // A session the server already assigned is ended when the open fails; the caller never receives it.
+    try { await session.#notify("notifications/initialized", signal); } catch (error) { await session.close(); throw error; }
     return session;
   }
 
@@ -139,7 +140,9 @@ export class McpHttpSession {
     if (this.#closed) throw new AppError("source_session_closed", 409);
     const id = this.#id++, body = JSON.stringify({ jsonrpc: "2.0", id, ...message });
     if (Buffer.byteLength(body) > connectionLimits.argumentBytes + 4_096) throw new AppError("source_arguments_too_large");
-    const response: SourceResponse = await this.network.request(this.endpoint, { method: "POST", headers: await this.#headers(initial), body, ...(signal ? { signal } : {}), timeoutMs, maxBytes: connectionLimits.responseBytes });
+    // An event stream ends as soon as its matching reply arrived, even if the server keeps the stream open.
+    const matched = (type: string, text: string) => type === "text/event-stream" && /\n\n/.test(text) && eventStreamMessages(text).some(item => !!item && typeof item === "object" && (item as { id?: unknown }).id === id && (item as { method?: unknown }).method === undefined);
+    const response: SourceResponse = await this.network.request(this.endpoint, { method: "POST", headers: await this.#headers(initial), body, ...(signal ? { signal } : {}), timeoutMs, maxBytes: connectionLimits.responseBytes, complete: matched });
     if (response.status === 401) throw new SourceAuthRequired(resourceMetadataOf(response.headers.get("www-authenticate")));
     if (response.status === 403) throw new AppError("source_forbidden", 403);
     if (response.status === 404 && this.#session) throw new AppError("source_session_expired", 409);

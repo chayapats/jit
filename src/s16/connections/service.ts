@@ -22,6 +22,7 @@ CREATE TABLE sources (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
 CREATE TABLE flows (id TEXT PRIMARY KEY, state_hash TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
 CREATE TABLE requests (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
 CREATE TABLE commands (id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL);
+CREATE TABLE pending (id TEXT PRIMARY KEY, payload_hash TEXT NOT NULL, source_id TEXT NOT NULL);
 `;
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 const forbiddenHeaders = new Set(["host", "content-length", "content-type", "accept", "connection", "transfer-encoding", "cookie", "mcp-session-id", "mcp-protocol-version", "upgrade", "te", "trailer", "proxy-authorization", "idempotency-key"]);
@@ -72,6 +73,10 @@ export interface ConnectionDirectoryOptions<Owner> {
 export class ConnectionDirectory<Owner> {
   readonly store: ProtectedDataStore;
   #queue: Promise<unknown> = Promise.resolve();
+  /** The command being executed (commands are serialized): its first source change records it as pending. */
+  #active: { requestId: string; hash: string } | null = null;
+  /** One OAuth refresh at a time per source, shared by every caller (rotating refresh tokens are single-use). */
+  readonly #refreshing = new Map<string, Promise<StoredToken>>();
   constructor(readonly options: ConnectionDirectoryOptions<Owner>) {
     this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a494337, CONNECTIONS_SCHEMA_V1);
     // A discovery interrupted by a stop leaves its source unavailable, never half-reviewed.
@@ -87,7 +92,11 @@ export class ConnectionDirectory<Owner> {
   record(id: string): SourceRecord | null { const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(id); return row ? JSON.parse(row.record_json) as SourceRecord : null; }
   /** The source owning a resource, recipient, DATA15 source or catalog-fence identity. */
   byRef(id: string): SourceRecord | null { const m = /^src[rsc]?_([a-f0-9]{24})$/.exec(id); return m ? this.record(`src_${m[1]}`) : null; }
-  #save(record: SourceRecord): void { this.store.db.query("INSERT INTO sources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(record.id, canonical(record)); }
+  #save(record: SourceRecord): void {
+    this.store.db.query("INSERT INTO sources VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(record.id, canonical(record));
+    // Recorded with the command's first change, so a retry after a stop finishes the command instead of conflicting.
+    if (this.#active) this.store.db.query("INSERT OR IGNORE INTO pending VALUES (?,?,?)").run(this.#active.requestId, this.#active.hash, record.id);
+  }
   #key(sourceId: string) { return s15CredentialKey(this.options.installationId, `source_${sourceId}`); }
   #flowKey(flowId: string) { return s15CredentialKey(this.options.installationId, `source_flow_${flowId}`); }
 
@@ -120,15 +129,32 @@ export class ConnectionDirectory<Owner> {
     }
     let token = JSON.parse(secret) as StoredToken;
     if (token.expiresAt !== null && token.expiresAt - 60_000 <= this.options.now()) {
-      if (!token.refreshToken || !record.auth.oauth) throw new AppError("source_login_required", 401);
-      const server: OAuthServer = { issuer: record.auth.oauth.issuer, authorizationEndpoint: record.auth.oauth.authorizationEndpoint, tokenEndpoint: record.auth.oauth.tokenEndpoint, registrationEndpoint: null, resource: record.auth.oauth.resource, scope: record.auth.oauth.scope };
-      const next = await refreshOAuthTokens(this.options.network, server, { clientId: token.clientId, clientSecret: token.clientSecret }, token.refreshToken, this.options.now());
-      registerSecretFingerprint(next.accessToken); if (next.refreshToken) registerSecretFingerprint(next.refreshToken);
-      token = { ...token, accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
-      this.options.vault.write(this.#key(record.id), JSON.stringify(token));
+      let refreshing = this.#refreshing.get(record.id);
+      if (!refreshing) {
+        refreshing = this.#refresh(record, secret, token).finally(() => this.#refreshing.delete(record.id));
+        this.#refreshing.set(record.id, refreshing);
+      }
+      token = await refreshing;
     }
     registerSecretFingerprint(token.accessToken);
     return { Authorization: `Bearer ${token.accessToken}` };
+  }
+
+  /**
+   * Refresh once and save only if nothing changed meanwhile: a removal, a reconnect (new auth) or another saved token
+   * since the refresh started keeps the newer state, and this result is discarded (`source_credential_changed`).
+   */
+  async #refresh(record: SourceRecord, stored: string, token: StoredToken): Promise<StoredToken> {
+    if (!token.refreshToken || !record.auth.oauth) throw new AppError("source_login_required", 401);
+    const server: OAuthServer = { issuer: record.auth.oauth.issuer, authorizationEndpoint: record.auth.oauth.authorizationEndpoint, tokenEndpoint: record.auth.oauth.tokenEndpoint, registrationEndpoint: null, resource: record.auth.oauth.resource, scope: record.auth.oauth.scope };
+    const next = await refreshOAuthTokens(this.options.network, server, { clientId: token.clientId, clientSecret: token.clientSecret }, token.refreshToken, this.options.now());
+    registerSecretFingerprint(next.accessToken); if (next.refreshToken) registerSecretFingerprint(next.refreshToken);
+    const latest = this.record(record.id);
+    let current: string | null = null; try { current = this.options.vault.read(this.#key(record.id)); } catch { current = null; }
+    if (!latest || latest.state === "removed" || canonical(latest.auth) !== canonical(record.auth) || current !== stored) throw new AppError("source_credential_changed", 409);
+    const saved: StoredToken = { ...token, accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt };
+    this.options.vault.write(this.#key(record.id), JSON.stringify(saved));
+    return saved;
   }
 
   /** Owner projection. */
@@ -151,6 +177,7 @@ export class ConnectionDirectory<Owner> {
       skipped: catalog?.skipped ?? [], truncated: catalog?.truncated ?? false, server: catalog?.server ?? null,
       bots: review ? this.options.bots(owner, record.resource.id) : [],
       policy: !review ? "not_needed" : this.options.inPolicy(owner, record.resource.id) ? "installed" : "review_required",
+      origin: record.origin.kind === "chat" ? { conversationId: record.origin.conversationId } : null,
       verifiedAt: record.verifiedAt, createdAt: record.createdAt, updatedAt: record.updatedAt };
   }
 
@@ -220,7 +247,10 @@ export class ConnectionDirectory<Owner> {
   #done(owner: Owner, command: ConnectionCommand, hash: string, source: SourceRecord | null, extra: Partial<Pick<ConnectionReceipt, "authorize" | "policy">> = {}): ConnectionReceipt {
     const receipt: ConnectionReceipt = { contract: "s16-connection-receipt/v1", requestId: command.requestId, kind: command.kind, source: source && source.state !== "removed" ? this.sourceView(owner, source) : null, github: this.options.github && command.kind.startsWith("github.") ? this.#github(owner) : null, authorize: extra.authorize ?? null, policy: extra.policy ?? null };
     // The OAuth URL carries a single-use state: a replayed command gets the same receipt but never a reusable sign-in link.
-    this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(command.requestId, hash, canonical({ ...receipt, authorize: null }));
+    this.store.transaction(() => {
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?)").run(command.requestId, hash, canonical({ ...receipt, authorize: null }));
+      this.store.db.query("DELETE FROM pending WHERE id=?").run(command.requestId);
+    });
     return receipt;
   }
   #current(id: unknown, expectedRevision: unknown): SourceRecord {
@@ -254,6 +284,23 @@ export class ConnectionDirectory<Owner> {
     this.options.requireOwner(owner);
     const { command, hash } = this.#parse(input);
     const prior = this.#prior(command.requestId, hash); if (prior) return prior;
+    const pending = this.store.db.query<{ payload_hash: string; source_id: string }, [string]>("SELECT payload_hash, source_id FROM pending WHERE id=?").get(command.requestId);
+    if (pending && pending.payload_hash !== hash) throw new AppError("request_id_conflict", 409);
+    this.#active = { requestId: command.requestId, hash };
+    try { return pending ? await this.#resume(owner, command, hash, pending.source_id) : await this.#execute(owner, command, hash); }
+    finally { this.#active = null; }
+  }
+  /**
+   * Finish a command that changed a source before the process stopped: rediscover a source left mid-discovery, and
+   * rerun the standing-rule update of a review or removal. Nothing is sent twice: a sign-in link is never reissued.
+   */
+  async #resume(owner: Owner, command: ConnectionCommand, hash: string, sourceId: string): Promise<ConnectionReceipt> {
+    let record = this.record(sourceId);
+    if (command.kind === "source.review" || command.kind === "source.remove") return this.#done(owner, command, hash, record, { policy: record?.review ? this.#membership(owner, command.requestId) : "unchanged" });
+    if (record && record.state !== "removed" && (record.code === "discovering" || record.code === "discovery_interrupted")) record = await this.#discover(owner, record);
+    return this.#done(owner, command, hash, record);
+  }
+  async #execute(owner: Owner, command: ConnectionCommand, hash: string): Promise<ConnectionReceipt> {
     const now = () => this.options.now();
     switch (command.kind) {
       case "source.add": {

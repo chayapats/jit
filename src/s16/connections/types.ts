@@ -20,7 +20,7 @@ export type JsonSchema = { [key: string]: JsonValue };
 /** How a tool is actually called. Only trusted adapter code builds requests from it; the model supplies arguments only. */
 export type SourceBinding =
   | { kind: "mcp"; tool: string }
-  | { kind: "openapi"; method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; parameters: { name: string; in: "path" | "query"; required: boolean }[]; body: "none" | "json"; bodyRequired: boolean }
+  | { kind: "openapi"; method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE"; path: string; parameters: { name: string; in: "path" | "query"; required: boolean; /** Query arrays: repeated keys (`form`, explode) or one comma-separated value (`form`, no explode). */ explode?: boolean }[]; body: "none" | "json"; bodyRequired: boolean }
   | { kind: "graphql"; operationName: string; operation: "query" | "mutation"; document: string };
 
 /** One discovered tool. `hint` is what the source said about itself, shown to the owner as a suggestion only. */
@@ -99,6 +99,8 @@ export interface SourceView {
   bots: { id: string; name: string; allowed: boolean }[];
   /** `installed`: the standing rules include the reviewed source. `review_required`: the rules page must be accepted first. */
   policy: "installed" | "review_required" | "not_needed";
+  /** The conversation whose card started this connection, to return to after sign-in. */
+  origin: { conversationId: string } | null;
   verifiedAt: number | null; createdAt: number; updatedAt: number;
 }
 /** GitHub app projection (fine-grained token connection). */
@@ -143,6 +145,6 @@ export interface ConnectionReceipt {
 /** Finite bounds (S16 NFR-05). Everything beyond them is refused or reported as skipped, never silently widened. */
 export const connectionLimits = Object.freeze({
   sources: 32, toolsPerSource: 128, listPages: 16, documentBytes: 1_048_576, responseBytes: 1_048_576,
-  resultBytes: 65_536, argumentBytes: 65_536, schemaBytes: 32_768, schemaDepth: 12, descriptionChars: 1_024,
+  resultBytes: 65_536, argumentBytes: 65_536, schemaBytes: 16_000, schemaDepth: 12, descriptionChars: 1_024,
   requestMs: 30_000, callMs: 120_000, oauthFlowMs: 600_000, graphqlDepth: 12, graphqlFields: 256, openapiRefs: 512,
 });

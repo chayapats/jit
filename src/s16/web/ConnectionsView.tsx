@@ -23,6 +23,11 @@ const privateFailure = (error: unknown) => error instanceof JitClientError && ([
 const tones: Record<ClientSource["state"], string> = { authorizing: "busy", needs_review: "warn", active: "ok", reconnect_required: "warn", unavailable: "warn", removed: "idle" };
 const classes: ClientToolClass[] = ["read", "change", "approval", "off"];
 type AuthKind = "none" | "bearer" | "header" | "oauth";
+/** Credential fields of one form. The add form and each reconnect form keep their own, so a secret typed for one
+ * service can never be sent with another form. */
+type Credentials = { kind: AuthKind; secret: string; header: string };
+const noCredentials = (): Credentials => ({ kind: "none", secret: "", header: "" });
+const authInput = (c: Credentials) => c.kind === "bearer" ? { kind: "bearer" as const, secret: c.secret } : c.kind === "header" ? { kind: "header" as const, name: c.header.trim(), secret: c.secret } : { kind: c.kind };
 
 /**
  * CONN16-01/MCP16-01/OPEN16-01 owner Connections page (ADR 0089): the GitHub app, HTTPS tool sources and the one-time
@@ -36,7 +41,9 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
   const [reviewing, setReviewing] = useState<string | null>(null), [choices, setChoices] = useState<Record<string, ClientToolClass>>({});
   const [token, setToken] = useState(""), [repos, setRepos] = useState<string[] | null>(null), [replacing, setReplacing] = useState(false);
   const [kind, setKind] = useState<ClientSourceKind>(seed && seed.kind !== "github" ? seed.kind : "mcp"), [label, setLabel] = useState(seed?.label ?? ""), [endpoint, setEndpoint] = useState(seed?.endpoint ?? "");
-  const [auth, setAuth] = useState<AuthKind>("none"), [secret, setSecret] = useState(""), [header, setHeader] = useState(""), [document, setDocument] = useState("");
+  const [adding, setAdding] = useState<Credentials>(noCredentials), [reconnect, setReconnect] = useState<Credentials>(noCredentials), [document, setDocument] = useState("");
+  // The conversation to return to: the chat card's, or after an OAuth round trip the one recorded on the source.
+  const [returnTo, setReturnTo] = useState<string | null>(seed?.conversationId ?? null);
   const [reconnecting, setReconnecting] = useState<string | null>(null), [problem, setProblem] = useState<string | null>(null);
   const commands = useRef(0), notice = useRef<HTMLDivElement>(null), finishing = useRef(false);
   const date = (value: number) => new Intl.DateTimeFormat(locale === "th" ? "th-TH" : "en-GB", { dateStyle: "medium", timeStyle: "short" }).format(value);
@@ -60,7 +67,7 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
     history.replaceState(null, "", "/s16/connections");
     if (oauth.error || !oauth.sourceId) { setTab("sources"); setProblem(oauth.error ?? "source_oauth_stale"); return; }
     const source = data.sources.find(item => item.id === oauth.sourceId);
-    setTab("sources");
+    setTab("sources"); if (source?.origin) setReturnTo(source.origin.conversationId);
     if (source?.state === "authorizing") void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.oauth_complete", sourceId: source.id, expectedRevision: source.revision }, "s16.connections.signedIn");
   }, [data, oauth]);
 
@@ -84,9 +91,8 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
   const busy = pending?.state === "pending";
   async function loadFile(file: File | undefined) { if (!file) return; if (file.size > (data?.limits.documentBytes ?? 1_048_576)) { setProblem("source_document_invalid"); return; } setDocument(await file.text()); }
   function addSource() {
-    const authInput = auth === "bearer" ? { kind: "bearer" as const, secret } : auth === "header" ? { kind: "header" as const, name: header.trim(), secret } : { kind: auth };
-    const command: ClientConnectionCommand = { contract: "s16-connection-command/v1", requestId: uid(), kind: "source.add", sourceKind: kind, label: label.trim() || endpoint.trim(), endpoint: endpoint.trim(), auth: authInput, document: kind === "mcp" ? null : document, origin: seed && seed.kind !== "github" ? { conversationId: seed.conversationId, requestId: seed.requestId } : null };
-    setSecret(""); setTab("sources");
+    const command: ClientConnectionCommand = { contract: "s16-connection-command/v1", requestId: uid(), kind: "source.add", sourceKind: kind, label: label.trim() || endpoint.trim(), endpoint: endpoint.trim(), auth: authInput(adding), document: kind === "mcp" ? null : document, origin: seed && seed.kind !== "github" ? { conversationId: seed.conversationId, requestId: seed.requestId } : null };
+    setAdding(current => ({ ...current, secret: "" })); setTab("sources");
     void run(command, "s16.connections.added");
   }
 
@@ -120,11 +126,11 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
         {(source.state === "needs_review" || source.state === "active") && source.tools.length > 0 && <button type="button" className={source.state === "needs_review" ? "primary" : ""} disabled={busy} onClick={() => reviewing === source.id ? setReviewing(null) : openReview(source)}>{t("s16.connections.review")}</button>}
         {source.auth.kind === "oauth" && (source.state === "authorizing" || source.state === "reconnect_required") && <button type="button" className="primary" disabled={busy} onClick={() => void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.oauth_begin", sourceId: source.id, expectedRevision: source.revision }, "s16.connections.signingIn")}>{t("s16.connections.signIn")}</button>}
         <button type="button" disabled={busy} onClick={() => void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.refresh", sourceId: source.id, expectedRevision: source.revision }, "s16.connections.added")}>{t("s16.connections.refresh")}</button>
-        <button type="button" disabled={busy} onClick={() => { setReconnecting(reconnecting === source.id ? null : source.id); setAuth(source.auth.kind); setSecret(""); setHeader(source.auth.header ?? ""); }}>{t("s16.connections.reconnect")}</button>
+        <button type="button" disabled={busy} onClick={() => { setReconnecting(reconnecting === source.id ? null : source.id); setReconnect({ kind: source.auth.kind, secret: "", header: source.auth.header ?? "" }); }}>{t("s16.connections.reconnect")}</button>
         <button type="button" disabled={busy} onClick={() => setConfirm({ kind: "source", source })}>{t("s16.connections.remove")}</button>
       </div>
-      {reconnecting === source.id && <form className="connection-form" onSubmit={event => { event.preventDefault(); const authInput = auth === "bearer" ? { kind: "bearer" as const, secret } : auth === "header" ? { kind: "header" as const, name: header.trim(), secret } : { kind: auth }; setSecret(""); setReconnecting(null); void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.reconnect", sourceId: source.id, expectedRevision: source.revision, auth: authInput }, "s16.connections.added"); }}>
-        {authFields(source.kind, source.id)}
+      {reconnecting === source.id && <form className="connection-form" onSubmit={event => { event.preventDefault(); const input = authInput(reconnect); setReconnect(noCredentials()); setReconnecting(null); void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.reconnect", sourceId: source.id, expectedRevision: source.revision, auth: input }, "s16.connections.added"); }}>
+        {authFields(source.kind, source.id, reconnect, setReconnect)}
         <div className="actions"><button type="submit" className="primary" disabled={busy}>{t("s16.connections.reconnectSave")}</button></div>
       </form>}
       {reviewing === source.id && <section className="connection-review" aria-labelledby={`review-${source.id}`}>
@@ -145,14 +151,15 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
       </section>}
     </li>;
   };
-  function authFields(sourceKind: ClientSourceKind, scope: string) {
+  function authFields(sourceKind: ClientSourceKind, scope: string, value: Credentials, set: (update: (current: Credentials) => Credentials) => void) {
+    const { kind: auth, secret, header } = value;
     return <>
       <label htmlFor={`auth-${scope}`}>{t("s16.connections.auth")}</label>
-      <select id={`auth-${scope}`} value={auth} onChange={event => setAuth(event.target.value as AuthKind)}>
+      <select id={`auth-${scope}`} value={auth} onChange={event => { const next = event.target.value as AuthKind; set(current => ({ ...current, kind: next })); }}>
         {(["none", "bearer", "header", ...(sourceKind === "mcp" ? ["oauth"] : [])] as AuthKind[]).map(option => <option key={option} value={option}>{t(`s16.connections.auth.${option}` as MessageKey)}</option>)}
       </select>
-      {auth === "header" && <label>{t("s16.connections.headerName")} <input value={header} onChange={event => setHeader(event.target.value)} autoComplete="off" spellCheck={false} required /></label>}
-      {(auth === "bearer" || auth === "header") && <><label>{t("s16.connections.secret")} <input type="password" value={secret} onChange={event => setSecret(event.target.value)} autoComplete="off" spellCheck={false} required /></label><p className="limits">{t("s16.connections.secretNote")}</p></>}
+      {auth === "header" && <label>{t("s16.connections.headerName")} <input value={header} onChange={event => { const next = event.target.value; set(current => ({ ...current, header: next })); }} autoComplete="off" spellCheck={false} required /></label>}
+      {(auth === "bearer" || auth === "header") && <><label>{t("s16.connections.secret")} <input type="password" value={secret} onChange={event => { const next = event.target.value; set(current => ({ ...current, secret: next })); }} autoComplete="off" spellCheck={false} required /></label><p className="limits">{t("s16.connections.secretNote")}</p></>}
       {auth === "oauth" && data && <p className="limits">{t("s16.connections.redirect", { uri: data.oauthRedirect })}</p>}
     </>;
   }
@@ -160,7 +167,7 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
   return <section className="computers connections" aria-labelledby="connections-title">
     <h1 id="connections-title">{t("s16.connections.title")}</h1>
     <p className="lead">{t("s16.connections.lead")}</p>
-    {seed && <p className="notice">{t("s16.connections.fromChat")} <button type="button" className="memory-link" onClick={() => onOpenConversation(seed.conversationId)}>{t("s16.connections.back")}</button></p>}
+    {returnTo && <p className="notice">{t("s16.connections.fromChat")} <button type="button" className="memory-link" onClick={() => onOpenConversation(returnTo)}>{t("s16.connections.back")}</button></p>}
     {!data && !loadError && <p role="status">{t("s16.common.loading")}</p>}
     {loadError && <p role="alert">{t("s16.connections.loadFailed", { reason: loadError })} <button type="button" onClick={() => setReload(value => value + 1)}>{t("s16.connections.retry")}</button></p>}
     {status}{local}
@@ -200,12 +207,12 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
         <ul className="computer-list">{data.sources.map(sourceCard)}</ul>
         <h2>{t("s16.connections.add")}</h2>
         <form className="connection-form" onSubmit={event => { event.preventDefault(); addSource(); }}>
-          <fieldset><legend>{t("s16.connections.kind")}</legend>{(["mcp", "openapi", "graphql"] as ClientSourceKind[]).map(option => <label key={option} className="check"><input type="radio" name="source-kind" checked={kind === option} onChange={() => { setKind(option); if (option !== "mcp" && auth === "oauth") setAuth("none"); }} /> {t(`s16.connections.kind.${option}` as MessageKey)}</label>)}</fieldset>
+          <fieldset><legend>{t("s16.connections.kind")}</legend>{(["mcp", "openapi", "graphql"] as ClientSourceKind[]).map(option => <label key={option} className="check"><input type="radio" name="source-kind" checked={kind === option} onChange={() => { setKind(option); if (option !== "mcp" && adding.kind === "oauth") setAdding(current => ({ ...current, kind: "none" })); }} /> {t(`s16.connections.kind.${option}` as MessageKey)}</label>)}</fieldset>
           <label>{t("s16.connections.label")} <input value={label} maxLength={60} onChange={event => setLabel(event.target.value)} /></label>
           <label>{t(kind === "openapi" ? "s16.connections.endpointOpenapi" : "s16.connections.endpoint")} <input type="url" inputMode="url" value={endpoint} onChange={event => setEndpoint(event.target.value)} placeholder="https://" required={kind !== "openapi"} spellCheck={false} /></label>
           {kind !== "mcp" && <><label>{t(kind === "openapi" ? "s16.connections.document.openapi" : "s16.connections.document.graphql")} <textarea rows={8} value={document} onChange={event => setDocument(event.target.value)} spellCheck={false} required /></label>
             <label>{t("s16.connections.loadFile")} <input type="file" accept={kind === "openapi" ? ".json,.yaml,.yml" : ".graphql,.gql,.txt"} onChange={event => { void loadFile(event.target.files?.[0]); event.target.value = ""; }} /></label></>}
-          {authFields(kind, "new")}
+          {authFields(kind, "new", adding, setAdding)}
           <div className="actions"><button type="submit" className="primary" disabled={busy || kind !== "openapi" && !endpoint.trim() || kind !== "mcp" && !document.trim()}>{t("s16.connections.submit")}</button></div>
         </form>
       </div>}

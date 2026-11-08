@@ -461,11 +461,16 @@ export async function composeS15(options: S15CompositionOptions) {
         scopedGuard();
         const opened = [] as Awaited<ReturnType<ConversationToolPort<ConversationPolicyWork>['open']>>[];
         try {
-          for (const registration of ports()) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) opened.push(await registration.port.open(current, { ...input, guard: scopedGuard }));
+          const sourceOpened = new Set<object>();
+          for (const registration of ports()) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) { const tools = await registration.port.open(current, { ...input, guard: scopedGuard }); opened.push(tools); if ([...sourcePorts.values()].includes(registration.port)) sourceOpened.add(tools); }
           if (google || browser) opened.push(await effects.tools.open(current, { ...input, guard: scopedGuard }));
           if (botTools) opened.push(await botTools.port.open(current, { ...input, guard: scopedGuard }));
           if (connectionTools) opened.push(await connectionTools.open(current, { ...input, guard: scopedGuard }));
-          return { tools: opened.flatMap(p => p.tools).map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
+          // CONN16-01: a run offers at most 64 tools (CHAT's bound). Connected-source tools fill what the other tools leave,
+          // in source and catalog order; the rest are not offered to this run rather than failing it.
+          const fixed = opened.filter(p => !sourceOpened.has(p)).flatMap(p => p.tools), room = Math.max(0, 64 - fixed.length);
+          const offered = [...fixed, ...opened.filter(p => sourceOpened.has(p)).flatMap(p => p.tools).slice(0, room)];
+          return { tools: offered.map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
       async runWork(input) {

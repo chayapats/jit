@@ -5,6 +5,7 @@ import { importGraphql } from '../src/s16/connections/graphql';
 import { eventStreamMessages, McpHttpSession, SourceAuthRequired } from '../src/s16/connections/mcp';
 import { openSourceNetwork, sourceUrl } from '../src/s16/connections/net';
 import { importOpenApi, openApiRequest, parseDocument } from '../src/s16/connections/openapi';
+import { modelName } from '../src/s16/connections/runtime';
 import { boundSchema, validateArguments } from '../src/s16/connections/schema';
 
 // MCP16-01 / OPEN16-01 bounded importers, schema handling, the protected source network and the MCP HTTP client.
@@ -63,7 +64,10 @@ test('OPEN16-01: GraphQL operations keep their real type; mutations can never be
   // Each tool sends only its own operation and the fragments it uses.
   const list = imported.tools[0]!.binding as { document: string };
   expect(list.document).toContain('query ListItems'); expect(list.document).toContain('fragment ItemFields'); expect(list.document).not.toContain('mutation');
-  expect(imported.tools[0]!.inputSchema).toMatchObject({ properties: { first: { type: 'integer' }, after: { type: 'string' } }, required: ['first'] });
+  expect(imported.tools[0]!.inputSchema).toMatchObject({ properties: { first: { type: 'integer' }, after: { type: ['string', 'null'] } }, required: ['first'] });
+  // A nullable variable accepts an explicit null; a non-null one does not.
+  expect(() => validateArguments(imported.tools[0]!.inputSchema, { first: 2, after: null })).not.toThrow();
+  expect(code(() => validateArguments(imported.tools[0]!.inputSchema, { first: null }))).toBe('source_arguments_invalid');
   const catalog = buildCatalog('graphql', 'https://gql.example.com/graphql', imported, 1);
   const mutation = catalog.tools.find(t => t.name === 'getUser')!;
   // The name says "get" and the field is aliased "harmless": it is still a mutation.
@@ -138,4 +142,47 @@ test('MCP16-01: one session per client over JSON and event-stream replies; a 401
   const refused = await McpHttpSession.open(locked.network, locked.url('/mcp'), async () => ({})).catch(error => error);
   expect(refused).toBeInstanceOf(SourceAuthRequired);
   expect((refused as SourceAuthRequired).resourceMetadata).toBe('https://mcp.example.com/.well-known/oauth-protected-resource');
+});
+
+test('OPEN16-01: parameter encodings follow the document or the operation is skipped; repeated placeholders all resolve', () => {
+  const doc = JSON.stringify({ openapi: '3.0.3', info: { title: 'P', version: '1' }, paths: {
+    '/users/{id}/friends/{id}': { get: { operationId: 'friends', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }] } },
+    '/tags': { get: { operationId: 'tags', parameters: [{ name: 'tag', in: 'query', explode: false, schema: { type: 'array', items: { type: 'string' } } }, { name: 'all', in: 'query', schema: { type: 'array', items: { type: 'string' } } }] } },
+    '/filter': { get: { operationId: 'filter', parameters: [{ name: 'where', in: 'query', required: true, schema: { type: 'object' } }] } },
+    '/deep': { get: { operationId: 'deep', parameters: [{ name: 'f', in: 'query', style: 'deepObject', schema: { type: 'string' } }] } } } });
+  const imported = importOpenApi(doc);
+  expect(imported.tools.map(t => t.name)).toEqual(['friends', 'tags']);
+  expect(imported.skipped).toEqual([{ name: 'filter', code: 'parameter_encoding_unsupported' }, { name: 'deep', code: 'parameter_encoding_unsupported' }]);
+  const [friends, tags] = imported.tools.map(t => t.binding as Parameters<typeof openApiRequest>[1]);
+  expect(openApiRequest('https://api.example.com', friends!, { id: '7' }).url).toBe('https://api.example.com/users/7/friends/7');
+  expect(openApiRequest('https://api.example.com', tags!, { tag: ['a', 'b'], all: ['c', 'd'] }).url).toBe('https://api.example.com/tags?tag=a%2Cb&all=c&all=d');
+});
+
+test('MCP16-01: long tool names stay unique and within the model limit', () => {
+  const prefix = 'sixteen_chars_ab_1a2b__', a = 'x'.repeat(41) + '_create', b = 'x'.repeat(41) + '_delete';
+  const [na, nb] = [modelName(prefix, a), modelName(prefix, b)];
+  expect(na).not.toBe(nb); expect(na.length).toBeLessThanOrEqual(64); expect(nb.length).toBeLessThanOrEqual(64);
+  expect(modelName(prefix, 'search')).toBe(prefix + 'search');
+});
+
+test('MCP16-01: an event stream ends at its matching reply; a failed open ends the assigned session', async () => {
+  const deletes: string[] = [];
+  let initialized = 'ok';
+  const { network, url } = fixtureNetwork(async request => {
+    if (request.method === 'DELETE') { deletes.push(String(request.headers.get('mcp-session-id'))); return new Response(null, { status: 204 }); }
+    const body = await request.json() as { id?: number; method: string };
+    if (body.method === 'initialize') return Response.json({ jsonrpc: '2.0', id: body.id, result: { protocolVersion: '2025-06-18', capabilities: {} } }, { headers: { 'Mcp-Session-Id': 'held-open' } });
+    if (body.method === 'notifications/initialized') return initialized === 'ok' ? new Response(null, { status: 202 }) : new Response(null, { status: 500 });
+    // The reply arrives, but the server never closes the stream.
+    const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { tools: [] } })}\n\n`)); } });
+    return new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } });
+  });
+  const session = await McpHttpSession.open(network, url('/mcp'), async () => ({}));
+  const started = Date.now();
+  expect((await session.listTools()).tools).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(5000);
+  await session.close();
+  initialized = 'fail';
+  await expect(McpHttpSession.open(network, url('/mcp'), async () => ({}))).rejects.toMatchObject({ code: 'source_protocol_error' });
+  expect(deletes).toEqual(['held-open', 'held-open']);
 });
