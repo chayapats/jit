@@ -35,7 +35,9 @@ export function s15DefaultCatalog(models: readonly { recipient: Ref }[]): Defaul
 }
 
 /** A composed resource the default rule may cover, with the trusted adapters that act on it. */
-export interface DefaultResource { ref: Ref; kind: 'computer' | 'browser' | 'repository' | 'account'; label: string; adapters: { id: string; operations: string[] }[] }
+export interface DefaultResource { ref: Ref; kind: 'computer' | 'browser' | 'repository' | 'account' | 'source'; label: string; adapters: { id: string; operations: string[] }[];
+  /** CONN16-01: the protected service recipient of a connected app/tool source (`kind: 'source'`), which receives its calls. */
+  recipient?: Ref }
 /** An approved model route the proposal selects, with its provider recipient and charge. */
 export interface DefaultSelection { selection: Selection; recipient: Ref; charge: 'subscription' | 'metered'; label: string }
 
@@ -49,7 +51,7 @@ export const s15DefaultRuleClasses: readonly ActionClass[] = Object.freeze(['ord
  */
 export const s15HeldClasses: readonly ActionClass[] = Object.freeze(['communication', 'production', 'financial', 'disclosure', 'new_egress', 'major_change']);
 /** Rule ids of the AUTH16-01 product defaults (contract revision 3). */
-export const s16DefaultRuleIds = Object.freeze({ namedSends: 'owner_named_sends', github: 'github_after_checks' });
+export const s16DefaultRuleIds = Object.freeze({ namedSends: 'owner_named_sends', github: 'github_after_checks', sources: 'connected_sources' });
 /** GitHub operations the product default publishes or merges without approval once its evidence holds. */
 export const s16GithubDefaultOperations: readonly string[] = Object.freeze(['merge', 'pr_create', 'pr_update', 'push', 'review_reply']);
 
@@ -67,22 +69,30 @@ export function s15DefaultPolicy(input: {
   if (!input.selections.length || !input.resources.length) return null;
   const expiresAt = input.now + (input.lifetimeMs ?? S15_DEFAULT_POLICY_LIFETIME_MS);
   const unique = <T extends Ref>(items: readonly T[]) => items.filter((item, index) => items.findIndex(other => other.id === item.id) === index);
+  // CONN16-01 (ADR 0089): connected app/tool sources get their own rule, so connecting, reviewing or removing one changes
+  // no rule that other work uses (POLICY's membership exemption keeps that work current).
+  const sources = input.resources.filter(r => r.kind === 'source'), work = input.resources.filter(r => r.kind !== 'source');
+  if (!work.length) return null;
   const resources = unique(input.resources.map(r => structuredClone(r.ref)));
-  const recipients = unique([...input.selections.map(s => structuredClone(s.recipient)), ...(input.extraRecipients ?? []).map(r => structuredClone(r))]);
+  const sourceRecipients = unique(sources.flatMap(r => r.recipient ? [structuredClone(r.recipient)] : []));
+  const recipients = unique([...input.selections.map(s => structuredClone(s.recipient)), ...(input.extraRecipients ?? []).map(r => structuredClone(r)), ...sourceRecipients]);
   const selections = input.selections.map(s => structuredClone(s.selection)).filter((s, index, all) => all.findIndex(other => equal(other, s)) === index);
-  const adapters = [...new Set(input.resources.flatMap(r => r.adapters.map(a => a.id)))].sort();
-  const operations = [...new Set(input.resources.flatMap(r => r.adapters.flatMap(a => a.operations)))].sort();
+  const adapters = [...new Set(work.flatMap(r => r.adapters.map(a => a.id)))].sort();
+  const operations = [...new Set(work.flatMap(r => r.adapters.flatMap(a => a.operations)))].sort();
   const purposes = [structuredClone(s15DefaultRefs.work), structuredClone(s15DefaultRefs.interpretation)];
   const bots = unique([input.bot, ...(input.extraBots ?? [])]).map(b => structuredClone(b));
-  const ordinary: Rule = { id: 'owner_requested_work', mode: 'ordinary', purposes: [structuredClone(s15DefaultRefs.work)], bots: bots.map(b => structuredClone(b)), resources, recipients, selections,
+  const workResources = unique(work.map(r => structuredClone(r.ref))), workRecipients = recipients.filter(r => !sourceRecipients.some(s => s.id === r.id));
+  const ordinary: Rule = { id: 'owner_requested_work', mode: 'ordinary', purposes: [structuredClone(s15DefaultRefs.work)], bots: bots.map(b => structuredClone(b)), resources: workResources, recipients: workRecipients, selections,
     adapters: adapters.length ? adapters : ['working_vm'], operations: operations.length ? operations : ['vm_write'], classes: [...s15DefaultRuleClasses], expiresAt, recurrence: null };
   // AUTH16-01 (S16-D07 b, d): owner-named sends and GitHub work after required checks run without approval.
-  const named: Rule = { ...structuredClone(ordinary), id: s16DefaultRuleIds.namedSends, mode: 'owner_named_send', recipients: recipients.map(r => structuredClone(r)), classes: ['ordinary_edit', 'communication'] };
+  const named: Rule = { ...structuredClone(ordinary), id: s16DefaultRuleIds.namedSends, mode: 'owner_named_send', recipients: workRecipients.map(r => structuredClone(r)), classes: ['ordinary_edit', 'communication'] };
   const repositories = input.resources.filter(r => r.kind === 'repository' && r.adapters.some(a => a.id === 's15_github'));
   const githubOps = [...new Set(repositories.flatMap(r => r.adapters.filter(a => a.id === 's15_github').flatMap(a => a.operations)))].filter(op => s16GithubDefaultOperations.includes(op)).sort();
   const rules: Rule[] = [ordinary, named];
   if (repositories.length && githubOps.length) rules.push({ id: s16DefaultRuleIds.github, mode: 'github_default', purposes: [structuredClone(s15DefaultRefs.work)], bots: bots.map(b => structuredClone(b)), resources: unique(repositories.map(r => structuredClone(r.ref))), recipients: [], selections: selections.map(x => structuredClone(x)),
     adapters: ['s15_github'], operations: githubOps, classes: ['communication', 'github_merge', 'github_publish'], expiresAt, recurrence: null });
+  if (sources.length) rules.push({ id: s16DefaultRuleIds.sources, mode: 'ordinary', purposes: [structuredClone(s15DefaultRefs.work)], bots: bots.map(b => structuredClone(b)), resources: unique(sources.map(r => structuredClone(r.ref))), recipients: sourceRecipients.map(r => structuredClone(r)), selections: selections.map(x => structuredClone(x)),
+    adapters: [...new Set(sources.flatMap(r => r.adapters.map(a => a.id)))].sort(), operations: [...new Set(sources.flatMap(r => r.adapters.flatMap(a => a.operations)))].sort(), classes: [...s15DefaultRuleClasses], expiresAt, recurrence: null });
   const policy: PolicyInput = { purposes, interpretationPurpose: structuredClone(s15DefaultRefs.interpretation), bots: bots.map(b => structuredClone(b)), resources, recipients, selections,
     budget: input.budget ? structuredClone(input.budget) : null, rules, expiresAt };
   for (const rule of input.carry ?? []) {
