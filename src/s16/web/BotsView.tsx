@@ -120,7 +120,7 @@ export function BotsView({ client, t, locale, available, page, onNavigate, onSta
         <p className="meta">{bot.main && <span className="pill ok">{t("s16.bots.mainBadge")}</span>} {bot.state === "archived" && <span className="pill idle">{t("s16.bots.archived")}</span>}</p>
         {bot.selectionUnavailable && <p className="notice warn">{t("s16.bots.modelUnavailable")}</p>}
         {bot.state === "active" ? <BotForm key={`${bot.id}:${bot.revision}`} t={t} data={data} main={bot.main} initial={{ contract: "s16-bot-draft/v1", name: botName(t, bot), responsibility: bot.responsibility, selection: bot.selection, excluded: bot.excluded, assignments: bot.assignments }} busy={busy} submit={t("s16.bots.save")}
-          onSubmit={draft => void send({ contract: "s16-bot-command/v1", requestId: uid(), kind: "bot.update", botId: bot.id, expectedRevision: bot.revision, name: draft.name, responsibility: draft.responsibility, selection: draft.selection, assignments: draft.assignments }, () => t("s16.bots.saved"))} />
+          onSubmit={draft => void send({ contract: "s16-bot-command/v1", requestId: uid(), kind: "bot.update", botId: bot.id, expectedRevision: bot.revision, name: draft.name, responsibility: draft.responsibility, selection: draft.selection, assignments: draft.assignments, excluded: draft.excluded }, () => t("s16.bots.saved"))} />
           : bot.responsibility && <p className="owner-text">{bot.responsibility}</p>}
         <div className="actions">
           {bot.state === "active" && <button type="button" className="primary" onClick={() => onStartChat(bot.id)}>{t("s16.bots.chat")}</button>}
@@ -178,7 +178,7 @@ function BotForm({ t, data, initial, busy, submit, creating = false, main = fals
   return <form className="bot-form" onSubmit={event => {
     event.preventDefault();
     if (!name.trim()) { setInvalid(true); return; }
-    onSubmit({ contract: "s16-bot-draft/v1", name: name.trim(), responsibility: responsibility.trim(), selection: selection >= 0 ? data.selections[selection]!.selection : null, excluded: [...excluded].sort(), assignments });
+    onSubmit({ contract: "s16-bot-draft/v1", name: name.trim(), responsibility: responsibility.trim(), selection: selection >= 0 ? data.selections[selection]!.selection : null, excluded: excluded.filter(id => data.resources.some(resource => resource.id === id)).sort(), assignments });
   }}>
     <label htmlFor="bot-name">{t("s16.bots.name")}</label>
     <input id="bot-name" value={name} maxLength={60} aria-invalid={invalid && !name.trim()} aria-describedby={invalid && !name.trim() ? "bot-name-error" : undefined} onChange={event => setName(event.target.value)} />
@@ -191,7 +191,7 @@ function BotForm({ t, data, initial, busy, submit, creating = false, main = fals
       <option value={-1}>{t(main ? "s16.bots.modelInstallation" : "s16.bots.modelDefault")}</option>
       {data.selections.map((choice, index) => <option key={index} value={index}>{choice.label}</option>)}
     </select>
-    {creating && <fieldset><legend>{t("s16.bots.resources")}</legend><p className="limits">{t("s16.bots.resourcesHint")}</p>
+    {(creating || data.resources.length > 0) && <fieldset><legend>{t("s16.bots.resources")}</legend><p className="limits">{t("s16.bots.resourcesHint")}</p>
       {!data.resources.length && <p>{t("s16.bots.noResources")}</p>}
       {data.resources.map(resource => <label key={resource.id} className="check"><input type="checkbox" checked={!excluded.includes(resource.id)} onChange={event => setExcluded(current => event.target.checked ? current.filter(id => id !== resource.id) : [...current, resource.id])} /> {resource.label}</label>)}
     </fieldset>}

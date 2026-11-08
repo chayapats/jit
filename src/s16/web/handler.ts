@@ -22,7 +22,7 @@ export async function createS16WebHandler(authenticate: (request: Request) => Pr
     if (request.method !== "GET" || url.search) return new Response("", { status: 405, headers });
     if (url.pathname === "/s16/client.js") return new Response(script, { headers: { ...headers, "Content-Type": "text/javascript; charset=utf-8" } });
     if (url.pathname === "/s16/style.css") return new Response(style, { headers: { ...headers, "Content-Type": "text/css; charset=utf-8" } });
-    if (url.pathname !== "/s16" && url.pathname !== "/s16/memory" && !/^\/s16\/(?:chat|artifacts|routines|bots)\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && url.pathname !== "/s16/artifacts" && url.pathname !== "/s16/routines" && url.pathname !== "/s16/bots" && url.pathname !== "/s16/computers") return new Response("", { status: 404, headers });
+    if (url.pathname !== "/s16" && url.pathname !== "/s16/memory" && !/^\/s16\/(?:chat|artifacts|routines|bots)\/[A-Za-z0-9_-]{1,128}$/.test(url.pathname) && url.pathname !== "/s16/artifacts" && url.pathname !== "/s16/routines" && url.pathname !== "/s16/bots" && url.pathname !== "/s16/computers" && url.pathname !== "/s16/connections") return new Response("", { status: 404, headers });
     const locale = negotiateLocale(request.headers.get("accept-language"));
     return new Response(`<!doctype html><html lang="${locale}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Jit</title><link rel="stylesheet" href="/s16/style.css"><script type="module" src="/s16/client.js"></script></head><body><div id="root"></div></body></html>`, { headers: { ...headers, "Content-Type": "text/html; charset=utf-8" } });
   };

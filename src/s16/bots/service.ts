@@ -249,7 +249,8 @@ export class BotDirectory<Owner> {
     if (!raw || typeof raw !== "object" || (raw as { contract?: unknown }).contract !== "s16-bot-command/v1") throw new AppError("invalid_bot_command");
     const kind = (raw as { kind?: unknown }).kind, shapes: Record<string, string[]> = { "bot.accept": ["proposalId", "proposalHash"], "bot.dismiss": ["proposalId"], "bot.update": ["botId", "expectedRevision", "name", "responsibility", "selection", "assignments"], "bot.archive": ["botId", "expectedRevision"], "bot.restore": ["botId", "expectedRevision"], "conversation.bind": ["conversationId", "botId"] };
     if (typeof kind !== "string" || !shapes[kind]) throw new AppError("invalid_bot_command");
-    exact(raw, ["contract", "requestId", "kind", ...shapes[kind]!]);
+    // CONN16-01: `bot.update` may also carry the Bot's exact excluded team resources (connections included).
+    exact(raw, ["contract", "requestId", "kind", ...shapes[kind]!, ...(kind === "bot.update" && Object.hasOwn(raw, "excluded") ? ["excluded"] : [])]);
     const command = raw as BotCommand; identity(command.requestId);
     const hash = digest(`s16.bot.command.v1\n${canonical(command)}`);
     const prior = this.store.db.query<{ payload_hash: string; result_json: string }, [string]>("SELECT payload_hash,result_json FROM commands WHERE id=?").get(command.requestId);
@@ -277,12 +278,20 @@ export class BotDirectory<Owner> {
         if (typeof command.assignments !== "boolean") throw new AppError("invalid_bot");
         const name = this.#name(command.name), responsibility = this.#responsibility(command.responsibility);
         if (command.selection !== null && !this.options.selections(owner).some(choice => same(choice.selection, command.selection))) throw new AppError("selection_unavailable", 409);
+        let excluded: string[] | null = null;
+        if (command.excluded !== undefined) {
+          const resources = this.options.resources(owner);
+          if (!Array.isArray(command.excluded) || command.excluded.length > botLimits.excluded || new Set(command.excluded).size !== command.excluded.length) throw new AppError("invalid_bot");
+          command.excluded.forEach(identity);
+          if (command.excluded.some(id => !resources.some(r => r.id === id))) throw new AppError("outside_scope", 409);
+          excluded = [...command.excluded].sort();
+        }
         return this.store.transaction(() => {
           const current = this.profile(command.botId);
           if (!current || !this.#bots(owner).some(r => r.id === command.botId)) throw new AppError("not_found", 404);
           if (current.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
           if (current.state !== "active") throw new AppError("bot_archived", 409);
-          const next: BotRecord = { ...current, revision: current.revision + 1, name, responsibility, selection: command.selection ? structuredClone(command.selection) : null, assignments: command.assignments, updatedAt: this.options.now(), ...(current.revision === 0 ? { createdAt: this.options.now() } : {}) };
+          const next: BotRecord = { ...current, revision: current.revision + 1, name, responsibility, selection: command.selection ? structuredClone(command.selection) : null, assignments: command.assignments, ...(excluded ? { excluded } : {}), updatedAt: this.options.now(), ...(current.revision === 0 ? { createdAt: this.options.now() } : {}) };
           this.#save(next); return this.#done(command, hash, this.#receipt(command, next, null, owner));
         });
       }

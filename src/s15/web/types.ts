@@ -143,7 +143,7 @@ export interface S15WebRules<Actor> {
 }
 
 /** One exact row of the reviewed proposal. Labels are trusted composition names, never model text. */
-export interface S15PolicyRow { kind: "bot" | "purpose" | "computer" | "browser" | "repository" | "model" | "recipient"; id: string; label: string; detail: "subscription" | "metered" | "provider" | "github" | "work" | "interpretation" | null }
+export interface S15PolicyRow { kind: "bot" | "purpose" | "computer" | "browser" | "repository" | "connection" | "model" | "recipient"; id: string; label: string; detail: "subscription" | "metered" | "provider" | "github" | "work" | "interpretation" | null }
 /**
  * POLICY15-02 (ADR 0073) review of the default standing policy derived from what this installation actually has.
  * `change`: `new` (nothing installed), `update` (the catalog or resources changed), `renew` (same scope, expiring or

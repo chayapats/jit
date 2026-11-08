@@ -126,6 +126,8 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...(config.computers ? { computers: { idleStopMs: s16ComputerIdleStopMs } } : {}),
       // BOT16-01/DELEG16-01: persistent Bots the owner accepts and bounded Bot-to-Bot assignments.
       ...(config.bots ? { bots: {} } : {}),
+      // CONN16-01/MCP16-01/OPEN16-01: apps and tool sources the owner connects; secrets stay in the protected vault.
+      ...(config.connections ? { connections: { vault } } : {}),
       ...(config.files ? { files: { ...(typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {}), ...(config.fileMemory ? { memory: true } : {}) } } : {}),
       recipients,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,

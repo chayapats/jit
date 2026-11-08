@@ -109,6 +109,8 @@ export async function firstRunFixture(tune?: (options: S15CompositionOptions, co
     set interpretation(value: Record<string, unknown>) { interpretation = value; }, set script(value: typeof script) { script = value; },
     async page(path: string, locale = 'th') { const response = await service.fetch(new Request(config.origin + path, { headers: { ...headers, 'accept-language': locale } })); return { status: response.status, html: await response.text(), location: response.headers.get('location') }; },
     async form(path: string, fields: Record<string, string>) { const response = await service.fetch(new Request(config.origin + path, { method: 'POST', headers: { ...headers, "accept-language": "en", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, requestId: uid(), ...fields }) })); return { status: response.status, html: await response.text(), location: response.headers.get('location') }; },
+    /** Authenticated JSON request (S16 client API). */
+    async request(path: string, method = 'GET', value?: unknown, supplied: Record<string, string> = {}) { return service.fetch(new Request(config.origin + path, { method, headers: { ...headers, 'content-type': 'application/json', ...supplied }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) })); },
     async chat(text: string, requestId = uid()) {
       const command = { contract: 's15-conversation/v1' as const, requestId, conversationId: 'first', text, continuation: null };
       const response = await service.fetch(new Request(config.origin + '/api/s15/conversations/first/messages', { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(command) }));

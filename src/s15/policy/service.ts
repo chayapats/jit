@@ -7,6 +7,9 @@ type Claim = { action: T.ActionRef; reservationId: string; decision: Extract<T.D
 const uid = () => randomUUID().replaceAll('-', '');
 const clone = <T>(x: T): T => JSON.parse(v.canonical(x)) as T;
 const actionRef = (a: T.PreparedAction): T.ActionRef => ({ id: a.id, revision: a.revision, actionHash: a.actionHash });
+/** Adapters whose every prepared action names at least one resource of the rule it matches (CONN16-01: the connected-source
+ * adapter always names its one source). A rule of only these adapters can never act for work that names none of its resources. */
+export const resourceBoundAdapters: ReadonlySet<string> = new Set(['s16_source']);
 const parse = <T>(row: { json: string } | null): T | null => row ? JSON.parse(row.json) as T : null;
 const paymentKey = (a: T.PreparedAction): string | null => a.transaction ? v.digest('s15.payment.intent.v1', { quote: a.transaction.quoteId }) : null;
 
@@ -86,15 +89,23 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (r.selectionPin && !v.equal(r.selectionPin, r.selection)) v.fail('selection_pinned');
   }
   /**
-   * BOT16-01 (ADR 0088): a newer revision that differs from the work's own revision only in which other Bots it names
-   * (adding a persistent Bot) leaves this work's authority unchanged. Compared from the work's
-   * Bot point of view: every other Bot reference is dropped from the top-level and rule Bot lists of both revisions,
-   * and everything else, including this Bot's own memberships, must be identical. An unchanged reinstall is not exempt.
+   * BOT16-01 (ADR 0088) and CONN16-01 (ADR 0089): a newer revision that differs from the work's own revision only in
+   * membership this work does not use leaves its authority unchanged: which other Bots it names (adding a persistent
+   * Bot), and which resources/recipients the work's request does not name (connecting, reviewing or removing another
+   * app or tool source). Compared from the work's point of view: every other Bot reference and every resource/recipient
+   * outside the work's request is dropped from the top-level and rule lists of both revisions, a rule left with none
+   * of its resources is dropped when all of its adapters are resource-bound (each of their actions names at least one
+   * resource of the rule, so it can never act for this work), and everything else, including this Bot's own memberships
+   * and every rule touching the work's resources, must be identical. An unchanged reinstall is not exempt.
    */
-  function sameForBot(w: T.WorkAuthority, p: T.StandingPolicy): boolean {
+  function sameForWork(w: T.WorkAuthority, p: T.StandingPolicy): boolean {
     if (w.policyRevision >= p.revision || p.revision - w.policyRevision > 256 || w.ownerGeneration !== p.ownerGeneration) return false;
+    const resources = new Set(w.request.resources.map(r => r.id)), recipients = new Set(w.request.recipients.map(r => r.id));
     const view = (x: T.StandingPolicy) => { const own = (refs: T.Ref[]) => refs.filter(r => r.id === w.request.bot.id);
-      return v.canonical({ ...x, revision: 0, bots: own(x.bots), rules: x.rules.map(r => ({ ...r, bots: own(r.bots) })) }); };
+      const used = (refs: T.Ref[]) => refs.filter(r => resources.has(r.id)), reached = (refs: T.Ref[]) => refs.filter(r => recipients.has(r.id));
+      return v.canonical({ ...x, revision: 0, bots: own(x.bots), resources: used(x.resources), recipients: reached(x.recipients),
+        rules: x.rules.filter(r => !(r.resources.length && !used(r.resources).length && r.adapters.length && r.adapters.every(a => resourceBoundAdapters.has(a))))
+          .map(r => ({ ...r, bots: own(r.bots), resources: used(r.resources), recipients: reached(r.recipients) })) }); };
     let previous = parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', w.policyRevision));
     if (!previous || w.policyHash !== v.digest('s15.policy.v1', previous)) return false;
     // Every step from the work's revision to the current one must be exempt: one non-exempt revision in between
@@ -102,7 +113,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     for (let revision = w.policyRevision + 1; revision <= p.revision; revision++) {
       const next = revision === p.revision ? p : parse<T.StandingPolicy>(ledger.get('SELECT json FROM policies WHERE revision=?', revision));
       if (!next || next.ownerGeneration !== w.ownerGeneration) return false;
-      // An owner's reinstall of the same rules still starts fresh: only a change to other Bots' membership is exempt.
+      // An owner's reinstall of the same rules still starts fresh: only membership this work does not use is exempt.
       if (v.canonical({ ...previous, revision: 0 }) === v.canonical({ ...next, revision: 0 }) || view(previous) !== view(next)) return false;
       previous = next;
     }
@@ -113,7 +124,7 @@ export function openPolicyService(options: T.PolicyOptions): T.S15PolicyService 
     if (!row || row.revoked) v.fail('authority_revoked');
     const w = JSON.parse(row.json) as T.WorkAuthority; const p = policyCurrent();
     if (w.ownerGeneration !== options.ownerGeneration()) v.fail('authority_revoked');
-    if ((w.policyRevision !== p.revision || w.policyHash !== v.digest('s15.policy.v1', p)) && !sameForBot(w, p)) v.fail('stale_authority');
+    if ((w.policyRevision !== p.revision || w.policyHash !== v.digest('s15.policy.v1', p)) && !sameForWork(w, p)) v.fail('stale_authority');
     if (time() >= w.expiresAt) v.fail('expired');
     checkRequest(p, w.request);
     if (!options.catalogs.allows(clone(w), null)) v.fail('outside_scope');

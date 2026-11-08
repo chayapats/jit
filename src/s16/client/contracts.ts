@@ -24,6 +24,8 @@ export interface ClientCapabilities {
   computers?: { available: false; code: "computers_unavailable" } | { available: true; contract: "s16-client-computers/v1"; idleStopMs: number | null; files: boolean };
   /** BOT16-01 persistent Bots (`s16-client-bots/v1`); `delegation` is DELEG16-01 Bot-to-Bot assignments. */
   bots?: { available: false; code: "bots_unavailable" } | { available: true; contract: "s16-client-bots/v1"; delegation: boolean };
+  /** CONN16-01/MCP16-01/OPEN16-01 connections (`s16-client-connections/v1`): GitHub plus HTTPS tool sources. */
+  connections?: { available: false; code: "connections_unavailable" } | { available: true; contract: "s16-client-connections/v1"; kinds: ("mcp" | "openapi" | "graphql")[]; github: boolean; oauth: boolean };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
@@ -126,4 +128,5 @@ export interface ClientArtifactDetail { contract: "s16-client-artifact/v1"; item
 export interface ClientArtifactInputCommand { requestId: string; conversationId: string; sha256: string }
 export type { RoutineDetail as ClientRoutineDetail, RoutineList as ClientRoutineList, RoutineOptions as ClientRoutineOptions, RoutineProposal as ClientRoutineProposal, RoutineReceipt as ClientRoutineReceipt, RoutineDraft as ClientRoutineDraft, RoutineOccurrence as ClientRoutineOccurrence, RoutineSummary as ClientRoutineSummary, RoutineSourceView as ClientRoutineSource } from "../routines/types";
 export type { NotificationSettings as ClientNotificationSettings, NotificationDevice as ClientNotificationDevice, NotificationSubscribeCommand as ClientNotificationSubscribeCommand, NotificationPayload as ClientNotificationPayload, NoticeKind as ClientNoticeKind } from "../notifications/types";
+export type { ConnectionsView as ClientConnectionsView, ConnectionCommand as ClientConnectionCommand, ConnectionReceipt as ClientConnectionReceipt, SourceView as ClientSource, SourceToolView as ClientSourceTool, GithubAppView as ClientGithubApp, ConnectionRequestView as ClientConnectionRequest, ToolClass as ClientToolClass, SourceKind as ClientSourceKind } from "../connections/types";
 export type { BotsView as ClientBotsView, BotDetail as ClientBotDetail, BotView as ClientBot, BotProposal as ClientBotProposal, BotDraft as ClientBotDraft, BotExport as ClientBotExport, BotCommand as ClientBotCommand, BotReceipt as ClientBotReceipt } from "../bots/types";
