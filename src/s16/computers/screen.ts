@@ -66,8 +66,13 @@ export class ScreenControl<Owner> {
   readonly #tickets = new Map<string, Set<object>>();
   readonly #ownerTail = new Map<string, Promise<void>>();
   readonly #closing = new Set<string>();
-  /** In-memory input deduplication: input commands (and their text) are never persisted. */
-  readonly #inputs = new Map<string, Promise<ScreenCommandResult>>();
+  /**
+   * Input request ids attempted under the current owner generation, kept in memory only (never the text). A retry
+   * joins a running send, returns the view after a finished one, and is refused (`screen_input_unknown`) after a
+   * send that failed once events may have reached the VM; only a refusal before sending releases the id. Entries of
+   * earlier generations are dropped on every transition: a retry under an old generation is refused as stale anyway.
+   */
+  readonly #inputs = new Map<string, { generation: number; vm: string; state: "sending" | "sent" | "unknown"; run: Promise<void> }>();
   constructor(readonly options: ScreenControlOptions<Owner>) {
     this.#now = options.now ?? Date.now; this.#leaseMs = options.leaseMs ?? 30_000; integer(this.#leaseMs, 1000, 600_000);
     options.store.db.exec(`CREATE TABLE IF NOT EXISTS s16_screen_control (vm_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('agent','settling','owner','fenced')), takeover_id TEXT, expires_at INTEGER);
@@ -79,6 +84,7 @@ export class ScreenControl<Owner> {
     });
   }
   private write(vm: string, generation: number, state: ScreenControlState, takeover: string | null, expires: number | null, event: string): Row {
+    for (const [id, entry] of this.#inputs) if (entry.vm === vm && entry.generation < generation) this.#inputs.delete(id);
     this.options.store.db.query("INSERT INTO s16_screen_control VALUES (?,?,?,?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=excluded.generation, state=excluded.state, takeover_id=excluded.takeover_id, expires_at=excluded.expires_at").run(vm, generation, state, takeover, expires);
     this.options.store.db.query("INSERT INTO s16_screen_events(vm_id,kind,generation,at) VALUES (?,?,?,?)").run(vm, event, generation, this.#now());
     return { vm_id: vm, generation, state, takeover_id: takeover, expires_at: expires };
@@ -148,11 +154,19 @@ export class ScreenControl<Owner> {
     const command = parseScreenCommand(input), vm = command.vmId; this.known(vm);
     const result = async (): Promise<ScreenCommandResult> => ({ contract: "s16-screen-command-result/v1", requestId: command.requestId, view: await this.view(actor, vm) });
     if (command.kind === "input") {
-      const prior = this.#inputs.get(command.requestId); if (prior) return prior;
-      const run = this.input(actor, command).then(result);
-      this.#inputs.set(command.requestId, run); if (this.#inputs.size > 256) this.#inputs.delete(this.#inputs.keys().next().value!);
-      run.catch(() => this.#inputs.delete(command.requestId));
-      return run;
+      const prior = this.#inputs.get(command.requestId);
+      if (prior) {
+        if (prior.state === "unknown") throw new AppError("screen_input_unknown", 409);
+        await prior.run;
+        return result();
+      }
+      let reached = false;
+      const entry = { generation: command.generation, vm, state: "sending" as "sending" | "sent" | "unknown", run: Promise.resolve() };
+      this.#inputs.set(command.requestId, entry);
+      entry.run = this.input(actor, command, () => { reached = true; });
+      try { await entry.run; entry.state = "sent"; }
+      catch (error) { if (reached) entry.state = "unknown"; else if (this.#inputs.get(command.requestId) === entry) this.#inputs.delete(command.requestId); throw error; }
+      return result();
     }
     if (command.kind === "renew") {
       // Renewal is idempotent by itself, so it is not journaled per request.
@@ -204,7 +218,7 @@ export class ScreenControl<Owner> {
     return row;
   }
   /** Owner input, serialized per computer and checked against the live row immediately before it is sent. */
-  private async input(actor: Owner, command: Extract<ScreenCommand, { kind: "input" }>): Promise<void> {
+  private async input(actor: Owner, command: Extract<ScreenCommand, { kind: "input" }>, sending: () => void): Promise<void> {
     const vm = command.vmId, device = this.options.device(vm); if (!device) throw new AppError("vm_desktop_unavailable", 409);
     const check = () => {
       this.options.requireOwner(actor);
@@ -213,7 +227,7 @@ export class ScreenControl<Owner> {
       if (row.state === "settling") throw new AppError("takeover_settling", 409);
     };
     check();
-    const previous = this.#ownerTail.get(vm) ?? Promise.resolve(), turn = previous.catch(() => {}).then(async () => { check(); await device.send(command.input); });
+    const previous = this.#ownerTail.get(vm) ?? Promise.resolve(), turn = previous.catch(() => {}).then(async () => { check(); sending(); await device.send(command.input); });
     const tail = turn.catch(() => {}); this.#ownerTail.set(vm, tail);
     try { await turn; } finally { if (this.#ownerTail.get(vm) === tail) this.#ownerTail.delete(vm); }
   }

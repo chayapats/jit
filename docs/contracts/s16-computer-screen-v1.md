@@ -46,8 +46,8 @@ Coordinates are display pixels (`0 ≤ x < 1280`, `0 ≤ y < 800`).
 
 ## Idempotency and privacy
 
-`takeover` and `hand_back` are idempotent per `requestId` (same body returns the current view; a different body is `request_id_conflict`). `input` is sent at most once per `requestId` within the running controller; input commands are never journaled, so no typed text or hash of it is stored. Frames are never stored.
+`takeover` and `hand_back` are idempotent per `requestId` (same body returns the current view; a different body is `request_id_conflict`). `input` is sent at most once per `requestId`: a retry joins a running send, returns the view after a finished one, and is refused (`screen_input_unknown`) after a send that failed once events may have reached the computer; only a refusal before sending (for example `takeover_settling`) releases the id. Ids are kept in controller memory for the current owner generation (a retry under an older generation is refused as stale or changed); input commands are never journaled, so no typed text or hash of it is stored. Frames are never stored.
 
 ## Errors
 
-`takeover_active` (work refused while the owner holds or lost control), `takeover_state_changed`, `takeover_settling`, `stale_screen`, `screen_control_lost`, `invalid_screen_input`, `screen_text_unsupported`, `vm_desktop_unavailable`, `vm_desktop_restart_required`, `vm_not_running`, `vm_screen_invalid`, `request_id_conflict`, `screen_unavailable` (not enabled).
+`screen_input_unknown`, `takeover_active` (work refused while the owner holds or lost control), `takeover_state_changed`, `takeover_settling`, `stale_screen`, `screen_control_lost`, `invalid_screen_input`, `screen_text_unsupported`, `vm_desktop_unavailable`, `vm_desktop_restart_required`, `vm_not_running`, `vm_screen_invalid`, `request_id_conflict`, `screen_unavailable` (not enabled).

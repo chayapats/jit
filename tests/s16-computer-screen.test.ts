@@ -230,6 +230,23 @@ describe("exclusive owner control", () => {
     expect(f.screen.sent).toEqual([text("once")]);
   });
 
+  test("an input id is never sent twice: not after many later inputs, and not after a send whose outcome is unknown", async () => {
+    const f = control(), ticket = f.control.agentInput("vm1");
+    const settling = (await f.command({ kind: "takeover", generation: 0 })).view;
+    const body = (requestId: string, value: string) => ({ contract: "s16-screen-command/v1", requestId, vmId: "vm1", kind: "input", generation: 1, takeoverId: settling.takeoverId, input: text(value) });
+    // Refused before anything was sent: the same id may be used again once the owner holds the screen.
+    await expect(f.control.command(f.owner, body("early", "e"))).rejects.toMatchObject({ code: "takeover_settling" });
+    ticket.end(); await f.control.command(f.owner, body("early", "e"));
+    for (let i = 0; i < 300; i++) await f.control.command(f.owner, body("many_" + i, "m"));
+    await f.control.command(f.owner, body("early", "e")); await f.control.command(f.owner, body("many_0", "m"));
+    expect(f.screen.sent).toHaveLength(301);
+    const failing = f.screen.value.send; f.screen.value.send = async () => { throw Object.assign(new Error("vm_management_unavailable"), { code: "vm_management_unavailable" }); };
+    await expect(f.control.command(f.owner, body("lost", "x"))).rejects.toThrow("vm_management_unavailable");
+    f.screen.value.send = failing;
+    await expect(f.control.command(f.owner, body("lost", "x"))).rejects.toMatchObject({ code: "screen_input_unknown" });
+    expect(f.screen.sent).toHaveLength(301);
+  });
+
   test("a computer without a desktop cannot be taken over, and only the owner reaches the screen", async () => {
     const f = control(); f.screen.setUnavailable("vm_desktop_restart_required");
     expect(await f.control.view(f.owner, "vm1")).toMatchObject({ available: false, code: "vm_desktop_restart_required", state: "agent" });
@@ -319,7 +336,7 @@ describe("owner screen API under the real composition", () => {
     expect(screen.sent).toEqual([{ kind: "text", text: "owner-secret" }]);
     const back = await (await f.request("/api/s16/client/computers/screen/commands", "POST", { contract: "s16-screen-command/v1", requestId: "back_1", vmId: "vm", kind: "hand_back", generation: 1, takeoverId: taken.view.takeoverId })).json();
     expect(back.view).toMatchObject({ state: "agent", generation: 2 });
-    expect((await f.request("/api/s16/client/computers/screen/commands", "POST", typed)).status).toBe(200); // Same request id: not sent again.
+    expect((await f.request("/api/s16/client/computers/screen/commands", "POST", typed)).status).toBe(409); // Retried after hand-back: refused, not sent again.
     expect(screen.sent).toHaveLength(1);
     const session = await f.service.workingVm.openAttempt(actor, input); await session.close();
     const plain = await composedFixture(); closers.push(() => plain.close());

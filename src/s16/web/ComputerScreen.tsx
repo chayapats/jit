@@ -27,9 +27,11 @@ const named: Record<string, string> = { Enter: "ret", Escape: "esc", Backspace: 
  * Frames stay in memory only; typed text is sent once and cleared from the field.
  */
 export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: ComputerScreenProps) {
-  const [view, setView] = useState<ScreenView | null>(null), [frame, setFrame] = useState<string | null>(null);
+  const [view, setView] = useState<ScreenView | null>(null), [frame, setFrame] = useState<{ url: string; generation: number } | null>(null);
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false), [refresh, setRefresh] = useState(0);
   const [typed, setTyped] = useState(""), [reveal, setReveal] = useState(false);
+  // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
+  const commands = useRef(0);
   const viewRef = useRef<ScreenView | null>(null), screenRef = useRef<HTMLDivElement>(null), headingRef = useRef<HTMLHeadingElement>(null);
   viewRef.current = view;
   const fail = (failure: unknown) => { if (privateFailure(failure)) { onFailure(failure); return; } const reason = code(failure); if (reason === "stale_screen") setRefresh(value => value + 1); else setError(reason); };
@@ -38,7 +40,7 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   useEffect(() => {
     const stop = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
-      try { const next = await client.screen(vmId, stop.signal); setView(next); setError(null); timer = setTimeout(() => void load(), next.state === "settling" ? 1000 : 3000); }
+      try { const turn = commands.current, next = await client.screen(vmId, stop.signal); if (turn === commands.current) { setView(next); setError(null); } timer = setTimeout(() => void load(), next.state === "settling" ? 1000 : 3000); }
       catch (failure) { if (stop.signal.aborted) return; fail(failure); timer = setTimeout(() => void load(), 5000); }
     };
     void load();
@@ -49,20 +51,21 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   // Frames under the generation last seen; a stale frame reloads the state instead of showing an old screen.
   const generation = view?.available ? view.generation : null, driving = view?.state === "owner";
   useEffect(() => {
-    if (generation === null) return;
+    if (generation === null) { setFrame(null); return; }
     const stop = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, url: string | null = null;
     const next = async () => {
       if (document.visibilityState === "visible") {
         try {
           const blob = await client.screenFrame(vmId, generation, stop.signal), fresh = URL.createObjectURL(blob);
           if (stop.signal.aborted) { URL.revokeObjectURL(fresh); return; }
-          if (url) URL.revokeObjectURL(url); url = fresh; setFrame(fresh);
+          if (url) URL.revokeObjectURL(url); url = fresh; setFrame({ url: fresh, generation });
         } catch (failure) { if (stop.signal.aborted) return; if (code(failure) === "stale_screen") { setRefresh(value => value + 1); return; } fail(failure); }
       }
       timer = setTimeout(() => void next(), driving ? 500 : 1500);
     };
     void next();
-    return () => { stop.abort(); clearTimeout(timer); if (url) URL.revokeObjectURL(url); };
+    // The frame is dropped with its URL, so a frame of an earlier generation is never shown as the current screen.
+    return () => { stop.abort(); clearTimeout(timer); if (url) URL.revokeObjectURL(url); setFrame(null); };
   }, [vmId, generation, driving]);
 
   // Owner control lasts only while this page renews it.
@@ -78,7 +81,8 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     const body: ScreenCommand = command.kind === "takeover" ? { ...base, kind: "takeover" } : command.kind === "hand_back" ? { ...base, kind: "hand_back", takeoverId: current.takeoverId }
       : command.kind === "renew" ? { ...base, kind: "renew", takeoverId: current.takeoverId ?? "" } : { ...base, kind: "input", takeoverId: current.takeoverId ?? "", input: command.input };
     if (!quiet) setBusy(true);
-    try { const result = await client.screenCommand(body); setView(result.view); setError(null); return true; }
+    commands.current++;
+    try { const result = await client.screenCommand(body); commands.current++; setView(result.view); setError(null); return true; }
     catch (failure) { fail(failure); return false; }
     finally { if (!quiet) setBusy(false); }
   }
@@ -90,7 +94,8 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     if (!driving || event.key === "Tab") return;
     const mods = [event.ctrlKey && "ctrl", event.altKey && "alt", event.metaKey && "meta"].filter(Boolean) as string[];
     const name = named[event.key] ?? (mods.length && /^[a-zA-Z0-9]$/.test(event.key) ? event.key.toLowerCase() : null);
-    if (name) { event.preventDefault(); void send({ kind: "input", input: { kind: "key", keys: [...mods, ...(event.shiftKey && named[event.key] ? ["shift"] : []), name] } }); return; }
+    // Shift is part of every forwarded combination (Ctrl+Shift+Z is not Ctrl+Z); alone with a character it is just typing.
+    if (name) { event.preventDefault(); void send({ kind: "input", input: { kind: "key", keys: [...mods, ...(event.shiftKey ? ["shift"] : []), name] } }); return; }
     if (event.key.length === 1 && !mods.length) { event.preventDefault(); void send({ kind: "input", input: { kind: "text", text: event.key } }); }
   }
 
@@ -114,9 +119,8 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     </div>
     {view?.scope.kind === "private" && <p className="limits">{t("s16.screen.private")}</p>}
     <div ref={screenRef} className="screen-frame" tabIndex={driving ? 0 : -1} aria-label={driving ? t("s16.screen.keyboard") : undefined} onKeyDown={key}>
-      {frame ? <img src={frame} width={view?.width ?? 1280} height={view?.height ?? 800} alt={t("s16.screen.alt", { computer: title })} draggable={false}
+      {frame && view?.available && frame.generation === view.generation ? <img src={frame.url} width={view?.width ?? 1280} height={view?.height ?? 800} alt={t("s16.screen.alt", { computer: title })} draggable={false}
         onClick={event => { if (driving) void send({ kind: "input", input: { kind: "click", ...point(event), button: "left", double: false } }); }}
-        onDoubleClick={event => { if (driving) void send({ kind: "input", input: { kind: "click", ...point(event), button: "left", double: true } }); }}
         onContextMenu={event => { if (!driving) return; event.preventDefault(); void send({ kind: "input", input: { kind: "click", ...point(event), button: "right", double: false } }); }}
         onWheel={event => { if (driving && event.deltaY) void send({ kind: "input", input: { kind: "scroll", ...point(event), delta: Math.max(-5, Math.min(5, Math.round(event.deltaY / 100) || Math.sign(event.deltaY))) } }); }} />
         : view?.available && <p role="status">{t("s16.screen.waitingFrame")}</p>}
