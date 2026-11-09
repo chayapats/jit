@@ -16,15 +16,16 @@ type Command = { kind: "takeover" } | { kind: "hand_back" } | { kind: "renew" } 
 const uid = () => crypto.randomUUID().replaceAll("-", "");
 const code = (error: unknown) => error instanceof JitClientError ? error.code : "client_unavailable";
 const privateFailure = (error: unknown) => error instanceof JitClientError && ([401, 403].includes(error.status ?? 0) || ["authentication_required", "authorization_required", "csrf_rejected"].includes(error.code));
-/** How long a left click waits for a second click before it is sent as a single click. */
-const doubleClickMs = 250;
+/** How long a left click waits for a second click before it is sent as a single click (the common desktop default). */
+const doubleClickMs = 500;
 /** Browser key names the screen forwards as one named key (everything printable is typed as text). */
 const named: Record<string, string> = { Enter: "ret", Escape: "esc", Backspace: "backspace", Delete: "delete", Insert: "insert", Home: "home", End: "end", PageUp: "pgup", PageDown: "pgdn",
   ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`F${i + 1}`, `f${i + 1}`])) };
 
 /**
- * Watch a working computer's screen and, when needed, take exclusive control: the Bot's work pauses, only the
- * owner's input reaches the screen, and handing back gives the Bot a fresh generation. A closed tab or lost
+ * Watch a working computer's screen and, when needed, take exclusive control: the Bot's work pauses, the Bot
+ * cannot send screen input, and handing back gives the Bot a fresh generation. Programs on the computer still see
+ * the screen and what the owner types, so this is not a protected place for site passwords. A closed tab or lost
  * connection keeps the computer fenced (nobody writes) until the owner takes over again or hands it back.
  * Frames stay in memory only; typed text is sent once and cleared from the field.
  */
@@ -36,7 +37,7 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   const commands = useRef(0);
   // A left click waits one double-click interval, so a double click reaches the computer as one `double` click
   // (both presses in one QMP batch) instead of two separate round trips the guest may not pair.
-  const pendingClick = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingClick = useRef<{ timer: ReturnType<typeof setTimeout>; send(): void } | undefined>(undefined);
   const viewRef = useRef<ScreenView | null>(null), screenRef = useRef<HTMLDivElement>(null), headingRef = useRef<HTMLHeadingElement>(null);
   viewRef.current = view;
   const fail = (failure: unknown) => { if (privateFailure(failure)) { onFailure(failure); return; } const reason = code(failure); if (reason === "stale_screen") setRefresh(value => value + 1); else setError(reason); };
@@ -104,16 +105,19 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     if (event.key.length === 1 && !mods.length) { event.preventDefault(); void send({ kind: "input", input: { kind: "text", text: event.key } }); }
   }
 
-  useEffect(() => () => { clearTimeout(pendingClick.current); pendingClick.current = undefined; }, [driving]);
+  useEffect(() => () => { clearTimeout(pendingClick.current?.timer); pendingClick.current = undefined; }, [driving]);
   function leftClick(event: MouseEvent<HTMLImageElement>) {
     if (!driving) return;
-    const at = point(event), waiting = pendingClick.current !== undefined;
-    clearTimeout(pendingClick.current); pendingClick.current = undefined;
-    // The second click of a pair replaces the pending single; a late second click (its single already sent) is
-    // just another single click, never a third press.
-    if (event.detail === 2 && waiting) { void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: true } }); return; }
+    const at = point(event), pending = pendingClick.current;
+    if (pending) { clearTimeout(pending.timer); pendingClick.current = undefined; }
+    // The second press of a browser double click replaces the pending single with one `double` click.
+    if (event.detail === 2 && pending) { void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: true } }); return; }
+    // Any other click first sends the pending single where it was made, so quick clicks at different places all arrive.
+    pending?.send();
+    // The third press of a triple click is not a further press on the computer.
     if (event.detail > 2) return;
-    pendingClick.current = setTimeout(() => { pendingClick.current = undefined; void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: false } }); }, doubleClickMs);
+    const single = () => void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: false } });
+    pendingClick.current = { send: single, timer: setTimeout(() => { pendingClick.current = undefined; single(); }, doubleClickMs) };
   }
 
   const state = view?.state;
