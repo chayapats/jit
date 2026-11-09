@@ -119,7 +119,7 @@ export function ComputersView({ client, t, locale, available, files, onFailure, 
         {status(item) && <p>{status(item)}</p>}
         {item.reason && <details><summary>{t("s16.common.details")}</summary><code>{item.reason}</code></details>}
         <div className="actions">
-          {item.state === "running" && item.activeSessions === 0 && data.idleStopMs !== null && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "sleep", vmId: item.id })}>{t("s16.computers.sleepNow")}</button>}
+          {item.state === "running" && item.activeSessions === 0 && data.idleStopMs !== null && <button type="button" disabled={busy || watching === item.id} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "sleep", vmId: item.id })}>{t("s16.computers.sleepNow")}</button>}
           {screen && item.state === "running" && watching !== item.id && <button type="button" onClick={event => { watchButton.current = event.currentTarget; setWatching(item.id); }}>{t("s16.screen.watch")}</button>}
           {item.state === "setup_failed" && !item.retired && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "retry_private", vmId: item.id })}>{t("s16.computers.retry")}</button>}
         </div>

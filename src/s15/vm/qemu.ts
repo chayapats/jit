@@ -209,7 +209,7 @@ export class QemuVmManagement implements VmLocalManagement {
    * command in the controller's own user manager; with one it is the fixed `sudo -n -u <vmm> -- <launcher>`
    * operation, which rebuilds the same command (and the same QEMU argv) as that identity.
    */
-  private hypervisor(operation: ["show" | "stop" | "kill"] | ["info", boolean] | ["resize", number] | ["create", string, number] | ["snapshot", "create" | "apply" | "delete", string] | ["start", LocalVmResources]): string[] {
+  private hypervisor(operation: ["show" | "stop" | "kill" | "discard-frame"] | ["info", boolean] | ["resize", number] | ["create", string, number] | ["snapshot", "create" | "apply" | "delete", string] | ["start", LocalVmResources]): string[] {
     const vmm = this.host.vmm, name = this.identity.name, [op] = operation;
     if (vmm) {
       if (op === "info") return vmmCommand(vmm, ["info", name, operation[1] ? "shared" : "exclusive"]);
@@ -273,8 +273,9 @@ export class QemuVmManagement implements VmLocalManagement {
   /**
    * DESK16-01 host-side screen of this exact VM: QMP `screendump` (PNG) and `input-send-event` on the
    * controller-only socket. Only a running QEMU whose argv is exactly the desktop profile has a screen; frames
-   * are written into this VM's hypervisor directory, read once and removed (VM15-03 leaves the file to the QEMU
-   * identity, which overwrites it on the next capture). One capture runs at a time.
+   * are written into this VM's hypervisor directory, read once and always removed before the capture settles
+   * (`discardFrame`, also under VM15-03). A frame that cannot be removed fails the capture, so no frame outlives
+   * it. One capture runs at a time.
    */
   screen(): VmScreenDevice {
     const self = this; let capturing: Promise<unknown> = Promise.resolve();
@@ -290,11 +291,11 @@ export class QemuVmManagement implements VmLocalManagement {
         const turn = capturing.then(async () => {
           const code = await running(); if (code) vmFail(code, 409);
           const file = join(self.hypervisorDirectory, "screen.png");
-          if (!self.host.vmm) rmSync(file, { force: true });
-          await self.qmp([{ execute: "screendump", arguments: { filename: file, format: "png" } }], 10_000);
-          try { return vmScreenFrame(new Uint8Array(readFileSync(file))); }
-          catch (error) { if (error instanceof AppError) throw error; return vmFail("vm_screen_invalid", 502); }
-          finally { if (!self.host.vmm) rmSync(file, { force: true }); }
+          try {
+            await self.qmp([{ execute: "screendump", arguments: { filename: file, format: "png" } }], 10_000);
+            try { return vmScreenFrame(new Uint8Array(readFileSync(file))); }
+            catch (error) { if (error instanceof AppError) throw error; return vmFail("vm_screen_invalid", 502); }
+          } finally { await self.discardFrame(); }
         });
         capturing = turn.catch(() => {});
         return turn;
@@ -355,8 +356,23 @@ export class QemuVmManagement implements VmLocalManagement {
     const transport = new VmSshTransport(this.endpoint(), this.#run);
     if ((await this.guest(transport, ["true"], { timeoutMs: 30_000, ...(signal ? { signal } : {}) })) !== "") vmFail("vm_protocol_invalid");
   }
-  /** Hard stop of this exact VM, then independent read-back: unit inactive, QEMU PID gone, image lock released. */
+  /**
+   * DESK16-01: removes this VM's last screen frame. Under VM15-03 the file belongs to the QEMU identity in a
+   * directory the controller cannot write, so that identity's launcher removes exactly `<vm>/screen.png`.
+   */
+  private async discardFrame(): Promise<void> {
+    if (this.host.vmm) await this.command(this.hypervisor(["discard-frame"]), 15_000, 4096);
+    else rmSync(join(this.hypervisorDirectory, "screen.png"), { force: true });
+  }
+  /**
+   * Hard stop of this exact VM, then independent read-back: unit inactive, QEMU PID gone, image lock released.
+   * A stopped VM keeps no screen frame (DESK16-01), including after an idle stop.
+   */
   async stop(): Promise<void> {
+    await this.halt();
+    await this.discardFrame();
+  }
+  private async halt(): Promise<void> {
     const before = await this.unitState(), recorded = this.state();
     this.saveState({ desired: "stopped" });
     const pids = [before.pid, recorded.pid ?? 0].filter(pid => pid > 0);

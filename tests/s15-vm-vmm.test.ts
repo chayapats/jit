@@ -75,14 +75,14 @@ describe('the argv-fixed launcher', () => {
 
   test.each(['x86_64', 'aarch64'] as const)('start builds the restricted QEMU argv byte-for-byte as qemuArgv for %s', async architecture => {
     const { l, run } = launcher(), dir = machine(l);
-    mkdirSync(dir); writeFileSync(join(dir, 'qmp.sock'), 'stale');
+    mkdirSync(dir); writeFileSync(join(dir, 'qmp.sock'), 'stale'); writeFileSync(join(dir, 'screen.png'), 'stale frame');
     const result = await run(['start', identity.name, architecture, '5', '9216', identity.mac, '22022']);
     const spec = { name: identity.name, architecture, machineDirectory: dir, cpus: 5, memoryMiB: 9216, mac: identity.mac, sshPort: 22022, proxySocket: l.proxySocket };
     expect(result.code).toBe(0);
     expect(result.recorded).toEqual(['systemd-run', '--user', '--quiet', '--collect', `--unit=${identity.name}.service`, '--property=Type=exec', '--property=TimeoutStopSec=15', '--property=UMask=0007', '--', ...qemuArgv(spec)]);
     expect(qemuArgvFacts(result.recorded!.slice(9), spec).exact).toBe(true);
-    // The stale QMP socket of the previous boot is removed by the QEMU identity itself.
-    expect(existsSync(join(dir, 'qmp.sock'))).toBe(false);
+    // The stale QMP socket and any screen frame of the previous boot are removed by the QEMU identity itself.
+    expect(existsSync(join(dir, 'qmp.sock'))).toBe(false); expect(existsSync(join(dir, 'screen.png'))).toBe(false);
   });
 
   test.each(['x86_64', 'aarch64'] as const)('start with the desktop word builds the desktop QEMU argv byte-for-byte as qemuArgv for %s', async architecture => {
@@ -106,6 +106,17 @@ describe('the argv-fixed launcher', () => {
     expect(existsSync(dir)).toBe(false); expect(readFileSync(join(other, 'disk.qcow2'), 'utf8')).toBe('other VM');
   });
 
+  test('discard-frame removes only that VM\'s screen frame and runs no tool', async () => {
+    const { l, run } = launcher(), dir = machine(l), other = join(l.machines, 'jit-work-ffffffffffff');
+    mkdirSync(dir); mkdirSync(other);
+    for (const d of [dir, other]) { writeFileSync(join(d, 'screen.png'), 'frame'); writeFileSync(join(d, 'disk.qcow2'), 'disk'); }
+    expect(await run(['discard-frame', identity.name])).toMatchObject({ code: 0, recorded: null });
+    expect(readdirSync(dir)).toEqual(['disk.qcow2']);
+    expect(readdirSync(other).sort()).toEqual(['disk.qcow2', 'screen.png']);
+    // Idempotent: nothing to remove is still success.
+    expect(await run(['discard-frame', identity.name])).toMatchObject({ code: 0, recorded: null });
+  });
+
   test('every malformed operation, name, value or extra argument is refused before any command runs', async () => {
     const { run } = launcher(), n = identity.name;
     const refused = [[], ['bogus', n], ['show'], ['show', n, 'extra'], ['show', 'jit-work-XYZ'], ['show', '../etc'], ['show', `${n}/..`], ['show', 'jit-work-0123456789abc'],
@@ -113,7 +124,7 @@ describe('the argv-fixed launcher', () => {
       ['create', n, 'AB'.repeat(32), '60'], ['create', n, sha], ['create', n, `${sha}/../x`, '60'], ['snapshot', n, 'create', 'other'], ['snapshot', n, 'revert', tag],
       ['start', n, 'riscv64', '1', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '0', '2048', identity.mac, '22022'], ['start', n, 'x86_64', '1000', '2048', identity.mac, '22022'],
       ['start', n, 'x86_64', '1', '2048', 'aa:bb:cc:dd:ee:ff', '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac, '80'], ['start', n, 'x86_64', '1', '2048', identity.mac, '70000'],
-      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'gui'], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'desktop', 'vnc'], ['kvm', n], ['check', n], ['remove', n, '/']];
+      ['start', n, 'x86_64', '1', '2048 -device foo', identity.mac, '22022'], ['start', n, 'x86_64', '1', '2048', identity.mac], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'gui'], ['start', n, 'x86_64', '1', '2048', identity.mac, '22022', 'desktop', 'vnc'], ['kvm', n], ['check', n], ['remove', n, '/'], ['discard-frame', n, 'screen.png'], ['discard-frame', '../etc']];
     for (const args of refused) {
       const result = await run(args);
       expect({ args, code: result.code, recorded: result.recorded }).toEqual({ args, code: 64, recorded: null });
@@ -137,7 +148,7 @@ describe('the argv-fixed launcher', () => {
 });
 
 describe('QEMU as the separate identity', () => {
-  function vmmHost(options: { wrongUid?: boolean } = {}) {
+  function vmmHost(options: { wrongUid?: boolean; desktop?: boolean; discardFails?: boolean } = {}) {
     const h = new FakeQemuHost(); hosts.push(h);
     const l = layout(h.root), vmm: QemuVmmOptions = { user: 'jit-test-vmm', uid: 4242, directory: l.directory, launcher: '/opt/jit-s15/libexec/jit-s15-vmm' };
     const prefix = vmmCommand(vmm, []), launched: string[][] = [], direct: string[][] = [];
@@ -158,14 +169,15 @@ describe('QEMU as the separate identity', () => {
       if (op === 'snapshot') return h.run(['/usr/bin/qemu-img', 'snapshot', rest[0] === 'create' ? '-c' : rest[0] === 'apply' ? '-a' : '-d', rest[1]!, disk], settings);
       if (op === 'seed') { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'seed.img'), settings.input!); return { exitCode: 0, stdout: Buffer.alloc(0) }; }
       if (op === 'remove') { rmSync(dir, { recursive: true, force: true }); return { exitCode: 0, stdout: Buffer.alloc(0) }; }
+      if (op === 'discard-frame') { if (options.discardFails) return { exitCode: 1, stdout: Buffer.alloc(0) }; rmSync(join(dir, 'screen.png'), { force: true }); return { exitCode: 0, stdout: Buffer.alloc(0) }; }
       if (op === 'start') {
-        const spec = { name, architecture: rest[0] as 'x86_64', machineDirectory: dir, cpus: Number(rest[1]), memoryMiB: Number(rest[2]), mac: rest[3]!, sshPort: Number(rest[4]), proxySocket: l.proxySocket };
+        const spec = { name, architecture: rest[0] as 'x86_64', machineDirectory: dir, cpus: Number(rest[1]), memoryMiB: Number(rest[2]), mac: rest[3]!, sshPort: Number(rest[4]), proxySocket: l.proxySocket, ...(rest[5] === 'desktop' ? { desktop: true } : {}) };
         return h.run(['systemd-run', '--user', '--quiet', '--collect', `--unit=${unit}`, '--property=Type=exec', '--property=TimeoutStopSec=15', '--property=UMask=0007', '--', ...qemuArgv(spec)], settings);
       }
       return { exitCode: 64, stdout: Buffer.alloc(0) };
     };
     const proc = { ...h.proc, uid: (pid: number) => h.processes.has(pid) ? options.wrongUid ? process.getuid!() : vmm.uid : null };
-    const host = { ...h.options(l.proxySocket), run, proc, vmm };
+    const host = { ...h.options(l.proxySocket), run, proc, vmm, ...(options.desktop ? { desktop: true } : {}) };
     return { h, l, vmm, host, launched, direct, m: new QemuVmManagement(identity, host) };
   }
 
@@ -216,6 +228,30 @@ describe('QEMU as the separate identity', () => {
     expect(await again.resume()).toBe(false);
     await again.start(); expect(await again.inspect()).toMatchObject({ state: 'running' });
     expect(launched.filter(c => c[0] === 'snapshot').map(c => c[2])).toEqual(['create', 'apply', 'delete']);
+  });
+
+  test('DESK16-01: no screen frame stays in the QEMU identity directory after a capture or a stop', async () => {
+    const { h, m, launched } = vmmHost({ desktop: true });
+    await m.provision();
+    const frame = join(m.hypervisorDirectory, 'screen.png'), screen = m.screen();
+    expect(await screen.capture()).toEqual(h.screenBytes);
+    expect(existsSync(frame)).toBe(false);
+    expect(launched.filter(c => c[0] === 'discard-frame')).toEqual([['discard-frame', identity.name]]);
+    // A capture that fails after QEMU wrote the file still removes it.
+    h.screenBytes = new Uint8Array(64).fill(1);
+    await expect(screen.capture()).rejects.toMatchObject({ code: 'vm_screen_invalid' });
+    expect(existsSync(frame)).toBe(false);
+    // A stop (also the idle stop) removes a frame left by anything else, e.g. a controller crash mid-capture.
+    writeFileSync(frame, 'left behind');
+    await m.stop(); expect(await m.inspect()).toMatchObject({ state: 'stopped' });
+    expect(existsSync(frame)).toBe(false);
+    expect(readdirSync(m.hypervisorDirectory).sort()).toEqual(['disk.qcow2', 'seed.img']);
+  });
+
+  test('DESK16-01: a frame that cannot be removed fails the capture instead of being shown', async () => {
+    const { m } = vmmHost({ desktop: true, discardFails: true });
+    await m.provision();
+    await expect(m.screen().capture()).rejects.toMatchObject({ code: 'vm_management_unavailable' });
   });
 
   test('a QEMU process that is not owned by the separate identity is never this VM', async () => {

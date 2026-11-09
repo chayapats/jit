@@ -16,6 +16,8 @@ type Command = { kind: "takeover" } | { kind: "hand_back" } | { kind: "renew" } 
 const uid = () => crypto.randomUUID().replaceAll("-", "");
 const code = (error: unknown) => error instanceof JitClientError ? error.code : "client_unavailable";
 const privateFailure = (error: unknown) => error instanceof JitClientError && ([401, 403].includes(error.status ?? 0) || ["authentication_required", "authorization_required", "csrf_rejected"].includes(error.code));
+/** How long a left click waits for a second click before it is sent as a single click. */
+const doubleClickMs = 250;
 /** Browser key names the screen forwards as one named key (everything printable is typed as text). */
 const named: Record<string, string> = { Enter: "ret", Escape: "esc", Backspace: "backspace", Delete: "delete", Insert: "insert", Home: "home", End: "end", PageUp: "pgup", PageDown: "pgdn",
   ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right", ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`F${i + 1}`, `f${i + 1}`])) };
@@ -32,6 +34,9 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   const [typed, setTyped] = useState(""), [reveal, setReveal] = useState(false);
   // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
   const commands = useRef(0);
+  // A left click waits one double-click interval, so a double click reaches the computer as one `double` click
+  // (both presses in one QMP batch) instead of two separate round trips the guest may not pair.
+  const pendingClick = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const viewRef = useRef<ScreenView | null>(null), screenRef = useRef<HTMLDivElement>(null), headingRef = useRef<HTMLHeadingElement>(null);
   viewRef.current = view;
   const fail = (failure: unknown) => { if (privateFailure(failure)) { onFailure(failure); return; } const reason = code(failure); if (reason === "stale_screen") setRefresh(value => value + 1); else setError(reason); };
@@ -99,6 +104,18 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     if (event.key.length === 1 && !mods.length) { event.preventDefault(); void send({ kind: "input", input: { kind: "text", text: event.key } }); }
   }
 
+  useEffect(() => () => { clearTimeout(pendingClick.current); pendingClick.current = undefined; }, [driving]);
+  function leftClick(event: MouseEvent<HTMLImageElement>) {
+    if (!driving) return;
+    const at = point(event), waiting = pendingClick.current !== undefined;
+    clearTimeout(pendingClick.current); pendingClick.current = undefined;
+    // The second click of a pair replaces the pending single; a late second click (its single already sent) is
+    // just another single click, never a third press.
+    if (event.detail === 2 && waiting) { void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: true } }); return; }
+    if (event.detail > 2) return;
+    pendingClick.current = setTimeout(() => { pendingClick.current = undefined; void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: false } }); }, doubleClickMs);
+  }
+
   const state = view?.state;
   return <section className="computer-screen" aria-labelledby={`screen-${vmId}`}>
     <header className="screen-bar" data-driver={state === "owner" ? "owner" : "bot"}>
@@ -120,7 +137,7 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     {view?.scope.kind === "private" && <p className="limits">{t("s16.screen.private")}</p>}
     <div ref={screenRef} className="screen-frame" tabIndex={driving ? 0 : -1} aria-label={driving ? t("s16.screen.keyboard") : undefined} onKeyDown={key}>
       {frame && view?.available && frame.generation === view.generation ? <img src={frame.url} width={view?.width ?? 1280} height={view?.height ?? 800} alt={t("s16.screen.alt", { computer: title })} draggable={false}
-        onClick={event => { if (driving) void send({ kind: "input", input: { kind: "click", ...point(event), button: "left", double: false } }); }}
+        onClick={leftClick}
         onContextMenu={event => { if (!driving) return; event.preventDefault(); void send({ kind: "input", input: { kind: "click", ...point(event), button: "right", double: false } }); }}
         onWheel={event => { if (driving && event.deltaY) void send({ kind: "input", input: { kind: "scroll", ...point(event), delta: Math.max(-5, Math.min(5, Math.round(event.deltaY / 100) || Math.sign(event.deltaY))) } }); }} />
         : view?.available && <p role="status">{t("s16.screen.waitingFrame")}</p>}

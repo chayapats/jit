@@ -35,7 +35,8 @@ function qemuWords(vmm: QemuVmmOptions, architecture: "x86_64" | "aarch64", desk
  * refuses any unknown operation or argument (exit 64, nothing run), and runs one fixed command per operation:
  * `check` (prints `jit-vmm-ready-v1`; the installer's end-to-end sudo probe), `kvm` (device access probe), `show|stop|kill <vm>` (its transient unit), `info <vm> shared|exclusive`,
  * `resize <vm> <GiB>`, `create <vm> <base sha256> <GiB>`, `snapshot <vm> create|apply|delete <tag>`,
- * `seed <vm>` (the NoCloud seed from stdin, at most 16 MiB), `remove <vm>` (that VM's machine directory) and
+ * `seed <vm>` (the NoCloud seed from stdin, at most 16 MiB), `remove <vm>` (that VM's machine directory),
+ * `discard-frame <vm>` (only that VM's DESK16-01 `screen.png`) and
  * `start <vm> <arch> <cpus> <MiB> <mac> <ssh port>` (QEMU in a transient user unit, UMask 0007 so only the
  * shared group reaches its QMP socket). It reads no environment input and accepts no path, flag or command.
  */
@@ -125,6 +126,9 @@ case "$op" in
   remove)
     [ "$#" -eq 0 ] || refuse
     rm -rf -- "$dir" ;;
+  discard-frame)
+    [ "$#" -eq 0 ] || refuse
+    rm -f -- "$dir/screen.png" ;;
   start)
     # A sixth word selects the DESK16-01 desktop profile; nothing else is accepted there.
     [ "$#" -eq 5 ] || { [ "$#" -eq 6 ] && [ "$6" = desktop ]; } || refuse
@@ -133,7 +137,7 @@ case "$op" in
     nat "$cpus" 3 && nat "$memory" 7 && nat "$port" 5 || refuse
     [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || refuse
     case "$mac" in 52:54:00:${hex(2)}:${hex(2)}:${hex(2)}) ;; *) refuse ;; esac
-    rm -f -- "$dir/qmp.sock"
+    rm -f -- "$dir/qmp.sock" "$dir/screen.png"
     case "$arch:$profile" in
       x86_64:headless) exec ${unit} \\
         ${qemuWords(vmm, "x86_64")} ;;

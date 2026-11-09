@@ -6175,7 +6175,7 @@ export const en: Record<MessageKey, string> = {
   "s16.screen.cancel": "Cancel",
   "s16.screen.close": "Close",
   "s16.screen.settling": "Waiting for the current step of the Bot to finish. Nothing new starts on this computer.",
-  "s16.screen.driving": "Only your input reaches this computer. Work of the Bot on it is paused until you hand it back.",
+  "s16.screen.driving": "The Bot starts nothing new on this computer until you hand it back. Programs already on it can still see the screen and what you type, so do not type passwords for sensitive sites here; use the protected owner view for those.",
   "s16.screen.fenced": "Control was lost (the page closed or the connection dropped). Nobody can use this computer until you take control again or hand it back.",
   "s16.screen.unavailable": "This computer has no screen to show ({reason}).",
   "s16.screen.failed": "That did not work ({reason}).",

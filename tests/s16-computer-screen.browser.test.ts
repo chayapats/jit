@@ -61,15 +61,19 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     expect(sent[0]).toMatchObject({ kind: "click", button: "left", double: false });
     const click = sent[0] as Extract<VmScreenInput, { kind: "click" }>;
     expect(Math.abs(click.x - 640)).toBeLessThanOrEqual(2); expect(Math.abs(click.y - 200)).toBeLessThanOrEqual(2);
+    // A double click is one double click on the computer, never two singles or three presses.
+    await image.dblclick({ position: { x: box.width / 2, y: box.height / 4 } });
+    await inputs(sent, 2); await Bun.sleep(400);
+    expect(sent).toHaveLength(2); expect(sent[1]).toMatchObject({ kind: "click", button: "left", double: true });
     const field = panel.getByLabel(copy["s16.screen.typeLabel"]);
     expect(await field.getAttribute("type")).toBe("password");
     await field.fill("Owner-Pass1"); await panel.getByRole("button", { name: copy["s16.screen.send"], exact: true }).click();
-    await inputs(sent, 2);
-    expect(sent[1]).toEqual({ kind: "text", text: "Owner-Pass1" }); expect(await field.inputValue()).toBe("");
+    await inputs(sent, 3);
+    expect(sent[2]).toEqual({ kind: "text", text: "Owner-Pass1" }); expect(await field.inputValue()).toBe("");
     // Keyboard capture: Enter on the focused screen region reaches the computer as one key.
     await panel.locator(".screen-frame").focus(); await page.keyboard.press("Enter");
-    await inputs(sent, 3);
-    expect(sent[2]).toEqual({ kind: "key", keys: ["ret"] });
+    await inputs(sent, 4);
+    expect(sent[3]).toEqual({ kind: "key", keys: ["ret"] });
     expect(await noOverflow()).toBe(true);
     await panel.getByRole("button", { name: copy["s16.screen.handBack"] }).click();
     await panel.getByText(copy["s16.screen.state.agent"], { exact: true }).waitFor();
@@ -77,7 +81,7 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await panel.getByRole("button", { name: copy["s16.screen.close"] }).click();
     await page.getByRole("button", { name: copy["s16.screen.watch"] }).waitFor();
     expect(await page.evaluate(() => document.activeElement?.textContent)).toBe(copy["s16.screen.watch"]);
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(4);
     expect(errors).toEqual([]); expect(external).toEqual([]);
   } finally { await context.close(); await f.close(); }
 }, 60000);
