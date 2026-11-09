@@ -254,6 +254,15 @@ describe('QEMU as the separate identity', () => {
     await expect(m.screen().capture()).rejects.toMatchObject({ code: 'vm_management_unavailable' });
   });
 
+  test('DESK16-01: a headless controller never asks for discard-frame, so a launcher without it still stops', async () => {
+    // discardFails stands in for an older launcher that refuses the op.
+    const { m, launched } = vmmHost({ discardFails: true });
+    await m.provision();
+    expect(await m.inspect()).toMatchObject({ state: 'running' });
+    await m.stop(); expect(await m.inspect()).toMatchObject({ state: 'stopped' });
+    expect(launched.some(c => c[0] === 'discard-frame')).toBe(false);
+  });
+
   test('a QEMU process that is not owned by the separate identity is never this VM', async () => {
     const { m } = vmmHost({ wrongUid: true });
     await expect(m.provision()).rejects.toMatchObject({ code: 'vm_management_unavailable' });

@@ -81,6 +81,11 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await panel.locator(".screen-frame").focus(); await page.keyboard.press("Enter");
     await inputs(sent, 6);
     expect(sent[5]).toEqual({ kind: "key", keys: ["ret"] });
+    // A key pressed right after a click arrives after that click, so typing lands where the owner clicked.
+    await image.click({ position: { x: box.width / 2, y: box.height / 2 } });
+    await panel.locator(".screen-frame").focus(); await page.keyboard.press("Escape");
+    await inputs(sent, 8);
+    expect(sent[6]).toMatchObject({ kind: "click", button: "left", double: false }); expect(sent[7]).toEqual({ kind: "key", keys: ["esc"] });
     expect(await noOverflow()).toBe(true);
     await panel.getByRole("button", { name: copy["s16.screen.handBack"] }).click();
     await panel.getByText(copy["s16.screen.state.agent"], { exact: true }).waitFor();
@@ -88,7 +93,7 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await panel.getByRole("button", { name: copy["s16.screen.close"] }).click();
     await page.getByRole("button", { name: copy["s16.screen.watch"] }).waitFor();
     expect(await page.evaluate(() => document.activeElement?.textContent)).toBe(copy["s16.screen.watch"]);
-    expect(sent).toHaveLength(6);
+    expect(sent).toHaveLength(8);
     expect(errors).toEqual([]); expect(external).toEqual([]);
   } finally { await context.close(); await f.close(); }
 }, 60000);

@@ -366,11 +366,12 @@ export class QemuVmManagement implements VmLocalManagement {
   }
   /**
    * Hard stop of this exact VM, then independent read-back: unit inactive, QEMU PID gone, image lock released.
-   * A stopped VM keeps no screen frame (DESK16-01), including after an idle stop.
+   * A stopped VM keeps no screen frame (DESK16-01), including after an idle stop. Only a desktop controller can
+   * capture frames, so a headless one never needs the `discard-frame` launcher op (an older launcher keeps working).
    */
   async stop(): Promise<void> {
     await this.halt();
-    await this.discardFrame();
+    if (this.host.desktop) await this.discardFrame();
   }
   private async halt(): Promise<void> {
     const before = await this.unitState(), recorded = this.state();

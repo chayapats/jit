@@ -38,6 +38,8 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   // A left click waits one double-click interval, so a double click reaches the computer as one `double` click
   // (both presses in one QMP batch) instead of two separate round trips the guest may not pair.
   const pendingClick = useRef<{ timer: ReturnType<typeof setTimeout>; send(): void } | undefined>(undefined);
+  // Screen input goes out one at a time, in the order the owner made it.
+  const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
   const viewRef = useRef<ScreenView | null>(null), screenRef = useRef<HTMLDivElement>(null), headingRef = useRef<HTMLHeadingElement>(null);
   viewRef.current = view;
   const fail = (failure: unknown) => { if (privateFailure(failure)) { onFailure(failure); return; } const reason = code(failure); if (reason === "stale_screen") setRefresh(value => value + 1); else setError(reason); };
@@ -101,9 +103,15 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     const mods = [event.ctrlKey && "ctrl", event.altKey && "alt", event.metaKey && "meta"].filter(Boolean) as string[];
     const name = named[event.key] ?? (mods.length && /^[a-zA-Z0-9]$/.test(event.key) ? event.key.toLowerCase() : null);
     // Shift is part of every forwarded combination (Ctrl+Shift+Z is not Ctrl+Z); alone with a character it is just typing.
-    if (name) { event.preventDefault(); void send({ kind: "input", input: { kind: "key", keys: [...mods, ...(event.shiftKey ? ["shift"] : []), name] } }); return; }
-    if (event.key.length === 1 && !mods.length) { event.preventDefault(); void send({ kind: "input", input: { kind: "text", text: event.key } }); }
+    if (name) { event.preventDefault(); input({ kind: "key", keys: [...mods, ...(event.shiftKey ? ["shift"] : []), name] }); return; }
+    if (event.key.length === 1 && !mods.length) { event.preventDefault(); input({ kind: "text", text: event.key }); }
   }
+  /** Queues one input after everything sent before it. */
+  function enqueue(next: VmScreenInput) { inputQueue.current = inputQueue.current.then(() => send({ kind: "input", input: next })); }
+  /** Sends a waiting single click now (where it was made), so it is never overtaken by later input. */
+  function flushClick() { const pending = pendingClick.current; if (!pending) return; clearTimeout(pending.timer); pendingClick.current = undefined; pending.send(); }
+  /** Every input other than a left click: a waiting click goes first, so typing lands where the owner clicked. */
+  function input(next: VmScreenInput) { flushClick(); enqueue(next); }
 
   useEffect(() => () => { clearTimeout(pendingClick.current?.timer); pendingClick.current = undefined; }, [driving]);
   function leftClick(event: MouseEvent<HTMLImageElement>) {
@@ -111,12 +119,12 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     const at = point(event), pending = pendingClick.current;
     if (pending) { clearTimeout(pending.timer); pendingClick.current = undefined; }
     // The second press of a browser double click replaces the pending single with one `double` click.
-    if (event.detail === 2 && pending) { void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: true } }); return; }
+    if (event.detail === 2 && pending) { enqueue({ kind: "click", ...at, button: "left", double: true }); return; }
     // Any other click first sends the pending single where it was made, so quick clicks at different places all arrive.
     pending?.send();
     // The third press of a triple click is not a further press on the computer.
     if (event.detail > 2) return;
-    const single = () => void send({ kind: "input", input: { kind: "click", ...at, button: "left", double: false } });
+    const single = () => enqueue({ kind: "click", ...at, button: "left", double: false });
     pendingClick.current = { send: single, timer: setTimeout(() => { pendingClick.current = undefined; single(); }, doubleClickMs) };
   }
 
@@ -142,15 +150,15 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
     <div ref={screenRef} className="screen-frame" tabIndex={driving ? 0 : -1} aria-label={driving ? t("s16.screen.keyboard") : undefined} onKeyDown={key}>
       {frame && view?.available && frame.generation === view.generation ? <img src={frame.url} width={view?.width ?? 1280} height={view?.height ?? 800} alt={t("s16.screen.alt", { computer: title })} draggable={false}
         onClick={leftClick}
-        onContextMenu={event => { if (!driving) return; event.preventDefault(); void send({ kind: "input", input: { kind: "click", ...point(event), button: "right", double: false } }); }}
-        onWheel={event => { if (driving && event.deltaY) void send({ kind: "input", input: { kind: "scroll", ...point(event), delta: Math.max(-5, Math.min(5, Math.round(event.deltaY / 100) || Math.sign(event.deltaY))) } }); }} />
+        onContextMenu={event => { if (!driving) return; event.preventDefault(); input({ kind: "click", ...point(event), button: "right", double: false }); }}
+        onWheel={event => { if (driving && event.deltaY) input({ kind: "scroll", ...point(event), delta: Math.max(-5, Math.min(5, Math.round(event.deltaY / 100) || Math.sign(event.deltaY))) }); }} />
         : view?.available && <p role="status">{t("s16.screen.waitingFrame")}</p>}
     </div>
-    {driving && <form className="screen-type" onSubmit={event => { event.preventDefault(); const value = typed; setTyped(""); if (value) void send({ kind: "input", input: { kind: "text", text: value } }); }}>
+    {driving && <form className="screen-type" onSubmit={event => { event.preventDefault(); const value = typed; setTyped(""); if (value) input({ kind: "text", text: value }); }}>
       <label>{t("s16.screen.typeLabel")} <input type={reveal ? "text" : "password"} value={typed} autoComplete="off" spellCheck={false} maxLength={512} onChange={event => setTyped(event.target.value)} /></label>
       <label><input type="checkbox" checked={reveal} onChange={event => setReveal(event.target.checked)} /> {t("s16.screen.show")}</label>
       <button type="submit" disabled={busy || !typed}>{t("s16.screen.send")}</button>
-      {(["ret", "tab", "esc", "backspace"] as const).map(name => <button key={name} type="button" disabled={busy} onClick={() => void send({ kind: "input", input: { kind: "key", keys: [name] } })}>{t(`s16.screen.key.${name}` as MessageKey)}</button>)}
+      {(["ret", "tab", "esc", "backspace"] as const).map(name => <button key={name} type="button" disabled={busy} onClick={() => input({ kind: "key", keys: [name] })}>{t(`s16.screen.key.${name}` as MessageKey)}</button>)}
       <p className="limits">{t("s16.screen.typeHint")}</p>
     </form>}
   </section>;
