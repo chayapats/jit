@@ -4,7 +4,7 @@ import type { ScreenCommand, ScreenView } from "../computers/screen";
 import type { VmScreenInput } from "../../s15/vm/screen";
 import type { MessageKey } from "../../i18n";
 import type { Copy } from "./copy";
-import { screenInputQueue, screenPin, type ScreenInputQueue, type ScreenPin } from "./screenInput";
+import { editDraft, emptyDraft, liveDraft, screenInputQueue, screenPin, type ScreenDraft, type ScreenInputQueue, type ScreenPin } from "./screenInput";
 
 /** Props for one computer's live screen (DESK16-01). Every fact comes from `s16-computer-screen/v1`. */
 export interface ComputerScreenProps {
@@ -33,7 +33,7 @@ const named: Record<string, string> = { Enter: "ret", Escape: "esc", Backspace: 
 export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: ComputerScreenProps) {
   const [view, setView] = useState<ScreenView | null>(null), [frame, setFrame] = useState<{ url: string; generation: number } | null>(null);
   const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false), [refresh, setRefresh] = useState(0);
-  const [typed, setTyped] = useState(""), [reveal, setReveal] = useState(false);
+  const [draft, setDraft] = useState<ScreenDraft>(emptyDraft), [reveal, setReveal] = useState(false);
   // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
   const commands = useRef(0);
   // A left click waits one double-click interval, so a double click reaches the computer as one `double` click
@@ -58,7 +58,7 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   useEffect(() => { headingRef.current?.focus(); }, []);
 
   // Frames under the generation last seen; a stale frame reloads the state instead of showing an old screen.
-  const generation = view?.available ? view.generation : null, driving = view?.state === "owner";
+  const generation = view?.available ? view.generation : null, driving = view?.state === "owner", takeoverId = view?.takeoverId ?? null;
   useEffect(() => {
     if (generation === null) { setFrame(null); return; }
     const stop = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined, url: string | null = null;
@@ -124,7 +124,16 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
   /** Every input other than a left click: a waiting click goes first, so typing lands where the owner clicked. */
   function input(next: VmScreenInput) { flushClick(); enqueue(next); }
 
-  useEffect(() => () => { clearTimeout(pendingClick.current?.timer); pendingClick.current = undefined; }, [driving]);
+  // A change of control (hand-back, fencing, a new takeover from any tab) ends what the owner was composing: typed
+  // text, the "show" choice and a waiting click never carry over to another takeover.
+  useEffect(() => () => { clearTimeout(pendingClick.current?.timer); pendingClick.current = undefined; setDraft(emptyDraft); setReveal(false); }, [driving, generation, takeoverId]);
+  // What the field shows and Send sends: only text typed under the control in force now.
+  const typed = liveDraft(draft, view);
+  function submitTyped() {
+    const value = liveDraft(draft, viewRef.current); setDraft(emptyDraft);
+    // The text goes out under the takeover it was typed in; the queue drops it if that control has ended.
+    if (value.text) { flushClick(); enqueue({ kind: "text", text: value.text }, value.pin); }
+  }
   function leftClick(event: MouseEvent<HTMLImageElement>) {
     if (!driving) return;
     // The click belongs to the takeover in force now, even if it is sent after the double-click wait.
@@ -166,10 +175,10 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
         onWheel={event => { if (driving && event.deltaY) input({ kind: "scroll", ...point(event), delta: Math.max(-5, Math.min(5, Math.round(event.deltaY / 100) || Math.sign(event.deltaY))) }); }} />
         : view?.available && <p role="status">{t("s16.screen.waitingFrame")}</p>}
     </div>
-    {driving && <form className="screen-type" onSubmit={event => { event.preventDefault(); const value = typed; setTyped(""); if (value) input({ kind: "text", text: value }); }}>
-      <label>{t("s16.screen.typeLabel")} <input type={reveal ? "text" : "password"} value={typed} autoComplete="off" spellCheck={false} maxLength={512} onChange={event => setTyped(event.target.value)} /></label>
+    {driving && <form className="screen-type" onSubmit={event => { event.preventDefault(); submitTyped(); }}>
+      <label>{t("s16.screen.typeLabel")} <input type={reveal ? "text" : "password"} value={typed.text} autoComplete="off" spellCheck={false} maxLength={512} onChange={event => setDraft(editDraft(viewRef.current, event.target.value))} /></label>
       <label><input type="checkbox" checked={reveal} onChange={event => setReveal(event.target.checked)} /> {t("s16.screen.show")}</label>
-      <button type="submit" disabled={busy || !typed}>{t("s16.screen.send")}</button>
+      <button type="submit" disabled={busy || !typed.text}>{t("s16.screen.send")}</button>
       {(["ret", "tab", "esc", "backspace"] as const).map(name => <button key={name} type="button" disabled={busy} onClick={() => input({ kind: "key", keys: [name] })}>{t(`s16.screen.key.${name}` as MessageKey)}</button>)}
       <p className="limits">{t("s16.screen.typeHint")}</p>
     </form>}

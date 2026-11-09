@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ScreenView } from "../src/s16/computers/screen";
 import type { VmScreenInput } from "../src/s15/vm/screen";
-import { screenInputQueue, screenPin, type ScreenPin } from "../src/s16/web/screenInput";
+import { editDraft, emptyDraft, liveDraft, screenInputQueue, screenPin, type ScreenPin } from "../src/s16/web/screenInput";
 
 const view = (state: ScreenView["state"], generation: number, takeoverId: string | null): ScreenView => ({
   contract: "s16-computer-screen/v1", vmId: "vm1", available: true, code: null, width: 1280, height: 800,
@@ -71,5 +71,35 @@ describe("screen input queue (DESK16-01)", () => {
     const queue = screenInputQueue(async () => { calls++; if (calls === 1) throw new Error("network"); }, () => current);
     queue.push(key("a"), pin); queue.push(key("b"), pin); await settle(); await settle();
     expect(calls).toBe(2);
+  });
+});
+
+describe("typed text stays with its takeover (DESK16-01)", () => {
+  /** The panel's Send: the field's live draft goes out under the pin it was typed with. */
+  const submit = (h: ReturnType<typeof harness>, draft: ReturnType<typeof editDraft>, now: ScreenView) => {
+    const value = liveDraft(draft, now); if (value.text) h.queue.push({ kind: "text", text: value.text }, value.pin);
+  };
+
+  test("text typed under takeover A is not sent after takeover B", async () => {
+    const a = view("owner", 4, "t1"), b = view("owner", 5, "t2"), h = harness(a);
+    const draft = editDraft(a, "Owner-Pass1");
+    expect(draft).toEqual({ text: "Owner-Pass1", pin: { generation: 4, takeoverId: "t1" } });
+    // Hand-back and a new takeover (this tab or another) while the text sits in the field.
+    for (const between of [view("agent", 5, null), view("fenced", 4, null), b]) expect(liveDraft(draft, between)).toEqual(emptyDraft);
+    h.set(b); submit(h, draft, b); await settle();
+    expect(h.sent).toEqual([]);
+    // Even if a stale draft reached the queue, it keeps takeover A's pin and is dropped under B.
+    h.queue.push({ kind: "text", text: draft.text }, draft.pin); await settle();
+    expect(h.sent).toEqual([]);
+    // Text typed under B goes out under B.
+    submit(h, editDraft(b, "new"), b); await settle();
+    expect(h.sent).toEqual([{ input: { kind: "text", text: "new" }, pin: { generation: 5, takeoverId: "t2" } }]);
+  });
+
+  test("the draft lasts while the same takeover is in force; nothing is composed while not driving", () => {
+    const a = view("owner", 4, "t1"), draft = editDraft(a, "abc");
+    expect(liveDraft(draft, view("owner", 4, "t1"))).toBe(draft);
+    expect(editDraft(view("agent", 4, null), "abc")).toEqual(emptyDraft);
+    expect(editDraft(a, "")).toEqual(emptyDraft);
   });
 });
