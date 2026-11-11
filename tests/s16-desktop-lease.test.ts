@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, createServer } from "node:net";
+import { AppError } from "../src/errors";
 import { ConnectionVault } from "../src/exec/connections";
 import { websiteSensitiveOnly } from "../src/s15/browser/sites";
 import { VmEnrollment } from "../src/s15/vm/enrollment";
@@ -31,11 +32,11 @@ const request = (target: string, authorization: string) => `CONNECT ${target} HT
 const sensitive = (host: string) => websiteSensitiveOnly(`https://${host}`);
 
 /** A public-web proxy whose DNS and upstream are scripted; `upstream` answers every admitted CONNECT. */
-async function proxyFixture(resolveTo = "93.184.216.34") {
-  const upstream = createServer(socket => socket.end());
+async function proxyFixture(resolveTo = "93.184.216.34", limits: { bytesPerSession?: number; reply?: number } = {}) {
+  const upstream = createServer(socket => socket.end(Buffer.alloc(limits.reply ?? 0)));
   await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve)); cleanups.push(() => new Promise<void>(resolve => upstream.close(() => resolve())));
   const upstreamPort = (upstream.address() as { port: number }).port, lookups: string[] = [], logs: VmProxyLog[] = [];
-  const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", guestHostname: "127.0.0.1", port: 0, hosts: ["registry.test"], publicWeb: true, log: e => logs.push(e),
+  const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", guestHostname: "127.0.0.1", port: 0, hosts: ["registry.test"], publicWeb: true, log: e => logs.push(e), ...(limits.bytesPerSession ? { bytesPerSession: limits.bytesPerSession } : {}),
     resolve: async host => { lookups.push(host); return [{ address: resolveTo, family: 4 }]; }, connect: () => connect(upstreamPort, "127.0.0.1") });
   cleanups.unshift(proxy.close);
   return { proxy, lookups, logs };
@@ -77,6 +78,18 @@ describe("desktop lease host filter in the proxy", () => {
     expect(() => lease.renew!(Date.now() - 1)).toThrow(expect.objectContaining({ code: "vm_proxy_unavailable" }));
     lease.close(); lease.renew!(Date.now() + 10_000);
     expect(await exchange(proxy.port, request("news.example.co.th:443", auth(lease)))).toContain("407");
+  });
+  test("renew starts a fresh byte allowance; an unrenewed (work-session) lease stays spent", async () => {
+    const { proxy } = await proxyFixture("93.184.216.34", { bytesPerSession: 64, reply: 200 });
+    const desktop = proxy.lease("desktop_vm_1", Date.now() + 10_000, undefined, { deny: sensitive }), work = proxy.lease("work_session_1", Date.now() + 10_000);
+    for (const lease of [desktop, work]) {
+      expect(await exchange(proxy.port, request("news.example.co.th:443", auth(lease)))).toContain("200 Connection Established");
+      await Bun.sleep(20);
+      expect(await exchange(proxy.port, request("news.example.co.th:443", auth(lease)))).not.toContain("200 Connection Established");
+    }
+    desktop.renew!(Date.now() + 10_000);
+    expect(await exchange(proxy.port, request("news.example.co.th:443", auth(desktop)))).toContain("200 Connection Established");
+    expect(await exchange(proxy.port, request("news.example.co.th:443", auth(work)))).not.toContain("200 Connection Established");
   });
 });
 
@@ -138,6 +151,14 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
     h.units.clear(); h.processes.clear(); for (const disk of h.disks.values()) disk.locked = false;
     l.beats[0]!.beat(); await flush();
     expect(l.issued[0]!.closed).toBe(true); expect(l.issued[0]!.renewals).toEqual([]); expect(m.desktopLeaseHeld).toBe(false);
+  });
+  test("a proxy that cannot issue a lease (full pool) leaves the VM running without one", async () => {
+    const h = host(), l = leases();
+    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options, desktopLease: () => { throw new AppError("vm_proxy_unavailable", 503); } });
+    await m.provision();
+    expect((await m.inspect()).state).toBe("running"); expect(m.desktopLeaseHeld).toBe(false); expect(l.beats).toEqual([]); expect(h.desktopLeases).toEqual([]);
+    await m.stop(); await m.start();
+    expect((await m.inspect()).state).toBe("running"); expect(m.desktopLeaseHeld).toBe(false);
   });
   test("a guest without the desktop group gets no lease; a headless controller issues none", async () => {
     const h = host(false), l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options });

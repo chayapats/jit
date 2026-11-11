@@ -356,14 +356,17 @@ export class QemuVmManagement implements VmLocalManagement {
    * work-session lease. A fresh lease is issued after each boot and when a controller re-attaches a VM that survived
    * its restart (the restarted proxy holds no lease). It is written over SSH to `/etc/jit-desktop/proxy.env`
    * (`0640 root:jit-desktop`) only when the guest has the desktop session's group; otherwise, or when delivery fails,
-   * it is revoked at once and the guest has no desktop lease. A held lease is renewed while the VM runs and revoked
+   * it is revoked at once and the guest has no desktop lease. A proxy that cannot issue one (e.g. its lease pool is
+   * full) likewise leaves the VM running without a desktop lease until its next boot or re-attachment. A held lease is renewed while the VM runs and revoked
    * before every stop (owner stop, idle stop, restore). A delivery failure never fails the start.
    */
   private async openDesktopLease(signal?: AbortSignal): Promise<void> {
     const issue = this.host.desktopLease; if (!issue || !this.host.desktop) return;
     this.closeDesktopLease(); const epoch = this.#desktopEpoch;
     // Expiry is judged by the proxy's own wall clock, like work-session and provisioning leases.
-    const lease = issue(`desktop_${this.identity.name}_${randomBytes(12).toString("hex")}`, Date.now() + desktopLeaseMs);
+    // The browser lease is optional: a full or unavailable proxy leaves this VM without one, never fails the start.
+    let lease: VmProxyLease;
+    try { lease = issue(`desktop_${this.identity.name}_${randomBytes(12).toString("hex")}`, Date.now() + desktopLeaseMs); } catch { return; }
     let delivered = false;
     try {
       const out = await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],

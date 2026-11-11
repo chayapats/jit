@@ -19,7 +19,11 @@ export interface VmProxyLog { sessionId: string; host: string; sentBytes: number
 /** A per-session narrow proxy lease, not an account credential or a Jit control-plane capability. */
 export interface VmProxyLease {
   environment: Readonly<Record<string, string>>; close(): void;
-  /** Moves this lease's expiry (a standing lease is renewed while its VM runs); a closed lease stays closed. */
+  /**
+   * Moves this lease's expiry (a standing lease is renewed while its VM runs) and starts a fresh byte allowance,
+   * so a standing lease carries at most `bytesPerSession` per renewal period. Work-session leases are never
+   * renewed and keep one allowance for their whole life. A closed lease stays closed.
+   */
   renew?(expiresAt: number): void;
 }
 /** Per-lease rules beyond the proxy's shared host settings. */
@@ -182,7 +186,7 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
       const url = `http://${sessionId}:${password}@${options.guestHostname}:${guestPort}`;
       return { environment: Object.freeze(Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map(k => [k, url]))),
         close() { sessions.delete(sessionId); for (const s of session.sockets) s.destroy(); },
-        renew(next) { if (sessions.get(sessionId) !== session) return; if (!Number.isFinite(next) || next <= Date.now()) vmFail("vm_proxy_unavailable"); session.expiresAt = next; } };
+        renew(next) { if (sessions.get(sessionId) !== session) return; if (!Number.isFinite(next) || next <= Date.now()) vmFail("vm_proxy_unavailable"); session.expiresAt = next; session.bytes = 0; } };
     },
     setHosts(next) {
       if (!next.length || next.length > 128 || next.some(h => typeof h !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h)) || new Set(next).size !== next.length) vmFail("vm_invalid_setup");
