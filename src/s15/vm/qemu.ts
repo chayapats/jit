@@ -384,6 +384,9 @@ export class QemuVmManagement implements VmLocalManagement {
   private async openDesktopLease(signal?: AbortSignal, install?: (sessionId: string, expiresAt: number) => VmProxyLease): Promise<void> {
     if (!this.host.desktopLease || !this.host.desktop) return;
     this.revokeDesktopLease(); const epoch = this.#desktopEpoch, abort = this.#desktopAbort.signal;
+    // Only a VM whose restricted profile is proven now gets standing web access.
+    try { if (!this.isolated(await this.inspect())) return; } catch { return; }
+    if (epoch !== this.#desktopEpoch) return;
     const stop = signal ? AbortSignal.any([signal, abort]) : abort;
     const result = await this.deliverDesktopLease(epoch, stop);
     if (result === "absent" && install && !this.#desktopInstallTried && epoch === this.#desktopEpoch) {
@@ -400,7 +403,7 @@ export class QemuVmManagement implements VmLocalManagement {
     let out = "";
     try {
       out = (await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],
-        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "" })), signal })).trim();
+        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "", version: qemuDesktopBrowser.version })), signal })).trim();
     } catch { out = ""; }
     if (out !== "jit-desktop-lease-v1" || epoch !== this.#desktopEpoch) { lease.close(); return out === "jit-desktop-absent-v1" ? "absent" : "failed"; }
     this.#desktopLease = lease;
@@ -427,25 +430,30 @@ export class QemuVmManagement implements VmLocalManagement {
    *   session first if a provisioning lease source exists and this boot has not tried yet;
    * - `inspect()` failed transiently (QMP busy with a live snapshot, a management timeout): skip this beat and keep
    *   the lease; its 30-minute expiry outlives one missed renewal;
-   * - the VM is proven not running, or its boundary is unproven (`vm_boundary_unproven`): revoke, failing closed.
+   * - the VM is proven not running, its boundary is unproven (`vm_boundary_unproven`) or its network profile is not
+   *   proven (`network` other than `proxy-only`): revoke and issue nothing, failing closed.
    *   A VM that is no longer running also ends the beat; its next protected start begins a new one.
    * A beat that finds earlier desktop work still in flight does nothing.
    */
   private async desktopBeat(): Promise<void> {
     if (this.#desktopWork) return;
     const epoch = this.#desktopEpoch;
-    let state: VmMachineState["state"];
-    try { state = (await this.inspect()).state; }
+    let machine: VmMachineState;
+    try { machine = await this.inspect(); }
     catch (error) {
       if (error instanceof AppError && error.code === "vm_boundary_unproven" && epoch === this.#desktopEpoch) this.revokeDesktopLease();
       return;
     }
     if (epoch !== this.#desktopEpoch || this.#desktopWork) return;
-    if (state !== "running") { this.endDesktop(); return; }
+    if (machine.state !== "running") { this.endDesktop(); return; }
+    // A running VM whose restricted network profile is not proven (e.g. an extra device) keeps no lease and gets none.
+    if (!this.isolated(machine)) { this.revokeDesktopLease(); return; }
     const held = this.#desktopLease;
     if (held) { try { held.renew?.(Date.now() + desktopLeaseMs); } catch { this.revokeDesktopLease(); } return; }
     await this.desktopTurn(() => this.openDesktopLease(undefined, this.host.provisionLease));
   }
+  /** Whether an inspected VM is running with its restricted, proxy-only network profile proven. */
+  private isolated(machine: VmMachineState): boolean { return machine.state === "running" && machine.network === "proxy-only"; }
   /** Runs one piece of desktop lease work at a time; a caller that must act waits for the earlier one to settle. */
   private async desktopTurn(work: () => Promise<void>): Promise<void> {
     while (this.#desktopWork) await this.#desktopWork;
@@ -705,11 +713,16 @@ const repeat = (beat: () => void, milliseconds: number) => { const timer = setIn
 /**
  * Fixed guest program (DESK16-01): writes the desktop lease read from stdin to `/etc/jit-desktop/proxy.env`, mode
  * 0640, owner root, group `jit-desktop` (the desktop session's unprivileged user), replacing it atomically. A guest
- * without that group gets nothing written. The file is an environment file for the desktop session's unit.
+ * whose desktop session is not completely installed at the pinned version (no `/opt/jit-desktop/ready-v1` naming
+ * it, which the installer writes last) or has no such group gets nothing written and reports it absent, so a
+ * partial or outdated install is installed again. The file is an environment file for the desktop session's unit.
  */
 export const qemuDesktopLeaseWriter = `import grp,json,os,stat,sys
-p=json.loads(sys.stdin.read(4096))['proxy']
+a=json.loads(sys.stdin.read(4096));p,v=a['proxy'],a['version']
 if not p.startswith('http://') or any(c in p for c in '\\n\\r\\0 "$\\'\\\\'):print('jit-desktop-lease-invalid-v1');sys.exit(0)
+try:r=open('/opt/jit-desktop/ready-v1').read().strip()==v
+except OSError:r=False
+if not r:print('jit-desktop-absent-v1');sys.exit(0)
 try:g=grp.getgrnam('jit-desktop').gr_gid
 except KeyError:print('jit-desktop-absent-v1');sys.exit(0)
 d='/etc/jit-desktop'
@@ -749,9 +762,10 @@ export const qemuDesktopBrowser = Object.freeze({
  * - enables `jit-desktop-proxy.service` (127.0.0.1:3129 → the guest-forwarded proxy, adding `Proxy-Authorization`
  *   from `/etc/jit-desktop/proxy.env` read per connection, since Chromium takes no credentials in a proxy URL) and
  *   `jit-desktop.service` (Xorg + fluxbox + the browser on vt7 as `jit-desktop`; the browser restarts if it exits).
- * Prints `jit-desktop-ready-v1` only when every step succeeded.
+ * Prints `jit-desktop-ready-v1` and writes `/opt/jit-desktop/ready-v1` (the version; removed when an install starts)
+ * only when every step succeeded and both units and the pinned browser have stayed up for three checks in a row.
  */
-export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,shutil,subprocess,sys,zipfile
+export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,shutil,subprocess,sys,time,zipfile
 a=json.loads(sys.stdin.read(8192))
 p,u,h,v=a['proxy'],a['url'],a['sha256'],a['version']
 if not p.startswith('http://') or not u.startswith('https://') or len(h)!=64 or not all(c in '0123456789abcdef' for c in h) or not all(c.isdigit() or c=='.' for c in v):print('jit-desktop-invalid-v1');sys.exit(0)
@@ -867,6 +881,9 @@ profile jit-desktop-chrome /opt/jit-desktop/chrome-*/chrome flags=(unconfined) {
 }
 '''
 try:
+ # The completion marker goes first and is written last, so a partial install never counts as installed.
+ try:os.unlink(R+'/ready-v1')
+ except FileNotFoundError:pass
  subprocess.run(['groupadd','--system','-f','jit-desktop'],**q)
  try:pwd.getpwnam('jit-desktop')
  except KeyError:subprocess.run(['useradd','--system','--gid','jit-desktop','--groups','video,input,render','--home-dir','/var/lib/jit-desktop','--create-home','--shell','/usr/sbin/nologin','jit-desktop'],**q)
@@ -899,7 +916,15 @@ try:
  subprocess.run(['apparmor_parser','-r','/etc/apparmor.d/jit-desktop-chrome'],timeout=120,**{**q,'check':False})
  subprocess.run(['systemctl','daemon-reload'],timeout=120,**q)
  subprocess.run(['systemctl','enable','--now','jit-desktop-proxy.service','jit-desktop.service'],timeout=120,**q)
- put(R+'/ready-v1',v+'\n')
+ # Installed means running: both units active and the pinned browser up as jit-desktop on three checks in a row.
+ k=0
+ for _ in range(60):
+  up=subprocess.run(['systemctl','is-active','--quiet','jit-desktop-proxy.service','jit-desktop.service'],timeout=30,**{**q,'check':False}).returncode==0 and subprocess.run(['pgrep','-u','jit-desktop','-f',B+'/chrome'],timeout=30,**{**q,'check':False}).returncode==0
+  k=k+1 if up else 0
+  if k>=3:break
+  time.sleep(2)
+ if k<3:print('jit-desktop-missing-v1');sys.exit(0)
+ os.makedirs(R,mode=0o755,exist_ok=True);put(R+'/ready-v1',v+'\n')
  print('jit-desktop-ready-v1')
 except (OSError,ValueError,KeyError,zipfile.BadZipFile,subprocess.SubprocessError):print('jit-desktop-missing-v1')
 `;

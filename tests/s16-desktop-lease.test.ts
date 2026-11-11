@@ -199,6 +199,20 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
     await l.beats[0]!.beat();
     expect(l.issued).toHaveLength(2); expect(m.desktopLeaseHeld).toBe(true);
   });
+  test("a running VM whose network profile is not proven gets no lease and loses a held one (Greptile #455)", async () => {
+    const h = host(), l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options });
+    await m.provision();
+    const [unit] = [...h.units.values()], process = h.processes.get(unit!.pid)!, argv = process.argv;
+    process.argv = [...argv, "-device", "e1000,netdev=extra"];
+    expect(await m.inspect()).toMatchObject({ state: "running", network: "unproven" });
+    await l.beats[0]!.beat();
+    expect(l.issued[0]!.closed).toBe(true); expect(l.issued[0]!.renewals).toEqual([]); expect(m.desktopLeaseHeld).toBe(false);
+    await l.beats[0]!.beat(); await m.reattached();
+    expect(l.issued).toHaveLength(1); expect(m.desktopLeaseHeld).toBe(false);
+    process.argv = argv;
+    await l.beats[0]!.beat();
+    expect(l.issued).toHaveLength(2); expect(m.desktopLeaseHeld).toBe(true);
+  });
   test("a guest without the desktop session and no install source gets no lease; the beat keeps trying; headless issues none", async () => {
     const h = host(false), l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options });
     await m.provision();
@@ -261,12 +275,26 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
 });
 
 describe("guest lease writer", () => {
-  const run = (proxy: string) => spawnSync("python3", ["-I", "-c", qemuDesktopLeaseWriter], { input: JSON.stringify({ proxy }), encoding: "utf8" });
+  const run = (proxy: string, program = qemuDesktopLeaseWriter) => spawnSync("python3", ["-I", "-c", program], { input: JSON.stringify({ proxy, version: qemuDesktopBrowser.version }), encoding: "utf8" });
   test("refuses a lease URL that could break the environment file, and writes nothing without the desktop group", () => {
     const python = spawnSync("python3", ["-c", "import grp;grp.getgrnam('jit-desktop')"]);
     if (python.error) return; // No python3 on this runner; the fixed program is exercised in live evidence.
     for (const bad of ["https://a:b@192.168.5.100:3128", "http://a:b@192.168.5.100:3128\nLD_PRELOAD=/x", "http://a b@h:1", "http://a:'b@h:1", "http://a:b$HOME@h:1"]) expect(run(bad).stdout.trim()).toBe("jit-desktop-lease-invalid-v1");
     if (python.status !== 0) expect(run("http://desktop_x:abc@192.168.5.100:3128").stdout.trim()).toBe("jit-desktop-absent-v1");
+  });
+  test("a partial or outdated install (no completion marker for the pinned version) counts as absent even with the group (Greptile #455)", () => {
+    const group = spawnSync("python3", ["-c", "import grp,os;print(grp.getgrgid(os.getgid()).gr_name)"], { encoding: "utf8" });
+    if (group.error || group.status !== 0) return;
+    const dir = mkdtempSync(join(tmpdir(), "jit-marker-")), marker = join(dir, "ready-v1"); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    // The runner's own group stands in for `jit-desktop`; the marker path is the only other change.
+    const program = qemuDesktopLeaseWriter.replace("'/opt/jit-desktop/ready-v1'", `'${marker}'`).replace("grp.getgrnam('jit-desktop')", `grp.getgrnam('${group.stdout.trim()}')`).replace("d='/etc/jit-desktop'", `d='${join(dir, "etc")}'`);
+    const lease = "http://desktop_x:abc@192.168.5.100:3128";
+    expect(run(lease, program).stdout.trim()).toBe("jit-desktop-absent-v1");
+    writeFileSync(marker, "1.0.0.0\n");
+    expect(run(lease, program).stdout.trim()).toBe("jit-desktop-absent-v1");
+    writeFileSync(marker, `${qemuDesktopBrowser.version}\n`);
+    // Past the marker and group checks the writer reaches its directory checks (not root-owned here), never "absent".
+    expect(run(lease, program).stdout.trim()).not.toBe("jit-desktop-absent-v1");
   });
 });
 
@@ -285,6 +313,10 @@ describe("guest desktop session program", () => {
     expect(qemuDesktopProvisioning).not.toContain("--no-sandbox");
     expect(qemuDesktopProvisioning).toContain("--proxy-server=http://127.0.0.1:3129");
     expect(qemuDesktopProvisioning).not.toMatch(/sudoers|NOPASSWD/);
+    // The completion marker is removed before anything else and written only after the running session is verified.
+    const at = (text: string) => qemuDesktopProvisioning.indexOf(text);
+    expect(at("os.unlink(R+'/ready-v1')")).toBeGreaterThan(-1); expect(at("os.unlink(R+'/ready-v1')")).toBeLessThan(at("'groupadd'"));
+    expect(at("'is-active'")).toBeGreaterThan(at("'enable','--now'")); expect(at("put(R+'/ready-v1'")).toBeGreaterThan(at("if k<3:"));
   });
   test("the loopback forwarder adds the lease's Proxy-Authorization, replacing any the client sent, and refuses without a lease", async () => {
     if (spawnSync("python3", ["-c", "1"]).error) return;

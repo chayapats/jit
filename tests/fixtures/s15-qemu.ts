@@ -161,7 +161,8 @@ export class FakeQemuHost {
     this.guestCommands.push(remote);
     const out = (s: string) => ({ exitCode: 0, stdout: Buffer.from(s) });
     if (remote.includes('cloud-init')) return out('jit-cloud-init:0\n');
-    if (remote.includes('jit-desktop-lease-v1')) { this.desktopLeases.push(JSON.parse(Buffer.from(input ?? []).toString()).proxy); return out(this.guestDesktopGroup ? 'jit-desktop-lease-v1\n' : 'jit-desktop-absent-v1\n'); }
+    // `guestDesktopGroup` stands for a completely installed session at the requested pinned version.
+    if (remote.includes('jit-desktop-lease-v1')) { const request = JSON.parse(Buffer.from(input ?? []).toString()); this.desktopLeases.push(request.proxy); return out(this.guestDesktopGroup && typeof request.version === 'string' ? 'jit-desktop-lease-v1\n' : 'jit-desktop-absent-v1\n'); }
     if (remote.includes('jit-desktop-ready-v1')) {
       const request = JSON.parse(Buffer.from(input ?? []).toString()); this.desktopInstalls.push(request);
       if (this.desktopInstallFails || !String(request.proxy).includes('@192.168.5.100:3128')) return out('jit-desktop-missing-v1\n');
