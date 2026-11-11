@@ -51,6 +51,11 @@ export interface VmManagement {
    * stopped. The caller re-verifies identity and egress before admitting work.
    */
   resume?(signal?: AbortSignal): Promise<boolean>;
+  /**
+   * Optional hook after the caller re-verified a VM that survived a controller restart (DESK16-01: a desktop VM
+   * gets a fresh desktop browser lease, since the restarted proxy holds none). Failure never fences the VM.
+   */
+  reattached?(signal?: AbortSignal): Promise<void>;
 }
 /** Immutable operation supplied to the policy consumer; the payload is credential-free exact runner input. */
 export interface VmPolicyOperation {

@@ -17,7 +17,19 @@ export const defaultVmRegistryHosts: readonly string[] = Object.freeze([
 /** Destination-only network observation. Paths, queries, headers, payloads and proxy credentials are never logged. */
 export interface VmProxyLog { sessionId: string; host: string; sentBytes: number; receivedBytes: number; state: "closed" | "denied" }
 /** A per-session narrow proxy lease, not an account credential or a Jit control-plane capability. */
-export interface VmProxyLease { environment: Readonly<Record<string, string>>; close(): void }
+export interface VmProxyLease {
+  environment: Readonly<Record<string, string>>; close(): void;
+  /** Moves this lease's expiry (a standing lease is renewed while its VM runs); a closed lease stays closed. */
+  renew?(expiresAt: number): void;
+}
+/** Per-lease rules beyond the proxy's shared host settings. */
+export interface VmProxyLeaseRules {
+  /**
+   * DESK16-01 (ADR 0091 decision 5): hosts this lease must never reach, judged on the requested name before DNS for
+   * every host (registry and public web alike). A refusal is logged as `denied`. A filter that throws refuses.
+   */
+  deny?: (host: string) => boolean;
+}
 /** Protected proxy settings and deterministic DNS/connect seams. No upstream credential injection exists. */
 export interface VmRegistryProxyOptions {
   hostname: string; port: number; guestHostname: string; hosts?: readonly string[];
@@ -70,7 +82,7 @@ export function vmPublicWebHost(host: string): boolean {
 }
 /** Starts a protected finite CONNECT/HTTP proxy. TLS is passthrough: registries see metadata/content; this is not a disclosure firewall. */
 export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Promise<{
-  port: number; lease(sessionId: string, expiresAt: number, authorize?: (host: string) => void): VmProxyLease; setHosts(hosts: readonly string[]): void; close(): Promise<void>;
+  port: number; lease(sessionId: string, expiresAt: number, authorize?: (host: string) => void, rules?: VmProxyLeaseRules): VmProxyLease; setHosts(hosts: readonly string[]): void; close(): Promise<void>;
 }> {
   const hosts = new Set(options.hosts ?? defaultVmRegistryHosts);
   const publicWeb = options.publicWeb === true;
@@ -79,7 +91,7 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
   if (options.socketPath !== undefined && (!options.socketPath.startsWith("/") || Buffer.byteLength(options.socketPath) > 100 || options.guestPort === undefined)) vmFail("vm_invalid_setup");
   const maxBytes = options.bytesPerSession ?? 536870912, maxConnections = options.maxConnections ?? 32, connectionMs = options.connectionMs ?? 300000;
   vmInteger(maxBytes, 1073741824); vmInteger(maxConnections, 128); vmInteger(connectionMs, 600000);
-  const sessions = new Map<string, { auth: string; expiresAt: number; bytes: number; sockets: Set<Socket>; authorize?: (host: string) => void }>(), sockets = new Set<Socket>();
+  const sessions = new Map<string, { auth: string; expiresAt: number; bytes: number; sockets: Set<Socket>; authorize?: (host: string) => void; deny?: (host: string) => boolean }>(), sockets = new Set<Socket>();
   const resolve = options.resolve ?? (host => lookup(host, { all: true, verbatim: true }));
   const upstream = options.connect ?? ((address, port) => connect({ host: address, port }));
   const server = createServer(client => {
@@ -114,6 +126,7 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
         host = destination.hostname.toLowerCase(); port = 80;
       }
       const denied = () => { options.log({ sessionId, host: redactCredentials(host), sentBytes: 0, receivedBytes: 0, state: "denied" }); refuse(); };
+      if (session.deny) { let refused = true; try { refused = session.deny(host); } catch { /* A failing filter refuses. */ } if (refused) return denied(); }
       const registry = hosts.has(host), authorize = registry ? session.authorize : undefined;
       if (!registry && !(publicWeb && vmPublicWebHost(host))) return denied();
       try { authorize?.(host); } catch { return denied(); }
@@ -160,14 +173,16 @@ export async function startVmRegistryProxy(options: VmRegistryProxyOptions): Pro
   else if (!address || typeof address === "string") vmFail("vm_proxy_unavailable");
   const listenerPort = typeof address === "object" && address ? address.port : 0, guestPort = options.guestPort ?? listenerPort;
   return { port: listenerPort,
-    lease(sessionId, expiresAt, authorize) {
+    lease(sessionId, expiresAt, authorize, rules) {
       vmId(sessionId); if (sessions.has(sessionId) || sessions.size >= 64 || expiresAt <= Date.now()) vmFail("vm_proxy_unavailable");
+      if (rules?.deny !== undefined && typeof rules.deny !== "function") vmFail("vm_invalid_setup");
       const password = randomBytes(24).toString("hex"), auth = `Basic ${Buffer.from(`${sessionId}:${password}`).toString("base64")}`;
       registerSecretFingerprint(password); registerSecretFingerprint(auth);
-      const session = { auth, expiresAt, bytes: 0, sockets: new Set<Socket>(), ...(authorize ? { authorize } : {}) }; sessions.set(sessionId, session);
+      const session = { auth, expiresAt, bytes: 0, sockets: new Set<Socket>(), ...(authorize ? { authorize } : {}), ...(rules?.deny ? { deny: rules.deny } : {}) }; sessions.set(sessionId, session);
       const url = `http://${sessionId}:${password}@${options.guestHostname}:${guestPort}`;
       return { environment: Object.freeze(Object.fromEntries(["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map(k => [k, url]))),
-        close() { sessions.delete(sessionId); for (const s of session.sockets) s.destroy(); } };
+        close() { sessions.delete(sessionId); for (const s of session.sockets) s.destroy(); },
+        renew(next) { if (sessions.get(sessionId) !== session) return; if (!Number.isFinite(next) || next <= Date.now()) vmFail("vm_proxy_unavailable"); session.expiresAt = next; } };
     },
     setHosts(next) {
       if (!next.length || next.length > 128 || next.some(h => typeof h !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h) || isIP(h)) || new Set(next).size !== next.length) vmFail("vm_invalid_setup");

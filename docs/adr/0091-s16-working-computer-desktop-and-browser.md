@@ -65,7 +65,7 @@ while the owner holds control, or per-site approval). What Rakazo does, read fro
 6. **Pinned browser.** Ubuntu 26.04 ships Chromium only as a snap, which needs snapd and store egress. Proposed:
    install a version-pinned Chromium build with a recorded SHA-256 for x86_64 and arm64 through the existing bounded
    provisioning lease, like the Docker install. The alternative is Firefox ESR from Mozilla's apt repository with
-   its signing key pinned. Open for review.
+   its signing key pinned. Champ chose the pinned Chromium build on 2026-11-11.
 
 ## Consequences
 

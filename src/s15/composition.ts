@@ -32,7 +32,7 @@ import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool
 import { privateLocalVmResources } from './vm/local';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
 import type { BrowserEngine, EngineOptions } from './browser/engine';
-import type { ApprovedWebsites } from './browser/sites';
+import { websiteSensitiveOnly, type ApprovedWebsites } from './browser/sites';
 import type { ProtectedChromium } from './browser/chromium';
 import { createEffectsConversationTools, registerGoogleEffects, type GoogleEffectsOptions } from './effects';
 import { closeCredentialLifecycle, openModelService, createModelProjectionHandler, type ModelOptions } from './model';
@@ -351,7 +351,9 @@ export async function composeS15(options: S15CompositionOptions) {
     }
     if (options.vm.local && !options.vm.managementVault) throw new AppError('vm_management_unavailable', 503);
     // Local working VMs: protected registry proxy on a controller-only socket, reached only by the QEMU guest-forward.
-    const localVm = options.vm.local ? await startLocalVmControl(vmStore, { directory: join(root, 'vm-local'), ...options.vm.local }) : null;
+    const localVm = options.vm.local ? await startLocalVmControl(vmStore, { directory: join(root, 'vm-local'), ...options.vm.local,
+      // DESK16-01 (ADR 0091 decision 5): the desktop browser lease never reaches a sensitive-only site.
+      ...(options.vm.local.desktop ? { desktopDeny: (host: string) => websiteSensitiveOnly(`https://${host}`) } : {}) }) : null;
     if (localVm) cleanup.push(() => localVm.close());
     const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);

@@ -110,6 +110,13 @@ export interface QemuHostOptions {
    * headless keeps running and reports `vm_desktop_restart_required` until its next start.
    */
   desktop?: boolean;
+  /**
+   * DESK16-01 (ADR 0091 decision 2): issues the standing public-web lease of a desktop VM's guest browser. The
+   * composed source (`startLocalVmControl`) refuses sensitive-only hosts on it. Absent, no desktop lease exists.
+   */
+  desktopLease?: (sessionId: string, expiresAt: number) => VmProxyLease;
+  /** Repeating timer seam for desktop lease renewal (default: an unreferenced `setInterval`); returns its cancel. */
+  every?: (beat: () => void, milliseconds: number) => () => void;
 }
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
 export interface QemuVmIdentity { name: string; architecture: "x86_64" | "aarch64"; mac: string; sshPort: number; resources: LocalVmResources }
@@ -153,6 +160,9 @@ export class QemuVmManagement implements VmLocalManagement {
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   #resources: LocalVmResources;
+  #desktopLease: { lease: VmProxyLease; cancel: () => void } | null = null;
+  /** Bumped by every revoke, so a delivery still in flight when the VM stops never installs its lease. */
+  #desktopEpoch = 0;
   constructor(readonly identity: Readonly<QemuVmIdentity>, readonly host: QemuHostOptions) {
     if (!/^jit-work-[a-f0-9]{12}$/.test(identity.name) || !["x86_64", "aarch64"].includes(identity.architecture)) vmFail("vm_management_scope_denied", 403);
     if (!/^52:54:00(?::[a-f0-9]{2}){3}$/.test(identity.mac)) vmFail("vm_invalid_setup");
@@ -337,6 +347,51 @@ export class QemuVmManagement implements VmLocalManagement {
     if (!running) vmFail("vm_management_unavailable");
     this.saveState({ pid, startTicks: this.#proc.startTicks(pid) });
     await this.waitForSsh(signal);
+    await this.openDesktopLease(signal);
+  }
+  /** Whether this manager currently holds a delivered desktop browser lease (DESK16-01). */
+  get desktopLeaseHeld(): boolean { return this.#desktopLease !== null; }
+  /**
+   * DESK16-01 (ADR 0091 decisions 2-3): the guest desktop browser's standing public-web lease, separate from every
+   * work-session lease. A fresh lease is issued after each boot and when a controller re-attaches a VM that survived
+   * its restart (the restarted proxy holds no lease). It is written over SSH to `/etc/jit-desktop/proxy.env`
+   * (`0640 root:jit-desktop`) only when the guest has the desktop session's group; otherwise, or when delivery fails,
+   * it is revoked at once and the guest has no desktop lease. A held lease is renewed while the VM runs and revoked
+   * before every stop (owner stop, idle stop, restore). A delivery failure never fails the start.
+   */
+  private async openDesktopLease(signal?: AbortSignal): Promise<void> {
+    const issue = this.host.desktopLease; if (!issue || !this.host.desktop) return;
+    this.closeDesktopLease(); const epoch = this.#desktopEpoch;
+    // Expiry is judged by the proxy's own wall clock, like work-session and provisioning leases.
+    const lease = issue(`desktop_${this.identity.name}_${randomBytes(12).toString("hex")}`, Date.now() + desktopLeaseMs);
+    let delivered = false;
+    try {
+      const out = await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],
+        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "" })), ...(signal ? { signal } : {}) });
+      delivered = out.trim() === "jit-desktop-lease-v1";
+    } catch { delivered = false; }
+    if (!delivered || epoch !== this.#desktopEpoch) { lease.close(); return; }
+    // Renewed only while this exact VM still runs; a VM that went away without a protected stop loses the lease.
+    const renew = async () => {
+      let running = false; try { running = (await this.inspect()).state === "running"; } catch { /* Unproven counts as not running. */ }
+      if (this.#desktopLease?.lease !== lease) return;
+      if (!running) { this.closeDesktopLease(); return; }
+      try { lease.renew?.(Date.now() + desktopLeaseMs); } catch { this.closeDesktopLease(); }
+    };
+    const cancel = (this.host.every ?? repeat)(() => { void renew(); }, desktopLeaseRenewMs);
+    this.#desktopLease = { lease, cancel };
+  }
+  private closeDesktopLease(): void {
+    const held = this.#desktopLease; this.#desktopLease = null; this.#desktopEpoch++;
+    if (held) { held.cancel(); held.lease.close(); }
+  }
+  /**
+   * Controller-boot re-attachment of a VM that survived the restart, after the caller re-verified it: the restarted
+   * proxy holds no lease, so a desktop VM gets a fresh desktop lease (DESK16-01). Headless VMs are unchanged.
+   */
+  async reattached(signal?: AbortSignal): Promise<void> {
+    if (this.#desktopLease || (await this.inspect()).state !== "running") return;
+    await this.openDesktopLease(signal);
   }
   /**
    * Waits for the guest SSH service, compares its host key to the pinned key (a different key fails closed),
@@ -374,6 +429,8 @@ export class QemuVmManagement implements VmLocalManagement {
     if (this.host.desktop) await this.discardFrame();
   }
   private async halt(): Promise<void> {
+    // The desktop lease goes first: a stopping or stopped VM keeps no standing web access (DESK16-01).
+    this.closeDesktopLease();
     const before = await this.unitState(), recorded = this.state();
     this.saveState({ desired: "stopped" });
     const pids = [before.pid, recorded.pid ?? 0].filter(pid => pid > 0);
@@ -550,6 +607,32 @@ export class QemuVmManagement implements VmLocalManagement {
   }
 }
 
+/** Lifetime of the desktop lease between renewals, and the renewal period (DESK16-01). */
+const desktopLeaseMs = 1_800_000, desktopLeaseRenewMs = 600_000;
+const repeat = (beat: () => void, milliseconds: number) => { const timer = setInterval(beat, milliseconds); timer.unref?.(); return () => clearInterval(timer); };
+/**
+ * Fixed guest program (DESK16-01): writes the desktop lease read from stdin to `/etc/jit-desktop/proxy.env`, mode
+ * 0640, owner root, group `jit-desktop` (the desktop session's unprivileged user), replacing it atomically. A guest
+ * without that group gets nothing written. The file is an environment file for the desktop session's unit.
+ */
+export const qemuDesktopLeaseWriter = `import grp,json,os,stat,sys
+p=json.loads(sys.stdin.read(4096))['proxy']
+if not p.startswith('http://') or any(c in p for c in '\\n\\r\\0 "\\'\\\\'):print('jit-desktop-lease-invalid-v1');sys.exit(0)
+try:g=grp.getgrnam('jit-desktop').gr_gid
+except KeyError:print('jit-desktop-absent-v1');sys.exit(0)
+d='/etc/jit-desktop'
+os.makedirs(d,mode=0o755,exist_ok=True)
+s=os.lstat(d)
+if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:print('jit-desktop-unsafe-v1');sys.exit(0)
+t=d+'/.proxy.env.new'
+try:os.unlink(t)
+except FileNotFoundError:pass
+f=os.open(t,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+os.fchown(f,0,g);os.fchmod(f,0o640)
+os.write(f,''.join(k+'='+p+'\\n' for k in ('HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy')).encode())
+os.fsync(f);os.close(f);os.rename(t,d+'/proxy.env')
+print('jit-desktop-lease-v1')
+`;
 /** Fixed guest program: installs Ubuntu's `docker.io` through the bounded provisioning proxy lease read from stdin. */
 const dockerProvisioning = `import json,subprocess,sys
 p=json.loads(sys.stdin.read(4096))['proxy']
