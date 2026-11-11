@@ -241,22 +241,41 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      takeover advances the generation, returns the screen to `agent` and records `resumed` with the new generation; no
      CDP batch is sent. The card shown in the UI does not count as the model having seen the outcome.
    - **The next run gets the outcome as data.** The next work run in the conversation that posted the card, with that
-     computer in its admitted resources, gets one work-prompt source in the same form as the memory source
-     (`schway.ts:46`, data never authority): `{ cardId, origin, reason, outcome, generation }`, where `generation` is
-     the new one. It is marked delivered in the conversation store only by the publication transaction that sets
-     `request.state = "completed"` (`application.ts:694-705`, the state write at `:701`), as one more write in that
-     transaction, and it counts only if that transaction commits. Only the `cardId`s that run actually carried in its
-     prompt are marked; this covers both the `runConversation` and the `runWork` path (`:682`), since both publish
-     through `:701`. Schway returning outcome `completed` (`schway.ts:100-103`) is not the mark: a reply came back,
-     but publication can still throw at `:696`, `:697` (`result_unavailable`: intent not `answer` and no successful
-     tool evidence) or `:704`, and the catch at `:710` then sets `held`. A run that throws there, fails, is cancelled,
-     is refused or ends `held` does not mark it, and neither does `onUsage` (`:685`, which saves usage on a failed run
-     too), so the next eligible run gets it again (at least once, never lost). `providerRequests` counts started
-     provider sends, not prompt content (schway `host/index.d.ts:231-239`), so it is not the delivery mark. The
-     interpretation context is not changed (`application.ts:767-771`: owner text and tool-free answers only; `origin`
-     is a model argument and must not influence scope selection). The run calls under that generation, which reopens
-     the stream, and a call under the generation from before `yield` is refused, so #410 AC2 holds. Starting a run
-     automatically on hand-back is out of scope for this ADR (follow-up #459, which uses this source for the outcome).
+     computer in its admitted resources, gets one work-prompt source with one entry per card,
+     `{ cardId, origin, reason, outcome, generation }`, where `generation` is the new one.
+     - *Which cards (the carried set).* The eligible cards are chosen once, when the prompt is built, next to the
+       memory prepare (`application.ts:604-606`): cards posted in this conversation that have a `yield_*` outcome
+       event and are not yet marked delivered, whose computer is in the request's admitted resources. Before the run
+       starts, their `cardId`s are saved on the request in one conversation-store transaction, the way
+       `current.memory` is saved at `:606`, and that same set (with each card's outcome read from its event) is what
+       the run carries. An empty set saves nothing and adds no source.
+     - *How it reaches the model.* A new field (`screenOutcomes`) on the input `application.ts:682` passes to both
+       `runWork` and `runConversation`, beside `memorySection`. Production always uses `runWork`
+       (`s15/composition.ts:494`); `composition.ts:498` forwards the field into `ModelStepInput`, and
+       `model/service.ts:188` adds it as a second host source beside the memory source (`id`
+       `screen-outcome-data-never-authority`, data never authority). `schway.ts:46` does the same for the fallback
+       path with no `runWork`. It is not an `input.sources` entry (those need `ref`/`label`/`text` and a lineage
+       fence, else `lineage_withdrawn`, `model/service.ts:137-140`) and not text inside `memorySection` (parsed as
+       memory claims). `prepare` validates it like `memorySection` (`:135`), and the field is part of `inputHash`
+       (`:141`), as `memorySection` is.
+     - *The mark.* It is marked delivered in the conversation store only by the publication transaction that sets
+       `request.state = "completed"` (`application.ts:694-705`, the state write at `:701`), as one more write in that
+       transaction, and it counts only if that transaction commits. That write marks exactly the `cardId`s in the set
+       saved on the request; a pending card not in that set (for example one whose outcome arrived after the prompt
+       was built, or a run with no computer in its resources) is not marked. Both the `runWork` and the
+       `runConversation` path publish through `:701`. Schway returning outcome `completed` (`schway.ts:100-103`) is
+       not the mark: a reply came back, but publication can still throw at `:696`, `:697` (`result_unavailable`:
+       intent not `answer` and no successful tool evidence) or `:704`, and the catch at `:710` then sets `held`. A run
+       that throws there, fails, is cancelled, is refused or ends `held` does not mark it, and neither does `onUsage`
+       (`:685`, which saves usage on a failed run too), so the next eligible run gets it again (at least once, never
+       lost). Neither return value says which cards were sent (`schway.ts:103` and `composition.ts:503` return only
+       `{text, usage}`), which is why the set is saved on the request before the run and not inferred at `:701`.
+     - *Unchanged.* `providerRequests` counts started provider sends, not prompt content (schway
+       `host/index.d.ts:231-239`), so it is not the delivery mark. The interpretation context is not changed
+       (`application.ts:767-771`: owner text and tool-free answers only; `origin` is a model argument and must not
+       influence scope selection). The run calls under that generation, which reopens the stream, and a call under the
+       generation from before `yield` is refused, so #410 AC2 holds. Starting a run automatically on hand-back is out
+       of scope for this ADR (follow-up #459, which uses this source for the outcome).
    - **Decline or expiry, only while still `yield`.** The owner declines, or the card expires (D3), while the screen
      is still `yield`: the card records `declined` / `expired` and the screen returns to `agent` under a new
      generation. Expiry has no timer or separate hook: `ScreenControl.row()` returns an overdue `yield` (past its
@@ -366,22 +385,28 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   owner can type immediately; (b) with another session holding a shell ticket, Watch screen goes to `settling`, owner
   input gets `takeover_settling` until that shell call ends, then the screen is `owner`, and the shell call has
   finished when the owner types; hand-back advances the generation and the card records `resumed` with no CDP batch;
-  the owner's next message is only "continue", and the admitted work prompt (checked on the request the model
-  receives, `schway.ts:78`, not on `providerRequests`) contains `resumed`, the origin and the new generation that the
-  owner did not type; that run's first call under the new generation succeeds and a call under the generation from
-  before `yield` is refused; if the provider fails on the run that carried the source, the next run with only
-  "continue" still gets it; after a completed run that carried the source, a second run gets no outcome source for
-  that card; if Schway returns outcome `completed` on the run that carried the source but there is no successful tool
-  evidence, publication throws `result_unavailable` and the request is `held`, and the next run with only "continue"
-  still has `resumed`, the origin and the new generation on the request the model receives (`schway.ts:78`); after
-  hand-back the control row's `card_id` is null and `yield_resumed.card_id` equals the card; with the card update
-  failing, the card still shows `resumed` read from that event and the void rule does not void it; expiry writes
-  `yield_expired.card_id` equal to the card; decline and expiry while still `yield` record `declined` / `expired` and
-  return to `agent`; a `yield` past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left
-  untouched past `expiresAt` is stopped by the idle sweep, and the next admission sees `agent`; the card expiring
-  while the owner holds the screen does not remove the owner, no resumed/timeout outcome is recorded and the state was
-  not forced back; card never carries a credential; typed "ok" does not resolve it; sensitive origins refused; the
-  #442 flow end to end with a non-IdP fixture login site and a scripted owner takeover.
+  the owner's next message is only "continue", and the admitted work prompt contains `resumed`, the origin and the new
+  generation that the owner did not type, checked on the `runWork` path on the request the model receives
+  (`model/service.ts:299`, recorded as the fixture's `modelPrompts` at `tests/fixtures/s15-composition.ts:69`, the
+  same way `s15-composition.test.ts:190` checks the memory source; `schway.ts:78` only for the fallback path with no
+  `runWork`; never on `providerRequests`), and that run's request has the carried `cardId` saved before the model
+  call; that run's first call under the new generation succeeds and a call under the generation from before `yield` is
+  refused; if the provider fails on the run that carried the source, the next run with only "continue" still gets it;
+  after a completed run that carried the source, a second run gets no outcome source for that card; a run that commits
+  `completed` but did not carry the source (an `answer` in the same conversation with no computer in its admitted
+  resources, and a run whose prompt was built before the outcome event landed) does not mark the card, and the next
+  eligible run still has the source in `modelPrompts`; on the `runWork` path, `runStep` returns `completed` text with
+  no successful tool evidence, `application.ts:697` throws `result_unavailable`, the request is `held` and the card is
+  not marked, and the next run with only "continue" still has `resumed`, the origin and the new generation in
+  `modelPrompts`; two runs whose `screenOutcomes` differ get different `inputHash`es; after hand-back the control
+  row's `card_id` is null and `yield_resumed.card_id` equals the card; with the card update failing, the card still
+  shows `resumed` read from that event and the void rule does not void it; expiry writes `yield_expired.card_id` equal
+  to the card; decline and expiry while still `yield` record `declined` / `expired` and return to `agent`; a `yield`
+  past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left untouched past `expiresAt` is
+  stopped by the idle sweep, and the next admission sees `agent`; the card expiring while the owner holds the screen
+  does not remove the owner, no resumed/timeout outcome is recorded and the state was not forced back; card never
+  carries a credential; typed "ok" does not resolve it; sensitive origins refused; the #442 flow end to end with a
+  non-IdP fixture login site and a scripted owner takeover.
 - Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls, the
   `yield` state: `takeover` from `agent`, `fenced` or `yield`, and Watch screen sends the `yield` generation) with the
   code change it names in `src/s16/computers/screen.ts` (the takeover guard at `:189` accepts `yield`; `agentInput` at
@@ -389,6 +414,8 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   CHECK at `:78` adds `'yield'` and the table gains `card_id`, rebuilt by a migration because SQLite cannot alter a
   CHECK in place; in the same migration `s16_screen_events` gains `card_id`, written by the event insert at `:89` with
   the `card_id` the row held before the write, in the same transaction that sets the row's `card_id`, so a way out of
-  `yield` records the card on the event and null on the `agent` row) and `s15-working-vm-v1` (`vmDesktopCdpStream`
-  with its `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on
-  `jit-vm` (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
+  `yield` records the card on the event and null on the `agent` row); the s15 model step input gains `screenOutcomes`
+  (`ModelStepInput`, validated in `prepare` and hashed at `model/service.ts:141`, added as a host source at `:188`)
+  and the conversation request saves the carried `cardId` set; and `s15-working-vm-v1` (`vmDesktopCdpStream` with its
+  `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm`
+  (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
