@@ -480,9 +480,10 @@ export class QemuVmManagement implements VmLocalManagement {
   /**
    * Controller-boot re-attachment of a VM that survived the restart, after the caller re-verified it: the restarted
    * proxy holds no lease, so a desktop VM gets a fresh desktop lease and a new beat (DESK16-01). Headless VMs are unchanged.
+   * The beat is armed before anything can fail: a transient `inspect()` failure here (QMP held by a live snapshot)
+   * only means no lease yet, and the next beat issues one (#454 (a)); a VM found not running ends the beat there.
    */
   async reattached(signal?: AbortSignal): Promise<void> {
-    if ((await this.inspect()).state !== "running") return;
     this.armDesktop();
     if (!this.#desktopLease) await this.desktopTurn(() => this.openDesktopLease(signal));
   }
@@ -765,7 +766,7 @@ export const qemuDesktopBrowser = Object.freeze({
  * Prints `jit-desktop-ready-v1` and writes `/opt/jit-desktop/ready-v1` (the version; removed when an install starts)
  * only when every step succeeded and both units and the pinned browser have stayed up for three checks in a row.
  */
-export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,shutil,subprocess,sys,time,zipfile
+export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,re,shutil,subprocess,sys,time,zipfile
 a=json.loads(sys.stdin.read(8192))
 p,u,h,v=a['proxy'],a['url'],a['sha256'],a['version']
 if not p.startswith('http://') or not u.startswith('https://') or len(h)!=64 or not all(c in '0123456789abcdef' for c in h) or not all(c.isdigit() or c=='.' for c in v):print('jit-desktop-invalid-v1');sys.exit(0)
@@ -919,7 +920,7 @@ try:
  # Installed means running: both units active and the pinned browser up as jit-desktop on three checks in a row.
  k=0
  for _ in range(60):
-  up=subprocess.run(['systemctl','is-active','--quiet','jit-desktop-proxy.service','jit-desktop.service'],timeout=30,**{**q,'check':False}).returncode==0 and subprocess.run(['pgrep','-u','jit-desktop','-f',B+'/chrome'],timeout=30,**{**q,'check':False}).returncode==0
+  up=subprocess.run(['systemctl','is-active','--quiet','jit-desktop-proxy.service','jit-desktop.service'],timeout=30,**{**q,'check':False}).returncode==0 and subprocess.run(['pgrep','-u','jit-desktop','-f','^'+re.escape(B+'/chrome')+'( |$)'],timeout=30,**{**q,'check':False}).returncode==0
   k=k+1 if up else 0
   if k>=3:break
   time.sleep(2)

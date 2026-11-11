@@ -252,6 +252,20 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
     await l.beats[1]!.beat();
     expect(h.desktopInstalls).toHaveLength(2); expect(m.desktopLeaseHeld).toBe(true); expect(installs).toHaveLength(2);
   });
+  test("#455: a transient inspect failure while re-attaching still arms the beat; the next beat issues the lease", async () => {
+    const h = host(), first = leases();
+    await new QemuVmManagement(identity, { ...h.options(), ...first.options }).provision();
+    let busy = true;
+    const qmp: QemuHostOptions["qmp"] = async (socket, commands, options) => {
+      if (busy) throw new AppError("vm_management_unavailable", 503); // A live snapshot holding QMP past the 30s timeout.
+      return h.qmp(socket, commands, options);
+    };
+    const l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options, qmp });
+    await m.reattached();
+    expect(l.beats).toHaveLength(1); expect(l.beats[0]!.cancelled).toBe(false); expect(l.issued).toEqual([]); expect(m.desktopLeaseHeld).toBe(false);
+    busy = false; await l.beats[0]!.beat();
+    expect(m.desktopLeaseHeld).toBe(true); expect(l.issued).toHaveLength(1); expect(l.issued[0]!.closed).toBe(false);
+  });
   test("a restarted controller re-attaching a surviving desktop VM issues a fresh lease once", async () => {
     const owner = {}, requireOwner = (a: object) => { if (a !== owner) throw new Error("owner"); };
     const allow: VmPolicyPort = { assertCurrent() {}, async claim() { return { async dispatch(start) { return start(); }, publish(consume) { return consume(); }, observe() {} }; } };
