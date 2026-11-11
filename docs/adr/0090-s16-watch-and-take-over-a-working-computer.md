@@ -1,5 +1,5 @@
 ---
-status: implemented for DESK16-01 (#410), first slice; deterministic evidence; guest desktop session, desktop-browser egress and live host evidence pending (#410 follow-up, #431)
+status: implemented for DESK16-01 (#410), first slice; deterministic evidence; guest desktop session and desktop-browser egress delivered by ADR 0091 (#453 and slice 2b); live host evidence pending (#431)
 date: 2026-11-08
 scope: DESK16-01 (#410); S16-AC05/AC07; FR-02/10/14/15/18/21/35/36/38/40; NFR-01/06/07/11/12/14
 ---
@@ -44,5 +44,5 @@ Option 3 keeps Rakazo's product concept (watch, take control with a lease, gener
 
 ## Pending (not delivered by this slice)
 
-- Guest desktop session (X server on the virtual display, window manager, browser) and the desktop browser's egress: the VM proxy admits only per-session leases, so a desktop browser outside a work session needs a reviewed lease design before a trusted-site login can work in the VM. #442's remaining item depends on it.
+- ~~Guest desktop session and the desktop browser's egress~~: delivered by [ADR 0091](0091-s16-working-computer-desktop-and-browser.md) (desktop lease in #453, desktop session in slice 2b). #442's remaining item can now build on it.
 - Live evidence on `jit-vm` (QEMU `screendump` and input on the real host, VM15-03 file permissions, restart into the desktop profile) belongs to LIVE16-01 (#431).

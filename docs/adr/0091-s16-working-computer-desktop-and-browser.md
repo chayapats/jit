@@ -1,5 +1,5 @@
 ---
-status: proposed for DESK16-01 (#410), second slice; for review before implementation
+status: accepted for DESK16-01 (#410), second slice; implemented with deterministic evidence (desktop lease #453, desktop session slice 2b with #454); live host evidence pending (#431)
 date: 2026-11-09
 scope: DESK16-01 (#410); AUTH16-01 (#442) step 5; S16-AC07/AC11; FR-10/14/15/35/38/40; NFR-07/14
 ---
@@ -65,7 +65,9 @@ while the owner holds control, or per-site approval). What Rakazo does, read fro
 6. **Pinned browser.** Ubuntu 26.04 ships Chromium only as a snap, which needs snapd and store egress. Proposed:
    install a version-pinned Chromium build with a recorded SHA-256 for x86_64 and arm64 through the existing bounded
    provisioning lease, like the Docker install. The alternative is Firefox ESR from Mozilla's apt repository with
-   its signing key pinned. Champ chose the pinned Chromium build on 2026-11-11.
+   its signing key pinned. Champ chose the pinned Chromium build on 2026-11-11. Implemented as Chrome for Testing
+   (Google's version-pinned Chromium build, published for both linux64 and linux-arm64, no auto-updater) from
+   `storage.googleapis.com/chrome-for-testing-public`, version and per-architecture SHA-256 in `qemuDesktopBrowser`. Its own `deb.deps` list drives the runtime packages.
 
 ## Consequences
 
