@@ -21,7 +21,9 @@ export interface ClientCapabilities {
   /** Additive field: Web Push notices (`s16-notifications/v1`) and the fixed service worker/scope that receives them. */
   notifications?: { available: false; code: "notifications_unavailable" } | { available: true; contract: "s16-notifications/v1"; transport: "web_push"; serviceWorker: "/s16/sw.js"; scope: "/s16/" };
   /** TEAM16-01 working computers; `files` is FILE16-01C staging/collection inside file work. */
-  computers?: { available: false; code: "computers_unavailable" } | { available: true; contract: "s16-client-computers/v1"; idleStopMs: number | null; files: boolean };
+  computers?: { available: false; code: "computers_unavailable" } | { available: true; contract: "s16-client-computers/v1"; idleStopMs: number | null; files: boolean;
+    /** DESK16-01: the owner can watch a desktop computer's screen and take exclusive control (`s16-computer-screen/v1`). */
+    screen?: boolean };
   /** BOT16-01 persistent Bots (`s16-client-bots/v1`); `delegation` is DELEG16-01 Bot-to-Bot assignments. */
   bots?: { available: false; code: "bots_unavailable" } | { available: true; contract: "s16-client-bots/v1"; delegation: boolean };
   /** CONN16-01/MCP16-01/OPEN16-01 connections (`s16-client-connections/v1`): GitHub plus HTTPS tool sources. */

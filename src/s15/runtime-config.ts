@@ -32,6 +32,10 @@ export interface S15RuntimeConfig {
   /** Explicit S16 working computers (`s16-computers/v1`, TEAM16-01): per-work leases, private computers and 30-minute
    * idle release with on-demand start. Omission keeps S15 working-computer behavior. */
   computers?: boolean;
+  /** Explicit S16 desktop computers (`s16-computer-screen/v1`, DESK16-01): Jit-created VMs start with one virtual display,
+   * tablet and keyboard reached only through QMP, and the owner can watch the screen and take exclusive control.
+   * Requires `computers`. A VM already running headless keeps running until its next start. Omission changes nothing. */
+  desktop?: boolean;
   /** Explicit S16 persistent Bots and delegation (`s16-bots/v1`, BOT16-01/DELEG16-01). Omission keeps the single main Bot. */
   bots?: boolean;
   /** Explicit S16 connections (`s16-connections/v1`, CONN16-01/MCP16-01/OPEN16-01): GitHub and HTTPS MCP/OpenAPI/GraphQL
@@ -81,6 +85,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.routines !== undefined && typeof value.routines !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.notifications !== undefined && typeof value.notifications !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.computers !== undefined && typeof value.computers !== 'boolean') throw new AppError('invalid_s15_config');
+  if (value.desktop !== undefined && (typeof value.desktop !== 'boolean' || value.desktop && value.computers !== true)) throw new AppError('invalid_s15_config');
   if (value.bots !== undefined && typeof value.bots !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.connections !== undefined && (typeof value.connections !== 'boolean' || value.connections && !value.disclosure)) throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');

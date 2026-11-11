@@ -10,6 +10,7 @@ import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from
 import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
 import type { NotificationService } from "./notifications/service";
+import type { ScreenControl } from "./computers/screen";
 import type { ComputerDirectory } from "./computers/service";
 import type { BotDirectory } from "./bots/service";
 import type { ConnectionDirectory } from "./connections/service";
@@ -23,7 +24,7 @@ import { connectionLimits } from "./connections/types";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -55,7 +56,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
-      computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files) } : { available: false, code: "computers_unavailable" },
+      computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files), ...(options.screen ? { screen: true } : {}) } : { available: false, code: "computers_unavailable" },
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
       connections: options.connections ? { available: true, contract: "s16-client-connections/v1", kinds: ["mcp", "openapi", "graphql"], github: !!options.connections.options.github, oauth: true } : { available: false, code: "connections_unavailable" } };
   };
@@ -161,6 +162,22 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
         if (request.method === "POST" && notify[1] === "subscribe") { const input = await body(request); return json(options.notifications.subscribe(currentOwner(), input)); }
         if (request.method === "POST" && notify[1] === "unsubscribe") { const input = await body(request); return json(options.notifications.unsubscribe(currentOwner(), input)); }
+        throw new AppError("method_rejected", 405);
+      }
+      const screen = /^\/api\/s16\/client\/computers\/(?:screen\/(commands)|([A-Za-z0-9_-]{1,128})\/screen(?:\/(frame))?)$/.exec(url.pathname);
+      if (screen) {
+        if (!options.screen) throw new AppError("screen_unavailable", 503);
+        if (request.method === "GET" && screen[3]) {
+          // The only query is the generation the owner last saw; a frame from any other generation is refused.
+          const generation = url.searchParams.get("generation");
+          if ([...url.searchParams.keys()].join() !== "generation" || !/^(0|[1-9][0-9]{0,9})$/.test(generation ?? "")) throw new AppError("invalid_body");
+          const bytes = await options.screen.frame(currentOwner(), screen[2]!, Number(generation));
+          return new Response(new Uint8Array(bytes), { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer", "Cross-Origin-Resource-Policy": "same-origin", Vary: "Cookie" } });
+        }
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && screen[2]) return json(await options.screen.view(currentOwner(), screen[2]));
+        // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
+        if (request.method === "POST" && screen[1]) { const input = await body(request, 4096); return json(await options.screen.command(currentOwner(), input)); }
         throw new AppError("method_rejected", 405);
       }
       const computer = /^\/api\/s16\/client\/computers(?:\/(commands))?$/.exec(url.pathname);

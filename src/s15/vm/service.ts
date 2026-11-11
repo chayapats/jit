@@ -29,6 +29,13 @@ export interface WorkingVmOptions {
    * start. Absent, VMs are never stopped or started without the owner (S15 behavior).
    */
   idle?: { stopAfterMs: number };
+  /**
+   * DESK16-01 exclusive owner screen control (explicit S16 desktop computers only). Every work operation holds
+   * a ticket from admission until it settled; `current()` refuses (`takeover_active`) once the owner asked for
+   * control, so no work operation is admitted, dispatched or published under the owner's generation. Idle
+   * release skips a computer the owner holds. Absent, nothing changes.
+   */
+  screen?: { agentInput(vmId: string): { current(): void; end(): void }; idleBlocked(vmId: string): boolean };
 }
 /** Registry reason of a VM that Jit stopped for idleness; only such a VM is started again on demand. */
 export const vmIdleReason = "vm_idle";
@@ -214,7 +221,10 @@ export class WorkingVmService implements WorkingVmPort {
   }
   private async call(actor: object, s: LiveSession, operation: Record<string, unknown>, kind: "read" | "write" | "shell", signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.enqueue(actor, s, signal, async () => {
-      await this.health(this.options.store.registration(s.vmId)); this.current(actor, s);
+      const ticket = this.options.screen?.agentInput(s.vmId);
+      try {
+      const current = () => { this.current(actor, s); ticket?.current(); };
+      await this.health(this.options.store.registration(s.vmId)); current();
       const id = uuid(), request: Record<string, unknown> = { v: 1, id, root: s.root, tmp: s.temporary, cap: kind === "shell" ? this.#limits.outputBytes : this.#limits.fileBytes, ...structuredClone(operation) };
       const payload = vmCanonical(request), operationId = id, payloadHash = vmHash(payload);
       if (containsCredential(payload)) vmFail("vm_credentials_denied", 403);
@@ -227,30 +237,31 @@ export class WorkingVmService implements WorkingVmPort {
         outputBytes: null, transport: "pending", execution: "unsettled", published: false };
       this.options.store.saveEvidence(evidence);
       try {
-        this.current(actor, s);
+        current();
         this.options.disclosure?.vmInput(actor, s.vmId);
         const transportRequest = request.op === "spawn" ? { ...request, env: { ...(request.env as Record<string, string>), ...s.proxy?.environment } } : request;
         const response = await claim.dispatch(() => {
-          this.current(actor, s); evidence.outcome = "unknown"; this.options.store.saveEvidence(evidence);
+          current(); evidence.outcome = "unknown"; this.options.store.saveEvidence(evidence);
           const transport = this.transport(this.options.store.registration(s.vmId)), began = this.#clock();
           const invoke = async () => {
-            if (operation.op === "init") await transport.openScope(s.unit, Math.max(1, s.deadline - this.#clock()), () => this.current(actor, s), s.controller.signal);
-            this.current(actor, s);
+            if (operation.op === "init") await transport.openScope(s.unit, Math.max(1, s.deadline - this.#clock()), () => current(), s.controller.signal);
+            current();
             return transport.invoke(transportRequest, { unit: s.unit, timeoutMs: Math.max(1, Math.floor(action.timeoutMs - (this.#clock() - began))),
-            maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart: () => this.current(actor, s) });
+            maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart: () => current() });
           };
           return invoke();
         });
         evidence.transport = "closed"; evidence.outcome = "guest_reported"; const bytes = vmCanonical(response);
         evidence.responseHash = vmHash(bytes); evidence.outputBytes = Buffer.byteLength(bytes); this.options.store.saveEvidence(evidence); claim.observe({ ...evidence });
-        this.current(actor, s);
-        return claim.publish(() => { this.current(actor, s); this.options.disclosure?.vmOutput(actor, s.vmId); evidence.published = true; this.options.store.saveEvidence(evidence); return response; });
+        current();
+        return claim.publish(() => { current(); this.options.disclosure?.vmOutput(actor, s.vmId); evidence.published = true; this.options.store.saveEvidence(evidence); return response; });
       } catch (error) {
         evidence.transport = "closed"; this.options.store.saveEvidence(evidence); claim.observe({ ...evidence });
         if (error instanceof AppError && ["vm_protocol_invalid", "vm_connection_failed", "vm_transport_timeout", "vm_output_limit"].includes(error.code)) this.uncertain(s.vmId, error.code, s.generation);
         throw error;
       }
       } finally { claim.release?.(); }
+      } finally { ticket?.end(); }
     });
   }
   private releaseHeld(s: LiveSession): void {
@@ -347,6 +358,7 @@ export class WorkingVmService implements WorkingVmPort {
       const row = this.options.store.registration(id), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
       if (row.state !== "ready" || !manager?.start || !row.bindingMac || this.#managementBusy.has(id)) continue;
       if (this.options.store.db.query("SELECT 1 FROM vm_sessions WHERE vm_id=? AND state<>'closed' LIMIT 1").get(id)) continue;
+      if (this.options.screen?.idleBlocked(id)) continue;
       const last = this.lastActivity(id);
       if (last === null) { this.touch(id); continue; }
       if (this.#now() - last < idle.stopAfterMs) continue;
