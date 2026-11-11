@@ -58,6 +58,12 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      `{"jit":"busy"}` when another client is attached, after which that connection is closed. The handshake is not a
      CDP message (`CdpClient` drops frames with no `id`/`method` and would report `cdp_closed`), so the controller
      reads it itself (decision 2).
+   - **Unbuffered, both ways.** The relay writes every frame, the handshake included, as soon as it has it: socket
+     writes use `sendall`, writes to Chromium's pipe use `os.write` in a loop until every byte is written. It never
+     writes through `sys.stdout`/`sys.stdout.buffer` or another buffered file object, so nothing waits in a
+     user-space buffer while the process runs. Its shebang is `#!/usr/bin/python3 -Iu` (one argument: Linux passes
+     everything after the interpreter as a single word; `-I` ignores `PYTHON*` variables and the user site, `-u`
+     unbuffers the standard streams as a second guard).
    - **Lifetimes.** A client disconnect closes only that client, drops partial frames, and leaves Chromium running
      with its tabs. When Chromium exits, the relay exits, and the loop starts both again after 2 s; the next tool call
      reconnects. When the relay exits for any other reason (SIGTERM from a unit stop, `Restart=always` restarting
@@ -70,6 +76,13 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
    operations) that runs `sudo -n -u jit-desktop /usr/local/lib/jit-desktop/cdp-attach`. `cdp-attach` is fixed
    Python: it connects to the socket, copies bytes both ways unchanged, and exits when either side closes. It is a
    `BoxStream` for `CdpClient`, with stdin and stdout kept open as pipes.
+   - **Unbuffered, both ways.** Like the relay (`#!/usr/bin/python3 -Iu`), `cdp-attach` reads with `os.read` and
+     writes at once: socket to stdout with `os.write(1, …)` in a loop, stdin to socket with `sendall`. Over `ssh -T`
+     its stdout is a pipe, where Python would otherwise block-buffer about 8 KiB, and sudo's `env_reset` clears
+     `PYTHONUNBUFFERED`, so the program does not rely on the environment.
+   - **stderr stays out of the stream.** The controller reads the SSH process's stderr separately, bounded, for
+     diagnostics only, and never merges it into stdout (`2>&1` is not used anywhere on the path). sudo's own
+     messages and Python tracebacks therefore cannot corrupt a frame.
    - **Why sudo, and why it is a byte pipe.** SSH logs in as `jit` (`qemu.ts` endpoint), and the socket stays
      `0600` in the `0700 jit-desktop` directory (decision 1), so `cdp-attach` runs as `jit-desktop`. `jit` already
      has `NOPASSWD:ALL`; no group membership, sudoers rule or setuid is added (setuid does not apply to a Python
@@ -118,13 +131,18 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
    - Every operation (`state`, `navigate`, `read`, `find`, `click`, `type`, `select`, `submit`) checks the current
      origin of the tab it acts on **before dispatch** and the tab's origin again **before returning page text**, so a
      tab the owner opened, or a redirect after a click or navigate, onto a refused origin is neither driven nor read.
+   - **Leaving a refused tab.** When the tab `navigate` would act on is on a refused origin and the target URL is
+     allowed, `navigate` opens the target in a new tab (one `Target.createTarget`) and acts there. The refused tab is
+     not navigated, its URL stays the same (the owner's half-filled form is not lost), and none of its text is
+     returned. Every other operation on that tab stays refused.
    - `state` lists tabs but returns no title, URL path or text for a tab on a refused origin, only its origin and
      `website_protected`/`website_sensitive_only`.
 5. **Fenced by the screen.** Every `computer_browser` call except `needs_you` holds a ScreenControl agent ticket from
-   admission until it settles, and checks it again immediately before each CDP input batch is sent. A takeover moves
-   the screen to `settling` until the call ends, and refuses new calls with `takeover_active`. Agent and owner input
-   never share a writable generation (#410 AC1). A call admitted before a hand-back is refused (#410 AC2); the
-   `needs_you` resume in decision 7 is not such a call, because it returns after the hand-back without a CDP batch.
+   admission until it settles, and checks it again immediately before each CDP input batch is sent. A call whose
+   action is held (decision 6) settles when the card is posted: it releases its ticket then, and the press is a new
+   admission. A takeover moves the screen to `settling` until the call ends, and refuses new calls with
+   `takeover_active`. Agent and owner input never share a writable generation (#410 AC1). A call admitted before a
+   hand-back is refused (#410 AC2). `needs_you` holds no ticket and sends no CDP batch (decision 7).
 6. **Human-required list on trusted and public sites (tool policy, not bypass-resistant).** There is one rule:
    `click`, `submit`, `select` and Enter-carrying `type` are held when the target element's accessible name, its
    form's field names, or the page URL path match the human-required vocabulary below. Everything else runs without
@@ -152,6 +170,15 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
    values. One press resumes the action once, only if the live revision still equals the card's; any change returns
    `stale` and the Bot must raise a new card. Decline, expiry and stale cards do nothing. The vocabulary is a
    heuristic, and guest root can bypass it. ADR 0084 already accepted that residual for trusted sites.
+   - **The call does not wait.** The held call returns `{ state: "pending", cardId, expiresAt }` within the tool
+     deadline (60 s), releases its agent ticket, and the turn ends normally, as `exec.browser` `pause()` and
+     approval-cards-v1 do (ADR 0037). The card expires after 30 minutes, as approval-cards-v1 cards do.
+   - **One press is a new admission.** It takes a new agent ticket and opens its own desktop CDP stream (refused with
+     `computer_browser_busy` while another run holds the VM's stream), then re-checks the card's revision and the
+     tab's current origin (decision 4) before the CDP batch. If the screen is not `agent`, the press is refused with
+     `takeover_active` (`settling`, `owner`, `fenced`) or `computer_yielded` (`yield`), and nothing is sent; the card
+     stays open until it expires. The outcome is recorded on the card and shown in the conversation, not returned to
+     the earlier tool call.
 7. **"Needs you" and the yield state.** `computer_browser` has one more kind, `needs_you { reason: "sign_in" |
    "verify" | "captcha", origin }` (S16-D07 row h).
    - **Yield.** ScreenControl gains a fifth state, `yield`. `needs_you` is refused unless the screen is `agent`
@@ -160,21 +187,33 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      another session, up to `maxSessions`) are not aborted and run to their end. While in `yield`:
      - new agent tickets are refused for every work on that computer, not only this run (`computer_yielded`);
      - `idleBlocked` is true, so idle sleep does not stop the VM while the owner is wanted;
-     - a **Watch screen** takeover follows the same rule as from `agent` (`screen.ts` takeover): `settling` while any
-       ticket is still held, otherwise `owner`. Owner input is refused with `takeover_settling` until the last ticket
-       ends; since `yield` admits no new tickets, that is bounded by `commandMs`, and the screen shows `agentBusy`
-       meanwhile.
+     - a **Watch screen** takeover is accepted from `yield` (the takeover guard accepts `agent`, `fenced` and
+       `yield`) and follows the same rule as from `agent` (`screen.ts` takeover): `settling` while any ticket is still
+       held, otherwise `owner`. Owner input is refused with `takeover_settling` until the last ticket ends; since
+       `yield` admits no new tickets, that is bounded by `commandMs`, and the screen shows `agentBusy` meanwhile. The
+       Watch screen button sends the `yield` generation; an older generation is `stale_screen`.
+   - **The call does not wait.** `needs_you` enters `yield`, posts the card and returns at once, within the tool
+     deadline (60 s): `{ state: "yielded", cardId, generation, expiresAt }`. The turn then ends normally (ADR 0037),
+     as other owner cards do (`exec.browser` `pause()`, approval-cards-v1 `pending_approval`). The tool never waits
+     for the owner, so no tool call or run outlives its own deadline (60 s per call; a conversation run's `activeMs`
+     is at most 1 h).
+   - **Yield is not tied to the run.** `yield` lives as long as the card and the screen. A run that is cancelled,
+     crashes or simply ends leaves `yield` in place, so the owner can still press Watch screen and hand back.
    - **Card.** It posts a card in the conversation: "<Bot> needs you on <origin> to <reason>", with a **Watch
      screen** button that opens the takeover for that computer. The card never asks for, carries or accepts a
      credential, and typed replies in chat do not resolve it.
-   - **Resume.** Hand-back from that takeover advances the generation and returns the screen to `agent`; then
-     `needs_you` returns `resumed` with the new generation and sends no CDP batch. The Bot's next call is a new call
-     under the new generation and reopens the stream, so #410 AC2 holds.
+   - **Outcome on the card, not as a tool result.** The outcome (`resumed`, `declined`, `expired`) is recorded on the
+     card and shown in the conversation. Hand-back from that takeover advances the generation, returns the screen to
+     `agent` and records `resumed` with the new generation; no CDP batch is sent. The Bot's next run sees the outcome
+     and calls under the new generation, which reopens the stream, so #410 AC2 holds. Starting a run automatically on
+     hand-back is out of scope for this ADR (follow-up #459).
    - **Decline or expiry, only while still `yield`.** The owner declines, or the card expires (D3), while the screen
-     is still `yield`: it returns to `agent` under a new generation, and the tool returns `owner_declined` /
-     `owner_timeout`. Once the owner has pressed Watch screen (`settling`, `owner` or `fenced`), the card no longer
-     declines or expires: it waits for the hand-back, and the tool returns `resumed` only then. An owner lease that
-     lapses during the takeover is `fenced`, as today, and the owner hands back from there.
+     is still `yield`: the card records `declined` / `expired` and the screen returns to `agent` under a new
+     generation. Expiry does not depend on a timer firing: the idle sweep and every admission (an agent ticket,
+     `needs_you`, Watch screen) first treat a `yield` whose card is past `expiresAt` as expired, record `expired`
+     and return the screen to `agent`. Once the owner has pressed Watch screen (`settling`, `owner` or `fenced`), the
+     card no longer declines or expires: it waits for the hand-back, and records `resumed` only then. An owner lease
+     that lapses during the takeover is `fenced`, as today, and the owner hands back from there.
    - **Refused origins.** A sensitive-only or `sensitive`-tier origin is refused and pointed at the protected
      browser's own login handoff. An identity-provider redirect that the desktop lease filter already refuses (ADR
      0091 decision 5, e.g. `accounts.`/`login.`/`sso.` hosts) cannot be signed in here either: the owner would see the
@@ -188,12 +227,14 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
 ## Consequences
 
 - #442's last item closes in the implementation: the owner marks a site trusted, the Bot hits its sign-in, raises
-  "needs you", the owner signs in on the screen and hands back, and the Bot continues with the session, which
-  survives stop/start because it lives in the desktop profile. The site must sign in on its own host (not through an
-  identity provider the desktop filter refuses).
+  "needs you" (the turn ends), the owner signs in on the screen and hands back, and the Bot's next run continues with
+  the session, which survives stop/start because it lives in the desktop profile. The site must sign in on its own
+  host (not through an identity provider the desktop filter refuses).
 - While a `needs_you` card is open the computer is in `yield`: it does not idle-sleep, and other work on that computer
-  waits (`computer_yielded`) until the owner hands back, or declines or the card expires before Watch screen. Card
-  expiry length is D3.
+  is refused (`computer_yielded`) until the owner hands back, or declines or the card expires before Watch screen.
+  This does not depend on the run that raised it, which has already ended. Card expiry length is D3.
+- The Bot does not continue by itself after hand-back: the owner's next message (or another trigger) starts the run
+  that sees the `resumed` outcome. Automatic continuation is follow-up #459.
 - The desktop browser becomes shared between owner and Bot, as in Rakazo. Tabs the owner leaves open are visible to
   the Bot's `state`/`read`.
 - Guest root can drive the same browser through the socket without Jit's classification. That is ADR 0084's
@@ -216,44 +257,58 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
 - **D2, shared browser.** Proposed: the Bot drives the same desktop browser the owner sees. Alternative: a second
   profile for the Bot, with the owner's trusted-site sessions copied in. That adds complexity, and cookies would leave
   the profile, so it is not recommended.
-- **D3, how long a "needs you" card waits.** Proposed: 24 h, matching other owner cards. During that time the
+- **D3, how long a "needs you" card waits.** Proposed: 24 h. Held action cards (decision 6) keep approval-cards-v1's
+  30 minutes; a sign-in waits longer because the owner has to come to the screen. During that time the
   computer stays awake and other work on it waits. Alternative: a shorter expiry (for example 1 h), which frees the
   computer sooner but loses requests the owner sees late.
 
 ## Delivery and evidence (planned slices)
 
-- **3a**: relay, attach, `vmDesktopCdpStream`, provisioning (session revision in `ready-v1`), `computer_browser`
-  read operations (`state`, `navigate`, `read`, `find`) with site rules and ScreenControl tickets. Tests:
-  provisioning steps exact and absent for headless; `ready-v1` matching the Chrome pin but missing the session
-  revision (relay files absent) runs the install and does not download Chrome again; the lease writer accepts the
-  composite key and reports absent for the bare Chrome pin; `/run/jit-desktop` is `0700 jit-desktop` and created by
-  root; a frame containing `\0`, `\r`, `\n`, `0x03` and `0x04` round-trips byte for byte through the real path
-  (`ssh -T` + `sudo -n -u jit-desktop` + `cdp-attach` + relay); refusal of sensitive-only and sensitive-tier hosts
-  before dispatch; an owner-opened tab on a sensitive-tier origin is refused for `read`/`find` and `state` returns
-  no title or text for it; a navigate that redirects onto a sensitive-tier origin returns no page text; a takeover
-  refuses new calls and waits for a running one; a hanging attach does not go through `invoke`/`control` and does
-  not block them; the controller reads the handshake before `CdpClient`, and a second concurrent attach is refused
-  with `computer_browser_busy`; a missing or malformed handshake is `computer_browser_unavailable`; a client
-  disconnect leaves Chromium running; relay exit reaps Chromium and the next start gets the profile lock; reconnect
-  after a browser restart; the stream closes after 5 minutes idle and the next call reopens it and succeeds.
+- **3a**: relay, attach, `vmDesktopCdpStream`, provisioning (session revision in `ready-v1`), `computer_browser` read
+  operations (`state`, `navigate`, `read`, `find`) with site rules and ScreenControl tickets. Tests: provisioning
+  steps exact and absent for headless; `ready-v1` matching the Chrome pin but missing the session revision (relay
+  files absent) runs the install and does not download Chrome again; the lease writer accepts the composite key and
+  reports absent for the bare Chrome pin; `/run/jit-desktop` is `0700 jit-desktop` and created by root; (i) a frame
+  containing `\0`, `\r`, `\n`, `0x03` and `0x04` goes through `ssh -T` + `sudo -n -u jit-desktop` + `cdp-attach` to a
+  stub echo peer on the socket (not Chromium) and comes back byte for byte before either side closes, while both
+  processes are still running; (ii) the real relay's handshake reaches the controller within 10 s while the relay and
+  `cdp-attach` are still running (not on exit); refusal of sensitive-only and sensitive-tier hosts before dispatch; an
+  owner-opened tab on a sensitive-tier origin is refused for `read`/`find` and `state` returns no title or text for
+  it; with a sensitive-tier tab as the only open tab, `navigate` to an allowed URL succeeds in a new tab, the old
+  tab's URL is unchanged, and none of its text is returned; a navigate that redirects onto a sensitive-tier origin
+  returns no page text; a takeover refuses new calls and waits for a running one; a hanging attach does not go through
+  `invoke`/`control` and does not block them; the controller reads the handshake before `CdpClient`, and a second
+  concurrent attach is refused with `computer_browser_busy`; a missing or malformed handshake is
+  `computer_browser_unavailable`; a client disconnect leaves Chromium running; relay exit reaps Chromium and the next
+  start gets the profile lock; reconnect after a browser restart; the stream closes after 5 minutes idle and the next
+  call reopens it and succeeds.
 - **3b**: `click`/`type`/`select`/`submit`, the vocabulary rule, held cards with one-press resume and stale refusal,
   secret-field refusal, current-origin check on every input operation. Tests: classification table per S16-D07 row
   (a) to (f), including ordinary submits that do not wait; password, file, hidden and one-time-code fields refused;
   a click whose result redirects onto a sensitive-tier origin returns no page text; the card shows the amount,
-  recipients and content and never a secret field's value; card approve once, decline, stale when the URL, element
-  or any shown value changed, reload with no duplicate dispatch; no typed text in journal, history or logs.
+  recipients and content and never a secret field's value; a held call returns `pending` within 60 s and releases
+  its ticket (a takeover while the card is open goes straight to `owner`); card approve once, decline, stale when the
+  URL, element or any shown value changed, reload with no duplicate dispatch; a press after the run ended takes a new
+  ticket and its own stream; a press while the screen is not `agent` is refused (`takeover_active` /
+  `computer_yielded`) and sends nothing; a press on a tab that moved to a refused origin sends nothing; the card
+  expires after 30 minutes; no typed text in journal, history or logs.
 - **3c**: `needs_you` card and the `yield` state, resume on hand-back, routine `needs_you` state, English/Thai copy;
-  `Closes #442`. Tests: `needs_you` is refused unless the screen is `agent`; a second work on the same computer is
-  refused while yielded; the idle sweep does not stop a yielded VM, and it is still running 31 minutes after the
-  last session closed; (a) with no ticket held, Watch screen goes to `owner` and the owner can type immediately;
-  (b) with another session holding a shell ticket, Watch screen goes to `settling`, owner input gets
-  `takeover_settling` until that shell call ends, then the screen is `owner`, and the shell call has finished when
-  the owner types; hand-back advances the generation and `needs_you` returns `resumed` with no CDP batch; decline
-  and expiry while still `yield` return to `agent`; the card expiring while the owner holds the screen does not
-  remove the owner and the tool has not returned; card never carries a credential; typed "ok" does not resolve it;
-  sensitive origins refused; the #442 flow end to end with a non-IdP fixture login site and a scripted owner
-  takeover.
-- Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls,
-  the `yield` state) and `s15-working-vm-v1` (`vmDesktopCdpStream` with its `sudo -n -u jit-desktop` attach and
-  handshake, relay files, composite `ready-v1` key). Live
-  evidence on `jit-vm` (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
+  `Closes #442`. Tests: `needs_you` is refused unless the screen is `agent`; it returns `{ state: "yielded", cardId,
+  generation, expiresAt }` within 60 s and the turn ends; a cancelled run leaves `yield` in place and Watch screen and
+  hand-back still work; Watch screen sends the `yield` generation, and an older one is `stale_screen`; a second work
+  on the same computer is refused while yielded; the idle sweep does not stop a yielded VM, and it is still running 31
+  minutes after the last session closed; (a) with no ticket held, Watch screen goes to `owner` and the owner can type
+  immediately; (b) with another session holding a shell ticket, Watch screen goes to `settling`, owner input gets
+  `takeover_settling` until that shell call ends, then the screen is `owner`, and the shell call has finished when the
+  owner types; hand-back advances the generation and the card records `resumed` with no CDP batch, and the next run's
+  call under the new generation succeeds; decline and expiry while still `yield` record `declined` / `expired` and
+  return to `agent`; a `yield` past `expiresAt` is expired by the idle sweep and by the next admission without a
+  timer; the card expiring while the owner holds the screen does not remove the owner, no resumed/timeout outcome is
+  recorded and the state was not forced back; card never carries a credential; typed "ok" does not resolve it;
+  sensitive origins refused; the #442 flow end to end with a non-IdP fixture login site and a scripted owner takeover.
+- Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls, the
+  `yield` state: `takeover` from `agent`, `fenced` or `yield`, and Watch screen sends the `yield` generation) with the
+  code change it names in `src/s16/computers/screen.ts` (the takeover guard at `:189` accepts `yield`, and the
+  `s16_screen_control` state CHECK at `:79` adds `'yield'`) and `s15-working-vm-v1` (`vmDesktopCdpStream` with its
+  `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm`
+  (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
