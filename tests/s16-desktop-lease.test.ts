@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, createServer } from "node:net";
@@ -11,7 +11,7 @@ import { VmEnrollment } from "../src/s15/vm/enrollment";
 import { startLocalVmControl } from "../src/s15/vm/local-control";
 import { VmManagers } from "../src/s15/vm/managers";
 import { startVmRegistryProxy, type VmProxyLease, type VmProxyLog } from "../src/s15/vm/proxy";
-import { QemuVmManagement, qemuDesktopLeaseWriter, type QemuHostOptions } from "../src/s15/vm/qemu";
+import { QemuVmManagement, qemuDesktopBrowser, qemuDesktopLeaseWriter, qemuDesktopProvisioning, type QemuHostOptions } from "../src/s15/vm/qemu";
 import { WorkingVmService } from "../src/s15/vm/service";
 import { VmStore } from "../src/s15/vm/store";
 import { VmSshTransport } from "../src/s15/vm/transport";
@@ -109,9 +109,14 @@ describe("local VM control composes the desktop lease only with its filter", () 
     expect(await exchange(control.host.proxySocket, request("news.example.co.th:443", auth(lease)))).toContain("403");
     expect(lookups).toEqual(["news.example.co.th"]);
     lease.close();
+    // The beat's install lease is the unfiltered provisioning kind, like the Docker install.
+    const install = control.host.provisionLease!(`provision_${"1".repeat(32)}`, Date.now() + 10_000);
+    expect(await exchange(control.host.proxySocket, request("accounts.google.com:443", auth(install)))).toContain("403");
+    expect(lookups).toEqual(["news.example.co.th", "accounts.google.com"]);
+    install.close();
     const other = new VmStore(":memory:"); cleanups.push(() => other.close());
     const headless = await startLocalVmControl(other, { directory: directory() }); cleanups.unshift(headless.close);
-    expect(headless.host.desktopLease).toBeUndefined();
+    expect(headless.host.desktopLease).toBeUndefined(); expect(headless.host.provisionLease).toBeUndefined();
   });
 });
 
@@ -119,12 +124,12 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
   const identity = { name: "jit-work-0123456789ab", architecture: "x86_64" as const, mac: "52:54:00:12:34:56", sshPort: 22022, resources: { cpus: 5, memoryMiB: 9216, diskGiB: 60 } };
   /** Records every desktop lease issued, renewed and revoked, and captures the renewal timer. */
   function leases() {
-    const issued: { id: string; expiresAt: number; renewals: number[]; closed: boolean }[] = [], beats: { beat: () => void; ms: number; cancelled: boolean }[] = [];
+    const issued: { id: string; expiresAt: number; renewals: number[]; closed: boolean }[] = [], beats: { beat: () => Promise<void>; ms: number; cancelled: boolean }[] = [];
     const desktopLease = (id: string, expiresAt: number): VmProxyLease => {
       const record = { id, expiresAt, renewals: [] as number[], closed: false }; issued.push(record);
       return { environment: Object.freeze({ HTTPS_PROXY: `http://${id}:secret@192.168.5.100:3128` }), close() { record.closed = true; }, renew(at) { record.renewals.push(at); } };
     };
-    const every = (beat: () => void, ms: number) => { const entry = { beat, ms, cancelled: false }; beats.push(entry); return () => { entry.cancelled = true; }; };
+    const every = (beat: () => void, ms: number) => { const entry = { beat: () => beat() as unknown as Promise<void>, ms, cancelled: false }; beats.push(entry); return () => { entry.cancelled = true; }; };
     return { issued, beats, options: { desktop: true, desktopLease, every } satisfies Partial<QemuHostOptions> };
   }
   function host(group = true) { const h = new FakeQemuHost(); h.guestDesktopGroup = group; cleanups.push(() => h.cleanup()); return h; }
@@ -152,21 +157,86 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
     l.beats[0]!.beat(); await flush();
     expect(l.issued[0]!.closed).toBe(true); expect(l.issued[0]!.renewals).toEqual([]); expect(m.desktopLeaseHeld).toBe(false);
   });
-  test("a proxy that cannot issue a lease (full pool) leaves the VM running without one", async () => {
-    const h = host(), l = leases();
-    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options, desktopLease: () => { throw new AppError("vm_proxy_unavailable", 503); } });
+  test("#454 (b): a full lease pool at boot leaves the VM running; a later beat obtains the lease", async () => {
+    const h = host(), l = leases(); let full = true;
+    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options, desktopLease: (id, at) => { if (full) throw new AppError("vm_proxy_unavailable", 503); return l.options.desktopLease(id, at); } });
     await m.provision();
-    expect((await m.inspect()).state).toBe("running"); expect(m.desktopLeaseHeld).toBe(false); expect(l.beats).toEqual([]); expect(h.desktopLeases).toEqual([]);
-    await m.stop(); await m.start();
-    expect((await m.inspect()).state).toBe("running"); expect(m.desktopLeaseHeld).toBe(false);
+    expect((await m.inspect()).state).toBe("running"); expect(m.desktopLeaseHeld).toBe(false); expect(h.desktopLeases).toEqual([]);
+    expect(l.beats).toHaveLength(1); expect(l.beats[0]!.cancelled).toBe(false);
+    await l.beats[0]!.beat();
+    expect(m.desktopLeaseHeld).toBe(false);
+    full = false; await l.beats[0]!.beat();
+    expect(m.desktopLeaseHeld).toBe(true); expect(l.issued).toHaveLength(1); expect(h.desktopLeases).toEqual([`http://${l.issued[0]!.id}:secret@192.168.5.100:3128`]);
+    await l.beats[0]!.beat();
+    expect(l.issued).toHaveLength(1); expect(l.issued[0]!.renewals).toHaveLength(1);
   });
-  test("a guest without the desktop group gets no lease; a headless controller issues none", async () => {
+  test("#454 (a): a live snapshot holding QMP past the 30s inspect timeout skips the beat and keeps the lease", async () => {
+    const h = host(), l = leases(); let release = () => {}; let holding = false;
+    const qmp: QemuHostOptions["qmp"] = async (socket, commands, options) => {
+      if (holding) throw new AppError("vm_management_unavailable", 503); // What qmpExchange reports after its 30s timeout.
+      if (commands.some(c => c.execute === "blockdev-snapshot-internal-sync")) { holding = true; await new Promise<void>(done => { release = done; }); holding = false; }
+      return h.qmp(socket, commands, options);
+    };
+    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options, qmp });
+    await m.provision();
+    const snapshot = m.snapshot(`jit-${"b".repeat(32)}`);
+    for (let i = 0; i < 200 && !holding; i++) await Bun.sleep(10);
+    expect(holding).toBe(true);
+    await l.beats[0]!.beat();
+    expect(m.desktopLeaseHeld).toBe(true); expect(l.issued[0]!.closed).toBe(false); expect(l.issued[0]!.renewals).toEqual([]); expect(l.beats[0]!.cancelled).toBe(false);
+    release(); await snapshot;
+    await l.beats[0]!.beat();
+    expect(l.issued[0]!.renewals).toHaveLength(1); expect(l.issued).toHaveLength(1);
+  });
+  test("an unproven boundary revokes the lease (fail closed); the beat issues a new one once the VM is proven again", async () => {
+    const h = host(), l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options });
+    await m.provision();
+    const [unit] = [...h.units.values()], process = h.processes.get(unit!.pid)!, argv = process.argv;
+    process.argv = ["/usr/bin/qemu-system-x86_64", "-name", "someone-else"];
+    await l.beats[0]!.beat();
+    expect(l.issued[0]!.closed).toBe(true); expect(m.desktopLeaseHeld).toBe(false); expect(l.beats[0]!.cancelled).toBe(false);
+    process.argv = argv;
+    await l.beats[0]!.beat();
+    expect(l.issued).toHaveLength(2); expect(m.desktopLeaseHeld).toBe(true);
+  });
+  test("a guest without the desktop session and no install source gets no lease; the beat keeps trying; headless issues none", async () => {
     const h = host(false), l = leases(), m = new QemuVmManagement(identity, { ...h.options(), ...l.options });
     await m.provision();
-    expect(l.issued).toHaveLength(1); expect(l.issued[0]!.closed).toBe(true); expect(l.beats).toEqual([]); expect(m.desktopLeaseHeld).toBe(false);
-    const h2 = host(), l2 = leases(), headless = new QemuVmManagement(identity, { ...h2.options(), desktopLease: l2.options.desktopLease });
+    // Once at boot, once again after cloud-init; both revoked because the guest has no `jit-desktop` group.
+    expect(l.issued).toHaveLength(2); expect(l.issued.every(x => x.closed)).toBe(true); expect(m.desktopLeaseHeld).toBe(false);
+    expect(l.beats).toHaveLength(1);
+    h.guestDesktopGroup = true; await l.beats[0]!.beat();
+    expect(l.issued).toHaveLength(3); expect(m.desktopLeaseHeld).toBe(true);
+    const h2 = host(), l2 = leases(), headless = new QemuVmManagement(identity, { ...h2.options(), desktopLease: l2.options.desktopLease, every: l2.options.every });
     await headless.provision();
-    expect(l2.issued).toEqual([]); expect(h2.desktopLeases).toEqual([]);
+    expect(l2.issued).toEqual([]); expect(h2.desktopLeases).toEqual([]); expect(l2.beats).toEqual([]); expect(h2.desktopInstalls).toEqual([]);
+  });
+  test("#454: provisioning installs the pinned session after cloud-init, then issues the lease; its own lease is always closed", async () => {
+    const h = host(false), l = leases(), provisioning: { id: string; closed: boolean }[] = [];
+    const lease = (id: string): VmProxyLease => { const r = { id, closed: false }; provisioning.push(r); return { environment: { HTTPS_PROXY: `http://${id}:p@192.168.5.100:3128` }, close() { r.closed = true; } }; };
+    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options });
+    await m.provision({ lease });
+    expect(h.desktopInstalls).toHaveLength(1);
+    expect(h.desktopInstalls[0]).toEqual({ proxy: expect.stringContaining("@192.168.5.100:3128"), url: qemuDesktopBrowser.x86_64.url, sha256: qemuDesktopBrowser.x86_64.sha256, version: qemuDesktopBrowser.version });
+    // Docker's lease and the desktop install's lease are separate and both closed.
+    expect(provisioning).toHaveLength(2); expect(provisioning.every(p => p.closed && /^provision_[0-9a-f]{32}$/.test(p.id))).toBe(true);
+    expect(m.desktopLeaseHeld).toBe(true); expect(l.issued.filter(x => !x.closed)).toHaveLength(1);
+    expect(h.desktopLeases.at(-1)).toContain(l.issued.at(-1)!.id);
+  });
+  test("a failed install is tried once per boot; on a later boot the beat installs it through the provisioning lease source", async () => {
+    const h = host(false), l = leases(), installs: string[] = [];
+    const provisionLease = (id: string): VmProxyLease => { installs.push(id); return { environment: { HTTPS_PROXY: `http://${id}:p@192.168.5.100:3128` }, close() {} }; };
+    const m = new QemuVmManagement(identity, { ...h.options(), ...l.options, provisionLease });
+    h.desktopInstallFails = true;
+    await m.provision();
+    expect(h.desktopInstalls).toHaveLength(1); expect(m.desktopLeaseHeld).toBe(false);
+    await l.beats[0]!.beat();
+    expect(h.desktopInstalls).toHaveLength(1);
+    await m.stop(); expect(l.beats[0]!.cancelled).toBe(true);
+    h.desktopInstallFails = false; await m.start();
+    expect(h.desktopInstalls).toHaveLength(1); expect(l.beats).toHaveLength(2);
+    await l.beats[1]!.beat();
+    expect(h.desktopInstalls).toHaveLength(2); expect(m.desktopLeaseHeld).toBe(true); expect(installs).toHaveLength(2);
   });
   test("a restarted controller re-attaching a surviving desktop VM issues a fresh lease once", async () => {
     const owner = {}, requireOwner = (a: object) => { if (a !== owner) throw new Error("owner"); };
@@ -195,7 +265,47 @@ describe("guest lease writer", () => {
   test("refuses a lease URL that could break the environment file, and writes nothing without the desktop group", () => {
     const python = spawnSync("python3", ["-c", "import grp;grp.getgrnam('jit-desktop')"]);
     if (python.error) return; // No python3 on this runner; the fixed program is exercised in live evidence.
-    for (const bad of ["https://a:b@192.168.5.100:3128", "http://a:b@192.168.5.100:3128\nLD_PRELOAD=/x", "http://a b@h:1", "http://a:'b@h:1"]) expect(run(bad).stdout.trim()).toBe("jit-desktop-lease-invalid-v1");
+    for (const bad of ["https://a:b@192.168.5.100:3128", "http://a:b@192.168.5.100:3128\nLD_PRELOAD=/x", "http://a b@h:1", "http://a:'b@h:1", "http://a:b$HOME@h:1"]) expect(run(bad).stdout.trim()).toBe("jit-desktop-lease-invalid-v1");
     if (python.status !== 0) expect(run("http://desktop_x:abc@192.168.5.100:3128").stdout.trim()).toBe("jit-desktop-absent-v1");
+  });
+});
+
+describe("guest desktop session program", () => {
+  test("pins one archive per architecture by SHA-256 and parses as Python", () => {
+    expect(qemuDesktopBrowser.version).toMatch(/^[0-9]+(?:\.[0-9]+){3}$/);
+    for (const pin of [qemuDesktopBrowser.x86_64, qemuDesktopBrowser.aarch64]) {
+      expect(pin.url.startsWith(`https://storage.googleapis.com/chrome-for-testing-public/${qemuDesktopBrowser.version}/`)).toBe(true);
+      expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(qemuDesktopBrowser.x86_64.sha256).not.toBe(qemuDesktopBrowser.aarch64.sha256);
+    const parsed = spawnSync("python3", ["-I", "-c", "import ast,sys;ast.parse(sys.stdin.read());print('ok')"], { input: qemuDesktopProvisioning, encoding: "utf8" });
+    if (parsed.error) return;
+    expect(parsed.stdout.trim()).toBe("ok");
+    // The browser keeps its sandbox and reaches the web only through the loopback forwarder; the session user has no sudo.
+    expect(qemuDesktopProvisioning).not.toContain("--no-sandbox");
+    expect(qemuDesktopProvisioning).toContain("--proxy-server=http://127.0.0.1:3129");
+    expect(qemuDesktopProvisioning).not.toMatch(/sudoers|NOPASSWD/);
+  });
+  test("the loopback forwarder adds the lease's Proxy-Authorization, replacing any the client sent, and refuses without a lease", async () => {
+    if (spawnSync("python3", ["-c", "1"]).error) return;
+    const forward = /FORWARD=r'''([\s\S]*?)'''/.exec(qemuDesktopProvisioning)![1]!;
+    const heads: string[] = [];
+    const upstream = createServer(socket => { let head = ""; socket.on("data", b => { head += b.toString("latin1"); if (head.includes("\r\n\r\n")) { heads.push(head); socket.end("HTTP/1.1 200 Connection Established\r\n\r\nok"); } }); });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve)); cleanups.push(() => new Promise<void>(resolve => upstream.close(() => resolve())));
+    const free = createServer(); await new Promise<void>(resolve => free.listen(0, "127.0.0.1", resolve));
+    const port = (free.address() as { port: number }).port; await new Promise<void>(resolve => free.close(() => resolve()));
+    const dir = mkdtempSync(join(tmpdir(), "jit-fwd-")), env = join(dir, "proxy.env"); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(env, "HTTPS_PROXY=http://desktop_x:pw@192.168.5.100:3128\n");
+    const code = forward.replace("E='/etc/jit-desktop/proxy.env'", `E='${env}'`).replace("U=('192.168.5.100',3128)", `U=('127.0.0.1',${(upstream.address() as { port: number }).port})`)
+      .replace("u.hostname==U[0] and u.port==U[1]", "u.hostname=='192.168.5.100' and u.port==3128").replace("l.bind(('127.0.0.1',3129))", `l.bind(('127.0.0.1',${port}))`);
+    const child = spawn("python3", ["-I", "-c", code], { stdio: "ignore" }); cleanups.push(() => { child.kill(); });
+    let answer = "";
+    for (let i = 0; i < 50 && !answer; i++) { try { answer = await exchange(port, "CONNECT news.example.co.th:443 HTTP/1.1\r\nHost: news.example.co.th:443\r\nProxy-Authorization: Basic Zm9vOmJhcg==\r\n\r\n"); } catch { await Bun.sleep(50); } }
+    expect(answer).toContain("200 Connection Established");
+    expect(heads).toHaveLength(1); expect(heads[0]!.match(/Proxy-Authorization/g)).toHaveLength(1);
+    expect(heads[0]).toContain(`Proxy-Authorization: Basic ${Buffer.from("desktop_x:pw").toString("base64")}\r\n`);
+    rmSync(env);
+    expect(await exchange(port, "CONNECT news.example.co.th:443 HTTP/1.1\r\n\r\n")).toContain("503");
+    expect(heads).toHaveLength(1);
   });
 });

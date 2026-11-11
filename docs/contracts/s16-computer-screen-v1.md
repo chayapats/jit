@@ -1,6 +1,6 @@
 # s16-computer-screen/v1
 
-Owner contract for watching a desktop working computer and taking exclusive control (DESK16-01, [ADR 0090](../adr/0090-s16-watch-and-take-over-a-working-computer.md)). Available when the installation enables `computers` and `desktop`; the bootstrap reports `capabilities.computers.screen: true`.
+Owner contract for watching a desktop working computer and taking exclusive control (DESK16-01, [ADR 0090](../adr/0090-s16-watch-and-take-over-a-working-computer.md)). Available when the installation enables `computers` and `desktop`; the bootstrap reports `capabilities.computers.screen: true`. The screen shows the guest desktop session (Xorg, fluxbox and the pinned browser on the 1280×800 virtio display; ADR 0091, `s15-working-vm-v1` "Desktop session") once it is installed; before that, or on a VM whose install failed, it shows the guest's text console.
 
 ## Read the screen state
 

@@ -115,7 +115,13 @@ export interface QemuHostOptions {
    * composed source (`startLocalVmControl`) refuses sensitive-only hosts on it. Absent, no desktop lease exists.
    */
   desktopLease?: (sessionId: string, expiresAt: number) => VmProxyLease;
-  /** Repeating timer seam for desktop lease renewal (default: an unreferenced `setInterval`); returns its cancel. */
+  /**
+   * DESK16-01 (ADR 0091 decisions 1, 6): bounded provisioning lease (no host filter, like the Docker install) the
+   * desktop beat uses to install the desktop session on a VM enrolled before `desktop` was on. Absent, only
+   * provisioning installs it.
+   */
+  provisionLease?: (sessionId: string, expiresAt: number) => VmProxyLease;
+  /** Repeating timer seam for the desktop beat (default: an unreferenced `setInterval`); returns its cancel. */
   every?: (beat: () => void, milliseconds: number) => () => void;
 }
 /** Credential-free persisted identity of one Jit-created VM; owner resource edits change only `resources`. */
@@ -160,9 +166,17 @@ export class QemuVmManagement implements VmLocalManagement {
   readonly #now: () => number;
   readonly #sleep: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
   #resources: LocalVmResources;
-  #desktopLease: { lease: VmProxyLease; cancel: () => void } | null = null;
+  #desktopLease: VmProxyLease | null = null;
   /** Bumped by every revoke, so a delivery still in flight when the VM stops never installs its lease. */
   #desktopEpoch = 0;
+  /** Cancels this boot's desktop beat; null while no beat runs. */
+  #desktopBeatCancel: (() => void) | null = null;
+  /** Aborted by every stop, so an in-flight delivery or install ends with it. */
+  #desktopAbort = new AbortController();
+  /** Desktop lease work in flight (delivery or install); a beat skips while it runs. */
+  #desktopWork: Promise<void> | null = null;
+  /** Whether this boot already tried to install a missing desktop session. */
+  #desktopInstallTried = false;
   constructor(readonly identity: Readonly<QemuVmIdentity>, readonly host: QemuHostOptions) {
     if (!/^jit-work-[a-f0-9]{12}$/.test(identity.name) || !["x86_64", "aarch64"].includes(identity.architecture)) vmFail("vm_management_scope_denied", 403);
     if (!/^52:54:00(?::[a-f0-9]{2}){3}$/.test(identity.mac)) vmFail("vm_invalid_setup");
@@ -347,54 +361,122 @@ export class QemuVmManagement implements VmLocalManagement {
     if (!running) vmFail("vm_management_unavailable");
     this.saveState({ pid, startTicks: this.#proc.startTicks(pid) });
     await this.waitForSsh(signal);
-    await this.openDesktopLease(signal);
+    this.#desktopInstallTried = false;
+    // The boot's lease and beat: a lease that cannot be issued or delivered now is retried by the beat.
+    await this.desktopTurn(() => this.openDesktopLease(signal));
+    this.armDesktop();
   }
   /** Whether this manager currently holds a delivered desktop browser lease (DESK16-01). */
   get desktopLeaseHeld(): boolean { return this.#desktopLease !== null; }
   /**
    * DESK16-01 (ADR 0091 decisions 2-3): the guest desktop browser's standing public-web lease, separate from every
-   * work-session lease. A fresh lease is issued after each boot and when a controller re-attaches a VM that survived
-   * its restart (the restarted proxy holds no lease). It is written over SSH to `/etc/jit-desktop/proxy.env`
-   * (`0640 root:jit-desktop`) only when the guest has the desktop session's group; otherwise, or when delivery fails,
-   * it is revoked at once and the guest has no desktop lease. A proxy that cannot issue one (e.g. its lease pool is
-   * full) likewise leaves the VM running without a desktop lease until its next boot or re-attachment. A held lease is renewed while the VM runs and revoked
-   * before every stop (owner stop, idle stop, restore). A delivery failure never fails the start.
+   * work-session lease. A fresh lease is issued after each boot, again once provisioning has finished cloud-init and
+   * installed the desktop session, and when a controller re-attaches a VM that survived its restart (the restarted
+   * proxy holds no lease). It is written over SSH to `/etc/jit-desktop/proxy.env` (`0640 root:jit-desktop`) only when
+   * the guest has the desktop session's group; otherwise, or when delivery fails, it is revoked at once. A proxy that
+   * cannot issue one (e.g. its lease pool is full) leaves the VM running without a lease. Neither ever fails the start:
+   * the 10-minute desktop beat (`desktopBeat`) renews a held lease and issues a new one while none is held. Every stop
+   * (owner stop, idle stop, restore) revokes the lease and ends the beat first.
+   *
+   * With `install`, a guest without the desktop session first gets it installed (`qemuDesktopProvisioning`) through
+   * a separate bounded provisioning lease, then the desktop lease is issued.
    */
-  private async openDesktopLease(signal?: AbortSignal): Promise<void> {
-    const issue = this.host.desktopLease; if (!issue || !this.host.desktop) return;
-    this.closeDesktopLease(); const epoch = this.#desktopEpoch;
-    // Expiry is judged by the proxy's own wall clock, like work-session and provisioning leases.
-    // The browser lease is optional: a full or unavailable proxy leaves this VM without one, never fails the start.
-    let lease: VmProxyLease;
-    try { lease = issue(`desktop_${this.identity.name}_${randomBytes(12).toString("hex")}`, Date.now() + desktopLeaseMs); } catch { return; }
-    let delivered = false;
-    try {
-      const out = await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],
-        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "" })), ...(signal ? { signal } : {}) });
-      delivered = out.trim() === "jit-desktop-lease-v1";
-    } catch { delivered = false; }
-    if (!delivered || epoch !== this.#desktopEpoch) { lease.close(); return; }
-    // Renewed only while this exact VM still runs; a VM that went away without a protected stop loses the lease.
-    const renew = async () => {
-      let running = false; try { running = (await this.inspect()).state === "running"; } catch { /* Unproven counts as not running. */ }
-      if (this.#desktopLease?.lease !== lease) return;
-      if (!running) { this.closeDesktopLease(); return; }
-      try { lease.renew?.(Date.now() + desktopLeaseMs); } catch { this.closeDesktopLease(); }
-    };
-    const cancel = (this.host.every ?? repeat)(() => { void renew(); }, desktopLeaseRenewMs);
-    this.#desktopLease = { lease, cancel };
+  private async openDesktopLease(signal?: AbortSignal, install?: (sessionId: string, expiresAt: number) => VmProxyLease): Promise<void> {
+    if (!this.host.desktopLease || !this.host.desktop) return;
+    this.revokeDesktopLease(); const epoch = this.#desktopEpoch, abort = this.#desktopAbort.signal;
+    const stop = signal ? AbortSignal.any([signal, abort]) : abort;
+    const result = await this.deliverDesktopLease(epoch, stop);
+    if (result === "absent" && install && !this.#desktopInstallTried && epoch === this.#desktopEpoch) {
+      // One install attempt per boot: a failed download is not retried every beat.
+      this.#desktopInstallTried = true;
+      if (await this.installDesktop(install, stop) && epoch === this.#desktopEpoch) await this.deliverDesktopLease(epoch, stop);
+    }
   }
-  private closeDesktopLease(): void {
+  /** Issues one desktop lease and writes it into the guest; keeps it only if this epoch is still current. */
+  private async deliverDesktopLease(epoch: number, signal: AbortSignal): Promise<"held" | "absent" | "failed"> {
+    // Expiry is judged by the proxy's own wall clock, like work-session and provisioning leases.
+    let lease: VmProxyLease;
+    try { lease = this.host.desktopLease!(`desktop_${this.identity.name}_${randomBytes(12).toString("hex")}`, Date.now() + desktopLeaseMs); } catch { return "failed"; }
+    let out = "";
+    try {
+      out = (await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],
+        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "" })), signal })).trim();
+    } catch { out = ""; }
+    if (out !== "jit-desktop-lease-v1" || epoch !== this.#desktopEpoch) { lease.close(); return out === "jit-desktop-absent-v1" ? "absent" : "failed"; }
+    this.#desktopLease = lease;
+    return "held";
+  }
+  /**
+   * Installs the pinned desktop session in the guest (ADR 0091 decisions 1, 6) through one bounded provisioning
+   * lease, which is always closed afterwards. True only when the guest reports the session ready.
+   */
+  private async installDesktop(issue: (sessionId: string, expiresAt: number) => VmProxyLease, signal: AbortSignal): Promise<boolean> {
+    let lease: VmProxyLease;
+    try { lease = issue(`provision_${randomBytes(16).toString("hex")}`, Date.now() + 1_800_000); } catch { return false; }
+    try {
+      const pin = qemuDesktopBrowser[this.identity.architecture];
+      const input = Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "", url: pin.url, sha256: pin.sha256, version: qemuDesktopBrowser.version }));
+      const out = await this.guest(new VmSshTransport(this.endpoint(), this.#run), ["sudo", "-n", "python3", "-I", "-c", qemuDesktopProvisioning], { timeoutMs: 1_800_000, input, signal });
+      return out.trim() === "jit-desktop-ready-v1";
+    } catch { return false; } finally { lease.close(); }
+  }
+  /**
+   * The desktop beat (#454): one timer per boot of a desktop VM, every 10 minutes.
+   * - running, lease held: renew it (a renewal that fails revokes it; the next beat issues a new one);
+   * - running, no lease (full pool, failed delivery, a guest still without the session): issue one, installing the
+   *   session first if a provisioning lease source exists and this boot has not tried yet;
+   * - `inspect()` failed transiently (QMP busy with a live snapshot, a management timeout): skip this beat and keep
+   *   the lease; its 30-minute expiry outlives one missed renewal;
+   * - the VM is proven not running, or its boundary is unproven (`vm_boundary_unproven`): revoke, failing closed.
+   *   A VM that is no longer running also ends the beat; its next protected start begins a new one.
+   * A beat that finds earlier desktop work still in flight does nothing.
+   */
+  private async desktopBeat(): Promise<void> {
+    if (this.#desktopWork) return;
+    const epoch = this.#desktopEpoch;
+    let state: VmMachineState["state"];
+    try { state = (await this.inspect()).state; }
+    catch (error) {
+      if (error instanceof AppError && error.code === "vm_boundary_unproven" && epoch === this.#desktopEpoch) this.revokeDesktopLease();
+      return;
+    }
+    if (epoch !== this.#desktopEpoch || this.#desktopWork) return;
+    if (state !== "running") { this.endDesktop(); return; }
+    const held = this.#desktopLease;
+    if (held) { try { held.renew?.(Date.now() + desktopLeaseMs); } catch { this.revokeDesktopLease(); } return; }
+    await this.desktopTurn(() => this.openDesktopLease(undefined, this.host.provisionLease));
+  }
+  /** Runs one piece of desktop lease work at a time; a caller that must act waits for the earlier one to settle. */
+  private async desktopTurn(work: () => Promise<void>): Promise<void> {
+    while (this.#desktopWork) await this.#desktopWork;
+    const running = work(), settled: Promise<void> = running.then(() => {}, () => {}).finally(() => { if (this.#desktopWork === settled) this.#desktopWork = null; });
+    this.#desktopWork = settled;
+    await running;
+  }
+  /** Starts the desktop beat of this boot (idempotent). Only a desktop controller with a lease source has one. */
+  private armDesktop(): void {
+    if (!this.host.desktop || !this.host.desktopLease || this.#desktopBeatCancel) return;
+    this.#desktopBeatCancel = (this.host.every ?? repeat)(() => this.desktopBeat(), desktopLeaseRenewMs);
+  }
+  /** Revokes the held lease (if any) and invalidates every delivery still in flight. The beat keeps running. */
+  private revokeDesktopLease(): void {
     const held = this.#desktopLease; this.#desktopLease = null; this.#desktopEpoch++;
-    if (held) { held.cancel(); held.lease.close(); }
+    held?.close();
+  }
+  /** Ends this boot's desktop state: aborts in-flight delivery or install, revokes the lease and stops the beat. */
+  private endDesktop(): void {
+    this.#desktopAbort.abort(); this.#desktopAbort = new AbortController();
+    this.revokeDesktopLease();
+    const cancel = this.#desktopBeatCancel; this.#desktopBeatCancel = null; cancel?.();
   }
   /**
    * Controller-boot re-attachment of a VM that survived the restart, after the caller re-verified it: the restarted
-   * proxy holds no lease, so a desktop VM gets a fresh desktop lease (DESK16-01). Headless VMs are unchanged.
+   * proxy holds no lease, so a desktop VM gets a fresh desktop lease and a new beat (DESK16-01). Headless VMs are unchanged.
    */
   async reattached(signal?: AbortSignal): Promise<void> {
-    if (this.#desktopLease || (await this.inspect()).state !== "running") return;
-    await this.openDesktopLease(signal);
+    if ((await this.inspect()).state !== "running") return;
+    this.armDesktop();
+    if (!this.#desktopLease) await this.desktopTurn(() => this.openDesktopLease(signal));
   }
   /**
    * Waits for the guest SSH service, compares its host key to the pinned key (a different key fails closed),
@@ -432,8 +514,8 @@ export class QemuVmManagement implements VmLocalManagement {
     if (this.host.desktop) await this.discardFrame();
   }
   private async halt(): Promise<void> {
-    // The desktop lease goes first: a stopping or stopped VM keeps no standing web access (DESK16-01).
-    this.closeDesktopLease();
+    // The desktop lease and beat go first: a stopping or stopped VM keeps no standing web access (DESK16-01).
+    this.endDesktop();
     const before = await this.unitState(), recorded = this.state();
     this.saveState({ desired: "stopped" });
     const pids = [before.pid, recorded.pid ?? 0].filter(pid => pid > 0);
@@ -606,6 +688,13 @@ export class QemuVmManagement implements VmLocalManagement {
         docker = out.trim() === "jit-docker-ready-v1";
       } catch { docker = false; } finally { lease.close(); }
     }
+    // DESK16-01 (#454): after cloud-init the desktop session is installed (if missing) and the lease is issued again,
+    // since the boot's first delivery can run before the guest has the session's group.
+    if (this.host.desktop && this.host.desktopLease && !this.#desktopLease) {
+      guard();
+      this.#desktopInstallTried = false;
+      await this.desktopTurn(() => this.openDesktopLease(options.signal, options.lease ?? this.host.provisionLease));
+    }
     return { docker };
   }
 }
@@ -620,7 +709,7 @@ const repeat = (beat: () => void, milliseconds: number) => { const timer = setIn
  */
 export const qemuDesktopLeaseWriter = `import grp,json,os,stat,sys
 p=json.loads(sys.stdin.read(4096))['proxy']
-if not p.startswith('http://') or any(c in p for c in '\\n\\r\\0 "\\'\\\\'):print('jit-desktop-lease-invalid-v1');sys.exit(0)
+if not p.startswith('http://') or any(c in p for c in '\\n\\r\\0 "$\\'\\\\'):print('jit-desktop-lease-invalid-v1');sys.exit(0)
 try:g=grp.getgrnam('jit-desktop').gr_gid
 except KeyError:print('jit-desktop-absent-v1');sys.exit(0)
 d='/etc/jit-desktop'
@@ -635,6 +724,184 @@ os.fchown(f,0,g);os.fchmod(f,0o640)
 os.write(f,''.join(k+'='+p+'\\n' for k in ('HTTP_PROXY','HTTPS_PROXY','http_proxy','https_proxy')).encode())
 os.fsync(f);os.close(f);os.rename(t,d+'/proxy.env')
 print('jit-desktop-lease-v1')
+`;
+/**
+ * DESK16-01 (ADR 0091 decision 6): the pinned desktop browser, Chrome for Testing (Google's version-pinned Chromium
+ * build, no auto-update) for both guest architectures. The SHA-256 of each archive was recorded from the published
+ * file; the guest refuses any other bytes. Changing the pin is a one-line reviewed change.
+ */
+export const qemuDesktopBrowser = Object.freeze({
+  version: "157.0.8103.50",
+  x86_64: Object.freeze({ url: "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux64/chrome-linux64.zip",
+    sha256: "d17167bc092eb495a3b768c7467f27e35f625aa03834233a1663af67dcb668c9" }),
+  aarch64: Object.freeze({ url: "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux-arm64/chrome-linux-arm64.zip",
+    sha256: "9539c1612121eb09c4b787f4f9d0c732357772eb22583620ffed64d50dd6c4cc" }),
+});
+/**
+ * Fixed guest program (DESK16-01, ADR 0091 decisions 1, 6), idempotent. Reads `{proxy, url, sha256, version}` from
+ * stdin (a bounded provisioning lease and the pin above) and, as root:
+ * - creates the unprivileged system user and group `jit-desktop` (no sudo, home `/var/lib/jit-desktop`);
+ * - unless this pinned version is already installed: downloads the archive through the lease, refuses it unless its
+ *   SHA-256 matches, unpacks it to `/opt/jit-desktop/chrome-<version>`, then installs its `deb.deps` and Xorg (the
+ *   modesetting driver), libinput, xinit, fluxbox and fonts from Ubuntu's archive; older pinned versions are removed;
+ * - writes the Xorg screen (1280×800), an AppArmor profile that lets only that browser use user namespaces (its
+ *   sandbox stays on), the loopback proxy forwarder and the session script;
+ * - enables `jit-desktop-proxy.service` (127.0.0.1:3129 → the guest-forwarded proxy, adding `Proxy-Authorization`
+ *   from `/etc/jit-desktop/proxy.env` read per connection, since Chromium takes no credentials in a proxy URL) and
+ *   `jit-desktop.service` (Xorg + fluxbox + the browser on vt7 as `jit-desktop`; the browser restarts if it exits).
+ * Prints `jit-desktop-ready-v1` only when every step succeeded.
+ */
+export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,shutil,subprocess,sys,zipfile
+a=json.loads(sys.stdin.read(8192))
+p,u,h,v=a['proxy'],a['url'],a['sha256'],a['version']
+if not p.startswith('http://') or not u.startswith('https://') or len(h)!=64 or not all(c in '0123456789abcdef' for c in h) or not all(c.isdigit() or c=='.' for c in v):print('jit-desktop-invalid-v1');sys.exit(0)
+env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','DEBIAN_FRONTEND':'noninteractive','http_proxy':p,'https_proxy':p,'HTTP_PROXY':p,'HTTPS_PROXY':p}
+q={'stdout':subprocess.DEVNULL,'stderr':subprocess.DEVNULL,'env':env,'check':True}
+R='/opt/jit-desktop';B=R+'/chrome-'+v;L='/usr/local/lib/jit-desktop'
+def put(f,s,m=0o644):
+ os.makedirs(os.path.dirname(f),mode=0o755,exist_ok=True)
+ t=f+'.jit-new'
+ with open(t,'w') as o:o.write(s)
+ os.chmod(t,m);os.rename(t,f)
+FORWARD=r'''import base64,os,socket,threading,urllib.parse
+E='/etc/jit-desktop/proxy.env';U=('192.168.5.100',3128);S=threading.BoundedSemaphore(64)
+def auth():
+ try:
+  for l in open(E):
+   if l.startswith('HTTPS_PROXY='):
+    u=urllib.parse.urlsplit(l.strip()[12:])
+    if u.scheme=='http' and u.hostname==U[0] and u.port==U[1] and u.username and u.password:return b'Basic '+base64.b64encode((urllib.parse.unquote(u.username)+':'+urllib.parse.unquote(u.password)).encode())
+ except (OSError,ValueError):pass
+def pipe(a,b):
+ try:
+  while True:
+   d=a.recv(65536)
+   if not d:break
+   b.sendall(d)
+ except OSError:pass
+ for s in (a,b):
+  try:s.shutdown(socket.SHUT_RDWR)
+  except OSError:pass
+def serve(c):
+ r=None
+ try:
+  c.settimeout(30);h=b''
+  while b'\r\n\r\n' not in h:
+   d=c.recv(8192)
+   if not d or len(h)>16384:return
+   h+=d
+  head,rest=h.split(b'\r\n\r\n',1);lines=head.split(b'\r\n');k=auth()
+  if not k:c.sendall(b'HTTP/1.1 503 No desktop lease\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return
+  lines=[lines[0]]+[l for l in lines[1:] if not l.lower().startswith((b'proxy-authorization:',b'proxy-connection:'))]+[b'Proxy-Authorization: '+k]
+  r=socket.create_connection(U,timeout=30);r.sendall(b'\r\n'.join(lines)+b'\r\n\r\n'+rest);c.settimeout(None);r.settimeout(None)
+  t=threading.Thread(target=pipe,args=(r,c),daemon=True);t.start();pipe(c,r);t.join()
+ except OSError:pass
+ finally:
+  c.close()
+  if r:r.close()
+  S.release()
+l=socket.socket();l.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);l.bind(('127.0.0.1',3129));l.listen(128)
+while True:
+ c,_=l.accept();S.acquire();threading.Thread(target=serve,args=(c,),daemon=True).start()
+'''
+SESSION=r'''#!/bin/sh
+xset s off -dpms
+fluxbox &
+while :; do
+ @B@/chrome --user-data-dir=/var/lib/jit-desktop/profile --proxy-server=http://127.0.0.1:3129 --no-first-run --no-default-browser-check --password-store=basic --disable-background-networking --window-position=0,0 --window-size=1280,800 --start-maximized
+ sleep 2
+done
+'''
+DESKTOP='''[Unit]
+Description=Jit desktop session (DESK16-01)
+After=systemd-user-sessions.service jit-desktop-proxy.service
+Wants=jit-desktop-proxy.service
+Conflicts=getty@tty7.service
+[Service]
+User=jit-desktop
+PAMName=login
+TTYPath=/dev/tty7
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+WorkingDirectory=/var/lib/jit-desktop
+ExecStartPre=+/usr/bin/chvt 7
+ExecStart=/usr/bin/xinit /usr/local/lib/jit-desktop/session -- /usr/bin/Xorg :0 vt7 -keeptty -novtswitch -nolisten tcp
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+'''
+PROXY='''[Unit]
+Description=Jit desktop browser proxy forwarder (DESK16-01)
+[Service]
+User=jit-desktop
+ExecStart=/usr/bin/python3 -I /usr/local/lib/jit-desktop/proxy-forward.py
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target
+'''
+XORG='''Section "Device"
+ Identifier "jit-virtio"
+ Driver "modesetting"
+EndSection
+Section "Screen"
+ Identifier "jit-screen"
+ Device "jit-virtio"
+ SubSection "Display"
+  Modes "1280x800"
+ EndSubSection
+EndSection
+'''
+ARMOR='''abi <abi/4.0>,
+include <tunables/global>
+profile jit-desktop-chrome /opt/jit-desktop/chrome-*/chrome flags=(unconfined) {
+ userns,
+}
+'''
+try:
+ subprocess.run(['groupadd','--system','-f','jit-desktop'],**q)
+ try:pwd.getpwnam('jit-desktop')
+ except KeyError:subprocess.run(['useradd','--system','--gid','jit-desktop','--groups','video,input,render','--home-dir','/var/lib/jit-desktop','--create-home','--shell','/usr/sbin/nologin','jit-desktop'],**q)
+ if not os.path.isfile(B+'/chrome'):
+  os.makedirs(R,mode=0o755,exist_ok=True);z=R+'/chrome.zip';n=B+'.new'
+  subprocess.run(['curl','-fsSL','--proto','=https','--max-filesize','314572800','--max-time','1500','-o',z,u],**q)
+  d=hashlib.sha256()
+  with open(z,'rb') as f:
+   for c in iter(lambda:f.read(1048576),b''):d.update(c)
+  if d.hexdigest()!=h:os.unlink(z);print('jit-desktop-unverified-v1');sys.exit(0)
+  shutil.rmtree(n,ignore_errors=True);os.makedirs(n,mode=0o755)
+  with zipfile.ZipFile(z) as f:
+   for i in f.infolist():
+    r=i.filename.split('/',1)[1] if '/' in i.filename else ''
+    if not r or r.endswith('/'):continue
+    if r.startswith('/') or '..' in r.split('/'):print('jit-desktop-unverified-v1');sys.exit(0)
+    t=os.path.join(n,r);os.makedirs(os.path.dirname(t),mode=0o755,exist_ok=True)
+    with f.open(i) as s,open(t,'wb') as o:shutil.copyfileobj(s,o)
+    os.chmod(t,0o755 if (i.external_attr>>16)&0o111 else 0o644)
+  deps=[l.strip() for l in open(n+'/deb.deps') if l.strip()]
+  subprocess.run(['apt-get','-q','update'],timeout=900,**q)
+  subprocess.run(['apt-get','-q','-y','--no-install-recommends','satisfy',', '.join(deps)],timeout=1200,**q)
+  subprocess.run(['apt-get','-q','-y','--no-install-recommends','install','xserver-xorg-core','xserver-xorg-input-libinput','xinit','x11-xserver-utils','fluxbox','fonts-dejavu-core','fonts-thai-tlwg','apparmor'],timeout=1200,**q)
+  os.rename(n,B);os.unlink(z)
+ for o in os.listdir(R):
+  if o.startswith('chrome-') and R+'/'+o!=B:shutil.rmtree(R+'/'+o,ignore_errors=True)
+ put(L+'/proxy-forward.py',FORWARD);put(L+'/session',SESSION.replace('@B@',B),0o755)
+ put('/etc/X11/xorg.conf.d/10-jit-desktop.conf',XORG);put('/etc/apparmor.d/jit-desktop-chrome',ARMOR)
+ put('/etc/systemd/system/jit-desktop.service',DESKTOP);put('/etc/systemd/system/jit-desktop-proxy.service',PROXY)
+ subprocess.run(['apparmor_parser','-r','/etc/apparmor.d/jit-desktop-chrome'],timeout=120,**{**q,'check':False})
+ subprocess.run(['systemctl','daemon-reload'],timeout=120,**q)
+ subprocess.run(['systemctl','enable','--now','jit-desktop-proxy.service','jit-desktop.service'],timeout=120,**q)
+ put(R+'/ready-v1',v+'\n')
+ print('jit-desktop-ready-v1')
+except (OSError,ValueError,KeyError,zipfile.BadZipFile,subprocess.SubprocessError):print('jit-desktop-missing-v1')
 `;
 /** Fixed guest program: installs Ubuntu's `docker.io` through the bounded provisioning proxy lease read from stdin. */
 const dockerProvisioning = `import json,subprocess,sys

@@ -78,5 +78,8 @@ export async function startLocalVmControl(store: VmStore, options: LocalVmContro
   const probe = host.probe ?? (options.vmm ? vmmHostProbe(options.vmm) : undefined);
   // DESK16-01: the desktop browser's standing lease always carries the sensitive-host filter (ADR 0091 decisions 2, 5).
   const desktopLease = host.desktop && desktopDeny ? (sessionId: string, expiresAt: number) => proxy.lease(sessionId, expiresAt, undefined, { deny: desktopDeny }) : undefined;
-  return { host: { ...host, proxySocket, ...(probe ? { probe } : {}), ...(desktopLease ? { desktopLease } : {}) }, lease: (sessionId, expiresAt, authorize) => proxy.lease(sessionId, expiresAt, authorize), setHosts: hosts => proxy.setHosts(hosts), close: () => proxy.close() };
+  // A desktop VM enrolled before `desktop` was on gets its session installed from the beat through a bounded
+  // provisioning lease, the same unfiltered kind as the Docker install (ADR 0091 decisions 1, 6).
+  const provisionLease = desktopLease ? (sessionId: string, expiresAt: number) => proxy.lease(sessionId, expiresAt) : undefined;
+  return { host: { ...host, proxySocket, ...(probe ? { probe } : {}), ...(desktopLease ? { desktopLease } : {}), ...(provisionLease ? { provisionLease } : {}) }, lease: (sessionId, expiresAt, authorize) => proxy.lease(sessionId, expiresAt, authorize), setHosts: hosts => proxy.setHosts(hosts), close: () => proxy.close() };
 }
