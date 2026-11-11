@@ -54,7 +54,9 @@ jobs:
           key: bun-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
       # Fake-runtime parser fixtures use local Pillow/Poppler; no image is built and no Podman is run.
-      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ripgrep python3-pil poppler-utils
+      # The helper retries apt with backoff so a short runner DNS outage does not fail the shard (#456).
+      # Each attempt is killed after 70 s; the worst case (~6m48s) leaves room for the tests in 15 min.
+      - run: bun ops/ci/apt-install.ts ripgrep python3-pil poppler-utils
       # A shared runner under parallel load can exceed Bun's default 5 s per test.
       - run: bun test --timeout 30000 $(bun ops/ci/test-shard.ts ${{ matrix.shard }} 6)
         env:
