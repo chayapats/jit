@@ -38,6 +38,11 @@ export interface LocalVmControlOptions extends Omit<QemuHostOptions, "proxySocke
   connect?: (address: string, port: number) => Socket;
   /** Listening socket for the shared layout's proxy path, inherited from the installer's socket unit (VM15-03). */
   proxySocketFd?: number;
+  /**
+   * DESK16-01 (ADR 0091 decision 5): hosts the desktop browser lease refuses before DNS (composition passes the
+   * sensitive-only site rule). Required when `desktop` is on, so a desktop lease never exists without its filter.
+   */
+  desktopDeny?: (host: string) => boolean;
 }
 /** Composed protected local-VM control: manager host options, the registry proxy's leases and its host settings. */
 export interface LocalVmControl {
@@ -64,11 +69,14 @@ export async function startLocalVmControl(store: VmStore, options: LocalVmContro
   if (options.vmm) assertVmmLayout(options.vmm);
   const proxySocket = options.vmm ? vmmLayout(options.vmm.directory).proxySocket : join(options.directory, "proxy.sock");
   // AUTH16-01 (ADR 0084, S16-D09): the working VM browser reaches the public web by default (recorded residual).
-  const { proxyLog, resolve, connect, proxySocketFd, publicWeb, ...host } = options;
+  const { proxyLog, resolve, connect, proxySocketFd, publicWeb, desktopDeny, ...host } = options;
   if (proxySocketFd !== undefined && !options.vmm) vmFail("vm_invalid_setup");
+  if (host.desktop && typeof desktopDeny !== "function") vmFail("vm_invalid_setup");
   const proxy = await startVmRegistryProxy({ hostname: "127.0.0.1", port: 0, socketPath: proxySocket, socketMode: options.vmm ? 0o660 : 0o600, ...(proxySocketFd !== undefined ? { socketFd: proxySocketFd } : {}), guestHostname: qemuGuestNetwork.proxy, guestPort: qemuGuestNetwork.proxyPort,
     ...(saved ? { hosts: JSON.parse(saved.data) as string[] } : {}), publicWeb: publicWeb ?? true, log: proxyLog ?? (() => {}), ...(resolve ? { resolve } : {}), ...(connect ? { connect } : {}) });
   // `/dev/kvm` readiness is the QEMU identity's access, probed through its launcher, never the controller's.
   const probe = host.probe ?? (options.vmm ? vmmHostProbe(options.vmm) : undefined);
-  return { host: { ...host, proxySocket, ...(probe ? { probe } : {}) }, lease: (sessionId, expiresAt, authorize) => proxy.lease(sessionId, expiresAt, authorize), setHosts: hosts => proxy.setHosts(hosts), close: () => proxy.close() };
+  // DESK16-01: the desktop browser's standing lease always carries the sensitive-host filter (ADR 0091 decisions 2, 5).
+  const desktopLease = host.desktop && desktopDeny ? (sessionId: string, expiresAt: number) => proxy.lease(sessionId, expiresAt, undefined, { deny: desktopDeny }) : undefined;
+  return { host: { ...host, proxySocket, ...(probe ? { probe } : {}), ...(desktopLease ? { desktopLease } : {}) }, lease: (sessionId, expiresAt, authorize) => proxy.lease(sessionId, expiresAt, authorize), setHosts: hosts => proxy.setHosts(hosts), close: () => proxy.close() };
 }

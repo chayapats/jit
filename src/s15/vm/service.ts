@@ -501,7 +501,7 @@ export class WorkingVmService implements WorkingVmPort {
   private async reattachOne(row: VmRegistration, manager: VmManagement, signal?: AbortSignal): Promise<void> {
     const fence = (error: unknown, generation = row.generation) => { this.uncertain(row.id, error instanceof AppError ? error.code : "vm_management_unavailable", generation); throw error; };
     const machine = await manager.inspect().catch(error => fence(error));
-    if (machine.state === "running") { await this.health(row, true); return; }
+    if (machine.state === "running") { await this.health(row, true); try { await manager.reattached?.(signal); } catch { /* The VM works without its desktop lease. */ } return; }
     this.options.store.transaction(() => {
       const current = this.options.store.registration(row.id);
       if (current.generation !== row.generation || current.state !== "ready") vmFail("vm_fenced");

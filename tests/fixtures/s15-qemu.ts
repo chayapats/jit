@@ -38,6 +38,9 @@ export class FakeQemuHost {
   keyscanOverride: string | null = null;
   stuck = false;
   guestDocker = false;
+  /** DESK16-01: whether the guest has the desktop session's `jit-desktop` group; every proxy URL the lease writer got. */
+  guestDesktopGroup = false;
+  readonly desktopLeases: string[] = [];
   guestReachable = false;
   guestMac: string | null = null;
   qmpDown = false;
@@ -155,6 +158,7 @@ export class FakeQemuHost {
     this.guestCommands.push(remote);
     const out = (s: string) => ({ exitCode: 0, stdout: Buffer.from(s) });
     if (remote.includes('cloud-init')) return out('jit-cloud-init:0\n');
+    if (remote.includes('jit-desktop-lease-v1')) { this.desktopLeases.push(JSON.parse(Buffer.from(input ?? []).toString()).proxy); return out(this.guestDesktopGroup ? 'jit-desktop-lease-v1\n' : 'jit-desktop-absent-v1\n'); }
     if (remote.includes('docker.io')) { const proxy = JSON.parse(Buffer.from(input ?? []).toString()).proxy; this.guestDocker = typeof proxy === 'string' && proxy.includes('@192.168.5.100:3128'); return out(this.guestDocker ? 'jit-docker-ready-v1\n' : 'jit-docker-missing-v1\n'); }
     if (remote.includes('platform.machine')) return out(JSON.stringify({ architecture: 'x86_64', os: 'ubuntu:26.04', cpuCount: Number(qemu[qemu.indexOf('-smp') + 1]), memoryBytes: 8 * GiB, diskBytes: 60 * GiB, sudo: true, docker: this.guestDocker, basis: 'guest_reported' }));
     if (remote.includes('nicMacs')) return out(JSON.stringify({ nicMacs: [mac] }));
