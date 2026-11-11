@@ -110,8 +110,9 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      The stream closes after 5 minutes without a call. `commandMs` and `sessionMs` do not apply to it, and the
      stream does not keep the work session open.
    - **Closing.** It closes when the run ends, after 5 minutes idle, on takeover, when a held card is posted (decision
-     6), on yield (decision 7), and on stop, idle sleep and restore. Closing ends `ssh` and `cdp-attach` only. The
-     relay sees a client disconnect and leaves Chromium running (decision 1).
+     6), when a held-card press ends, sent or refused (decision 6), on yield (decision 7), and on stop, idle sleep and
+     restore. Closing ends `ssh` and `cdp-attach` only. The relay sees a client disconnect and leaves Chromium running
+     (decision 1).
    - A VM without the desktop session refuses with `vm_desktop_unavailable`.
    - `s15-working-vm-v1` names `vmDesktopCdpStream` and its bounds next to `invoke`/`control`.
 3. **Tool `computer_browser`.** It is offered only when the run's computer has a running desktop session. The
@@ -176,19 +177,22 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      ticket. The turn continues or ends normally (ADR 0037:37), as with `exec.browser` `pause()` and approval-cards-v1
      `pending_approval`; if the run calls `computer_browser` again, the stream reopens (decision 2). The card expires
      after 30 minutes, as approval-cards-v1 cards do.
-   - **One press is a new admission, in this order.** Every exit after step 3 ends that ticket (`end()`) exactly
-     once, success or refusal, so a press never leaves a ticket behind.
-     1. Screen state, before any ticket: not `agent` is refused with `computer_yielded` (`yield`) or
+   - **One press is a new admission, in this order.** Every exit after a successful step 2 closes the stream that this
+     press opened (a sent batch, `stale`, a refused origin, or a step-3 throw), and every exit after step 3 ends that
+     ticket (`end()`) exactly once, success or refusal, so a press never leaves a stream or a ticket behind.
+     1. Screen state, before any stream or ticket: not `agent` is refused with `computer_yielded` (`yield`) or
         `takeover_active` (`settling`, `owner`, `fenced`).
      2. Open the press's own desktop CDP stream. If the VM's stream is held, by another run or by the run that
         posted the card, the press is refused with `computer_browser_busy`.
-     3. Take an agent ticket (`agentInput`).
+     3. Take an agent ticket (`agentInput`). If it throws, the stream from step 2 is closed before the refusal
+        returns.
      4. Re-check the card's revision (`stale` on any change) and the tab's current origin (decision 4).
      5. Send the CDP batch, then close the stream and end the ticket.
-   - **Only a sent batch uses the press.** A press refused at steps 1 to 4 for busy, a non-`agent` screen or a
-     refused origin sends nothing and does not consume the one press: the card stays pending until a press sends
-     its batch, the revision is `stale`, the owner declines, or the 30 minutes pass. The outcome is recorded on the
-     card and shown in the conversation, not returned to the earlier tool call.
+   - **Only a sent batch uses the press.** A press refused at steps 1 to 4 for busy, a non-`agent` screen, a step-3
+     throw or a refused origin sends nothing, leaves no stream and no ticket, and does not consume the one press, so
+     the next press can send at once, without waiting for the idle close or a takeover. The card stays pending until a
+     press sends its batch, the revision is `stale`, the owner declines, or the 30 minutes pass. The outcome is
+     recorded on the card and shown in the conversation, not returned to the earlier tool call.
 7. **"Needs you" and the yield state.** `computer_browser` has one more kind, `needs_you { reason: "sign_in" |
    "verify" | "captcha", origin }` (S16-D07 row h).
    - **Yield.** ScreenControl gains a fifth state, `yield`. `needs_you` is refused unless the screen is `agent`
@@ -205,12 +209,17 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
        `yield` admits no new tickets, that is bounded by `commandMs`, and the screen shows `agentBusy` meanwhile. The
        Watch screen button sends the `yield` generation; an older generation is `stale_screen`.
    - **No `yield` without a card.** The card lives in the main store and ScreenControl in `vm.sqlite`
-     (`composition.ts:207`): two stores with no shared transaction. So the order is fixed: insert the card first,
-     then move the screen to `yield`. If the card insert fails, the screen stays `agent` and the call fails. If the
-     move to `yield` fails (the screen is no longer `agent`, or the write fails), the card is voided and never shows
-     a Watch screen button. The `yield` row keeps its own `card_id` and `expires_at` (the card's `expiresAt`), so
-     expiry and hand-back never need the main store. `card_id` stays on the row through `settling`, `owner` and
-     `fenced` (including the restart and lapsed-lease fences) and is cleared when the screen returns to `agent`.
+     (`composition.ts:207`): two stores with no shared transaction. So the order is fixed: insert the card first, then
+     move the screen to `yield`. If the card insert fails, the screen stays `agent` and the call fails. If the move to
+     `yield` fails (the screen is no longer `agent`, or the write fails), the card is voided and never shows a Watch
+     screen button. A process that dies after the insert and before the move leaves a pending card that no caller
+     voids. So a pending `needs_you` card is voided when all three hold: it is older than the 60 s call deadline, no
+     `s16_screen_control` row holds its `card_id`, and no `yield_*` event carries its `card_id`. This is checked on
+     card read and at startup; a failed void is repaired on the next read. The `yield` row keeps its own `card_id` and
+     `expires_at` (the card's `expiresAt`), so expiry and hand-back never need the main store. `card_id` stays on the
+     row through `settling`, `owner` and `fenced` (including the restart and lapsed-lease fences) and is cleared when
+     the screen returns to `agent`. Watch screen overwrites `expires_at` with the owner lease (`screen.ts:191`) and
+     never copies the card expiry into `settling`, `owner` or `fenced`; only `card_id` carries over.
    - **The call does not wait.** `needs_you` posts the card, enters `yield` and returns at once, within the tool
      deadline (60 s): `{ state: "yielded", cardId, generation, expiresAt }`. The turn continues or ends normally (ADR
      0037:37), as with other owner cards (`exec.browser` `pause()`, approval-cards-v1 `pending_approval`); any later
@@ -227,15 +236,17 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      a failed card update cannot lose it. Hand-back from that takeover advances the generation, returns the screen to
      `agent` and records `resumed` with the new generation; no CDP batch is sent. The card shown in the UI does not
      count as the model having seen the outcome.
-   - **The next run gets the outcome as data.** The next work run in the conversation that posted the card, with
-     that computer in its admitted resources, gets one work-prompt source in the same form as the memory source
+   - **The next run gets the outcome as data.** The next work run in the conversation that posted the card, with that
+     computer in its admitted resources, gets one work-prompt source in the same form as the memory source
      (`schway.ts:46`, data never authority): `{ cardId, origin, reason, outcome, generation }`, where `generation` is
-     the new one. It is delivered once per card: it is marked delivered in the main store when that run's prompt is
-     built. The interpretation context is not changed (`application.ts:767-771`: owner text and tool-free answers
-     only; `origin` is a model argument and must not influence scope selection). The run calls under that
-     generation, which reopens the stream, and a call under the generation from before `yield` is refused, so #410
-     AC2 holds. Starting a run automatically on hand-back is out of scope for this ADR (follow-up #459, which uses
-     this source for the outcome).
+     the new one. It is marked delivered in the main store only when a work run that carried it ends `completed`
+     (`schway.ts:100-103`). A run that throws, fails, is cancelled or is refused does not mark it, so the next
+     eligible run gets it again (at least once, never lost). `providerRequests` counts started provider sends, not
+     prompt content (schway `host/index.d.ts:231-239`), so it is not the delivery mark. The interpretation context is
+     not changed (`application.ts:767-771`: owner text and tool-free answers only; `origin` is a model argument and
+     must not influence scope selection). The run calls under that generation, which reopens the stream, and a call
+     under the generation from before `yield` is refused, so #410 AC2 holds. Starting a run automatically on hand-back
+     is out of scope for this ADR (follow-up #459, which uses this source for the outcome).
    - **Decline or expiry, only while still `yield`.** The owner declines, or the card expires (D3), while the screen
      is still `yield`: the card records `declined` / `expired` and the screen returns to `agent` under a new
      generation. Expiry has no timer or separate hook: `ScreenControl.row()` returns an overdue `yield` (past its
@@ -267,7 +278,8 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   This does not depend on the run that raised it, which has already ended. Card expiry length is D3.
 - The Bot does not continue by itself after hand-back: the owner's next message (or another trigger) starts the run,
   which gets the `resumed` outcome and the new generation as a data source in its work prompt (decision 7), even when
-  the owner types only "continue". Automatic continuation is follow-up #459.
+  the owner types only "continue". If that run does not complete, the next one gets the source again. Automatic
+  continuation is follow-up #459.
 - The desktop browser becomes shared between owner and Bot, as in Rakazo. Tabs the owner leaves open are visible to
   the Bot's `state`/`read`.
 - Guest root can drive the same browser through the socket without Jit's classification. That is ADR 0084's
@@ -323,36 +335,44 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   stream and releases its ticket (a takeover while the card is open goes straight to `owner`); a press while the
   posting run still holds the stream (it called `computer_browser` again) gets `computer_browser_busy`, does not
   consume the press and leaves no ticket (Watch screen then goes straight to `owner`), and a later press once the
-  stream is free sends exactly once; a press refused at any step leaves no ticket; card approve once, decline, stale
-  when the URL, element or any shown value changed, reload with no duplicate dispatch; a press after the run ended
-  takes a new ticket and its own stream; a press while the screen is not `agent` is refused (`takeover_active` /
-  `computer_yielded`) before any ticket and sends nothing; a press on a tab that moved to a refused origin sends
-  nothing; neither consumes the press; the card expires after 30 minutes; no typed text in journal, history or logs.
+  stream is free sends exactly once; a press refused at any step leaves no ticket; (a) a press on a tab that moved to
+  a refused origin leaves no stream and no ticket, and once the tab is back on an allowed origin the next press sends
+  exactly once without waiting for the idle close or a takeover; (b) a press refused at step 3 (`agentInput` throws)
+  leaves no stream; card approve once, decline, stale when the URL, element or any shown value changed, reload with no
+  duplicate dispatch; a press after the run ended takes a new ticket and its own stream; a press while the screen is
+  not `agent` is refused (`takeover_active` / `computer_yielded`) before any ticket and sends nothing; a press on a
+  tab that moved to a refused origin sends nothing; neither consumes the press; the card expires after 30 minutes; no
+  typed text in journal, history or logs.
 - **3c**: `needs_you` card and the `yield` state, resume on hand-back, routine `needs_you` state, English/Thai copy;
   `Closes #442`. Tests: `needs_you` is refused unless the screen is `agent`; a failed card insert leaves the screen
-  `agent` and new work is not refused with `computer_yielded`; a failed move to `yield` voids the card; it returns `{
-  state: "yielded", cardId, generation, expiresAt }` within 60 s, and a later call in the same run is refused with
-  `computer_yielded`; a cancelled run leaves `yield` in place and Watch screen and hand-back still work; Watch screen
-  sends the `yield` generation, and an older one is `stale_screen`; a second work on the same computer is refused
-  while yielded; the idle sweep does not stop a yielded VM, and it is still running 31 minutes after the last session
-  closed; (a) with no ticket held, Watch screen goes to `owner` and the owner can type immediately; (b) with another
-  session holding a shell ticket, Watch screen goes to `settling`, owner input gets `takeover_settling` until that
-  shell call ends, then the screen is `owner`, and the shell call has finished when the owner types; hand-back
-  advances the generation and the card records `resumed` with no CDP batch; the owner's next message is only
-  "continue", and the admitted work prompt (provider request) contains `resumed`, the origin and the new generation
-  that the owner did not type; that run's first call under the new generation succeeds and a call under the generation
-  from before `yield` is refused; a second run gets no outcome source for that card; decline and expiry while still
-  `yield` record `declined` / `expired` and return to `agent`; a `yield` past `expiresAt` is returned to `agent` by
-  `row()` without a timer: a yielded VM left untouched past `expiresAt` is stopped by the idle sweep, and the next
-  admission sees `agent`; the card expiring while the owner holds the screen does not remove the owner, no
-  resumed/timeout outcome is recorded and the state was not forced back; card never carries a credential; typed "ok"
-  does not resolve it; sensitive origins refused; the #442 flow end to end with a non-IdP fixture login site and a
-  scripted owner takeover.
+  `agent` and new work is not refused with `computer_yielded`; a failed move to `yield` voids the card; a process
+  killed after the card insert and before the move to `yield`: after restart and 60 s, the screen is `agent`, the card
+  is void and shows no Watch screen button; a card read between the insert and the move does not void the card, and
+  the move still succeeds; it returns `{ state: "yielded", cardId, generation, expiresAt }` within 60 s, and a later
+  call in the same run is refused with `computer_yielded`; a cancelled run leaves `yield` in place and Watch screen
+  and hand-back still work; Watch screen sends the `yield` generation, and an older one is `stale_screen`; a second
+  work on the same computer is refused while yielded; the idle sweep does not stop a yielded VM, and it is still
+  running 31 minutes after the last session closed; (a) with no ticket held, Watch screen goes to `owner` and the
+  owner can type immediately; (b) with another session holding a shell ticket, Watch screen goes to `settling`, owner
+  input gets `takeover_settling` until that shell call ends, then the screen is `owner`, and the shell call has
+  finished when the owner types; hand-back advances the generation and the card records `resumed` with no CDP batch;
+  the owner's next message is only "continue", and the admitted work prompt (checked on the request the model
+  receives, `schway.ts:78`, not on `providerRequests`) contains `resumed`, the origin and the new generation that the
+  owner did not type; that run's first call under the new generation succeeds and a call under the generation from
+  before `yield` is refused; if the provider fails on the run that carried the source, the next run with only
+  "continue" still gets it; after a completed run that carried the source, a second run gets no outcome source for
+  that card; decline and expiry while still `yield` record `declined` / `expired` and return to `agent`; a `yield`
+  past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left untouched past `expiresAt` is
+  stopped by the idle sweep, and the next admission sees `agent`; the card expiring while the owner holds the screen
+  does not remove the owner, no resumed/timeout outcome is recorded and the state was not forced back; card never
+  carries a credential; typed "ok" does not resolve it; sensitive origins refused; the #442 flow end to end with a
+  non-IdP fixture login site and a scripted owner takeover.
 - Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls, the
   `yield` state: `takeover` from `agent`, `fenced` or `yield`, and Watch screen sends the `yield` generation) with the
   code change it names in `src/s16/computers/screen.ts` (the takeover guard at `:189` accepts `yield`; `agentInput` at
   `:116` refuses `yield` with `computer_yielded`; `row()` expires an overdue `yield`; the `s16_screen_control` state
   CHECK at `:78` adds `'yield'` and the table gains `card_id`, rebuilt by a migration because SQLite cannot alter a
-  CHECK in place) and `s15-working-vm-v1` (`vmDesktopCdpStream` with its `sudo -n -u jit-desktop` attach and
-  handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm` (real Chromium pipe, sign-in on a
-  trusted non-IdP fixture site, stop/start) belongs to #431.
+  CHECK in place; in the same migration `s16_screen_events` gains `card_id`, written by the event insert at `:89`) and
+  `s15-working-vm-v1` (`vmDesktopCdpStream` with its `sudo -n -u jit-desktop` attach and handshake, relay files,
+  composite `ready-v1` key). Live evidence on `jit-vm` (real Chromium pipe, sign-in on a trusted non-IdP fixture site,
+  stop/start) belongs to #431.
