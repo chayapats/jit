@@ -222,11 +222,15 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      returns to `agent`. Watch screen overwrites `expires_at` with the owner lease (`screen.ts:191`) and never copies
      the card expiry into `settling`, `owner` or `fenced`; only `card_id` carries over.
    - **Card expiry (D3).** The card's `expiresAt` is the post time plus `JIT_COMPUTER_NEEDS_YOU_MINUTES`: default 240
-     (4 h), allowed 15 to 1440, read in `src/config.ts` with the same range check as `JIT_BOX_IDLE_MINUTES` (`intIn`,
-     `:62-68`, `:97`). A value outside the range fails startup. The packaged service exposes it as an optional setting
-     in `ops/package/service-config.ts`, pushed only when set, like `JIT_SEARXNG_ENABLED` (`:381`). `expiresAt` is
-     fixed when the card is posted and copied to the `yield` row; changing the setting applies only to cards posted
-     after the restart. Held action cards (decision 6) keep their 30 minutes.
+     (4 h), allowed 30 to 1440. It is one owner setting for the service, not set per card. It is a top-level
+     `AppConfig` field (`needsYouMinutes`) read in `readConfig` (`src/config.ts:179`) with its own integer range check,
+     not through `parseExecutionConfig`'s local `intIn`, because it is not an execution-box setting. A value outside
+     the range fails startup. The packaged service has an optional `ServiceConfig` field `needsYouMinutes`, rendered
+     to `JIT_COMPUTER_NEEDS_YOU_MINUTES` only when set, like `searxngEnabled` (`ops/package/service-config.ts:48`,
+     pushed at `:381`); `parseServiceConfig` rejects a value outside the same range, and the field joins its optional
+     keys (`:171`) and the plan fields (`:409`). `expiresAt` is fixed when the card is posted and copied to the
+     `yield` row; changing the setting applies only to cards posted after the restart. Held action cards (decision 6)
+     keep their 30 minutes. The setting ships in slice 3c with the `needs_you` card; there is no follow-up issue.
    - **The call does not wait.** `needs_you` posts the card, enters `yield` and returns at once, within the tool
      deadline (60 s): `{ state: "yielded", cardId, generation, expiresAt }`. The turn continues or ends normally (ADR
      0037:37), as with other owner cards (`exec.browser` `pause()`, approval-cards-v1 `pending_approval`); any later
@@ -339,10 +343,10 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   profile for the Bot, with the owner's trusted-site sessions copied in. That adds complexity, and cookies would leave
   the profile.
 - **D3, how long a "needs you" card waits.** Chosen: 4 h by default, adjustable with
-  `JIT_COMPUTER_NEEDS_YOU_MINUTES` (15 to 1440 minutes; decision 7, card expiry). The 24 h first proposed and a 1 h
-  alternative were not chosen. Held action cards (decision 6) keep approval-cards-v1's 30 minutes; a sign-in waits
-  longer because the owner has to come to the screen. During that time the computer stays awake and other work on it
-  waits.
+  `JIT_COMPUTER_NEEDS_YOU_MINUTES` (30 to 1440 minutes; decision 7, card expiry). It is one owner setting, not set
+  per card, and ships in slice 3c with the `needs_you` card. The 24 h first proposed and a 1 h alternative were not
+  chosen. Held action cards (decision 6) keep approval-cards-v1's 30 minutes; a sign-in waits longer because the
+  owner has to come to the screen. During that time the computer stays awake and other work on it waits.
 
 ## Delivery and evidence (planned slices)
 
@@ -411,12 +415,13 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   shows `resumed` read from that event and the void rule does not void it; expiry writes `yield_expired.card_id` equal
   to the card; decline and expiry while still `yield` record `declined` / `expired` and return to `agent`; a
   `needs_you` card posted with no setting has `expiresAt` 4 h after it is posted, `JIT_COMPUTER_NEEDS_YOU_MINUTES=30`
-  gives 30 minutes, 14 and 1441 fail startup, and a card posted before the setting changed keeps its `expiresAt`; a
-  `yield` past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left untouched past
-  `expiresAt` is stopped by the idle sweep, and the next admission sees `agent`; the card expiring while the owner
-  holds the screen does not remove the owner, no resumed/timeout outcome is recorded and the state was not forced
-  back; card never carries a credential; typed "ok" does not resolve it; sensitive origins refused; the #442 flow end
-  to end with a non-IdP fixture login site and a scripted owner takeover.
+  gives 30 minutes, 30 and 1440 start, 29 and 1441 fail startup (in `readConfig` and in `parseServiceConfig`), and
+  a card posted before the setting changed keeps its `expiresAt`; a `yield` past `expiresAt` is returned to `agent` by
+  `row()` without a timer: a yielded VM left untouched past `expiresAt` is stopped by the idle sweep, and the next
+  admission sees `agent`; the card expiring while the owner holds the screen does not remove the owner, no
+  resumed/timeout outcome is recorded and the state was not forced back; card never carries a credential; typed "ok"
+  does not resolve it; sensitive origins refused; the #442 flow end to end with a non-IdP fixture login site and a
+  scripted owner takeover.
 - Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls, the
   `yield` state: `takeover` from `agent`, `fenced` or `yield`, and Watch screen sends the `yield` generation) with the
   code change it names in `src/s16/computers/screen.ts` (the takeover guard at `:189` accepts `yield`; `agentInput` at
@@ -426,8 +431,9 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   the `card_id` the row held before the write, in the same transaction that sets the row's `card_id`, so a way out of
   `yield` records the card on the event and null on the `agent` row); the s15 model step input gains `screenOutcomes`
   (`ModelStepInput`, validated in `prepare` and hashed at `model/service.ts:141`, added as a host source at `:188`)
-  and the conversation request saves the carried `cardId` set; `src/config.ts` gains `JIT_COMPUTER_NEEDS_YOU_MINUTES`
-  (default 240, 15 to 1440, D3), an optional setting in `ops/package/service-config.ts`; and `s15-working-vm-v1`
-  (`vmDesktopCdpStream` with its `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1`
-  key). Live evidence on `jit-vm` (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start)
-  belongs to #431.
+  and the conversation request saves the carried `cardId` set; `AppConfig` gains `needsYouMinutes` from
+  `JIT_COMPUTER_NEEDS_YOU_MINUTES` (default 240, 30 to 1440, D3), read in `readConfig` with its own range check, and
+  `ServiceConfig` gains an optional `needsYouMinutes`, rendered only when set and range-checked in
+  `parseServiceConfig`, shipped in slice 3c; and `s15-working-vm-v1` (`vmDesktopCdpStream` with its
+  `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm`
+  (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
