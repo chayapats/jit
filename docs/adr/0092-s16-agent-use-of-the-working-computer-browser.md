@@ -1,5 +1,5 @@
 ---
-status: proposed for DESK16-01 (#410), third slice; closes AUTH16-01 (#442)'s last acceptance item once implemented; live host evidence belongs to #431
+status: accepted for DESK16-01 (#410), third slice; D1/D2/D3 chosen by Champ on 2026-11-12; not yet implemented (slices 3a/3b/3c); closes AUTH16-01 (#442)'s last acceptance item once implemented; live host evidence belongs to #431
 date: 2026-11-12
 scope: DESK16-01 (#410); AUTH16-01 (#442); S16-AC06/AC07/AC11; FR-10/14/15/35/38/40; NFR-07/14
 ---
@@ -29,7 +29,7 @@ is applied "by tool policy and Bot instructions", not bypass-resistantly. That t
 2. **Guest browser automation run by the Bot itself.** The Bot installs Playwright or similar in the VM and drives a
    second Chromium. The owner's sign-in lives in the desktop profile, which a second instance cannot open while the
    desktop browser holds it, and Jit sees only shell commands, so no tool policy is possible.
-3. **CDP to the desktop Chromium, through a fixed relay and a dedicated SSH stream (proposed).** The desktop session
+3. **CDP to the desktop Chromium, through a fixed relay and a dedicated SSH stream (chosen).** The desktop session
    starts Chromium with `--remote-debugging-pipe` behind a small fixed relay. The controller opens its own long-lived
    SSH stream to the relay (not the work session's one-shot `invoke`/`control` channel, which reads all stdin and
    returns one JSON after exit) and talks to it with the existing `CdpClient` framing (`jit.box.cdp-stream/v1`:
@@ -39,7 +39,7 @@ is applied "by tool policy and Bot instructions", not bypass-resistantly. That t
 Option 3 reuses parts Jit already has (CDP client, the protected browser's operation union and secret-field rules,
 ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
 
-## Decision (proposed)
+## Decision
 
 1. **Debugging pipe, no port; the relay is the session loop body.** The session script's browser loop
    (`while :; do … sleep 2; done`, `qemu.ts`) runs `/usr/local/lib/jit-desktop/cdp-relay` instead of Chromium
@@ -221,6 +221,12 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
      `settling`, `owner` and `fenced` (including the restart and lapsed-lease fences) and is cleared when the screen
      returns to `agent`. Watch screen overwrites `expires_at` with the owner lease (`screen.ts:191`) and never copies
      the card expiry into `settling`, `owner` or `fenced`; only `card_id` carries over.
+   - **Card expiry (D3).** The card's `expiresAt` is the post time plus `JIT_COMPUTER_NEEDS_YOU_MINUTES`: default 240
+     (4 h), allowed 15 to 1440, read in `src/config.ts` with the same range check as `JIT_BOX_IDLE_MINUTES` (`intIn`,
+     `:62-68`, `:97`). A value outside the range fails startup. The packaged service exposes it as an optional setting
+     in `ops/package/service-config.ts`, pushed only when set, like `JIT_SEARXNG_ENABLED` (`:381`). `expiresAt` is
+     fixed when the card is posted and copied to the `yield` row; changing the setting applies only to cards posted
+     after the restart. Held action cards (decision 6) keep their 30 minutes.
    - **The call does not wait.** `needs_you` posts the card, enters `yield` and returns at once, within the tool
      deadline (60 s): `{ state: "yielded", cardId, generation, expiresAt }`. The turn continues or ends normally (ADR
      0037:37), as with other owner cards (`exec.browser` `pause()`, approval-cards-v1 `pending_approval`); any later
@@ -304,7 +310,8 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   on its own host (not through an identity provider the desktop filter refuses).
 - While a `needs_you` card is open the computer is in `yield`: it does not idle-sleep, and other work on that computer
   is refused (`computer_yielded`) until the owner hands back, or declines or the card expires before Watch screen.
-  This does not depend on the run that raised it, which has already ended. Card expiry length is D3.
+  This does not depend on the run that raised it, which has already ended. The card waits 4 h by default
+  (`JIT_COMPUTER_NEEDS_YOU_MINUTES`, D3).
 - The Bot does not continue by itself after hand-back: the owner's next message (or another trigger) starts the run,
   which gets the `resumed` outcome and the new generation as a data source in its work prompt (decision 7), even when
   the owner types only "continue". If that run's publication does not commit `completed` (`application.ts:701`),
@@ -323,18 +330,19 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   the installer keeps an already unpacked, hash-checked `/opt/jit-desktop/chrome-<version>` and does not download
   Chrome again.
 
-## Decisions for Champ
+## Decisions by Champ (2026-11-12)
 
-- **D1, what waits on trusted/public sites.** Proposed: only actions matching the human-required vocabulary (decision
-  6). Alternative: hold every submit, as exec.browser/v1 does. That is safer, but it asks often and works against the
+- **D1, what waits on trusted/public sites.** Chosen: only actions matching the human-required vocabulary (decision
+  6). Not chosen: hold every submit, as exec.browser/v1 does. That is safer, but it asks often and works against the
   Grok-style default.
-- **D2, shared browser.** Proposed: the Bot drives the same desktop browser the owner sees. Alternative: a second
+- **D2, shared browser.** Chosen: the Bot drives the same desktop browser the owner sees. Not chosen: a second
   profile for the Bot, with the owner's trusted-site sessions copied in. That adds complexity, and cookies would leave
-  the profile, so it is not recommended.
-- **D3, how long a "needs you" card waits.** Proposed: 24 h. Held action cards (decision 6) keep approval-cards-v1's
-  30 minutes; a sign-in waits longer because the owner has to come to the screen. During that time the
-  computer stays awake and other work on it waits. Alternative: a shorter expiry (for example 1 h), which frees the
-  computer sooner but loses requests the owner sees late.
+  the profile.
+- **D3, how long a "needs you" card waits.** Chosen: 4 h by default, adjustable with
+  `JIT_COMPUTER_NEEDS_YOU_MINUTES` (15 to 1440 minutes; decision 7, card expiry). The 24 h first proposed and a 1 h
+  alternative were not chosen. Held action cards (decision 6) keep approval-cards-v1's 30 minutes; a sign-in waits
+  longer because the owner has to come to the screen. During that time the computer stays awake and other work on it
+  waits.
 
 ## Delivery and evidence (planned slices)
 
@@ -401,12 +409,14 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   `modelPrompts`; two runs whose `screenOutcomes` differ get different `inputHash`es; after hand-back the control
   row's `card_id` is null and `yield_resumed.card_id` equals the card; with the card update failing, the card still
   shows `resumed` read from that event and the void rule does not void it; expiry writes `yield_expired.card_id` equal
-  to the card; decline and expiry while still `yield` record `declined` / `expired` and return to `agent`; a `yield`
-  past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left untouched past `expiresAt` is
-  stopped by the idle sweep, and the next admission sees `agent`; the card expiring while the owner holds the screen
-  does not remove the owner, no resumed/timeout outcome is recorded and the state was not forced back; card never
-  carries a credential; typed "ok" does not resolve it; sensitive origins refused; the #442 flow end to end with a
-  non-IdP fixture login site and a scripted owner takeover.
+  to the card; decline and expiry while still `yield` record `declined` / `expired` and return to `agent`; a
+  `needs_you` card posted with no setting has `expiresAt` 4 h after it is posted, `JIT_COMPUTER_NEEDS_YOU_MINUTES=30`
+  gives 30 minutes, 14 and 1441 fail startup, and a card posted before the setting changed keeps its `expiresAt`; a
+  `yield` past `expiresAt` is returned to `agent` by `row()` without a timer: a yielded VM left untouched past
+  `expiresAt` is stopped by the idle sweep, and the next admission sees `agent`; the card expiring while the owner
+  holds the screen does not remove the owner, no resumed/timeout outcome is recorded and the state was not forced
+  back; card never carries a credential; typed "ok" does not resolve it; sensitive origins refused; the #442 flow end
+  to end with a non-IdP fixture login site and a scripted owner takeover.
 - Contracts: new `s16-computer-browser-v1`; updates to `s16-computer-screen-v1` (agent tickets for browser calls, the
   `yield` state: `takeover` from `agent`, `fenced` or `yield`, and Watch screen sends the `yield` generation) with the
   code change it names in `src/s16/computers/screen.ts` (the takeover guard at `:189` accepts `yield`; `agentInput` at
@@ -416,6 +426,8 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   the `card_id` the row held before the write, in the same transaction that sets the row's `card_id`, so a way out of
   `yield` records the card on the event and null on the `agent` row); the s15 model step input gains `screenOutcomes`
   (`ModelStepInput`, validated in `prepare` and hashed at `model/service.ts:141`, added as a host source at `:188`)
-  and the conversation request saves the carried `cardId` set; and `s15-working-vm-v1` (`vmDesktopCdpStream` with its
-  `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm`
-  (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
+  and the conversation request saves the carried `cardId` set; `src/config.ts` gains `JIT_COMPUTER_NEEDS_YOU_MINUTES`
+  (default 240, 15 to 1440, D3), an optional setting in `ops/package/service-config.ts`; and `s15-working-vm-v1`
+  (`vmDesktopCdpStream` with its `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1`
+  key). Live evidence on `jit-vm` (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start)
+  belongs to #431.
