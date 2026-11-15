@@ -35,13 +35,13 @@ Immediately before input, fixed DOM programs inspect only the target's metadata 
 values. Password, file, hidden and `autocomplete=one-time-code` values are never read or entered; they refuse
 `computer_browser_secret_field`. Ordinary observations still never read editable values. The input batch repeats
 the secret and exact revision checks in the same synchronous DOM task as dispatch. Stale/foreign/removed elements,
-changed URL, accessible name, target attributes, form action/method or non-secret field state/values refuse without
-input. Field snapshots include checked/selected/disabled state. Oversized full snapshots refuse rather than truncate
+changed URL, accessible name, raw HTML field name, target attributes, form action/method or non-secret field
+state/values refuse without input. Field snapshots include checked/selected/disabled state. Oversized full snapshots refuse rather than truncate
 the payload the owner would approve. Select values must match an enabled option. Type uses the native value setter
 and input/change events; it is not a trusted physical keyboard or a way to solve a site's automation challenge.
 
-A `click`, `submit`, `select`, or Enter-carrying `type` is held if its accessible name, its form's field names or decoded
-URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai):
+A `click`, `submit`, `select`, or Enter-carrying `type` is held if its accessible name, its form's raw HTML field
+names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai):
 
 | S16-D07 row | English | Thai aliases |
 | --- | --- | --- |

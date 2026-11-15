@@ -4,7 +4,7 @@ import { AppError } from "../../errors";
 export class BrowserDispatchRefused extends AppError {}
 
 export type BrowserInput = { kind: "click" | "submit"; target: string; generation: number; tab?: string } | { kind: "type" | "select"; target: string; value: string; generation: number; tab?: string };
-export interface BrowserActionFacts { url: string; ref: string; name: string; tag: string; type: string; formNames: string[]; fields: { name: string; value: string }[]; revision: string }
+export interface BrowserActionFacts { url: string; ref: string; name: string; tag: string; type: string; formNames: string[]; fields: { name: string; htmlName?: string; value: string }[]; revision: string }
 export type HumanBrowserRow = "a" | "b" | "c" | "d" | "e" | "f";
 const vocabulary: [HumanBrowserRow, RegExp][] = [
   ["a", /\b(pay|buy|purchase|checkout|order|transfer|subscribe)\b|จ่าย|ชำระ|ซื้อ|สั่งซื้อ|โอน|สมัครสมาชิก/iu],
@@ -30,16 +30,17 @@ export const browserDomHelpers = `
   while((n=w.nextNode())){const p=n.parentElement;if(!p||p.closest(excluded))continue;const s=getComputedStyle(p);if(s.display!=='none'&&s.visibility!=='hidden')parts.push(n.textContent||'');}return parts.join(' ').trim();};
  const name=(e,inputButtons=false)=>{if(e.closest('[contenteditable]'))return '';const labelled=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(id=>document.getElementById(id)).filter(Boolean).map(safeText).join(' ');
  const labels=Array.from(e.labels||document.querySelectorAll('label')).filter(l=>l.control===e||(e.id&&l.getAttribute('for')===e.id)||l.contains(e)).map(safeText).join(' ');
- return (e.getAttribute('aria-label')||labelled||labels||e.getAttribute('title')||((e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button')?safeText(e):(inputButtons&&e.tagName==='INPUT'&&['submit','button','reset'].includes((e.getAttribute('type')||'').toLowerCase()))?String(e.value||''):e.getAttribute('name')||''));};
+ const content=(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button')?safeText(e):(inputButtons&&e.tagName==='INPUT'&&['submit','button','reset'].includes((e.getAttribute('type')||'').toLowerCase()))?String(e.value||''):'';
+ return labelled||e.getAttribute('aria-label')||labels||content||e.getAttribute('title')||e.getAttribute('name')||'';};
  if(globalThis.__jitComputerNodes?.document!==document)globalThis.__jitComputerNodes={document,nodes:new Map(),ids:new WeakMap()};
  const registry=globalThis.__jitComputerNodes;
  for(const [id,node] of registry.nodes)if(!node.deref()?.isConnected)registry.nodes.delete(id);
  const ref=e=>{let id=registry.ids.get(e);if(!id||!registry.nodes.has(id)){if(registry.nodes.size>=1024)registry.nodes.delete(registry.nodes.keys().next().value);id=crypto.randomUUID();registry.ids.set(e,id);registry.nodes.set(id,new WeakRef(e));}return id;};
  const setValue=(e,value)=>{const set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value')?.set;if(set)set.call(e,value);else e.value=value;};
- const facts=e=>{const all=Array.from((e.form||e.closest('form'))?.elements||[e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
+ const facts=e=>{const all=Array.from((e.form||e.closest('form'))?.elements||[e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),htmlName:f.getAttribute('name')||'',value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
   if(fields.length>100||fields.some(f=>f.value.length>12000))return {code:'computer_browser_snapshot_limit'};
   const target={ref:ref(e),name:name(e,true),tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),href:e.getAttribute('href'),formaction:e.getAttribute('formaction'),formmethod:e.getAttribute('formmethod'),disabled:!!e.disabled,readOnly:!!e.readOnly};
-  const form=e.form||e.closest('form');const data={url:location.href,...target,formAction:form?.getAttribute('action'),formMethod:form?.getAttribute('method'),formNames:all.map(f=>name(f,true)),fields};
+  const form=e.form||e.closest('form');const data={url:location.href,...target,formAction:form?.getAttribute('action'),formMethod:form?.getAttribute('method'),formNames:all.flatMap(f=>[f.getAttribute('name')||'',name(f,true)]),fields};
   return {...data,revision:JSON.stringify(data)};};
 `;
 export const computerBrowserObservation = `(() => {${browserDomHelpers}

@@ -5,7 +5,7 @@ import { copy } from "../src/s16/web/copy";
 import { JitClient } from "../src/s16/client";
 import { createS16ClientHandler } from "../src/s16/http";
 import { webFixture, origin as webOrigin } from "./fixtures/s15-web";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { parseHTML } from "linkedom";
 import { AppError } from "../src/errors";
 import type { BoxStream } from "../src/exec/box-runtime";
@@ -238,4 +238,92 @@ test.each(["role-button","input-submit"])("classifies the actual accessible name
   f.document.body.append(element); const a=await f.observe(); const target=a.es.find(e=>kind==="role-button"?e.tag==="div":e.tag==="input"&&e.type==="submit")!;
   if (kind==="input-submit") expect(target.name).not.toContain("Pay");
   expect((await a.r.execute({ kind:"click",target:target.id,generation:a.o.generation })).state).toBe("pending"); expect(f.cards.list(f.owner,"conversation")[0]!.facts.name).toBe("Pay"); expect(f.dispatches).toBe(0);
+});
+
+
+test("a display label cannot hide a raw HTML field name from matching or the saved revision", async () => {
+  const f = fixture(); f.field.id = "amount"; f.field.name = "pay";
+  const label = f.document.createElement("label"); label.setAttribute("for", "amount"); label.textContent = "Amount"; f.document.body.append(label);
+  const h = await held(f), card = f.cards.list(f.owner, "conversation")[0]!;
+  expect(card.row).toBe("a"); expect(card.facts.formNames).toContain("pay"); expect(card.facts.formNames).toContain("Amount");
+  expect(card.facts.fields[0]).toMatchObject({ name: "Amount", htmlName: "pay", value: "20" });
+  expect(JSON.parse(card.facts.revision).fields[0].htmlName).toBe("pay");
+  f.field.name = "buy";
+  expect((await f.decide(h.cardId)).state).toBe("stale"); expect(f.dispatches).toBe(0);
+});
+
+test.each(["button text", "input value", "aria-labelledby"])("competing name sources use %s before a neutral fallback", async source => {
+  const f = fixture("Pay"); let target: Element = f.button;
+  if (source === "input value") {
+    const button = f.document.createElement("input"); button.type = "submit"; button.value = "Pay";
+    f.button.replaceWith(button); target = button;
+  }
+  target.setAttribute("title", "Continue");
+  if (source === "aria-labelledby") {
+    target.textContent = "Continue"; target.setAttribute("aria-label", "Continue");
+    const label = f.document.createElement("span"); label.id = "pay-label"; label.textContent = "Pay"; f.document.body.append(label);
+    target.setAttribute("aria-labelledby", "missing pay-label");
+  }
+  const { r, o, es } = await f.observe(); const element = es.find(e => source === "input value" ? e.type === "submit" : e.tag === "button")!;
+  expect((await r.execute({ kind: "click", target: element.id, generation: o.generation })).state).toBe("pending");
+  const card = f.cards.list(f.owner, "conversation")[0]!;
+  expect(card.facts.name).toBe("Pay"); expect(card.row).toBe("a"); expect(f.dispatches).toBe(0);
+});
+
+test("ARIA labels still precede button contents, and title remains the fallback for unnamed buttons", async () => {
+  const f = fixture("Pay"); f.button.setAttribute("aria-label", "Continue");
+  const a = await f.observe();
+  expect((await a.r.execute({ kind: "click", target: a.es.find(e => e.tag === "button")!.id, generation: a.o.generation })).state).toBe("ok"); a.r.close();
+  f.button.removeAttribute("aria-label"); f.button.textContent = ""; f.button.setAttribute("title", "Pay");
+  const h = await held(f); expect(f.cards.list(f.owner, "conversation")[0]!.facts.name).toBe("Pay");
+  expect((await f.decide(h.cardId)).state).toBe("sent"); expect(f.dispatches).toBe(2);
+});
+
+test("refresh loads only live cards and the latest 64 terminal cards, not historical snapshots", async () => {
+  const f = fixture("Pay"), h = await held(f), original = f.cards.list(f.owner, "conversation")[0]!;
+  const insert = f.store.db.query("INSERT INTO s16_browser_cards VALUES (?,?,?)");
+  for (let i = 0; i < 200; i++) {
+    for (const [prefix, conversationId, ownerGeneration] of [["history", "conversation", 1], ["old-owner", "conversation", 0], ["foreign", "other", 1]] as const) {
+      const card = { ...original, id: `${prefix}_${i}`, conversationId, ownerGeneration, state: "sent", facts: { ...original.facts, revision: "x".repeat(32000) } };
+      insert.run(card.id, conversationId, JSON.stringify(card));
+    }
+  }
+  const plans = [
+    ["SELECT record FROM s16_browser_cards WHERE conversation_id=? AND json_extract(record,'$.state')='pending' ORDER BY rowid", ["conversation"], "s16_browser_cards_pending"],
+    ["SELECT record FROM s16_browser_cards WHERE conversation_id=? AND json_extract(record,'$.ownerGeneration')=? AND json_extract(record,'$.state')!='pending' ORDER BY rowid DESC LIMIT 64", ["conversation", 1], "s16_browser_cards_recent"],
+  ] as const;
+  for (const [sql, args, index] of plans) {
+    const plan = JSON.stringify(f.store.db.query("EXPLAIN QUERY PLAN " + sql).all(...args));
+    expect(plan).toContain(index); expect(plan).not.toContain("SCAN"); expect(plan).not.toContain("TEMP B-TREE");
+  }
+  const parse = spyOn(JSON, "parse");
+  let cards;
+  try {
+    new BrowserActionCards({ store: f.store, browser: f.browser, requireOwner() {}, ownerGeneration: () => 1, now: () => 1000 });
+    expect(parse.mock.calls).toHaveLength(0); // Recovery updates sending claims in SQL, not by parsing history.
+    cards = f.cards.list(f.owner, "conversation");
+    expect(parse.mock.calls.length).toBe(65);
+  } finally { parse.mockRestore(); }
+  expect(cards.map(c => c.id)).toEqual([h.cardId, ...Array.from({ length: 64 }, (_, i) => `history_${i + 136}`)]);
+  // Pending expiry is reconciled before the bounded history selection; no duplicate or lost card.
+  f.setNow(original.expiresAt);
+  cards = f.cards.list(f.owner, "conversation");
+  expect(cards).toHaveLength(64); expect(cards.every(c => c.state === "sent")).toBe(true);
+  expect((await f.decide(h.cardId)).state).toBe("expired"); expect(f.dispatches).toBe(0);
+});
+
+
+test("all 64 live cards survive the bounded terminal history and the pending limit remains enforced", async () => {
+  const f = fixture("Pay"), h = await held(f), original = f.cards.list(f.owner, "conversation")[0]!;
+  const action = { ...original, op: { ...input, kind: "click" as const } };
+  const ids = [h.cardId];
+  for (let i = 1; i < 64; i++) ids.push(f.cards.hold(action).cardId);
+  expect(() => f.cards.hold(action)).toThrow("computer_browser_card_limit");
+  expect(f.cards.list(f.owner, "conversation").map(c => c.id)).toEqual(ids);
+  expect((await f.decide(ids[1]!, "decline")).state).toBe("declined");
+  const next = f.cards.hold(action);
+  const cards = f.cards.list(f.owner, "conversation");
+  expect(cards.filter(c => c.state === "pending")).toHaveLength(64);
+  expect(cards.filter(c => c.state === "declined").map(c => c.id)).toEqual([ids[1]!]);
+  expect(cards.some(c => c.id === next.cardId)).toBe(true); expect(f.dispatches).toBe(0);
 });

@@ -19,11 +19,17 @@ export class BrowserActionCards<Owner> {
   readonly #pressing = new Set<string>();
   constructor(readonly options: { store: VmStore; browser: ComputerBrowser; requireOwner(actor: Owner): void; ownerGeneration(): number; now?: () => number }) {
     options.store.db.exec("CREATE TABLE IF NOT EXISTS s16_browser_cards (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, record TEXT NOT NULL)");
-    for (const row of this.rows()) if (row.state === "sending") this.save({ ...row, state: "unknown" });
+    // Partial indexes keep refresh independent of historical form snapshots.
+    options.store.db.exec(`
+      CREATE INDEX IF NOT EXISTS s16_browser_cards_pending ON s16_browser_cards(conversation_id) WHERE json_extract(record,'$.state')='pending';
+      CREATE INDEX IF NOT EXISTS s16_browser_cards_recent ON s16_browser_cards(conversation_id,json_extract(record,'$.ownerGeneration')) WHERE json_extract(record,'$.state')!='pending';
+      CREATE INDEX IF NOT EXISTS s16_browser_cards_sending ON s16_browser_cards(json_extract(record,'$.state')) WHERE json_extract(record,'$.state')='sending';
+      UPDATE s16_browser_cards SET record=json_set(record,'$.state','unknown') WHERE json_extract(record,'$.state')='sending';
+    `);
   }
   private now(): number { return this.options.now?.() ?? Date.now(); }
-  private rows(conversation?: string): BrowserActionCard[] {
-    return (conversation ? this.options.store.db.query<{ record: string }, [string]>("SELECT record FROM s16_browser_cards WHERE conversation_id=? ORDER BY rowid").all(conversation) : this.options.store.db.query<{ record: string }, []>("SELECT record FROM s16_browser_cards ORDER BY rowid").all()).map(r => JSON.parse(r.record) as BrowserActionCard);
+  private pending(conversation: string): BrowserActionCard[] {
+    return this.options.store.db.query<{ record: string }, [string]>("SELECT record FROM s16_browser_cards WHERE conversation_id=? AND json_extract(record,'$.state')='pending' ORDER BY rowid").all(conversation).map(r => JSON.parse(r.record) as BrowserActionCard);
   }
   private save(card: BrowserActionCard): void {
     const { value: _value, ...record } = card;
@@ -37,7 +43,7 @@ export class BrowserActionCards<Owner> {
   }
   hold(action: HeldBrowserAction): { state: "pending"; cardId: string; expiresAt: number } {
     identity(action.requestId); identity(action.conversationId);
-    if (this.rows(action.conversationId).filter(c => this.current(c).state === "pending").length >= 64) throw new AppError("computer_browser_card_limit", 409);
+    if (this.pending(action.conversationId).filter(c => this.current(c).state === "pending").length >= 64) throw new AppError("computer_browser_card_limit", 409);
     const { op, ...rest } = action;
     const card: BrowserActionCard = { ...rest, id: `bcard_${crypto.randomUUID().replaceAll("-", "")}`, kind: op.kind, expiresAt: this.now() + 1_800_000, state: "pending" };
     if ("value" in op) this.#values.set(card.id, op.value);
@@ -45,9 +51,11 @@ export class BrowserActionCards<Owner> {
   }
   list(actor: Owner, conversationId: string): BrowserActionCard[] {
     this.options.requireOwner(actor); identity(conversationId);
-    const cards = this.rows(conversationId).filter(c => c.ownerGeneration === this.options.ownerGeneration()).map(c => this.current(c));
-    // Keep every live press, plus a bounded recent history, within the protected client's response limit.
-    return [...cards.filter(c => c.state === "pending"), ...cards.filter(c => c.state !== "pending").slice(-64)];
+    const generation = this.options.ownerGeneration();
+    const pending = this.pending(conversationId).map(c => this.current(c)).filter(c => c.state === "pending" && c.ownerGeneration === generation);
+    // Reconcile live presses first so newly expired/stale cards participate in the same bounded SQL history.
+    const recent = this.options.store.db.query<{ record: string }, [string, number]>("SELECT record FROM s16_browser_cards WHERE conversation_id=? AND json_extract(record,'$.ownerGeneration')=? AND json_extract(record,'$.state')!='pending' ORDER BY rowid DESC LIMIT 64").all(conversationId, generation).reverse().map(r => JSON.parse(r.record) as BrowserActionCard);
+    return [...pending, ...recent];
   }
   async decide(actor: Owner, value: unknown, guard: () => void = () => {}): Promise<BrowserActionCard> {
     this.options.requireOwner(actor);
@@ -55,9 +63,11 @@ export class BrowserActionCards<Owner> {
     const v = value as { contract: string; conversationId: string; cardId: string; decision: string };
     if (v.contract !== "s16-browser-card-decision/v1" || !["approve", "decline"].includes(v.decision)) throw new AppError("invalid_body");
     identity(v.conversationId); identity(v.cardId);
-    const found = this.rows(v.conversationId).find(c => c.id === v.cardId && c.ownerGeneration === this.options.ownerGeneration());
+    const found = this.options.store.db.query<{ record: string }, [string, string]>("SELECT record FROM s16_browser_cards WHERE id=? AND conversation_id=?").get(v.cardId, v.conversationId);
     if (!found) throw new AppError("not_found", 404);
-    let card = this.current(found);
+    const saved = JSON.parse(found.record) as BrowserActionCard;
+    if (saved.ownerGeneration !== this.options.ownerGeneration()) throw new AppError("not_found", 404);
+    let card = this.current(saved);
     if (card.state !== "pending") return card;
     if (this.#pressing.has(card.id)) throw new AppError("computer_browser_busy", 409);
     if (v.decision === "decline") { this.save(card = { ...card, state: "declined" }); return card; }
