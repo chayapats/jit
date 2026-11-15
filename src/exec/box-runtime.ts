@@ -164,6 +164,8 @@ export interface BoxStreamRequest {
 
 /** The open pipe of a {@link BoxStreamRequest}. Closing kills the `podman exec` client and ends `stdout`. */
 export interface BoxStream {
+  /** Optional positive guest-drain acknowledgement. Rejection means control must remain fenced. */
+  readonly settled?: Promise<void>;
   /** Writes bytes to the process's stdin; throws `box_stream_closed` once closed. */
   write(bytes: Uint8Array): void;
   /** The process's stdout, chunk by chunk, until it exits or the stream closes. */

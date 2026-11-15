@@ -51,3 +51,15 @@ Coordinates are display pixels (`0 ≤ x < 1280`, `0 ≤ y < 800`).
 ## Errors
 
 `screen_input_unknown`, `takeover_active` (work refused while the owner holds or lost control), `takeover_state_changed`, `takeover_settling`, `stale_screen`, `screen_control_lost`, `invalid_screen_input`, `screen_text_unsupported`, `vm_desktop_unavailable`, `vm_desktop_restart_required`, `vm_not_running`, `vm_screen_invalid`, `request_id_conflict`, `screen_unavailable` (not enabled).
+
+## Watched browser tickets (ADR 0092, slice 3a)
+
+Every `computer_browser` call (`state`, `navigate`, `read`, `find`) holds an agent ticket from before its first wait
+until it settles. The ticket and live work guard are checked immediately before and after each CDP command.
+A screen generation transition synchronously invalidates observations and closes the run's stream, including an idle
+or opening stream. Takeover therefore refuses new browser calls with `takeover_active`, and stays `settling` until
+the outstanding browser call releases its ticket. Hand-back never revives an observation from before takeover.
+
+Closing a browser channel is not settlement by itself: takeover retains the browser ticket until the relay
+acknowledges that unsent frames were dropped and partial/in-flight frames finished. If the dedicated SSH drain
+times out or exits without acknowledgement, `computer_browser_unsettled` leaves the ticket held (fail closed).

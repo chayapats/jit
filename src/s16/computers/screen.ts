@@ -43,6 +43,8 @@ export interface ScreenControlOptions<Owner> {
   device(vmId: string): VmScreenDevice | null;
   scope(vmId: string): ComputerScope;
   now?: () => number;
+  /** Close idle/read browser streams on any generation transition. */
+  onTransition?(vm: string): void;
   /** Owner control lapses this long after the last renewal (default 30 s). */
   leaseMs?: number;
 }
@@ -87,6 +89,7 @@ export class ScreenControl<Owner> {
     for (const [id, entry] of this.#inputs) if (entry.vm === vm && entry.generation < generation) this.#inputs.delete(id);
     this.options.store.db.query("INSERT INTO s16_screen_control VALUES (?,?,?,?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=excluded.generation, state=excluded.state, takeover_id=excluded.takeover_id, expires_at=excluded.expires_at").run(vm, generation, state, takeover, expires);
     this.options.store.db.query("INSERT INTO s16_screen_events(vm_id,kind,generation,at) VALUES (?,?,?,?)").run(vm, event, generation, this.#now());
+    this.options.onTransition?.(vm);
     return { vm_id: vm, generation, state, takeover_id: takeover, expires_at: expires };
   }
   /** Current row; a lapsed owner lease becomes `fenced` under a new generation as it is read. */

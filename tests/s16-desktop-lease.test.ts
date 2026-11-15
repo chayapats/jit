@@ -11,7 +11,7 @@ import { VmEnrollment } from "../src/s15/vm/enrollment";
 import { startLocalVmControl } from "../src/s15/vm/local-control";
 import { VmManagers } from "../src/s15/vm/managers";
 import { startVmRegistryProxy, type VmProxyLease, type VmProxyLog } from "../src/s15/vm/proxy";
-import { QemuVmManagement, qemuDesktopBrowser, qemuDesktopLeaseWriter, qemuDesktopProvisioning, type QemuHostOptions } from "../src/s15/vm/qemu";
+import { QemuVmManagement, qemuDesktopBrowser, qemuDesktopReadyKey, qemuDesktopLeaseWriter, qemuDesktopProvisioning, type QemuHostOptions } from "../src/s15/vm/qemu";
 import { WorkingVmService } from "../src/s15/vm/service";
 import { VmStore } from "../src/s15/vm/store";
 import { VmSshTransport } from "../src/s15/vm/transport";
@@ -289,7 +289,7 @@ describe("desktop lease lifecycle of a local QEMU VM", () => {
 });
 
 describe("guest lease writer", () => {
-  const run = (proxy: string, program = qemuDesktopLeaseWriter) => spawnSync("python3", ["-I", "-c", program], { input: JSON.stringify({ proxy, version: qemuDesktopBrowser.version }), encoding: "utf8" });
+  const run = (proxy: string, program = qemuDesktopLeaseWriter) => spawnSync("python3", ["-I", "-c", program], { input: JSON.stringify({ proxy, version: qemuDesktopReadyKey }), encoding: "utf8" });
   test("refuses a lease URL that could break the environment file, and writes nothing without the desktop group", () => {
     const python = spawnSync("python3", ["-c", "import grp;grp.getgrnam('jit-desktop')"]);
     if (python.error) return; // No python3 on this runner; the fixed program is exercised in live evidence.
@@ -307,6 +307,8 @@ describe("guest lease writer", () => {
     writeFileSync(marker, "1.0.0.0\n");
     expect(run(lease, program).stdout.trim()).toBe("jit-desktop-absent-v1");
     writeFileSync(marker, `${qemuDesktopBrowser.version}\n`);
+    expect(run(lease, program).stdout.trim()).toBe("jit-desktop-absent-v1");
+    writeFileSync(marker, `${qemuDesktopReadyKey}\n`);
     // Past the marker and group checks the writer reaches its directory checks (not root-owned here), never "absent".
     expect(run(lease, program).stdout.trim()).not.toBe("jit-desktop-absent-v1");
   });

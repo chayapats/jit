@@ -1,3 +1,4 @@
+import { desktopCdpRelay, desktopCdpAttach, desktopSessionRevision } from "./desktop-programs";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -403,7 +404,7 @@ export class QemuVmManagement implements VmLocalManagement {
     let out = "";
     try {
       out = (await new VmSshTransport(this.endpoint(), this.#run).control(["sudo", "-n", "python3", "-I", "-c", qemuDesktopLeaseWriter],
-        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "", version: qemuDesktopBrowser.version })), signal })).trim();
+        { timeoutMs: 60_000, maxBytes: 4096, input: Buffer.from(JSON.stringify({ proxy: lease.environment.HTTPS_PROXY ?? "", version: qemuDesktopReadyKey })), signal })).trim();
     } catch { out = ""; }
     if (out !== "jit-desktop-lease-v1" || epoch !== this.#desktopEpoch) { lease.close(); return out === "jit-desktop-absent-v1" ? "absent" : "failed"; }
     this.#desktopLease = lease;
@@ -751,6 +752,8 @@ export const qemuDesktopBrowser = Object.freeze({
   aarch64: Object.freeze({ url: "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.50/linux-arm64/chrome-linux-arm64.zip",
     sha256: "9539c1612121eb09c4b787f4f9d0c732357772eb22583620ffed64d50dd6c4cc" }),
 });
+/** Chrome pin plus the session programs; a bare Chrome marker must upgrade without re-downloading Chrome. */
+export const qemuDesktopReadyKey = `${qemuDesktopBrowser.version}+session.${desktopSessionRevision}`;
 /**
  * Fixed guest program (DESK16-01, ADR 0091 decisions 1, 6), idempotent. Reads `{proxy, url, sha256, version}` from
  * stdin (a bounded provisioning lease and the pin above) and, as root:
@@ -763,10 +766,10 @@ export const qemuDesktopBrowser = Object.freeze({
  * - enables `jit-desktop-proxy.service` (127.0.0.1:3129 → the guest-forwarded proxy, adding `Proxy-Authorization`
  *   from `/etc/jit-desktop/proxy.env` read per connection, since Chromium takes no credentials in a proxy URL) and
  *   `jit-desktop.service` (Xorg + fluxbox + the browser on vt7 as `jit-desktop`; the browser restarts if it exits).
- * Prints `jit-desktop-ready-v1` and writes `/opt/jit-desktop/ready-v1` (the version; removed when an install starts)
+ * Prints `jit-desktop-ready-v1` and writes `/opt/jit-desktop/ready-v1` (the Chrome pin + session revision; removed when an install starts)
  * only when every step succeeded and both units and the pinned browser have stayed up for three checks in a row.
  */
-export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,re,shutil,subprocess,sys,time,zipfile
+export const qemuDesktopProvisioning = String.raw`import hashlib,json,os,pwd,re,shutil,stat,subprocess,sys,time,zipfile
 a=json.loads(sys.stdin.read(8192))
 p,u,h,v=a['proxy'],a['url'],a['sha256'],a['version']
 if not p.startswith('http://') or not u.startswith('https://') or len(h)!=64 or not all(c in '0123456789abcdef' for c in h) or not all(c.isdigit() or c=='.' for c in v):print('jit-desktop-invalid-v1');sys.exit(0)
@@ -778,6 +781,8 @@ def put(f,s,m=0o644):
  t=f+'.jit-new'
  with open(t,'w') as o:o.write(s)
  os.chmod(t,m);os.rename(t,f)
+RELAY=${JSON.stringify(desktopCdpRelay)}
+ATTACH=${JSON.stringify(desktopCdpAttach)}
 FORWARD=r'''import base64,os,socket,threading,urllib.parse
 E='/etc/jit-desktop/proxy.env';U=('192.168.5.100',3128);S=threading.BoundedSemaphore(64)
 def auth():
@@ -823,7 +828,7 @@ SESSION=r'''#!/bin/sh
 xset s off -dpms
 fluxbox &
 while :; do
- @B@/chrome --user-data-dir=/var/lib/jit-desktop/profile --proxy-server=http://127.0.0.1:3129 --no-first-run --no-default-browser-check --password-store=basic --disable-background-networking --window-position=0,0 --window-size=1280,800 --start-maximized
+ /usr/local/lib/jit-desktop/cdp-relay @B@/chrome --user-data-dir=/var/lib/jit-desktop/profile --proxy-server=http://127.0.0.1:3129 --no-first-run --no-default-browser-check --password-store=basic --disable-background-networking --window-position=0,0 --window-size=1280,800 --start-maximized </dev/null
  sleep 2
 done
 '''
@@ -843,6 +848,7 @@ UtmpIdentifier=tty7
 UtmpMode=user
 WorkingDirectory=/var/lib/jit-desktop
 ExecStartPre=+/usr/bin/chvt 7
+ExecStartPre=+/usr/bin/install -d -m 0700 -o jit-desktop -g jit-desktop /run/jit-desktop
 ExecStart=/usr/bin/xinit /usr/local/lib/jit-desktop/session -- /usr/bin/Xorg :0 vt7 -keeptty -novtswitch -nolisten tcp
 Restart=always
 RestartSec=2
@@ -911,21 +917,25 @@ try:
   os.rename(n,B);os.unlink(z)
  for o in os.listdir(R):
   if o.startswith('chrome-') and R+'/'+o!=B:shutil.rmtree(R+'/'+o,ignore_errors=True)
+ put(L+'/cdp-relay',RELAY,0o755);put(L+'/cdp-attach',ATTACH,0o755)
  put(L+'/proxy-forward.py',FORWARD);put(L+'/session',SESSION.replace('@B@',B),0o755)
  put('/etc/X11/xorg.conf.d/10-jit-desktop.conf',XORG);put('/etc/apparmor.d/jit-desktop-chrome',ARMOR)
  put('/etc/systemd/system/jit-desktop.service',DESKTOP);put('/etc/systemd/system/jit-desktop-proxy.service',PROXY)
  subprocess.run(['apparmor_parser','-r','/etc/apparmor.d/jit-desktop-chrome'],timeout=120,**{**q,'check':False})
  subprocess.run(['systemctl','daemon-reload'],timeout=120,**q)
  subprocess.run(['systemctl','enable','--now','jit-desktop-proxy.service','jit-desktop.service'],timeout=120,**q)
+ subprocess.run(['systemctl','restart','jit-desktop.service'],timeout=120,**q)
  # Installed means running: both units active and the pinned browser up as jit-desktop on three checks in a row.
  k=0
  for _ in range(60):
   up=subprocess.run(['systemctl','is-active','--quiet','jit-desktop-proxy.service','jit-desktop.service'],timeout=30,**{**q,'check':False}).returncode==0 and subprocess.run(['pgrep','-u','jit-desktop','-f','^'+re.escape(B+'/chrome')+'( |$)'],timeout=30,**{**q,'check':False}).returncode==0
+  try:up=up and stat.S_ISSOCK(os.stat('/run/jit-desktop/cdp.sock').st_mode)
+  except OSError:up=False
   k=k+1 if up else 0
   if k>=3:break
   time.sleep(2)
  if k<3:print('jit-desktop-missing-v1');sys.exit(0)
- os.makedirs(R,mode=0o755,exist_ok=True);put(R+'/ready-v1',v+'\n')
+ os.makedirs(R,mode=0o755,exist_ok=True);put(R+'/ready-v1',v+'+session.${desktopSessionRevision}\n')
  print('jit-desktop-ready-v1')
 except (OSError,ValueError,KeyError,zipfile.BadZipFile,subprocess.SubprocessError):print('jit-desktop-missing-v1')
 `;

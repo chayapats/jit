@@ -25,6 +25,13 @@ export type WebsiteTier = 'trusted' | 'sensitive';
 /** One owner-approved HTTPS origin the protected browser may read. `revision` advances on every re-approval or tier change. */
 export interface ApprovedWebsite { origin: string; revision: number; addedAt: number; tier: WebsiteTier }
 
+/** Working-browser refusal follows the hostname, not the protected browser's exact-origin approval.
+ * A trusted scheme/port never overrides a sensitive approval of the same normalized host. */
+export function websiteHostSensitive(sites: readonly Pick<ApprovedWebsite, 'origin' | 'tier'>[], hostname: string): boolean {
+  const normalize = (host: string) => host.toLowerCase().replace(/\.$/, '');
+  return sites.some(site => site.tier === 'sensitive' && normalize(new URL(site.origin).hostname) === normalize(hostname));
+}
+
 /** Identity providers, primary email, banking and payment hosts: always sensitive, never usable freely in the VM. */
 const sensitiveOnlyHosts = ['accounts.google.com', 'mail.google.com', 'myaccount.google.com', 'pay.google.com', 'login.microsoftonline.com', 'login.live.com', 'account.microsoft.com', 'outlook.live.com', 'outlook.office.com', 'appleid.apple.com', 'icloud.com', 'paypal.com', 'stripe.com', 'wise.com', 'revolut.com', 'id.me', 'okta.com', 'auth0.com', 'login.yahoo.com', 'mail.yahoo.com', 'proton.me', 'github.com'];
 /** True for a site that must stay in the protected browser whatever the owner marks (`website_sensitive_only`). */
