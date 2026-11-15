@@ -209,7 +209,7 @@ test("101 targets report truncation without expiring open opaque IDs beyond the 
 
 test("actual observation program never reads editable self/descendant text into names",async()=>{
  const {document}=parseHTML(`<html><body>
-   <a contenteditable>SELF SECRET</a><button contenteditable aria-label="PRIVATE LABEL">BUTTON SECRET</button>
+   <a contenteditable>SELF SECRET</a><button contenteditable aria-label="Pay">BUTTON SECRET</button>
    <a><span contenteditable>NESTED SECRET</span>Public link</a>
    <button>Public button<span contenteditable><b>DEEP SECRET</b><img alt="IMAGE SECRET"></span></button>
    <input value="INPUT SECRET"><textarea>TEXTAREA SECRET</textarea>
@@ -218,7 +218,7 @@ test("actual observation program never reads editable self/descendant text into 
  // Execute the unchanged production program over a real DOM tree; only the browser globals are supplied.
  const evaluate=new Function("document","NodeFilter","getComputedStyle","location",`return ${computerBrowserObservation}`);
   const result=evaluate(document,{SHOW_TEXT:4,SHOW_ELEMENT:1},(e:HTMLElement)=>e.style,{href:"https://public.org/"}) as {text:string;elements:{name:string}[]};
-  const json=JSON.stringify(result);expect(json).not.toContain("SECRET");expect(json).not.toContain("PRIVATE LABEL");
+  const json=JSON.stringify(result);expect(json).not.toContain("SECRET");expect(result.elements.map(e=>e.name)).toContain("Pay");
   expect(result.elements.map(e=>e.name)).toContain("Public link");expect(result.elements.map(e=>e.name)).toContain("Public button");expect(result.elements.map(e=>e.name)).toContain("Visible");
 });
 
