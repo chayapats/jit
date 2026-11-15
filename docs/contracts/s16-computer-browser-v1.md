@@ -31,8 +31,8 @@ Without `tab`, operations select the run's last selected tab, or the first disco
 
 ## Inputs and held action cards (3b)
 
-Immediately before input, fixed DOM programs inspect only the target's metadata and bounded **non-secret** form
-values. Password, file, hidden and `autocomplete=one-time-code` values are never read or entered; they refuse
+Immediately before input, fixed DOM programs inspect the target's metadata, its bounded native activation context
+and bounded **non-secret** form values. Password, file, hidden and `autocomplete=one-time-code` values are never read or entered; they refuse
 `computer_browser_secret_field`. Ordinary observations still never read editable values. The input batch repeats
 the secret and exact revision checks in the same synchronous DOM task as dispatch. Stale/foreign/removed elements,
 changed URL, accessible name, raw HTML field name, target attributes, form action/method or non-secret field
@@ -40,7 +40,14 @@ state/values refuse without input. Field snapshots include checked/selected/disa
 the payload the owner would approve. Select values must match an enabled option. Type uses the native value setter
 and input/change events; it is not a trusted physical keyboard or a way to solve a site's automation challenge.
 
-A `click`, `submit`, `select`, or Enter-carrying `type` is held if its accessible name, its form's raw HTML field
+For a listed descendant, native activation facts include the nearest button, button-like input or `a[href]`,
+or a label's forwarded `control`, and that control's form owner (including external `form=` associations).
+The same context supplies vocabulary matching, owner-review facts and the exact revision: control/label/form
+identity, effective name, relevant activation attributes and non-secret form state are pinned. Changed context
+refuses as stale; dispatch still clicks the original opaque target, never a substituted ancestor/control.
+This does not analyze arbitrary JavaScript listeners or expand matching to every ancestor.
+
+A `click`, `submit`, `select`, or Enter-carrying `type` is held if its target/effective control name, its form's raw HTML field
 names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai). Underscore, hyphen and slash separators in field names and paths are treated as spaces; `pay_now`/`delete_account` match, but `paypal`/`reorder` do not. Names preserve ARIA then associated-label precedence before contents (HTML-AAM §4.1.4), including image `alt` in button contents and image-input names. Native buttons beneath an editable ancestor retain their own name; editable self/descendant text and field values remain excluded from observation names:
 
 | S16-D07 row | English | Thai aliases |

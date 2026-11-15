@@ -557,3 +557,140 @@ test("all 64 live cards survive the bounded terminal history and the pending lim
   expect(cards.filter(c => c.state === "declined").map(c => c.id)).toEqual([ids[1]!]);
   expect(cards.some(c => c.id === next.cardId)).toBe(true); expect(f.dispatches).toBe(0);
 });
+
+// Linkedom has no native form-owner/label forwarding/default-submit implementation.
+// These shims exercise the host/card pipeline; Chromium evidence separately checks native activation.
+function activationFixture(state: string, source: "external" | "button" | "link" | "label" | "wrapped label" | "input label", word = "Pay") {
+  const f = fixture();
+  const child = f.document.createElement("span"); child.setAttribute("contenteditable", state); child.textContent = "!";
+  const form = f.document.querySelector("form")!; form.id = "outside";
+  let control: HTMLElement, label: HTMLElement | undefined;
+  if (source === "link") {
+    control = f.document.createElement("a"); control.setAttribute("href", "/continue");
+    f.document.body.append(control);
+  } else if (source === "input label") {
+    control = f.document.createElement("input"); control.setAttribute("type", "image"); control.setAttribute("alt", word);
+    f.document.body.append(control);
+  } else {
+    control = f.document.createElement("button"); control.setAttribute("type", source === "external" ? "submit" : "button");
+    f.document.body.append(control);
+  }
+  control.id = "effective";
+  if (source === "external") control.setAttribute("form", form.id);
+  // Honor an explicit unresolved form= rather than falling back to an ancestor form.
+  if (control.tagName !== "A") Object.defineProperty(control, "form", { get: () => control.hasAttribute("form") ? f.document.getElementById(control.getAttribute("form")!) : control.closest("form") });
+  if (source.includes("label")) {
+    label = f.document.createElement("label"); label.setAttribute("for", control.id); label.append(word, child);
+    Object.defineProperty(label, "control", { configurable: true, get: () => f.document.getElementById(label!.getAttribute("for")!) });
+    f.document.body.append(label);
+    if (source === "wrapped label") { label.removeAttribute("for"); label.append(control); Object.defineProperty(label, "control", { configurable: true, get: () => label!.querySelector("button") }); }
+    // linkedom does not provide .labels; the production helper's existing label lookup handles it.
+  } else control.append(word, child);
+  let listeners = 0, submits = 0;
+  const click = spyOn(child, "click").mockImplementation(() => { listeners++; if (source === "external") submits++; });
+  const controlClick = spyOn(control, "click");
+  return { f, child, control, label, click, controlClick, form, get listeners() { return listeners; }, get submits() { return submits; } };
+}
+
+for (const state of ["false", "true"]) for (const source of ["external", "button", "link", "label", "wrapped label", "input label"] as const) {
+  test.each(["unchanged", "name", "identity", "attribute", "form owner"])(`child contenteditable=${state} activates ${source}: %s`, async change => {
+    const a = activationFixture(state, source), { f } = a;
+    const { r, o, es } = await f.observe();
+    const target = es.find(e => e.tag === "span")!; expect(target).toBeDefined();
+    const pending = await r.execute({ kind: "click", target: target.id, generation: o.generation });
+    expect(pending.state).toBe("pending"); expect(a.listeners).toBe(0); expect(a.submits).toBe(0); expect(f.dispatches).toBe(0);
+    expect(a.click).not.toHaveBeenCalled(); expect(a.controlClick).not.toHaveBeenCalled();
+    const card = f.cards.list(f.owner, "conversation")[0]!;
+    expect(card.row).toBe("a"); expect(card.facts.tag).toBe("span"); if (state === "true" || !a.label) expect(card.facts.name).toBe("");
+    expect(card.facts.activation?.name).toContain("Pay"); expect(card.facts.activation?.ref).not.toBe(card.facts.ref);
+    expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(JSON.stringify(card)).not.toContain("SECRET_");
+    if (source === "external") expect(card.facts.fields.find(field => field.htmlName === "amount")?.value).toBe("20");
+    r.close();
+    if (change === "name") {
+      if (a.label) a.label.firstChild!.textContent = "Buy";
+      else a.control.firstChild!.textContent = "Buy";
+    }
+    if (change === "identity") {
+      const replacement = a.control.cloneNode(true) as HTMLElement;
+      if (a.label) a.control.replaceWith(replacement);
+      else { a.control.replaceWith(replacement); replacement.append(a.child); }
+    }
+    if (change === "attribute") a.control.setAttribute(source === "link" ? "href" : "formaction", "/changed");
+    if (change === "form owner") {
+      if (source === "external") { const other = f.document.createElement("form"); other.id = "other"; f.document.body.append(other); a.control.setAttribute("form", other.id); }
+      else if (a.label && source !== "wrapped label") a.label.setAttribute("for", f.field.id = "different");
+      else a.control.setAttribute(source === "link" ? "target" : "form", "different");
+    }
+    const expected = change === "unchanged" ? "sent" : "stale";
+    expect((await f.decide(pending.cardId as string)).state).toBe(expected);
+    expect((await f.decide(pending.cardId as string)).state).toBe(expected);
+    expect(a.click).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+    expect(a.controlClick).not.toHaveBeenCalled(); // Always click the original child, never substitute its control.
+    expect(a.listeners).toBe(change === "unchanged" ? 1 : 0); expect(a.submits).toBe(change === "unchanged" && source === "external" ? 1 : 0);
+    expect(f.dispatches).toBe(0);
+  });
+}
+
+test.each(["false", "true"])("ordinary Continue child (%s) does not require a card", async state => {
+  for (const source of ["external", "button", "link", "label"] as const) {
+    const a = activationFixture(state, source, "Continue"), { f } = a;
+    const { r, o, es } = await f.observe();
+    expect((await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation })).state).toBe("ok");
+    expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); expect(a.listeners).toBe(1); expect(a.controlClick).not.toHaveBeenCalled(); r.close();
+  }
+});
+
+test.each(["association", "identity", "action", "field"])("child approval pins effective form %s even with identical control names", async change => {
+  const a = activationFixture("true", "external"), { f } = a;
+  const { r, o, es } = await f.observe();
+  const pending = await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation });
+  expect(pending.state).toBe("pending"); r.close();
+  if (change === "identity" || change === "association") {
+    const replacement = a.form.cloneNode(true) as HTMLElement;
+    Object.defineProperty(replacement, "elements", { get: () => [...a.form.querySelectorAll("input,textarea,select,button")] });
+    if (change === "identity") a.form.replaceWith(replacement);
+    else { replacement.id = "other"; f.document.body.append(replacement); a.control.setAttribute("form", "other"); }
+  }
+  if (change === "action") a.form.setAttribute("action", "/changed");
+  if (change === "field") f.field.value = "30";
+  expect((await f.decide(pending.cardId as string)).state).toBe("stale"); expect(a.click).not.toHaveBeenCalled(); expect(a.submits).toBe(0);
+});
+
+test("label forwarding cannot expose or activate a secret control", async () => {
+  const f = fixture(), label = f.document.createElement("label"), child = f.document.createElement("span");
+  child.setAttribute("contenteditable", "false"); label.append("Pay", child); f.document.body.append(label);
+  const secret = f.document.querySelector('[type="password"]')!; Object.defineProperty(label, "control", { configurable: true, get: () => secret });
+  const click = spyOn(child, "click"); const { r, o, es } = await f.observe();
+  await expect(r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_secret_field" });
+  expect(click).not.toHaveBeenCalled(); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+test("interactive link inside a label is its own activation context, not the label's control", async () => {
+  const a = activationFixture("false", "label"), { f } = a;
+  a.label!.firstChild!.textContent = ""; a.control.setAttribute("aria-label", "Pay");
+  const link = f.document.createElement("a"); link.setAttribute("href", "/continue"); link.append("Continue", a.child); a.label!.append(link);
+  // The Pay-labelled control must not turn this separate Continue link into a held activation.
+  const { r, o, es } = await f.observe();
+  expect((await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation })).state).toBe("ok");
+  expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+
+test("child matching includes the effective external form's raw names, not only the ancestor's name", async () => {
+  const a = activationFixture("true", "external", "Continue"), { f } = a;
+  f.field.name = "pay_now"; f.field.value = " 20 ";
+  const { r, o, es } = await f.observe();
+  const pending = await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation });
+  expect(pending.state).toBe("pending"); expect(a.click).not.toHaveBeenCalled();
+  const card = f.cards.list(f.owner, "conversation")[0]!;
+  expect(card.row).toBe("a"); expect(card.facts.activation?.name).toBe("Continue");
+  expect(card.facts.fields.find(field => field.htmlName === "pay_now")?.value).toBe(" 20 "); r.close();
+});
+
+test("an unresolved explicit form owner does not inherit an unrelated enclosing form", async () => {
+  const a = activationFixture("false", "button", "Continue"), { f } = a;
+  f.field.name = "pay_now"; a.form.append(a.control); a.control.setAttribute("form", "missing");
+  const { r, o, es } = await f.observe();
+  expect((await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation })).state).toBe("ok");
+  expect(a.click).toHaveBeenCalledTimes(1); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});

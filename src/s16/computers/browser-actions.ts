@@ -4,7 +4,7 @@ import { AppError } from "../../errors";
 export class BrowserDispatchRefused extends AppError {}
 
 export type BrowserInput = { kind: "click" | "submit"; target: string; generation: number; tab?: string } | { kind: "type" | "select"; target: string; value: string; generation: number; tab?: string };
-export interface BrowserActionFacts { url: string; ref: string; name: string; tag: string; type: string; formNames: string[]; fields: { name: string; htmlName?: string; value: string }[]; revision: string }
+export interface BrowserActionFacts { url: string; ref: string; name: string; tag: string; type: string; activation?: { ref: string; name: string; tag: string; type: string; htmlName: string }; formNames: string[]; fields: { name: string; htmlName?: string; value: string }[]; revision: string }
 export type HumanBrowserRow = "a" | "b" | "c" | "d" | "e" | "f";
 const vocabulary: [HumanBrowserRow, RegExp][] = [
   ["a", /\b(pay|buy|purchase|checkout|order|transfer|subscribe)\b|จ่าย|ชำระ|ซื้อ|สั่งซื้อ|โอน|สมัครสมาชิก/iu],
@@ -18,7 +18,7 @@ const vocabulary: [HumanBrowserRow, RegExp][] = [
 export function humanBrowserRow(op: BrowserInput, facts: BrowserActionFacts): HumanBrowserRow | null {
   if (op.kind === "type" && !/[\r\n]/u.test(op.value)) return null;
   let path = new URL(facts.url).pathname; try { path = decodeURIComponent(path); } catch { /* literal invalid escape */ }
-  const text = [facts.name, ...facts.formNames.map(n => n.replace(/[_/-]+/gu, " ")), path.replace(/[_/-]+/gu, " ")].join(" ");
+  const text = [facts.name, facts.activation?.name || "", ...[facts.activation?.htmlName || "", ...facts.formNames].map(n => n.replace(/[_/-]+/gu, " ")), path.replace(/[_/-]+/gu, " ")].join(" ");
   return vocabulary.find(([, pattern]) => pattern.test(text))?.[0] ?? null;
 }
 
@@ -46,10 +46,19 @@ export const browserDomHelpers = `
  for(const [id,node] of registry.nodes)if(!node.deref()?.isConnected)registry.nodes.delete(id);
  const ref=e=>{let id=registry.ids.get(e);if(!id||!registry.nodes.has(id)){if(registry.nodes.size>=1024)registry.nodes.delete(registry.nodes.keys().next().value);id=crypto.randomUUID();registry.ids.set(e,id);registry.nodes.set(id,new WeakRef(e));}return id;};
  const setValue=(e,value)=>{const set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value')?.set;if(set)set.call(e,value);else e.value=value;};
- const facts=e=>{const all=Array.from((e.form||e.closest('form'))?.elements||[e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),htmlName:f.getAttribute('name')||'',value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
+ // Only native activation/label forwarding, not arbitrary ancestors or page-written listeners.
+ const activationContext=e=>{const n=e.closest('button,input,select,textarea,a[href],label');if(!n)return {};
+  if(n.tagName==='LABEL')return {control:n.control,label:n};
+  if(n.tagName==='BUTTON'||n.tagName==='A'||(n.tagName==='INPUT'&&['submit','button','reset','image'].includes((n.getAttribute('type')||'').toLowerCase())))return {control:n};
+  return {};};
+ const controlFacts=e=>({ref:ref(e),name:name(e,true),tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),id:e.getAttribute('id'),htmlName:e.getAttribute('name')||'',href:e.getAttribute('href'),target:e.getAttribute('target'),form:e.getAttribute('form'),formaction:e.getAttribute('formaction'),formmethod:e.getAttribute('formmethod'),formtarget:e.getAttribute('formtarget'),formenctype:e.getAttribute('formenctype'),formnovalidate:e.hasAttribute('formnovalidate'),disabled:!!e.disabled,readOnly:!!e.readOnly});
+ const facts=e=>{const {control,label}=activationContext(e);if(control&&secret(control))return {code:'computer_browser_secret_field'};
+  // A native form owner's null (e.g. unresolved form=) must not fall back to an enclosing form.
+  const form=control&&'form' in control?control.form:(e.form||e.closest('form'));
+  const all=Array.from(form?.elements||[control||e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),htmlName:f.getAttribute('name')||'',value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
   if(fields.length>100||fields.some(f=>f.value.length>12000))return {code:'computer_browser_snapshot_limit'};
-  const target={ref:ref(e),name:name(e,true),tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),href:e.getAttribute('href'),formaction:e.getAttribute('formaction'),formmethod:e.getAttribute('formmethod'),disabled:!!e.disabled,readOnly:!!e.readOnly};
-  const form=e.form||e.closest('form');const data={url:location.href,...target,formAction:form?.getAttribute('action'),formMethod:form?.getAttribute('method'),formNames:all.flatMap(f=>[f.getAttribute('name')||'',name(f,true)]),fields};
+  const activation=control?{...controlFacts(control),label:label?{ref:ref(label),for:label.getAttribute('for')}:undefined}:undefined;
+  const data={url:location.href,...controlFacts(e),activation,formRef:form?ref(form):undefined,formId:form?.getAttribute('id'),formAction:form?.getAttribute('action'),formMethod:form?.getAttribute('method'),formTarget:form?.getAttribute('target'),formEnctype:form?.getAttribute('enctype'),formNoValidate:form?.hasAttribute('novalidate'),formNames:all.flatMap(f=>[f.getAttribute('name')||'',name(f,true)]),fields};
   return {...data,revision:JSON.stringify(data)};};
 `;
 export const computerBrowserObservation = `(() => {${browserDomHelpers}
