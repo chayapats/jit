@@ -132,7 +132,7 @@ export interface ConversationTools {
 }
 /** Trusted VM/broker factory; there is no host-local backend fallback or dynamically installed model tool. */
 export interface ConversationToolPort<WorkContext> {
-  open(work: WorkContext, input: { mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void; onAction?: (action: ActionRef) => void }): Promise<ConversationTools>;
+  open(work: WorkContext, input: { request?: { requestId: string; conversationId: string }; mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void; onAction?: (action: ActionRef) => void }): Promise<ConversationTools>;
 }
 /** Stable receipt acknowledges one durable ingress identity, independently of execution or completion. */
 export interface ConversationReceipt { contract: "s15-conversation-receipt/v1"; requestId: string; rootRequestId: string; conversationId: string; receivedAt: number }

@@ -94,7 +94,7 @@ describe("desktop stream handshake", () => {
 });
 
 describe("computer_browser read operations", () => {
-  test("closed union rejects raw CDP, JS, selectors, secrets and input operations", async () => {
+  test("closed union rejects raw CDP, JS, selectors, secrets and inputs without opaque targets", async () => {
     const f = fixture(), r = f.run();
     for (const op of [{ kind: "read", generation: 1, selector: "#x" }, { kind: "evaluate", value: "document.cookie" }, { kind: "click", target: "x", generation: 1 }, { kind: "state", vmId: "other" }]) await expect(r.execute(op)).rejects.toMatchObject({ code: "computer_browser_operation_invalid" });
     expect(f.streams).toBe(0); expect(r.tools()[0]!.name).toBe("computer_browser");

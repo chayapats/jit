@@ -1,3 +1,4 @@
+import type { BrowserActionCard } from "../computers/browser-cards";
 import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionCommand, type ClientConnectionReceipt, type ClientSource, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 import type { ScreenCommand, ScreenCommandResult, ScreenView } from "../computers/screen";
@@ -59,10 +60,17 @@ export class JitClient {
     return this.receipt(await this.call(`/conversations/${input.conversationId}/messages`, "POST", input, signal, input.requestId), input);
   }
   /** Fresh guarded snapshot; no queued work is started or replayed by reading. */
+  /** Exact explicit owner press. No automatic retry: refresh the durable card after an unknown response. */
+  async browserCard(conversationId: string, cardId: string, decision: "approve" | "decline"): Promise<BrowserActionCard> {
+    const data = await this.call("/browser-cards/decisions", "POST", { contract: "s16-browser-card-decision/v1", conversationId: id(conversationId), cardId: id(cardId), decision });
+    if (!browserCard(data, conversationId) || data.id !== cardId) return invalid();
+    return data as unknown as BrowserActionCard;
+  }
   async snapshot(conversationId: string, signal?: AbortSignal): Promise<ClientSnapshot> {
     const data = await this.call(`/conversations/${id(conversationId)}`, "GET", undefined, signal);
     if (!record(data) || data.contract !== "s16-client-snapshot/v1" || !record(data.conversation) || data.conversation.contract !== "s15.owner-view/v1" || data.conversation.conversationId !== conversationId || !Number.isSafeInteger(data.conversation.cursor) || !Array.isArray(data.conversation.rows) || data.conversation.rows.length > 32 || !Array.isArray(data.conversation.needsYou)) return invalid();
     for (const row of data.conversation.rows) if (!record(row) || !identifier(row.requestId) || !Number.isSafeInteger(row.revision) || !record(row.receipt) || row.receipt.conversationId !== conversationId) return invalid();
+    if (data.browserCards !== undefined && (!Array.isArray(data.browserCards) || data.browserCards.length > 128 || !data.browserCards.every(card => browserCard(card, conversationId)))) return invalid();
     return data as unknown as ClientSnapshot;
   }
   /** Recovers a retained send by ID, including outside the recent conversation window; never resends. */
@@ -481,4 +489,11 @@ export class JitClient {
     finally { reader.releaseLock(); }
     return data;
   }
+}
+
+/** Protected card snapshots still cross a JSON boundary; reject malformed/foreign rows before rendering them. */
+function browserCard(value: unknown, conversationId: string): value is BrowserActionCard {
+  if (!record(value) || !identifier(value.id) || !identifier(value.requestId) || value.conversationId !== conversationId || !["pending","sending","sent","unknown","stale","declined","expired"].includes(String(value.state)) || !["click","type","select","submit"].includes(String(value.kind)) || !["a","b","c","d","e","f"].includes(String(value.row))) return false;
+  const facts = value.facts;
+  return record(facts) && typeof facts.url === "string" && typeof facts.name === "string" && typeof facts.revision === "string" && Array.isArray(facts.fields) && facts.fields.length <= 100 && facts.fields.every(f => record(f) && typeof f.name === "string" && typeof f.value === "string") && (value.value === undefined || typeof value.value === "string");
 }
