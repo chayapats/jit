@@ -348,6 +348,89 @@ test("associated labels precede button subtree per HTML-AAM 4.1.4", async () => 
   expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); expect(f.dispatches).toBe(1); r.close();
 });
 
+async function assertPayNameHeld(f: ReturnType<typeof fixture>, change: () => void, changed: boolean) {
+  const { r, o, es } = await f.observe();
+  const target = es.find(e => e.tag === "button")!;
+  expect(target.name.trim()).toBe("Pay");
+  const pending = await r.execute({ kind: "click", target: target.id, generation: o.generation });
+  expect(pending.state).toBe("pending"); expect(f.dispatches).toBe(0);
+  const card = f.cards.list(f.owner, "conversation")[0]!;
+  expect(card.row).toBe("a"); expect(card.facts.name.trim()).toBe("Pay");
+  expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(JSON.stringify(card)).not.toContain("SECRET_");
+  r.close();
+  if (changed) change();
+  expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
+  expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
+  expect(f.dispatches).toBe(changed ? 0 : 1);
+}
+
+test.each([
+  ["button", "false", true], ["button", "False", true], ["button", "false", false],
+  ["button", "inherit", false], ["button", "invalid", false], ["button", "inherit", true],
+  ["span", "false", false], ["span", "False", true], ["span", "inherit", false],
+  ["img", "false", false], ["img", "False", true], ["img", "inherit", false],
+  ["button-alt", "false", true], ["button-aria", "false", true],
+] as const)("noneditable %s contenteditable=%s (editing ancestor=%s) holds its name", async (source, state, ancestor) => {
+  for (const changed of [false, true]) {
+    const f = fixture("Pay");
+    if (ancestor) {
+      const host = f.document.createElement("div"); host.setAttribute("contenteditable", "true");
+      host.textContent = "SECRET_EDITABLE"; f.button.replaceWith(host); host.append(f.button);
+    }
+    let named: HTMLElement = f.button;
+    if (source === "span" || source === "img" || source === "button-alt") {
+      named = f.document.createElement(source === "span" ? "span" : "img");
+      if (named.tagName === "IMG") named.setAttribute("alt", "Pay"); else named.textContent = "Pay";
+      f.button.replaceChildren(named);
+    }
+    (source.startsWith("button") ? f.button : named).setAttribute("contenteditable", state);
+    if (source === "button-aria") { f.button.textContent = "Continue"; f.button.setAttribute("aria-label", "Pay"); }
+    await assertPayNameHeld(f, () => {
+      if (source === "button-aria") f.button.setAttribute("aria-label", "Buy");
+      else if (named.tagName === "IMG") named.setAttribute("alt", "Buy");
+      else named.textContent = "Buy";
+    }, changed);
+  }
+});
+
+test.each(["aria-label", "labelledby", "labels", "all", "aria-to-label", "labelledby-to-aria"])("blank %s falls through without changing field facts", async source => {
+  for (const changed of [false, true]) {
+    const f = fixture(), image = f.document.createElement("img"); image.setAttribute("alt", "Pay"); f.button.replaceChildren(image);
+    f.button.id = "go"; f.field.name = " raw_field "; f.field.value = " 20 ";
+    if (["aria-label", "all", "aria-to-label"].includes(source)) f.button.setAttribute("aria-label", " \t\n ");
+    if (["labelledby", "all", "labelledby-to-aria"].includes(source)) {
+      for (const id of ["blank-one", "blank-two"]) { const span = f.document.createElement("span"); span.id = id; span.textContent = " \t "; f.document.body.append(span); }
+      f.button.setAttribute("aria-labelledby", "blank-one blank-two");
+    }
+    let label: HTMLElement | undefined;
+    if (["labels", "all", "aria-to-label"].includes(source)) {
+      for (let i = 0; i < 2; i++) { label = f.document.createElement("label"); label.setAttribute("for", "go"); label.textContent = " \n "; f.button.before(label); }
+    }
+    if (source === "aria-to-label") { label!.textContent = "Pay"; image.setAttribute("alt", "Continue"); }
+    if (source === "labelledby-to-aria") { f.button.setAttribute("aria-label", "Pay"); image.setAttribute("alt", "Continue"); }
+    await assertPayNameHeld(f, () => {
+      if (source === "aria-to-label") label!.textContent = "Buy";
+      else if (source === "labelledby-to-aria") f.button.setAttribute("aria-label", "Buy");
+      else image.setAttribute("alt", "Buy");
+    }, changed);
+    const field = f.cards.list(f.owner, "conversation")[0]!.facts.fields.find(field => field.htmlName === " raw_field ")!;
+    expect(field.htmlName).toBe(" raw_field "); expect(field.value).toBe(" 20 ");
+  }
+});
+
+test.each(["true", "", "plaintext-only", "TRUE", "PLAINTEXT-ONLY"])("editable state %s redacts self and descendants, including invalid inherited states", async state => {
+  const f = fixture("SECRET_SELF"), host = f.document.createElement("div");
+  f.button.setAttribute("contenteditable", state); f.button.setAttribute("aria-label", "SECRET_ARIA");
+  host.setAttribute("contenteditable", state); host.innerHTML = '<a contenteditable="inherit">SECRET_LINK</a>';
+  f.document.body.append(host);
+  const publicButton = f.document.createElement("button"); publicButton.textContent = "Continue";
+  const privateText = f.document.createElement("span"); privateText.setAttribute("contenteditable", state);
+  privateText.innerHTML = '<b contenteditable="inherit">SECRET_TEXT</b><img alt="SECRET_ALT">'; publicButton.append(privateText); f.document.body.append(publicButton);
+  const { r, o, es } = await f.observe();
+  expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(es.find(e => e.tag === "button")!.name).toBe("");
+  expect(es.filter(e => e.tag === "button")[1]!.name).toBe("Continue"); r.close();
+});
+
 test("refresh loads only live cards and the latest 64 terminal cards, not historical snapshots", async () => {
   const f = fixture("Pay"), h = await held(f), original = f.cards.list(f.owner, "conversation")[0]!;
   const insert = f.store.db.query("INSERT INTO s16_browser_cards VALUES (?,?,?)");
