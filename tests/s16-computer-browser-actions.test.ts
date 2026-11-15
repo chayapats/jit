@@ -77,7 +77,7 @@ function fixture(label = "Continue", owner: object = {}) {
   const observe = async (r = run(), index = 0) => { const o = await r.execute({ kind: "read", generation: 1 }); const es = o.elements as { id: string; tag: string; type: string; name: string }[]; return { r, o, target: es[index]!.id, es }; };
   const command = (kind: string, generation: number, takeoverId?: string | null) => screen.command(owner, { contract: "s16-screen-command/v1", requestId: crypto.randomUUID(), vmId: "vm1", kind, generation, ...(kind === "hand_back" ? { takeoverId } : {}) });
   const decide = (cardId: string, decision = "approve") => cards.decide(owner, { contract: "s16-browser-card-decision/v1", conversationId: "conversation", cardId, decision });
-  return { browser, store, cards, owner, document, field, button, select, location, methods, run, observe, command, screen, decide, streams, get opened() { return opened; }, get dispatches() { return dispatches; }, get tickets() { return tickets; }, setNow: (v: number) => { now = v; }, setOwnerGeneration: (v: number) => { ownerGeneration = v; }, setThrow: (v: boolean) => { throwTicket = v; }, beforeDispatch: (hook: () => void) => { beforeDispatch = hook; }, setRedirect: (v: string) => { redirect = v; } };
+  return { browser, store, cards, owner, document, window, field, button, select, location, methods, run, observe, command, screen, decide, streams, get opened() { return opened; }, get dispatches() { return dispatches; }, get tickets() { return tickets; }, setNow: (v: number) => { now = v; }, setOwnerGeneration: (v: number) => { ownerGeneration = v; }, setThrow: (v: boolean) => { throwTicket = v; }, beforeDispatch: (hook: () => void) => { beforeDispatch = hook; }, setRedirect: (v: string) => { redirect = v; } };
 }
 
 async function held(f: ReturnType<typeof fixture>) {
@@ -693,4 +693,146 @@ test("an unresolved explicit form owner does not inherit an unrelated enclosing 
   const { r, o, es } = await f.observe();
   expect((await r.execute({ kind: "click", target: es.find(e => e.tag === "span")!.id, generation: o.generation })).state).toBe("ok");
   expect(a.click).toHaveBeenCalledTimes(1); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+// These native association/default-action shims deliberately validate the submitted form and submitter.
+// They are host-pipeline tests, not native-browser evidence; the same structures are probed in Chromium.
+function nativeActivationFixture(state: string, nested = "direct", owner = "pay", type = "submit", word = "Pay") {
+  const f = fixture();
+  f.document.body.innerHTML = `<form id="pay"><input name="pay_now" value=" 20 "><input type="password" value="SECRET_PASSWORD"></form><form id="neutral"><input id="other" name="notes" value="hello"></form><form id="encdel"><input name="delete_account" value="yes"></form>`;
+  const control = f.document.createElement(type === "image" ? "input" : "button"); control.id = "native";
+  if (type !== "default") control.setAttribute("type", type);
+  control.setAttribute("form", owner);
+  if (type === "image") control.setAttribute("alt", word); else control.append(word);
+  // Deliberately put the control inside a DIFFERENT form from its external owner.
+  f.document.getElementById(owner === "pay" ? "encdel" : "pay")!.append(control);
+  const child = f.document.createElement("span"); child.setAttribute("contenteditable", state); child.textContent = "!";
+  let wrapper: HTMLElement | undefined;
+  if (nested !== "direct") {
+    wrapper = f.document.createElement(nested === "link" ? "a" : "label");
+    if (nested === "link") wrapper.setAttribute("href", "/continue");
+    if (nested === "label other") wrapper.setAttribute("for", "other");
+    if (nested !== "link") Object.defineProperty(wrapper, "control", { get: () => wrapper!.hasAttribute("for") ? f.document.getElementById(wrapper!.getAttribute("for")!) : wrapper!.querySelector("input,button") });
+    control.append(wrapper); wrapper.append(child);
+  } else if (type !== "image") control.append(child);
+  const submissions: { form: Element; submitter: Element | undefined }[] = [];
+  const forms = [...f.document.querySelectorAll("form")];
+  for (const e of f.document.querySelectorAll("input,button")) Object.defineProperty(e, "form", { get: () => e.hasAttribute("form") ? f.document.getElementById(e.getAttribute("form")!) : e.closest("form") });
+  for (const form of forms) {
+    Object.defineProperty(form, "elements", { get: () => [...f.document.querySelectorAll("input,button")].filter(e => (e as HTMLInputElement).form === form) });
+    Object.defineProperty(form, "requestSubmit", { value: (submitter?: HTMLButtonElement) => {
+      if (submitter && submitter.form !== form) throw new Error("wrong native submitter");
+      submissions.push({ form, submitter });
+    } });
+  }
+  const secret = f.document.querySelector('[type="password"]')!;
+  Object.defineProperty(secret, "value", { get: () => { throw new Error("secret read"); } });
+  let listeners = 0;
+  control.addEventListener("click", () => { listeners++; });
+  const original = type === "image" ? control : child;
+  const click = spyOn(original, "click").mockImplementation(() => {
+    original.dispatchEvent(new f.window.Event("click", { bubbles: true }));
+    const form = (control as HTMLButtonElement).form;
+    if (form && !["button", "reset"].includes(type)) form.requestSubmit(control as HTMLButtonElement);
+  });
+  const observe = async () => {
+    const { r, o, es } = await f.observe();
+    const target = es.find(e => type === "image" ? e.type === "image" : e.tag === "span")!.id;
+    return { r, o, target };
+  };
+  return { f, control, child, wrapper, original, click, observe, submissions, get listeners() { return listeners; } };
+}
+
+for (const type of ["button", "reset", "image", "submit"]) test(`submit refuses a null native form owner (${type}) rather than sending the enclosing Pay form`, async () => {
+  const a = nativeActivationFixture("false", "direct", "missing", type, "Continue"), { f } = a;
+  const { r, o, target } = await a.observe();
+  await expect(r.execute({ kind: "submit", target, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_target_invalid" });
+  expect(a.submissions).toHaveLength(0); expect(a.listeners).toBe(0); expect(a.click).not.toHaveBeenCalled();
+  expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+for (const state of ["false", "true"]) for (const kind of ["click", "submit"] as const) {
+  test(`child ${state} ${kind} submits the pinned external neutral form, never the enclosing Pay form`, async () => {
+    const a = nativeActivationFixture(state, "direct", "neutral", "submit", "Continue"), { f } = a;
+    const { r, o, target } = await a.observe();
+    expect((await r.execute({ kind, target, generation: o.generation })).state).toBe("ok");
+    expect(f.cards.list(f.owner, "conversation")).toHaveLength(0);
+    expect(a.submissions.map(s => s.form.id)).toEqual(["neutral"]); expect(a.submissions[0]!.submitter).toBe(a.control); r.close();
+  });
+  test(`child ${state} ${kind} reviews and sends external Pay form, never enclosing Delete form`, async () => {
+    const a = nativeActivationFixture(state, "direct"), { f } = a, { r, o, target } = await a.observe();
+    const pending = await r.execute({ kind, target, generation: o.generation });
+    expect(pending.state).toBe("pending"); expect(a.submissions).toHaveLength(0); expect(a.listeners).toBe(0);
+    const card = f.cards.list(f.owner, "conversation")[0]!;
+    expect(card.row).toBe("a"); expect(card.facts.fields.map(v => v.htmlName)).toContain("pay_now");
+    expect(card.facts.fields.map(v => v.htmlName)).not.toContain("delete_account"); expect(JSON.stringify(card)).not.toContain("SECRET_");
+    r.close(); expect((await f.decide(pending.cardId as string)).state).toBe("sent");
+    expect((await f.decide(pending.cardId as string)).state).toBe("sent");
+    expect(a.submissions.map(s => s.form.id)).toEqual(["pay"]); expect(a.submissions[0]!.submitter).toBe(a.control);
+    expect(a.click).toHaveBeenCalledTimes(kind === "click" ? 1 : 0);
+  });
+}
+
+for (const state of ["false", "true"]) for (const nested of ["label", "label other", "link"]) {
+  test.each(["unchanged", "name", "identity", "form"])(`child ${state} inside button/${nested} pins native button: %s`, async change => {
+    const a = nativeActivationFixture(state, nested), { f } = a, { r, o, target } = await a.observe();
+    const pending = await r.execute({ kind: "click", target, generation: o.generation });
+    expect(pending.state).toBe("pending"); expect(a.listeners).toBe(0); expect(a.submissions).toHaveLength(0); expect(a.click).not.toHaveBeenCalled();
+    const card = f.cards.list(f.owner, "conversation")[0]!;
+    expect(card.row).toBe("a"); expect(card.facts.ref).not.toBe(card.facts.activation?.ref); expect(card.facts.activation?.tag).toBe("button");
+    expect(card.facts.fields.map(v => v.htmlName)).toContain("pay_now"); expect(JSON.stringify(card)).not.toContain("SECRET_");
+    if (change === "name") a.control.firstChild!.textContent = "Buy";
+    if (change === "form") a.control.setAttribute("form", "neutral");
+    if (change === "identity") { const replacement = a.control.cloneNode(false) as HTMLElement; a.control.replaceWith(replacement); replacement.append("Pay", a.wrapper!); Object.defineProperty(replacement, "form", { get: () => f.document.getElementById("pay") }); }
+    r.close(); expect((await f.decide(pending.cardId as string)).state).toBe(change === "unchanged" ? "sent" : "stale");
+    expect((await f.decide(pending.cardId as string)).state).toBe(change === "unchanged" ? "sent" : "stale");
+    expect(a.click).toHaveBeenCalledTimes(change === "unchanged" ? 1 : 0);
+    expect(a.listeners).toBe(change === "unchanged" ? 1 : 0);
+    expect(a.submissions.map(s => s.form.id)).toEqual(change === "unchanged" ? ["pay"] : []);
+  });
+  test(`submit child ${state} inside button/${nested} uses the pinned button as submitter`, async () => {
+    const a = nativeActivationFixture(state, nested), { f } = a, { r, o, target } = await a.observe();
+    const pending = await r.execute({ kind: "submit", target, generation: o.generation }); expect(pending.state).toBe("pending");
+    expect(a.submissions).toHaveLength(0); r.close(); expect((await f.decide(pending.cardId as string)).state).toBe("sent");
+    expect((await f.decide(pending.cardId as string)).state).toBe("sent");
+    expect(a.submissions.map(s => s.form.id)).toEqual(["pay"]); expect(a.submissions[0]!.submitter).toBe(a.control);
+    expect(a.click).not.toHaveBeenCalled(); expect(a.listeners).toBe(0);
+  });
+  test(`ordinary Continue child ${state} inside button/${nested} does not spuriously hold`, async () => {
+    const a = nativeActivationFixture(state, nested, "neutral", "submit", "Continue"), { f } = a, { r, o, target } = await a.observe();
+    expect((await r.execute({ kind: "click", target, generation: o.generation })).state).toBe("ok");
+    expect(a.submissions.map(s => s.form.id)).toEqual(["neutral"]); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+  });
+}
+
+for (const type of ["default", "image", "SuBmIt", "invalid-default"]) test(`submit preserves valid native ${type} submitter and stales changed external owner`, async () => {
+  for (const change of [false, true]) {
+    const a = nativeActivationFixture("true", "direct", "pay", type), { f } = a, { r, o, target } = await a.observe();
+    const pending = await r.execute({ kind: "submit", target, generation: o.generation }); expect(pending.state).toBe("pending"); expect(a.submissions).toHaveLength(0);
+    if (change) a.control.setAttribute("form", "neutral");
+    r.close(); expect((await f.decide(pending.cardId as string)).state).toBe(change ? "stale" : "sent");
+    expect(a.submissions.map(s => s.form.id)).toEqual(change ? [] : ["pay"]);
+    if (!change) expect(a.submissions[0]!.submitter).toBe(a.control);
+    expect(a.click).not.toHaveBeenCalled();
+  }
+});
+
+for (const type of ["button", "reset"]) test(`submit refuses non-submitter ${type} even with a valid neutral owner`, async () => {
+  const a = nativeActivationFixture("false", "direct", "neutral", type, "Continue"), { f } = a, { r, o, target } = await a.observe();
+  await expect(r.execute({ kind: "submit", target, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_target_invalid" });
+  expect(a.submissions).toHaveLength(0); expect(a.click).not.toHaveBeenCalled(); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+for (const type of ["button", "reset"]) test(`direct ${type} submit also refuses null owner without closest-form fallback`, async () => {
+  const a = nativeActivationFixture("false", "direct", "missing", type, "Continue"), { f } = a;
+  const { r, o, es } = await f.observe(); const target = es.find(e => e.tag === "button")!.id;
+  await expect(r.execute({ kind: "submit", target, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_target_invalid" });
+  expect(a.submissions).toHaveLength(0); expect(a.listeners).toBe(0); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
+
+test("a held submit with an invalid effective submitter refuses atomically and never replays", async () => {
+  const a = nativeActivationFixture("true", "label other", "pay", "button"), { f } = a, { r, o, target } = await a.observe();
+  const pending = await r.execute({ kind: "submit", target, generation: o.generation }); expect(pending.state).toBe("pending");
+  expect(a.submissions).toHaveLength(0); r.close(); expect((await f.decide(pending.cardId as string)).state).toBe("stale");
+  expect((await f.decide(pending.cardId as string)).state).toBe("stale"); expect(a.submissions).toHaveLength(0); expect(a.listeners).toBe(0); expect(a.click).not.toHaveBeenCalled();
 });

@@ -47,14 +47,17 @@ export const browserDomHelpers = `
  const ref=e=>{let id=registry.ids.get(e);if(!id||!registry.nodes.has(id)){if(registry.nodes.size>=1024)registry.nodes.delete(registry.nodes.keys().next().value);id=crypto.randomUUID();registry.ids.set(e,id);registry.nodes.set(id,new WeakRef(e));}return id;};
  const setValue=(e,value)=>{const set=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value')?.set;if(set)set.call(e,value);else e.value=value;};
  // Only native activation/label forwarding, not arbitrary ancestors or page-written listeners.
- const activationContext=e=>{const n=e.closest('button,input,select,textarea,a[href],label');if(!n)return {};
+ const activationContext=e=>{
+  // A child still activates its containing button through an intervening label/link (even in invalid HTML).
+  const button=e.closest('button,input[type=submit i],input[type=button i],input[type=reset i],input[type=image i]');if(button)return {control:button};
+  const n=e.closest('input,select,textarea,a[href],label');if(!n)return {};
   if(n.tagName==='LABEL')return {control:n.control,label:n};
-  if(n.tagName==='BUTTON'||n.tagName==='A'||(n.tagName==='INPUT'&&['submit','button','reset','image'].includes((n.getAttribute('type')||'').toLowerCase())))return {control:n};
+  if(n.tagName==='A')return {control:n};
   return {};};
  const controlFacts=e=>({ref:ref(e),name:name(e,true),tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),id:e.getAttribute('id'),htmlName:e.getAttribute('name')||'',href:e.getAttribute('href'),target:e.getAttribute('target'),form:e.getAttribute('form'),formaction:e.getAttribute('formaction'),formmethod:e.getAttribute('formmethod'),formtarget:e.getAttribute('formtarget'),formenctype:e.getAttribute('formenctype'),formnovalidate:e.hasAttribute('formnovalidate'),disabled:!!e.disabled,readOnly:!!e.readOnly});
- const facts=e=>{const {control,label}=activationContext(e);if(control&&secret(control))return {code:'computer_browser_secret_field'};
-  // A native form owner's null (e.g. unresolved form=) must not fall back to an enclosing form.
-  const form=control&&'form' in control?control.form:(e.form||e.closest('form'));
+ // Inspection and submit dispatch must share the native owner, including null for unresolved form=.
+ const nativeContext=e=>{const {control,label}=activationContext(e);return {control,label,form:control&&'form' in control?control.form:(e.form||e.closest('form'))};};
+ const facts=e=>{const {control,label,form}=nativeContext(e);if(control&&secret(control))return {code:'computer_browser_secret_field'};
   const all=Array.from(form?.elements||[control||e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),htmlName:f.getAttribute('name')||'',value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
   if(fields.length>100||fields.some(f=>f.value.length>12000))return {code:'computer_browser_snapshot_limit'};
   const activation=control?{...controlFacts(control),label:label?{ref:ref(label),for:label.getAttribute('for')}:undefined}:undefined;
@@ -79,7 +82,9 @@ export function dispatchBrowserTarget(ref: string, revision: string, op: Browser
  const live=facts(e);if(live.code)return live;if(live.revision!==${JSON.stringify(revision)})return {code:'computer_browser_stale'};
  const op=${payload};if(e.disabled)return {code:'computer_browser_target_invalid'};
  if(op.kind==='click')e.click();
- else if(op.kind==='submit'){const form=e.form||e.closest('form');if(!form)return {code:'computer_browser_target_invalid'};form.requestSubmit(e.matches('button:not([type]),button[type=submit],input[type=submit]')?e:undefined);}
+ else if(op.kind==='submit'){const {control,form}=nativeContext(e);const submitter=control||e;const type=(submitter.getAttribute('type')||'').toLowerCase();
+  const valid=submitter.tagName==='BUTTON'?!['button','reset'].includes(type):submitter.tagName==='INPUT'&&['submit','image'].includes(type);
+  if(!form||submitter.form!==form||!valid||submitter.disabled)return {code:'computer_browser_target_invalid'};form.requestSubmit(submitter);}
  else if(op.kind==='select'){if(e.tagName!=='SELECT'||!Array.from(e.options).some(o=>o.value===op.value&&!o.disabled))return {code:'computer_browser_target_invalid'};setValue(e,op.value);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}
  else {if(!['INPUT','TEXTAREA'].includes(e.tagName)||e.readOnly)return {code:'computer_browser_target_invalid'};e.focus();const enter=/[\\r\\n]/.test(op.value);setValue(e,op.value.replace(/[\\r\\n]/g,''));e.dispatchEvent(new Event('input',{bubbles:true}));if(enter){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));if(e.form)e.form.requestSubmit();}}
  return {state:'sent'};

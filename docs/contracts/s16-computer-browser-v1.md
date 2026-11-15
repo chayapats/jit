@@ -40,11 +40,14 @@ state/values refuse without input. Field snapshots include checked/selected/disa
 the payload the owner would approve. Select values must match an enabled option. Type uses the native value setter
 and input/change events; it is not a trusted physical keyboard or a way to solve a site's automation challenge.
 
-For a listed descendant, native activation facts include the nearest button, button-like input or `a[href]`,
-or a label's forwarded `control`, and that control's form owner (including external `form=` associations).
+For a listed descendant, native activation facts prioritize its containing button/button-like input, including
+through an intervening label or link. Otherwise they use the nearest `a[href]` or label's forwarded `control`,
+and that control's form owner (including external `form=` associations, with no enclosing-form fallback for a null native owner).
 The same context supplies vocabulary matching, owner-review facts and the exact revision: control/label/form
 identity, effective name, relevant activation attributes and non-secret form state are pinned. Changed context
 refuses as stale; dispatch still clicks the original opaque target, never a substituted ancestor/control.
+`submit` uses this same pinned owner and effective native submitter (including default buttons and image inputs);
+a null owner or invalid submitter refuses `computer_browser_target_invalid` without input, never an unchecked enclosing form.
 This does not analyze arbitrary JavaScript listeners or expand matching to every ancestor.
 
 A `click`, `submit`, `select`, or Enter-carrying `type` is held if its target/effective control name, its form's raw HTML field
