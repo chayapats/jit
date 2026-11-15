@@ -25,6 +25,8 @@ const writes = new Set(["write", "edit", "bash"]);
 export function createConversationVmTools<Worker extends object>(vm: ConversationWorkingVm, configuration: {
   /** Pool id (or, without a pool, the single VM id); fixed by trusted composition, never by a model. */
   vmId: string; resourceId: string;
+  /** Host-only optional watched-browser run, bound to the placed VM session. */
+  browser?(session: VmSession, guard: () => void, signal: AbortSignal): Promise<{ tools: readonly import("schway/host").ToolDefinition[]; close(): void } | null>;
 }): ConversationToolPort<ConversationPolicyWork<Worker>> {
   identity(configuration.vmId); identity(configuration.resourceId);
   const { vmId, resourceId } = configuration;
@@ -32,7 +34,13 @@ export function createConversationVmTools<Worker extends object>(vm: Conversatio
     input.guard();
     if (!work.authority.request.resources.some(resource => resource.id === resourceId)) throw new AppError("outside_scope", 403);
     const session = await openConversationVmSession(vm, vmId, work, input);
-    return { tools: conversationVmSessionTools(session, input), cancel: () => session.cancel(), close: () => session.close() };
+    let browser: Awaited<ReturnType<NonNullable<typeof configuration.browser>>> = null;
+    try {
+      browser = input.mode === "execute" ? await configuration.browser?.(session, input.guard, input.signal) ?? null : null;
+      input.guard();
+      return { tools: [...conversationVmSessionTools(session, input), ...(browser?.tools.map(definition => ({ access: "reversible_write" as const, definition })) ?? [])],
+        cancel: async () => { browser?.close(); await session.cancel(); }, close: async () => { browser?.close(); await session.close(); } };
+    } catch (error) { browser?.close(); await session.close().catch(() => {}); throw error; }
   } };
 }
 

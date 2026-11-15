@@ -3,6 +3,8 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
+import { ComputerBrowser } from '../s16/computers/browser';
+import { vmDesktopCdpStream } from './vm/desktop-stream';
 import { ComputerDirectory } from '../s16/computers/service';
 import { isVmScreenManagement, type VmScreenDevice } from './vm/screen';
 import { BotDirectory } from '../s16/bots/service';
@@ -359,7 +361,8 @@ export async function composeS15(options: S15CompositionOptions) {
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     if (options.screen && !scopes) throw new AppError('invalid_s15_config');
     const screenDevices = new WeakMap<object, VmScreenDevice>();
-    const screen = options.screen && scopes ? new ScreenControl<OwnerActor>({ store: vmStore, requireOwner, scope: id => scopes.scope(id),
+    let computerBrowser: ComputerBrowser | null = null;
+    const screen = options.screen && scopes ? new ScreenControl<OwnerActor>({ store: vmStore, requireOwner, scope: id => scopes.scope(id), onTransition: id => computerBrowser?.invalidate(id),
       ...(options.screen.leaseMs ? { leaseMs: options.screen.leaseMs } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       device(id) {
         const row = vmStore.registration(id), manager = row.managerId ? managers.get(row.managerId) : undefined;
@@ -367,6 +370,20 @@ export async function composeS15(options: S15CompositionOptions) {
         let device = screenDevices.get(manager); if (!device) { device = manager.screen(); screenDevices.set(manager, device); }
         return device;
       } }) : null;
+    if (screen) {
+      computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id),
+        async unavailable(id) {
+          const row = vmStore.registration(id); if (row.state !== 'ready') return 'vm_not_running';
+          const manager = row.managerId ? managers.get(row.managerId) : undefined;
+          if (!isVmScreenManagement(manager)) return 'vm_desktop_unavailable';
+          return manager.screen().unavailable();
+        }, stream: (id, signal) => vmDesktopCdpStream(vmStore.registration(id).endpoint, { signal }),
+        tier: origin => options.browser?.approved?.sites.list().find(site => site.origin === origin)?.tier });
+      cleanup.push(() => computerBrowser!.close());
+      cleanup.push(vmStore.onChange((row, previous) => {
+        if (row.state !== 'ready' || previous && previous.generation !== row.generation) computerBrowser!.invalidate(row.id);
+      }));
+    }
     const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}), ...(screen ? { screen } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       ...(localVm ? { proxyLease: localVm.lease } : {}), ...(options.computers ? { idle: { stopAfterMs: options.computers.idleStopMs } } : {}) });
@@ -454,7 +471,15 @@ export async function composeS15(options: S15CompositionOptions) {
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
     const github = gh && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...gh, ...(githubConnections ? { currentRepositories: () => githubConnections!.repositories() } : {}), ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: gh.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
-    const vmPort = { resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id }) };
+    const vmPort = { resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id,
+      ...(computerBrowser ? { async browser(session, guard, signal) {
+        // Placement is protected VM state, never a model-selected endpoint/member.
+        const placed = vmStore.db.query<{ vm_id: string }, [string]>('SELECT vm_id FROM vm_sessions WHERE id=?').get(session.id);
+        if (!placed || await computerBrowser!.options.unavailable(placed.vm_id)) return null;
+        guard(); const generation = vmStore.registration(placed.vm_id).generation;
+        const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal);
+        return { tools: run.tools(), close: () => run.close() };
+      } } : {}) }) };
     const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
     // Repository ports follow the live selection; each stays scoped to its one repository resource.
     const sourcePorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
@@ -488,7 +513,7 @@ export async function composeS15(options: S15CompositionOptions) {
           // in source and catalog order; the rest are not offered to this run rather than failing it.
           const fixed = opened.filter(p => !sourceOpened.has(p)).flatMap(p => p.tools), room = Math.max(0, 64 - fixed.length);
           const offered = [...fixed, ...opened.filter(p => sourceOpened.has(p)).flatMap(p => p.tools).slice(0, room)];
-          return { tools: offered.map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : tool.definition.name === 'protected_browser' ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
+          return { tools: offered.map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : ['protected_browser', 'computer_browser'].includes(tool.definition.name) ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
       async runWork(input) {

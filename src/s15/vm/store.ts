@@ -16,6 +16,9 @@ export interface VmRegistration {
 /** Append-only claim/evidence metadata in a separate protected store; never a guest snapshot or S14 migration. */
 export class VmStore {
   readonly db: Database;
+  readonly #listeners = new Set<(row: VmRegistration, previous: VmRegistration | null) => void>();
+  /** Synchronous lifecycle invalidation; no protected stream survives a VM fence/stop/restore. */
+  onChange(listener: (row: VmRegistration, previous: VmRegistration | null) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
   constructor(path: string) {
     if (path !== ":memory:") {
       if (!path.startsWith("/")) vmFail("vm_invalid_setup");
@@ -48,7 +51,11 @@ export class VmStore {
     return JSON.parse(row.data);
   }
   /** Writer-only trusted metadata update. */
-  save(row: VmRegistration): void { this.db.query("INSERT INTO vm_registry VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(row.id, JSON.stringify(row)); }
+  save(row: VmRegistration): void {
+    const prior = this.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(row.id);
+    this.db.query("INSERT INTO vm_registry VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(row.id, JSON.stringify(row));
+    for (const listener of this.#listeners) listener(row, prior ? JSON.parse(prior.data) : null);
+  }
   /** Copies retained metadata; raw command output and command text are never ordinary durable evidence. */
   evidence(sessionId: string): VmEvidence[] {
     return this.db.query<{ data: string }, [string]>("SELECT data FROM vm_claims WHERE session_id=? ORDER BY rowid").all(sessionId).map(r => JSON.parse(r.data));

@@ -78,13 +78,17 @@ export class CdpClient {
 
   /** Waits for the first event matching `filter`, or rejects `cdp_timeout`. */
   waitFor(filter: (event: CdpEvent) => boolean, timeoutMs = this.#commandMs): Promise<CdpEvent> {
+    if (this.#closed) return Promise.reject(new AppError("cdp_closed", 502));
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { off(); reject(new AppError("cdp_timeout", 504)); }, timeoutMs);
-      const off = this.on(event => { if (filter(event)) { clearTimeout(timer); off(); resolve(event); } });
+      const cleanup = () => { clearTimeout(timer); off(); this.#closeListeners.delete(closed); };
+      const closed = () => { cleanup(); reject(new AppError("cdp_closed", 502)); };
+      const timer = setTimeout(() => { cleanup(); reject(new AppError("cdp_timeout", 504)); }, timeoutMs);
+      const off = this.on(event => { if (filter(event)) { cleanup(); resolve(event); } });
+      this.#closeListeners.add(closed);
     });
   }
 
-  /** Closes the stream (killing the relay and Chromium) and fails every pending command. Idempotent. */
+  /** Closes the stream (the stream implementation owns guest-process lifetime) and fails every pending command. Idempotent. */
   close(reason = "closed"): void {
     if (this.#closed) return;
     this.#closed = reason;
