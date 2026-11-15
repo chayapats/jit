@@ -41,7 +41,7 @@ the payload the owner would approve. Select values must match an enabled option.
 and input/change events; it is not a trusted physical keyboard or a way to solve a site's automation challenge.
 
 A `click`, `submit`, `select`, or Enter-carrying `type` is held if its accessible name, its form's raw HTML field
-names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai):
+names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai). Underscore, hyphen and slash separators in field names and paths are treated as spaces; `pay_now`/`delete_account` match, but `paypal`/`reorder` do not. Names preserve ARIA then associated-label precedence before contents (HTML-AAM §4.1.4), including image `alt` in button contents and image-input names. Native buttons beneath an editable ancestor retain their own name; editable self/descendant text and field values remain excluded from observation names:
 
 | S16-D07 row | English | Thai aliases |
 | --- | --- | --- |

@@ -18,7 +18,7 @@ const vocabulary: [HumanBrowserRow, RegExp][] = [
 export function humanBrowserRow(op: BrowserInput, facts: BrowserActionFacts): HumanBrowserRow | null {
   if (op.kind === "type" && !/[\r\n]/u.test(op.value)) return null;
   let path = new URL(facts.url).pathname; try { path = decodeURIComponent(path); } catch { /* literal invalid escape */ }
-  const text = [facts.name, ...facts.formNames, path.replace(/[_/-]+/gu, " ")].join(" ");
+  const text = [facts.name, ...facts.formNames.map(n => n.replace(/[_/-]+/gu, " ")), path.replace(/[_/-]+/gu, " ")].join(" ");
   return vocabulary.find(([, pattern]) => pattern.test(text))?.[0] ?? null;
 }
 
@@ -26,11 +26,17 @@ export function humanBrowserRow(op: BrowserInput, facts: BrowserActionFacts): Hu
 export const browserDomHelpers = `
  const secret=e=>['password','file','hidden'].includes((e.getAttribute('type')||'').toLowerCase()) || (e.getAttribute('autocomplete')||'').toLowerCase().split(/\\s+/).includes('one-time-code');
  const excluded='script,style,noscript,input,textarea,select,[contenteditable]';
- const safeText=root=>{const parts=[];const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n;
-  while((n=w.nextNode())){const p=n.parentElement;if(!p||p.closest(excluded))continue;const s=getComputedStyle(p);if(s.display!=='none'&&s.visibility!=='hidden')parts.push(n.textContent||'');}return parts.join(' ').trim();};
- const name=(e,inputButtons=false)=>{if(e.closest('[contenteditable]'))return '';const labelled=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(id=>document.getElementById(id)).filter(Boolean).map(safeText).join(' ');
- const labels=Array.from(e.labels||document.querySelectorAll('label')).filter(l=>l.control===e||(e.id&&l.getAttribute('for')===e.id)||l.contains(e)).map(safeText).join(' ');
- const content=(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button')?safeText(e):(inputButtons&&e.tagName==='INPUT'&&['submit','button','reset'].includes((e.getAttribute('type')||'').toLowerCase()))?String(e.value||''):'';
+ // Only a native button's contents can ignore an editable ancestor, never editable descendants or field values.
+ const safeText=(root,button=false)=>{const parts=[];const w=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT);let n=root;
+  do{const p=n.nodeType===1?n:n.parentElement;if(!p||p.closest('script,style,noscript,input,textarea,select'))continue;
+   const editable=p.closest('[contenteditable]');if(editable&&(!button||root.contains(editable)))continue;
+   const s=getComputedStyle(p);if(s.display==='none'||s.visibility==='hidden')continue;
+   if(n.nodeType===3)parts.push(n.textContent||'');else if(n.tagName==='IMG')parts.push(n.getAttribute('alt')||'');
+  }while((n=w.nextNode()));return parts.join(' ').trim();};
+ const name=(e,inputButtons=false)=>{const type=(e.getAttribute('type')||'').toLowerCase();const button=e.tagName==='BUTTON'||(e.tagName==='INPUT'&&['submit','button','reset','image'].includes(type));
+ if(e.hasAttribute('contenteditable')||(!button&&e.closest('[contenteditable]')))return '';const labelled=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(id=>document.getElementById(id)).filter(Boolean).map(n=>safeText(n)).join(' ');
+ const labels=Array.from(e.labels||document.querySelectorAll('label')).filter(l=>l.control===e||(e.id&&l.getAttribute('for')===e.id)||l.contains(e)).map(n=>safeText(n)).join(' ');
+ const content=(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button')?safeText(e,button):(e.tagName==='INPUT'&&type==='image')?(e.getAttribute('alt')||''):(inputButtons&&e.tagName==='INPUT'&&['submit','button','reset'].includes(type))?String(e.value||''):'';
  return labelled||e.getAttribute('aria-label')||labels||content||e.getAttribute('title')||e.getAttribute('name')||'';};
  if(globalThis.__jitComputerNodes?.document!==document)globalThis.__jitComputerNodes={document,nodes:new Map(),ids:new WeakMap()};
  const registry=globalThis.__jitComputerNodes;

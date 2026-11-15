@@ -45,7 +45,7 @@ function fixture(label = "Continue", owner: object = {}) {
   Object.defineProperty(form, "requestSubmit", { value: () => { dispatches++; } });
   Object.defineProperty(button, "click", { value: () => { dispatches++; if (redirect) location.href = redirect; } });
   const location = { href: "https://public.org/" }, global = {};
-  const evaluate = (expression: string) => new Function("document", "location", "NodeFilter", "getComputedStyle", "globalThis", "crypto", "WeakRef", "Event", "KeyboardEvent", `return ${expression}`)(document, location, { SHOW_TEXT: 4 }, () => ({ display: "block", visibility: "visible" }), global, crypto, WeakRef, window.Event, window.Event);
+  const evaluate = (expression: string) => new Function("document", "location", "NodeFilter", "getComputedStyle", "globalThis", "crypto", "WeakRef", "Event", "KeyboardEvent", `return ${expression}`)(document, location, { SHOW_TEXT: 4, SHOW_ELEMENT: 1 }, () => ({ display: "block", visibility: "visible" }), global, crypto, WeakRef, window.Event, window.Event);
   let browser!: ComputerBrowser;
   const screen = new ScreenControl({ store, requireOwner: () => {}, scope: () => ({ kind: "shared" }), device: () => ({ async unavailable() { return null; }, async capture() { return new Uint8Array(); }, async send() {} }), onTransition: vm => browser.invalidate(vm), now: () => now });
   const streams: { closed: boolean }[] = [], methods: string[] = [];
@@ -277,6 +277,75 @@ test("ARIA labels still precede button contents, and title remains the fallback 
   f.button.removeAttribute("aria-label"); f.button.textContent = ""; f.button.setAttribute("title", "Pay");
   const h = await held(f); expect(f.cards.list(f.owner, "conversation")[0]!.facts.name).toBe("Pay");
   expect((await f.decide(h.cardId)).state).toBe("sent"); expect(f.dispatches).toBe(2);
+});
+
+test.each(["button image", "input image"])("%s requires a card, sends once, and a changed alt is stale", async source => {
+  for (const changed of [false, true]) {
+    const f = fixture(); let target: HTMLElement = f.button;
+    const image = f.document.createElement(source === "button image" ? "img" : "input");
+    image.setAttribute("alt", "Pay");
+    if (source === "button image") f.button.replaceChildren(image);
+    else { image.setAttribute("type", "image"); f.button.replaceWith(image); target = image; }
+    const click = spyOn(target, "click").mockImplementation(() => {});
+    const { r, o, es } = await f.observe(); const element = es.find(e => source === "button image" ? e.tag === "button" : e.type === "image")!;
+    const pending = await r.execute({ kind: "click", target: element.id, generation: o.generation });
+    expect(pending.state).toBe("pending"); expect(f.dispatches).toBe(0); expect(click).not.toHaveBeenCalled();
+    const card = f.cards.list(f.owner, "conversation")[0]!;
+    expect(element.name).toBe("Pay"); expect(card.facts.name).toBe("Pay"); expect(card.row).toBe("a");
+    r.close();
+    if (changed) image.setAttribute("alt", "Buy");
+    expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
+    expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
+    expect(click).toHaveBeenCalledTimes(changed ? 0 : 1);
+  }
+});
+
+test.each(["contents", "aria-label", "aria-labelledby"])("button under an editable ancestor keeps its %s without editable values", async source => {
+  for (const changed of [false, true]) {
+    const f = fixture("Pay"), editable = f.document.createElement("div"), privateText = f.document.createElement("span");
+    editable.setAttribute("contenteditable", "true"); editable.textContent = "EDITABLE_PRIVATE";
+    f.button.replaceWith(editable); editable.append(f.button);
+    privateText.setAttribute("contenteditable", "true"); privateText.textContent = "EDITABLE_PRIVATE"; f.button.append(privateText);
+    const label = f.document.createElement("span"); label.id = "button-label"; label.textContent = "Pay"; f.document.body.append(label);
+    if (source === "aria-label") f.button.setAttribute("aria-label", "Pay");
+    if (source === "aria-labelledby") f.button.setAttribute("aria-labelledby", label.id);
+    const { r, o, es } = await f.observe();
+    expect(JSON.stringify(o)).not.toContain("EDITABLE_PRIVATE"); expect(JSON.stringify(o)).not.toContain("SECRET_");
+    const target = es.find(e => e.tag === "button")!;
+    const pending = await r.execute({ kind: "click", target: target.id, generation: o.generation });
+    expect(pending.state).toBe("pending"); expect(f.dispatches).toBe(0);
+    const card = f.cards.list(f.owner, "conversation")[0]!;
+    expect(target.name).toBe("Pay"); expect(card.row).toBe("a"); expect(card.facts.name).toBe("Pay");
+    expect(JSON.stringify(card)).not.toContain("EDITABLE_PRIVATE"); expect(JSON.stringify(card)).not.toContain("SECRET_");
+    r.close();
+    if (changed) {
+      if (source === "contents") f.button.firstChild!.textContent = "Buy";
+      if (source === "aria-label") f.button.setAttribute("aria-label", "Buy");
+      if (source === "aria-labelledby") label.textContent = "Buy";
+    }
+    expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
+    expect(f.dispatches).toBe(changed ? 0 : 1);
+  }
+});
+
+test.each([["pay_now", "a"], ["delete_account", "e"], ["pay-now", "a"], ["delete/account", "e"], ["paypal", null], ["reorder", null]] as const)("raw field name %s has the same separators as URL paths", async (rawName, row) => {
+  expect(humanBrowserRow(input, { ...facts("Continue"), formNames: [rawName] })).toBe(row);
+  const f = fixture(); f.field.name = rawName;
+  const label = f.document.createElement("label"); label.setAttribute("for", "amount"); label.textContent = "Amount"; f.field.id = "amount"; f.field.before(label);
+  const { r, o, es } = await f.observe();
+  const result = await r.execute({ kind: "click", target: es.find(e => e.tag === "button")!.id, generation: o.generation });
+  expect(result.state).toBe(row ? "pending" : "ok"); expect(f.dispatches).toBe(row ? 0 : 1);
+  if (row) expect(f.cards.list(f.owner, "conversation")[0]!.row).toBe(row);
+  r.close();
+});
+
+test("associated labels precede button subtree per HTML-AAM 4.1.4", async () => {
+  const f = fixture("Pay"), label = f.document.createElement("label");
+  f.button.id = "go"; label.setAttribute("for", "go"); label.textContent = "Next"; f.button.before(label);
+  const { r, o, es } = await f.observe(); const target = es.find(e => e.tag === "button")!;
+  expect(target.name).toBe("Next");
+  expect((await r.execute({ kind: "click", target: target.id, generation: o.generation })).state).toBe("ok");
+  expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); expect(f.dispatches).toBe(1); r.close();
 });
 
 test("refresh loads only live cards and the latest 64 terminal cards, not historical snapshots", async () => {
