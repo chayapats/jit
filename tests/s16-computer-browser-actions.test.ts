@@ -348,20 +348,23 @@ test("associated labels precede button subtree per HTML-AAM 4.1.4", async () => 
   expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); expect(f.dispatches).toBe(1); r.close();
 });
 
-async function assertPayNameHeld(f: ReturnType<typeof fixture>, change: () => void, changed: boolean) {
+async function assertPayNameHeld(f: ReturnType<typeof fixture>, change: () => void, changed: boolean, expectedName = "Pay", node: HTMLElement = f.button) {
+  const click = spyOn(node, "click");
   const { r, o, es } = await f.observe();
-  const target = es.find(e => e.tag === "button")!;
-  expect(target.name.trim()).toBe("Pay");
+  const target = es.find(e => node.tagName === "INPUT" ? e.type === "image" : e.tag === "button")!;
+  expect(target.name.trim()).toBe(expectedName);
   const pending = await r.execute({ kind: "click", target: target.id, generation: o.generation });
-  expect(pending.state).toBe("pending"); expect(f.dispatches).toBe(0);
+  expect(pending.state).toBe("pending"); expect(f.dispatches).toBe(0); expect(click).not.toHaveBeenCalled();
   const card = f.cards.list(f.owner, "conversation")[0]!;
-  expect(card.row).toBe("a"); expect(card.facts.name.trim()).toBe("Pay");
+  expect(card.row).toBe("a"); expect(card.facts.name.trim()).toBe(expectedName);
   expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(JSON.stringify(card)).not.toContain("SECRET_");
   r.close();
   if (changed) change();
   expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
   expect((await f.decide(pending.cardId as string)).state).toBe(changed ? "stale" : "sent");
-  expect(f.dispatches).toBe(changed ? 0 : 1);
+  expect(click).toHaveBeenCalledTimes(changed ? 0 : 1);
+  expect(f.dispatches).toBe(node === f.button && !changed ? 1 : 0);
+  click.mockRestore();
 }
 
 test.each([
@@ -420,15 +423,90 @@ test.each(["aria-label", "labelledby", "labels", "all", "aria-to-label", "labell
 
 test.each(["true", "", "plaintext-only", "TRUE", "PLAINTEXT-ONLY"])("editable state %s redacts self and descendants, including invalid inherited states", async state => {
   const f = fixture("SECRET_SELF"), host = f.document.createElement("div");
-  f.button.setAttribute("contenteditable", state); f.button.setAttribute("aria-label", "SECRET_ARIA");
+  f.button.setAttribute("contenteditable", state); f.button.setAttribute("aria-label", "Pay");
   host.setAttribute("contenteditable", state); host.innerHTML = '<a contenteditable="inherit">SECRET_LINK</a>';
   f.document.body.append(host);
   const publicButton = f.document.createElement("button"); publicButton.textContent = "Continue";
   const privateText = f.document.createElement("span"); privateText.setAttribute("contenteditable", state);
   privateText.innerHTML = '<b contenteditable="inherit">SECRET_TEXT</b><img alt="SECRET_ALT">'; publicButton.append(privateText); f.document.body.append(publicButton);
   const { r, o, es } = await f.observe();
-  expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(es.find(e => e.tag === "button")!.name).toBe("");
+  expect(JSON.stringify(o)).not.toContain("SECRET_"); expect(es.find(e => e.tag === "button")!.name).toBe("Pay");
   expect(es.filter(e => e.tag === "button")[1]!.name).toBe("Continue"); r.close();
+});
+
+test.each(["associated label", "aria-labelledby", "aria-label", "title", "input alt"])("editing-host native control keeps public %s, not editable text", async source => {
+  for (const changed of [false, true]) {
+    const f = fixture("SECRET_SELF"); let target: HTMLElement = f.button;
+    f.button.setAttribute("contenteditable", "true"); f.button.id = "go";
+    const privateText = f.document.createElement("span"); privateText.innerHTML = '<b>SECRET_DESCENDANT</b><img alt="SECRET_ALT">'; f.button.append(privateText);
+    const label = f.document.createElement(source === "associated label" ? "label" : "span");
+    label.id = "public-label"; label.textContent = "Pay"; label.setAttribute("contenteditable", "false");
+    label.setAttribute("for", "go"); f.button.before(label);
+    if (source === "aria-labelledby") f.button.setAttribute("aria-labelledby", label.id);
+    if (source === "aria-label") f.button.setAttribute("aria-label", "Pay");
+    if (source === "title") f.button.setAttribute("title", "Pay");
+    if (source === "input alt") {
+      target = f.document.createElement("input"); target.setAttribute("type", "image");
+      target.setAttribute("alt", "Pay"); target.setAttribute("contenteditable", "true"); f.button.replaceWith(target);
+    }
+    await assertPayNameHeld(f, () => {
+      if (source === "associated label" || source === "aria-labelledby") label.textContent = "Buy";
+      else target.setAttribute(source === "input alt" ? "alt" : source, "Buy");
+    }, changed, "Pay", target);
+  }
+});
+
+for (const state of ["true", "", "plaintext-only"]) for (const word of ["Pay", "ชำระเงิน"]) {
+  test.each(["span", "img"])(`false %s island in contenteditable=${state} button keeps ${word}`, async tag => {
+    for (const changed of [false, true]) {
+      const f = fixture("SECRET_SELF"); f.button.setAttribute("contenteditable", state);
+      const privateText = f.document.createElement("span"); privateText.innerHTML = '<b contenteditable="inherit">SECRET_DESCENDANT</b><img alt="SECRET_ALT">';
+      const island = f.document.createElement(tag); island.setAttribute("contenteditable", "false");
+      if (tag === "img") island.setAttribute("alt", word); else island.textContent = word;
+      f.button.append(privateText, island);
+      await assertPayNameHeld(f, () => {
+        if (tag === "img") island.setAttribute("alt", "Buy"); else island.textContent = "Buy";
+      }, changed, word);
+    }
+  });
+}
+
+test.each([
+  ["contents", null], ["contents", "inherit"], ["contents", "invalid"], ["contents", "false"], ["contents", "False"],
+  ["associated label", "false"], ["associated label", null], ["associated label", "inherit"],
+  ["aria-labelledby", "false"], ["aria-labelledby", null], ["aria-labelledby", "inherit"],
+] as const)("designMode on keeps native %s (state=%s) and redacts inherited document/label text", async (source, state) => {
+  for (const changed of [false, true]) {
+    const f = fixture("Pay"); f.document.designMode = "On";
+    const host = f.document.createElement("div"); host.innerHTML = 'SECRET_DESIGN<a href="/continue">SECRET_DESIGN_LINK</a><b contenteditable="inherit">SECRET_DESIGN_INHERITED</b><span contenteditable="false">Public text</span>';
+    f.document.body.append(host);
+    f.button.id = "go";
+    let named: HTMLElement = f.button;
+    if (source !== "contents") {
+      named = f.document.createElement(source === "associated label" ? "label" : "span"); named.id = "design-label";
+      named.textContent = state === "false" ? "Pay" : "SECRET_DESIGN_LABEL"; f.button.before(named);
+      if (source === "associated label") named.setAttribute("for", "go"); else f.button.setAttribute("aria-labelledby", named.id);
+    }
+    if (state !== null) named.setAttribute("contenteditable", state);
+    const privateText = f.document.createElement("span"); privateText.setAttribute("contenteditable", "true");
+    privateText.innerHTML = '<b contenteditable="invalid">SECRET_DESIGN_DESCENDANT</b><img alt="SECRET_DESIGN_ALT">'; f.button.append(privateText);
+    const observation = await f.observe();
+    expect(observation.o.text).toContain("Public text"); expect(JSON.stringify(observation.o)).not.toContain("SECRET_"); observation.r.close();
+    await assertPayNameHeld(f, () => {
+      if (source === "contents" || state !== "false") f.button.firstChild!.textContent = "Buy";
+      else named.textContent = "Buy";
+    }, changed);
+  }
+});
+
+test.each(["false", "False"])("designMode honors %s reset, then explicit true and invalid inheritance", async state => {
+  const f = fixture("Pay"); f.document.designMode = "on";
+  const island = f.document.createElement("div"); island.setAttribute("contenteditable", state);
+  island.innerHTML = 'Public reset<a href="/continue" contenteditable="invalid">Public link</a><div contenteditable="true">SECRET_DESIGN_RESET<span contenteditable="invalid">SECRET_DESIGN_CHILD</span></div>';
+  f.document.body.append(island);
+  const { r, o, es } = await f.observe();
+  expect(o.text).toContain("Public reset"); expect(o.text).toContain("Public link");
+  expect(es.find(e => e.tag === "a")!.name).toBe("Public link"); expect(JSON.stringify(o)).not.toContain("SECRET_"); r.close();
 });
 
 test("refresh loads only live cards and the latest 64 terminal cards, not historical snapshots", async () => {

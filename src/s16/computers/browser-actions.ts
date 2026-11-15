@@ -26,9 +26,9 @@ export function humanBrowserRow(op: BrowserInput, facts: BrowserActionFacts): Hu
 export const browserDomHelpers = `
  const secret=e=>['password','file','hidden'].includes((e.getAttribute('type')||'').toLowerCase()) || (e.getAttribute('autocomplete')||'').toLowerCase().split(/\\s+/).includes('one-time-code');
  const excluded='script,style,noscript,input,textarea,select';
- // Missing/invalid contenteditable states inherit; only the enumerated true states make an editing host.
+ // Missing/invalid states inherit, ultimately from designMode unless a native-button boundary stops it.
  const editState=e=>{const value=e.getAttribute('contenteditable');if(value===null)return null;const state=value.toLowerCase();return state==='false'?false:['','true','plaintext-only'].includes(state)?true:null;};
- const editable=(e,stop=null)=>{for(let n=e;n&&n!==stop;n=n.parentElement){const state=editState(n);if(state!==null)return state;}return false;};
+ const editable=(e,stop=null)=>{for(let n=e;n&&n!==stop;n=n.parentElement){const state=editState(n);if(state!==null)return state;}return !stop&&(document.designMode||"").toLowerCase()==="on";};
  // Only a native button's contents can ignore an editable ancestor, never editable descendants or field values.
  const safeText=(root,button=false)=>{const parts=[];const w=document.createTreeWalker(root,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT);let n=root;
   do{const p=n.nodeType===1?n:n.parentElement;if(!p||p.closest('script,style,noscript,input,textarea,select'))continue;
@@ -37,7 +37,7 @@ export const browserDomHelpers = `
    if(n.nodeType===3)parts.push(n.textContent||'');else if(n.tagName==='IMG')parts.push(n.getAttribute('alt')||'');
   }while((n=w.nextNode()));return parts.join(' ').trim();};
  const name=(e,inputButtons=false)=>{const type=(e.getAttribute('type')||'').toLowerCase();const button=e.tagName==='BUTTON'||(e.tagName==='INPUT'&&['submit','button','reset','image'].includes(type));
- if(editState(e)===true||(!button&&editable(e)))return '';const labelled=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(id=>document.getElementById(id)).filter(Boolean).map(n=>safeText(n)).join(' ');
+ if(!button&&editable(e))return '';const labelled=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(id=>document.getElementById(id)).filter(Boolean).map(n=>safeText(n)).join(' ');
  const labels=Array.from(e.labels||document.querySelectorAll('label')).filter(l=>l.control===e||(e.id&&l.getAttribute('for')===e.id)||l.contains(e)).map(n=>safeText(n)).join(' ');
  const content=(e.tagName==='BUTTON'||e.tagName==='A'||e.getAttribute('role')==='button')?safeText(e,button):(e.tagName==='INPUT'&&type==='image')?(e.getAttribute('alt')||''):(inputButtons&&e.tagName==='INPUT'&&['submit','button','reset'].includes(type))?String(e.value||''):'';
  return [labelled,e.getAttribute('aria-label')||'',labels,content,e.getAttribute('title')||'',e.getAttribute('name')||''].find(value=>value.trim())||'';};
