@@ -15,24 +15,31 @@ export interface ComputerBrowserOptions {
   agentInput(vm: string): ScreenAgentTicket;
   unavailable(vm: string): Promise<string | null>;
   stream(vm: string, signal: AbortSignal): Promise<BoxStream>;
-  /** Live owner site tier; unlisted public sites are permitted. */
-  tier(origin: string): WebsiteTier | undefined;
+  /** Live owner host tier, across schemes/ports; any sensitive record wins. */
+  tier(hostname: string): WebsiteTier | undefined;
   idleMs?: number; callMs?: number;
 }
 function fail(code: string): never { throw new AppError(code, 409); }
 /** Fixed observation program, not model JavaScript. Never read input values, password/OTP contents or editable text. */
 export const computerBrowserObservation = `(() => {
+ const excluded='script,style,noscript,input,textarea,select,[contenteditable]';
+ const safeText=root=>{
+  const parts=[]; const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT); let n;
+  while((n=w.nextNode())) { const p=n.parentElement; if(!p||p.closest(excluded))continue;
+   const s=getComputedStyle(p); if(s.display!=='none'&&s.visibility!=='hidden')parts.push(n.textContent||'');
+  } return parts.join(' ').trim();
+ };
  const text=[]; const walker=document.createTreeWalker(document.body || document.documentElement,NodeFilter.SHOW_TEXT);
  let node; let length=0;
  while ((node=walker.nextNode()) && length<12000) {
   const p=node.parentElement;
-  if (!p || p.closest('script,style,noscript,input,textarea,select,[contenteditable]')) continue;
+  if (!p || p.closest(excluded)) continue;
   const s=getComputedStyle(p); if(s.display==='none'||s.visibility==='hidden') continue;
   const t=(node.textContent||'').trim().slice(0,12000-length); if(t){text.push(t);length+=t.length;}
  }
  const elements=Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[contenteditable]')).slice(0,100).map(e=>({
   tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),
-  name:(e.getAttribute('aria-label')||e.getAttribute('title')||((e.tagName==='BUTTON'||e.tagName==='A')?e.innerText:'')||'').slice(0,128)
+  name:(e.closest('[contenteditable]')?'':(e.getAttribute('aria-label')||e.getAttribute('title')||((e.tagName==='BUTTON'||e.tagName==='A')?safeText(e):''))).slice(0,128)
  }));
  return {url:location.href,text:text.join('\\n'),truncated:length>=12000,elements};
 })()`;
@@ -42,9 +49,9 @@ export class ComputerBrowser {
   readonly #owners = new Map<string, ComputerBrowserRun>();
   readonly #runs = new Set<ComputerBrowserRun>();
   constructor(readonly options: ComputerBrowserOptions) {}
-  open(vm: string, guard: () => void, signal: AbortSignal): ComputerBrowserRun {
+  open(vm: string, guard: () => void, signal: AbortSignal, disclosure?: { input(): void; output(): void }): ComputerBrowserRun {
     guard(); if (signal.aborted) fail("cancelled");
-    const run = new ComputerBrowserRun(this, vm, guard, signal); this.#runs.add(run); return run;
+    const run = new ComputerBrowserRun(this, vm, guard, signal, disclosure); this.#runs.add(run); return run;
   }
   claim(run: ComputerBrowserRun): void {
     const current = this.#owners.get(run.vm);
@@ -67,7 +74,8 @@ export class ComputerBrowserRun {
   #selected: string | null = null;
   readonly #tabs = new Map<string, string>();
   readonly #abort = () => this.close();
-  constructor(readonly controller: ComputerBrowser, readonly vm: string, readonly guard: () => void, readonly signal: AbortSignal) {
+  readonly #settling = new Set<Promise<void>>();
+  constructor(readonly controller: ComputerBrowser, readonly vm: string, readonly guard: () => void, readonly signal: AbortSignal, readonly disclosure?: { input(): void; output(): void }) {
     signal.addEventListener("abort", this.#abort, { once: true }); if (signal.aborted) this.close();
   }
   disconnect(): void {
@@ -75,7 +83,13 @@ export class ComputerBrowserRun {
     this.#opening?.abort();
     const lease = this.#lease; this.#lease = null;
     if (lease?.timer) clearTimeout(lease.timer);
-    lease?.client.close(); this.controller.release(this);
+    if (lease) {
+      lease.client.close();
+      const settled = lease.client.settled(); this.#settling.add(settled);
+      // Keep failures latched: an unproven guest settlement must never release an owner-input ticket.
+      void settled.then(() => this.#settling.delete(settled), () => {});
+    }
+    this.controller.release(this);
   }
   close(): void { if (this.#closed) return; this.#closed = true; this.disconnect(); this.signal.removeEventListener("abort", this.#abort); this.controller.forget(this); }
   #current(): void { this.guard(); if (this.#closed || this.signal.aborted) fail("cancelled"); }
@@ -97,9 +111,10 @@ export class ComputerBrowserRun {
     if (url === "about:blank") return null;
     let u: URL; try { u = new URL(url); } catch { return "computer_browser_url_invalid"; }
     if (!["https:", "http:"].includes(u.protocol) || u.username || u.password) return "computer_browser_url_invalid";
-    try { approvedWebsiteOrigin(`https://${u.hostname}`); } catch { return "computer_browser_url_invalid"; }
-    if (websiteSensitiveOnly(u.origin)) return "website_sensitive_only";
-    return this.controller.options.tier(u.origin) === "sensitive" ? "website_protected" : null;
+    const hostname = u.hostname.toLowerCase().replace(/\.$/, "");
+    try { approvedWebsiteOrigin(`https://${hostname}`); } catch { return "computer_browser_url_invalid"; }
+    if (websiteSensitiveOnly(`https://${hostname}`)) return "website_sensitive_only";
+    return this.controller.options.tier(hostname) === "sensitive" ? "website_protected" : null;
   }
   #tabId(target: string): string {
     for (const [id, value] of this.#tabs) if (value === target) return id;
@@ -118,29 +133,30 @@ export class ComputerBrowserRun {
       // Ticket is taken before any await, and held until the call's channel work has settled.
       ticket = this.controller.options.agentInput(this.vm);
       const current = () => { this.#current(); if (deadline.signal.aborted) fail(timedOut ? "computer_browser_timeout" : "cancelled"); ticket!.current(); };
-      current();
+      current(); await Promise.all(this.#settling); current();
       const unavailable = await bounded(this.controller.options.unavailable(this.vm), deadline.signal); current(); if (unavailable) fail(unavailable);
       if (op.kind !== "state" && op.generation !== this.#generation) fail("computer_browser_stale");
       if (op.kind === "navigate") { const code = this.#code(op.url); if (code) fail(code); }
+      this.disclosure?.input(); current();
       const client = await bounded(this.#client(deadline.signal), deadline.signal); current();
       const send = async (method: string, params: Record<string, unknown> = {}, sessionId?: string) => {
         current(); const result = await bounded(client.send(method, params, sessionId ? { sessionId } : {}), deadline.signal); current(); return result;
       };
       const targets = await send("Target.getTargets");
-      const tabs = (Array.isArray(targets.targetInfos) ? targets.targetInfos : []).filter((t): t is Tab => !!t && t.type === "page" && typeof t.targetId === "string" && typeof t.url === "string").slice(0,100);
+      const tabs = (Array.isArray(targets.targetInfos) ? targets.targetInfos : []).filter((t): t is Tab => !!t && t.type === "page" && typeof t.targetId === "string" && typeof t.url === "string");
       const alive = new Set(tabs.map(t => t.targetId));
       for (const [id, target] of this.#tabs) if (!alive.has(target)) this.#tabs.delete(id);
       if (op.kind === "state") {
         // Re-read each tab immediately before projecting it; Target.getTargets was only discovery.
         const fresh: Tab[] = [];
-        for (const tab of tabs) { const r = await send("Target.getTargetInfo", { targetId: tab.targetId }); if (r.targetInfo) fresh.push(r.targetInfo as Tab); }
-        const result = { state: "ready", generation: this.#generation, truncated: false, tabs: fresh.map(t => {
+        for (const tab of tabs.slice(0,100)) { const r = await send("Target.getTargetInfo", { targetId: tab.targetId }); if (r.targetInfo) fresh.push(r.targetInfo as Tab); }
+        const result = { state: "ready", generation: this.#generation, truncated: tabs.length > 100, tabs: fresh.map(t => {
         const code = this.#code(t.url), id = this.#tabId(t.targetId);
         if (code) { let origin = ""; try { origin = new URL(t.url).origin; } catch { /* no path */ } return { id, origin, code }; }
         return { id, url: t.url.slice(0,4096), title: String(t.title ?? "").slice(0,256) };
         }) };
         while (Buffer.byteLength(JSON.stringify(result)) > computerBrowserSnapshotBytes) { result.tabs.pop(); result.truncated = true; }
-        current(); return result;
+        current(); this.disclosure?.output(); current(); return result;
       }
       let target = op.tab ? this.#tabs.get(op.tab) : this.#selected ?? tabs[0]?.targetId;
       if (op.tab && !target) fail("computer_browser_stale");
@@ -160,10 +176,12 @@ export class ComputerBrowserRun {
       const attached = await send("Target.attachToTarget", { targetId: target, flatten: true });
       if (typeof attached.sessionId !== "string") fail("computer_browser_unavailable");
       const session = attached.sessionId;
+      let observed: Record<string, unknown>;
       try {
         if (op.kind === "navigate") {
           const t = await info(); const c = this.#code(t.url); if (c) fail(c);
           await send("Page.enable", {}, session);
+          const destinationCode = this.#code(op.url); if (destinationCode) fail(destinationCode);
           const loaded = client.waitFor(event => event.sessionId === session && event.method === "Page.loadEventFired");
           // Attach a handler before navigate can reject; the original promise is still awaited below.
           void loaded.catch(() => {});
@@ -182,14 +200,17 @@ export class ComputerBrowserRun {
         const elements = (Array.isArray(observation.elements) ? observation.elements : []).slice(0,100).map(e => ({ id: `el_${crypto.randomUUID().replaceAll("-", "")}`, tag: String(e.tag ?? "").slice(0,32), name: String(e.name ?? "").slice(0,128), type: String(e.type ?? "").slice(0,32) }));
         const safe = { state: "observed", generation: ++this.#generation, tab: this.#tabId(target), url: observation.url.slice(0,4096), text: text.slice(0,12000), truncated: !!observation.truncated || text.length > 12000, elements };
         while (Buffer.byteLength(JSON.stringify(safe)) > computerBrowserSnapshotBytes) { safe.truncated = true; if (safe.text.length) safe.text = safe.text.slice(0,Math.floor(safe.text.length/2)); else safe.elements.pop(); }
-        current(); return safe;
+        observed = safe;
       } finally { if (!client.closed) { try { await send("Target.detachFromTarget", { sessionId: session }); } catch (error) { this.disconnect(); throw error; } } }
+      current(); this.disclosure?.output(); current(); return observed;
     } catch (error) {
       if (timedOut) fail("computer_browser_timeout");
       if (callSignal?.aborted) fail("cancelled");
       throw error;
     } finally {
-      clearTimeout(timer); callSignal?.removeEventListener("abort", cancel); ticket?.end(); this.#busy = false;
+      clearTimeout(timer); callSignal?.removeEventListener("abort", cancel);
+      try { await Promise.all(this.#settling); ticket?.end(); }
+      finally { this.#busy = false; }
       if (this.#lease) { this.#lease.timer = setTimeout(() => this.disconnect(), this.controller.options.idleMs ?? computerBrowserIdleMs); this.#lease.timer.unref?.(); }
     }
   }

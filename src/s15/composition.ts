@@ -1,3 +1,4 @@
+import { websiteHostSensitive } from "./browser/sites";
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ClientHandler } from '../s16/http';
@@ -378,7 +379,7 @@ export async function composeS15(options: S15CompositionOptions) {
           if (!isVmScreenManagement(manager)) return 'vm_desktop_unavailable';
           return manager.screen().unavailable();
         }, stream: (id, signal) => vmDesktopCdpStream(vmStore.registration(id).endpoint, { signal }),
-        tier: origin => options.browser?.approved?.sites.list().find(site => site.origin === origin)?.tier });
+        tier: hostname => websiteHostSensitive(options.browser?.approved?.sites.list() ?? [], hostname) ? 'sensitive' : undefined });
       cleanup.push(() => computerBrowser!.close());
       cleanup.push(vmStore.onChange((row, previous) => {
         if (row.state !== 'ready' || previous && previous.generation !== row.generation) computerBrowser!.invalidate(row.id);
@@ -472,12 +473,12 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
     const github = gh && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...gh, ...(githubConnections ? { currentRepositories: () => githubConnections!.repositories() } : {}), ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: gh.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const vmPort = { resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id,
-      ...(computerBrowser ? { async browser(session, guard, signal) {
+      ...(computerBrowser ? { async browser(session, guard, signal, actor) {
         // Placement is protected VM state, never a model-selected endpoint/member.
         const placed = vmStore.db.query<{ vm_id: string }, [string]>('SELECT vm_id FROM vm_sessions WHERE id=?').get(session.id);
         if (!placed || await computerBrowser!.options.unavailable(placed.vm_id)) return null;
         guard(); const generation = vmStore.registration(placed.vm_id).generation;
-        const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal);
+        const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal, disclosure ? { input: () => disclosure.vmInput(actor, placed.vm_id), output: () => disclosure.vmOutput(actor, placed.vm_id) } : undefined);
         return { tools: run.tools(), close: () => run.close() };
       } } : {}) }) };
     const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();

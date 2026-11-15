@@ -57,7 +57,7 @@ describe("fixed desktop programs (real subprocesses, stub child)", () => {
     const next=f.start();await until(()=>existsSync(join(f.dir,"cdp.sock")));const d=f.open();expect(await d.next()).toBe('{"jit":"attached"}');d.socket.write('{"id":2,"method":"echo","params":{}}\0');expect(JSON.parse(await d.next()).id).toBe(2);next.kill("SIGTERM");await next.exited;
   });
   test("a detached client's late reply cannot resolve a new client's reused CDP id", async()=>{
-    const f=await relayFixture(),a=f.open();await a.next();a.socket.write('{"id":1,"method":"late","params":{"old":true}}\0');await pause(10);a.socket.destroy();await pause(10);
+    const f=await relayFixture(),a=f.open();await a.next();a.socket.write('{"id":1,"method":"late","params":{"old":true}}\0');await pause(10);a.socket.end();expect(await a.next()).toBe('{"jit":"settled"}');
     const b=f.open();expect(await b.next()).toBe('{"jit":"attached"}');b.socket.write('{"id":1,"method":"echo","params":{"new":true}}\0');expect(JSON.parse(await b.next())).toEqual({id:1,result:{echo:{new:true}}});
   });
   test("child exit closes relay and next start releases the profile lock",async()=>{
@@ -90,7 +90,7 @@ describe("fixed desktop programs (real subprocesses, stub child)", () => {
     expect(qemuDesktopProvisioning).toContain("ExecStartPre=+/usr/bin/install -d -m 0700 -o jit-desktop -g jit-desktop /run/jit-desktop");
     expect(qemuDesktopProvisioning).toContain("put(L+'/cdp-relay',RELAY,0o755);put(L+'/cdp-attach',ATTACH,0o755)");
     expect(qemuDesktopProvisioning).toContain("/cdp-relay @B@/chrome");expect(qemuDesktopProvisioning).toContain("</dev/null");
-    expect(qemuDesktopReadyKey).toBe(`${qemuDesktopBrowser.version}+session.cdp-1`);
+    expect(qemuDesktopReadyKey).toBe(`${qemuDesktopBrowser.version}+session.cdp-2`);
     expect(desktopCdpRelay).not.toContain("remote-debugging-port");expect(desktopCdpRelay).toContain("--remote-debugging-pipe");
     expect(qemuDesktopProvisioning.indexOf("if not os.path.isfile(B+'/chrome'):")).toBeLessThan(qemuDesktopProvisioning.indexOf("'curl'"));
   });
@@ -111,4 +111,61 @@ describe.skipIf(!liveEndpoint)("real guest ssh -T + sudo-rs desktop channel (#43
   test("actual relay handshake and version reply arrive without closing or restarting Chromium",async()=>{
     const stream=await vmDesktopCdpStream(JSON.parse(liveEndpoint!));const cdp=new CdpClient(stream);cleanup.push(()=>cdp.close());expect(await cdp.send("Browser.getVersion")).toHaveProperty("product");expect(cdp.closed).toBeNull();
   });
+});
+
+// The production relay is unmodified apart from file breadcrumbs after real pipe writes/disconnect.
+// A child that does not read fd3 gives deterministic kernel-pipe backpressure (not mocked os.write).
+test("real relay drains a partial frame, drops wholly unsent navigation and acknowledges before reattach",async()=>{
+ const dir=directory(),release=join(dir,"release"),progress=join(dir,"progress"),disconnected=join(dir,"disconnected"),received=join(dir,"received");
+ const stub=join(dir,"stub"),program=join(dir,"relay");
+ writeFileSync(stub,`#!/usr/bin/python3\nimport os,json,time\nwhile not os.path.exists(${JSON.stringify(release)}):time.sleep(.001)\nb=b''\nwhile True:\n d=os.read(3,65536)\n if not d:break\n b+=d\n while b'\\0' in b:\n  frame,b=b.split(b'\\0',1);m=json.loads(frame)\n  with open(${JSON.stringify(received)},'a') as f:f.write(m['method']+'\\n')\n  os.write(4,json.dumps({'id':m['id'],'result':{}}).encode()+b'\\0')\n`);chmodSync(stub,0o700);
+ const source=desktopCdpRelay.replace("D='/run/jit-desktop'",`D=${JSON.stringify(dir)}`).replace("pwd.getpwnam('jit-desktop').pw_uid","os.geteuid()")
+ .replace("incoming=b'';outgoing=b'';draining=True",`incoming=b'';outgoing=b'';draining=True\n with open(${JSON.stringify(disconnected)},'w') as f:f.write(str(offset)+','+str(len(commands)))`)
+ .replace("offset+=n",`offset+=n\n    with open(${JSON.stringify(progress)},'w') as f:f.write(str(offset))`);
+ writeFileSync(program,source);chmodSync(program,0o700);
+ const proc=Bun.spawn([program,stub],{stdout:"ignore",stderr:"pipe"});cleanup.push(async()=>{proc.kill();await proc.exited;});
+ await until(()=>existsSync(join(dir,"cdp.sock")));
+ const socket=connect(join(dir,"cdp.sock"));socket.on("error",()=>{});cleanup.push(()=>{socket.destroy();});const next=frames(socket,"drain");await next();
+ const first=JSON.stringify({id:1,method:"echo",params:{payload:"x".repeat(196608)}})+"\0";
+ socket.write(first+JSON.stringify({id:2,method:"Page.navigate",params:{url:"https://public.org/late"}})+"\0");
+ await until(()=>existsSync(progress)&&Number(readFileSync(progress,"utf8"))>0);
+ expect(Number(readFileSync(progress,"utf8"))).toBeLessThan(Buffer.byteLength(first));
+ socket.end();await until(()=>existsSync(disconnected));
+ const [offset,queued]=readFileSync(disconnected,"utf8").split(",").map(Number);expect(offset).toBeGreaterThan(0);expect(queued).toBe(1);
+ let settled=false;const ack=next().then(v=>{settled=true;return v;});await pause();expect(settled).toBe(false);expect(existsSync(received)).toBe(false);
+ writeFileSync(release,"");expect(await ack).toBe('{"jit":"settled"}');expect(readFileSync(received,"utf8")).toBe("echo\n");
+ const again=connect(join(dir,"cdp.sock"));again.on("error",()=>{});cleanup.push(()=>{again.destroy();});const reply=frames(again,"next controller");expect(await reply()).toBe('{"jit":"attached"}');
+ again.write('{"id":1,"method":"after","params":{}}\0');expect(JSON.parse(await reply())).toEqual({id:1,result:{}});
+ expect(readFileSync(received,"utf8")).toBe("echo\nafter\n");
+});
+
+test("real relay does not acknowledge a fully sent in-flight command until its reply settles",async()=>{
+ const dir=directory(),entered=join(dir,"entered"),release=join(dir,"release"),stub=join(dir,"stub"),program=join(dir,"relay");
+ writeFileSync(stub,`#!/usr/bin/python3\nimport os,json,time\nb=b''\nwhile b'\\0' not in b:b+=os.read(3,65536)\nm=json.loads(b.split(b'\\0')[0]);open(${JSON.stringify(entered)},'w').close()\nwhile not os.path.exists(${JSON.stringify(release)}):time.sleep(.001)\nos.write(4,json.dumps({'id':m['id'],'result':{}}).encode()+b'\\0')\nwhile os.read(3,65536):pass\n`);chmodSync(stub,0o700);
+ writeFileSync(program,desktopCdpRelay.replace("D='/run/jit-desktop'",`D=${JSON.stringify(dir)}`).replace("pwd.getpwnam('jit-desktop').pw_uid","os.geteuid()"));chmodSync(program,0o700);
+ const proc=Bun.spawn([program,stub],{stdout:"ignore",stderr:"pipe"});cleanup.push(async()=>{proc.kill();await proc.exited;});await until(()=>existsSync(join(dir,"cdp.sock")));
+ const socket=connect(join(dir,"cdp.sock"));socket.on("error",()=>{});cleanup.push(()=>{socket.destroy();});const next=frames(socket,"inflight");await next();
+ socket.write('{"id":1,"method":"Runtime.evaluate","params":{}}\0');await until(()=>existsSync(entered));socket.end();
+ let settled=false;const ack=next().then(v=>{settled=true;return v;});await pause();expect(settled).toBe(false);
+ writeFileSync(release,"");expect(await ack).toBe('{"jit":"settled"}');
+});
+
+
+test("real relay stops a navigation's delayed load and waits for stop acknowledgement before owner settlement",async()=>{
+ const dir=directory(),entered=join(dir,"entered"),release=join(dir,"release"),stub=join(dir,"stub"),program=join(dir,"relay");
+ writeFileSync(stub,`#!/usr/bin/python3\nimport os,json,time\nb=b''\nwhile True:\n d=os.read(3,65536)\n if not d:break\n b+=d\n while b'\\0' in b:\n  frame,b=b.split(b'\\0',1);m=json.loads(frame)\n  if m['method']=='Page.stopLoading':\n   assert m['sessionId']=='page-session'\n   open(${JSON.stringify(entered)},'w').close()\n   while not os.path.exists(${JSON.stringify(release)}):time.sleep(.001)\n  os.write(4,json.dumps({'id':m['id'],'result':{'loaderId':'still-loading'}}).encode()+b'\\0')\n`);chmodSync(stub,0o700);
+ writeFileSync(program,desktopCdpRelay.replace("D='/run/jit-desktop'",`D=${JSON.stringify(dir)}`).replace("pwd.getpwnam('jit-desktop').pw_uid","os.geteuid()"));chmodSync(program,0o700);
+ const proc=Bun.spawn([program,stub],{stdout:"ignore",stderr:"pipe"});cleanup.push(async()=>{proc.kill();await proc.exited;});await until(()=>existsSync(join(dir,"cdp.sock")));
+ const socket=connect(join(dir,"cdp.sock"));socket.on("error",()=>{});cleanup.push(()=>{socket.destroy();});const next=frames(socket,"stop loading");await next();
+ socket.write('{"id":1,"method":"Page.navigate","params":{"url":"https://public.org/"},"sessionId":"page-session"}\0');expect(JSON.parse(await next()).result.loaderId).toBe("still-loading");socket.end();
+ await until(()=>existsSync(entered));let settled=false;const ack=next().then(v=>{settled=true;return v;});await pause();expect(settled).toBe(false);
+ writeFileSync(release,"");expect(await ack).toBe('{"jit":"settled"}');
+});
+
+test("attach EOF without the relay drain acknowledgement is not a successful settlement",async()=>{
+ const dir=directory(),path=join(dir,"no-ack.sock"),server=createServer(socket=>socket.on("end",()=>socket.end()));
+ await new Promise<void>(resolve=>server.listen(path,resolve));cleanup.push(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+ const program=desktopCdpAttach.replace("'/run/jit-desktop/cdp.sock'",JSON.stringify(path));
+ const proc=Bun.spawn(["python3","-I","-u","-c",program],{stdin:"pipe",stdout:"ignore",stderr:"ignore"});cleanup.push(async()=>{proc.kill();await proc.exited;});
+ proc.stdin.end();expect(await proc.exited).toBe(1);
 });

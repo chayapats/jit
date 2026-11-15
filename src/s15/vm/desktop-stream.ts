@@ -10,11 +10,23 @@ export type DesktopStreamSpawn = (argv: string[]) => BoxStream;
 const spawnStream: DesktopStreamSpawn = argv => {
   const proc = Bun.spawn(argv, { env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: homedir(), LANG: "C" }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   let closed = false;
-  const close = () => { if (closed) return; closed = true; try { void Promise.resolve(proc.stdin.end()).catch(() => {}); } catch { /* already exited */ } proc.kill("SIGKILL"); };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const close = () => {
+    if (closed) return; closed = true;
+    // EOF asks attach/relay to discard unsent frames and acknowledge the drained guest.
+    // Killing SSH here would prove nothing about what is still in Chrome's pipe.
+    try { void Promise.resolve(proc.stdin.end()).catch(() => proc.kill("SIGKILL")); } catch { proc.kill("SIGKILL"); }
+    timer = setTimeout(() => proc.kill("SIGKILL"), 15_000); timer.unref?.();
+  };
+  const settled = proc.exited.then(code => {
+    if (timer) clearTimeout(timer);
+    if (code !== 0) throw new AppError("computer_browser_unsettled", 503);
+  });
+  void settled.catch(() => {});
   // Discard, do not accumulate or mix SSH/sudo diagnostics into the protocol.
   void (async () => { try { for await (const _ of proc.stderr) { /* drain */ } } catch { /* killed */ } })();
   return { write(bytes) { if (closed) throw new AppError("cdp_closed", 502); proc.stdin.write(bytes); void Promise.resolve(proc.stdin.flush()).catch(close); },
-    stdout: proc.stdout, exited: proc.exited, close };
+    stdout: proc.stdout, exited: proc.exited, settled, close };
 };
 
 /** Consume exactly the non-CDP handshake, preserving bytes coalesced after its NUL. */
@@ -42,7 +54,12 @@ export async function vmDesktopCdpStream(endpoint: VmEndpoint, options: { signal
         if (frame === '{"jit":"busy"}') throw new AppError("computer_browser_busy", 409);
         if (frame !== '{"jit":"attached"}') throw new AppError("computer_browser_unavailable", 503);
         const tail = bytes.subarray(end + 1);
-        return { ...stream, stdout: (async function* () { if (tail.length) yield tail; for (;;) { const next = await iterator.next(); if (next.done) return; yield next.value; } })() };
+        return { ...stream, stdout: (async function* () {
+          try { if (tail.length) yield tail; for (;;) { const next = await iterator.next(); if (next.done) return; yield next.value; } }
+          finally { // CdpClient stops publishing on close; still drain SSH so attach can acknowledge settlement.
+            try { while (!(await iterator.next()).done) { /* discard */ } } catch { /* exited */ }
+          }
+        })() };
       }
     };
     return await Promise.race([handshake(), cancelled, new Promise<never>((_, reject) => { timer = setTimeout(() => { stream.close(); reject(new AppError("computer_browser_unavailable", 503)); }, options.handshakeMs ?? desktopHandshakeMs); })]);

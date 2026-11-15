@@ -41,8 +41,15 @@ and mode and binds a `0600` Unix socket. There is no TCP DevTools port. The rela
 when that client disconnects. Command ids are remapped across clients so an old reply cannot settle a new call.
 A relay exit terminates and reaps its browser; a browser exit ends the relay, allowing the session loop to restart both.
 Messages are at most 1 MiB, with bounded queues; stdout never uses Python's buffered file objects.
+On disconnect, wholly unsent frames are discarded. A partially sent frame is completed without splicing JSON,
+and all sent commands must reply (navigations also receive `Page.stopLoading`, whose reply is awaited) before the relay acknowledges `{"jit":"settled"}` and closes the client socket.
+New clients remain busy during this drain. Attach half-closes its Unix socket on stdin EOF, keeps draining replies,
+and exits successfully only after that final acknowledgement (or a busy handshake). The host gracefully ends SSH
+stdin, continues discarding stdout, and waits for this positive settlement before releasing the screen ticket;
+a 15 s drain timeout kills only the SSH process and reports `computer_browser_unsettled`, never proof of guest settlement.
+Unproven settlement keeps owner input blocked. The browser process/profile is never killed to cancel a client.
 
-`ready-v1` now holds `<chrome version>+session.<revision>` (currently `cdp-1`) rather than the bare Chrome pin.
+`ready-v1` now holds `<chrome version>+session.<revision>` (currently `cdp-2`) rather than the bare Chrome pin.
 The installer, installed check and lease writer share this key. A bare pin upgrades the session, units, relay and attach
 without downloading an already unpacked Chrome pin again. The marker is removed first and written only after the
 services and socket are ready. Headless provisioning remains unchanged.

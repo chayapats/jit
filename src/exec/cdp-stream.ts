@@ -100,6 +100,9 @@ export class CdpClient {
     this.#listeners.clear();
   }
 
+  /** Positive guest settlement, distinct from merely rejecting host promises. */
+  settled(): Promise<void> { return this.#stream.settled ?? Promise.resolve(); }
+
   async #read(): Promise<void> {
     let buffer = new Uint8Array(0);
     try {

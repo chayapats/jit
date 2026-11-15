@@ -31,19 +31,26 @@ Without `tab`, operations select the run's last selected tab, or the first disco
 ## Site policy
 
 On every call the controller rereads the owner's website tier. Sensitive-only hosts refuse `website_sensitive_only`;
-owner-approved sensitive-tier origins refuse `website_protected`. Use `protected_browser` for either. Trusted sites
+owner-approved sensitive-tier hosts (normalized hostname, regardless of scheme or port; any sensitive record wins) refuse `website_protected`. Use `protected_browser` for either. Trusted sites
 and unapproved public sites are allowed. Non-public addresses, credentials in URLs and non-HTTP(S) schemes are refused;
 `about:blank` is permitted as the browser's empty tab.
 
-`navigate` checks its destination before opening a stream. Every target is checked before dispatch and again before
+`navigate` checks its destination before opening a stream and live again immediately before `Page.navigate` after awaited setup. Every target is checked before dispatch and again before
 returning text; redirects to refused sites return no page text. A refused tab's `state` projection contains no path,
-title or text. Navigating away from a refused tab creates exactly one new tab and navigates there, leaving the
+title or text. The complete discovered target set determines liveness; only the returned projection is capped at 100 and marked truncated, so reordering an open tab past the cap does not invalidate its opaque id. Navigating away from a refused tab creates exactly one new tab and navigates there, leaving the
 owner's old tab and half-filled form untouched. Reads/finds on the refused tab remain refused.
 
 ## Lifetimes and failures
 
+Every call binds disclosure to the trusted work actor and its placed VM/session: `vmInput` stamps current work
+ancestry before guest dispatch, and `vmOutput` imports persistent shared-VM ancestry before publication, including
+sources acquired after session setup. A denied input sends no CDP; a denied output publishes no observation.
+
 All operations hold ScreenControl agent tickets and recheck them and the live work guard around each CDP command.
-Takeover closes the channel; outstanding calls must settle before owner input is admitted. Generation transitions,
+Takeover closes the channel gracefully. The relay discards wholly unsent commands, completes any partial frame,
+and acknowledges only after sent commands reply and sent navigations have stopped loading (`Page.stopLoading` reply). The host waits for that positive guest-drain acknowledgement,
+not just rejected host promises, before releasing the agent ticket. Unproven settlement fails closed with
+`computer_browser_unsettled`: the ticket stays held and owner input remains blocked. Generation transitions,
 VM stop/restore/fence, run completion/cancel and shutdown close streams. A browser restart or five-minute idle close
 permits a later fresh `state` to reopen. Other runs on the same VM refuse `computer_browser_busy` while a stream is held.
 
@@ -55,7 +62,7 @@ There is no autonomous retry of an operation whose outcome may be uncertain.
 ## Verification
 
 `tests/s16-computer-browser.test.ts` exercises handshake parsing, split/coalesced frames, site rules, opaque generations,
-read/find/navigate, redirects, bounding, one stream, idle/restart and takeover/deadline settlement using fake CDP.
+read/find/navigate, redirects, bounding, one stream, idle/restart and takeover/deadline settlement using fake CDP. It also executes the unchanged observation program on a linkedom DOM fixture (test-only dependency) to check editable self/descendant text exclusion from both text and element names, and runs real disclosure-service ancestry/denial regressions.
 `tests/s16-desktop-cdp.test.ts` runs the actual fixed Python programs against a fd3/fd4 stub child and tests binary
 attach forwarding, live handshake, busy attach, disconnect/reconnect, stale replies, shutdown/restart/profile lock
 and session upgrade without downloading Chrome. The SSH + sudo-rs live tests in that file are explicitly skipped

@@ -1,8 +1,12 @@
+import { parseHTML } from "linkedom";
+import { websiteHostSensitive } from "../src/s15/browser/sites";
+import { disclosureFixture } from "./fixtures/s15-disclosure";
+import { ref } from "./fixtures/s15-policy";
 import { afterEach, describe, expect, test } from "bun:test";
 import { AppError } from "../src/errors";
 import type { BoxStream } from "../src/exec/box-runtime";
 import { CdpClient } from "../src/exec/cdp-stream";
-import { ComputerBrowser, computerBrowserSnapshotBytes } from "../src/s16/computers/browser";
+import { ComputerBrowser, computerBrowserObservation, computerBrowserSnapshotBytes } from "../src/s16/computers/browser";
 import { ScreenControl } from "../src/s16/computers/screen";
 import { VmStore } from "../src/s15/vm/store";
 import { vmDesktopCdpStream } from "../src/s15/vm/desktop-stream";
@@ -33,7 +37,7 @@ function fixture(settings: { idleMs?: number; callMs?: number } = {}) {
     device: () => ({ async unavailable() { return unavailable; }, async capture() { return new Uint8Array(); }, async send() {} }), onTransition: vm => browser.invalidate(vm) });
   const pipes: ReturnType<typeof pipe>[] = [];
   browser = new ComputerBrowser({ agentInput: vm => screen.agentInput(vm), unavailable: async () => unavailable,
-    tier: origin => origin === "https://sensitive.org" ? "sensitive" : origin === "https://trusted.org" ? "trusted" : undefined,
+    tier: hostname => hostname === "sensitive.org" ? "sensitive" : hostname === "trusted.org" ? "trusted" : undefined,
     stream: async () => {
       streams++; const p = pipe(); pipes.push(p);
       p.stream.write = bytes => {
@@ -170,4 +174,128 @@ describe("computer_browser read operations", () => {
     const f = fixture(), r = f.run(); f.setUnavailable("vm_desktop_unavailable");
     await expect(r.execute({ kind: "state" })).rejects.toMatchObject({ code: "vm_desktop_unavailable" }); expect(f.streams).toBe(0);
   });
+});
+
+
+test.each(["http://sensitive.org/secret?token=abc", "https://sensitive.org:8443/secret?token=abc", "http://SENSITIVE.ORG./secret?token=abc"])("sensitive host refusal ignores scheme/port: %s", async url => {
+  const f=fixture(), r=f.run(); f.tabs[0]!.url=url; f.tabs[0]!.title="SECRET TITLE"; f.setBody("LEAKED TEXT");
+  const state=JSON.stringify(await r.execute({kind:"state"}));
+  expect(state).toContain("website_protected");
+  for(const secret of ["SECRET TITLE","/secret","token=abc","LEAKED TEXT"])expect(state).not.toContain(secret);
+  for(const kind of ["read","find"]){await expect(r.execute({kind,generation:1,...(kind==="find"?{text:"secret"}:{})})).rejects.toMatchObject({code:"website_protected"});}
+  await expect(r.execute({kind:"navigate",generation:1,url})).rejects.toMatchObject({code:"website_protected"});
+  expect(f.sent.some(m=>["Runtime.evaluate","Page.navigate"].includes(m.method))).toBe(false);
+});
+
+test("destination tier is checked live immediately after awaited Page.enable",async()=>{
+ const f=fixture(),r=f.run();f.setHold("Page.enable");
+ const pending=r.execute({kind:"navigate",generation:1,url:"https://public.org/destination"});
+ while(!f.sent.some(m=>m.method==="Page.enable"))await pause();
+ f.browser.options.tier=host=>host==="public.org"?"sensitive":undefined;
+ const m=f.sent.find(m=>m.method==="Page.enable")! as unknown as {id:number};
+ f.pipes[0]!.emit(JSON.stringify({id:m.id,result:{}})+"\0");
+ await expect(pending).rejects.toMatchObject({code:"website_protected"});
+ expect(f.sent.some(m=>m.method==="Page.navigate"||m.method==="Runtime.evaluate")).toBe(false);
+});
+
+test("101 targets report truncation without expiring open opaque IDs beyond the projection",async()=>{
+ const f=fixture(),r=f.run();
+ for(let i=2;i<=101;i++)f.tabs.push({targetId:`target${i}`,type:"page",url:`https://public.org/${i}`,title:""});
+ const state=await r.execute({kind:"state"});expect(state.truncated).toBe(true);expect((state.tabs as unknown[]).length).toBe(100);
+ const id=(state.tabs as {id:string}[])[0]!.id;const first=f.tabs.shift()!;f.tabs.push(first);
+ const reordered=await r.execute({kind:"state"});expect(reordered.truncated).toBe(true);
+ expect((await r.execute({kind:"read",generation:1,tab:id})).url).toBe(first.url);
+});
+
+test("actual observation program never reads editable self/descendant text into names",async()=>{
+ const {document}=parseHTML(`<html><body>
+   <a contenteditable>SELF SECRET</a><button contenteditable aria-label="PRIVATE LABEL">BUTTON SECRET</button>
+   <a><span contenteditable>NESTED SECRET</span>Public link</a>
+   <button>Public button<span contenteditable><b>DEEP SECRET</b></span></button>
+   <input value="INPUT SECRET"><textarea>TEXTAREA SECRET</textarea>
+   <div contenteditable><a>ANCESTOR SECRET</a></div><button><span style="display:none">HIDDEN SECRET</span>Visible</button>
+  </body></html>`);
+ // Execute the unchanged production program over a real DOM tree; only the browser globals are supplied.
+ const evaluate=new Function("document","NodeFilter","getComputedStyle","location",`return ${computerBrowserObservation}`);
+  const result=evaluate(document,{SHOW_TEXT:4},(e:HTMLElement)=>e.style,{href:"https://public.org/"}) as {text:string;elements:{name:string}[]};
+  const json=JSON.stringify(result);expect(json).not.toContain("SECRET");expect(json).not.toContain("PRIVATE LABEL");
+  expect(result.elements.map(e=>e.name)).toContain("Public link");expect(result.elements.map(e=>e.name)).toContain("Public button");expect(result.elements.map(e=>e.name)).toContain("Visible");
+});
+
+test("takeover retains its ticket until positive guest drain acknowledgement",async()=>{
+ const f=fixture(),r=f.run(),drain=Promise.withResolvers<void>();
+ const stream=f.browser.options.stream;f.browser.options.stream=async(...args)=>({...await stream(...args),settled:drain.promise});
+ f.setHold("Runtime.evaluate");const result=r.execute({kind:"read",generation:1}).catch(e=>e);
+ while(!f.sent.some(m=>m.method==="Runtime.evaluate"))await pause();
+ const transition=f.command({kind:"takeover",generation:0});await pause();
+ expect((await f.screen.view(f.owner,"vm1")).state).toBe("settling");
+ drain.resolve();expect(await result).toBeInstanceOf(AppError);await transition;
+ expect((await f.screen.view(f.owner,"vm1")).state).toBe("owner");
+});
+
+test("unproven guest settlement fails closed, never granting owner input",async()=>{
+ const f=fixture(),r=f.run(),drain=Promise.withResolvers<void>();void drain.promise.catch(()=>{});
+ const stream=f.browser.options.stream;f.browser.options.stream=async(...args)=>({...await stream(...args),settled:drain.promise});
+ f.setHold("Runtime.evaluate");const result=r.execute({kind:"read",generation:1}).catch(e=>e);
+ while(!f.sent.some(m=>m.method==="Runtime.evaluate"))await pause();
+ await f.command({kind:"takeover",generation:0});drain.reject(new AppError("computer_browser_unsettled",503));
+ expect((await result).code).toBe("computer_browser_unsettled");
+ expect((await f.screen.view(f.owner,"vm1")).state).toBe("settling");
+});
+
+
+test("any sensitive host record wins over a trusted alternate origin in either list order",()=>{
+ const sites=[{origin:"https://sensitive.org:8443",tier:"trusted" as const},{origin:"https://sensitive.org",tier:"sensitive" as const}];
+ for(const records of [sites,[...sites].reverse()]){
+  expect(websiteHostSensitive(records,"SENSITIVE.ORG")).toBe(true);
+  expect(websiteHostSensitive(records,"sensitive.org.")).toBe(true);
+  expect(websiteHostSensitive(records,"www.sensitive.org")).toBe(false);
+ }
+});
+
+test("each browser call stamps post-session private sources and imports persistent VM ancestry before publication",async()=>{
+ const f=fixture(),x=disclosureFixture();cleanups.push(x.cleanup);
+ let inputs=0,outputs=0;
+ const hooks=(actor:object)=>({input(){inputs++;x.disclosure.vmInput(actor,"vm1");},output(){outputs++;x.disclosure.vmOutput(actor,"vm1");}});
+ const r=f.browser.open("vm1",()=>{},new AbortController().signal,hooks(x.actor));
+ await r.execute({kind:"state"}); // Session/run exists before the private read.
+ x.disclosure.read(x.actor,ref("private"));f.setBody("private derived bytes in persistent tab");
+ await r.execute({kind:"navigate",generation:1,url:"https://public.org/persisted"});
+ await r.execute({kind:"find",generation:2,text:"private"});expect(inputs).toBe(3);expect(outputs).toBe(3);
+ r.close();
+ const sibling=x.f.admit({access:"effect"}).actor!;
+ const later=f.browser.open("vm1",()=>{},new AbortController().signal,hooks(sibling));
+ const read=await later.execute({kind:"read",generation:1});expect(read.text).toContain("private derived bytes");
+ expect(inputs).toBe(4);expect(outputs).toBe(4);
+ const work=x.f.service.work.guard(sibling);
+ expect(()=>x.f.service.work.reserveModelCall(sibling,{requestId:"sibling_browser_model",selection:work.request.selection,upperBound:{attempts:1,steps:1,calls:1,reads:0,outputBytes:1,activeMs:1,spendMinor:"0"}})).toThrow("recipient_unapproved");
+ x.sources.get("private")!.active=false;
+ await expect(later.execute({kind:"read",generation:2})).rejects.toThrow("outside_scope");
+});
+
+test("disclosure denial before input dispatch sends no CDP; output denial publishes no observation",async()=>{
+ const f=fixture();let denyInput=true;
+ const r=f.browser.open("vm1",()=>{},new AbortController().signal,{input(){if(denyInput)throw new AppError("outside_scope");},output(){throw new AppError("recipient_unapproved");}});
+ await expect(r.execute({kind:"state"})).rejects.toMatchObject({code:"outside_scope"});expect(f.sent).toHaveLength(0);
+ denyInput=false;await expect(r.execute({kind:"read",generation:1})).rejects.toMatchObject({code:"recipient_unapproved"});
+});
+
+
+test("disclosure output is checked after awaited CDP cleanup, immediately before publication",async()=>{
+ const f=fixture();let allowed=true;
+ const r=f.browser.open("vm1",()=>{},new AbortController().signal,{input(){},output(){if(!allowed)throw new AppError("outside_scope");}});
+ f.setHold("Target.detachFromTarget");const pending=r.execute({kind:"read",generation:1});
+ while(!f.sent.some(m=>m.method==="Target.detachFromTarget"))await pause();
+ allowed=false;const m=f.sent.find(m=>m.method==="Target.detachFromTarget")! as unknown as {id:number};
+ f.pipes[0]!.emit(JSON.stringify({id:m.id,result:{}})+"\0");
+ await expect(pending).rejects.toMatchObject({code:"outside_scope"});
+});
+
+
+test("closed desktop CDP stops publication but keeps draining SSH stdout until positive settlement",async()=>{
+ const closed=Promise.withResolvers<void>(),exit=Promise.withResolvers<number>();let drained=0;
+ const stdout=(async function*(){yield Buffer.from('{"jit":"attached"}\0');await closed.promise;for(let i=0;i<128;i++){drained++;yield Buffer.alloc(65536,32);}exit.resolve(0);})();
+ const stream:BoxStream={stdout,exited:exit.promise,settled:exit.promise.then(()=>{}),write(){},close(){closed.resolve();}};
+ const desktop=await vmDesktopCdpStream(endpoint,{spawn:()=>stream}),client=new CdpClient(desktop);
+ client.close();await client.settled();expect(drained).toBe(128);
 });

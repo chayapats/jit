@@ -16,7 +16,8 @@ function fixture() {
 
 test("desktop tool binds the admitted placed session, not a model-selected VM; run cleanup precedes work-shell cleanup", async () => {
   const f = fixture(); let received: VmSession | undefined;
-  const port = createConversationVmTools(f.vm, { vmId: "pool", resourceId: "workspace", async browser(session, guard, signal) {
+  const port = createConversationVmTools(f.vm, { vmId: "pool", resourceId: "workspace", async browser(session, guard, signal, actor) {
+    expect(actor).toBe(f.work.actor);
     received = session; expect(guard).toBe(f.input.guard); expect(signal).toBe(f.input.signal);
     return { tools: [f.definition("computer_browser")], close() { f.events.push("browser close"); } };
   } });

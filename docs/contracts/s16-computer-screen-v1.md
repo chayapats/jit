@@ -59,3 +59,7 @@ until it settles. The ticket and live work guard are checked immediately before 
 A screen generation transition synchronously invalidates observations and closes the run's stream, including an idle
 or opening stream. Takeover therefore refuses new browser calls with `takeover_active`, and stays `settling` until
 the outstanding browser call releases its ticket. Hand-back never revives an observation from before takeover.
+
+Closing a browser channel is not settlement by itself: takeover retains the browser ticket until the relay
+acknowledges that unsent frames were dropped and partial/in-flight frames finished. If the dedicated SSH drain
+times out or exits without acknowledgement, `computer_browser_unsettled` leaves the ticket held (fail closed).
