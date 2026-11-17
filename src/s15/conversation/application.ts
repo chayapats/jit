@@ -608,7 +608,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       }
       const mode: "inspect" | "execute" = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
-        const toolInput = { mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
+        const toolInput = { request: { requestId: id, conversationId: request.receipt.conversationId }, mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
           guard(); exact(action, ["id", "revision", "actionHash"]); identity(action.id); integer(action.revision, 1);
           if (!/^[a-f0-9]{64}$/.test(action.actionHash)) throw new AppError("invalid_data");
           const current = this.store.request(id);

@@ -1,5 +1,5 @@
 ---
-status: accepted for DESK16-01 (#410), third slice; D1/D2/D3 chosen by Champ on 2026-11-12; not yet implemented (slices 3a/3b/3c); closes AUTH16-01 (#442)'s last acceptance item once implemented; live host evidence belongs to #431
+status: accepted for DESK16-01 (#410), third slice; D1/D2/D3 chosen by Champ on 2026-11-12; 3a merged in #460; 3b implementation adds inputs and held cards; 3c sign-in/resume remains unimplemented; closes AUTH16-01 (#442)'s last acceptance item once implemented; live host evidence belongs to #431
 date: 2026-11-12
 scope: DESK16-01 (#410); AUTH16-01 (#442); S16-AC06/AC07/AC11; FR-10/14/15/35/38/40; NFR-07/14
 ---

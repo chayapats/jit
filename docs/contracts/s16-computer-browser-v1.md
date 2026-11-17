@@ -1,19 +1,20 @@
 # s16-computer-browser/v1 — watched desktop browser
 
-Slice 3a of ADR 0092 / #410. The host offers `computer_browser` only to execute work admitted to a running desktop
+Slices 3a and 3b of ADR 0092 / #410. The host offers `computer_browser` only to execute work admitted to a running desktop
 computer. Placement and SSH identity come from that work's VM session, not model input. Inspect work and headless
 computers keep their existing file/shell tools. A private computer's browser observations retain that computer's scope.
 
-## Closed operation union (3a)
+## Closed operation union
 
 - `{ kind: "state" }`: current generation and at most 100 opaque tab ids.
 - `{ kind: "navigate", generation, tab?, url }`: public HTTP(S) URL, at most 4096 bytes.
 - `{ kind: "read", generation, tab? }`: bounded page text and element observations.
 - `{ kind: "find", generation, tab?, text }`: case-insensitive literal text matches, query at most 4096 bytes.
+- `{ kind: "click" | "submit", generation, tab?, target }`: an opaque element id from the latest observation.
+- `{ kind: "type" | "select", generation, tab?, target, value }`: replace a non-secret input or select an exact option value; at most 4096 UTF-8 bytes. Line breaks in `type` carry Enter/form submission.
 
 Unknown fields/kinds are refused. There is no model-supplied JS, selector, CDP command, cookie access, upload/download,
-credential entry or screenshot. Input operations and human-required action cards ship separately in 3b; `needs_you`
-and the trusted-site sign-in/resume flow ship in 3c. This slice does not close #442 or claim live guest evidence.
+credential entry or screenshot. `needs_you` and the trusted-site sign-in/resume flow ship in 3c. This slice does not close #442 or claim live guest evidence.
 
 `state` returns `{ state: "ready", generation, truncated, tabs }`. Allowed tabs expose bounded URL/title; refused
 tabs expose only opaque id, origin and refusal code. `navigate`/`read`/`find` return
@@ -23,10 +24,84 @@ editable fields and input/select/textarea nodes, never reads field values, and r
 with opaque ids. There are no remotely callable browser handles. Results are not written to browser history/memory
 ledgers; ordinary publication remains guarded by the admitted work's resource/scope rules.
 
-Every successful observation advances its generation. Stale generations and foreign/expired tab ids are refused with
+Successful input returns `{ state: "ok", generation }`, without echoing its value; call `read` again for new targets. Every successful observation or input advances its generation. Stale generations and foreign/expired tab ids are refused with
 `computer_browser_stale`. Stream loss, idle close, takeover and VM lifecycle invalidation clear tab observations and
 advance the generation. A fresh `state` permits reconnection; no stream is reopened during owner control or fencing.
 Without `tab`, operations select the run's last selected tab, or the first discovered page.
+
+## Inputs and held action cards (3b)
+
+Immediately before input, fixed DOM programs inspect the target's metadata, its bounded native activation context
+and bounded **non-secret** form values. Password, file, hidden and `autocomplete=one-time-code` values are never read or entered; they refuse
+`computer_browser_secret_field`. Ordinary observations still never read editable values. The input batch repeats
+the secret and exact revision checks in the same synchronous DOM task as dispatch. Stale/foreign/removed elements,
+changed URL, accessible name, raw HTML field name, target attributes, form action/method or non-secret field
+state/values refuse without input. Field snapshots include checked/selected/disabled state. Oversized full snapshots refuse rather than truncate
+the payload the owner would approve. Select values must match an enabled option. Type uses the native value setter
+and input/change events; it is not a trusted physical keyboard or a way to solve a site's automation challenge.
+
+For a listed descendant, native activation facts prioritize its containing button/button-like input, including
+through an intervening label or link. Otherwise they use the nearest `a[href]` or label's forwarded `control`,
+and that control's form owner (including external `form=` associations, with no enclosing-form fallback for a null native owner).
+The same context supplies vocabulary matching, owner-review facts and the exact revision: control/label/form
+identity, effective name, relevant activation attributes and non-secret form state are pinned. Changed context
+refuses as stale; dispatch still clicks the original opaque target, never a substituted ancestor/control.
+`submit` uses this same pinned owner and effective native submitter (including default buttons and image inputs);
+a null owner or invalid submitter refuses `computer_browser_target_invalid` without input, never an unchecked enclosing form.
+This does not analyze arbitrary JavaScript listeners or expand matching to every ancestor.
+
+Enter-carrying `type` refuses before focus or editing if the field's native form owner differs from the
+reviewed activation form (including a null owner). It captures that reviewed form before input events and
+submits only that form, even if a keydown handler re-associates the field. A label inside a button that
+would forward to a different native submitter refuses `computer_browser_target_invalid` without a
+click. Chromium 157 can forward even when the containing button is itself a valid submitter, so these
+conflicting native activation contexts are refused rather than assuming one version's precedence.
+External-label forwarding and the independent link-inside-label boundary remain supported.
+
+A `click`, `submit`, `select`, or Enter-carrying `type` is held if its target/effective control name, its form's raw HTML field
+names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai). Underscore, hyphen and slash separators in field names and paths are treated as spaces; `pay_now`/`delete_account` match, but `paypal`/`reorder` do not. Names preserve ARIA then associated-label precedence before contents (HTML-AAM §4.1.4), including image `alt` in button contents and image-input names. Native buttons beneath an editable ancestor retain their own name; editable self/descendant text and field values remain excluded from observation names:
+
+| S16-D07 row | English | Thai aliases |
+| --- | --- | --- |
+| a | pay, buy, purchase, checkout, order, transfer, subscribe | จ่าย, ชำระ, ซื้อ, สั่งซื้อ, โอน, สมัครสมาชิก |
+| b | send | ส่งข้อความ, ส่งอีเมล, ส่งเมล |
+| c | post, publish, share publicly | โพสต์, เผยแพร่, แชร์สาธารณะ |
+| d | deploy, release, promote to production | ดีพลอย, นำขึ้นใช้งานจริง, ปล่อยรุ่น |
+| e | delete, remove, cancel account, close account | ลบ, ยกเลิกบัญชี, ปิดบัญชี |
+| f | password, account settings, security, permissions | รหัสผ่าน, ตั้งค่าบัญชี, ความปลอดภัย, สิทธิ์ |
+
+Otherwise input runs without a card: **not every submit or newline waits**. This heuristic is tool policy, not a
+bypass-resistant boundary; unrecognised wording and page-written JS remain ADR 0084 residuals. It does not reuse
+`exec.browser`'s blanket submit/Enter check, introduce secret access, or implement sign-in/resume (3c).
+
+A hold returns only `{ state: "pending", cardId, expiresAt }`. Posting the owner card closes the run's stream and
+settles/releases its ticket. The owner's authenticated conversation snapshot separately includes inline
+`browserCards`, including exact URL, target, amount/recipients/content and every non-secret field, with an escaped
+full-review view. Plain owner text, a source, a model argument and normal conversation decision routes cannot approve
+it. Only an explicit CSRF-protected `POST /api/s16/client/browser-cards/decisions` can press it:
+
+```
+{ contract: "s16-browser-card-decision/v1", conversationId, cardId, decision: "approve" | "decline" }
+```
+
+The owner press is independent of the posting work's cancelled actor/session. It checks `agent` screen state before
+opening its **new** controller stream, then takes its own ScreenControl ticket in a `try/finally`, verifies pinned VM
+and owner generations, live website tier and full saved revision, and refreshes authentication immediately before
+its one input batch. Busy, non-agent screen, ticket-admission throw and refused origin close any opened stream,
+leave no ticket and preserve the press. Changed facts become `stale` and need a new card. Decline/30-minute expiry
+send nothing. Before the sole batch, a FULL-synchronous durable `sending` claim prevents replay; a lost/uncertain
+response or recovered `sending` becomes `unknown`, never an automatic resend. A positive atomic pre-input refusal
+becomes `stale`. `sent` means browser input was sent once, **not** a verified website/payment outcome.
+
+Cards reside in the protected working-computer store, not guest state, and have no model-callable decision tool.
+At most 64 live cards per conversation are accepted; snapshots include every live card plus 64 recent terminal
+cards. Proposed type/select bytes are kept only in memory for that card, so a process restart makes such pending
+cards stale instead of persisting/replaying the input. Their model tool-call arguments are replaced by one-use
+opaque receipts **before** native Schway history is appended, hydrated only at the trusted tool boundary, and never
+echoed in results/evidence. This uses the existing public model/tool seams, not a fork/private import or alternate
+loop. Card snapshots may deliberately retain existing non-secret form values for owner review; normal tool history
+and observations do not receive that snapshot or the proposed input. Model-authored prose remains untrusted text,
+not proof of dispatch or a general DLP guarantee.
 
 ## Site policy
 
@@ -67,4 +142,9 @@ read/find/navigate, redirects, bounding, one stream, idle/restart and takeover/d
 attach forwarding, live handshake, busy attach, disconnect/reconnect, stale replies, shutdown/restart/profile lock
 and session upgrade without downloading Chrome. The SSH + sudo-rs live tests in that file are explicitly skipped
 unless `JIT_DESKTOP_SSH_ENDPOINT` supplies the protected endpoint JSON (only key paths, never key bytes).
+The 3b action fixtures execute the actual fixed programs in a pinned development DOM: ordinary inputs, both
+languages, exact cards, secret-value getters that throw on any read, stale revisions (including a late mutation),
+independent press/busy/screen/admission/expiry/generation paths, one-send recovery, owner API/CSRF and escaped inline
+cards. A real native Schway run verifies hydrated tool input and absence of payload bytes from its on-disk artifacts
+and next-turn context. These are deterministic fixtures, not live desktop/browser acceptance evidence.
 Live guest Chromium, trusted non-IdP sign-in and stop/start evidence belong to #431, not a claim made by these fixtures.

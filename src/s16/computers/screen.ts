@@ -114,6 +114,10 @@ export class ScreenControl<Owner> {
    * Admits one work operation on `vm` (WorkingVmService). Refused with `takeover_active` unless work holds the
    * screen. The ticket must be ended exactly once, after the operation settled (finished, failed or unknown).
    */
+  /** Card presses check before opening a stream or allocating a ticket. */
+  assertAgent(vm: string): void {
+    if (this.row(vm).state !== "agent") throw new AppError("takeover_active", 409);
+  }
   agentInput(vm: string): ScreenAgentTicket {
     const admitted = this.row(vm);
     if (admitted.state !== "agent") throw new AppError("takeover_active", 409);

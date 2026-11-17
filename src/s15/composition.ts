@@ -5,6 +5,7 @@ import { createS16ModelsPort } from '../s16/models';
 import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
+import { BrowserActionCards } from '../s16/computers/browser-cards';
 import { ComputerBrowser } from '../s16/computers/browser';
 import { vmDesktopCdpStream } from './vm/desktop-stream';
 import { ComputerDirectory } from '../s16/computers/service';
@@ -364,6 +365,7 @@ export async function composeS15(options: S15CompositionOptions) {
     if (options.screen && !scopes) throw new AppError('invalid_s15_config');
     const screenDevices = new WeakMap<object, VmScreenDevice>();
     let computerBrowser: ComputerBrowser | null = null;
+    let browserCards: BrowserActionCards<OwnerActor> | null = null;
     const screen = options.screen && scopes ? new ScreenControl<OwnerActor>({ store: vmStore, requireOwner, scope: id => scopes.scope(id), onTransition: id => computerBrowser?.invalidate(id),
       ...(options.screen.leaseMs ? { leaseMs: options.screen.leaseMs } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       device(id) {
@@ -373,7 +375,9 @@ export async function composeS15(options: S15CompositionOptions) {
         return device;
       } }) : null;
     if (screen) {
-      computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id),
+      computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id), assertAgent: id => screen.assertAgent(id),
+        hold: action => browserCards!.hold(action),
+        pressGuard: card => { const row = vmStore.registration(card.vm); if (row.state !== 'ready' || row.generation !== card.vmGeneration) throw new AppError('computer_browser_stale', 409); },
         async unavailable(id) {
           const row = vmStore.registration(id); if (row.state !== 'ready') return 'vm_not_running';
           const manager = row.managerId ? managers.get(row.managerId) : undefined;
@@ -381,6 +385,7 @@ export async function composeS15(options: S15CompositionOptions) {
           return manager.screen().unavailable();
         }, stream: (id, signal) => vmDesktopCdpStream(vmStore.registration(id).endpoint, { signal }),
         tier: hostname => websiteHostSensitive(options.browser?.approved?.sites.list() ?? [], hostname) ? 'sensitive' : undefined });
+      browserCards = new BrowserActionCards({ store: vmStore, browser: computerBrowser, requireOwner, ownerGeneration: options.owner.generation, ...(options.clock ? { now: options.clock.now } : {}) });
       cleanup.push(() => computerBrowser!.close());
       cleanup.push(vmStore.onChange((row, previous) => {
         if (row.state !== 'ready' || previous && previous.generation !== row.generation) computerBrowser!.invalidate(row.id);
@@ -474,12 +479,12 @@ export async function composeS15(options: S15CompositionOptions) {
     const githubDisclosure = disclosure && options.disclosure?.githubRoute ? { beforeRead: (work: import('./policy').WorkAuthority, payload: import('./policy').JsonValue) => disclosure.guardRead(work, options.disclosure!.githubRoute!, payload), recordRead: (actor: import('./policy').WorkActor) => { const current = policy.work.guard(actor); for (const source of options.disclosure!.workSources(current)) disclosure.read(actor, source); } } : undefined;
     const github = gh && githubStore ? new GithubService({ runtime: 's15', store: githubStore, policy, ...gh, ...(githubConnections ? { currentRepositories: () => githubConnections!.repositories() } : {}), ...(options.disclosure?.githubRecipients ? { publicationRecipients: options.disclosure.githubRecipients } : {}), workspace: gh.workspace({ policy, vm: workingVm, routeAuth, ...(disclosure ? { disclosure, ...githubDisclosure, guardModel(current, request) { const candidate = options.model.registry.current(current.request.selection); if (!candidate || !modelDisclosure) throw new AppError('route_unavailable'); modelDisclosure.guard(current, candidate, request); } } : {}) }), ...(githubDisclosure ? { disclosure: githubDisclosure } : {}), responsibilities: work, ...(options.clock ? { now: options.clock.now } : {}) }) : undefined;
     const vmPort = { resourceId: options.vm.resource.id, port: createConversationVmTools(workingVm, { vmId: options.vm.id, resourceId: options.vm.resource.id,
-      ...(computerBrowser ? { async browser(session, guard, signal, actor) {
+      ...(computerBrowser ? { async browser(session, guard, signal, actor, request) {
         // Placement is protected VM state, never a model-selected endpoint/member.
         const placed = vmStore.db.query<{ vm_id: string }, [string]>('SELECT vm_id FROM vm_sessions WHERE id=?').get(session.id);
         if (!placed || await computerBrowser!.options.unavailable(placed.vm_id)) return null;
         guard(); const generation = vmStore.registration(placed.vm_id).generation;
-        const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal, disclosure ? { input: () => disclosure.vmInput(actor, placed.vm_id), output: () => disclosure.vmOutput(actor, placed.vm_id) } : undefined);
+        const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal, disclosure ? { input: () => disclosure.vmInput(actor, placed.vm_id), output: () => disclosure.vmOutput(actor, placed.vm_id) } : undefined, request ? { ...request, vmGeneration: generation } : undefined);
         return { tools: run.tools(), close: () => run.close() };
       } } : {}) }) };
     const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
@@ -760,7 +765,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
