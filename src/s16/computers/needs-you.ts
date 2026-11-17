@@ -4,7 +4,7 @@ import type { ConversationRequest } from "../../s15/conversation/types";
 import { canonical, exact, identity, integer } from "../../s15/conversation/validation";
 import { approvedWebsiteOrigin, websiteSensitiveOnly, type WebsiteTier } from "../../s15/browser/sites";
 import type { ScreenControl } from "./screen";
-import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouPost, ComputerNeedsYouResult, ComputerScreenOutcome } from "./needs-you-types";
+import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouPost, ComputerNeedsYouResult, ComputerScreenOutcome, ComputerScreenResumption, ComputerContinuationView } from "./needs-you-types";
 
 type StoredCard = ComputerNeedsYouPost & { id: string; createdAt: number; expiresAt: number; voidedAt?: number };
 /** One public HTTP(S) origin only; paths, credentials, query strings and fragments never enter a card. */
@@ -26,6 +26,8 @@ export class ComputerNeedsYou<Owner> {
     /** The request's actual placed computer, admitted resource and private-Bot restriction must all match. */
     allows(request: ConversationRequest, vmId: string): boolean;
     now?: () => number; minutes?: number;
+    /** Read-only host continuation facts; never schedules from a card read. */
+    continuation?(cardId: string): ComputerContinuationView | null;
   }) {
     this.minutes = options.minutes ?? 240; integer(this.minutes, 30, 1440);
     for (const row of options.store.db.query<{ record_json: string }, [number]>("SELECT record_json FROM computer_needs_you WHERE json_extract(record_json,'$.voidedAt') IS NULL AND created_at<=?").all(this.now() - 60_000)) this.current(JSON.parse(row.record_json));
@@ -53,7 +55,9 @@ export class ComputerNeedsYou<Owner> {
     const control = this.options.screen.cardControl(card.id), outcome = this.options.screen.cardOutcome(card.id);
     if (card.voidedAt === undefined && this.now() - card.createdAt >= 60_000 && !control && !outcome) this.void(card);
     let code: string | null = null; try { this.allowed(card.origin); } catch (error) { code = error instanceof AppError ? error.code : "computer_browser_unavailable"; }
+    const continuation = this.options.continuation?.(card.id);
     return { ...card, state: outcome?.outcome ?? (card.voidedAt === undefined ? "pending" : "void"), generation: outcome?.generation ?? control?.generation ?? null,
+      ...(continuation ? { continuation } : {}),
       code, screenState: control?.state ?? null, canWatch: code === null && card.voidedAt === undefined && !!control && !outcome, canDecline: card.voidedAt === undefined && control?.state === "yield" && !outcome };
   }
   /** Posts metadata only, then yields. Failed insertion cannot yield; failed yield voids the already inserted card. */
@@ -92,6 +96,12 @@ export class ComputerNeedsYou<Owner> {
       return ["resumed", "declined", "expired"].includes(card.state) && card.generation !== null && this.options.allows(request, card.vmId)
         ? [{ cardId: card.id, origin: card.origin, reason: card.reason, outcome: card.state as ComputerScreenOutcome["outcome"], generation: card.generation }] : [];
     });
+  }
+  /** Host-only durable trigger. Delivery and the ended posting run do not erase a hand-back event. */
+  resumption(id: string): ComputerScreenResumption | null {
+    const stored = this.get(id), card = this.current(stored);
+    if (stored.ownerGeneration !== this.options.ownerGeneration() || card.state !== "resumed" || card.generation === null) return null;
+    return { cardId: id, requestId: stored.requestId, conversationId: stored.conversationId, vmId: stored.vmId, ownerGeneration: stored.ownerGeneration, generation: card.generation };
   }
   /** Must share the conversation publication transaction; failed/held/cancelled runs never mark outcomes delivered. */
   delivered(request: ConversationRequest): void {

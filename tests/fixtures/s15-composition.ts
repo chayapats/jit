@@ -57,8 +57,11 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
       if (request.op === 'init') return {};
       if (request.op === 'spawn') return { stdout: Buffer.from('composed').toString('base64'), stderr: '', exitCode: 0, timedOut: false, truncated: false, totalBytes: 8 };
       if (request.op === 'realpath') return { path: request.path };
-      if (request.op === 'write') { files.set(String(request.path), Buffer.from(String(request.data), 'base64')); return {}; }
+      const token = () => files.has(String(request.path)) ? new Bun.CryptoHasher('sha256').update(files.get(String(request.path))!).digest('hex') : null;
+      if (request.op === 'observe') { const value = token(); return { token: value, data: value !== null && request.content === true ? Buffer.from(files.get(String(request.path))!).toString('base64') : null }; }
+      if (request.op === 'write') { if (Object.hasOwn(request, 'observed') && request.observed !== token()) throw Error('fixture_file_changed'); files.set(String(request.path), Buffer.from(String(request.data), 'base64')); return {}; }
       if (request.op === 'read') return { data: Buffer.from(files.get(String(request.path)) ?? []).toString('base64') };
+      if (request.op === 'stat') { if (!files.has(String(request.path))) throw Error('fixture_missing_file'); return { type: 'file' }; }
       if (request.op === 'list') return { entries: [] };
       throw Error('unsupported fixture operation');
     }

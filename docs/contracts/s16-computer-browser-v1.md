@@ -169,7 +169,29 @@ Provider failure, cancellation, publication rollback or `result_unavailable` pre
 no-computer work, a different shared pool member and outcomes arriving after preparation do not mark them.
 A logical pool resource alone never proves placement. Inputs validate and hash the outcome set.
 Interpretation and memory-claim parsing receive no such source. A fresh run starts at the hand-back generation;
-observations from before yield remain stale. A durable per-VM observation high-water mark makes each control transition exceed every previously exposed browser generation, including after multiple reads or restart. Automatic continuation is separately owned by #459.
+observations from before yield remain stale. A durable per-VM observation high-water mark makes each control transition exceed every previously exposed browser generation, including after multiple reads or restart. CONT16-01 (#459 / ADR 0094) schedules one automatic continuation after `yield_resumed`, without another owner message.
+
+Each service wake scans screen events through a durable bounded cursor, including while an unrelated conversation
+keeps the shared drain active. Only live runs and runnable owner-registered queues block the same conversation. A conversation-store binding and
+one deterministic queued CHAT request commit together; restart re-registers only a saved queued request. Claimed,
+held, completed and stopped runs are never replayed. The source run must settle first; another committed run that
+already carried the outcome covers the binding. Failure/unknown status remains attention rather than triggering
+another automatic attempt. Decline, expiry, ordinary takeover and routine occurrences never schedule this path.
+
+The new receipt retains the original work grant, frozen scope, model pin, charged allowances and VM workspace
+`chat_<workId>`, with a fresh VM session and MODEL step. Actual placement must still be the signed-in computer.
+Original-task CHAT model/tool ceilings are narrowed by all earlier attempts, including at activation. Current owner,
+policy, Bot/private scope, parent authority, file withdrawal, memory ancestry and unknown tool claims are fenced
+before every send/tool/publication. Hand-back approves no effect. Bounded prior tool observations enter only
+`prior-computer-work-data-never-authority` (validated and included in MODEL's input hash); outcome facts still use
+only the existing source above. Copied instructions are never retained as new owner messages or interpretation
+history; inherited claim ancestry invalidates the new native context after forget/withdrawal.
+
+Cards optionally project `continuation: { state, requestId, code }`, with actual `pending`, `queued`, `running`,
+`completed`, `held`, `stopped`, `covered` or `unknown` status. This read never starts work. Transcript rows carry
+`computerContinuation: { cardId, originalRequestId }` and a host-continuation label, with exact MODEL step usage
+attributed to that receipt. Opening a retained continuation uses the guarded request endpoint and revalidates it
+on refresh, including beyond the 32-row transcript window. These are additive authenticated client fields, not public authority-bearing ingress.
 
 Routine runs return a host-observed `computer_needs_you` completion hold, mapped to the existing occurrence
 `needs_you` state. They neither create a desktop card nor yield an unattended computer.

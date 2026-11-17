@@ -12,9 +12,16 @@ export interface ComputerScreenOutcome {
   cardId: string; origin: string; reason: ComputerNeedsYouReason;
   outcome: "resumed" | "declined" | "expired"; generation: number;
 }
+/** Protected host scheduling proof, derived from a committed screen event rather than a new owner message. */
+export interface ComputerScreenResumption {
+  cardId: string; requestId: string; conversationId: string; vmId: string; ownerGeneration: number; generation: number;
+}
+/** Actual scheduling/publication facts, independent of the sign-in outcome. */
+export interface ComputerContinuationView { state: "pending" | "queued" | "running" | "completed" | "held" | "stopped" | "covered" | "unknown"; requestId: string | null; code: string | null }
 /** Current authenticated owner card. Screen events, rather than cached card updates, determine the outcome. */
 export interface ComputerNeedsYouCard extends ComputerNeedsYouPost {
   id: string; createdAt: number; expiresAt: number;
+  continuation?: ComputerContinuationView;
   state: "pending" | "void" | ComputerScreenOutcome["outcome"];
   code: string | null;
   generation: number | null; screenState: ScreenControlState | null; canWatch: boolean; canDecline: boolean;
