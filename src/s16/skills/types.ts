@@ -19,4 +19,4 @@ export interface SkillPackage {
   files: SkillFile[]; units: SkillUnit[]; scripts: SkillScript[]; dependencies: SkillDependency[]; unsupported: UnsupportedSkillPart[];
 }
 /** Independent finite custody and model-input bounds; oversize imports refuse rather than silently dropping files. */
-export const skillLimits = Object.freeze({ files: 128, fileBytes: 65536, totalBytes: 2 * 1024 * 1024, units: 16, bodyBytes: 32000, dependencies: 16, metadataBytes: 16384, importRequests: 132, importMs: 60000 });
+export const skillLimits = Object.freeze({ files: 128, fileBytes: 65536, totalBytes: 2 * 1024 * 1024, units: 16, bodyBytes: 32000, dependencies: 16, metadataBytes: 16384, importRequests: 144, importMs: 60000 });
