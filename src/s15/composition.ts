@@ -455,10 +455,11 @@ export async function composeS15(options: S15CompositionOptions) {
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
       ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}),
       ...(bots ? { bots: (() => {
-        // A Bot's own route also carries its interpretation send; an unknown route keeps the installation's default pair.
+        // A Bot's own route also carries its interpretation send. A missing explicit pin never selects the default.
         const route = (selection: import('./policy').Selection) => { const found = options.model.registry.current(selection); return found ? { provider: found.provider, model: found.modelId } : null; };
         return { route, resolve: (conversationId: string, selections: readonly import('./policy').Selection[]) => {
           const resolved = bots!.resolve(conversationId, selections), found = route(resolved.selection);
+          if (!found && resolved.record.selection) throw new AppError('selection_pinned', 409);
           return found ? { ...resolved, route: found } : { ...resolved, selection: structuredClone(options.conversation.selection), route: { ...options.conversation.route } };
         } };
       })() } : {}) });

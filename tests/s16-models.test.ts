@@ -14,7 +14,7 @@ const uid = () => crypto.randomUUID().replaceAll("-", "");
 const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 
 async function fixture() {
-  let high!: ApprovedModelRoute, available = true, fail = false, gate: Promise<void> | undefined;
+  let high!: ApprovedModelRoute, available = true, configured = true, fail = false, gate: Promise<void> | undefined;
   let entered = Promise.withResolvers<void>();
   const selected: string[] = [], prompts: string[] = [];
   const f = await composedFixture("default", false, undefined, o => {
@@ -24,7 +24,7 @@ async function fixture() {
       o.proposedPolicy!.selections.push(high.selection);
       o.proposedPolicy!.rules.forEach(rule => rule.selections.push(high.selection));
     }
-    const routes = () => [base, { ...high, availability: available ? "available" as const : "unavailable" as const }];
+    const routes = () => [base, ...(configured ? [{ ...high, availability: available ? "available" as const : "unavailable" as const }] : [])];
     return { ...o, bots: {}, catalogs: { ...o.catalogs, current: (kind, id) => kind === "model" && id === "high_model" ? { ref: high.selection.model, active: true } : o.catalogs.current(kind, id) },
       model: { ...o.model, registry: { ...o.model.registry, list: routes, current: selection => routes().find(row => same(row.selection, selection)) ?? null }, scripted(route): Model {
         return { provider: "codex-subscription", id: route.modelId, async *stream(request) {
@@ -47,7 +47,7 @@ async function fixture() {
     const response = await f.request("/api/s16/client/bots/commands", "POST", { contract: "s16-bot-command/v1", requestId: uid(), kind: "bot.update", botId: "bot", expectedRevision: profile.revision, name: "Jit", responsibility: "Keep useful context.", selection, assignments: true });
     expect(response.status).toBe(200);
   }
-  return { f, high, client, selected, prompts, choose, unavailable() { available = false; }, failing() { fail = true; }, get entered() { return entered.promise; }, gate(value: Promise<void> | undefined) { gate = value; if (value) entered = Promise.withResolvers<void>(); } };
+  return { f, high, client, selected, prompts, choose, removeRoute() { configured = false; }, unavailable() { available = false; }, failing() { fail = true; }, get entered() { return entered.promise; }, gate(value: Promise<void> | undefined) { gate = value; if (value) entered = Promise.withResolvers<void>(); } };
 }
 
 test("MODEL16 catalog and snapshot reads report configured routes without provider work or reservations", async () => {
@@ -80,6 +80,23 @@ test("a withdrawn explicit pin holds without default inference; only an explicit
   expect(f.service.bots!.profile("bot")!.selection).toEqual(high.selection);
   await choose(null);
   expect((await f.chat("Update notes with the explicit default.")).state).toBe("completed");
+  expect(new Set(selected)).toEqual(new Set(["low"]));
+});
+
+test("removing a configured route holds an explicit pin before interpretation even while policy retains it", async () => {
+  const { f, high, choose, removeRoute, selected, client } = await fixture();
+  await choose(high.selection); removeRoute();
+  expect(f.service.policy.owner.current(f.owner)!.selections).toContainEqual(high.selection);
+  expect((await client.models()).routes.some(route => same(route.selection, high.selection))).toBe(false);
+  const profile = (await client.bots()).bots.find(bot => bot.id === "bot")!;
+  expect(profile.selectionUnavailable).toBe(true); expect(profile.selection).toEqual(high.selection);
+  const reservations = f.service.policy.control.reservations().length;
+  const row = await f.chat("Use my pinned route after its configuration was removed.");
+  expect(row.state).toBe("held"); expect(row.code).toBe("selection_pinned");
+  expect(f.interpreterPrompts).toHaveLength(0); expect(selected).toHaveLength(0);
+  expect(f.service.policy.control.reservations()).toHaveLength(reservations);
+  await choose(null);
+  expect((await f.chat("Use the explicitly selected installation default.")).state).toBe("completed");
   expect(new Set(selected)).toEqual(new Set(["low"]));
 });
 
