@@ -155,7 +155,7 @@ export function ComputerScreen({ client, t, vmId, title, onClose, onFailure }: C
       <h3 id={`screen-${vmId}`} ref={headingRef} tabIndex={-1}>{t("s16.screen.title", { computer: title })}</h3>
       <span className={`pill ${state === "owner" ? "busy" : state === "fenced" ? "warn" : "ok"}`} role="status">{view ? t(`s16.screen.state.${view.state}` as MessageKey) : t("s16.common.loading")}</span>
       <div className="actions">
-        {view?.available && (state === "agent" || state === "fenced") && <button type="button" className="primary" disabled={busy} onClick={() => void send({ kind: "takeover" }).then(ok => { if (ok) screenRef.current?.focus(); })}>{t(state === "fenced" ? "s16.screen.takeBack" : "s16.screen.takeOver")}</button>}
+        {view?.available && (state === "agent" || state === "yield" || state === "fenced") && <button type="button" className="primary" disabled={busy} onClick={() => void send({ kind: "takeover" }).then(ok => { if (ok) screenRef.current?.focus(); })}>{t(state === "fenced" ? "s16.screen.takeBack" : "s16.screen.takeOver")}</button>}
         {(state === "owner" || state === "settling" || state === "fenced") && <button type="button" disabled={busy} onClick={() => void send({ kind: "hand_back" })}>{t(state === "settling" ? "s16.screen.cancel" : "s16.screen.handBack")}</button>}
         <button type="button" onClick={onClose}>{t("s16.screen.close")}</button>
       </div>

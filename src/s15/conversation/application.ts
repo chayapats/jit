@@ -10,7 +10,7 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationDelegationPin, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
 
-const safeCodes = new Set(["bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
+const safeCodes = new Set(["computer_needs_you", "computer_yielded", "bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
   "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
@@ -606,9 +606,14 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
       }
+      const screenOutcomes = this.options.screenOutcomes?.prepare(request);
+      if (screenOutcomes?.length) {
+        this.store.transaction(() => { const current = this.store.request(id); current.screenOutcomeCards = screenOutcomes.map(card => card.cardId); this.store.save(current); });
+        request = this.store.request(id); guard("model");
+      }
       const mode: "inspect" | "execute" = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
-        const toolInput = { request: { requestId: id, conversationId: request.receipt.conversationId }, mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
+        const toolInput = { request: { requestId: id, conversationId: request.receipt.conversationId, routine: !!request.routine }, mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
           guard(); exact(action, ["id", "revision", "actionHash"]); identity(action.id); integer(action.revision, 1);
           if (!/^[a-f0-9]{64}$/.test(action.actionHash)) throw new AppError("invalid_data");
           const current = this.store.request(id);
@@ -679,7 +684,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         current.inputEvidence ??= []; if (current.inputEvidence.some(row => row.id === evidence.id)) return;
         if (current.inputEvidence.length >= 64) throw new AppError("output_limit"); current.inputEvidence.push(evidence); this.store.save(current); this.store.event(current, "evidence", this.clock.now());
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput, steering }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, signal: abort.signal, clock: this.clock, scripted: this.options.model, steering, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, screenOutcomes, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput, steering }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, screenOutcomes, signal: abort.signal, clock: this.clock, scripted: this.options.model, steering, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         guard: () => guard("model"),
         // Usage evidence is kept on a failed run too; publication below still requires completion.
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),
@@ -694,12 +699,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       this.store.transaction(() => {
         guard("publication"); const current = this.store.request(id), evidence = this.store.evidence(id);
         if (current.code) throw new AppError(current.code);
+        const completionHold = tools?.completionHold?.(); if (completionHold) throw new AppError(completionHold);
         if (current.intent.kind !== "answer" && !evidence.some(item => !item.isError)) throw new AppError("result_unavailable");
         if (current.fileInputs) current.artifacts = this.options.files!.complete(work!, current, evidence);
         if (current.memory) { const retained = this.options.memory?.complete(work!, id, output.text); if (retained?.length) current.memory.retained.push(...retained); }
         if (current.memory && current.artifacts?.length) this.options.memory?.artifacts?.(work!, id, current.artifacts);
         current.state = "completed"; current.code = current.intent.hold ? "owner_start_required" : null; current.result = output.text; current.usage = output.usage; current.revision++;
-        this.store.save(current); this.store.event(current, "result", this.clock.now());
+        this.store.save(current); this.options.screenOutcomes?.delivered(current); this.store.event(current, "result", this.clock.now());
         if (current.code) this.store.event(current, "needs_me", this.clock.now(), current.code);
         this.options.beforeCommit?.();
       });

@@ -126,13 +126,15 @@ export interface ConversationTool {
 /** Work-scoped VM/broker session. Its tools must guard actual I/O after waits and retain their own effect claims. */
 export interface ConversationTools {
   tools: readonly ConversationTool[];
+  /** Host-observed routine handoff; model text and tool-result JSON cannot set this hold. */
+  completionHold?(): string | null;
   /** Narrow cleanup only; return does not certify VM/process/effect settlement. */
   cancel(): Promise<void>;
   close(): Promise<void>;
 }
 /** Trusted VM/broker factory; there is no host-local backend fallback or dynamically installed model tool. */
 export interface ConversationToolPort<WorkContext> {
-  open(work: WorkContext, input: { request?: { requestId: string; conversationId: string }; mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void; onAction?: (action: ActionRef) => void }): Promise<ConversationTools>;
+  open(work: WorkContext, input: { request?: { requestId: string; conversationId: string; routine?: boolean }; mode: "inspect" | "execute"; signal: AbortSignal; guard: () => void; onAction?: (action: ActionRef) => void }): Promise<ConversationTools>;
 }
 /** Stable receipt acknowledges one durable ingress identity, independently of execution or completion. */
 export interface ConversationReceipt { contract: "s15-conversation-receipt/v1"; requestId: string; rootRequestId: string; conversationId: string; receivedAt: number }
@@ -164,6 +166,8 @@ export interface ConversationRequest {
   contextSequence?: number;
   memory?: { retained: { id: string; kind: "fact" | "inference"; category: string; source: { kind: string; id: string; conversationId: string | null; at: number } }[] };
   inputEvidence?: ConversationEvidence[];
+  /** ADR 0092: the exact outcome cards carried by this run, saved before its model call. */
+  screenOutcomeCards?: string[];
   fileInputs?: FileReceipt[];
   /** Frozen ingress semantics; enabling memory later never promotes previously accepted file work. */
   fileMemory?: "s16-file-memory/v1";
@@ -212,7 +216,9 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[]) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
-  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  /** Picks one carried set before the send; delivery shares only the committed result-publication transaction. */
+  screenOutcomes?: { prepare(request: ConversationRequest): import("../../s16/computers/needs-you-types").ComputerScreenOutcome[]; delivered(request: ConversationRequest): void };
   /** Most requests that run at once (default 2); one conversation never runs two requests at the same time. */
   maxConcurrentRuns?: number;
   /** DELEG16-01: delegated children run in their own finite pool (default 3) so a waiting parent cannot starve them. */

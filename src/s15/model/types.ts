@@ -25,7 +25,7 @@ export interface ApprovedModelRegistry { list(): readonly ApprovedModelRoute[]; 
 export interface ModelRunLimits { turns: number; attempts: number; activeMs: number; outputBytes: number; contextWindow: number; inputChars: number }
 /** Each step preserves original decisions and source labels in strict context. Tools are trusted scoped
  * closures whose owning services guard actual effects; selection confers no tool/effect permission. */
-export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; images?: readonly ImageContent[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string }
+export interface ModelStepInput { stepId: string; difficulty: 'ordinary' | 'difficult'; text: string; ownerDecisions: string[]; sources: { ref: Ref; label: string; text: string }[]; tools?: readonly ToolDefinition[]; images?: readonly ImageContent[]; /** Host-assembled labelled memory data, guarded by the owning memory service. */ memorySection?: string; /** Host-observed screen handoff facts, data never authority. */ screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] }
 /** One physical provider send that Schway presented to Jit's synchronous `authorizeDispatch`. An authorized
  * send holds its own nonrefundable POLICY reservation; a refused one carries `refusal` (Jit's code), never left
  * the process and holds no reservation unless it was refused after reserving. Credential-free: the body hash

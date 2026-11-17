@@ -26,7 +26,7 @@ export function createConversationVmTools<Worker extends object>(vm: Conversatio
   /** Pool id (or, without a pool, the single VM id); fixed by trusted composition, never by a model. */
   vmId: string; resourceId: string;
   /** Host-only optional watched-browser run, bound to the placed VM session. */
-  browser?(session: VmSession, guard: () => void, signal: AbortSignal, actor: ConversationPolicyWork<Worker>["actor"], request?: { requestId: string; conversationId: string; ownerGeneration: number }): Promise<{ tools: readonly import("schway/host").ToolDefinition[]; close(): void } | null>;
+  browser?(session: VmSession, guard: () => void, signal: AbortSignal, actor: ConversationPolicyWork<Worker>["actor"], request?: { requestId: string; conversationId: string; ownerGeneration: number; routine?: boolean }): Promise<{ tools: readonly import("schway/host").ToolDefinition[]; completionHold?(): string | null; close(): void } | null>;
 }): ConversationToolPort<ConversationPolicyWork<Worker>> {
   identity(configuration.vmId); identity(configuration.resourceId);
   const { vmId, resourceId } = configuration;
@@ -39,7 +39,7 @@ export function createConversationVmTools<Worker extends object>(vm: Conversatio
       browser = input.mode === "execute" ? await configuration.browser?.(session, input.guard, input.signal, work.actor, input.request ? { ...input.request, ownerGeneration: work.authority.ownerGeneration } : undefined) ?? null : null;
       input.guard();
       return { tools: [...conversationVmSessionTools(session, input), ...(browser?.tools.map(definition => ({ access: "reversible_write" as const, definition })) ?? [])],
-        cancel: async () => { browser?.close(); await session.cancel(); }, close: async () => { browser?.close(); await session.close(); } };
+        completionHold: () => browser?.completionHold?.() ?? null, cancel: async () => { browser?.close(); await session.cancel(); }, close: async () => { browser?.close(); await session.close(); } };
     } catch (error) { browser?.close(); await session.close().catch(() => {}); throw error; }
   } };
 }
