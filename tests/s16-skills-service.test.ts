@@ -97,7 +97,8 @@ test("an interrupted GitHub import resumes the saved commit rather than re-resol
   h.github.failBlobs = true; await expect(h.directory.command(h.owner, command)).rejects.toThrow("skill_source_unavailable");
   const pending = h.directory.store.db.query<{ resolved_json: string }, [string]>("SELECT resolved_json FROM pending WHERE id=?").get(requestId)!; expect(JSON.parse(pending.resolved_json).commit).toBe(commit);
   expect(h.directory.records()).toHaveLength(0); await h.reopen(); h.github.failBlobs = false;
-  const result = await h.directory.command(h.owner, command); expect(h.directory.package(result.pin!).origin).toMatchObject({ commit });
+  const hits = h.github.hits.length; expect(h.directory.status(h.owner, requestId).state).toBe("interrupted"); expect(h.github.hits).toHaveLength(hits);
+  const result = await h.directory.resume(h.owner, requestId); expect(h.directory.package(result.pin!).origin).toMatchObject({ commit });
   expect(h.github.hits.filter(url => url.includes("/git/ref/heads/"))).toHaveLength(1);
 });
 
@@ -116,4 +117,31 @@ test("unsupported-only candidates stay reviewable data and cannot be advertised 
   const h = await fixture(), receipt = await h.command({ kind: "skill.import", input: { kind: "folder", label: "Unsupported", files: [file("plugin.json", '{"name":"unsupported"}'), file("hooks/hooks.json", '{"start":"touch /protected/marker"}')] } });
   const candidate = h.directory.record(receipt.skillId)!;
   await expect(h.review(candidate)).rejects.toThrow("skill_parts_unavailable"); expect(h.directory.record(candidate.id)!.state).toBe("needs_review"); expect(h.membership).toBe(0);
+});
+
+test("a folder import interrupted before candidate commit resumes by identity without reselecting or changing its bytes", async () => {
+  const h = await fixture(), requestId = uid(), original = folder("Original frozen instructions.");
+  h.directory.store.db.exec("CREATE TRIGGER fixture_commit_stop BEFORE INSERT ON skills BEGIN SELECT RAISE(ABORT,'fixture_commit_stop'); END");
+  await expect(h.directory.command(h.owner, { contract: "s16-skill-command/v1", requestId, kind: "skill.import", input: original })).rejects.toThrow("fixture_commit_stop");
+  original.files[0]!.base64 = Buffer.from("Caller changed its local files.").toString("base64");
+  expect(h.directory.status(h.owner, requestId).state).toBe("interrupted"); await h.reopen();
+  h.directory.store.db.exec("DROP TRIGGER fixture_commit_stop");
+  const result = await h.directory.resume(h.owner, requestId);
+  expect(h.directory.package(result.pin!).units[0]!.body).toBe("Original frozen instructions.\n"); expect(result.state).toBe("needs_review"); expect(h.membership).toBe(0);
+});
+
+test("status reads never reconcile membership; explicit identity recovery reconciles only its committed exact review", async () => {
+  const h = await fixture(), candidate = await h.imported(), requestId = uid(); h.memberFails = true;
+  await expect(h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {} }, requestId)).rejects.toThrow("controlled membership failure");
+  const status = h.directory.status(h.owner, requestId); expect(status.state).toBe("complete");
+  if (status.state === "complete") expect(status.receipt.policy).toBe("review_required");
+  const before = h.membership; h.directory.status(h.owner, requestId); expect(h.membership).toBe(before);
+  await h.reopen(); h.memberFails = false; const restored = await h.directory.resume(h.owner, requestId); expect(restored.policy).toBe("installed"); expect(h.directory.record(candidate.id)!.revision).toBe(restored.revision);
+});
+
+test("the owner generation is bound at queue ingress, before another command or microtask can run", async () => {
+  const h = await fixture(), requestId = uid();
+  const queued = h.command({ kind: "skill.import", input: folder() }, requestId); expect(h.directory.status(h.owner, requestId).state).toBe("queued");
+  h.generation = 2; await expect(queued).rejects.toThrow("owner_changed"); expect(h.directory.records()).toEqual([]);
+  expect(h.directory.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM pending").get()!.n).toBe(0);
 });

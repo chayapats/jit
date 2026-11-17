@@ -7,12 +7,12 @@ import type { SourceNetwork } from "../connections/net";
 import type { SourceRecord } from "../connections/types";
 import { githubSkillSource, importGithubSkill } from "./github";
 import { parseSkillPackage } from "./package";
-import type { SkillAvailability, SkillCommand, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse } from "./types";
+import type { SkillAvailability, SkillCommand, SkillCommandStatus, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse } from "./types";
 
 const schema = `CREATE TABLE skills(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);
 CREATE TABLE packages(pin TEXT PRIMARY KEY,record_json TEXT NOT NULL);
-CREATE TABLE commands(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,result_json TEXT NOT NULL);
-CREATE TABLE pending(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,resolved_json TEXT);
+CREATE TABLE commands(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,kind TEXT NOT NULL,result_json TEXT NOT NULL);
+CREATE TABLE pending(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,resolved_json TEXT,input_json TEXT NOT NULL);
 CREATE TABLE reviews(id INTEGER PRIMARY KEY,skill_id TEXT NOT NULL,record_json TEXT NOT NULL);
 CREATE TABLE uses(id TEXT PRIMARY KEY,request_id TEXT NOT NULL,work_id TEXT NOT NULL,skill_id TEXT NOT NULL,pin TEXT NOT NULL,record_json TEXT NOT NULL);`;
 const fail = (code: string): never => { throw new AppError(code, 409); };
@@ -28,6 +28,8 @@ export interface SkillDirectoryOptions<Owner> {
 export class SkillDirectory<Owner> {
   readonly store: ProtectedDataStore;
   #tail: Promise<unknown> = Promise.resolve();
+  readonly #queued = new Map<string, { generation: number; hash: string; count: number }>();
+  readonly #active = new Set<string>();
   constructor(readonly options: SkillDirectoryOptions<Owner>) { this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a49534b, schema); }
   /** Current protected records for catalog/disclosure composition; not an unguarded client endpoint. */
   records(): SkillRecord[] { return this.store.db.query<{ record_json: string }, []>("SELECT record_json FROM skills ORDER BY rowid").all().map(row => JSON.parse(row.record_json)); }
@@ -56,7 +58,7 @@ export class SkillDirectory<Owner> {
     }
   }
   private receipt(requestId: string, record: SkillRecord): SkillReceipt { return { contract: "s16-skill-receipt/v1", requestId, skillId: record.id, revision: record.revision, pin: record.activePin ?? record.candidatePin, state: record.state, policy: "not_needed" }; }
-  private member(owner: Owner, command: SkillCommand, receipt: SkillReceipt): SkillReceipt {
+  private member(owner: Owner, command: Pick<SkillCommand, "kind" | "requestId">, receipt: SkillReceipt): SkillReceipt {
     if (!["skill.review", "skill.availability", "skill.revoke"].includes(command.kind)) return receipt;
     const current = this.get(owner, receipt.skillId);
     // A lost reply never reinstalls an old review over a later update/revocation.
@@ -66,13 +68,22 @@ export class SkillDirectory<Owner> {
   }
   /** Serialized authenticated owner ingress. Exact IDs replay receipts or resume a pinned inert import, never code. */
   command(owner: Owner, value: unknown): Promise<SkillReceipt> {
-    let snapshot: unknown; try { snapshot = structuredClone(value); } catch { return Promise.reject(new AppError("invalid_body")); }
-    const run = this.#tail.then(() => this.execute(owner, snapshot)); this.#tail = run.catch(() => {}); return run;
+    let snapshot: SkillCommand, generation: number, hash: string;
+    try { this.owner(owner); snapshot = structuredClone(value) as SkillCommand; canonical(snapshot); identity(snapshot.requestId); generation = this.options.ownerGeneration(); hash = digest("s16.skills.command.v1", snapshot); }
+    catch (error) { return Promise.reject(error); }
+    const previous = this.#queued.get(snapshot.requestId);
+    if (previous && (previous.generation !== generation || previous.hash !== hash)) return Promise.reject(new AppError("request_id_conflict", 409));
+    const queued = previous ?? { generation, hash, count: 0 }; queued.count++; this.#queued.set(snapshot.requestId, queued);
+    const run = this.#tail.then(async () => {
+      this.#active.add(snapshot.requestId);
+      try { return await this.execute(owner, snapshot, generation); }
+      finally { this.#active.delete(snapshot.requestId); if (--queued.count === 0) this.#queued.delete(snapshot.requestId); }
+    }); this.#tail = run.catch(() => {}); return run;
   }
-  private async execute(owner: Owner, value: unknown): Promise<SkillReceipt> {
-    this.owner(owner); canonical(value); const command = value as SkillCommand;
+  private async execute(owner: Owner, value: unknown, generation: number): Promise<SkillReceipt> {
+    this.owner(owner); if (generation !== this.options.ownerGeneration()) return fail("owner_changed"); canonical(value); const command = value as SkillCommand;
     if (command.contract !== "s16-skill-command/v1") return fail("invalid_contract"); identity(command.requestId);
-    const hash = digest("s16.skills.command.v1", command), generation = this.options.ownerGeneration();
+    const hash = digest("s16.skills.command.v1", command);
     const old = this.store.db.query<{ payload_hash: string; owner_generation: number; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(command.requestId);
     if (old) { if (old.payload_hash !== hash) return fail("request_id_conflict"); if (old.owner_generation !== generation) return fail("owner_changed"); return this.member(owner, command, JSON.parse(old.result_json)); }
     let record: SkillRecord | null = null;
@@ -85,7 +96,7 @@ export class SkillDirectory<Owner> {
       else { exact(input, ["kind", "url"]); if (input.kind !== "github") return fail("skill_origin_invalid"); githubSkillSource(input.url); }
       const pending = this.store.db.query<{ payload_hash: string; owner_generation: number; resolved_json: string | null }, [string]>("SELECT * FROM pending WHERE id=?").get(command.requestId);
       if (pending && (pending.payload_hash !== hash || pending.owner_generation !== generation)) return fail("request_id_conflict");
-      this.store.transaction(() => { this.store.capacity(); this.store.db.query("INSERT OR IGNORE INTO pending VALUES(?,?,?,NULL)").run(command.requestId, hash, generation); });
+      this.store.transaction(() => { this.store.capacity(); this.store.db.query("INSERT OR IGNORE INTO pending VALUES(?,?,?,NULL,?)").run(command.requestId, hash, generation, canonical(command)); });
       const guard = () => { this.owner(owner); if (generation !== this.options.ownerGeneration()) fail("owner_changed"); };
       if (folder) candidate = folder;
       else {
@@ -120,9 +131,29 @@ export class SkillDirectory<Owner> {
       if (command.kind === "skill.revoke") record.state = "revoked";
       if (["skill.review", "skill.availability", "skill.revoke"].includes(command.kind)) { record.resource.revision++; record.source.revision++; this.store.db.query("INSERT INTO reviews(skill_id,record_json) VALUES(?,?)").run(record.id, canonical({ revision: record.revision + 1, review: record.review, state: record.state })); }
       record.revision++; record.updatedAt = now; this.save(record); const receipt = this.receipt(command.requestId, record);
-      this.store.db.query("INSERT INTO commands VALUES(?,?,?,?)").run(command.requestId, hash, generation, canonical(receipt)); this.store.db.query("DELETE FROM pending WHERE id=?").run(command.requestId); return receipt;
+      if (["skill.review", "skill.availability", "skill.revoke"].includes(command.kind)) receipt.policy = "review_required";
+      this.store.db.query("INSERT INTO commands VALUES(?,?,?,?,?)").run(command.requestId, hash, generation, command.kind, canonical(receipt)); this.store.db.query("DELETE FROM pending WHERE id=?").run(command.requestId); return receipt;
     });
     return this.member(owner, command, result);
+  }
+  /** Fresh identity-only recovery read. It never resumes an import or applies resource membership. */
+  status(owner: Owner, requestId: string): SkillCommandStatus {
+    this.owner(owner); identity(requestId); const generation = this.options.ownerGeneration();
+    const done = this.store.db.query<{ owner_generation: number; result_json: string }, [string]>("SELECT owner_generation,result_json FROM commands WHERE id=?").get(requestId);
+    if (done) { if (done.owner_generation !== generation) return fail("owner_changed"); return { contract: "s16-skill-command-status/v1", requestId, state: "complete", receipt: JSON.parse(done.result_json) }; }
+    const pending = this.store.db.query<{ owner_generation: number }, [string]>("SELECT owner_generation FROM pending WHERE id=?").get(requestId);
+    if (pending) { if (pending.owner_generation !== generation) return fail("owner_changed"); return { contract: "s16-skill-command-status/v1", requestId, state: this.#active.has(requestId) ? "importing" : "interrupted" }; }
+    const queued = this.#queued.get(requestId); if (!queued) return fail("not_found"); if (queued.generation !== generation) return fail("owner_changed");
+    return { contract: "s16-skill-command-status/v1", requestId, state: "queued" };
+  }
+  /** Explicit authenticated recovery of the original inert import or already-committed exact membership action. */
+  async resume(owner: Owner, requestId: string): Promise<SkillReceipt> {
+    this.owner(owner); identity(requestId); const generation = this.options.ownerGeneration();
+    const done = this.store.db.query<{ owner_generation: number; kind: SkillCommand["kind"]; result_json: string }, [string]>("SELECT owner_generation,kind,result_json FROM commands WHERE id=?").get(requestId);
+    if (done) { if (done.owner_generation !== generation) return fail("owner_changed"); return this.member(owner, { kind: done.kind, requestId }, JSON.parse(done.result_json)); }
+    const pending = this.store.db.query<{ owner_generation: number; input_json: string }, [string]>("SELECT owner_generation,input_json FROM pending WHERE id=?").get(requestId);
+    if (!pending) return fail("not_found"); if (pending.owner_generation !== generation) return fail("owner_changed");
+    return this.command(owner, JSON.parse(pending.input_json));
   }
   /** Authenticated preview, including candidate bytes; never a model/source route. */
   detail(owner: Owner, id: string): { record: SkillRecord; active: SkillPackage | null; candidate: SkillPackage | null } {

@@ -46,3 +46,6 @@ export type SkillCommand =
   | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.revoke"; skillId: string; expectedRevision: number };
 /** A compact durable command result; package contents are obtained through a fresh authenticated detail read. */
 export interface SkillReceipt { contract: "s16-skill-receipt/v1"; requestId: string; skillId: string; revision: number; pin: string | null; state: SkillRecord["state"]; policy: "installed" | "review_required" | "not_needed" }
+
+/** A read-only import/review recovery projection; querying it starts no work or network request. */
+export type SkillCommandStatus = { contract: "s16-skill-command-status/v1"; requestId: string } & ({ state: "complete"; receipt: SkillReceipt } | { state: "queued" | "importing" | "interrupted" });
