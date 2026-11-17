@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../../errors";
 import type { SourceNetwork } from "../connections/net";
 import { parseSkillPackage, skillPath } from "./package";
-import { skillLimits, type SkillPackage } from "./types";
+import { skillLimits, type SkillPackage, type SkillOrigin } from "./types";
 
 const refuse = (code: string): never => { throw new AppError(code, 409); };
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
@@ -23,7 +23,7 @@ export function githubSkillSource(value: unknown): { repository: string; ref: st
  * Bounded data-only GitHub import: unauthenticated API reads, immutable commit/tree/blob verification and no
  * redirects/archive extraction/local git/npm execution. `guard` reacquires the owner after every awaited read.
  */
-export async function importGithubSkill(value: unknown, options: { network: SourceNetwork; guard(): void; signal?: AbortSignal; now?: () => number }): Promise<SkillPackage> {
+export async function importGithubSkill(value: unknown, options: { network: SourceNetwork; guard(): void; signal?: AbortSignal; now?: () => number; resolved?(origin: Extract<SkillOrigin, { kind: "github" }>): void }): Promise<SkillPackage> {
   const source = githubSkillSource(value), now = options.now ?? Date.now, end = now() + skillLimits.importMs, controller = new AbortController();
   let count = 0;
   const cancel = () => controller.abort(); if (options.signal?.aborted) cancel(); else options.signal?.addEventListener("abort", cancel, { once: true });
@@ -54,6 +54,7 @@ export async function importGithubSkill(value: unknown, options: { network: Sour
     }
     const committed = await read(`git/commits/${commit}`, 65536), treeId = (committed?.tree as Record<string, unknown> | undefined)?.sha;
     if (committed?.sha !== commit || !sha(treeId)) return refuse("skill_source_invalid");
+    options.resolved?.({ kind: "github", repository: source.repository, commit, folder: source.folder });
     const tree = await read(`git/trees/${treeId}?recursive=1`, 2 * 1024 * 1024);
     if (tree?.truncated !== false || tree.sha !== treeId || !Array.isArray(tree.tree)) return refuse("skill_tree_incomplete");
     const selected: { path: string; original: string; sha: string; size: number }[] = []; let total = 0;

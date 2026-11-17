@@ -20,3 +20,29 @@ export interface SkillPackage {
 }
 /** Independent finite custody and model-input bounds; oversize imports refuse rather than silently dropping files. */
 export const skillLimits = Object.freeze({ files: 128, fileBytes: 65536, totalBytes: 2 * 1024 * 1024, units: 16, bodyBytes: 32000, dependencies: 16, metadataBytes: 16384, importRequests: 144, importMs: 60000 });
+
+/** Owner-reviewed existing connection; imports never create or change that connection or its tool decisions. */
+export interface SkillDependencyBinding { sourceId: string; catalogHash: string; reviewRevision: number }
+/** Availability narrows use of this know-how; it is not a work grant or connection permission. */
+export type SkillAvailability = { kind: "team" } | { kind: "bots"; botIds: string[] };
+/** Frozen owner review of one exact candidate. */
+export interface SkillReview { pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding>; at: number }
+/** Protected current pointers; immutable package bytes and past reviews remain in the owning journal. */
+export interface SkillRecord {
+  contract: "s16-skill/v1"; id: string; revision: number; ownerGeneration: number; state: "needs_review" | "active" | "revoked";
+  activePin: string | null; candidatePin: string | null; review: SkillReview | null;
+  resource: import("../../s15/policy").Ref; source: import("../../s15/policy").Ref; createdAt: number; updatedAt: number;
+}
+/** Guarded CHAT dependency, recorded before imported bytes reach a model or the working computer. */
+export interface SkillUse { skillId: string; pin: string; unitId: string | null; resource: import("../../s15/policy").Ref }
+/** Inert owner ingress; remote provenance is constructed by the importer, never asserted by a folder upload. */
+export type SkillImport = { kind: "github"; url: string } | { kind: "folder"; label: string; files: SkillFileInput[] };
+/** Each command has an exact receipt identity. Update discovery never replaces a reviewed pin by itself. */
+export type SkillCommand =
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.import"; input: SkillImport }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.update"; skillId: string; expectedRevision: number; input: SkillImport }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.review"; skillId: string; expectedRevision: number; pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding> }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.availability"; skillId: string; expectedRevision: number; availability: SkillAvailability; executable: boolean }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.revoke"; skillId: string; expectedRevision: number };
+/** A compact durable command result; package contents are obtained through a fresh authenticated detail read. */
+export interface SkillReceipt { contract: "s16-skill-receipt/v1"; requestId: string; skillId: string; revision: number; pin: string | null; state: SkillRecord["state"]; policy: "installed" | "review_required" | "not_needed" }
