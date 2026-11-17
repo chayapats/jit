@@ -16,6 +16,7 @@ import type { ScreenControl } from "./computers/screen";
 import type { ComputerDirectory } from "./computers/service";
 import type { BotDirectory } from "./bots/service";
 import type { ConnectionDirectory } from "./connections/service";
+import type { S16ModelsPort } from "./models";
 import { connectionLimits } from "./connections/types";
 
 /**
@@ -26,7 +27,7 @@ import { connectionLimits } from "./connections/types";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -50,7 +51,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
     const formats = [ ...["txt", "md", "markdown", "csv", "tsv"].map(extension => ({ extension, mime: "text/plain", bytes: textBytes })),
       ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
       ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
-    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
+    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
       uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
@@ -191,6 +192,11 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const result = await options.needsYou.command(actor, input, () => { currentOwner(); });
         currentOwner(); return json(result);
       }
+      if (url.pathname === "/api/s16/client/models") {
+        if (request.method !== "GET" || url.search) throw new AppError("method_rejected", 405);
+        if (!options.models) throw new AppError("models_unavailable", 503);
+        return json(options.models.view(currentOwner()));
+      }
       if (url.pathname === "/api/s16/client/browser-cards/decisions") {
         if (!options.browserCards) throw new AppError("computer_browser_unavailable", 503);
         if (request.method !== "POST" || url.search) throw new AppError("method_rejected", 405);
@@ -257,7 +263,9 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const conversationId = conversation[1]!;
         if (request.method === "GET" && !conversation[2]) {
           if (url.search) throw new AppError("invalid_body");
-          return json({ contract: "s16-client-snapshot/v1", conversation: conversationOwnerView(app, authenticated.actor, conversationId), ...(options.browserCards ? { browserCards: options.browserCards.list(authenticated.actor, conversationId) } : {}), ...(options.needsYou ? { needsYouCards: options.needsYou.list(authenticated.actor, conversationId) } : {}), ...(options.bots ? { botId: options.bots.conversationBot(conversationId) } : {}) });
+          const conversation = conversationOwnerView(app, authenticated.actor, conversationId);
+          const modelUsage = options.models?.usage(currentOwner(), conversation.rows.flatMap(row => row.scopeLine ? [{ requestId: row.requestId, workId: row.scopeLine.authorityId }] : []));
+          return json({ contract: "s16-client-snapshot/v1", conversation, ...(modelUsage ? { modelUsage } : {}), ...(options.browserCards ? { browserCards: options.browserCards.list(authenticated.actor, conversationId) } : {}), ...(options.needsYou ? { needsYouCards: options.needsYou.list(authenticated.actor, conversationId) } : {}), ...(options.bots ? { botId: options.bots.conversationBot(conversationId) } : {}) });
         }
         if (request.method === "GET" && conversation[2] === "events") {
           if ([...url.searchParams.keys()].some(key => key !== "after") || url.searchParams.getAll("after").length > 1 || !/^(?:0|[1-9]\d{0,15})$/.test(url.searchParams.get("after") ?? "0")) throw new AppError("cursor_invalid", 409);

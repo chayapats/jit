@@ -137,7 +137,10 @@ export interface ModelService {
    * invocation or result. Unknown effect outcomes remain the responsibility/owning adapter's concern. */
   reconcile(owner: import('../policy').OwnerActor, recordId: string): ModelSelectionRecord;
   publish(actor: WorkActor, stepId: string, consume: (text: string) => void): void;
-  project(owner: import('../policy').OwnerActor, workId?: string): ModelBudgetView;
+  project(owner: import('../policy').OwnerActor, workId?: string, includeSelections?: boolean): ModelBudgetView;
+  /** Read at most 128 recent steps for at most 32 owner-authorized work IDs, without output or native handles.
+   * The query never reconciles, renews, reserves or starts work; truncation is explicit. */
+  observations(owner: import('../policy').OwnerActor, workIds: readonly string[]): { records: Omit<ModelSelectionRecord, 'output' | 'session'>[]; truncated: boolean };
   /** Drop cached catalog evidence for one route (or all) after an observed sign-in, logout or account change;
    * the next step renews and lists afresh. No credential is read or written. */
   forgetRouteCatalog(route?: ApprovedModelRoute['provider']): void;

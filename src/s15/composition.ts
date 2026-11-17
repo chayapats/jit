@@ -1,6 +1,7 @@
 import { websiteHostSensitive } from "./browser/sites";
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { createS16ModelsPort } from '../s16/models';
 import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
@@ -461,10 +462,11 @@ export async function composeS15(options: S15CompositionOptions) {
     const conversationPolicy = createConversationPolicy(policy, { ...options.conversation, ...(gh ? { subjectResourceIds: options.github ? options.github.repositories.map(r => r.resource.id) : subjectIds } : {}), ownerGeneration: options.owner.generation,
       ...(options.recipients ? { namedRecipients: (text: string) => options.recipients!.named(text, options.google?.recipients() ?? []), onApproved: (action: import('./policy').PreparedAction) => options.recipients!.remember(action) } : {}),
       ...(bots ? { bots: (() => {
-        // A Bot's own route also carries its interpretation send; an unknown route keeps the installation's default pair.
+        // A Bot's own route also carries its interpretation send. A missing explicit pin never selects the default.
         const route = (selection: import('./policy').Selection) => { const found = options.model.registry.current(selection); return found ? { provider: found.provider, model: found.modelId } : null; };
         return { route, resolve: (conversationId: string, selections: readonly import('./policy').Selection[]) => {
           const resolved = bots!.resolve(conversationId, selections), found = route(resolved.selection);
+          if (!found && resolved.record.selection) throw new AppError('selection_pinned', 409);
           return found ? { ...resolved, route: found } : { ...resolved, selection: structuredClone(options.conversation.selection), route: { ...options.conversation.route } };
         } };
       })() } : {}) });
@@ -771,7 +773,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
