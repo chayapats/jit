@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../../i18n";
 import { JitClientError, type JitClient } from "../client";
 import type { ClientBot, ClientBotCommand, ClientBotDetail, ClientBotDraft, ClientBotProposal, ClientBotReceipt, ClientBotsView } from "../client/contracts";
+import { ModelsPanel } from "./ModelsPanel";
 import { BotProposalCard } from "./BotProposalCard";
 import type { Copy } from "./copy";
 
@@ -12,6 +13,7 @@ export interface BotsViewProps {
   client: JitClient; t: Copy; locale: Locale;
   /** Server capability. When false, no request is made and no control is shown. */
   available: boolean;
+  modelsAvailable?: boolean;
   page: BotsPage;
   onNavigate(page: BotsPage): void;
   onStartChat(botId: string): void;
@@ -34,7 +36,7 @@ export function botName(t: Copy, bot: Pick<ClientBot, "main" | "name"> | undefin
  * New Bot form. Every change is one explicit command that is never retried silently; creating a Bot always goes
  * through the reviewed proposal card.
  */
-export function BotsView({ client, t, locale, available, page, onNavigate, onStartChat, onOpenConversation, onChanged, onFailure }: BotsViewProps) {
+export function BotsView({ client, t, locale, available, modelsAvailable, page, onNavigate, onStartChat, onOpenConversation, onChanged, onFailure }: BotsViewProps) {
   const [data, setData] = useState<ClientBotsView | null>(null), [detail, setDetail] = useState<ClientBotDetail | null>(null), [loadError, setLoadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null), [reload, setReload] = useState(0), [proposal, setProposal] = useState<ClientBotProposal | null>(null), [confirm, setConfirm] = useState(false);
   const noticeRef = useRef<HTMLDivElement>(null), heading = useRef<HTMLHeadingElement>(null), importer = useRef<HTMLInputElement>(null), commands = useRef(0);
@@ -122,6 +124,7 @@ export function BotsView({ client, t, locale, available, page, onNavigate, onSta
         {bot.state === "active" ? <BotForm key={`${bot.id}:${bot.revision}`} t={t} data={data} main={bot.main} initial={{ contract: "s16-bot-draft/v1", name: botName(t, bot), responsibility: bot.responsibility, selection: bot.selection, excluded: bot.excluded, assignments: bot.assignments }} busy={busy} submit={t("s16.bots.save")}
           onSubmit={draft => void send({ contract: "s16-bot-command/v1", requestId: uid(), kind: "bot.update", botId: bot.id, expectedRevision: bot.revision, name: draft.name, responsibility: draft.responsibility, selection: draft.selection, assignments: draft.assignments, excluded: draft.excluded }, () => t("s16.bots.saved"))} />
           : bot.responsibility && <p className="owner-text">{bot.responsibility}</p>}
+        {modelsAvailable && <ModelsPanel client={client} t={t} onFailure={onFailure} />}
         <div className="actions">
           {bot.state === "active" && <button type="button" className="primary" onClick={() => onStartChat(bot.id)}>{t("s16.bots.chat")}</button>}
           {data.creation.available && <button type="button" disabled={busy} onClick={() => void duplicate(bot)}>{t("s16.bots.duplicate")}</button>}
@@ -149,6 +152,7 @@ export function BotsView({ client, t, locale, available, page, onNavigate, onSta
   return <section className="bots" aria-labelledby="bots-title">
     <h1 id="bots-title" ref={heading} tabIndex={-1}>{t("s16.bots.title")}</h1>
     <p className="lead">{t("s16.bots.lead")}</p>
+    {modelsAvailable && <ModelsPanel client={client} t={t} onFailure={onFailure} />}
     {loading}{status}
     {data && <>
       <div className="actions">
@@ -173,12 +177,14 @@ export function BotsView({ client, t, locale, available, page, onNavigate, onSta
 /** The exact editable Bot configuration; submitting creates a proposal (new Bot) or saves the profile (existing Bot). */
 function BotForm({ t, data, initial, busy, submit, creating = false, main = false, onSubmit }: { t: Copy; data: ClientBotsView; initial: ClientBotDraft | null; busy: boolean; submit: string; creating?: boolean; main?: boolean; onSubmit(draft: ClientBotDraft): void }) {
   const [name, setName] = useState(initial?.name ?? ""), [responsibility, setResponsibility] = useState(initial?.responsibility ?? "");
-  const [selection, setSelection] = useState(() => initial?.selection ? data.selections.findIndex(choice => same(choice.selection, initial.selection)) : -1);
+  const [selection, setSelection] = useState<ClientBotDraft["selection"]>(() => initial?.selection ?? null);
+  const selectionKey = (value: NonNullable<ClientBotDraft["selection"]>) => JSON.stringify([value.route.id, value.route.revision, value.route.generation, value.model.id, value.model.revision, value.model.generation, value.effort]);
+  const unavailable = selection !== null && !data.selections.some(choice => selectionKey(choice.selection) === selectionKey(selection));
   const [excluded, setExcluded] = useState<string[]>(initial?.excluded ?? []), [assignments, setAssignments] = useState(initial?.assignments ?? true), [invalid, setInvalid] = useState(false);
   return <form className="bot-form" onSubmit={event => {
     event.preventDefault();
-    if (!name.trim()) { setInvalid(true); return; }
-    onSubmit({ contract: "s16-bot-draft/v1", name: name.trim(), responsibility: responsibility.trim(), selection: selection >= 0 ? data.selections[selection]!.selection : null, excluded: excluded.filter(id => data.resources.some(resource => resource.id === id)).sort(), assignments });
+    if (!name.trim() || unavailable) { setInvalid(true); return; }
+    onSubmit({ contract: "s16-bot-draft/v1", name: name.trim(), responsibility: responsibility.trim(), selection, excluded: excluded.filter(id => data.resources.some(resource => resource.id === id)).sort(), assignments });
   }}>
     <label htmlFor="bot-name">{t("s16.bots.name")}</label>
     <input id="bot-name" value={name} maxLength={60} aria-invalid={invalid && !name.trim()} aria-describedby={invalid && !name.trim() ? "bot-name-error" : undefined} onChange={event => setName(event.target.value)} />
@@ -187,10 +193,16 @@ function BotForm({ t, data, initial, busy, submit, creating = false, main = fals
     <textarea id="bot-responsibility" rows={4} maxLength={2000} value={responsibility} aria-describedby="bot-responsibility-hint" onChange={event => setResponsibility(event.target.value)} />
     <p id="bot-responsibility-hint" className="limits">{t("s16.bots.responsibilityHint")}</p>
     <label htmlFor="bot-model">{t("s16.bots.model")}</label>
-    <select id="bot-model" value={selection} onChange={event => setSelection(Number(event.target.value))}>
-      <option value={-1}>{t(main ? "s16.bots.modelInstallation" : "s16.bots.modelDefault")}</option>
-      {data.selections.map((choice, index) => <option key={index} value={index}>{choice.label}</option>)}
+    <select id="bot-model" value={selection ? selectionKey(selection) : "default"} onChange={event => {
+      if (event.target.value === "default") setSelection(null);
+      else { const choice = data.selections.find(item => selectionKey(item.selection) === event.target.value); if (choice) setSelection(choice.selection); }
+    }}>
+      {unavailable && selection && <option value={selectionKey(selection)} disabled>{t("s16.bots.modelUnavailableChoice")}</option>}
+      <option value="default">{t(main ? "s16.bots.modelInstallation" : "s16.bots.modelDefault")}</option>
+      {data.selections.map(choice => <option key={selectionKey(choice.selection)} value={selectionKey(choice.selection)}>{choice.label}</option>)}
     </select>
+    <p className="limits">{t("s16.models.pinHint")}</p>
+    {invalid && unavailable && <p role="alert">{t("s16.bots.modelUnavailable")}</p>}
     {(creating || data.resources.length > 0) && <fieldset><legend>{t("s16.bots.resources")}</legend><p className="limits">{t("s16.bots.resourcesHint")}</p>
       {!data.resources.length && <p>{t("s16.bots.noResources")}</p>}
       {data.resources.map(resource => <label key={resource.id} className="check"><input type="checkbox" checked={!excluded.includes(resource.id)} onChange={event => setExcluded(current => event.target.checked ? current.filter(id => id !== resource.id) : [...current, resource.id])} /> {resource.label}</label>)}

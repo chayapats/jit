@@ -107,7 +107,8 @@ export class BotDirectory<Owner> {
     if (record.state !== "active") throw new AppError("bot_archived", 409);
     const ref = this.isMain(botId) ? this.options.main.bot : record.ref ?? this.options.configured(botId)?.ref;
     if (!ref) throw new AppError("bot_unavailable", 409);
-    const selection = record.selection && (!policySelections || policySelections.some(s => same(s, record.selection))) ? record.selection : this.options.main.selection;
+    if (record.selection && policySelections && !policySelections.some(s => same(s, record.selection))) throw new AppError("selection_pinned", 409);
+    const selection = record.selection ?? this.options.main.selection;
     return { bot: structuredClone(ref), selection: structuredClone(selection), excluded: [...record.excluded], record };
   }
   /** Ingress fence: a conversation of an archived Bot accepts no new message, routine run or assignment. */

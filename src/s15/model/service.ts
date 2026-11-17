@@ -108,6 +108,7 @@ export function openModelService(options: ModelOptions): ModelService {
   }
   if (limits.turns > 64 || limits.attempts > 8 || limits.activeMs > 3600000 || limits.outputBytes > 32768) fail('invalid_limits');
   const journal = new DurableJournal(options.path, options.installationId, options.create, 0x4a4d5135), clock = options.clock ?? defaultClock;
+  journal.db.exec("CREATE INDEX IF NOT EXISTS model_records_work ON records(json_extract(json,'$.workId'))");
   const active = new Set<string>();
   const key = (workId: string, stepId: string) => digest('s15.model.step.v1', { workId, stepId });
   const time = () => { const t = clock.now(); nat(t); return t; };
@@ -371,11 +372,19 @@ export function openModelService(options: ModelOptions): ModelService {
       id(stepId); const work = options.policy.work.guard(actor), record = journal.get<ModelSelectionRecord>(key(work.id, stepId)); guard(actor, record);
       if (record.state !== 'completed' || record.output === null) fail('result_unavailable'); consume(record.output);
     },
-    project(owner, workId): ModelBudgetView {
+    observations(owner, workIds) {
+      options.policy.owner.current(owner);
+      if (!Array.isArray(workIds) || workIds.length > 32) fail('invalid_shape');
+      workIds.forEach(id);
+      const ids = [...new Set(workIds)]; if (!ids.length) return { records: [], truncated: false };
+      const rows = journal.db.query<{ json: string }, string[]>(`SELECT json_remove(json,'$.output','$.session') AS json FROM records WHERE json_extract(json,'$.workId') IN (${ids.map(() => '?').join(',')}) ORDER BY rowid DESC LIMIT 129`).all(...ids);
+      return { records: rows.slice(0, 128).reverse().map(row => JSON.parse(row.json) as Omit<ModelSelectionRecord, 'output' | 'session'>), truncated: rows.length > 128 };
+    },
+    project(owner, workId, includeSelections = true): ModelBudgetView {
       // A fresh installation has no standing policy yet; the authenticated owner still reads routes and limits (POLICY15-02).
       const p: { budget: import('../policy').OperatingBudget | null } = options.policy.owner.current(owner) ?? { budget: null }; if (workId !== undefined) id(workId);
       // Installation ceilings always show installation charges; filtering selections cannot hide siblings' spend.
-      const reservations = options.policy.control.reservations(), totals = summarizeReservations(reservations), records = journal.all<ModelSelectionRecord>().filter(row => workId === undefined || row.workId === workId);
+      const reservations = options.policy.control.reservations(), totals = summarizeReservations(reservations), records = includeSelections ? journal.all<ModelSelectionRecord>().filter(row => workId === undefined || row.workId === workId) : [];
       const workIds = workId ? [workId] : [...new Set(records.map(row => row.workId))];
       return { contract: 's15-model-budget/v1', currency: p.budget?.currency ?? null, subscriptionLimits: options.policy.control.subscriptionLimits(),
         ceilings: (Object.keys(totals.charged) as (keyof typeof totals.charged)[]).map(dimension => ({ dimension, ceiling: p.budget?.ceiling[dimension] ?? null, charged: dimension === 'spendMinor' && !p.budget ? null : totals.charged[dimension], measured: totals.measured[dimension], unknown: totals.unknown.includes(dimension) })),

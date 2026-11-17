@@ -70,7 +70,7 @@ export interface BotView {
   id: string; revision: number; origin: BotOrigin; main: boolean;
   name: string; responsibility: string;
   selection: Selection | null; selectionLabel: string | null;
-  /** True when the chosen route is no longer approved and new work uses the installation default. */
+  /** True when the exact chosen route is no longer approved; new work holds until the owner changes it. */
   selectionUnavailable: boolean;
   excluded: string[]; assignments: boolean;
   state: "active" | "archived";

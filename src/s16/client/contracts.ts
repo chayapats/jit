@@ -1,6 +1,7 @@
 import type { ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationReceipt, ConversationSteerCommand, ConversationSteerReceipt } from "../../s15/conversation/types";
 import type { ConversationListEntry, ConversationNeedsYou, ConversationOwnerRow, ConversationOwnerView } from "../../s15/conversation/owner-view";
 import type { FileArtifact, FileLimits } from "../files/types";
+import type { ApprovedModelRoute, ModelBudgetView, ModelSelectionRecord } from "../../s15/model/types";
 
 /** Versioned client capabilities describe actual composed operations, never execution authority. */
 export interface ClientCapabilities {
@@ -28,6 +29,8 @@ export interface ClientCapabilities {
   bots?: { available: false; code: "bots_unavailable" } | { available: true; contract: "s16-client-bots/v1"; delegation: boolean };
   /** CONN16-01/MCP16-01/OPEN16-01 connections (`s16-client-connections/v1`): GitHub plus HTTPS tool sources. */
   connections?: { available: false; code: "connections_unavailable" } | { available: true; contract: "s16-client-connections/v1"; kinds: ("mcp" | "openapi" | "graphql")[]; github: boolean; oauth: boolean };
+  /** MODEL16-01: configured routes and recorded work usage; reads never start provider work. */
+  models?: { available: true; contract: "s16-client-models/v1" };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {
@@ -45,7 +48,23 @@ export interface ClientBootstrap {
   policyUpdate?: boolean;
 }
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
-export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView; /** Additive (BOT16-01): the conversation's Bot. */ botId?: string }
+export interface ClientSnapshot { contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView; /** Additive (BOT16-01): the conversation's Bot. */ botId?: string; modelUsage?: ClientModelUsage }
+
+/** Configuration is not proof of a successful live provider call. Every route still passes POLICY/DATA15. */
+export interface ClientModelsView {
+  contract: "s16-client-models/v1";
+  routes: (Pick<ApprovedModelRoute, "selection" | "provider" | "modelId" | "account" | "billing" | "recipient" | "charge" | "availability"> & { approved: boolean; holdCode: string | null })[];
+  budget: Pick<ModelBudgetView, "currency" | "ceilings" | "subscriptionLimits" | "unsettled">;
+}
+/** Observed work-step facts only; no prompt/output/native session or inferred zero measurements. */
+export interface ClientModelStep extends Pick<ModelSelectionRecord, "id" | "state" | "code" | "createdAt" | "tokens" | "usage" | "providerRequests" | "effort" | "reason" | "controls"> {
+  requestId: string; provider: string; model: string; selection: ApprovedModelRoute["selection"];
+  physicalSends: number | null; refusedSends: number | null; reservedCalls: number;
+  /** Known numbers are subtotals when any call/measurement in this step remains unknown. */
+  partial: boolean;
+}
+/** At most 128 recent steps from this snapshot's already-authorized request identities. */
+export interface ClientModelUsage { records: ClientModelStep[]; truncated: boolean }
 /** One currently authorized request, including requests older than the bounded conversation window. */
 export interface ClientRequest { contract: "s16-client-request/v1"; conversationId: string; receipt: ConversationReceipt; row: ConversationOwnerRow }
 /** Monotonic conversation-bound metadata, used only to invalidate and refresh owner projections. */

@@ -18,6 +18,8 @@ S15/S16 target terms below refine product intent. Definitions explicitly marked 
 
 **Bot:** A persistent participant with a stable identity, responsibility, enabled generation, selected model/auth route and capability policy. It is not a model, provider session or container. Creating a permanent Bot requires owner acceptance of its exact proposal.
 
+**Model pin (S16, MODEL16-01):** An owner's exact Bot route/model/effort choice. An unavailable or withdrawn choice holds new work instead of silently selecting the installation default. An explicit profile update affects new admission; already admitted work retains its POLICY pin. Recorded usage distinguishes conservative charges, measured subtotals and unknown values; it is evidence rather than authority. See ADR 0093 and `s16-client-models/v1`.
+
 **Jit (main Bot):** The default conversational assistant and coordinator. It understands requested outcomes, chooses tools and approved team/model resources, and remains responsible for authorized work and evidence. It cannot widen policy or approve its own held actions. In implemented S14, coordinator-only chat has no tools or warm computer; work uses its separate grant path.
 
 **Team:** Bots using installation-approved work resources/accounts for the assigned purpose. S15 defaults to shared team access without repeated per-Bot setup; explicit narrower restrictions still apply. This does not retroactively declassify S14-private sources or expose raw session/credential material.

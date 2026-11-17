@@ -1,6 +1,7 @@
 import { websiteHostSensitive } from "./browser/sites";
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
+import { createS16ModelsPort } from '../s16/models';
 import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
@@ -759,7 +760,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
