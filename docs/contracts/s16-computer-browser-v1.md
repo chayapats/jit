@@ -161,11 +161,13 @@ Screen transitions retain `card_id` through owner leases/restarts, and each retu
 and stores its old card ID on `yield_resumed`, `yield_declined` or `yield_expired`. Cards derive outcomes from these
 events, so a failed card update cannot erase an outcome. No hand-back sends a CDP batch.
 
-The next eligible work in the same conversation gets `{ cardId, origin, reason, outcome, generation }` as a separate
+After tool opening confirms the actual placed VM, the next eligible work in the same conversation on that exact
+computer gets `{ cardId, origin, reason, outcome, generation }` as a separate
 `screen-outcome-data-never-authority` host source in both production MODEL and fallback Schway. The exact carried IDs
 are saved before sending and marked delivered only in the committed conversation result-publication transaction.
 Provider failure, cancellation, publication rollback or `result_unavailable` preserves them for the next eligible run;
-no-computer work and outcomes arriving after preparation do not mark them. Inputs validate and hash the outcome set.
+no-computer work, a different shared pool member and outcomes arriving after preparation do not mark them.
+A logical pool resource alone never proves placement. Inputs validate and hash the outcome set.
 Interpretation and memory-claim parsing receive no such source. A fresh run starts at the hand-back generation;
 observations from before yield remain stale. A durable per-VM observation high-water mark makes each control transition exceed every previously exposed browser generation, including after multiple reads or restart. Automatic continuation is separately owned by #459.
 

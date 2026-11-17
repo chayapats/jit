@@ -378,8 +378,12 @@ export async function composeS15(options: S15CompositionOptions) {
     const needsYou = screen && scopes ? new ComputerNeedsYou({ store, screen, requireOwner, ownerGeneration: options.owner.generation,
       vmGeneration: id => vmStore.registration(id).generation,
       tier: hostname => websiteHostSensitive(options.browser?.approved?.sites.list() ?? [], hostname) ? 'sensitive' : undefined,
-      allows: (request, vmId) => !!request.authority?.resources.includes(options.vm.resource.id) &&
-        (scopes.privateBot(vmId) === null || scopes.privateBot(vmId) === (bots?.conversationBot(request.receipt.conversationId) ?? options.conversation.bot.id)),
+      allows: (request, vmId) => {
+        if (!request.authority?.resources.includes(options.vm.resource.id)) return false;
+        const placed = vmStore.db.query<{ vm_id: string }, [string]>("SELECT DISTINCT vm_id FROM vm_sessions WHERE work_id=? AND state='active' LIMIT 2").all(request.authority.id);
+        return placed.length === 1 && placed[0]!.vm_id === vmId &&
+          (scopes.privateBot(vmId) === null || scopes.privateBot(vmId) === (bots?.conversationBot(request.receipt.conversationId) ?? options.conversation.bot.id));
+      },
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.screen?.needsYouMinutes !== undefined ? { minutes: options.screen.needsYouMinutes } : {}) }) : null;
     if (screen) {
       computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id), assertAgent: id => screen.assertAgent(id),

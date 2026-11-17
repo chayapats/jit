@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import type { Model, ModelRequest } from "schway/host";
 import { JitClient } from "../src/s16/client";
 import type { ComputerNeedsYouCard } from "../src/s16/computers/needs-you-types";
@@ -13,13 +13,13 @@ const origin = "https://notes.example.com", sourceId = "screen-outcome-data-neve
 const shell = () => [{ type: "tool_call" as const, id: uid(), name: "bash", arguments: { command: "printf observed" } }];
 async function fixture() {
   let mode: "normal" | "failure" | "no_evidence" = "normal", gate: Promise<void> | undefined;
-  let entered = Promise.withResolvers<void>(); const prompts: string[] = [], inputs: ModelRequest[] = [], sent: unknown[] = [];
+  let entered = Promise.withResolvers<void>(), gateAfterTool = false; const prompts: string[] = [], inputs: ModelRequest[] = [], sent: unknown[] = [];
   const f = await composedFixture("default", false, undefined, o => ({ ...o, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, screen: {},
     model: { ...o.model, scripted: route => {
       const original = o.model.scripted!(route);
       return { ...original, async *stream(request, call) {
-        prompts.push(JSON.stringify(request)); inputs.push(request); entered.resolve();
-        if (gate) await gate;
+        prompts.push(JSON.stringify(request)); inputs.push(request);
+        if (gate && (!gateAfterTool || request.items.at(-1)?.type === "tool_result")) { entered.resolve(); await gate; }
         if (mode === "failure") throw Error("controlled provider failure");
         if (mode === "no_evidence") { yield { type: "message_complete", message: { type: "assistant", id: uid(), content: [{ type: "text", text: "Completed without any observed tool result." }] } }; return; }
         yield* original.stream(request, call);
@@ -44,7 +44,7 @@ async function fixture() {
     const back = await client.screenCommand({ contract: "s16-screen-command/v1", requestId: uid(), vmId: "vm", kind: "hand_back", generation: taken.screen!.generation, takeoverId: taken.screen!.takeoverId });
     expect(sent).toHaveLength(1); expect(back.view.state).toBe("agent"); return back.view.generation;
   }
-  return { f, client, prompts, inputs, post, resume, command, set mode(value: typeof mode) { mode = value; }, hold(value: Promise<void> | undefined) { gate = value; if (value) entered = Promise.withResolvers<void>(); }, get entered() { return entered.promise; } };
+  return { f, client, prompts, inputs, post, resume, command, set mode(value: typeof mode) { mode = value; }, hold(value: Promise<void> | undefined, afterTool = false) { gate = value; gateAfterTool = afterTool; if (value) entered = Promise.withResolvers<void>(); }, get entered() { return entered.promise; } };
 }
 
 test("composed non-IdP login handoff survives end of run; only continue carries outcome into the production MODEL request once", async () => {
@@ -95,19 +95,35 @@ test("completed answer without the computer never carries or marks the outcome",
 });
 
 test("outcome arriving after prompt preparation is not marked by that completed run", async () => {
-  const h = await fixture(), { f } = h, card = await h.post(), taken = await h.command(card, "watch");
-  const gate = Promise.withResolvers<void>(), opened = Promise.withResolvers<void>();
-  const port = f.service.conversation.options.tools, originalOpen = port.open.bind(port);
-  const spy = spyOn(port, "open").mockImplementation(async (...args) => { opened.resolve(); await gate.promise; return originalOpen(...args); });
-  h.prompts.length = 0; f.script = shell();
-  const running = f.chat("continue"); await opened.promise;
+  const h = await fixture(), { f } = h;
+  const gate = Promise.withResolvers<void>(); h.hold(gate.promise, true);
+  f.script = [{ type: "tool_call", id: uid(), name: "computer_browser", arguments: { kind: "needs_you", reason: "sign_in", origin } }];
+  const running = f.chat("Open the notes."); await h.entered;
+  const card = (await h.client.snapshot("conversation")).needsYouCards!.at(-1)!;
   try {
-    expect(f.service.conversation.store.db.query("SELECT 1 FROM requests WHERE state='running' AND json_extract(record_json,'$.screenOutcomeCards[0]') IS NOT NULL").get()).toBeNull();
-    await h.client.screenCommand({ contract: "s16-screen-command/v1", requestId: uid(), vmId: "vm", kind: "hand_back", generation: taken.screen!.generation, takeoverId: taken.screen!.takeoverId });
-  } finally { spy.mockRestore(); gate.resolve(); }
-  expect((await running).state).toBe("completed");
+    expect(h.prompts.join()).not.toContain(sourceId);
+    await h.resume(card);
+  } finally { h.hold(undefined); gate.resolve(); }
+  const completed = await running; expect(completed.state).toBe("completed");
+  expect(f.service.conversation.store.request(completed.receipt.requestId).screenOutcomeCards).toBeUndefined();
   expect(f.service.conversation.store.db.query("SELECT delivered_by FROM computer_needs_you WHERE id=?").get(card.id)).toEqual({ delivered_by: null });
-  h.prompts.length = 0; expect((await f.chat("continue")).state).toBe("completed"); expect(h.prompts[0]).toContain(sourceId);
+  h.prompts.length = 0; f.script = shell(); expect((await f.chat("continue")).state).toBe("completed"); expect(h.prompts[0]).toContain(sourceId);
+});
+
+test("a different shared computer cannot receive or consume the signed-in computer's outcome", async () => {
+  const h = await fixture(), { f } = h, card = await h.post(); await h.resume(card);
+  const original = f.service.vmManagers.get("manager")!;
+  f.service.vmManagers.set("manager2", { ...original, async inspect() { return { ...await original.inspect(), identity: "fixture2" }; } });
+  f.service.vmStore.save({ ...f.service.vmStore.registration("vm"), id: "vm2", managerId: "manager2", machineIdentity: "fixture2" });
+  f.service.vmPool.setDrained("vm", true); h.prompts.length = 0; f.script = shell();
+  const other = await f.chat("continue"); expect(other.state).toBe("completed");
+  expect(f.service.vmPool.holder(other.authority!.id)).toBe("vm2");
+  expect(h.prompts[0]).not.toContain(sourceId); expect(f.service.conversation.store.request(other.receipt.requestId).screenOutcomeCards).toBeUndefined();
+  expect(f.service.conversation.store.db.query("SELECT delivered_by FROM computer_needs_you WHERE id=?").get(card.id)).toEqual({ delivered_by: null });
+  f.service.vmPool.setDrained("vm", false); f.service.vmPool.setDrained("vm2", true); h.prompts.length = 0;
+  const matching = await f.chat("continue"); expect(matching.state).toBe("completed");
+  expect(f.service.vmPool.holder(matching.authority!.id)).toBe("vm");
+  expect(h.prompts[0]).toContain(sourceId); expect(f.service.conversation.store.request(matching.receipt.requestId).screenOutcomeCards).toEqual([card.id]);
 });
 
 test("needs-you ingress rechecks auth, CSRF, closed shape and exact conversation; routine uses the existing occurrence hold", async () => {

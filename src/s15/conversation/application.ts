@@ -606,11 +606,6 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
       }
-      const screenOutcomes = this.options.screenOutcomes?.prepare(request);
-      if (screenOutcomes?.length) {
-        this.store.transaction(() => { const current = this.store.request(id); current.screenOutcomeCards = screenOutcomes.map(card => card.cardId); this.store.save(current); });
-        request = this.store.request(id); guard("model");
-      }
       const mode: "inspect" | "execute" = request.intent.kind === "inspect" ? "inspect" : "execute";
       if (request.intent.kind !== "answer") {
         const toolInput = { request: { requestId: id, conversationId: request.receipt.conversationId, routine: !!request.routine }, mode, signal: abort.signal, guard, onAction: (action: ActionRef) => this.store.transaction(() => {
@@ -624,6 +619,12 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         tools = request.fileInputs ? await this.options.files!.open(work!, request, toolInput) : await this.options.tools.open(work!, toolInput);
         if (abort.signal.aborted) cancelTools();
         guard();
+      }
+      // Screen outcomes belong to the actual placed computer, not every member of its logical resource pool.
+      const screenOutcomes = this.options.screenOutcomes?.prepare(request);
+      if (screenOutcomes?.length) {
+        this.store.transaction(() => { const current = this.store.request(id); current.screenOutcomeCards = screenOutcomes.map(card => card.cardId); this.store.save(current); });
+        request = this.store.request(id); guard("model");
       }
       const admitted = (tools?.tools ?? []).filter(tool => tool.access === "read" || mode === "execute" && (request.intent.scope!.access === "effect" || tool.access === "reversible_write" && request.intent.scope!.access === "reversible_write"));
       if (request.intent.kind !== "answer" && !admitted.length) throw new AppError("tool_unavailable");

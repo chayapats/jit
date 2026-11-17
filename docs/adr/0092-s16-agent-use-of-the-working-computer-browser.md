@@ -253,9 +253,13 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
    - **The next run gets the outcome as data.** The next work run in the conversation that posted the card, with that
      computer in its admitted resources, gets one work-prompt source with one entry per card,
      `{ cardId, origin, reason, outcome, generation }`, where `generation` is the new one.
-     - *Which cards (the carried set).* The eligible cards are chosen once, when the prompt is built, next to the
-       memory prepare (`application.ts:604-606`): cards posted in this conversation that have a `yield_*` outcome
-       event and are not yet marked delivered, whose computer is in the request's admitted resources. Before the run
+     - *Which cards (the carried set).* The eligible cards are chosen once, when the prompt is built, after tools
+       open and the protected VM journal confirms the request's actual placement: cards posted in this conversation
+       that have a `yield_*` outcome event and are not yet marked delivered, whose computer is in the request's
+       admitted resources and is its single active placed VM. A pool resource or matching Bot alone is insufficient:
+       sign-in on member A must not be carried or consumed by a run placed on member B. A run with no placed VM
+       receives no screen outcome. This refines the initial prepare-before-tool-open ordering near memory preparation.
+       Before the model run
        starts, their `cardId`s are saved on the request in one conversation-store transaction, the way
        `current.memory` is saved at `:606`, and that same set (with each card's outcome read from its event) is what
        the run carries. An empty set saves nothing and adds no source.
@@ -449,6 +453,12 @@ rather than the revision/counter ceiling. A protected per-VM browser-generation 
 screen transition exceed every previously exposed browser observation. This avoids a numerical collision when
 several browser reads preceded yield; recording it does not alter screen control or interrupt existing tickets.
 The mark survives restart and seeds fresh runs. Browser calls still use Schway's public host/tool surface.
+
+PR #463 review found that a logical computer resource can name multiple shared members. Outcome preparation
+therefore runs after tool placement, and the protected composition intersects its resource/private-Bot check with
+the actual active VM session rows for that work. Another member cannot receive or mark the signed-in member's
+outcome; it remains pending until an eligible run on that exact member commits. A two-member composed regression
+forces B while A is drained, then A, and checks actual MODEL prompts and the committed delivery row in both runs.
 
 The production MODEL and fallback Schway paths receive a separate validated/hashed `screenOutcomes` source.
 Publication marks only the saved carried IDs in the conversation result transaction. Routine holds come from the

@@ -23,7 +23,7 @@ export class ComputerNeedsYou<Owner> {
     vmGeneration(vmId: string): number;
     /** Live host tier; a changed site cannot be signed into through a previously posted desktop card. */
     tier(hostname: string): WebsiteTier | undefined;
-    /** The request's admitted computer resource and any private-Bot restriction must both match. */
+    /** The request's actual placed computer, admitted resource and private-Bot restriction must all match. */
     allows(request: ConversationRequest, vmId: string): boolean;
     now?: () => number; minutes?: number;
   }) {
