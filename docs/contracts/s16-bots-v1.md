@@ -28,7 +28,7 @@ Bounds: name 1–60 characters, responsibility up to 2000, at most 32 created Bo
 
 ## Conversations
 
-- `ConversationPolicy` (`createConversationPolicy({ bots })`) resolves `{ bot, selection, route, excluded }` per `conversationId`; interpretation and work both use that selection and route. `selection` is the Bot's choice when it is still in the policy's selections, else `conversation.selection`. Work `selectionPin` is that selection; physical reservations use the work's own selection.
+- `ConversationPolicy` (`createConversationPolicy({ bots })`) resolves `{ bot, selection, route, excluded }` per `conversationId`; interpretation and work both use that selection and route. `selection` is the Bot's exact choice, or `conversation.selection` only when the owner selected the default. A saved choice no longer in policy holds `selection_pinned` (MODEL16-01, ADR 0093); it never falls back silently. Work `selectionPin` is that selection; physical reservations use the work's own selection.
 - `ConversationOptions.admitConversation(conversationId)` runs for every new request (message, clarification, routine occurrence, assignment) and refuses `bot_archived` / `bot_unavailable`.
 - Owner decisions for a work include `{"bot":{"name","responsibility"}}` when the profile has either, and `{"assignment":{…}}` for a child.
 

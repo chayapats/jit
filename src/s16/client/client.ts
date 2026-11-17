@@ -1,3 +1,4 @@
+import type { ClientModelsView } from "./contracts";
 import type { BrowserActionCard } from "../computers/browser-cards";
 import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionCommand, type ClientConnectionReceipt, type ClientSource, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
@@ -15,6 +16,10 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : "client_unavailable";
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+const nullableCount = (value: unknown) => value === null || count(value);
+const modelRef = (value: unknown) => record(value) && identifier(value.id) && count(value.revision) && count(value.generation);
+const modelChoice = (value: unknown) => record(value) && modelRef(value.route) && modelRef(value.model) && typeof value.effort === "string";
+const quantity = (value: unknown) => nullableCount(value) || typeof value === "string" && /^[0-9]+$/.test(value);
 const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const invalid = (): never => { throw new JitClientError("client_protocol_invalid", null, "response"); };
 const id = (value: string) => { if (!identifier(value)) throw new JitClientError("invalid_identity", null, "not_sent"); return value; };
@@ -44,6 +49,17 @@ export class JitClient {
     const { csrf: _csrf, ...projection } = data as unknown as ClientBootstrap;
     return projection;
   }
+  /** Reads protected route configuration and measured/unknown budgets; starts no provider work. */
+  async models(signal?: AbortSignal): Promise<ClientModelsView> {
+    const data = await this.call("/models", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-models/v1" || !Array.isArray(data.routes) || data.routes.length > 64 || !record(data.budget) || !Array.isArray(data.budget.ceilings)) return invalid();
+    for (const route of data.routes) if (!record(route) || !modelChoice(route.selection) || !["codex", "grok"].includes(String(route.provider)) || typeof route.modelId !== "string" || typeof route.approved !== "boolean" || !modelRef(route.account) || !modelRef(route.billing) || !modelRef(route.recipient) || !["subscription", "metered"].includes(String(route.charge)) || !["available", "unavailable", "quota"].includes(String(route.availability)) || route.holdCode !== null && typeof route.holdCode !== "string") return invalid();
+    for (const ceiling of data.budget.ceilings) if (!record(ceiling) || typeof ceiling.dimension !== "string" || !quantity(ceiling.charged) || !quantity(ceiling.measured) || !quantity(ceiling.ceiling) || typeof ceiling.unknown !== "boolean") return invalid();
+    const limits = data.budget.subscriptionLimits;
+    if (limits !== null && (!record(limits) || !count(limits.concurrency) || !record(limits.perWork) || ![limits.perWork.calls, limits.perWork.steps, limits.perWork.activeMs].every(count))) return invalid();
+    if (!count(data.budget.unsettled)) return invalid();
+    return data as unknown as ClientModelsView;
+  }
   /** Creates one local immutable send identity; callers retain this command through response loss. */
   prepareMessage(conversationId: string, text: string, files: readonly FileReference[] = []): ClientMessage {
     id(conversationId);
@@ -69,6 +85,15 @@ export class JitClient {
   async snapshot(conversationId: string, signal?: AbortSignal): Promise<ClientSnapshot> {
     const data = await this.call(`/conversations/${id(conversationId)}`, "GET", undefined, signal);
     if (!record(data) || data.contract !== "s16-client-snapshot/v1" || !record(data.conversation) || data.conversation.contract !== "s15.owner-view/v1" || data.conversation.conversationId !== conversationId || !Number.isSafeInteger(data.conversation.cursor) || !Array.isArray(data.conversation.rows) || data.conversation.rows.length > 32 || !Array.isArray(data.conversation.needsYou)) return invalid();
+    if (data.modelUsage !== undefined) {
+      if (!record(data.modelUsage) || !Array.isArray(data.modelUsage.records) || data.modelUsage.records.length > 128 || typeof data.modelUsage.truncated !== "boolean") return invalid();
+      const ids = new Set(data.conversation.rows.map(row => record(row) ? row.requestId : null));
+      for (const step of data.modelUsage.records) {
+        if (!record(step) || !identifier(step.id) || !ids.has(step.requestId) || typeof step.provider !== "string" || typeof step.model !== "string" || !modelChoice(step.selection) || !record(step.effort) || typeof step.effort.requested !== "string" || !record(step.usage) || !quantity(step.usage.spendMinor) || !nullableCount(step.physicalSends) || !nullableCount(step.refusedSends) || !count(step.reservedCalls) || typeof step.partial !== "boolean") return invalid();
+        if (step.tokens !== null && (!record(step.tokens) || !nullableCount(step.tokens.inputTokens) || !nullableCount(step.tokens.outputTokens))) return invalid();
+        if (step.effort.attempts !== undefined && (!Array.isArray(step.effort.attempts) || step.effort.attempts.some(value => value !== null && (!record(value) || value.sent !== null && typeof value.sent !== "string" || value.reported !== null && typeof value.reported !== "string")))) return invalid();
+      }
+    }
     for (const row of data.conversation.rows) if (!record(row) || !identifier(row.requestId) || !Number.isSafeInteger(row.revision) || !record(row.receipt) || row.receipt.conversationId !== conversationId) return invalid();
     if (data.browserCards !== undefined && (!Array.isArray(data.browserCards) || data.browserCards.length > 128 || !data.browserCards.every(card => browserCard(card, conversationId)))) return invalid();
     return data as unknown as ClientSnapshot;
