@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Locale } from "../../i18n";
 import { JitClient, JitClientError } from "../client";
-import type { ClientArtifactItem, ClientBootstrap, ClientMessage, ClientSnapshot, ClientSteer } from "../client/contracts";
+import type { ClientArtifactItem, ClientBootstrap, ClientMessage, ClientRequest, ClientSnapshot, ClientSteer } from "../client/contracts";
 import type { ConversationSteer } from "../../s15/conversation/types";
 import type { FileArtifact, FileReceipt, FileUploadCommand } from "../files/types";
 import { ComputerScreen } from "./ComputerScreen";
@@ -46,6 +46,8 @@ function App() {
   const [locale, setLocale] = useState<Locale>(document.documentElement.lang === "en" ? "en" : "th"), t = copy(locale);
   const [boot, setBoot] = useState<Omit<ClientBootstrap, "csrf"> | null>(null), [conversation, setConversation] = useState(() => /^\/s16\/chat\/([A-Za-z0-9_-]{1,128})$/.exec(location.pathname)?.[1] ?? uid());
   const [snapshot, setSnapshot] = useState<ClientSnapshot | null>(null), [error, setError] = useState<string | null>(null), [drafts, setDrafts] = useState<Record<string, Draft>>(() => { const id = chatPath() ? recoveryHash() : undefined; return id ? { [conversation]: { ...empty(), recoveryId: id } } : {}; }), [sending, setSending] = useState(false), [menu, setMenu] = useState(false), [search, setSearch] = useState("");
+  const [historicalRow, setHistoricalRow] = useState<ClientRequest["row"] | null>(null);
+  const historicalTarget = useRef<{ id: string; conversationId: string } | null>(null), historicalFocus = useRef<string | null>(null), historicalVersion = useRef(0);
   const [authHidden, setAuthHidden] = useState(false), notice = useRef<HTMLDivElement>(null);
   const [computers, setComputers] = useState(computersPath);
   // Kept outside snapshot rows: refresh deliberately withholds those rows, but must not close owner control.
@@ -58,12 +60,13 @@ function App() {
   const [memory, setMemory] = useState(memoryPath), [memoryClaim, setMemoryClaim] = useState<string | null>(() => memoryPath() ? recoveryHash() ?? null : null);
   const [routines, setRoutines] = useState(() => !!routinesPath()), [routineId, setRoutineId] = useState<string | null>(() => routinesPath()?.[1] ?? null), [routineSeed, setRoutineSeed] = useState<RoutineSeed | null>(null), [routineAttention, setRoutineAttention] = useState<number | null>(null);
   const [library, setLibrary] = useState(() => !!artifactsPath()), [libraryArtifact, setLibraryArtifact] = useState<string | null>(() => artifactsPath()?.[1] ?? null), [preview, setPreview] = useState<FileArtifact | null>(null);
-  useEffect(() => { setNeedsYouScreen(null); needsYouReturnFocus.current = null; }, [conversation, computers, connections, botsPage, memory, routines, library]);
+  useEffect(() => { historicalTarget.current = null; historicalFocus.current = null; setHistoricalRow(null); setNeedsYouScreen(null); needsYouReturnFocus.current = null; }, [conversation, computers, connections, botsPage, memory, routines, library]);
   useEffect(() => { if (snapshot && needsYouReturnFocus.current) { const id = needsYouReturnFocus.current; needsYouReturnFocus.current = null; (document.getElementById(`needs-you-${id}`)?.querySelector<HTMLElement>("h3") ?? composer.current)?.focus(); } }, [snapshot]);
   const sendLock = useRef(false), target = useRef(conversation), generation = useRef(0), picker = useRef<HTMLInputElement>(null), composer = useRef<HTMLTextAreaElement>(null), inspector = useRef<HTMLElement>(null), returnFocus = useRef<HTMLElement | null>(null), transfers = useRef(new Map<string, { stop: AbortController; cancelled: boolean }>());
   const [libraryRefresh, setLibraryRefresh] = useState(0), viewTurn = useRef(0), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const refreshing = useRef<{ id: string; turn: number; stop: AbortController } | null>(null), privacyEpoch = useRef(0);
-  const draft = drafts[conversation] ?? empty(), capabilities = boot?.capabilities.uploads, rows = snapshot?.conversation.rows ?? [];
+  const draft = drafts[conversation] ?? empty(), capabilities = boot?.capabilities.uploads, rows = snapshot ? [...(historicalRow && !snapshot.conversation.rows.some(row => row.requestId === historicalRow.requestId) ? [historicalRow] : []), ...snapshot.conversation.rows.map(row => historicalRow?.requestId === row.requestId ? historicalRow : row)] : [];
+  useEffect(() => { if (snapshot && historicalFocus.current) { const element = document.getElementById(`request-${historicalFocus.current}`); if (element) { historicalFocus.current = null; element.focus(); element.scrollIntoView({ block: "start" }); } } }, [snapshot, historicalRow]);
   const artifactCaps = boot?.capabilities.artifacts.available ? boot.capabilities.artifacts : null, libraryAvailable = artifactCaps?.library === "s16-client-artifacts/v1", htmlPreview = artifactCaps?.html === "sandboxed_static";
   const pendingId = draft.pending?.requestId ?? draft.recoveryId;
   // CHAT16-02: while a request of this conversation is running, the composer steers it; a new chat stays independent.
@@ -80,7 +83,7 @@ function App() {
   function closePreview() { const id = preview?.id; setPreview(null); if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-preview-for="${id}"]`)?.focus(); }
   function hidePrivate(error: unknown) {
     const code = typeof error === "string" ? error : errorCode(error); if (code === "client_response_stale") return;
-    generation.current++; privacyEpoch.current++; refreshing.current?.stop.abort(); refreshing.current = null; setSnapshot(null); needsYouReturnFocus.current = null; setNeedsYouScreen(null); setPreview(null); setError(code);
+    generation.current++; privacyEpoch.current++; refreshing.current?.stop.abort(); refreshing.current = null; setSnapshot(null); historicalTarget.current = null; historicalFocus.current = null; setHistoricalRow(null); needsYouReturnFocus.current = null; setNeedsYouScreen(null); setPreview(null); setError(code);
     if (["authentication_required", "csrf_rejected", "authorization_required"].includes(code) || error instanceof JitClientError && [401, 403].includes(error.status ?? 0)) {
       client.clear(); setBoot(null); setDrafts({}); setSearch(""); setSending(false); setAuthHidden(true);
       for (const transfer of transfers.current.values()) { transfer.cancelled = true; transfer.stop.abort(); } transfers.current.clear();
@@ -90,10 +93,28 @@ function App() {
   async function refresh(id = target.current) {
     if (id !== target.current) return;
     if (refreshing.current?.id === id) return;
-    refreshing.current?.stop.abort(); const stop = new AbortController(), turn = ++generation.current; refreshing.current = { id, turn, stop }; setSnapshot(null);
-    try { const data = await client.snapshot(id, stop.signal); if (turn !== generation.current || id !== target.current) return; setSnapshot(data); setError(null); }
+    refreshing.current?.stop.abort(); const stop = new AbortController(), turn = ++generation.current; refreshing.current = { id, turn, stop }; historicalVersion.current++;
+    if (historicalTarget.current && document.activeElement?.id === `request-${historicalTarget.current.id}`) historicalFocus.current = historicalTarget.current.id;
+    setSnapshot(null); setHistoricalRow(null);
+    try { const selected = historicalTarget.current, data = await client.snapshot(id, stop.signal);
+      const historical = selected?.conversationId === id && !data.conversation.rows.some(row => row.requestId === selected.id) ? await client.request(selected.id, stop.signal) : null;
+      if (turn !== generation.current || id !== target.current) return;
+      if (historical && (historical.conversationId !== id || historical.row.requestId !== selected?.id)) throw new JitClientError("client_response_invalid", 502, "response");
+      if (historicalTarget.current === selected) setHistoricalRow(historical?.row ?? null);
+      setSnapshot(data); setError(null); }
     catch (error) { if (turn === generation.current && id === target.current) hidePrivate(error); }
     finally { if (refreshing.current?.turn === turn) refreshing.current = null; }
+  }
+  /** Load any retained continuation through the guarded request endpoint, including beyond the 32-row window. */
+  async function viewContinuation(requestId: string) {
+    const id = target.current, epoch = privacyEpoch.current, view = viewTurn.current, version = ++historicalVersion.current;
+    historicalTarget.current = { id: requestId, conversationId: id }; historicalFocus.current = requestId;
+    try {
+      const request = await client.request(requestId);
+      if (version !== historicalVersion.current || epoch !== privacyEpoch.current || view !== viewTurn.current || id !== target.current || historicalTarget.current?.id !== requestId) return;
+      if (request.conversationId !== id || request.row.requestId !== requestId) throw new JitClientError("client_response_invalid", 502, "response");
+      setHistoricalRow(request.row);
+    } catch (error) { if (epoch === privacyEpoch.current && view === viewTurn.current) hidePrivate(error); }
   }
   async function bootstrap() {
     const epoch = privacyEpoch.current;
@@ -317,13 +338,13 @@ function App() {
         {boot?.policyUpdate && !library && <section className="notice policy-update" aria-labelledby="policy-update-title"><h2 id="policy-update-title">{t("s16.policy.updateTitle")}</h2><p>{t("s16.policy.updateBody")}</p><a className="button-link" href="/rules">{t("s16.policy.review")}</a></section>}
         {library ? <section><h2>{t("s16.artifact.current")}</h2>{artifactCards(rows.flatMap(row => row.files?.artifacts ?? []))}{!rows.some(row => row.files?.artifacts.length) && <p>{t("s16.artifact.empty")}</p>}</section> : <>
           {snapshot && !rows.length && <div className="empty"><h2>{t("s16.chat.empty")}</h2>{roster.filter(bot => bot.state === "active").length > 1 && <label className="talk-to">{t("s16.bots.talkTo")} <select value={currentBot?.id ?? ""} onChange={event => { const value = event.target.value; setChosenBot(current => ({ ...current, [conversation]: value })); }}>{roster.filter(bot => bot.state === "active").map(bot => <option key={bot.id} value={bot.id}>{botName(t, bot)}</option>)}</select></label>}</div>}
-          {snapshot?.needsYouCards?.filter(card => !rows.some(row => row.requestId === card.requestId)).map(card => <ComputerNeedsYouCard key={card.id} card={card} botName={nameOf(currentBot?.id)} onWatch={watchNeedsYou} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
+          {snapshot?.needsYouCards?.filter(card => !rows.some(row => row.requestId === card.requestId)).map(card => <ComputerNeedsYouCard key={card.id} card={card} botName={nameOf(currentBot?.id)} onWatch={watchNeedsYou} onViewContinuation={id => void viewContinuation(id)} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
           {snapshot?.browserCards?.filter(card => !rows.some(row => row.requestId === card.requestId)).map(card => <BrowserActionCard key={card.id} card={card} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
           {rows.map(row => <article className="exchange" id={`request-${row.requestId}`} tabIndex={-1} key={row.requestId}><div className={`${row.computerContinuation ? "continuation-message" : "owner-message"} ${row.routine ? "routine-message" : ""} ${row.delegation ? "assignment-message" : ""}`}>{row.computerContinuation && <p className="meta">{t("s16.continuation.label")}</p>}{row.delegation && <p className="meta">{t("s16.bots.assignmentFrom", { name: nameOf(row.delegation.fromBotId) })} · <button type="button" className="memory-link" onClick={() => navigate(row.delegation!.parentConversationId)}>{t("s16.bots.openChild")}</button></p>}{row.routine && <button type="button" className="memory-link routine-badge" onClick={() => openRoutines(row.routine!.routineId)}>{t("s16.chat.routineRun")}</button>}<p>{row.ownerMessage}</p>{!!row.steers?.length && <ul className="steers" aria-label={t("s16.steer.label")}>{row.steers.map(item => <li key={item.id} className={`steer steer-${item.state}`}><p>{item.text}</p><span className="steer-state">{t(`s16.steer.${item.state}`)}</span>{item.state === "unapplied" && <button type="button" className="memory-link" onClick={() => reuseSteer(item)}>{t("s16.steer.resend")}</button>}</li>)}</ul>}{row.files?.inputs.map(file => <div className="source-chip" key={file.id}><span>{file.name} · {file.bytes.toLocaleString()} bytes</span>{fileDetails(file)}<button disabled={!!pendingId || draft.chips.some(chip => chip.receipt?.id === file.id)} onClick={() => void selectReceipt(file)}>{t("s16.files.useNext")}</button><button title={t("s16.files.withdrawImpact")} onClick={() => void client.withdrawUpload(file.id).then(() => refresh()).catch(error => hidePrivate(error))}>{t("s16.files.withdraw")}</button></div>)}</div>
             <div className="bot-message"><strong>{row.delegation?.kind === "temporary" ? t("s16.bots.temporary") : nameOf(row.delegation?.botId ?? currentBot?.id)}</strong><span className="status">{status(row.state)}</span>{row.result ? <p className="result">{row.routine && /^\s*\{\s*"outcome"\s*:\s*"no_update"\s*\}\s*$/.test(row.result.text) ? t("s16.chat.nothingNew") : row.result.text}</p> : row.files && row.state === "received" ? <p>{t("s16.chat.receivedFiles")}</p> : null}
               {snapshot?.modelUsage && <ModelUsage records={snapshot.modelUsage.records.filter(step => step.requestId === row.requestId)} truncated={snapshot.modelUsage.truncated} t={t} />}
               {artifactCards(row.files?.artifacts ?? [])}{!!row.memory?.retained.length && <p className="limits">{boot?.capabilities.memory?.available ? <button type="button" className="memory-link" onClick={() => openMemory(row.memory!.retained[0]!.id)}>{t("s16.memory.review", { count: row.memory.retained.length })}</button> : <a href={`/memory?claim=${encodeURIComponent(row.memory.retained[0]!.id)}`}>{t("s16.memory.review", { count: row.memory.retained.length })}</a>}</p>}{row.progress.active && <button onClick={() => void client.stop(row.requestId).then(() => refresh()).catch(error => hidePrivate(error))}>{t("s16.chat.stop")}</button>}
-              {snapshot?.needsYouCards?.filter(card => card.requestId === row.requestId).map(card => <ComputerNeedsYouCard key={card.id} card={card} botName={nameOf(row.delegation?.botId ?? currentBot?.id)} onWatch={watchNeedsYou} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
+              {snapshot?.needsYouCards?.filter(card => card.requestId === row.requestId).map(card => <ComputerNeedsYouCard key={card.id} card={card} botName={nameOf(row.delegation?.botId ?? currentBot?.id)} onWatch={watchNeedsYou} onViewContinuation={id => void viewContinuation(id)} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
               {snapshot?.browserCards?.filter(card => card.requestId === row.requestId).map(card => <BrowserActionCard key={card.id} card={card} client={client} t={t} refresh={() => void refresh()} onFailure={hidePrivate} />)}
               {/* AUTH16-01 (S16-D08): pending exact actions are decided inline with one press; other holds keep the notice. */}
               {boot?.capabilities.exactDecisions && row.slips.some(slip => slip.state === "pending") ? row.slips.filter(slip => slip.state === "pending").map(slip => <ActionCard key={`${slip.action.id}:${slip.action.revision}`} slip={slip} conversationId={conversation} client={client} t={t} onDecided={() => void refresh()} />)

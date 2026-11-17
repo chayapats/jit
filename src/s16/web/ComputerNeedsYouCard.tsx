@@ -4,7 +4,7 @@ import type { ComputerNeedsYouCard as Card } from "../computers/needs-you-types"
 import type { Copy } from "./copy";
 
 /** Origin-only owner handoff. The existing screen owns input, renewal and hand-back; this card holds no secrets. */
-export function ComputerNeedsYouCard({ card, botName, client, t, refresh, onFailure, onWatch }: { card: Card; botName: string; client: JitClient; t: Copy; refresh(): void; onFailure(error: unknown): void; onWatch(vmId: string, title: string, cardId: string): void }) {
+export function ComputerNeedsYouCard({ card, botName, client, t, refresh, onFailure, onWatch, onViewContinuation }: { card: Card; botName: string; client: JitClient; t: Copy; refresh(): void; onFailure(error: unknown): void; onWatch(vmId: string, title: string, cardId: string): void; onViewContinuation(requestId: string): void }) {
   const [busy, setBusy] = useState(false), [failed, setFailed] = useState(false);
   async function command(kind: "watch" | "decline") {
     if (busy || card.generation === null) return;
@@ -25,7 +25,7 @@ export function ComputerNeedsYouCard({ card, botName, client, t, refresh, onFail
     </div>}
     {card.code && <p>{t("s16.needsYou.protected")}</p>}
     {card.continuation ? <div className="computer-continuation"><p role="status">{t(`s16.continuation.${card.continuation.state}`)}</p>
-      {card.continuation.requestId && <a href={`#request-${card.continuation.requestId}`}>{t("s16.continuation.open")}</a>}
+      {card.continuation.requestId && <button type="button" className="memory-link" onClick={() => onViewContinuation(card.continuation!.requestId!)}>{t("s16.continuation.open")}</button>}
       {card.continuation.code && <details><summary>{t("s16.common.details")}</summary><code>{card.continuation.code}</code></details>}
     </div> : card.state === "resumed" && <p>{t("s16.needsYou.continue")}</p>}
     {failed && <p role="alert">{t("s16.needsYou.failed")} <button type="button" onClick={() => { setFailed(false); refresh(); }}>{t("s16.card.refresh")}</button></p>}

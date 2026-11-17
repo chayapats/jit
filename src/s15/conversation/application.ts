@@ -114,7 +114,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       this.store.capacity();
       const limits = this.computerAllowance(original, requestId);
       const recent = this.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.computerContinuation.originalRequestId')=? ORDER BY rowid DESC LIMIT 62").all(originalId).map(row => row.id);
-      const history = [...new Set([originalId, source.receipt.rootRequestId, ...recent])];
+      const history = [...new Set([originalId, ...recent.reverse()])].filter(id => id !== source.receipt.rootRequestId).concat(source.receipt.rootRequestId);
       const command = { ...structuredClone(original.command), requestId, continuation: null };
       const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId, rootRequestId: requestId, conversationId: proof.conversationId, receivedAt: this.clock.now() };
       const request: ConversationRequest = { receipt, command, interpretationRequest: command, owner: { ...original.owner }, revision: 1, intent: structuredClone(original.intent), state: "queued", code: null,
@@ -543,6 +543,12 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     for (const child of this.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.delegation.parentRequestId')=? AND state IN ('queued','running','held','proposed')").all(requestId)) {
       try { this.stop(actor, child.id); } catch { /* Settled meanwhile. */ }
     }
+  }
+  /** Protected scheduler fact: only a live run or a queued request with this process's owner can block work. */
+  hasScheduledWork(conversationId: string): boolean {
+    identity(conversationId);
+    return [...this.#running.keys()].some(id => this.store.request(id).receipt.conversationId === conversationId) ||
+      [...this.#owners.keys()].some(id => { const row = this.store.request(id); return row.receipt.conversationId === conversationId && ["queued", "running"].includes(row.state); });
   }
   /**
    * Wakes the local durable queue drain. Concurrent callers share it; a claim is committed before I/O. Up to

@@ -171,7 +171,8 @@ A logical pool resource alone never proves placement. Inputs validate and hash t
 Interpretation and memory-claim parsing receive no such source. A fresh run starts at the hand-back generation;
 observations from before yield remain stale. A durable per-VM observation high-water mark makes each control transition exceed every previously exposed browser generation, including after multiple reads or restart. CONT16-01 (#459 / ADR 0094) schedules one automatic continuation after `yield_resumed`, without another owner message.
 
-The existing service drain scans screen events through a durable bounded cursor. A conversation-store binding and
+Each service wake scans screen events through a durable bounded cursor, including while an unrelated conversation
+keeps the shared drain active. Only live runs and runnable owner-registered queues block the same conversation. A conversation-store binding and
 one deterministic queued CHAT request commit together; restart re-registers only a saved queued request. Claimed,
 held, completed and stopped runs are never replayed. The source run must settle first; another committed run that
 already carried the outcome covers the binding. Failure/unknown status remains attention rather than triggering
@@ -189,7 +190,8 @@ history; inherited claim ancestry invalidates the new native context after forge
 Cards optionally project `continuation: { state, requestId, code }`, with actual `pending`, `queued`, `running`,
 `completed`, `held`, `stopped`, `covered` or `unknown` status. This read never starts work. Transcript rows carry
 `computerContinuation: { cardId, originalRequestId }` and a host-continuation label, with exact MODEL step usage
-attributed to that receipt. These are additive authenticated client fields, not public authority-bearing ingress.
+attributed to that receipt. Opening a retained continuation uses the guarded request endpoint and revalidates it
+on refresh, including beyond the 32-row transcript window. These are additive authenticated client fields, not public authority-bearing ingress.
 
 Routine runs return a host-observed `computer_needs_you` completion hold, mapped to the existing occurrence
 `needs_you` state. They neither create a desktop card nor yield an unattended computer.

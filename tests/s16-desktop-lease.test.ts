@@ -94,7 +94,8 @@ describe("desktop lease host filter in the proxy", () => {
 });
 
 describe("local VM control composes the desktop lease only with its filter", () => {
-  const directory = () => { const dir = mkdtempSync(join(tmpdir(), "jit-desk-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return join(dir, "vm"); };
+  // Unix socket paths need the same short macOS root as the QEMU conformance fixtures.
+  const directory = () => { const dir = mkdtempSync(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "jit-desk-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true })); return join(dir, "vm"); };
   test("desktop without a filter is refused; with one the lease refuses sensitive hosts; headless has no desktop lease", async () => {
     const store = new VmStore(":memory:"); cleanups.push(() => store.close());
     await expect(startLocalVmControl(store, { directory: directory(), desktop: true })).rejects.toMatchObject({ code: "vm_invalid_setup" });

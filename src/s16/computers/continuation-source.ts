@@ -6,19 +6,19 @@ import type { ConversationEvidence, ConversationRequest } from "../../s15/conver
 export function computerContinuationSection(originalRequestId: string, rows: readonly { request: ConversationRequest; evidence: ConversationEvidence[] }[]): string {
   const selected = rows.slice(-8), requests: { requestId: string; state: string; code: string | null; evidence: { id: string; tool: string; isError: boolean; sha256: string; excerpt: string }[] }[] = [];
   let truncated = selected.length !== rows.length;
-  for (const { request, evidence } of selected) {
-    const row = { requestId: request.receipt.rootRequestId, state: request.state, code: request.code, evidence: [] as typeof requests[number]["evidence"] };
-    requests.push(row);
-    if (Buffer.byteLength(canonical({ authority: "none", originalRequestId, requests, truncated })) > 7500) { requests.pop(); truncated = true; break; }
+  // Allocate the byte budget to the newest observations first, then present retained rows chronologically.
+  for (const { request } of selected) requests.push({ requestId: request.receipt.rootRequestId, state: request.state, code: request.code, evidence: [] });
+  for (let index = selected.length - 1; index >= 0; index--) {
+    const { evidence } = selected[index]!, row = requests[index]!;
     const observations = evidence.filter(item => {
       if (item.tool !== "computer_browser") return true;
       try { return JSON.parse(item.content).state !== "yielded"; } catch { return true; }
     }).slice(-8);
     if (observations.length !== evidence.length) truncated = true;
-    for (const item of observations) {
+    for (const item of observations.reverse()) {
       const entry = { id: item.id, tool: item.tool, isError: item.isError, sha256: new Bun.CryptoHasher("sha256").update(item.content).digest("hex"), excerpt: item.content.slice(0, 512) };
-      row.evidence.push(entry);
-      if (Buffer.byteLength(canonical({ authority: "none", originalRequestId, requests, truncated })) > 7000) { row.evidence.pop(); truncated = true; break; }
+      row.evidence.unshift(entry);
+      if (Buffer.byteLength(canonical({ authority: "none", originalRequestId, requests, truncated })) > 7000) { row.evidence.shift(); truncated = true; break; }
       if (entry.excerpt !== item.content) truncated = true;
     }
   }

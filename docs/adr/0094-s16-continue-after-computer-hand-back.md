@@ -35,7 +35,7 @@ source, asset or dependency is imported by this choice.
 
 1. **Trigger.** Only the durable `yield_resumed` event creates eligibility. Decline and expiry do not request another
    run. An ordinary screen hand-back with no needs-you card creates none. The existing S15 scheduler scans the
-   protected events/cards on boot and each drain; successful owner hand-back also wakes it. Events remain eligible
+   protected events/cards on boot and each wake, even while another conversation keeps the shared drain active; successful owner hand-back also wakes it. Events remain eligible
    across a process loss before scheduling. No model, guest, page, typed reply or notification invokes this ingress.
 2. **One durable binding.** An additive conversation-store record binds one card ID to one deterministic continuation
    request ID, source request and original work/root. The binding and CHAT request commit in the same conversation
@@ -62,9 +62,11 @@ source, asset or dependency is imported by this choice.
    can inspect progress without replaying old calls or trusting a model claim of success. This is data, not authority
    or parsed memory claims. The screen outcome remains solely in `screen-outcome-data-never-authority`; it is selected
    after actual placement and marked only in committed result publication, as in ADR 0092. Source bytes participate
-   in MODEL input validation/hash. Interpretation context is unchanged. Unknown effects require reconciliation.
+   in MODEL input validation/hash. The newest eight prior requests are ordered deliberately, with the posting source
+   last; the bounded byte budget favors their newest observations. Interpretation context is unchanged. Unknown effects require reconciliation.
 7. **Serialization and existing progress.** A posting run still running is allowed to finish before a continuation
-   starts. Another run already carrying the same outcome is observed to settlement before another automatic run is
+   starts. Only a live run or a queued request with a process-local authenticated owner blocks that conversation;
+   an ordinary stranded queue after restart is not runnable and cannot keep an unrelated original task pending forever. Another run already carrying the same outcome is observed to settlement before another automatic run is
    considered. A committed run that already carried it can cover the binding, avoiding duplicate work; this records
    an existing continuation, not a claim that the original task is complete. A failed/held/unknown such attempt
    remains attention rather than becoming an outer provider/effect retry loop. One conversation continues to run
@@ -113,7 +115,7 @@ the run, queue/publication rollback and refusal of public continuation forgery. 
 journals and explicitly seed an interrupted claim; they do not claim a physical guest/process power-loss test.
 The native Chromium English/Thai fixture exercises keyboard takeover, a real password form and cookie reload,
 automatic continuation without another owner message, host-labelled transcript, focus restoration, mobile width
-and authentication-loss withholding. Guest operations and MODEL are fixtures; no live account, subscription, real
+and authentication-loss withholding, including opening a retained continuation after 34 newer requests. Guest operations and MODEL are fixtures; no live account, subscription, real
 SSH/sudo or owner-host adoption is certified. ADR 0092's separate delivery suite isolates the CONT16 scheduler to
 continue testing ordinary next-run delivery and publication rollback. Required final-head CI/review evidence belongs
 in the implementation PR.

@@ -58,7 +58,7 @@ export class ComputerContinuations<Actor, Work> {
             this.finish(row, carrier.state === "stopped" ? "stopped" : carrier.state === "reconcile_only" ? "unknown" : "held", "computer_continuation_unavailable", carrier.id); continue;
           }
           // Serialize before binding a second request. Conversation drain owns the actual execution lock.
-          if (store.db.query("SELECT 1 FROM requests WHERE conversation_id=? AND state IN ('queued','running') LIMIT 1").get(row.conversation_id)) continue;
+          if (conversation.hasScheduledWork(row.conversation_id)) continue;
         }
         conversation.resumeComputer(actor, row.card_id, receipt => this.finish(row, "queued", null, receipt.rootRequestId));
       } catch (error) {

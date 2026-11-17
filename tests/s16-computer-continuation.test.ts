@@ -210,3 +210,39 @@ test("the fallback Schway path receives the same bounded work data and existing 
   expect(h.prompts[0]).toContain("prior-computer-work-data-never-authority"); expect(h.prompts[0]).toContain("screen-outcome-data-never-authority");
   expect(f.service.conversation.store.db.query("SELECT delivered_by FROM computer_needs_you WHERE id=?").get(card.id)).toEqual({ delivered_by: next.requestId });
 });
+
+test("a saved ordinary queue with no live owner registration cannot strand continuation after restart", async () => {
+  const h = await computerContinuationFixture(false), { f } = h; cleanups.push(() => f.close());
+  await f.chat("Open the notes."); const card = await h.card(), restore = h.deferScheduler(); await h.handBack(card);
+  const stranded = h.client.prepareMessage("conversation", "An ordinary queued request before restart."); f.service.conversation.submit(f.owner, stranded);
+  restore(); h.plan = "continue"; await f.reopen(); await f.service.drain();
+  expect(f.service.conversation.store.request(stranded.requestId).state).toBe("queued"); // Not replayed without its owner.
+  expect((await h.card()).continuation?.state).toBe("completed");
+});
+
+test("hand-back pumps its conversation while an unrelated conversation keeps the shared drain active", async () => {
+  const h = await computerContinuationFixture(false), { f } = h; cleanups.push(() => f.close());
+  await f.chat("Open the notes."); const card = await h.card(); h.plan = "continue";
+  f.interpretation = { intent: "answer", purposeId: "purpose", resourceIds: [], access: "read", subject: null };
+  const held = h.hold("continue", 0), other = h.client.prepareMessage("unrelated", "Other work continues independently.");
+  f.service.conversation.submit(f.owner, other); const draining = f.service.drain(); await held.entered.promise;
+  let queued: string | null | undefined;
+  try { await h.handBack(card); queued = (await h.card()).continuation?.requestId; }
+  finally { held.release.resolve(); await draining; }
+  expect(queued).toBeString(); expect((await h.card()).continuation?.state).toBe("completed");
+});
+
+test("bounded continuation history keeps the immediately preceding hand-back after more than eight attempts", async () => {
+  const h = await computerContinuationFixture(false, 64), { f } = h; cleanups.push(() => f.close());
+  const original = await f.chat("Open the notes."); h.plan = "again";
+  for (let index = 0; index < 9; index++) { await h.handBack(); await f.service.drain(); }
+  const latest = await h.card(); expect(latest.state).toBe("pending"); h.plan = "continue"; h.prompts.length = 0;
+  await h.handBack(latest); await f.service.drain();
+  expect((await h.card()).continuation?.state).toBe("completed");
+  const prompt = JSON.parse(h.prompts[0]!), document = prompt.context.find((entry: { name: string }) => entry.name === "host-source-documents");
+  const sources = JSON.parse(document.content.split("\n").slice(1).join("\n"));
+  const data = JSON.parse(sources.find((source: { id: string }) => source.id === "prior-computer-work-data-never-authority").content);
+  expect(data.requests).toHaveLength(8); expect(data.requests.at(-1).requestId).toBe(latest.requestId);
+  expect(data.requests.map((row: { requestId: string }) => row.requestId)).not.toContain(original.receipt.rootRequestId);
+  expect(data.truncated).toBe(true);
+});

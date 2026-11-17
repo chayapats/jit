@@ -20,7 +20,7 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
     ? '<!doctype html><h1>Signed-in fixture notes</h1><p>The working browser kept this session.</p>'
     : `<!doctype html><form><label>Fixture password<input type="password" autofocus></label><button>Sign in</button></form><script>document.querySelector('form').addEventListener('submit',event=>{event.preventDefault();document.cookie='signed_in=1;Secure;SameSite=Strict;Path=/';location.reload()})</script>` }));
   const guestPage = await guest.newPage(); await guestPage.goto("https://notes.example.com/"); await guestPage.getByLabel("Fixture password").focus();
-  const sent: VmScreenInput[] = [], commands: Record<string, unknown>[] = [], errors: string[] = [];
+  const sent: VmScreenInput[] = [], commands: Record<string, unknown>[] = [], guardedRequests: string[] = [], errors: string[] = [];
   const f = await composedFixture("default", false, undefined, o => ({ ...o, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, screen: {},
     model: { ...o.model, scripted: route => { const original = o.model.scripted!(route); return { ...original, async *stream(request, call) {
       if (!JSON.stringify(request.context).includes("screen-outcome-data-never-authority")) { yield* original.stream(request, call); return; }
@@ -36,6 +36,7 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
     if (url.origin !== "http://localhost:3099") { await route.abort(); return; }
     const value = request.method() === "POST" ? request.postDataJSON() : undefined;
     if (url.pathname === "/api/s16/client/needs-you/commands") commands.push(value);
+    if (url.pathname.startsWith("/api/s16/client/requests/")) guardedRequests.push(url.pathname);
     const response = await f.request(url.pathname + url.search, request.method(), value, { ...request.headers(), host: "localhost:3099", ...(unauthenticated ? { cookie: "" } : {}) });
     await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
   });
@@ -79,6 +80,19 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
       expect(read.text).toContain("Signed-in fixture notes"); expect(JSON.stringify(read)).not.toContain("fixture-login");
     } finally { controller.close(); }
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    // Retained cards outlive the 32-row transcript window. Opening one must fetch the guarded row.
+    const continuation = f.service.conversation.store.db.query<{ request_id: string }, [string]>("SELECT request_id FROM computer_continuations WHERE card_id=?").get(commands[0]!.cardId as string)!.request_id;
+    f.script = [{ type: "tool_call", id: uid(), name: "bash", arguments: { command: "printf newer" } }];
+    for (let index = 0; index < 34; index++) expect((await f.chat(`Newer work ${index}.`)).state).toBe("completed");
+    await page.getByRole("button", { name: copy["s16.common.refresh"], exact: true }).first().click();
+    await page.waitForResponse(response => response.url().endsWith("/api/s16/client/conversations/conversation"));
+    expect(await page.locator(`#request-${continuation}`).count()).toBe(0);
+    const openResult = card.getByRole("button", { name: copy["s16.continuation.open"], exact: true });
+    await openResult.focus(); await openResult.press("Enter");
+    await page.locator(`#request-${continuation}`).getByText("Automatic continuation completed from observed evidence.", { exact: true }).waitFor();
+    expect(guardedRequests).toContain(`/api/s16/client/requests/${continuation}`);
+    await page.waitForFunction(id => document.activeElement?.id === `request-${id}`, continuation);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     // A second card proves that session loss clears the independently held screen and private card text.
     f.script = [{ type: "tool_call", id: uid(), name: "computer_browser", arguments: { kind: "needs_you", reason: "verify", origin: "https://notes.example.com" } }];
     expect((await f.chat("Verify the notes.")).state).toBe("completed");
@@ -89,6 +103,7 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
     unauthenticated = true; await panel.waitFor({ state: "detached", timeout: 10_000 });
     await page.getByText(copy["s16.common.authenticationRequired"], { exact: true }).waitFor();
     expect(await page.locator("body").innerText()).not.toContain("https://notes.example.com");
+    expect(await page.locator("body").innerText()).not.toContain("Automatic continuation completed from observed evidence.");
     expect((await f.service.screen!.view(f.owner, "vm")).state).toBe("owner");
     f.advance(31_000); expect((await f.service.screen!.view(f.owner, "vm")).state).toBe("fenced");
     expect(errors).toEqual([]);
