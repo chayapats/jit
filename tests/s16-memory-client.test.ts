@@ -128,7 +128,11 @@ test("team corrections follow work to another Bot after restart; Bot-private mem
 
   bot = "specialist"; await w.f.reopen();
   expect((await w.say("peer", "How should replies look? Mention the vault rotation too.")).result).toBe("Detailed reply.");
-  expect(w.lastInput()).toContain("I prefer detailed replies."); expect(w.lastInput()).not.toContain("Tuesday"); expect(w.lastInput()).not.toContain("I prefer concise replies.");
+  // Schway's host date legitimately includes Tuesday on Tuesdays. Every other context section must still
+  // exclude the private memory token, including source documents, history and owner decisions.
+  const input = JSON.parse(w.lastInput()); input.context = input.context.filter((section: { name: string }) => section.name !== "schway-local-date");
+  const context = JSON.stringify(input);
+  expect(context).toContain("I prefer detailed replies."); expect(context).not.toContain("Tuesday"); expect(context).not.toContain("I prefer concise replies.");
 });
 
 test("memory routes keep the protected client boundary", async () => {
