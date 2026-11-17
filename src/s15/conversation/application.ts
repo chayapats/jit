@@ -11,7 +11,7 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationDelegationPin, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
 
-const safeCodes = new Set(["computer_continuation_unavailable", "computer_needs_you", "computer_yielded", "bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
+const safeCodes = new Set(["skills_required", "skill_unavailable", "skill_review_required", "skill_dependency_unavailable", "skill_dependency_outside_scope", "skill_unit_unavailable", "skill_runtime_unavailable", "skill_execution_unsupported", "computer_continuation_unavailable", "computer_needs_you", "computer_yielded", "bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
   "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
@@ -56,6 +56,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
     if (options.memory?.fileContract && (!store.fileMemory || !options.guardInterpretation)) throw new AppError("file_memory_required", 503);
     if (!options.memory?.fileContract && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileMemory')='text' LIMIT 1").get()) throw new AppError("file_memory_required", 503);
+    if (options.skills && !store.skillContract || !options.skills && (store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version === 5 || store.db.query("SELECT 1 FROM requests WHERE json_array_length(record_json,'$.skillUses')>0 LIMIT 1").get())) throw new AppError("skills_required", 503);
     this.clock = options.clock ?? clock;
     if (!options.memory && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.memory')='object' LIMIT 1").get()) throw new AppError("memory_required", 503);
     if (!options.files && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileInputs')='array' LIMIT 1").get()) throw new AppError("files_required", 503);
@@ -137,6 +138,21 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (this.store.request(receipt.rootRequestId).state === "queued") this.#owners.set(receipt.rootRequestId, { actor, commandId: receipt.requestId });
     this.#wakeDrain(); return receipt;
   }
+  /** Protected tool ingress: persist exact current imported-data dependencies before releasing any of their bytes. */
+  recordSkillUse(requestId: string, use: import("../../s16/skills/types").SkillUse): void {
+    identity(requestId); canonical(use); exact(use, ["skillId", "pin", "unitId", "resource"]); identity(use.skillId);
+    if (typeof use.pin !== "string" || !/^[a-f0-9]{64}$/.test(use.pin)) throw new AppError("invalid_data");
+    if (use.unitId !== null) identity(use.unitId); exact(use.resource, ["id", "revision", "generation"]); identity(use.resource.id); integer(use.resource.revision, 1); integer(use.resource.generation, 1);
+    if (!this.options.skills) throw new AppError("skills_required", 503);
+    this.store.transaction(() => {
+      const current = this.store.request(requestId);
+      if (current.state !== "running" || current.phase !== "work" || !current.authority) throw new AppError("outside_scope");
+      const work = this.options.policy.open(current.authority); this.options.policy.guard(work, "tool");
+      const pins = current.skillUses ?? []; if (!pins.some(pin => canonical(pin) === canonical(use))) pins.push(structuredClone(use));
+      if (pins.length > 64) throw new AppError("output_limit"); current.skillUses = pins;
+      this.options.skills!.guard(work, current); this.store.requireSkillContract(); this.store.save(current); this.store.event(current, "progress", this.clock.now(), "skill_used"); this.options.beforeCommit?.();
+    });
+  }
   /** Remaining caller ceilings of the original logical task, including all earlier continuation attempts. */
   private computerAllowance(original: ConversationRequest, requestId: string): ConversationAuthority["limits"] {
     if (!original.authority) throw new AppError("outside_scope");
@@ -161,6 +177,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     for (const id of pin.evidenceRequests) {
       const prior = this.store.request(id);
       if (prior.owner.generation !== request.owner.generation || prior.authority?.id !== request.authority?.id) throw new AppError("outside_scope");
+      if (prior.skillUses?.length) { if (!this.options.skills) throw new AppError("skills_required", 503); this.options.skills.guard(work, prior); }
       if (prior.memory) { if (!this.options.memory) throw new AppError("memory_context_stale"); this.options.memory.guard(work, id); }
       if (prior.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, prior); }
       const unknown = this.store.db.query<{ tool: string }, [string]>("SELECT tool FROM tool_calls WHERE request_id=? AND state IN ('claimed','unknown')").all(id);
@@ -523,6 +540,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     const work = this.options.policy.open(request.authority);
     this.options.policy.guard(work, "publication");
     this.guardComputerContinuation(work, request);
+    if (request.skillUses?.length) { if (!this.options.skills) throw new AppError("skills_required", 503); this.options.skills.guard(work, request); }
     if (request.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, request); }
     if (request.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, request.receipt.rootRequestId); }
   }
@@ -630,6 +648,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         if (!registration?.actor) throw new AppError("authentication_required", 401);
         this.owner(registration.actor, current); this.guardComputerContinuation(work, current);
       }
+      if (current.phase === "work" && current.skillUses?.length) { if (!this.options.skills) throw new AppError("skills_required", 503); this.options.skills.guard(work, current); }
       if (current.phase === "work" && current.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, current); }
       if (current.phase === "work" && current.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, id); }
     };

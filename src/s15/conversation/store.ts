@@ -16,7 +16,7 @@ export class ConversationStore {
   readonly db!: Database;
   #lock: Database;
   #closed = false;
-  constructor(readonly path: string, installationId: string, create = false, readonly fileContract = false, readonly fileMemory = false) {
+  constructor(readonly path: string, installationId: string, create = false, readonly fileContract = false, readonly fileMemory = false, readonly skillContract = false) {
     identity(installationId);
     const existing = existsSync(path);
     if (existing) {
@@ -25,7 +25,7 @@ export class ConversationStore {
       const header = Buffer.alloc(100), fd = openSync(path, "r");
       let length: number;
       try { length = readSync(fd, header, 0, 100, 0); } finally { closeSync(fd); }
-      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || fileContract && ([2, 3].includes(header.readUInt32BE(60)) || fileMemory && header.readUInt32BE(60) === 4))) throw new AppError("conversation_store_incompatible", 409);
+      if (length < 100 || header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== applicationId || !(header.readUInt32BE(60) === 1 || skillContract && header.readUInt32BE(60) === 5 || fileContract && ([2, 3].includes(header.readUInt32BE(60)) || fileMemory && header.readUInt32BE(60) === 4))) throw new AppError("conversation_store_incompatible", 409);
     } else if (!create) throw new AppError("continuity_unavailable", 503);
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lockPath = `${path}.runtime-lock.sqlite`;
@@ -73,6 +73,12 @@ export class ConversationStore {
     if (version === 4 && !this.fileMemory) throw new AppError("file_memory_required", 503);
     const current = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
     this.db.exec(`PRAGMA user_version=${Math.max(current, version)}`);
+  }
+  /** First imported-data use stamps its dependency atomically with CHAT; older readers cannot ignore its fences. */
+  requireSkillContract(): void {
+    if (!this.skillContract || !this.db.inTransaction) throw new AppError("skills_required", 503);
+    const current = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    this.db.exec(`PRAGMA user_version=${Math.max(current, 5)}`);
   }
   /** Reads one exact retained request; absence never creates a new authority or queue. */
   request(requestId: string): ConversationRequest {

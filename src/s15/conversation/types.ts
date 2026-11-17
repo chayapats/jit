@@ -155,6 +155,8 @@ export interface ConversationEvent {
 export interface ConversationEvidence { kind?: "input"; id: string; tool: string; inputHash: string; outputHash: string; content: string; isError: boolean; at: number }
 /** Durable request lifecycle. Claimed interrupted work is reconcile-only and is never automatically replayed. */
 export interface ConversationRequest {
+  /** Guarded imported know-how dependencies; no pin is owner or execution authority. */
+  skillUses?: import("../../s16/skills/types").SkillUse[];
   receipt: ConversationReceipt; command: ConversationCommand; owner: ConversationOwner;
   /** Latest immutable owner command, distinct from the root command when filling a material hold. */
   interpretationRequest: ConversationCommand;
@@ -227,6 +229,8 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
   runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; continuationSection?: string | undefined; screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Picks one carried set before the send; delivery shares only the committed result-publication transaction. */
+  /** Every use, later send/tool and publication reacquires the owning imported-data fences. */
+  skills?: { guard(work: WorkContext, request: ConversationRequest): void };
   screenOutcomes?: { prepare(request: ConversationRequest): import("../../s16/computers/needs-you-types").ComputerScreenOutcome[]; delivered(request: ConversationRequest): void;
     /** Host scheduling proof. The composition also confirms the original work's durable VM affinity. */
     resumption?(cardId: string): import("../../s16/computers/needs-you-types").ComputerScreenResumption | null };
