@@ -1,6 +1,6 @@
 # s16-computer-browser/v1 — watched desktop browser
 
-Slices 3a and 3b of ADR 0092 / #410. The host offers `computer_browser` only to execute work admitted to a running desktop
+Slices 3a–3c of ADR 0092 / #410. The host offers `computer_browser` only to execute work admitted to a running desktop
 computer. Placement and SSH identity come from that work's VM session, not model input. Inspect work and headless
 computers keep their existing file/shell tools. A private computer's browser observations retain that computer's scope.
 
@@ -12,9 +12,10 @@ computers keep their existing file/shell tools. A private computer's browser obs
 - `{ kind: "find", generation, tab?, text }`: case-insensitive literal text matches, query at most 4096 bytes.
 - `{ kind: "click" | "submit", generation, tab?, target }`: an opaque element id from the latest observation.
 - `{ kind: "type" | "select", generation, tab?, target, value }`: replace a non-secret input or select an exact option value; at most 4096 UTF-8 bytes. Line breaks in `type` carry Enter/form submission.
+- `{ kind: "needs_you", reason: "sign_in" | "verify" | "captcha", origin }`: public HTTP(S) origin only (no path, credentials, query or fragment); posts the conversation card and yields without a screen ticket or CDP batch.
 
 Unknown fields/kinds are refused. There is no model-supplied JS, selector, CDP command, cookie access, upload/download,
-credential entry or screenshot. `needs_you` and the trusted-site sign-in/resume flow ship in 3c. This slice does not close #442 or claim live guest evidence.
+credential entry or screenshot. The needs-you contract below supplies trusted-site sign-in/handoff; live guest acceptance remains #431.
 
 `state` returns `{ state: "ready", generation, truncated, tabs }`. Allowed tabs expose bounded URL/title; refused
 tabs expose only opaque id, origin and refusal code. `navigate`/`read`/`find` return
@@ -121,7 +122,7 @@ Every call binds disclosure to the trusted work actor and its placed VM/session:
 ancestry before guest dispatch, and `vmOutput` imports persistent shared-VM ancestry before publication, including
 sources acquired after session setup. A denied input sends no CDP; a denied output publishes no observation.
 
-All operations hold ScreenControl agent tickets and recheck them and the live work guard around each CDP command.
+All operations except `needs_you` hold ScreenControl agent tickets and recheck them and the live work guard around each CDP command.
 Takeover closes the channel gracefully. The relay discards wholly unsent commands, completes any partial frame,
 and acknowledges only after sent commands reply and sent navigations have stopped loading (`Page.stopLoading` reply). The host waits for that positive guest-drain acknowledgement,
 not just rejected host promises, before releasing the agent ticket. Unproven settlement fails closed with
@@ -133,6 +134,43 @@ Each call has a 60 s deadline (`computer_browser_timeout`), each CDP command 15 
 Neither work-shell command/session timeout applies to this dedicated stream. The model tool wraps refusals as
 `{ state: "denied", code }` with `isError`; unexpected transport errors are `computer_browser_unavailable`.
 There is no autonomous retry of an operation whose outcome may be uncertain.
+
+## Needs-you handoff (slice 3c)
+
+`needs_you` refuses unless the screen is `agent` (`takeover_state_changed`). It closes its stream, inserts an
+origin-only card in `conversation.sqlite`, then changes `vm.sqlite` to `yield` under a fresh generation. It returns
+`{ state: "yielded", cardId, generation, expiresAt }` within the ordinary 60 s call deadline. Work can end or be
+cancelled without clearing yield. Later browser/VM input on that computer refuses `computer_yielded`; idle sleep
+is blocked. Existing operation tickets settle normally; Watch screen waits in `settling` until they end.
+
+The authenticated snapshot adds `needsYouCards`. `POST /api/s16/client/needs-you/commands` (CSRF, JSON ≤ 4 KiB)
+accepts exactly `{ contract: "s16-computer-needs-you/v1", requestId, conversationId, cardId, kind: "watch" | "decline", generation }`.
+The response is `{ contract: "s16-computer-needs-you-result/v1", card, screen }`. Watch rechecks the current site
+tier and VM generation, takes control under the exact observed generation, then opens the existing screen UI.
+An old generation refuses `stale_screen`. Decline applies only to a still-yielded card. Chat text cannot call either.
+Sensitive-only or sensitive-tier origins require `protected_browser`.
+
+Expiry is fixed on insertion: top-level `needsYouMinutes` / `JIT_COMPUTER_NEEDS_YOU_MINUTES`, default 240, range
+30–1440; S15 validates it at startup independently of legacy config. The optional packaged-service field is validated,
+rendered only when present and included in configuration plans. Restarting with a different setting affects future
+cards only. Reading an overdue `yield` lazily returns it to `agent`; card expiry never clears owner/settling/fenced control.
+
+A failed insert cannot yield. A failed yield voids the inserted card. A crash orphan is voided on read/startup
+only after 60 s when neither a control row nor terminal yield event holds its card ID. Failed repair retries on read.
+Screen transitions retain `card_id` through owner leases/restarts, and each return to agent atomically clears the row
+and stores its old card ID on `yield_resumed`, `yield_declined` or `yield_expired`. Cards derive outcomes from these
+events, so a failed card update cannot erase an outcome. No hand-back sends a CDP batch.
+
+The next eligible work in the same conversation gets `{ cardId, origin, reason, outcome, generation }` as a separate
+`screen-outcome-data-never-authority` host source in both production MODEL and fallback Schway. The exact carried IDs
+are saved before sending and marked delivered only in the committed conversation result-publication transaction.
+Provider failure, cancellation, publication rollback or `result_unavailable` preserves them for the next eligible run;
+no-computer work and outcomes arriving after preparation do not mark them. Inputs validate and hash the outcome set.
+Interpretation and memory-claim parsing receive no such source. A fresh run starts at the hand-back generation;
+observations from before yield remain stale. A durable per-VM observation high-water mark makes each control transition exceed every previously exposed browser generation, including after multiple reads or restart. Automatic continuation is separately owned by #459.
+
+Routine runs return a host-observed `computer_needs_you` completion hold, mapped to the existing occurrence
+`needs_you` state. They neither create a desktop card nor yield an unattended computer.
 
 ## Verification
 

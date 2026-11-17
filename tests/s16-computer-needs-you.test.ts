@@ -23,7 +23,7 @@ function fixture(minutes?: number) {
   const store = new ConversationStore(join(root, "conversation.sqlite"), "fixture", true), vm = new VmStore(":memory:");
   cleanups.push(() => { vm.close(); store.close(); rmSync(root, { recursive: true, force: true }); });
   vm.save({ id: "vm", generation: 1, endpoint, managerId: "manager", state: "ready", networkCheckedAt: 1, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: "fixture-vm", boot: "boot", bindingMac: "52:54:00:12:34:56" });
-  const owner = {}, sent: unknown[] = []; let now = 1000, ownerGeneration = 1, sensitive = false, allowed = true;
+  const owner = {}, sent: unknown[] = []; let now = 1_800_000_000_000, ownerGeneration = 1, sensitive = false, allowed = true;
   const requireOwner = (actor: object) => { if (actor !== owner) throw new AppError("authentication_required", 401); };
   const screenOptions = { store: vm, requireOwner, scope: () => ({ kind: "shared" as const }), now: () => now, leaseMs: 600_000,
     device: () => ({ async unavailable() { return null; }, async capture() { return new Uint8Array(64); }, async send(input: unknown) { sent.push(input); } }) };
@@ -78,6 +78,32 @@ test("crash orphan is repaired at startup only after 60 seconds; failed void rep
   expect(new ComputerNeedsYou(f.options).list(f.owner, "conversation")[0]).toMatchObject({ state: "void", canWatch: false });
 });
 
+test("SIGKILL after the committed insert leaves a durable orphan that startup repairs after the deadline", async () => {
+  const f = fixture(), path = f.store.path, vmPath = join(path, "..", "vm.sqlite"), now = f.now;
+  const registration = f.vm.registration("vm"); f.store.close();
+  const child = Bun.spawn([process.execPath, "-e", `
+    import { ConversationStore } from "./src/s15/conversation/store.ts";
+    import { VmStore } from "./src/s15/vm/store.ts";
+    import { ScreenControl } from "./src/s16/computers/screen.ts";
+    import { ComputerNeedsYou } from "./src/s16/computers/needs-you.ts";
+    const [path, vmPath, record, post, stamp] = process.argv.slice(1);
+    const store = new ConversationStore(path, "fixture", false), vm = new VmStore(vmPath); vm.save(JSON.parse(record));
+    const screen = new ScreenControl({store:vm, requireOwner(){}, device(){return null}, scope(){return {kind:"shared"}}, now:()=>Number(stamp)});
+    screen.yieldToOwner = () => { if(store.db.inTransaction) throw Error("insert_not_committed"); process.kill(process.pid,"SIGKILL"); throw Error("kill_failed"); };
+    new ComputerNeedsYou({store,screen,requireOwner(){},ownerGeneration:()=>1,vmGeneration:()=>1,tier(){},allows:()=>true,now:()=>Number(stamp)}).post(JSON.parse(post));
+  `, path, vmPath, JSON.stringify(registration), JSON.stringify(f.post), String(now)], { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" });
+  const code = await child.exited; expect(code).not.toBe(0); expect(await new Response(child.stderr).text()).toBe("");
+  const store = new ConversationStore(path, "fixture", false), vm = new VmStore(vmPath);
+  cleanups.push(() => { store.close(); vm.close(); });
+  let stamp = now + 59_999;
+  const screen = new ScreenControl({ ...f.screenOptions, store: vm, now: () => stamp });
+  const options = { ...f.options, store, screen, now: () => stamp };
+  expect(new ComputerNeedsYou(options).list(f.owner, "conversation")[0]).toMatchObject({ state: "pending", canWatch: false });
+  stamp++;
+  expect(new ComputerNeedsYou(options).list(f.owner, "conversation")[0]).toMatchObject({ state: "void", canWatch: false });
+  expect(screen.idleBlocked("vm")).toBe(false);
+});
+
 test("yield survives posting-run cancellation; takeover settles existing work before owner input and retains event card ID", async () => {
   const f = fixture(), ticket = f.screen.agentInput("vm"), result = f.cards.post(f.post);
   f.row.state = "stopped"; f.store.save(f.row);
@@ -108,6 +134,36 @@ test("decline and lazy expiry return to agent with old card ID; fixed expiry bel
   expect(restarted.cardOutcome(third.cardId)).toBeNull(); await f.back(); expect(f.screen.cardOutcome(third.cardId)?.outcome).toBe("resumed");
 });
 
+test("card expiry never removes a renewed owner; restarting owner control keeps the card fenced", async () => {
+  const f = fixture(30), card = f.cards.post(f.post), taken = (await f.command("watch", card.cardId, card.generation)).screen!;
+  for (let i = 0; i < 4; i++) {
+    f.advance(9 * 60_000);
+    await f.screen.command(f.owner, { contract: "s16-screen-command/v1", requestId: uid(), vmId: "vm", kind: "renew", generation: taken.generation, takeoverId: taken.takeoverId });
+  }
+  expect((await f.screen.view(f.owner, "vm")).state).toBe("owner"); expect(f.screen.cardOutcome(card.cardId)).toBeNull();
+  const restarted = new ScreenControl(f.screenOptions); expect(restarted.cardControl(card.cardId)).toMatchObject({ state: "fenced", generation: taken.generation + 1 });
+  expect(f.cards.list(f.owner, "conversation")[0]).toMatchObject({ state: "pending", canWatch: true });
+});
+
+test("screen CHECK migration preserves existing controls, events and commands and fences retained owner control", () => {
+  const f = fixture();
+  f.vm.db.exec("DROP TABLE s16_screen_control; DROP TABLE s16_screen_events; CREATE TABLE s16_screen_control(vm_id TEXT PRIMARY KEY,generation INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN ('agent','settling','owner','fenced')),takeover_id TEXT,expires_at INTEGER); CREATE TABLE s16_screen_events(sequence INTEGER PRIMARY KEY,vm_id TEXT NOT NULL,kind TEXT NOT NULL,generation INTEGER NOT NULL,at INTEGER NOT NULL); INSERT INTO s16_screen_control VALUES('vm',7,'owner','old_takeover',90000); INSERT INTO s16_screen_events VALUES(1,'vm','takeover',7,1000); INSERT INTO s16_screen_commands VALUES('old_command','old_hash','vm');");
+  const migrated = new ScreenControl(f.screenOptions);
+  expect(migrated.generation("vm")).toBe(8);
+  expect(f.vm.db.query("SELECT state,card_id FROM s16_screen_control").get()).toEqual({ state: "fenced", card_id: null });
+  expect(f.vm.db.query("SELECT kind,card_id FROM s16_screen_events WHERE sequence=1").get()).toEqual({ kind: "takeover", card_id: null });
+  expect(f.vm.db.query("SELECT hash FROM s16_screen_commands WHERE id='old_command'").get()).toEqual({ hash: "old_hash" });
+});
+
+test("browser high-water marks survive restart without interrupting tickets or changing the settling generation", async () => {
+  const f = fixture(), ticket = f.screen.agentInput("vm");
+  f.screen.observedBrowserGeneration("vm", 42); expect(() => ticket.current()).not.toThrow();
+  const taken = (await f.screen.command(f.owner, { contract: "s16-screen-command/v1", requestId: uid(), vmId: "vm", kind: "takeover", generation: 0 })).view;
+  expect(taken).toMatchObject({ state: "settling", generation: 43 }); ticket.end();
+  expect((await f.screen.view(f.owner, "vm"))).toMatchObject({ state: "owner", generation: 43 });
+  await f.back(); const restarted = new ScreenControl(f.screenOptions); expect(restarted.browserGeneration("vm")).toBe(44);
+});
+
 test("a changed tier after the availability wait refuses takeover; metadata and origin cannot expand scope", async () => {
   const f = fixture(), result = f.cards.post(f.post), gate = Promise.withResolvers<void>();
   const device = f.screenOptions.device()!; device.unavailable = async () => { await gate.promise; return null; };
@@ -133,6 +189,18 @@ test("only exact carried cards mark delivered inside committed publication; roll
   f.store.transaction(() => f.cards.delivered(next));
   expect(f.cards.prepare(next).map(card => card.cardId)).toEqual([second.cardId]);
   f.ownerGeneration = 2; expect(f.cards.prepare(next)).toEqual([]); expect(f.cards.list(f.owner, "conversation")).toEqual([]);
+});
+
+test("bounded undelivered custody refuses the 65th card without yielding; changing expiry affects future cards only", async () => {
+  const f = fixture(30), first = f.cards.post(f.post); await f.command("decline", first.cardId, first.generation);
+  const later = new ComputerNeedsYou({ ...f.options, minutes: 1440 });
+  for (let i = 1; i < 64; i++) {
+    const card = later.post(f.post); expect(card.expiresAt).toBe(f.now + 1440 * 60_000);
+    f.screen.declineYield("vm", card.cardId, card.generation);
+  }
+  expect(later.list(f.owner, "conversation").find(card => card.id === first.cardId)!.expiresAt).toBe(first.expiresAt);
+  expect(() => later.post(f.post)).toThrow(expect.objectContaining({ code: "computer_needs_you_limit" }));
+  expect(f.screen.idleBlocked("vm")).toBe(false); expect(later.list(f.owner, "conversation")).toHaveLength(64);
 });
 
 test("needs_you sends no CDP batch or ticket, returns immediately, and later browser calls are yielded", async () => {

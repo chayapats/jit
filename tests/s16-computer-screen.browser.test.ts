@@ -92,7 +92,7 @@ browserTest.each([1440, 390])("actual S16 computer screen: watch, take over, cli
     await panel.getByRole("button", { name: copy["s16.screen.takeOver"] }).waitFor();
     await panel.getByRole("button", { name: copy["s16.screen.close"] }).click();
     await page.getByRole("button", { name: copy["s16.screen.watch"] }).waitFor();
-    expect(await page.evaluate(() => document.activeElement?.textContent)).toBe(copy["s16.screen.watch"]);
+    await page.waitForFunction(expected => document.activeElement?.textContent === expected, copy["s16.screen.watch"]);
     expect(sent).toHaveLength(8);
     expect(errors).toEqual([]); expect(external).toEqual([]);
   } finally { await context.close(); await f.close(); }

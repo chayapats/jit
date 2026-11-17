@@ -383,7 +383,7 @@ export async function composeS15(options: S15CompositionOptions) {
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.screen?.needsYouMinutes !== undefined ? { minutes: options.screen.needsYouMinutes } : {}) }) : null;
     if (screen) {
       computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id), assertAgent: id => screen.assertAgent(id),
-        hold: action => browserCards!.hold(action), needsYou: input => needsYou!.post(input), generation: id => screen.generation(id),
+        hold: action => browserCards!.hold(action), needsYou: input => needsYou!.post(input), generation: id => screen.browserGeneration(id), observedGeneration: (id, generation) => screen.observedBrowserGeneration(id, generation),
         pressGuard: card => { const row = vmStore.registration(card.vm); if (row.state !== 'ready' || row.generation !== card.vmGeneration) throw new AppError('computer_browser_stale', 409); },
         async unavailable(id) {
           const row = vmStore.registration(id); if (row.state !== 'ready') return 'vm_not_running';

@@ -1,5 +1,5 @@
 ---
-status: accepted for DESK16-01 (#410), third slice; D1/D2/D3 chosen by Champ on 2026-11-12; 3a merged in #460; 3b implementation adds inputs and held cards; 3c sign-in/resume remains unimplemented; closes AUTH16-01 (#442)'s last acceptance item once implemented; live host evidence belongs to #431
+status: implemented for DESK16-01 (#410), third slice; D1/D2/D3 chosen by Champ on 2026-11-12; 3a merged in #460 and 3b in #461; 3c delivers needs-you sign-in/handoff and AUTH16-01 (#442)'s remaining deterministic acceptance; live host evidence belongs to #431
 date: 2026-11-12
 scope: DESK16-01 (#410); AUTH16-01 (#442); S16-AC06/AC07/AC11; FR-10/14/15/35/38/40; NFR-07/14
 ---
@@ -437,3 +437,32 @@ ScreenControl tickets). The owner sees the Bot work on the screen, as in Rakazo.
   `parseServiceConfig`, shipped in slice 3c; and `s15-working-vm-v1` (`vmDesktopCdpStream` with its
   `sudo -n -u jit-desktop` attach and handshake, relay files, composite `ready-v1` key). Live evidence on `jit-vm`
   (real Chromium pipe, sign-in on a trusted non-IdP fixture site, stop/start) belongs to #431.
+
+
+## Slice 3c implementation record
+
+The protected `ComputerNeedsYou` service uses the existing conversation and VM journals with the insertion,
+recovery, expiry and event-delivery order specified above. No cross-store transaction is claimed. A new additive
+conversation table holds bounded origin-only metadata and delivered request IDs; the VM migration preserves the
+old state/events/commands while extending the CHECK and adding card IDs. Expiry validates real epoch milliseconds
+rather than the revision/counter ceiling. A protected per-VM browser-generation high-water mark makes each
+screen transition exceed every previously exposed browser observation. This avoids a numerical collision when
+several browser reads preceded yield; recording it does not alter screen control or interrupt existing tickets.
+The mark survives restart and seeds fresh runs. Browser calls still use Schway's public host/tool surface.
+
+The production MODEL and fallback Schway paths receive a separate validated/hashed `screenOutcomes` source.
+Publication marks only the saved carried IDs in the conversation result transaction. Routine holds come from the
+trusted browser run, through the VM/composite/file tool ports, rather than parsing model prose or tool-result JSON.
+The shared React client's open screen is held outside refreshed snapshot rows, so periodic withholding does not
+unmount input/control; navigation, private-content failure and session loss clear it. The existing screen component
+continues to own input serialization, renewal, fresh generations and hand-back.
+
+Deterministic evidence: `s16-computer-needs-you.test.ts` (two-store gap/fault/restart, event outcomes, exact carried
+sets, tier/auth/scope, routine and no-CDP semantics), `s16-needs-you-composition.test.ts` (actual tool, owner command,
+MODEL prompt, only “continue”, failed provider, completed MODEL with missing evidence, publication rollback, late
+outcome, no-computer request, routine occurrence and idle sweep), `s16-computer-browser.test.ts` (fresh/stale
+handoff generations and bounded unproven-drain refusal), `s15-model.test.ts` (source validation and input hash),
+`s15-conversation.test.ts` (fallback), `ops-execution-config.test.ts` (startup bounds and package rendering/plans),
+and the actual English/Thai client bundle in `s16-needs-you.browser.test.ts` (1440/390, keyboard Watch screen,
+refresh continuity, session-loss withholding, native non-IdP fixture login/session persistence and hand-back). These do not substitute for #431 live guest/account/SSH/sudo acceptance.
+Automatic continuation remains #459.

@@ -119,7 +119,7 @@ export class ComputerNeedsYou<Owner> {
     const screen = card.screenState === "yield" || card.screenState === "fenced"
       ? (await this.options.screen.command(owner, { contract: "s16-screen-command/v1", requestId: command.requestId, vmId: card.vmId, kind: "takeover", generation: command.generation }, current)).view
       : await this.options.screen.view(owner, card.vmId);
-    guard(); this.options.requireOwner(owner); card = this.current(this.get(card.id));
+    current(); card = this.current(this.get(card.id));
     return { contract: "s16-computer-needs-you-result/v1", card, screen };
   }
 }

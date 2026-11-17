@@ -32,7 +32,7 @@ const tones: Record<ComputerView["state"], string> = { running: "ok", sleeping: 
  * retried silently; an unknown outcome is rechecked with the same command identity.
  */
 export function ComputersView({ client, t, locale, available, files, onFailure, names, screen }: ComputersViewProps) {
-  const [watching, setWatching] = useState<string | null>(null), watchButton = useRef<HTMLButtonElement | null>(null);
+  const [watching, setWatching] = useState<string | null>(null), watchButtons = useRef(new Map<string, HTMLButtonElement>());
   const [data, setData] = useState<ComputersData | null>(null), [loadError, setLoadError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null), [confirm, setConfirm] = useState<Confirm | null>(null), [reload, setReload] = useState(0);
   // Bumped by every command: a poll that started before a command never overwrites the command's fresh view.
@@ -120,10 +120,10 @@ export function ComputersView({ client, t, locale, available, files, onFailure, 
         {item.reason && <details><summary>{t("s16.common.details")}</summary><code>{item.reason}</code></details>}
         <div className="actions">
           {item.state === "running" && item.activeSessions === 0 && data.idleStopMs !== null && <button type="button" disabled={busy || watching === item.id} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "sleep", vmId: item.id })}>{t("s16.computers.sleepNow")}</button>}
-          {screen && item.state === "running" && watching !== item.id && <button type="button" onClick={event => { watchButton.current = event.currentTarget; setWatching(item.id); }}>{t("s16.screen.watch")}</button>}
+          {screen && item.state === "running" && watching !== item.id && <button type="button" ref={node => { if (node) watchButtons.current.set(item.id, node); else watchButtons.current.delete(item.id); }} onClick={() => setWatching(item.id)}>{t("s16.screen.watch")}</button>}
           {item.state === "setup_failed" && !item.retired && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "retry_private", vmId: item.id })}>{t("s16.computers.retry")}</button>}
         </div>
-        {screen && watching === item.id && <ComputerScreen client={client} t={t} vmId={item.id} title={title(item)} onFailure={onFailure} onClose={() => { setWatching(null); requestAnimationFrame(() => { if (watchButton.current?.isConnected) watchButton.current.focus(); }); }} />}
+        {screen && watching === item.id && <ComputerScreen client={client} t={t} vmId={item.id} title={title(item)} onFailure={onFailure} onClose={() => { setWatching(null); requestAnimationFrame(() => watchButtons.current.get(item.id)?.focus()); }} />}
       </article></li>)}</ul>
     </>}
   </section>;

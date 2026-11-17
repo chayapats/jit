@@ -372,7 +372,8 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     const s = parsed.s14!;
     return [["JIT_S14_DATABASE", serviceDatabasePath(parsed)], ["JIT_S14_ORIGIN", serviceOrigin(parsed)],
       ["JIT_S14_VAULT_DIRECTORY", s.vaultDirectory], ["JIT_S14_GIT_SCRATCH", s.gitScratch],
-      ...(s.images ? [["JIT_S14_COMPUTER_ROOT", s.computerRoot], ["JIT_BOX_IMAGE_BASE", s.images.base], ["JIT_BOX_IMAGE_BROWSER", s.images.browser]] as [string, string][] : [])];
+      ...(s.images ? [["JIT_S14_COMPUTER_ROOT", s.computerRoot], ["JIT_BOX_IMAGE_BASE", s.images.base], ["JIT_BOX_IMAGE_BROWSER", s.images.browser]] as [string, string][] : []),
+      ...(parsed.needsYouMinutes !== undefined ? [["JIT_COMPUTER_NEEDS_YOU_MINUTES", String(parsed.needsYouMinutes)]] as [string, string][] : [])];
   }
   const env: [string, string][] = [
     ["JIT_DATABASE", serviceDatabasePath(parsed)],

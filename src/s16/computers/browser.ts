@@ -28,6 +28,8 @@ export interface ComputerBrowserOptions {
   needsYou?(input: ComputerNeedsYouPost): { state: "yielded"; cardId: string; generation: number; expiresAt: number };
   /** Starts a fresh run at the post-handoff screen generation; opaque observations remain run-local. */
   generation?(vm: string): number;
+  /** Durable protected high-water mark, so the next handoff exceeds every generation already exposed. */
+  observedGeneration?(vm: string, generation: number): void;
   idleMs?: number; callMs?: number;
 }
 function fail(code: string): never { throw new AppError(code, 409); }
@@ -178,7 +180,7 @@ export class ComputerBrowserRun {
         return { id, url: t.url.slice(0,4096), title: String(t.title ?? "").slice(0,256) };
         }) };
         while (Buffer.byteLength(JSON.stringify(result)) > computerBrowserSnapshotBytes) { result.tabs.pop(); result.truncated = true; }
-        current(); this.disclosure?.output(); current(); return result;
+        current(); this.disclosure?.output(); current(); this.controller.options.observedGeneration?.(this.vm, this.#generation); return result;
       }
       let target = op.tab ? this.#tabs.get(op.tab) : this.#selected ?? tabs[0]?.targetId;
       if (op.tab && !target) fail("computer_browser_stale");
@@ -258,7 +260,7 @@ export class ComputerBrowserRun {
           observed = safe;
         }
       } finally { if (!client.closed) { try { await send("Target.detachFromTarget", { sessionId: session }); } catch (error) { this.disconnect(); throw error; } } }
-      current(); this.disclosure?.output(); current(); return observed;
+      current(); this.disclosure?.output(); current(); this.controller.options.observedGeneration?.(this.vm, this.#generation); return observed;
     } catch (error) {
       if (timedOut) fail("computer_browser_timeout");
       if (callSignal?.aborted) fail("cancelled");
@@ -266,7 +268,9 @@ export class ComputerBrowserRun {
     } finally {
       if (closeAfter || this.#resume) this.disconnect();
       clearTimeout(timer); callSignal?.removeEventListener("abort", cancel);
-      try { await Promise.all(this.#settling); ticket?.end(); }
+      // needs_you owns no ticket: its bounded pre-yield drain already decided whether a card may post.
+      // An unproven idle close must not turn a refused/cancelled handoff into an unbounded tool call.
+      try { if (op.kind !== "needs_you") { await Promise.all(this.#settling); ticket?.end(); } }
       finally { this.#busy = false; }
       if (this.#lease) { this.#lease.timer = setTimeout(() => this.disconnect(), this.controller.options.idleMs ?? computerBrowserIdleMs); this.#lease.timer.unref?.(); }
     }

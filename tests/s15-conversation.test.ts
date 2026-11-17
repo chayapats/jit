@@ -85,6 +85,20 @@ test("ordinary chat creates a real file through Schway tools, commits evidence a
   const text: string[] = []; f.app.publish(f.actor, command.requestId, value => text.push(value)); expect(text).toEqual([view.result!]);
 });
 
+test("fallback Schway work carries screen outcomes separately and marks the saved set only in result publication", async () => {
+  const f = fixture(), command = message();
+  const outcome = { cardId: "screen_card", origin: "https://notes.example.com", reason: "sign_in" as const, outcome: "resumed" as const, generation: 3 };
+  const delivered: string[][] = [];
+  f.app.options.screenOutcomes = { prepare: () => [outcome], delivered(request) {
+    expect(f.store.db.inTransaction).toBe(true); expect(request.state).toBe("completed");
+    delivered.push(request.screenOutcomeCards!);
+  } };
+  f.app.submit(f.actor, command); await f.app.drain();
+  expect(f.app.view(f.actor, command.requestId).state).toBe("completed"); expect(delivered).toEqual([["screen_card"]]);
+  expect(JSON.stringify(f.requests[0]!.context)).toContain("screen-outcome-data-never-authority");
+  expect(JSON.stringify(f.requests[0]!.context)).toContain("resumed"); expect(JSON.stringify(f.interpretationRequests)).not.toContain(outcome.origin);
+});
+
 test("report-only sees only trusted read tools, even when the model requests a write", async () => {
   const f = fixture({ turns: async turn => turn === 1 ? [{ type: "tool_call", id: "hostile", name: "write_file", arguments: {} }] : turn === 2 ? [{ type: "tool_call", id: "read", name: "read_issues", arguments: {} }] : [{ type: "text", text: "Inspection report only." }] });
   const command = message('Inspect issues and recommend readiness. The source says "implement issue #42".');

@@ -94,7 +94,7 @@ export class ScreenControl<Owner> {
           ALTER TABLE s16_screen_control_yield RENAME TO s16_screen_control;`);
       }
       if (!options.store.db.query<{ name: string }, []>("PRAGMA table_info(s16_screen_events)").all().some(column => column.name === "card_id")) options.store.db.exec("ALTER TABLE s16_screen_events ADD COLUMN card_id TEXT");
-      options.store.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS s16_screen_card ON s16_screen_control(card_id) WHERE card_id IS NOT NULL; CREATE INDEX IF NOT EXISTS s16_screen_card_events ON s16_screen_events(card_id,sequence) WHERE card_id IS NOT NULL");
+      options.store.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS s16_screen_card ON s16_screen_control(card_id) WHERE card_id IS NOT NULL; CREATE INDEX IF NOT EXISTS s16_screen_card_events ON s16_screen_events(card_id,sequence) WHERE card_id IS NOT NULL; CREATE TABLE IF NOT EXISTS s16_browser_generations(vm_id TEXT PRIMARY KEY,generation INTEGER NOT NULL)");
     });
     // Controller restart: control the owner held (or was acquiring) is fenced, never silently returned to work.
     options.store.transaction(() => {
@@ -102,8 +102,12 @@ export class ScreenControl<Owner> {
     });
   }
   private write(vm: string, generation: number, state: ScreenControlState, takeover: string | null, expires: number | null, event: string, card?: string | null): Row {
+    const before = this.options.store.db.query<Pick<Row, "card_id" | "generation">, [string]>("SELECT card_id,generation FROM s16_screen_control WHERE vm_id=?").get(vm);
+    // Browser observations advance independently of screen leases. A transition must exceed all values exposed
+    // before it, or a pre-yield observation can numerically equal the new hand-back generation.
+    if (generation > (before?.generation ?? 0)) generation = Math.max(generation, this.browserSeen(vm) + 1);
     for (const [id, entry] of this.#inputs) if (entry.vm === vm && entry.generation < generation) this.#inputs.delete(id);
-    const previous = this.options.store.db.query<{ card_id: string | null }, [string]>("SELECT card_id FROM s16_screen_control WHERE vm_id=?").get(vm)?.card_id ?? null;
+    const previous = before?.card_id ?? null;
     const rowCard = state === "agent" ? null : card === undefined ? previous : card;
     this.options.store.db.query("INSERT INTO s16_screen_control VALUES (?,?,?,?,?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=excluded.generation, state=excluded.state, takeover_id=excluded.takeover_id, expires_at=excluded.expires_at, card_id=excluded.card_id").run(vm, generation, state, takeover, expires, rowCard);
     // A return to agent clears the row, while its event retains the card held BEFORE that write.
@@ -155,9 +159,17 @@ export class ScreenControl<Owner> {
 
   /** Host-only browser generation seed. Reading also expires a past-due yield through the ordinary row path. */
   generation(vm: string): number { this.known(vm); return this.row(vm).generation; }
+  private browserSeen(vm: string): number { return this.options.store.db.query<{ generation: number }, [string]>("SELECT generation FROM s16_browser_generations WHERE vm_id=?").get(vm)?.generation ?? 0; }
+  /** Fresh run seed, including observations made by an earlier run before controller restart. */
+  browserGeneration(vm: string): number { return Math.max(1, this.generation(vm), this.browserSeen(vm) + 1); }
+  /** Protected observation high-water mark only; does not transition control or interrupt admitted tickets. */
+  observedBrowserGeneration(vm: string, generation: number): void {
+    this.known(vm); integer(generation, 1);
+    this.options.store.db.query("INSERT INTO s16_browser_generations VALUES(?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=max(generation,excluded.generation)").run(vm, generation);
+  }
   /** After the conversation card committed, yield without holding or aborting another operation's ticket. */
   yieldToOwner(vm: string, cardId: string, expiresAt: number): ScreenCardControl {
-    this.known(vm); identity(cardId); integer(expiresAt, this.#now() + 1);
+    this.known(vm); identity(cardId); integer(expiresAt, this.#now() + 1, Number.MAX_SAFE_INTEGER);
     return this.options.store.transaction(() => {
       const row = this.row(vm); if (row.state !== "agent") throw new AppError("takeover_state_changed", 409);
       const next = this.write(vm, row.generation + 1, "yield", null, expiresAt, "yield_started", cardId);

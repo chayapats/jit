@@ -57,7 +57,7 @@ CHAT16-02 [#406](https://github.com/chayapats/jit/issues/406) adds owner steerin
 The owner chose Grok-style autonomy and removed Telegram: [S16-D06–D11](../specs/S16-rakazo-experience.md), [ADR 0084](../adr/0084-s16-grok-style-default-autonomy.md), [ADR 0085](../adr/0085-remove-telegram-web-push-notifications.md). Consequences for this graph:
 
 - CHANNEL16-01 #424 is closed as not planned; NOTIFY16-01 #441 owns AC18, now notifications rather than messaging surfaces. #429/#430 depend on #441 instead.
-- AUTH16-01 #442 owns the new default policy, in-chat approval and website tiers.
+- AUTH16-01 #442 owns the new default policy, in-chat approval and website tiers. ADR 0092 slice 3c delivers the remaining origin-only needs-you desktop handoff with event-derived outcomes; automatic continuation is #459 and live desktop/account proof remains #431.
 - The protected browser is required only for sensitive sites; public and trusted-site browsing uses the working VM browser. #397/#408/#409/#410 carry the narrowed scope.
 - GitHub publication/merge after required checks is the product default; "product-default versus opt-in personal GitHub" wording in older issue bodies is replaced by the S16-D07 list.
 - References to Telegram or messaging channels above and in older documents are historical.

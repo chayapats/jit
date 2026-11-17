@@ -27,6 +27,18 @@ test('ordinary and difficult steps select approved models and record exact ratio
   const published: string[] = []; service.publish(source.actor!, 'hard', text => published.push(text)); expect(published).toEqual(['Completed the selected step.']);
 });
 
+test('screen outcomes are bounded separate host data and participate in the exact step input hash', async () => {
+  const { source, service, requests } = setup();
+  const outcome = { cardId: 'fixture_card', origin: 'https://notes.example.com', reason: 'sign_in' as const, outcome: 'resumed' as const, generation: 3 };
+  const first = await service.runStep(source.actor!, { ...step('screen_one'), screenOutcomes: [outcome] });
+  const second = await service.runStep(source.actor!, { ...step('screen_two'), screenOutcomes: [{ ...outcome, outcome: 'declined' }] });
+  expect(first.state).toBe('completed'); expect(second.state).toBe('completed'); expect(first.inputHash).not.toBe(second.inputHash);
+  expect(JSON.stringify(requests[0]!.context)).toContain('screen-outcome-data-never-authority');
+  expect(JSON.stringify(requests[0]!.context)).toContain('resumed');
+  await expect(service.runStep(source.actor!, { ...step('screen_invalid'), screenOutcomes: [{ ...outcome, generation: -1 }] })).rejects.toThrow();
+  expect(requests).toHaveLength(2);
+});
+
 test('ranking excludes higher-ranked registry models that the current POLICY does not approve', async () => {
   const { f, source, service, requests } = setup({ selections: [ordinary] });
   expect(f.routes.map(route => route.selection)).toEqual([ordinary, difficult]);
