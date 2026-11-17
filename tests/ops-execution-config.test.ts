@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { parseServiceConfig, serviceEnvironment, type ServiceConfig } from "../ops/package/service-config";
-import { readConfig } from "../src/config";
+import { parseServiceConfig, planServiceConfig, serviceEnvironment, type ServiceConfig } from "../ops/package/service-config";
+import { readConfig, readComputerNeedsYouMinutes } from "../src/config";
+import { runS15 } from "../src/s15/main";
 
 function baseService(dirs: { work: string; state: string; backup: string; opt: string }): ServiceConfig {
   return {
@@ -37,6 +38,28 @@ function layout() {
 }
 
 const validImage = "jit-box-base@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3";
+
+test("needs-you expiry is independent startup configuration with packaged validation, rendering and plans", async () => {
+  const f = layout();
+  try {
+    const base = baseService(f.dirs);
+    expect(readConfig({}).needsYouMinutes).toBe(240);
+    expect(readComputerNeedsYouMinutes({})).toBe(240);
+    expect(serviceEnvironment(base).some(([key]) => key === "JIT_COMPUTER_NEEDS_YOU_MINUTES")).toBe(false);
+    for (const minutes of [30, 1440]) {
+      expect(readConfig({ JIT_COMPUTER_NEEDS_YOU_MINUTES: String(minutes) }).needsYouMinutes).toBe(minutes);
+      const config = parseServiceConfig({ ...base, needsYouMinutes: minutes });
+      expect(config.needsYouMinutes).toBe(minutes);
+      expect(serviceEnvironment(config)).toContainEqual(["JIT_COMPUTER_NEEDS_YOU_MINUTES", String(minutes)]);
+      expect(planServiceConfig(base, config)).toContainEqual({ field: "needsYouMinutes", before: null, after: minutes });
+    }
+    for (const minutes of [29, 1441, 30.5, "", "invalid"]) {
+      expect(() => readConfig({ JIT_COMPUTER_NEEDS_YOU_MINUTES: String(minutes) })).toThrow("Invalid JIT_COMPUTER_NEEDS_YOU_MINUTES");
+      expect(() => parseServiceConfig({ ...base, needsYouMinutes: minutes })).toThrow();
+      await expect(runS15(["setup", "--s15", "--config", join(f.root, "uncreated.json")], { JIT_COMPUTER_NEEDS_YOU_MINUTES: String(minutes) })).rejects.toThrow("Invalid JIT_COMPUTER_NEEDS_YOU_MINUTES");
+    }
+  } finally { f.cleanup(); }
+});
 
 function validExecution(dirs: ReturnType<typeof layout>["dirs"]) {
   return {

@@ -36,7 +36,7 @@ function fixture(settings: { idleMs?: number; callMs?: number } = {}) {
   const screen = new ScreenControl({ store, requireOwner: actor => { if (actor !== owner) throw new Error("not owner"); }, scope: () => ({ kind: "shared" }),
     device: () => ({ async unavailable() { return unavailable; }, async capture() { return new Uint8Array(); }, async send() {} }), onTransition: vm => browser.invalidate(vm) });
   const pipes: ReturnType<typeof pipe>[] = [];
-  browser = new ComputerBrowser({ agentInput: vm => screen.agentInput(vm), unavailable: async () => unavailable,
+  browser = new ComputerBrowser({ agentInput: vm => screen.agentInput(vm), generation: vm => screen.generation(vm), unavailable: async () => unavailable,
     tier: hostname => hostname === "sensitive.org" ? "sensitive" : hostname === "trusted.org" ? "trusted" : undefined,
     stream: async () => {
       streams++; const p = pipe(); pipes.push(p);
@@ -65,6 +65,23 @@ function fixture(settings: { idleMs?: number; callMs?: number } = {}) {
 }
 
 describe("desktop stream handshake", () => {
+  test("a new run uses the hand-back generation, while pre-yield observations and old frames remain stale", async () => {
+    const f = fixture(), old = f.run();
+    f.browser.options.observedGeneration = (vm, generation) => f.screen.observedBrowserGeneration(vm, generation);
+    let observation = await old.execute({ kind: "read", generation: 1 });
+    observation = await old.execute({ kind: "read", generation: observation.generation });
+    observation = await old.execute({ kind: "read", generation: observation.generation });
+    const yielded = f.screen.yieldToOwner("vm1", "fixture_card", Date.now() + 60_000);
+    const taken = (await f.command({ kind: "takeover", generation: yielded.generation })).view;
+    const back = (await f.command({ kind: "hand_back", generation: taken.generation, takeoverId: taken.takeoverId })).view;
+    expect(back.generation).toBeGreaterThan(observation.generation as number);
+    const run = f.run();
+    const before = f.sent.length;
+    await expect(run.execute({ kind: "read", generation: observation.generation })).rejects.toMatchObject({ code: "computer_browser_stale" });
+    expect(f.sent.length).toBe(before);
+    expect(await run.execute({ kind: "read", generation: back.generation })).toMatchObject({ state: "observed" });
+    await expect(old.execute({ kind: "read", generation: observation.generation })).rejects.toMatchObject({ code: "computer_browser_stale" });
+  });
   test("consumes handshake first, preserves coalesced CDP bytes and uses fixed pinned SSH argv", async () => {
     const p = pipe(); let argv: string[] = [];
     const opening = vmDesktopCdpStream(endpoint, { spawn: args => { argv = args; return p.stream; } });
@@ -231,6 +248,21 @@ test("takeover retains its ticket until positive guest drain acknowledgement",as
  expect((await f.screen.view(f.owner,"vm1")).state).toBe("settling");
  drain.resolve();expect(await result).toBeInstanceOf(AppError);await transition;
  expect((await f.screen.view(f.owner,"vm1")).state).toBe("owner");
+});
+
+test("needs_you deadline returns without yielding when an idle stream cannot prove settlement", async () => {
+  const f = fixture({ callMs: 10 }), drain = Promise.withResolvers<void>();
+  const stream = f.browser.options.stream; f.browser.options.stream = async (...args) => ({ ...await stream(...args), settled: drain.promise });
+  f.browser.options.assertAgent = vm => f.screen.assertAgent(vm);
+  let posted = 0; f.browser.options.needsYou = () => { posted++; throw Error("unexpected card"); };
+  const run = f.browser.open("vm1", () => {}, new AbortController().signal, undefined, { requestId: "request", conversationId: "conversation", ownerGeneration: 1, vmGeneration: 1 });
+  await run.execute({ kind: "state" });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<string>(resolve => { timer = setTimeout(() => resolve("unbounded"), 100); });
+  try {
+    const result = await Promise.race([run.execute({ kind: "needs_you", reason: "sign_in", origin: "https://public.org" }).catch(error => error.code), timeout]);
+    expect(result).toBe("computer_browser_timeout"); expect(posted).toBe(0); expect(f.screen.idleBlocked("vm1")).toBe(false);
+  } finally { clearTimeout(timer); drain.resolve(); await run.settled(); }
 });
 
 test("unproven guest settlement fails closed, never granting owner input",async()=>{

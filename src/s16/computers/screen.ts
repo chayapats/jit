@@ -7,13 +7,14 @@ import type { ComputerScope } from "./scopes";
 /**
  * Who may write to a working computer's screen (`s16-computer-screen/v1`, DESK16-01):
  * - `agent`: work may use the computer; the owner can watch.
+ * - `yield`: a needs-you card waits for the owner; existing operations settle, new work input is refused.
  * - `settling`: the owner asked for control; new work operations are refused and the owner waits until every
  *   work operation admitted under the previous generation has settled.
  * - `owner`: only the owner's input reaches the screen, under the current generation and takeover id.
  * - `fenced`: control was lost while the owner held it (lease expiry, closed tab, controller restart). Nobody
  *   writes until the owner takes control again or hands the computer back.
  */
-export type ScreenControlState = "agent" | "settling" | "owner" | "fenced";
+export type ScreenControlState = "agent" | "yield" | "settling" | "owner" | "fenced";
 /** Owner projection of one computer's screen. Frames are this computer's private data in `scope`. */
 export interface ScreenView {
   contract: "s16-computer-screen/v1"; vmId: string;
@@ -48,7 +49,11 @@ export interface ScreenControlOptions<Owner> {
   /** Owner control lapses this long after the last renewal (default 30 s). */
   leaseMs?: number;
 }
-interface Row { vm_id: string; generation: number; state: ScreenControlState; takeover_id: string | null; expires_at: number | null }
+interface Row { vm_id: string; generation: number; state: ScreenControlState; takeover_id: string | null; expires_at: number | null; card_id: string | null }
+/** Host-only current control facts for one needs-you card; not a model-callable handle. */
+export interface ScreenCardControl { vmId: string; state: ScreenControlState; generation: number }
+/** Monotonic outcome copied from the screen event, independently of any conversation-card update. */
+export interface ScreenCardOutcome { vmId: string; cardId: string; outcome: "resumed" | "declined" | "expired"; generation: number; at: number }
 /** A work operation admitted under one generation. `current()` refuses once the owner asked for control. */
 export interface ScreenAgentTicket { current(): void; end(): void }
 
@@ -80,21 +85,41 @@ export class ScreenControl<Owner> {
     options.store.db.exec(`CREATE TABLE IF NOT EXISTS s16_screen_control (vm_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('agent','settling','owner','fenced')), takeover_id TEXT, expires_at INTEGER);
       CREATE TABLE IF NOT EXISTS s16_screen_commands (id TEXT PRIMARY KEY, hash TEXT NOT NULL, vm_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS s16_screen_events (sequence INTEGER PRIMARY KEY, vm_id TEXT NOT NULL, kind TEXT NOT NULL, generation INTEGER NOT NULL, at INTEGER NOT NULL);`);
+    // SQLite cannot extend a CHECK in place. Preserve every control/event/command in one migration transaction.
+    options.store.transaction(() => {
+      if (!options.store.db.query<{ name: string }, []>("PRAGMA table_info(s16_screen_control)").all().some(column => column.name === "card_id")) {
+        options.store.db.exec(`CREATE TABLE s16_screen_control_yield (vm_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, state TEXT NOT NULL CHECK (state IN ('agent','yield','settling','owner','fenced')), takeover_id TEXT, expires_at INTEGER, card_id TEXT);
+          INSERT INTO s16_screen_control_yield SELECT vm_id,generation,state,takeover_id,expires_at,NULL FROM s16_screen_control;
+          DROP TABLE s16_screen_control;
+          ALTER TABLE s16_screen_control_yield RENAME TO s16_screen_control;`);
+      }
+      if (!options.store.db.query<{ name: string }, []>("PRAGMA table_info(s16_screen_events)").all().some(column => column.name === "card_id")) options.store.db.exec("ALTER TABLE s16_screen_events ADD COLUMN card_id TEXT");
+      options.store.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS s16_screen_card ON s16_screen_control(card_id) WHERE card_id IS NOT NULL; CREATE INDEX IF NOT EXISTS s16_screen_card_events ON s16_screen_events(card_id,sequence) WHERE card_id IS NOT NULL; CREATE TABLE IF NOT EXISTS s16_browser_generations(vm_id TEXT PRIMARY KEY,generation INTEGER NOT NULL)");
+    });
     // Controller restart: control the owner held (or was acquiring) is fenced, never silently returned to work.
     options.store.transaction(() => {
       for (const row of options.store.db.query<Row, []>("SELECT * FROM s16_screen_control WHERE state IN ('settling','owner')").all()) this.write(row.vm_id, row.generation + 1, "fenced", null, null, "fenced_restart");
     });
   }
-  private write(vm: string, generation: number, state: ScreenControlState, takeover: string | null, expires: number | null, event: string): Row {
+  private write(vm: string, generation: number, state: ScreenControlState, takeover: string | null, expires: number | null, event: string, card?: string | null): Row {
+    const before = this.options.store.db.query<Pick<Row, "card_id" | "generation">, [string]>("SELECT card_id,generation FROM s16_screen_control WHERE vm_id=?").get(vm);
+    // Browser observations advance independently of screen leases. A transition must exceed all values exposed
+    // before it, or a pre-yield observation can numerically equal the new hand-back generation.
+    if (generation > (before?.generation ?? 0)) generation = Math.max(generation, this.browserSeen(vm) + 1);
     for (const [id, entry] of this.#inputs) if (entry.vm === vm && entry.generation < generation) this.#inputs.delete(id);
-    this.options.store.db.query("INSERT INTO s16_screen_control VALUES (?,?,?,?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=excluded.generation, state=excluded.state, takeover_id=excluded.takeover_id, expires_at=excluded.expires_at").run(vm, generation, state, takeover, expires);
-    this.options.store.db.query("INSERT INTO s16_screen_events(vm_id,kind,generation,at) VALUES (?,?,?,?)").run(vm, event, generation, this.#now());
+    const previous = before?.card_id ?? null;
+    const rowCard = state === "agent" ? null : card === undefined ? previous : card;
+    this.options.store.db.query("INSERT INTO s16_screen_control VALUES (?,?,?,?,?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=excluded.generation, state=excluded.state, takeover_id=excluded.takeover_id, expires_at=excluded.expires_at, card_id=excluded.card_id").run(vm, generation, state, takeover, expires, rowCard);
+    // A return to agent clears the row, while its event retains the card held BEFORE that write.
+    this.options.store.db.query("INSERT INTO s16_screen_events(vm_id,kind,generation,at,card_id) VALUES (?,?,?,?,?)").run(vm, event, generation, this.#now(), previous ?? rowCard);
     this.options.onTransition?.(vm);
-    return { vm_id: vm, generation, state, takeover_id: takeover, expires_at: expires };
+    return { vm_id: vm, generation, state, takeover_id: takeover, expires_at: expires, card_id: rowCard };
   }
   /** Current row; a lapsed owner lease becomes `fenced` under a new generation as it is read. */
   private row(vm: string): Row {
-    const row = this.options.store.db.query<Row, [string]>("SELECT * FROM s16_screen_control WHERE vm_id=?").get(vm) ?? { vm_id: vm, generation: 0, state: "agent", takeover_id: null, expires_at: null };
+    const row = this.options.store.db.query<Row, [string]>("SELECT * FROM s16_screen_control WHERE vm_id=?").get(vm) ?? { vm_id: vm, generation: 0, state: "agent", takeover_id: null, expires_at: null, card_id: null };
+    if (row.state === "yield" && row.expires_at !== null && row.expires_at <= this.#now())
+      return this.options.store.transaction(() => this.write(vm, row.generation + 1, "agent", null, null, "yield_expired"));
     if ((row.state === "owner" || row.state === "settling") && row.expires_at !== null && row.expires_at <= this.#now())
       return this.options.store.transaction(() => this.write(vm, row.generation + 1, "fenced", null, null, "fenced_lapsed"));
     return row;
@@ -116,11 +141,12 @@ export class ScreenControl<Owner> {
    */
   /** Card presses check before opening a stream or allocating a ticket. */
   assertAgent(vm: string): void {
-    if (this.row(vm).state !== "agent") throw new AppError("takeover_active", 409);
+    const state = this.row(vm).state;
+    if (state !== "agent") throw new AppError(state === "yield" ? "computer_yielded" : "takeover_active", 409);
   }
   agentInput(vm: string): ScreenAgentTicket {
     const admitted = this.row(vm);
-    if (admitted.state !== "agent") throw new AppError("takeover_active", 409);
+    if (admitted.state !== "agent") throw new AppError(admitted.state === "yield" ? "computer_yielded" : "takeover_active", 409);
     const token = {}, set = this.#tickets.get(vm) ?? new Set<object>(); set.add(token); this.#tickets.set(vm, set);
     let ended = false;
     return {
@@ -130,6 +156,50 @@ export class ScreenControl<Owner> {
   }
   /** Idle release never stops a computer the owner holds or lost control of. */
   idleBlocked(vm: string): boolean { return this.row(vm).state !== "agent"; }
+
+  /** Host-only browser generation seed. Reading also expires a past-due yield through the ordinary row path. */
+  generation(vm: string): number { this.known(vm); return this.row(vm).generation; }
+  private browserSeen(vm: string): number { return this.options.store.db.query<{ generation: number }, [string]>("SELECT generation FROM s16_browser_generations WHERE vm_id=?").get(vm)?.generation ?? 0; }
+  /** Fresh run seed, including observations made by an earlier run before controller restart. */
+  browserGeneration(vm: string): number { return Math.max(1, this.generation(vm), this.browserSeen(vm) + 1); }
+  /** Protected observation high-water mark only; does not transition control or interrupt admitted tickets. */
+  observedBrowserGeneration(vm: string, generation: number): void {
+    this.known(vm); integer(generation, 1);
+    this.options.store.db.query("INSERT INTO s16_browser_generations VALUES(?,?) ON CONFLICT(vm_id) DO UPDATE SET generation=max(generation,excluded.generation)").run(vm, generation);
+  }
+  /** After the conversation card committed, yield without holding or aborting another operation's ticket. */
+  yieldToOwner(vm: string, cardId: string, expiresAt: number): ScreenCardControl {
+    this.known(vm); identity(cardId); integer(expiresAt, this.#now() + 1, Number.MAX_SAFE_INTEGER);
+    return this.options.store.transaction(() => {
+      const row = this.row(vm); if (row.state !== "agent") throw new AppError("takeover_state_changed", 409);
+      const next = this.write(vm, row.generation + 1, "yield", null, expiresAt, "yield_started", cardId);
+      return { vmId: vm, state: next.state, generation: next.generation };
+    });
+  }
+  /** Decline only a still-yielded exact card/generation; owner control is never cleared by card expiry/decline. */
+  declineYield(vm: string, cardId: string, generation: number): void {
+    this.known(vm); identity(cardId); integer(generation);
+    this.options.store.transaction(() => {
+      const row = this.row(vm);
+      if (row.state !== "yield" || row.card_id !== cardId) throw new AppError("takeover_state_changed", 409);
+      if (row.generation !== generation) throw stale();
+      this.write(vm, row.generation + 1, "agent", null, null, "yield_declined");
+    });
+  }
+  /** Current control still holding this card, including takeover/restart fences; absent once it returned to agent. */
+  cardControl(cardId: string): ScreenCardControl | null {
+    identity(cardId);
+    const row = this.options.store.db.query<Row, [string]>("SELECT * FROM s16_screen_control WHERE card_id=?").get(cardId);
+    if (!row) return null;
+    const current = this.row(row.vm_id);
+    return current.card_id === cardId ? { vmId: row.vm_id, state: current.state, generation: current.generation } : null;
+  }
+  /** Exact latest terminal yield event. The event survives a missing/failed conversation-card update. */
+  cardOutcome(cardId: string): ScreenCardOutcome | null {
+    identity(cardId);
+    const event = this.options.store.db.query<{ vm_id: string; kind: string; generation: number; at: number }, [string]>("SELECT vm_id,kind,generation,at FROM s16_screen_events WHERE card_id=? AND kind IN ('yield_resumed','yield_declined','yield_expired') ORDER BY sequence DESC LIMIT 1").get(cardId);
+    return event ? { vmId: event.vm_id, cardId, outcome: event.kind.slice(6) as ScreenCardOutcome["outcome"], generation: event.generation, at: event.at } : null;
+  }
 
   /** Authenticated owner projection. Reading starts, stops or changes nothing except lapsing an expired lease. */
   async view(actor: Owner, vm: string): Promise<ScreenView> {
@@ -156,10 +226,10 @@ export class ScreenControl<Owner> {
   }
 
   /** One exact owner command. Takeover and hand-back are idempotent per `requestId`; input is sent at most once per `requestId` in this process. */
-  async command(actor: Owner, input: unknown): Promise<ScreenCommandResult> {
-    this.options.requireOwner(actor);
+  async command(actor: Owner, input: unknown, guard: () => void = () => {}): Promise<ScreenCommandResult> {
+    guard(); this.options.requireOwner(actor);
     const command = parseScreenCommand(input), vm = command.vmId; this.known(vm);
-    const result = async (): Promise<ScreenCommandResult> => ({ contract: "s16-screen-command-result/v1", requestId: command.requestId, view: await this.view(actor, vm) });
+    const result = async (): Promise<ScreenCommandResult> => { guard(); const view = await this.view(actor, vm); guard(); return { contract: "s16-screen-command-result/v1", requestId: command.requestId, view }; };
     if (command.kind === "input") {
       const prior = this.#inputs.get(command.requestId);
       if (prior) {
@@ -170,7 +240,7 @@ export class ScreenControl<Owner> {
       let reached = false;
       const entry = { generation: command.generation, vm, state: "sending" as "sending" | "sent" | "unknown", run: Promise.resolve() };
       this.#inputs.set(command.requestId, entry);
-      entry.run = this.input(actor, command, () => { reached = true; });
+      entry.run = this.input(actor, command, () => { reached = true; }, guard);
       try { await entry.run; entry.state = "sent"; }
       catch (error) { if (reached) entry.state = "unknown"; else if (this.#inputs.get(command.requestId) === entry) this.#inputs.delete(command.requestId); throw error; }
       return result();
@@ -178,7 +248,7 @@ export class ScreenControl<Owner> {
     if (command.kind === "renew") {
       // Renewal is idempotent by itself, so it is not journaled per request.
       this.options.store.transaction(() => {
-        this.options.requireOwner(actor);
+        guard(); this.options.requireOwner(actor);
         this.held(vm, command.generation, command.takeoverId);
         this.options.store.db.query("UPDATE s16_screen_control SET expires_at=? WHERE vm_id=?").run(this.#now() + this.#leaseMs, vm);
       });
@@ -191,9 +261,9 @@ export class ScreenControl<Owner> {
       const device = this.options.device(vm), code = device ? await device.unavailable() : "vm_desktop_unavailable";
       if (code) throw new AppError(code, 409);
       this.options.store.transaction(() => {
-        this.options.requireOwner(actor);
+        guard(); this.options.requireOwner(actor);
         const row = this.row(vm);
-        if (row.state !== "agent" && row.state !== "fenced") throw new AppError("takeover_state_changed", 409);
+        if (row.state !== "agent" && row.state !== "fenced" && row.state !== "yield") throw new AppError("takeover_state_changed", 409);
         if (row.generation !== command.generation) throw stale();
         this.write(vm, row.generation + 1, this.busy(vm) ? "settling" : "owner", uuid(), this.#now() + this.#leaseMs, this.busy(vm) ? "takeover_settling" : "takeover");
         this.record(command.requestId, hash, vm);
@@ -202,16 +272,16 @@ export class ScreenControl<Owner> {
     }
     // Hand-back: refuse new owner input, wait for the owner's last input to settle, then return the screen to work.
     const row = this.row(vm);
-    if (row.state === "agent") throw new AppError("takeover_state_changed", 409);
+    if (row.state === "agent" || row.state === "yield") throw new AppError("takeover_state_changed", 409);
     if (row.generation !== command.generation || (row.state !== "fenced" && row.takeover_id !== command.takeoverId)) throw stale();
     this.#closing.add(vm);
     try {
       await (this.#ownerTail.get(vm) ?? Promise.resolve()).catch(() => {});
       this.options.store.transaction(() => {
-        this.options.requireOwner(actor);
+        guard(); this.options.requireOwner(actor);
         const current = this.row(vm);
         if (current.generation !== row.generation || current.state === "agent") throw stale();
-        this.write(vm, current.generation + 1, "agent", null, null, "hand_back");
+        this.write(vm, current.generation + 1, "agent", null, null, current.card_id ? "yield_resumed" : "hand_back");
         this.record(command.requestId, hash, vm);
       });
     } finally { this.#closing.delete(vm); }
@@ -225,10 +295,10 @@ export class ScreenControl<Owner> {
     return row;
   }
   /** Owner input, serialized per computer and checked against the live row immediately before it is sent. */
-  private async input(actor: Owner, command: Extract<ScreenCommand, { kind: "input" }>, sending: () => void): Promise<void> {
+  private async input(actor: Owner, command: Extract<ScreenCommand, { kind: "input" }>, sending: () => void, guard: () => void): Promise<void> {
     const vm = command.vmId, device = this.options.device(vm); if (!device) throw new AppError("vm_desktop_unavailable", 409);
     const check = () => {
-      this.options.requireOwner(actor);
+      guard(); this.options.requireOwner(actor);
       if (this.#closing.has(vm)) throw stale();
       const row = this.held(vm, command.generation, command.takeoverId);
       if (row.state === "settling") throw new AppError("takeover_settling", 409);

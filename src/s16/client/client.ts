@@ -1,3 +1,4 @@
+import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouResult } from "../computers/needs-you-types";
 import type { ClientModelsView } from "./contracts";
 import type { BrowserActionCard } from "../computers/browser-cards";
 import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionCommand, type ClientConnectionReceipt, type ClientSource, type ClientBotsView, type ClientBotDetail, type ClientBot, type ClientBotProposal, type ClientBotDraft, type ClientBotExport, type ClientBotCommand, type ClientBotReceipt, type ClientNotificationDevice, type ClientNotificationSettings, type ClientNotificationSubscribeCommand, type ClientSteer, type ClientSteerReceipt, type ClientRoutineDetail, type ClientRoutineDraft, type ClientRoutineList, type ClientRoutineOptions, type ClientRoutineProposal, type ClientRoutineReceipt, type ClientArtifactDetail, type ClientArtifactInputCommand, type ClientArtifactItem, type ClientArtifactList, type ClientArtifactQuery, type ClientMemoryCommand, type ClientMemoryDetail, type ClientMemoryList, type ClientMemoryQuery, type ClientMemoryResult, type ClientBootstrap, type ClientDecision, type ClientEvents, type ClientMessage, type ClientReceipt, type ClientRequest, type ClientSnapshot } from "./contracts";
@@ -82,6 +83,14 @@ export class JitClient {
     if (!browserCard(data, conversationId) || data.id !== cardId) return invalid();
     return data as unknown as BrowserActionCard;
   }
+  /** Exact owner handoff command; chat text never invokes it, and unknown responses are not retried. */
+  async needsYou(command: ComputerNeedsYouCommand): Promise<ComputerNeedsYouResult> {
+    const input = structuredClone(command); id(input.requestId); id(input.conversationId); id(input.cardId);
+    if (input.contract !== "s16-computer-needs-you/v1" || !["watch", "decline"].includes(input.kind) || !count(input.generation)) return invalid();
+    const data = await this.call("/needs-you/commands", "POST", input, undefined, input.requestId);
+    if (!record(data) || data.contract !== "s16-computer-needs-you-result/v1" || !needsYouCard(data.card, input.conversationId) || data.card.id !== input.cardId || data.screen !== null && (!this.screenView(data.screen) || data.screen.vmId !== data.card.vmId)) return invalid();
+    return data as unknown as ComputerNeedsYouResult;
+  }
   async snapshot(conversationId: string, signal?: AbortSignal): Promise<ClientSnapshot> {
     const data = await this.call(`/conversations/${id(conversationId)}`, "GET", undefined, signal);
     if (!record(data) || data.contract !== "s16-client-snapshot/v1" || !record(data.conversation) || data.conversation.contract !== "s15.owner-view/v1" || data.conversation.conversationId !== conversationId || !Number.isSafeInteger(data.conversation.cursor) || !Array.isArray(data.conversation.rows) || data.conversation.rows.length > 32 || !Array.isArray(data.conversation.needsYou)) return invalid();
@@ -96,6 +105,7 @@ export class JitClient {
     }
     for (const row of data.conversation.rows) if (!record(row) || !identifier(row.requestId) || !Number.isSafeInteger(row.revision) || !record(row.receipt) || row.receipt.conversationId !== conversationId) return invalid();
     if (data.browserCards !== undefined && (!Array.isArray(data.browserCards) || data.browserCards.length > 128 || !data.browserCards.every(card => browserCard(card, conversationId)))) return invalid();
+    if (data.needsYouCards !== undefined && (!Array.isArray(data.needsYouCards) || data.needsYouCards.length > 128 || !data.needsYouCards.every(card => needsYouCard(card, conversationId)))) return invalid();
     return data as unknown as ClientSnapshot;
   }
   /** Recovers a retained send by ID, including outside the recent conversation window; never resends. */
@@ -388,7 +398,7 @@ export class JitClient {
   }
   private screenView(data: unknown): data is ScreenView {
     return record(data) && data.contract === "s16-computer-screen/v1" && identifier(data.vmId) && typeof data.available === "boolean" && (data.code === null || typeof data.code === "string")
-      && count(data.width) && count(data.height) && ["agent", "settling", "owner", "fenced"].includes(data.state as string) && count(data.generation)
+      && count(data.width) && count(data.height) && ["agent", "yield", "settling", "owner", "fenced"].includes(data.state as string) && count(data.generation)
       && (data.takeoverId === null || identifier(data.takeoverId)) && (data.expiresAt === null || count(data.expiresAt)) && typeof data.agentBusy === "boolean"
       && record(data.scope) && (data.scope.kind === "shared" || data.scope.kind === "private" && identifier(data.scope.botId));
   }
@@ -521,4 +531,12 @@ function browserCard(value: unknown, conversationId: string): value is BrowserAc
   if (!record(value) || !identifier(value.id) || !identifier(value.requestId) || value.conversationId !== conversationId || !["pending","sending","sent","unknown","stale","declined","expired"].includes(String(value.state)) || !["click","type","select","submit"].includes(String(value.kind)) || !["a","b","c","d","e","f"].includes(String(value.row))) return false;
   const facts = value.facts;
   return record(facts) && typeof facts.url === "string" && typeof facts.name === "string" && typeof facts.revision === "string" && Array.isArray(facts.fields) && facts.fields.length <= 100 && facts.fields.every(f => record(f) && typeof f.name === "string" && typeof f.value === "string") && (value.value === undefined || typeof value.value === "string");
+}
+
+/** No foreign card or malformed screen state is rendered across the client JSON boundary. */
+function needsYouCard(value: unknown, conversationId: string): value is ComputerNeedsYouCard {
+  if (!record(value) || !identifier(value.id) || !identifier(value.requestId) || !identifier(value.vmId) || value.conversationId !== conversationId || !count(value.ownerGeneration) || !count(value.vmGeneration) || !count(value.createdAt) || !count(value.expiresAt)) return false;
+  if (!["pending", "void", "resumed", "declined", "expired"].includes(String(value.state)) || !["sign_in", "verify", "captcha"].includes(String(value.reason)) || typeof value.origin !== "string" || value.origin.length > 2048 || value.code !== null && typeof value.code !== "string") return false;
+  try { const url = new URL(value.origin); if (!["http:", "https:"].includes(url.protocol) || url.origin !== value.origin) return false; } catch { return false; }
+  return (value.generation === null || count(value.generation)) && (value.screenState === null || ["agent", "yield", "settling", "owner", "fenced"].includes(String(value.screenState))) && typeof value.canWatch === "boolean" && typeof value.canDecline === "boolean";
 }

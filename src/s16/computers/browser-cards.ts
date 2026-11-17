@@ -4,7 +4,7 @@ import type { VmStore } from "../../s15/vm/store";
 import type { ComputerBrowser } from "./browser";
 import { BrowserDispatchRefused, type BrowserActionFacts, type BrowserInput, type HumanBrowserRow } from "./browser-actions";
 
-export interface BrowserCardContext { requestId: string; conversationId: string; vmGeneration: number; ownerGeneration: number }
+export interface BrowserCardContext { requestId: string; conversationId: string; vmGeneration: number; ownerGeneration: number; routine?: boolean }
 export interface HeldBrowserAction extends BrowserCardContext { vm: string; targetId: string; facts: BrowserActionFacts; op: BrowserInput; row: HumanBrowserRow }
 export interface BrowserActionCard {
   id: string; requestId: string; conversationId: string; vm: string; vmGeneration: number; ownerGeneration: number;

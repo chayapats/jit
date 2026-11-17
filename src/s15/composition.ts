@@ -6,6 +6,7 @@ import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
 import { BrowserActionCards } from '../s16/computers/browser-cards';
+import { ComputerNeedsYou } from '../s16/computers/needs-you';
 import { ComputerBrowser } from '../s16/computers/browser';
 import { vmDesktopCdpStream } from './vm/desktop-stream';
 import { ComputerDirectory } from '../s16/computers/service';
@@ -88,7 +89,7 @@ export interface S15CompositionOptions {
   /** DESK16-01 watch and take over a desktop working computer (`s16-computer-screen/v1`). Requires `computers`;
    * the local manager must also start VMs with the desktop profile (`vm.local.desktop`). `leaseMs` is how long
    * owner control lasts without a renewal (default 30 s). Opt-in; it changes no installed policy. */
-  screen?: { leaseMs?: number };
+  screen?: { leaseMs?: number; needsYouMinutes?: number };
   /** Explicit S16 persistent Bots and delegation (`s16-bots/v1`, BOT16-01/DELEG16-01, ADR 0088). Opt-in; it adds
    * `bots.sqlite`. A new Bot joins the standing policy only when the owner accepts its exact proposal. */
   bots?: Record<string, never>;
@@ -374,9 +375,19 @@ export async function composeS15(options: S15CompositionOptions) {
         let device = screenDevices.get(manager); if (!device) { device = manager.screen(); screenDevices.set(manager, device); }
         return device;
       } }) : null;
+    const needsYou = screen && scopes ? new ComputerNeedsYou({ store, screen, requireOwner, ownerGeneration: options.owner.generation,
+      vmGeneration: id => vmStore.registration(id).generation,
+      tier: hostname => websiteHostSensitive(options.browser?.approved?.sites.list() ?? [], hostname) ? 'sensitive' : undefined,
+      allows: (request, vmId) => {
+        if (!request.authority?.resources.includes(options.vm.resource.id)) return false;
+        const placed = vmStore.db.query<{ vm_id: string }, [string]>("SELECT DISTINCT vm_id FROM vm_sessions WHERE work_id=? AND state='active' LIMIT 2").all(request.authority.id);
+        return placed.length === 1 && placed[0]!.vm_id === vmId &&
+          (scopes.privateBot(vmId) === null || scopes.privateBot(vmId) === (bots?.conversationBot(request.receipt.conversationId) ?? options.conversation.bot.id));
+      },
+      ...(options.clock ? { now: options.clock.now } : {}), ...(options.screen?.needsYouMinutes !== undefined ? { minutes: options.screen.needsYouMinutes } : {}) }) : null;
     if (screen) {
       computerBrowser = new ComputerBrowser({ agentInput: id => screen.agentInput(id), assertAgent: id => screen.assertAgent(id),
-        hold: action => browserCards!.hold(action),
+        hold: action => browserCards!.hold(action), needsYou: input => needsYou!.post(input), generation: id => screen.browserGeneration(id), observedGeneration: (id, generation) => screen.observedBrowserGeneration(id, generation),
         pressGuard: card => { const row = vmStore.registration(card.vm); if (row.state !== 'ready' || row.generation !== card.vmGeneration) throw new AppError('computer_browser_stale', 409); },
         async unavailable(id) {
           const row = vmStore.registration(id); if (row.state !== 'ready') return 'vm_not_running';
@@ -486,7 +497,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (!placed || await computerBrowser!.options.unavailable(placed.vm_id)) return null;
         guard(); const generation = vmStore.registration(placed.vm_id).generation;
         const run = computerBrowser!.open(placed.vm_id, () => { guard(); const row = vmStore.registration(placed.vm_id); if (row.state !== 'ready' || row.generation !== generation) throw new AppError('vm_fenced', 409); }, signal, disclosure ? { input: () => disclosure.vmInput(actor, placed.vm_id), output: () => disclosure.vmOutput(actor, placed.vm_id) } : undefined, request ? { ...request, vmGeneration: generation } : undefined);
-        return { tools: run.tools(), close: () => run.close() };
+        return { tools: run.tools(), completionHold: () => run.completionHold(), close: () => run.close() };
       } } : {}) }) };
     const githubPorts = new Map<string, ConversationToolPort<ConversationPolicyWork>>();
     // Repository ports follow the live selection; each stays scoped to its one repository resource.
@@ -494,7 +505,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []),
       // CONN16-01: each reviewed source's tools, scoped to its one resource; every call rereads the live review.
       ...(connections && sourceRuntime ? connections.reviewed().map(r => ({ resourceId: r.resource.id, port: sourcePorts.get(r.id) ?? (sourcePorts.set(r.id, sourceRuntime!.port(r.resource.id)), sourcePorts.get(r.id)!) })) : []), ...(options.tools ?? [])];
-    conversation = new ConversationApplication(store, { policy: conversationPolicy, memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+    conversation = new ConversationApplication(store, { policy: conversationPolicy, ...(needsYou ? { screenOutcomes: needsYou } : {}), memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: delegationLimits.installationConcurrent, delegationSessions: () => { try { return vmStore.registration(options.vm.id).maxSessions; } catch { return 0; } } } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
@@ -521,7 +532,7 @@ export async function composeS15(options: S15CompositionOptions) {
           // in source and catalog order; the rest are not offered to this run rather than failing it.
           const fixed = opened.filter(p => !sourceOpened.has(p)).flatMap(p => p.tools), room = Math.max(0, 64 - fixed.length);
           const offered = [...fixed, ...opened.filter(p => sourceOpened.has(p)).flatMap(p => p.tools).slice(0, room)];
-          return { tools: offered.map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : ['protected_browser', 'computer_browser'].includes(tool.definition.name) ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
+          return { completionHold: () => opened.map(p => p.completionHold?.()).find(Boolean) ?? null, tools: offered.map(tool => ({ ...tool, definition: { ...tool.definition, async execute(value, call) { scopedGuard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id, tool.access === 'read' ? 'read' : ['protected_browser', 'computer_browser'].includes(tool.definition.name) ? 'input' : 'write'); const result = await tool.definition.execute(value, call); scopedGuard(); return result; } } })), async cancel() { await Promise.all(opened.map(p => p.cancel())); }, async close() { await Promise.all(opened.map(p => p.close())); } };
         } catch (error) { await Promise.allSettled(opened.map(p => p.close())); throw error; }
       } },
       async runWork(input) {
@@ -529,7 +540,7 @@ export async function composeS15(options: S15CompositionOptions) {
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
         try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : []), ...(botTools?.ownerDecisions(input.work, input.request) ?? [])], sources: [], tools: input.definitions, ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: () => { input.countModelCall(); botTools?.beforeChildSend(input.work, input.request); }, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : []), ...(botTools?.ownerDecisions(input.work, input.request) ?? [])], sources: [], tools: input.definitions, ...(input.screenOutcomes?.length ? { screenOutcomes: input.screenOutcomes } : {}), ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: () => { input.countModelCall(); botTools?.beforeChildSend(input.work, input.request); }, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
         let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
@@ -766,7 +777,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);

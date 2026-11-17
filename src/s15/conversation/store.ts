@@ -58,6 +58,10 @@ export class ConversationStore {
       if (this.db.query<{ id: string }, []>("SELECT id FROM identity").get()?.id !== installationId) throw new AppError("continuity_unavailable", 503);
       // CHAT16-02 steers: added in place by this release; an older binary ignores the table and its rows.
       this.db.exec("CREATE TABLE IF NOT EXISTS steers (id TEXT PRIMARY KEY REFERENCES commands(id), request_id TEXT NOT NULL REFERENCES requests(id), state TEXT NOT NULL, follow_up TEXT, at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS request_steers ON steers(request_id)");
+      // ADR 0092: cards commit here before vm.sqlite enters yield; delivery marks share publication's transaction.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS computer_needs_you (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL REFERENCES requests(id), vm_id TEXT NOT NULL, owner_generation INTEGER NOT NULL, created_at INTEGER NOT NULL, record_json TEXT NOT NULL, delivered_by TEXT REFERENCES requests(id));
+        CREATE INDEX IF NOT EXISTS computer_needs_you_pending ON computer_needs_you(conversation_id,owner_generation) WHERE delivered_by IS NULL AND json_extract(record_json,'$.voidedAt') IS NULL;
+        CREATE INDEX IF NOT EXISTS computer_needs_you_recent ON computer_needs_you(conversation_id,owner_generation);`);
     } catch (error) { this.db!?.close(); this.#lock.close(); throw error; }
   }
   /** Synchronous writer boundary; no model, tool or async callback is permitted inside it. */
@@ -100,7 +104,8 @@ export class ConversationStore {
       (SELECT coalesce(sum(length(CAST(record_json AS BLOB)) + coalesce(json_extract(record_json,'$.authority.limits.outputBytes'),0)*2),0) FROM requests)
       + (SELECT coalesce(sum(length(CAST(command_json AS BLOB))+length(CAST(receipt_json AS BLOB))),0) FROM commands)
       + (SELECT coalesce(sum(length(CAST(evidence_json AS BLOB))),0) FROM tool_calls) AS n`).get()!.n;
-    if (count >= 10000 || bytes + 262144 >= 64 * 1024 * 1024) throw new AppError("continuity_capacity", 409);
+    const cards = this.db.query<{ n: number }, []>("SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) AS n FROM computer_needs_you").get()!.n;
+    if (count >= 10000 || bytes + cards + 262144 >= 64 * 1024 * 1024) throw new AppError("continuity_capacity", 409);
   }
   /** Close only after application shutdown has awaited its active Schway/tool calls. */
   close(): void { if (!this.#closed) { this.#closed = true; this.db.close(); this.#lock.close(); } }

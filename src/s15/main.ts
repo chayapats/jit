@@ -1,5 +1,6 @@
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { readComputerNeedsYouMinutes } from '../config';
 import { s16ComputerIdleStopMs } from '../s16/computers/defaults';
 import { AppError } from '../errors';
 import { readHiddenPassword } from '../terminal-password';
@@ -44,6 +45,7 @@ export { parseS15RuntimeConfig, readS15RuntimeConfig, readS15VmPool, type S15Run
 export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.env, protectedPorts: Pick<S15CompositionOptions, 'adoption'> = {}): Promise<void> {
   const index = args.indexOf('--config'), path = args[index + 1];
   if (!['setup', 'init', 'serve', 'owner-link', 'credential'].includes(args[0] ?? '') || !args.includes('--s15') || index < 0 || !path) throw new AppError('explicit_s15_config_required');
+  const needsYouMinutes = readComputerNeedsYouMinutes(env);
   const config = withModelAttempts(readS15RuntimeConfig(path)), setup = args[0] === 'setup', initialize = setup || args[0] === 'init', localCommand = ['owner-link', 'credential'].includes(args[0]!);
   if (args[0] === 'owner-link') requireS14OwnerLinkPipe(3);
   if (initialize) { mkdirSync(dirname(config.directory), { recursive: true, mode: 0o700 }); mkdirSync(config.directory, { mode: 0o700 }); }
@@ -125,7 +127,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       // TEAM16-01: owner decision 2026-11-07, a working computer with no open session sleeps after 30 minutes.
       ...(config.computers ? { computers: { idleStopMs: s16ComputerIdleStopMs } } : {}),
       // DESK16-01: watch and take over a desktop working computer.
-      ...(config.computers && config.desktop ? { screen: {} } : {}),
+      ...(config.computers && config.desktop ? { screen: { needsYouMinutes } } : {}),
       // BOT16-01/DELEG16-01: persistent Bots the owner accepts and bounded Bot-to-Bot assignments.
       ...(config.bots ? { bots: {} } : {}),
       // CONN16-01/MCP16-01/OPEN16-01: apps and tool sources the owner connects; secrets stay in the protected vault.

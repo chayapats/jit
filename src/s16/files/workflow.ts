@@ -231,7 +231,7 @@ export function createFileWorkflow(options: {
               return { content: JSON.stringify({ ...result, name: checked.name, sha256: hash, bytes: checked.bytes.length }) };
             } finally { collected.delete(`${work.authority.id}:${hash}`); }
           } } }];
-      return { tools, cancel: async () => { try { await session.cancel(); } finally { await opened.cancel(); } }, close: async () => { try { await session.close(); } finally { await opened.close(); } } };
+      return { tools, completionHold: () => opened.completionHold?.() ?? null, cancel: async () => { try { await session.cancel(); } finally { await opened.cancel(); } }, close: async () => { try { await session.close(); } finally { await opened.close(); } } };
     },
     complete(work, row, evidence): FileArtifact[] {
       guard(work, row); coverage(row, evidence);

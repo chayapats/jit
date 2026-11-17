@@ -49,7 +49,7 @@ export interface ClientBootstrap {
   policyUpdate?: boolean;
 }
 /** Currently authorized owner projection; completion cannot be reconstructed from progress events. */
-export interface ClientSnapshot { browserCards?: BrowserActionCard[]; contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView; /** Additive (BOT16-01): the conversation's Bot. */ botId?: string; modelUsage?: ClientModelUsage }
+export interface ClientSnapshot { needsYouCards?: import("../computers/needs-you-types").ComputerNeedsYouCard[]; browserCards?: BrowserActionCard[]; contract: "s16-client-snapshot/v1"; conversation: ConversationOwnerView; /** Additive (BOT16-01): the conversation's Bot. */ botId?: string; modelUsage?: ClientModelUsage }
 
 /** Configuration is not proof of a successful live provider call. Every route still passes POLICY/DATA15. */
 export interface ClientModelsView {

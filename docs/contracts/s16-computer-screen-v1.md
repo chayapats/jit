@@ -11,11 +11,11 @@ Owner contract for watching a desktop working computer and taking exclusive cont
   "state": "agent", "generation": 0, "takeoverId": null, "expiresAt": null, "agentBusy": false, "scope": { "kind": "shared" } }
 ```
 
-- `state`: `agent` (work may use the computer), `settling` (takeover requested; waiting for earlier work operations, `agentBusy`), `owner` (only owner input), `fenced` (control lost; nobody writes).
-- `generation` advances on takeover, lease lapse, controller restart and hand-back.
+- `state`: `agent` (work may use the computer), `yield` (needs-you card waiting for the owner), `settling` (takeover requested; waiting for earlier work operations, `agentBusy`), `owner` (only owner input), `fenced` (control lost; nobody writes).
+- `generation` advances on takeover, lease lapse, controller restart and hand-back. Each transition exceeds the durable browser-observation high-water mark, so a pre-handoff browser counter cannot equal the new control generation. Recording an observation changes neither control nor active tickets.
 - `available`/`code`: `vm_desktop_unavailable`, `vm_not_running` or `vm_desktop_restart_required` when no frame can be read.
 - `scope`: lineage of every frame (a private computer's frames are its Bot's private data).
-- Reading changes nothing, except that an owner lease that already lapsed is reported (and recorded) as `fenced`.
+- Reading expires a past-due `yield` to `agent` with `yield_expired`, or reports/records a lapsed owner lease as `fenced`. Card expiry never removes owner control.
 
 ## Read one frame
 
@@ -27,7 +27,7 @@ Owner contract for watching a desktop working computer and taking exclusive cont
 
 | kind | fields | effect |
 | --- | --- | --- |
-| `takeover` | `generation` | from `agent` or `fenced`: new generation and takeover id; `owner` at once, or `settling` while work operations admitted earlier are still running |
+| `takeover` | `generation` | from `agent`, `yield` or `fenced`: new generation and takeover id; `owner` at once, or `settling` while work operations admitted earlier are still running |
 | `renew` | `generation`, `takeoverId` | extends owner control by the lease (30 s); not journaled |
 | `input` | `generation`, `takeoverId`, `input` | one input in `owner` only (`takeover_settling` while settling) |
 | `hand_back` | `generation`, `takeoverId` (null when fenced) | waits for the input being sent, then `agent` under a new generation |
@@ -54,7 +54,7 @@ Coordinates are display pixels (`0 ≤ x < 1280`, `0 ≤ y < 800`).
 
 ## Watched browser tickets (ADR 0092, slice 3a)
 
-Every `computer_browser` call (`state`, `navigate`, `read`, `find`) holds an agent ticket from before its first wait
+Every `computer_browser` call except `needs_you` holds an agent ticket from before its first wait
 until it settles. The ticket and live work guard are checked immediately before and after each CDP command.
 A screen generation transition synchronously invalidates observations and closes the run's stream, including an idle
 or opening stream. Takeover therefore refuses new browser calls with `takeover_active`, and stays `settling` until
@@ -63,3 +63,9 @@ the outstanding browser call releases its ticket. Hand-back never revives an obs
 Closing a browser channel is not settlement by itself: takeover retains the browser ticket until the relay
 acknowledges that unsent frames were dropped and partial/in-flight frames finished. If the dedicated SSH drain
 times out or exits without acknowledgement, `computer_browser_unsettled` leaves the ticket held (fail closed).
+
+Slice 3c rebuilds the existing control table's state CHECK to add `yield` and `card_id`, preserving prior rows,
+commands and events. Events gain `card_id` in that migration. Yield retains the card across takeover/settling,
+lapsed leases and restart fencing. A return to agent stores the old card ID on its outcome event in the same VM
+transaction and clears it on the new control row. See [the browser contract](s16-computer-browser-v1.md#needs-you-handoff-slice-3c)
+for card insertion order, recovery, expiry and outcome delivery.

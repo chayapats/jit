@@ -150,6 +150,8 @@ function validatedHostname(value: string | undefined): string {
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
+  /** Future working-computer needs-you cards expire after this many minutes. */
+  needsYouMinutes: number;
   /** Managed search defaults on; environment or service-config opt-out wins, independently of execution boxes. */
   searxngEnabled: boolean;
   /** app.attachments/v1: default-on ingestion (explicit env/service opt-out) and host-scaled storage/sanitizer limits. */
@@ -173,6 +175,13 @@ export interface AppConfig {
   execution: ExecutionConfig;
   /** Operator-configured model per provider (service config `routes[].model`); route forms recommend it (#167). */
   routeModels: RouteModels;
+}
+
+/** Independent startup validation, also used by S15 without loading legacy application settings. */
+export function readComputerNeedsYouMinutes(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.JIT_COMPUTER_NEEDS_YOU_MINUTES, value = raw === undefined ? 240 : Number(raw);
+  if (!Number.isSafeInteger(value) || value < 30 || value > 1440) throw new Error("Invalid JIT_COMPUTER_NEEDS_YOU_MINUTES");
+  return value;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -207,6 +216,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   const databasePath = resolve(env.JIT_DATABASE ?? ".local/jit.sqlite");
   return {
     databasePath,
+    needsYouMinutes: readComputerNeedsYouMinutes(env),
     searxngEnabled: env.JIT_SEARXNG_ENABLED !== "0",
     attachments: attachmentLimits(env, host ?? attachmentHost(dirname(databasePath), `${databasePath}.backups`)),
     runPort,

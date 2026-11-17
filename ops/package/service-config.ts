@@ -46,6 +46,8 @@ export interface ServiceConfig {
   runPort?: "scripted" | "schway";
   /** Managed keyless search defaults on; false here or JIT_SEARXNG_ENABLED=0 disables it. */
   searxngEnabled?: boolean;
+  /** Expiry for future working-computer needs-you cards (30–1440 minutes). */
+  needsYouMinutes?: number;
   /** Chat attachment ingestion defaults on; an explicit value overrides the environment and renders as JIT_ATTACHMENTS. */
   attachmentsEnabled?: boolean;
   /**
@@ -168,7 +170,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
   const c = raw as Record<string, unknown>;
   keysWithin(c, ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath", "backupDirectory",
-    "routes", "secretRefs", "network", "resources"], ["runtime", "s14", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"]);
+    "routes", "secretRefs", "network", "resources"], ["runtime", "s14", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled", "needsYouMinutes"]);
   if (typeof c.serviceUser !== "string" || !userPattern.test(c.serviceUser) || c.serviceUser === "root") fail();
   const executablePath = absolutePath(c.executablePath);
   const workingDirectory = absolutePath(c.workingDirectory);
@@ -233,6 +235,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   const parsed: ServiceConfig = { serviceUser: c.serviceUser as string, executablePath, workingDirectory, stateDirectory,
     ledgerPath, backupDirectory, routes, secretRefs,
     network: { bindHost, port, vpnInterface: n.vpnInterface as string | null, ...(origin !== undefined ? { origin } : {}) }, resources };
+  if (c.needsYouMinutes !== undefined) parsed.needsYouMinutes = positiveInt(c.needsYouMinutes, 30, 1440);
   if (c.searxngEnabled !== undefined) {
     if (typeof c.searxngEnabled !== "boolean") fail();
     parsed.searxngEnabled = c.searxngEnabled as boolean;
@@ -369,7 +372,8 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     const s = parsed.s14!;
     return [["JIT_S14_DATABASE", serviceDatabasePath(parsed)], ["JIT_S14_ORIGIN", serviceOrigin(parsed)],
       ["JIT_S14_VAULT_DIRECTORY", s.vaultDirectory], ["JIT_S14_GIT_SCRATCH", s.gitScratch],
-      ...(s.images ? [["JIT_S14_COMPUTER_ROOT", s.computerRoot], ["JIT_BOX_IMAGE_BASE", s.images.base], ["JIT_BOX_IMAGE_BROWSER", s.images.browser]] as [string, string][] : [])];
+      ...(s.images ? [["JIT_S14_COMPUTER_ROOT", s.computerRoot], ["JIT_BOX_IMAGE_BASE", s.images.base], ["JIT_BOX_IMAGE_BROWSER", s.images.browser]] as [string, string][] : []),
+      ...(parsed.needsYouMinutes !== undefined ? [["JIT_COMPUTER_NEEDS_YOU_MINUTES", String(parsed.needsYouMinutes)]] as [string, string][] : [])];
   }
   const env: [string, string][] = [
     ["JIT_DATABASE", serviceDatabasePath(parsed)],
@@ -378,6 +382,7 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     ["JIT_ORIGIN", serviceOrigin(parsed)],
     ["JIT_RUN_PORT", parsed.runPort ?? "scripted"],
   ];
+  if (parsed.needsYouMinutes !== undefined) env.push(["JIT_COMPUTER_NEEDS_YOU_MINUTES", String(parsed.needsYouMinutes)]);
   if (parsed.searxngEnabled !== undefined) env.push(["JIT_SEARXNG_ENABLED", parsed.searxngEnabled ? "1" : "0"]);
   if (parsed.attachmentsEnabled !== undefined) env.push(["JIT_ATTACHMENTS", parsed.attachmentsEnabled ? "1" : "0"]);
   if (!parsed.execution) env.push(["JIT_EXECUTION_SECRETS_DIR", `${parsed.stateDirectory}.connections`]);
@@ -406,7 +411,7 @@ export interface ServicePlanChange {
 }
 
 const planFields = ["runtime", "s14", "serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
-  "backupDirectory", "routes", "network", "resources", "runPort", "execution", "searxngEnabled", "attachmentsEnabled"] as const;
+  "backupDirectory", "routes", "network", "resources", "runPort", "execution", "searxngEnabled", "attachmentsEnabled", "needsYouMinutes"] as const;
 
 /**
  * Plan/validate mode: prints only allowlisted non-secret differences between two
