@@ -194,6 +194,11 @@ export class ScreenControl<Owner> {
     const current = this.row(row.vm_id);
     return current.card_id === cardId ? { vmId: row.vm_id, state: current.state, generation: current.generation } : null;
   }
+  /** Protected bounded scheduler cursor; ordinary hand-backs have no card and never appear here. */
+  resumptions(after: number): { sequence: number; cardId: string }[] {
+    integer(after);
+    return this.options.store.db.query<{ sequence: number; cardId: string }, [number]>("SELECT sequence,card_id AS cardId FROM s16_screen_events WHERE sequence>? AND kind='yield_resumed' AND card_id IS NOT NULL ORDER BY sequence LIMIT 64").all(after);
+  }
   /** Exact latest terminal yield event. The event survives a missing/failed conversation-card update. */
   cardOutcome(cardId: string): ScreenCardOutcome | null {
     identity(cardId);

@@ -103,7 +103,7 @@ export class JitClient {
         if (step.effort.attempts !== undefined && (!Array.isArray(step.effort.attempts) || step.effort.attempts.some(value => value !== null && (!record(value) || value.sent !== null && typeof value.sent !== "string" || value.reported !== null && typeof value.reported !== "string")))) return invalid();
       }
     }
-    for (const row of data.conversation.rows) if (!record(row) || !identifier(row.requestId) || !Number.isSafeInteger(row.revision) || !record(row.receipt) || row.receipt.conversationId !== conversationId) return invalid();
+    for (const row of data.conversation.rows) if (!record(row) || !identifier(row.requestId) || !Number.isSafeInteger(row.revision) || !record(row.receipt) || row.receipt.conversationId !== conversationId || row.computerContinuation !== undefined && (!record(row.computerContinuation) || !identifier(row.computerContinuation.cardId) || !identifier(row.computerContinuation.originalRequestId))) return invalid();
     if (data.browserCards !== undefined && (!Array.isArray(data.browserCards) || data.browserCards.length > 128 || !data.browserCards.every(card => browserCard(card, conversationId)))) return invalid();
     if (data.needsYouCards !== undefined && (!Array.isArray(data.needsYouCards) || data.needsYouCards.length > 128 || !data.needsYouCards.every(card => needsYouCard(card, conversationId)))) return invalid();
     return data as unknown as ClientSnapshot;
@@ -538,5 +538,9 @@ function needsYouCard(value: unknown, conversationId: string): value is Computer
   if (!record(value) || !identifier(value.id) || !identifier(value.requestId) || !identifier(value.vmId) || value.conversationId !== conversationId || !count(value.ownerGeneration) || !count(value.vmGeneration) || !count(value.createdAt) || !count(value.expiresAt)) return false;
   if (!["pending", "void", "resumed", "declined", "expired"].includes(String(value.state)) || !["sign_in", "verify", "captcha"].includes(String(value.reason)) || typeof value.origin !== "string" || value.origin.length > 2048 || value.code !== null && typeof value.code !== "string") return false;
   try { const url = new URL(value.origin); if (!["http:", "https:"].includes(url.protocol) || url.origin !== value.origin) return false; } catch { return false; }
+  if (value.continuation !== undefined) {
+    const next = value.continuation;
+    if (!record(next) || !["pending", "queued", "running", "completed", "held", "stopped", "covered", "unknown"].includes(String(next.state)) || next.requestId !== null && !identifier(next.requestId) || next.code !== null && !identifier(next.code)) return false;
+  }
   return (value.generation === null || count(value.generation)) && (value.screenState === null || ["agent", "yield", "settling", "owner", "fenced"].includes(String(value.screenState))) && typeof value.canWatch === "boolean" && typeof value.canDecline === "boolean";
 }

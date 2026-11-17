@@ -138,6 +138,13 @@ export interface ConversationToolPort<WorkContext> {
 }
 /** Stable receipt acknowledges one durable ingress identity, independently of execution or completion. */
 export interface ConversationReceipt { contract: "s15-conversation-receipt/v1"; requestId: string; rootRequestId: string; conversationId: string; receivedAt: number }
+/** One protected continuation attempt of existing work, never a new owner message or another work grant. */
+export interface ConversationComputerContinuation {
+  contract: "s16-computer-continuation/v1"; cardId: string; sourceRequestId: string; originalRequestId: string;
+  vmId: string; generation: number;
+  /** Exact earlier request contexts whose evidence may enter this attempt; checked again before each send. */
+  evidenceRequests: string[];
+}
 /** Control events contain no model/tool payload; result content is read through a fresh publication guard. */
 export interface ConversationEvent {
   sequence: number; requestId: string; conversationId: string; at: number;
@@ -168,6 +175,8 @@ export interface ConversationRequest {
   inputEvidence?: ConversationEvidence[];
   /** ADR 0092: the exact outcome cards carried by this run, saved before its model call. */
   screenOutcomeCards?: string[];
+  /** CONT16-01: fresh request/attempt under the original work authority, affinity and charged allowance. */
+  computerContinuation?: ConversationComputerContinuation;
   fileInputs?: FileReceipt[];
   /** Frozen ingress semantics; enabling memory later never promotes previously accepted file work. */
   fileMemory?: "s16-file-memory/v1";
@@ -188,7 +197,7 @@ export interface ConversationRequest {
 /** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
 export interface ConversationMemoryPort<WorkContext> {
   fileContract?: "s16-file-memory/v1";
-  prepare(work: WorkContext, request: ConversationRequest, ingress?: { receivedAt: number }): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
+  prepare(work: WorkContext, request: ConversationRequest, ingress?: { receivedAt: number; priorRequests?: readonly ConversationRequest[] }): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
   guard(work: WorkContext, requestId: string): void;
   observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence, observations?: readonly ConversationEvidence[]): NonNullable<ConversationRequest["memory"]>["retained"];
   complete(work: WorkContext, requestId: string, text: string): NonNullable<ConversationRequest["memory"]>["retained"] | void;
@@ -216,9 +225,11 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
   guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[]) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
-  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
+  runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; continuationSection?: string | undefined; screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Picks one carried set before the send; delivery shares only the committed result-publication transaction. */
-  screenOutcomes?: { prepare(request: ConversationRequest): import("../../s16/computers/needs-you-types").ComputerScreenOutcome[]; delivered(request: ConversationRequest): void };
+  screenOutcomes?: { prepare(request: ConversationRequest): import("../../s16/computers/needs-you-types").ComputerScreenOutcome[]; delivered(request: ConversationRequest): void;
+    /** Host scheduling proof. The composition also confirms the original work's durable VM affinity. */
+    resumption?(cardId: string): import("../../s16/computers/needs-you-types").ComputerScreenResumption | null };
   /** Most requests that run at once (default 2); one conversation never runs two requests at the same time. */
   maxConcurrentRuns?: number;
   /** DELEG16-01: delegated children run in their own finite pool (default 3) so a waiting parent cannot starve them. */

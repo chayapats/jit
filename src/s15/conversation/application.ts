@@ -1,3 +1,4 @@
+import { computerContinuationSection } from "../../s16/computers/continuation-source";
 import type { HostClock, HostSteerInput, HostSteerResult, HostSteeringReport, ToolDefinition } from "schway/host";
 import type { ModelStepSteering } from "../model/types";
 import { AppError } from "../../errors";
@@ -10,7 +11,7 @@ import { freezeInterpretation } from "./interpretation";
 import { canonical, command, content, digest, exact, identity, integer } from "./validation";
 import type { ConversationAuthority, ConversationCommand, ConversationDecisionCommand, ConversationEvent, ConversationIntent, ConversationOptions, ConversationReceipt, ConversationDelegationPin, ConversationRequest, ConversationRoutinePin, ConversationSteerCommand, ConversationSteerReceipt, ConversationSteerState, ConversationTools } from "./types";
 
-const safeCodes = new Set(["computer_needs_you", "computer_yielded", "bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
+const safeCodes = new Set(["computer_continuation_unavailable", "computer_needs_you", "computer_yielded", "bot_archived", "bot_unavailable", "delegation_unavailable", "private_context", "context_lost", "parent_unavailable", "material_ambiguity", "owner_start_required", "outside_scope", "authority_revoked", "stale_authority", "expired", "lineage_withdrawn", "selection_pinned", "budget_exhausted", "finite_budget_required", "cost_unknown", "route_unavailable", "capacity_busy", "approval_required", "recipient_approval_required", "merge_authority_required", "production_approval_required", "owner_direction_required", "policy_match_required", "adapter_unproven", "aborted", "tool_unavailable", "result_unavailable", "conversation_run_incomplete", "credential_content_refused", "authentication_required", "output_limit", "context_lost", "conversation_unavailable", "settlement_pending", "approval_reference_required", "stale_action", "already_claimed", "action_denied", "reconciliation_required", "payload_withdrawn", "read_bound_exhausted", "read_operation_unavailable", "recipient_unapproved", "classification_unknown", "recipient_unknown", "disclosure_changed", "disclosure_nonreleasable", "opaque_egress_unavailable", "memory_context_stale", "resource_busy", "stale_lease",
   // MODEL15-02: honest route status and per-send dispatch outcomes.
   "route_needs_login", "route_store_unavailable", "route_store_invalid", "route_rejected", "route_integration_unavailable", "route_renewal_timeout", "route_choice_refused", "quota_exceeded", "auth_retry_refused",
   "images_unsupported", "images_unavailable", "file_validation_failed", "file_extraction_incomplete", "sanitizer_unavailable", "sanitizer_busy", "sanitizer_cleanup_failed", "effort_unsupported", "effort_unproven", "cost_bound_unknown", "route_control_refused", "dispatch_refused", "usage_invalid", "file_unavailable", "file_integrity_failed", "file_read_required", "artifact_required", "file_work_required"]);
@@ -66,7 +67,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         this.store.event(this.store.request(row.request_id), "steer", this.clock.now(), `steer_${next}`);
       }
       // A delegated child that never started has no live owner registration and its parent is reconcile-only now.
-      for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='queued' AND json_type(record_json,'$.delegation')='object'").all()) {
+      for (const row of this.store.db.query<{ id: string }, []>("SELECT id FROM requests WHERE state='queued' AND json_type(record_json,'$.delegation')='object' AND json_type(record_json,'$.computerContinuation') IS NULL").all()) {
         const request = this.store.request(row.id); request.state = "blocked"; request.code = "context_lost"; request.revision++;
         this.store.save(request); this.store.event(request, "stopped", this.clock.now(), request.code);
       }
@@ -78,6 +79,94 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   }
   /** Ordinary authenticated text starts clear work immediately; duplicate ingress returns its original receipt. */
   submit(actor: OwnerActor, value: unknown): ConversationReceipt { return this.#submit(actor, value, null); }
+  /**
+   * Protected CONT16-01 ingress. A committed hand-back schedules a fresh attempt of the existing work, with
+   * its original authority/affinity and remaining allowance. It creates no owner message, policy admission,
+   * interpretation or approval. `bound` commits the per-card job alongside the request. A duplicate may
+   * re-register an unclaimed queued request after restart; claimed/terminal attempts are never replayed.
+   */
+  resumeComputer(actor: OwnerActor, cardId: string, bound?: (receipt: ConversationReceipt) => void): ConversationReceipt {
+    identity(cardId); this.options.policy.requireOwner(actor);
+    const proof = this.options.screenOutcomes?.resumption?.(cardId);
+    if (!proof || proof.cardId !== cardId) throw new AppError("computer_continuation_unavailable", 409);
+    const requestId = `cc_${digest(`s16.computer.continuation.v1\n${cardId}`).slice(0, 40)}`;
+    const hash = digest(`s16.computer.continuation.command.v1\n${canonical(proof)}`);
+    const receipt = this.store.transaction(() => {
+      const source = this.store.request(proof.requestId); this.owner(actor, source);
+      const originalId = source.computerContinuation?.originalRequestId ?? source.receipt.rootRequestId;
+      const original = this.store.request(originalId); this.owner(actor, original);
+      if (source.routine || original.routine || source.receipt.conversationId !== proof.conversationId || original.receipt.conversationId !== proof.conversationId || original.owner.generation !== proof.ownerGeneration) throw new AppError("outside_scope");
+      if (!source.authority || !original.authority || source.authority.id !== original.authority.id || !original.intent.scope || original.phase !== "work") throw new AppError("outside_scope");
+      if ([source.state, original.state].includes("stopped")) throw new AppError("aborted");
+      if ([source.state, original.state].includes("reconcile_only")) throw new AppError("reconciliation_required");
+      if (["running", "queued"].includes(source.state)) throw new AppError("capacity_busy");
+      if (source.state !== "completed" && source.code !== "computer_yielded") throw new AppError("computer_continuation_unavailable");
+      this.options.admitConversation?.(proof.conversationId);
+      const prior = this.store.db.query<{ payload_hash: string; receipt_json: string }, [string]>("SELECT payload_hash,receipt_json FROM commands WHERE id=?").get(requestId);
+      if (prior) {
+        if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409);
+        const receipt = JSON.parse(prior.receipt_json) as ConversationReceipt;
+        const request = this.store.request(receipt.rootRequestId); this.owner(actor, request);
+        if (request.state === "queued") this.guardComputerContinuation(this.options.policy.open(request.authority!), request);
+        bound?.(receipt); this.options.beforeCommit?.(); return receipt;
+      }
+      if (this.#closing) throw new AppError("conversation_unavailable", 503);
+      this.store.capacity();
+      const limits = this.computerAllowance(original, requestId);
+      const recent = this.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.computerContinuation.originalRequestId')=? ORDER BY rowid DESC LIMIT 62").all(originalId).map(row => row.id);
+      const history = [...new Set([originalId, source.receipt.rootRequestId, ...recent])];
+      const command = { ...structuredClone(original.command), requestId, continuation: null };
+      const receipt: ConversationReceipt = { contract: "s15-conversation-receipt/v1", requestId, rootRequestId: requestId, conversationId: proof.conversationId, receivedAt: this.clock.now() };
+      const request: ConversationRequest = { receipt, command, interpretationRequest: command, owner: { ...original.owner }, revision: 1, intent: structuredClone(original.intent), state: "queued", code: null,
+        authority: { ...structuredClone(original.authority), limits }, phase: "work", interpretation: null, interpretationCalls: 0, modelCalls: 0, toolCalls: 0, result: null, usage: null, actions: [], decision: null,
+        computerContinuation: { contract: "s16-computer-continuation/v1", cardId, sourceRequestId: source.receipt.rootRequestId, originalRequestId: originalId, vmId: proof.vmId, generation: proof.generation, evidenceRequests: history } };
+      if (original.delegation) request.delegation = structuredClone(original.delegation);
+      if (command.contract === "s16-conversation/v2") {
+        if (!this.options.files) throw new AppError("files_required");
+        request.fileInputs = this.options.files.accept(actor, command); request.artifacts = [];
+        if (original.fileMemory) request.fileMemory = original.fileMemory;
+      }
+      this.guardComputerContinuation(this.options.policy.open(request.authority!), request);
+      this.store.db.query("INSERT INTO requests VALUES (?,?,?,?)").run(requestId, proof.conversationId, request.state, canonical(request));
+      this.store.db.query("INSERT INTO commands VALUES (?,?,?,?,?)").run(requestId, hash, requestId, canonical(receipt), canonical(command));
+      this.store.event(request, "received", this.clock.now(), "computer_continuation");
+      request.contextSequence = this.store.db.query<{ sequence: number }, []>("SELECT last_insert_rowid() AS sequence").get()!.sequence;
+      this.store.save(request); this.store.event(request, "admitted", this.clock.now(), "computer_continuation");
+      bound?.(receipt); this.options.beforeCommit?.(); return receipt;
+    });
+    if (this.store.request(receipt.rootRequestId).state === "queued") this.#owners.set(receipt.rootRequestId, { actor, commandId: receipt.requestId });
+    this.#wakeDrain(); return receipt;
+  }
+  /** Remaining caller ceilings of the original logical task, including all earlier continuation attempts. */
+  private computerAllowance(original: ConversationRequest, requestId: string): ConversationAuthority["limits"] {
+    if (!original.authority) throw new AppError("outside_scope");
+    const used = this.store.db.query<{ models: number; tools: number }, [string, string, string]>("SELECT coalesce(sum(json_extract(record_json,'$.modelCalls')),0) AS models,coalesce(sum(json_extract(record_json,'$.toolCalls')),0) AS tools FROM requests WHERE id<>? AND (id=? OR json_extract(record_json,'$.computerContinuation.originalRequestId')=?)").get(requestId, original.receipt.rootRequestId, original.receipt.rootRequestId)!;
+    integer(used.models); integer(used.tools);
+    const limits = { ...original.authority.limits, modelCalls: original.authority.limits.modelCalls - used.models, toolCalls: original.authority.limits.toolCalls - used.tools };
+    if (limits.modelCalls < 1 || original.intent.kind !== "answer" && limits.toolCalls < 1) throw new AppError("budget_exhausted");
+    return limits;
+  }
+  /** The continuation's original grant and every earlier context remain current throughout execution. */
+  private guardComputerContinuation(work: WorkContext, request: ConversationRequest): void {
+    const pin = request.computerContinuation; if (!pin) return;
+    const proof = this.options.screenOutcomes?.resumption?.(pin.cardId);
+    const original = this.store.request(pin.originalRequestId), source = this.store.request(pin.sourceRequestId);
+    if (!proof || proof.requestId !== pin.sourceRequestId || proof.conversationId !== request.receipt.conversationId || proof.vmId !== pin.vmId || proof.generation !== pin.generation || proof.ownerGeneration !== request.owner.generation) throw new AppError("computer_continuation_unavailable");
+    if (original.routine || source.routine || original.owner.generation !== request.owner.generation || original.authority?.id !== request.authority?.id || original.receipt.conversationId !== request.receipt.conversationId) throw new AppError("outside_scope");
+    if ([original.state, source.state].includes("stopped")) throw new AppError("aborted");
+    if ([original.state, source.state].includes("reconcile_only")) throw new AppError("reconciliation_required");
+    if (original.delegation && this.store.request(original.delegation.parentRequestId).state !== "running") throw new AppError("parent_unavailable");
+    if (canonical(original.intent.scope) !== canonical(request.intent.scope)) throw new AppError("outside_scope");
+    this.options.admitConversation?.(request.receipt.conversationId); this.options.policy.guard(work, "model");
+    for (const id of pin.evidenceRequests) {
+      const prior = this.store.request(id);
+      if (prior.owner.generation !== request.owner.generation || prior.authority?.id !== request.authority?.id) throw new AppError("outside_scope");
+      if (prior.memory) { if (!this.options.memory) throw new AppError("memory_context_stale"); this.options.memory.guard(work, id); }
+      if (prior.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, prior); }
+      const unknown = this.store.db.query<{ tool: string }, [string]>("SELECT tool FROM tool_calls WHERE request_id=? AND state IN ('claimed','unknown')").all(id);
+      if (unknown.length) throw new AppError("reconciliation_required");
+    }
+  }
   /**
    * Protected routine occurrence ingress (`s16-routine-run/v1`). Only the routine service calls this, with the
    * owner-confirmed pin of one occurrence. The pin narrows interpretation to its purpose, resources and access
@@ -433,6 +522,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (request.state !== "completed" || request.result === null || !request.authority) throw new AppError("result_unavailable", 409);
     const work = this.options.policy.open(request.authority);
     this.options.policy.guard(work, "publication");
+    this.guardComputerContinuation(work, request);
     if (request.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, request); }
     if (request.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, request.receipt.rootRequestId); }
   }
@@ -530,6 +620,10 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (current.code) throw new AppError(current.code);
       if (this.clock.now() - startedAt >= (current.phase === "interpretation" ? current.interpretation!.authority : current.authority!).limits.activeMs) throw new AppError("expired");
       this.options.policy.guard(work, stage);
+      if (current.computerContinuation) {
+        if (!registration?.actor) throw new AppError("authentication_required", 401);
+        this.owner(registration.actor, current); this.guardComputerContinuation(work, current);
+      }
       if (current.phase === "work" && current.fileInputs) { if (!this.options.files) throw new AppError("file_unavailable"); this.options.files.guard(work, current); }
       if (current.phase === "work" && current.memory) { if (!this.options.memory) throw new AppError("memory_context_stale", 409); this.options.memory.guard(work, id); }
     };
@@ -538,7 +632,16 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     try {
       let request: ConversationRequest;
       // DELEG16-01: a delegated child has no interpretation call; its pin already fixes the narrowed scope.
-      if (this.store.request(id).delegation) request = this.store.transaction(() => this.admitDelegation(id, registration?.actor));
+      if (this.store.request(id).computerContinuation) request = this.store.transaction(() => {
+        const current = this.store.request(id), actor = registration?.actor;
+        if (current.state !== "queued" || !current.authority || !current.computerContinuation) throw new AppError("already_claimed");
+        if (!actor) throw new AppError("authentication_required", 401); this.owner(actor, current);
+        const remaining = this.computerAllowance(this.store.request(current.computerContinuation.originalRequestId), id);
+        current.authority.limits = { ...remaining, modelCalls: Math.min(remaining.modelCalls, current.authority.limits.modelCalls), toolCalls: Math.min(remaining.toolCalls, current.authority.limits.toolCalls) };
+        this.guardComputerContinuation(this.options.policy.open(current.authority), current);
+        current.state = "running"; current.revision++; this.store.save(current); this.store.event(current, "admitted", this.clock.now(), "computer_continuation"); this.options.beforeCommit?.(); return current;
+      });
+      else if (this.store.request(id).delegation) request = this.store.transaction(() => this.admitDelegation(id, registration?.actor));
       else {
       request = this.store.transaction(() => {
         const request = this.store.request(id);
@@ -601,7 +704,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       if (this.options.memory && !request.delegation && (!request.fileInputs || request.fileMemory)) this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: [] }; this.store.save(current); });
       const ingress = this.store.db.query<{ receipt_json: string }, [string]>("SELECT receipt_json FROM commands WHERE id=?").get(request.interpretationRequest.requestId)!;
       // A delegated child works from its assignment only: no sourced memory is retrieved or retained for it.
-      const memory = request.delegation || request.fileInputs && !request.fileMemory ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt });
+      const memory = request.delegation || request.fileInputs && !request.fileMemory ? undefined : this.options.memory?.prepare(work!, request, { receivedAt: (JSON.parse(ingress.receipt_json) as ConversationReceipt).receivedAt, ...(request.computerContinuation ? { priorRequests: request.computerContinuation.evidenceRequests.map(id => this.store.request(id)) } : {}) });
       if (memory) {
         this.store.transaction(() => { const current = this.store.request(id); current.memory = { retained: memory.retained }; this.store.save(current); });
         request = this.store.request(id); guard("model");
@@ -621,6 +724,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         guard();
       }
       // Screen outcomes belong to the actual placed computer, not every member of its logical resource pool.
+      const continuationSection = request.computerContinuation ? computerContinuationSection(request.computerContinuation.originalRequestId, request.computerContinuation.evidenceRequests.map(id => ({ request: this.store.request(id), evidence: this.store.evidence(id) }))) : undefined;
       const screenOutcomes = this.options.screenOutcomes?.prepare(request);
       if (screenOutcomes?.length) {
         this.store.transaction(() => { const current = this.store.request(id); current.screenOutcomeCards = screenOutcomes.map(card => card.cardId); this.store.save(current); });
@@ -685,7 +789,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
         current.inputEvidence ??= []; if (current.inputEvidence.some(row => row.id === evidence.id)) return;
         if (current.inputEvidence.length >= 64) throw new AppError("output_limit"); current.inputEvidence.push(evidence); this.store.save(current); this.store.event(current, "evidence", this.clock.now());
       });
-      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, screenOutcomes, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput, steering }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, screenOutcomes, signal: abort.signal, clock: this.clock, scripted: this.options.model, steering, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
+      const output = this.options.runWork ? await this.options.runWork({ work: work!, request, definitions, memorySection: memory?.section, continuationSection, screenOutcomes, signal: abort.signal, guard: () => guard("model"), countModelCall, observeInput, steering }) : await runConversation({ directory: this.options.nativeDirectory, request, definitions, memorySection: memory?.section, continuationSection, screenOutcomes, signal: abort.signal, clock: this.clock, scripted: this.options.model, steering, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         guard: () => guard("model"),
         // Usage evidence is kept on a failed run too; publication below still requires completion.
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.usage = usage; this.store.save(current); }),
@@ -760,7 +864,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     if (request.interpretationRequest.requestId !== request.command.requestId) context.push({ role: "owner", text: request.command.text });
     const cutoff = request.contextSequence ?? this.store.db.query<{ sequence: number }, [string]>("SELECT min(sequence) AS sequence FROM events WHERE request_id=? AND kind='received'").get(request.receipt.rootRequestId)!.sequence;
     const prior = this.store.db.query<{ id: string; command_json: string }, [string, string, string]>(`SELECT r.id,c.command_json FROM commands c JOIN requests r ON r.id=c.root_id
-      WHERE r.conversation_id=? AND c.rowid<(SELECT rowid FROM commands WHERE id=?) AND r.id<>? ORDER BY c.rowid DESC LIMIT 8`).all(request.receipt.conversationId, request.interpretationRequest.requestId, request.receipt.rootRequestId);
+      WHERE json_type(r.record_json,'$.computerContinuation') IS NULL AND r.conversation_id=? AND c.rowid<(SELECT rowid FROM commands WHERE id=?) AND r.id<>? ORDER BY c.rowid DESC LIMIT 8`).all(request.receipt.conversationId, request.interpretationRequest.requestId, request.receipt.rootRequestId);
     for (const row of prior) {
       const value = this.store.request(row.id);
       if (value.owner.id !== request.owner.id || value.owner.generation !== request.owner.generation) continue;

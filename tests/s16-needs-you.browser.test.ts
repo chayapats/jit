@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import type { Model } from "schway/host";
 import { chromium, type Browser, type Page } from "playwright-core";
 import type { BoxStream } from "../src/exec/box-runtime";
 import type { VmScreenInput } from "../src/s15/vm/screen";
@@ -21,6 +22,11 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
   const guestPage = await guest.newPage(); await guestPage.goto("https://notes.example.com/"); await guestPage.getByLabel("Fixture password").focus();
   const sent: VmScreenInput[] = [], commands: Record<string, unknown>[] = [], errors: string[] = [];
   const f = await composedFixture("default", false, undefined, o => ({ ...o, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, screen: {},
+    model: { ...o.model, scripted: route => { const original = o.model.scripted!(route); return { ...original, async *stream(request, call) {
+      if (!JSON.stringify(request.context).includes("screen-outcome-data-never-authority")) { yield* original.stream(request, call); return; }
+      const content = request.items.some(item => item.type === "tool_result") ? [{ type: "text" as const, text: "Automatic continuation completed from observed evidence." }] : [{ type: "tool_call" as const, id: uid(), name: "bash", arguments: { command: "printf continued" } }];
+      yield { type: "message_complete", message: { type: "assistant", id: uid(), content } };
+    } } as Model; } },
     vm: { ...o.vm, managers: new Map([...o.vm.managers].map(([id, manager]) => [id, Object.assign(manager, { screen: () => ({ async unavailable() { return null; }, async capture() { return new Uint8Array(await guestPage.screenshot()); }, async send(input: VmScreenInput) { sent.push(input); if (input.kind === "text") await guestPage.keyboard.insertText(input.text); else if (input.kind === "key" && input.keys.join() === "ret") await guestPage.keyboard.press("Enter"); } }) })])) } }));
   let unauthenticated = false;
   const copy = width === 1440 ? en : th;
@@ -59,7 +65,9 @@ for (const width of [1440, 390]) browserTest(`actual needs-you card takes over, 
     await panel.getByRole("button", { name: copy["s16.screen.handBack"], exact: true }).click();
     await card.getByText(copy["s16.needsYou.resumed"], { exact: true }).waitFor();
     await panel.getByRole("button", { name: copy["s16.screen.close"], exact: true }).click();
-    await card.getByText(copy["s16.needsYou.continue"], { exact: true }).waitFor();
+    await card.getByText(copy["s16.continuation.completed"], { exact: true }).waitFor();
+    await page.getByText(copy["s16.continuation.label"], { exact: true }).waitFor();
+    expect(f.interpreterPrompts).toHaveLength(1);
     await page.waitForFunction(() => document.activeElement?.matches('[id^="needs-you-"] h3'));
     expect(f.service.screen!.cardOutcome(commands[0]!.cardId as string)).toMatchObject({ outcome: "resumed", generation: 3 });
     await guestPage.reload();

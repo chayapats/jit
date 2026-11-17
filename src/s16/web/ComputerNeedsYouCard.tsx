@@ -24,7 +24,10 @@ export function ComputerNeedsYouCard({ card, botName, client, t, refresh, onFail
       {card.canDecline && <button type="button" disabled={busy || failed} onClick={() => void command("decline")}>{t("s16.needsYou.decline")}</button>}
     </div>}
     {card.code && <p>{t("s16.needsYou.protected")}</p>}
-    {card.state === "resumed" && <p>{t("s16.needsYou.continue")}</p>}
+    {card.continuation ? <div className="computer-continuation"><p role="status">{t(`s16.continuation.${card.continuation.state}`)}</p>
+      {card.continuation.requestId && <a href={`#request-${card.continuation.requestId}`}>{t("s16.continuation.open")}</a>}
+      {card.continuation.code && <details><summary>{t("s16.common.details")}</summary><code>{card.continuation.code}</code></details>}
+    </div> : card.state === "resumed" && <p>{t("s16.needsYou.continue")}</p>}
     {failed && <p role="alert">{t("s16.needsYou.failed")} <button type="button" onClick={() => { setFailed(false); refresh(); }}>{t("s16.card.refresh")}</button></p>}
   </section>;
 }

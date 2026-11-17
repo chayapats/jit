@@ -1,5 +1,5 @@
 ---
-status: proposed implementation contract for CONT16-01 (#459); owner outcome confirmed by the issue; implementation and review pending
+status: scoped implementation for CONT16-01 (#459); owner outcome confirmed by the issue; review and required CI pending
 date: 2026-11-18
 scope: CONT16-01 (#459); S16-AC06/AC07/AC11; FR-10/14/15/35/38/40; NFR-07/14
 ---
@@ -23,7 +23,7 @@ identities. Schway owns each execution loop, retries and native session; Jit mus
    or have an uncertain claim, and another request cannot certify native/tool settlement.
 2. Submit a synthetic owner message and admit unrelated new work. Rejected: a new work identity loses the original
    workspace affinity, can select a different computer/model, resets per-work allowances and misrepresents the owner.
-3. Continue the existing Jit work through a fresh CHAT request, VM attempt and public MODEL step. Chosen: retain
+3. Continue the existing Jit work through a fresh CHAT request, VM session and public MODEL step. Chosen: retain
    the original authority, computer/workspace affinity, model pin, disclosure ancestry and finite charged allowance;
    only the execution attempt and receipt are new. This uses the current Jit services and Schway public surface.
 
@@ -52,8 +52,9 @@ source, asset or dependency is imported by this choice.
    earlier continuation attempts. A new receipt cannot reset or increase a budget. Exhaustion is an honest hold.
    A delegated continuation retains its original parent/slice and runs only while that authority is current; routines
    use their existing occurrence `needs_you` state and never enter this path.
-5. **Fresh attempts, persistent state.** The VM attempt ID and MODEL step ID are domain-separated by the continuation
-   receipt/card; their original claims remain untouched. The original work's durable pool affinity keeps the browser
+5. **Fresh sessions, persistent state.** `WorkingVmService.openAttempt` creates a fresh session ID/unit and operation
+   claims while retaining the original `chat_<workId>` workspace key. The MODEL step ID is domain-separated by the
+   continuation receipt/card; earlier loop/tool/session claims remain untouched. The original work's durable pool affinity keeps the browser
    session and workspace on the card's computer, even if another shared member is less loaded. An unavailable/full
    original computer holds the attempt rather than falling back. A changed Bot setting affects new work, not this
    existing work's pin. File receipts retain their original ingress/memory semantics and are rechecked for withdrawal.
@@ -102,3 +103,17 @@ Use scripted models, protocol fixtures, fake clocks and barriers to prove:
 
 Run affected suites, typecheck, provenance checks and full required CI on the final head. Record actual native
 browser fixture evidence separately from guest Chromium/SSH/sudo, subscription, physical-device and live-host proof.
+
+## Local conformance record
+
+The deterministic continuation suite covers automatic production and fallback execution, the original work/workspace
+and finite allowance, per-step receipt usage, two-computer affinity, quick hand-back, duplicate events, queued and
+claimed-state restart recovery, coalescing, stop/revocation/owner/budget/unknown fences, memory forget before/during/after
+the run, queue/publication rollback and refusal of public continuation forgery. Restart tests reopen persisted
+journals and explicitly seed an interrupted claim; they do not claim a physical guest/process power-loss test.
+The native Chromium English/Thai fixture exercises keyboard takeover, a real password form and cookie reload,
+automatic continuation without another owner message, host-labelled transcript, focus restoration, mobile width
+and authentication-loss withholding. Guest operations and MODEL are fixtures; no live account, subscription, real
+SSH/sudo or owner-host adoption is certified. ADR 0092's separate delivery suite isolates the CONT16 scheduler to
+continue testing ordinary next-run delivery and publication rollback. Required final-head CI/review evidence belongs
+in the implementation PR.
