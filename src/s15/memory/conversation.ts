@@ -37,13 +37,16 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
       const current = context(work, request.receipt.rootRequestId), authority = memory.options.team.guard(current);
       const pins = request.fileInputs && files ? files.pins(work, request) : [];
       const scope = memory.options.retention(authority);
-      const messages = [{ command: request.command, at: request.receipt.receivedAt }];
-      if (request.interpretationRequest.requestId !== request.command.requestId) messages.push({ command: request.interpretationRequest, at: ingress?.receivedAt ?? request.receipt.receivedAt });
+      const messages = request.computerContinuation ? [] : [{ command: request.command, at: request.receipt.receivedAt }];
+      if (!request.computerContinuation && request.interpretationRequest.requestId !== request.command.requestId) messages.push({ command: request.interpretationRequest, at: ingress?.receivedAt ?? request.receipt.receivedAt });
       const retained = scope ? messages.flatMap(({ command, at }) => memory.retain(current, { id: memoryId(`message_${command.requestId}`), text: command.text, origin: { kind: "owner_message", id: command.requestId, conversationId: request.receipt.conversationId, at }, scope, resources: pins.map(pin => pin.resource).filter((pin, index, all) => all.findIndex(other => other.id === pin.id) === index), parents: [], ...(pins.length ? { filePins: pins } : {}) })) : [];
       const packet = memory.prepare(current, request.receipt.rootRequestId, request.intent.instruction, pins);
       // Schway receives the complete owner instruction regardless of memory ranking. Its retained
       // claims must fence the reply even when they are absent from the bounded ranked source subset.
       memory.include(current, packet.id, retained.map(claim => claim.id));
+      // Copy dependencies, never recapture the old instruction as fresh owner ingress. Forget/withdrawal
+      // must invalidate this new native context as well as the original work observations.
+      for (const prior of ingress?.priorRequests ?? []) if (prior.memory) memory.include(current, packet.id, memory.derivative(current, prior.receipt.rootRequestId).claimIds);
       files?.disclose(work, memory.ancestry(current, packet.id));
       return { section: packet.section, retained: retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin })) };
     },

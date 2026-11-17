@@ -55,3 +55,5 @@
 
 /* MODEL16-01: bounded owner route/budget facts wrap on narrow clients. */
 .model-settings,.model-usage{margin:16px 0;padding:12px;border:1px solid var(--line);border-radius:12px;overflow-wrap:anywhere;min-width:0}.model-settings summary,.model-usage summary{cursor:pointer;font-weight:600}.model-settings ul{padding-inline-start:20px}.model-settings li+li,.model-usage section+section{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}.model-facts{margin:8px 0;font-size:.875rem}.model-facts dt{font-weight:600}.model-facts dd{margin:2px 0 8px;overflow-wrap:anywhere}.model-facts>div{margin-bottom:8px}
+/* CONT16-01: host continuation is distinct from live owner ingress. */
+.continuation-message{border-left:3px solid var(--line);padding:8px 16px;margin:0 0 16px;overflow-wrap:anywhere}.continuation-message .meta{color:var(--muted);font-size:13px}.computer-continuation{margin-top:12px;border-top:1px solid var(--line);padding-top:8px;overflow-wrap:anywhere}

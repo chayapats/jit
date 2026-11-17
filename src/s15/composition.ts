@@ -1,3 +1,4 @@
+import { ComputerContinuations } from "../s16/computers/continuation";
 import { websiteHostSensitive } from "./browser/sites";
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -6,6 +7,7 @@ import { createS16ClientHandler } from '../s16/http';
 import { ComputerScopes } from '../s16/computers/scopes';
 import { ScreenControl } from '../s16/computers/screen';
 import { BrowserActionCards } from '../s16/computers/browser-cards';
+import { conversationModelStepId } from './conversation/model-step';
 import { ComputerNeedsYou } from '../s16/computers/needs-you';
 import { ComputerBrowser } from '../s16/computers/browser';
 import { vmDesktopCdpStream } from './vm/desktop-stream';
@@ -259,7 +261,7 @@ export async function composeS15(options: S15CompositionOptions) {
       // FILE16-01C: file work reaches the same placed, TEAM-coordinated working computer as ordinary VM work.
       ...(options.computers ? { computer: { vm: { openAttempt: (actor, input) => workingVm.openAttempt(actor, input) }, vmId: options.vm.id, resourceId: options.vm.resource.id } } : {}),
       guardResource(current, write) { team.resource(team.bind(current.actor), options.vm.resource.id, write ? 'write' : 'read'); },
-      request(workId) { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
+      request(workId) { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,rowid DESC LIMIT 1").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
     const channelOwner = (snapshot: ResumeOwnerSnapshot, current: () => boolean): OwnerActor | null => {
       const proof = Object.freeze({});
       channelProofs.set(proof, () => current() && snapshot.generation === options.owner.generation() ? { id: snapshot.ownerId, generation: snapshot.generation, expiresAt: clockNow() + 60000 } : null);
@@ -375,7 +377,8 @@ export async function composeS15(options: S15CompositionOptions) {
         let device = screenDevices.get(manager); if (!device) { device = manager.screen(); screenDevices.set(manager, device); }
         return device;
       } }) : null;
-    const needsYou = screen && scopes ? new ComputerNeedsYou({ store, screen, requireOwner, ownerGeneration: options.owner.generation,
+    let computerContinuations: ComputerContinuations<OwnerActor, ConversationPolicyWork> | null = null;
+    const needsYou = screen && scopes ? new ComputerNeedsYou({ store, screen, requireOwner, continuation: cardId => computerContinuations?.view(cardId) ?? null, ownerGeneration: options.owner.generation,
       vmGeneration: id => vmStore.registration(id).generation,
       tier: hostname => websiteHostSensitive(options.browser?.approved?.sites.list() ?? [], hostname) ? 'sensitive' : undefined,
       allows: (request, vmId) => {
@@ -479,7 +482,7 @@ export async function composeS15(options: S15CompositionOptions) {
     let conversation!: ConversationApplication<OwnerActor, ConversationPolicyWork>;
     let botTools: ReturnType<typeof createBotTools> | undefined;
     // CONN16-01: `propose_connection` drafts an inert chat card; pressing it opens the owner's protected form.
-    const connectionTools = connections ? createConnectionTools({ directory: connections, request: workId => { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
+    const connectionTools = connections ? createConnectionTools({ directory: connections, request: workId => { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,rowid DESC LIMIT 1").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); } }) : undefined;
     const work = openWorkService({ runtime: 's15', path: join(root, 'work.sqlite'), create: options.create, installationId: options.installationId, policy,
       conversation: { view: (owner, id) => conversation.view(owner, id) }, remainingCalls: workId => {
         const current = policy.control.policyForWork(workId), used = policy.control.reservations(workId).reduce((n, row) => n + row.upperBound.calls, 0);
@@ -505,7 +508,10 @@ export async function composeS15(options: S15CompositionOptions) {
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []),
       // CONN16-01: each reviewed source's tools, scoped to its one resource; every call rereads the live review.
       ...(connections && sourceRuntime ? connections.reviewed().map(r => ({ resourceId: r.resource.id, port: sourcePorts.get(r.id) ?? (sourcePorts.set(r.id, sourceRuntime!.port(r.resource.id)), sourcePorts.get(r.id)!) })) : []), ...(options.tools ?? [])];
-    conversation = new ConversationApplication(store, { policy: conversationPolicy, ...(needsYou ? { screenOutcomes: needsYou } : {}), memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+    conversation = new ConversationApplication(store, { policy: conversationPolicy, ...(needsYou ? { screenOutcomes: { prepare: (request: import('./conversation/types').ConversationRequest) => needsYou.prepare(request), delivered: (request: import('./conversation/types').ConversationRequest) => needsYou.delivered(request), resumption(cardId: string) {
+        const proof = needsYou.resumption(cardId); if (!proof) return null;
+        const source = store.request(proof.requestId); return source.authority && pool.holder(source.authority.id) === proof.vmId ? proof : null;
+      } } } : {}), memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: delegationLimits.installationConcurrent, delegationSessions: () => { try { return vmStore.registration(options.vm.id).maxSessions; } catch { return 0; } } } : {}),
       ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
@@ -539,13 +545,14 @@ export async function composeS15(options: S15CompositionOptions) {
         input.guard();
         if (disclosure && options.disclosure) { for (const source of options.disclosure.workSources(input.work.authority)) disclosure.read(input.work.actor, source); for (const route of options.model.registry.list()) modelDisclosure?.allows(input.work.authority, route); }
         activeGuards.set(input.work.authority.id, input.guard);
-        try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: 'conversation', difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
-          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : []), ...(botTools?.ownerDecisions(input.work, input.request) ?? [])], sources: [], tools: input.definitions, ...(input.screenOutcomes?.length ? { screenOutcomes: input.screenOutcomes } : {}), ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: () => { input.countModelCall(); botTools?.beforeChildSend(input.work, input.request); }, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
+        try { const images = fileWorkflow?.images(input.work, input.request, options.files?.imageProbes ?? [], input.observeInput); const record = await models.runStep(input.work.actor, { stepId: conversationModelStepId(input.request), difficulty: 'ordinary', text: input.request.intent.instruction, ...(images ? { images: images.references } : {}),
+          ownerDecisions: [canonical({ intent: input.request.intent, authority: input.request.authority }), ...(input.request.routine?.quiet ? [routineQuietDecision] : []), ...(botTools?.ownerDecisions(input.work, input.request) ?? [])], sources: [], tools: input.definitions, ...(input.continuationSection ? { continuationSection: input.continuationSection } : {}), ...(input.screenOutcomes?.length ? { screenOutcomes: input.screenOutcomes } : {}), ...(input.memorySection ? { memorySection: input.memorySection } : {}) }, input.signal, { beforeCall: () => { input.countModelCall(); botTools?.beforeChildSend(input.work, input.request); }, steering: input.steering, ...(images ? { images: images.hooks } : {}) });
         input.guard(); if (record.state !== 'completed') throw new AppError(record.code ?? 'conversation_run_incomplete');
-        let text = ''; models.publish(input.work.actor, 'conversation', output => { text = output; });
+        let text = ''; models.publish(input.work.actor, conversationModelStepId(input.request), output => { text = output; });
         if (Buffer.byteLength(text) > input.request.authority!.limits.outputBytes) throw new AppError('output_limit');
         return { text, usage: null }; } finally { activeGuards.delete(input.work.authority.id); }
       } });
+    if (needsYou && screen) computerContinuations = new ComputerContinuations<OwnerActor, ConversationPolicyWork>({ store, conversation, needsYou, screen, owner: snapshot => channelOwner(snapshot, () => true), now: clockNow });
     if (bots) botTools = createBotTools({ conversation, directory: bots, policy, team, memory, ...(disclosure ? { disclosure } : {}), owner: snapshot => channelOwner({ ownerId: snapshot.id, generation: snapshot.generation }, () => true) });
     // WORK15-02: the owner's own completed stall reply resumes its named responsibility, after restart too.
     const resumes = openResumeBindings<OwnerActor>({ store, conversation: { submit: (actor, command) => conversation.submit(actor, command) },
@@ -777,12 +784,12 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines, wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
     const githubHandler = github ? createGithubHandler(github, { origin: options.origin, cookieName, authentication, resolveWork(owner, id) {
-      requireOwner(owner); const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=?").get(id);
+      requireOwner(owner); const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,rowid DESC LIMIT 1").get(id);
       if (!row || conversation.view(owner, row.id).authority?.id !== id) throw new AppError('outside_scope'); return policy.control.bindWork(id);
     } }) : undefined;
     if (options.create) writeFileSync(manifestPath, canonical(manifest), { mode: 0o600, flag: 'wx' });
@@ -795,10 +802,10 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, bots, connections, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines,
+    const composed = { policy, conversation, team, memory, files, bots, connections, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
-      drain(): Promise<void> { if (closing) return Promise.resolve(); return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },
+      drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },
       /** Mount after the installation's existing login/OAuth/device routes, on the same authenticated server. */
       async fetch(request: Request): Promise<Response> {
         try {

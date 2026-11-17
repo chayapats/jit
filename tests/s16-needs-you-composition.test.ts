@@ -26,6 +26,8 @@ async function fixture() {
       } } as Model;
     } },
     vm: { ...o.vm, managers: new Map([...o.vm.managers].map(([id, manager]) => [id, Object.assign(manager, { screen: () => ({ async unavailable() { return null; }, async capture() { return new Uint8Array(64); }, async send(input: unknown) { sent.push(input); } }) })])) } }));
+  // This suite isolates ADR 0092 delivery from the CONT16 scheduler, covered in s16-computer-continuation.test.ts.
+  f.service.drain = () => f.service.conversation.drain();
   cleanups.push(() => f.close());
   const client = new JitClient({ origin: "http://localhost:3099", fetch: async request => { const url = new URL(request.url); return f.request(url.pathname + url.search, request.method, request.method === "POST" ? await request.json() : undefined); } });
   await client.bootstrap();

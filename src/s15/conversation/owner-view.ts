@@ -1,3 +1,4 @@
+import { conversationModelStepId } from "./model-step";
 import type { ConversationApplication } from "./application";
 import type { ConversationEvidence, ConversationReceipt, ConversationRequest, ConversationScope, ConversationSteer } from "./types";
 import { identity } from "./validation";
@@ -6,13 +7,15 @@ import type { ActionRef, ActionSlip, Observation } from "../policy";
 /** CHAT row of the Opus-authored s15.owner-view/v1 handoff; labels/layout remain the UI's responsibility. */
 export interface ConversationOwnerRow {
   requestId: string; receipt: ConversationReceipt; ownerMessage: string;
+  /** Host continuation of an earlier task, never new owner ingress. */
+  computerContinuation?: { cardId: string; originalRequestId: string };
   /** Current request revision; a clarification continuation must name it exactly. */
   revision: number;
   /** Subject grounded from the owner's original bytes (for example `issue:328`), never from model output. */
   subject: string | null;
   state: "received" | "understanding" | "inspecting" | "working" | "needs_you" | "question" | "budget_hold" | "blocked" | "unsupported" | "unknown" | "stopped" | "done" | "partial" | "denied";
   intentLine: "report_only" | "started_work" | "obligation_only" | "question" | null;
-  scopeLine: { authorityId: string; purposeId: string; policyRevision: number; resources: readonly string[]; access: ConversationScope["access"] } | null;
+  scopeLine: { modelStepId?: string; authorityId: string; purposeId: string; policyRevision: number; resources: readonly string[]; access: ConversationScope["access"] } | null;
   /** Control progress never certifies completion; only observed committed evidence appears below. */
   progress: { provisional: true; phase: "interpretation" | "work" | "decision"; active: boolean };
   evidence: ConversationEvidence[];
@@ -85,11 +88,12 @@ function ownerRow<Actor, Work>(app: ConversationApplication<Actor, Work>, actor:
       ? { candidates: [...new Set([...request.command.text.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `#${match[1]}`))].slice(0, 4) } : null;
     return { requestId: id, receipt: request.receipt, ownerMessage: request.command.text, revision: request.revision, subject: request.intent.subject, state: disposition,
       intentLine: request.phase === "decision" ? null : request.state === "accepted" ? "obligation_only" : request.phase === "interpretation" ? request.state === "held" ? "question" : null : request.intent.kind === "inspect" ? "report_only" : request.intent.kind === "execute" ? "started_work" : null,
-      scopeLine: request.authority && request.intent.scope ? { authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
+      scopeLine: request.authority && request.intent.scope ? { ...(request.computerContinuation ? { modelStepId: conversationModelStepId(request) } : {}), authorityId: request.authority.id, purposeId: request.authority.purposeId, policyRevision: request.authority.policyRevision, resources: request.authority.resources, access: request.intent.scope.access } : null,
       progress: { provisional: true, phase: request.phase, active: request.state === "running" }, evidence: request.evidence,
       result: request.result === null ? null : { status: "done", text: request.result }, needsYou, slips: request.slips, memory: request.memory ?? null, question,
       ...(request.fileInputs ? { files: { inputs: request.fileInputs, artifacts: request.result === null ? [] : request.artifacts ?? [] } } : {}),
       reply: request.interpretationRequest.requestId === request.command.requestId ? null : request.interpretationRequest.text,
+      ...(request.computerContinuation ? { computerContinuation: { cardId: request.computerContinuation.cardId, originalRequestId: request.computerContinuation.originalRequestId } } : {}),
       ...(request.routine ? { routine: { routineId: request.routine.routineId, occurrenceId: request.routine.occurrenceId, quiet: request.routine.quiet } } : {}),
       steers: app.store.steers(id),
       ...(request.delegation ? { delegation: { parentRequestId: request.delegation.parentRequestId, parentConversationId: request.delegation.parentConversationId, kind: request.delegation.kind, botId: request.delegation.botId, fromBotId: request.delegation.fromBotId } } : {}),

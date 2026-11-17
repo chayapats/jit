@@ -180,7 +180,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (url.search) throw new AppError("invalid_body");
         if (request.method === "GET" && screen[2]) return json(await options.screen.view(currentOwner(), screen[2]));
         // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
-        if (request.method === "POST" && screen[1]) { const input = await body(request, 4096); return json(await options.screen.command(currentOwner(), input)); }
+        if (request.method === "POST" && screen[1]) { const input = await body(request, 4096); const result = await options.screen.command(currentOwner(), input); options.wake?.(); return json(result); }
         throw new AppError("method_rejected", 405);
       }
       if (url.pathname === "/api/s16/client/needs-you/commands") {
@@ -264,7 +264,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "GET" && !conversation[2]) {
           if (url.search) throw new AppError("invalid_body");
           const conversation = conversationOwnerView(app, authenticated.actor, conversationId);
-          const modelUsage = options.models?.usage(currentOwner(), conversation.rows.flatMap(row => row.scopeLine ? [{ requestId: row.requestId, workId: row.scopeLine.authorityId }] : []));
+          const modelUsage = options.models?.usage(currentOwner(), conversation.rows.flatMap(row => row.scopeLine ? [{ requestId: row.requestId, workId: row.scopeLine.authorityId, ...(row.scopeLine.modelStepId ? { modelStepId: row.scopeLine.modelStepId } : {}) }] : []));
           return json({ contract: "s16-client-snapshot/v1", conversation, ...(modelUsage ? { modelUsage } : {}), ...(options.browserCards ? { browserCards: options.browserCards.list(authenticated.actor, conversationId) } : {}), ...(options.needsYou ? { needsYouCards: options.needsYou.list(authenticated.actor, conversationId) } : {}), ...(options.bots ? { botId: options.bots.conversationBot(conversationId) } : {}) });
         }
         if (request.method === "GET" && conversation[2] === "events") {
