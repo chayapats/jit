@@ -57,6 +57,11 @@ export const browserDomHelpers = `
  const controlFacts=e=>({ref:ref(e),name:name(e,true),tag:e.tagName.toLowerCase(),type:(e.getAttribute('type')||'').toLowerCase(),id:e.getAttribute('id'),htmlName:e.getAttribute('name')||'',href:e.getAttribute('href'),target:e.getAttribute('target'),form:e.getAttribute('form'),formaction:e.getAttribute('formaction'),formmethod:e.getAttribute('formmethod'),formtarget:e.getAttribute('formtarget'),formenctype:e.getAttribute('formenctype'),formnovalidate:e.hasAttribute('formnovalidate'),disabled:!!e.disabled,readOnly:!!e.readOnly});
  // Inspection and submit dispatch must share the native owner, including null for unresolved form=.
  const nativeContext=e=>{const {control,label}=activationContext(e);return {control,label,form:control&&'form' in control?control.form:(e.form||e.closest('form'))};};
+ const submitControl=e=>{const type=(e.getAttribute('type')||'').toLowerCase();return e.tagName==='BUTTON'?!['button','reset'].includes(type):e.tagName==='INPUT'&&['submit','image'].includes(type);};
+ // Conflicting label submitters are ambiguous across Chromium versions, even inside a submit button.
+ const unreviewedLabelClick=e=>{const {control}=activationContext(e);if(!control||!['BUTTON','INPUT'].includes(control.tagName))return false;
+  const label=e.closest('input,select,textarea,a[href],label');const forwarded=label?.tagName==='LABEL'?label.control:null;
+  return !!(forwarded&&forwarded!==control&&submitControl(forwarded)&&forwarded.form);};
  const facts=e=>{const {control,label,form}=nativeContext(e);if(control&&secret(control))return {code:'computer_browser_secret_field'};
   const all=Array.from(form?.elements||[control||e]);const fields=all.filter(f=>!secret(f)).map(f=>({name:name(f,true),htmlName:f.getAttribute('name')||'',value:String(f.value||''),type:(f.getAttribute('type')||'').toLowerCase(),disabled:!!f.disabled,checked:['checkbox','radio'].includes((f.getAttribute('type')||'').toLowerCase())?!!f.checked:undefined,selected:f.tagName==='SELECT'?Array.from(f.options).filter(o=>o.selected).map(o=>o.value):undefined}));
   if(fields.length>100||fields.some(f=>f.value.length>12000))return {code:'computer_browser_snapshot_limit'};
@@ -81,12 +86,12 @@ export function dispatchBrowserTarget(ref: string, revision: string, op: Browser
  if(secret(e))return {code:'computer_browser_secret_field'};
  const live=facts(e);if(live.code)return live;if(live.revision!==${JSON.stringify(revision)})return {code:'computer_browser_stale'};
  const op=${payload};if(e.disabled)return {code:'computer_browser_target_invalid'};
- if(op.kind==='click')e.click();
- else if(op.kind==='submit'){const {control,form}=nativeContext(e);const submitter=control||e;const type=(submitter.getAttribute('type')||'').toLowerCase();
-  const valid=submitter.tagName==='BUTTON'?!['button','reset'].includes(type):submitter.tagName==='INPUT'&&['submit','image'].includes(type);
-  if(!form||submitter.form!==form||!valid||submitter.disabled)return {code:'computer_browser_target_invalid'};form.requestSubmit(submitter);}
+ if(op.kind==='click'){if(unreviewedLabelClick(e))return {code:'computer_browser_target_invalid'};e.click();}
+ else if(op.kind==='submit'){const {control,form}=nativeContext(e);const submitter=control||e;
+  if(!form||submitter.form!==form||!submitControl(submitter)||submitter.disabled)return {code:'computer_browser_target_invalid'};form.requestSubmit(submitter);}
  else if(op.kind==='select'){if(e.tagName!=='SELECT'||!Array.from(e.options).some(o=>o.value===op.value&&!o.disabled))return {code:'computer_browser_target_invalid'};setValue(e,op.value);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));}
- else {if(!['INPUT','TEXTAREA'].includes(e.tagName)||e.readOnly)return {code:'computer_browser_target_invalid'};e.focus();const enter=/[\\r\\n]/.test(op.value);setValue(e,op.value.replace(/[\\r\\n]/g,''));e.dispatchEvent(new Event('input',{bubbles:true}));if(enter){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));if(e.form)e.form.requestSubmit();}}
+ else {if(!['INPUT','TEXTAREA'].includes(e.tagName)||e.readOnly)return {code:'computer_browser_target_invalid'};const enter=/[\\r\\n]/.test(op.value);const form=nativeContext(e).form;
+  if(enter&&e.form!==form)return {code:'computer_browser_target_invalid'};e.focus();setValue(e,op.value.replace(/[\\r\\n]/g,''));e.dispatchEvent(new Event('input',{bubbles:true}));if(enter){e.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));if(form)form.requestSubmit();}}
  return {state:'sent'};
 })()`;
 }

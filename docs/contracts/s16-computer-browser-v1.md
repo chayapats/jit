@@ -50,6 +50,14 @@ refuses as stale; dispatch still clicks the original opaque target, never a subs
 a null owner or invalid submitter refuses `computer_browser_target_invalid` without input, never an unchecked enclosing form.
 This does not analyze arbitrary JavaScript listeners or expand matching to every ancestor.
 
+Enter-carrying `type` refuses before focus or editing if the field's native form owner differs from the
+reviewed activation form (including a null owner). It captures that reviewed form before input events and
+submits only that form, even if a keydown handler re-associates the field. A label inside a button that
+would forward to a different native submitter refuses `computer_browser_target_invalid` without a
+click. Chromium 157 can forward even when the containing button is itself a valid submitter, so these
+conflicting native activation contexts are refused rather than assuming one version's precedence.
+External-label forwarding and the independent link-inside-label boundary remain supported.
+
 A `click`, `submit`, `select`, or Enter-carrying `type` is held if its target/effective control name, its form's raw HTML field
 names/display labels or decoded URL path matches this committed bilingual vocabulary (case-insensitive English word boundaries, literal Thai). Underscore, hyphen and slash separators in field names and paths are treated as spaces; `pay_now`/`delete_account` match, but `paypal`/`reorder` do not. Names preserve ARIA then associated-label precedence before contents (HTML-AAM §4.1.4), including image `alt` in button contents and image-input names. Native buttons beneath an editable ancestor retain their own name; editable self/descendant text and field values remain excluded from observation names:
 

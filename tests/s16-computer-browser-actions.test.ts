@@ -836,3 +836,52 @@ test("a held submit with an invalid effective submitter refuses atomically and n
   expect(a.submissions).toHaveLength(0); r.close(); expect((await f.decide(pending.cardId as string)).state).toBe("stale");
   expect((await f.decide(pending.cardId as string)).state).toBe("stale"); expect(a.submissions).toHaveLength(0); expect(a.listeners).toBe(0); expect(a.click).not.toHaveBeenCalled();
 });
+
+for (const [owner, fieldOwner, tag] of [["neutral", "pay", "input"], ["pay", "encdel", "input"], ["missing", "pay", "textarea"]] as const) {
+  test(`Enter refuses field owner ${fieldOwner} differing from reviewed ${owner} before editing`, async () => {
+    const a = nativeActivationFixture("false", "direct", owner, owner === "missing" ? "button" : "submit", "Continue"), { f } = a;
+    const field = f.document.createElement(tag); field.setAttribute("aria-label", "Quantity"); field.setAttribute("form", fieldOwner); field.value = "old"; a.control.append(field);
+    Object.defineProperty(field, "form", { get: () => f.document.getElementById(field.getAttribute("form")!) });
+    const focus = spyOn(field, "focus"); let edits = 0; field.addEventListener("input", () => { edits++; });
+    const { r, o, es } = await f.observe(); const target = es.find(e => e.name === "Quantity")!.id;
+    const call = r.execute({ kind: "type", target, generation: o.generation, value: "30\n" });
+    if (owner === "pay") {
+      const pending = await call; expect(pending.state).toBe("pending"); r.close();
+      expect((await f.decide(pending.cardId as string)).state).toBe("stale");
+      expect((await f.decide(pending.cardId as string)).state).toBe("stale");
+    } else { await expect(call).rejects.toMatchObject({ code: "computer_browser_target_invalid" }); r.close(); }
+    expect(field.value).toBe("old"); expect(focus).not.toHaveBeenCalled(); expect(edits).toBe(0); expect(a.submissions).toHaveLength(0);
+  });
+}
+
+test("Enter with the reviewed native owner submits only that captured form despite keydown reassociation", async () => {
+  const a = nativeActivationFixture("false", "direct", "neutral", "submit", "Continue"), { f } = a;
+  const field = f.document.createElement("input"); field.setAttribute("aria-label", "Quantity"); field.setAttribute("form", "neutral"); a.control.append(field);
+  Object.defineProperty(field, "form", { get: () => f.document.getElementById(field.getAttribute("form")!) });
+  field.addEventListener("keydown", () => field.setAttribute("form", "encdel"));
+  const { r, o, es } = await f.observe();
+  expect((await r.execute({ kind: "type", target: es.find(e => e.name === "Quantity")!.id, generation: o.generation, value: "30\n" })).state).toBe("ok");
+  expect(a.submissions.map(s => s.form.id)).toEqual(["neutral"]); expect(field.value).toBe("30"); r.close();
+});
+
+for (const state of ["false", "true"]) for (const type of ["button", "reset", "submit"]) {
+  test(`child ${state} label in ${type} without a submitting owner cannot forward to an unreviewed Pay button`, async () => {
+    const a = nativeActivationFixture(state, "label", "missing", type, "Continue"), { f } = a;
+    const pay = f.document.createElement("button"); pay.type = "submit"; pay.id = "pay-button"; pay.textContent = "Pay"; pay.setAttribute("form", "pay"); f.document.body.append(pay);
+    Object.defineProperty(pay, "form", { get: () => f.document.getElementById("pay") });
+    a.wrapper!.setAttribute("for", pay.id);
+    a.click.mockImplementation(() => { (f.document.getElementById("pay") as unknown as HTMLFormElement).requestSubmit(pay); });
+    const { r, o, target } = await a.observe();
+    await expect(r.execute({ kind: "click", target, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_target_invalid" });
+    expect(a.click).not.toHaveBeenCalled(); expect(a.submissions).toHaveLength(0); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+  });
+}
+
+test("a submitting containing button also refuses an ambiguous different label submitter", async () => {
+  const a = nativeActivationFixture("false", "label", "neutral", "submit", "Continue"), { f } = a;
+  const pay = f.document.createElement("button"); pay.id = "pay-button"; pay.type = "submit"; pay.textContent = "Pay"; f.document.getElementById("pay")!.append(pay);
+  Object.defineProperty(pay, "form", { get: () => f.document.getElementById("pay") }); a.wrapper!.setAttribute("for", pay.id);
+  const { r, o, target } = await a.observe();
+  await expect(r.execute({ kind: "click", target, generation: o.generation })).rejects.toMatchObject({ code: "computer_browser_target_invalid" });
+  expect(a.click).not.toHaveBeenCalled(); expect(a.submissions).toHaveLength(0); expect(f.cards.list(f.owner, "conversation")).toHaveLength(0); r.close();
+});
