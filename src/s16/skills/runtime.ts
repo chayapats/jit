@@ -136,7 +136,7 @@ export function createSkillRuntime<Owner>(options: {
           if (!Array.isArray(value.arguments) || value.arguments.length > 32) return fail("invalid_arguments"); for (const argument of value.arguments) if (typeof argument !== "string" || argument.includes("\0") || Buffer.byteLength(argument) > 256) return fail("invalid_arguments");
           const staged = await stage(work, value.skillId as string, input.guard, input.signal); input.guard(); current(work, value.skillId as string);
           const response = await staged.session.backend.spawn({ command: [script.runtime, quote(`${staged.path}/${script.path}`), ...value.arguments.map(argument => quote(argument as string))].join(" "), cwd: staged.path, signal: input.signal }); input.guard(); current(work, value.skillId as string);
-          const output = { sessionId: staged.session.id, operationIds: staged.session.evidence().slice(-1).map(e => e.operationId), skillId: value.skillId, pin: pkg.pin, script: script.path, runtime: script.runtime, exitCode: response.exitCode, timedOut: response.timedOut === true, stdout: response.stdout, stderr: response.stderr, basis: "guest_reported" };
+          const output = { path: staged.path, sessionId: staged.session.id, operationIds: staged.session.evidence().slice(-1).map(e => e.operationId), skillId: value.skillId, pin: pkg.pin, script: script.path, runtime: script.runtime, exitCode: response.exitCode, timedOut: response.timedOut === true, stdout: response.stdout, stderr: response.stderr, basis: "guest_reported" };
           if (Buffer.byteLength(JSON.stringify(output)) > 24576) return fail("output_limit"); return output;
         }, true)] : []),
     ], async cancel() {}, async close() {} };

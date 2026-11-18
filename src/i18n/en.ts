@@ -4,6 +4,8 @@ import { s15WebEn } from "./s15-web-en";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "s16.skills.privateComputerRequired": "This package is limited to selected Bots. Give this Bot its own private computer before releasing the package there.",
+  "s16.skills.privateComputerUnavailable": "Private computers are not enabled on this service. The package can still be read within its reviewed scope.",
   "s16.skills.title": "Skills / plugins",
   "s16.skills.lead": "Import know-how, inspect its exact files and decide who may use it. Imported text never grants permissions.",
   "s16.skills.unavailable": "Skills are not enabled on this service.",

@@ -188,3 +188,25 @@ The composed scenarios prove an actual fixture-VM file effect through one placed
 a lost script reply with retained guest bytes/unknown evidence and no restart replay. Typecheck, diff and immutable
 upstream/license checks passed at that checkpoint. Additional re-review, fallback, file/continuation and receiver-change
 conformance plus the complete exact-head release suite/review remain required; no live guest/account/host claim follows.
+
+### Composed Bot-scope and continuation conformance
+
+The real composed Bot-only scenario exposed a TEAM refresh constraint: its ordinary reviewed-registration path
+correctly refuses changing any existing restriction. SKILL16-01 adds a protected `reviewedBotScope` host check only for
+an exact current active package resource/review. On a newer team identity, it may change `allowedBots` alone. Scope,
+S14-private origin, denials, purposes, operations and physical coordination remain identical. The original generic
+path stays strict when the port is absent; even an accepting port cannot change those other fields. Older sources,
+MEM descendants and released private VM copies are not promoted by a later wider package review.
+
+Additional composed fixtures now exercise Bot-only refusal before guest bytes on the shared member, successful
+placement/copy custody on its assigned private member, actual mapped MCP reads with the package, and refusal of a
+separate private source's outbound arguments. File work uses that same placed session; its observed script result
+reports a guest path for collection. A committed file artifact copied into a later input cannot drop the original
+package's DATA15 ancestors by omitting its resource. File work also offers only the already-admitted reviewed source
+tools, under the same run limit and cleanup as ordinary CHAT. Offering them loads no playbook.
+
+A real computer continuation carries actually observed skill instructions, complete MEM/DATA15 refs and the original
+work/workspace. Revocation during its actual model wait withholds the result and further tools. Native English/Thai
+scenarios additionally change team availability to a selected Bot and follow the missing-private-computer hold to the
+real Computers setup page. These remain deterministic service/client/guest-protocol fixtures, not live physical guest
+or account attestations. Full exact-head release validation and external review remain required.

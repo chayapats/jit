@@ -93,6 +93,7 @@ and artifact-derived inputs preserve ancestry; original S14-private scope remain
 only this package/copy and the explicitly listed recipients, never future providers or unrelated private inputs.
 
 Rollback format fences: CHAT 5 for loaded skill pins; TEAM 3 for DATA15 ancestry/4 with file ancestry; MEM 5/6 respectively.
+TEAM can refresh only allowedBots on a newer team resource through the owning exact active-package review; all other restrictions, physical identity and S14-private scope remain unchanged.
 Readers without the owning ports refuse before writable open. Later file/timing writes preserve the stronger header.
 
 ## Client and conformance
@@ -102,7 +103,7 @@ dependency mapping, team/Bot and computer-use review, update, revoke and identit
 behind the existing owner session. English/Thai, keyboard focus, mobile width, unknown outcomes and authentication loss
 are covered by the actual bundled client scenario suite. Chat exposes actual guarded use pins and observed tool evidence.
 
-Deterministic tests: `s16-skills-{package,github,service,continuity,disclosure,composition}.test.ts` and the opt-in native
+Deterministic tests: `s16-skills-{package,github,service,continuity,disclosure,composition,continuation}.test.ts` and the opt-in native
 `s16-skills.browser.test.ts`. Broader FILE/TEAM/MEM/CHAT/connections and installer/package checks remain part of release
 validation. Real subscription/account/device, hostile-root network enforcement, power-loss and owner-host cutover evidence
 are independently owned by #408/#431/#432; these deterministic fixtures do not certify them or invoke a billable service.

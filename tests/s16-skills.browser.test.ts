@@ -14,7 +14,7 @@ beforeAll(async () => { if (process.env.JIT_S16_BROWSER_TESTS === "1") browser =
 afterAll(async () => { await browser?.close(); }, 30000);
 
 browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, preview/review/use, folder update and revoke at width %i", async width => {
-  const f = await firstRunFixture(o => ({ ...o, skills: {}, connections: { vault: o.githubWeb!.vault } }));
+  const f = await firstRunFixture(o => ({ ...o, skills: {}, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, connections: { vault: o.githubWeb!.vault } }));
   const fixtures = githubSkillFixture(new Map([["SKILL.md", "---\nname: browser-notes\ndescription: Use the fixture notes.\nlicense: MIT\n---\nThe test command is bun test.\n"], ["LICENSE", "MIT License\nSelf-authored browser fixture.\n"], ["hooks/hooks.json", '{"start":"touch /protected/must-not-run"}']]));
   f.service.skills!.options.network.request = fixtures.network.request;
   const setup = await f.page("/setup", "en"), hash = (name: string) => new RegExp(`name="${name}" value="([a-f0-9]{64})"`).exec(setup.html)?.[1];
@@ -52,6 +52,13 @@ browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, previe
     f.script = [{ type: "tool_call", id: "load", name: "skill_load", arguments: { skillId: active.id, unitId, offset: 0 } }];
     await page.goto(f.config.origin + "/s16/chat/first"); await page.getByRole("textbox", { name: copy["s16.chat.prompt"], exact: true }).fill("Use the reviewed notes."); await page.getByRole("button", { name: copy["s16.chat.send"], exact: true }).click();
     await page.getByText(copy["s16.skills.used"].replace("{count}", "1"), { exact: true }).waitFor(); expect(f.prompts.some(prompt => prompt.includes("The test command is bun test."))).toBe(true);
+    await page.goto(f.config.origin + "/s16/connections"); await page.getByRole("tab", { name: copy["s16.skills.title"], exact: true }).click(); await page.getByRole("button", { name: copy["s16.skills.open"], exact: true }).click();
+    await detail.getByLabel(copy["s16.skills.selectedBots"], { exact: true }).check(); await detail.getByLabel(copy["s16.bots.mainName"], { exact: true }).check(); await detail.getByRole("button", { name: copy["s16.skills.confirm"], exact: true }).click();
+    await page.getByText(copy["s16.skills.active"], { exact: true }).waitFor();
+    f.script = [{ type: "tool_call", id: "stage", name: "skill_stage", arguments: { skillId: active.id } }];
+    await page.goto(f.config.origin + "/s16/chat/first"); await page.getByRole("textbox", { name: copy["s16.chat.prompt"], exact: true }).fill("Stage this Bot-private package on the computer."); await page.getByRole("button", { name: copy["s16.chat.send"], exact: true }).click();
+    await page.getByText(copy["s16.skills.privateComputerRequired"], { exact: true }).waitFor(); await page.locator(".bot-message .notice").filter({ hasText: copy["s16.skills.privateComputerRequired"] }).getByRole("button", { name: copy["s16.nav.computers"], exact: true }).click();
+    await page.getByRole("heading", { name: copy["s16.computers.title"], exact: true }).waitFor();
     await page.goto(f.config.origin + "/s16/connections"); await page.getByRole("tab", { name: copy["s16.skills.title"], exact: true }).click(); await page.getByRole("button", { name: copy["s16.skills.open"], exact: true }).click();
     await detail.getByRole("button", { name: copy["s16.skills.update"], exact: true }).click(); await page.getByLabel(copy["s16.skills.folder"], { exact: true }).check();
     writeFileSync(join(directory, "SKILL.md"), "---\nname: browser-notes\ndescription: Updated fixture notes.\n---\nThe test command is bun test --timeout 30000.\n"); writeFileSync(join(directory, "LICENSE"), "MIT License\nSelf-authored updated fixture.\n");

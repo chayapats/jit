@@ -51,6 +51,9 @@ export interface TeamOptions {
   fileLineage?: FileLineagePort;
   /** Explicit owning-service lineage integration; older readers refuse its stamped sources. */
   dataLineage?: DataLineagePort;
+  /** Owning exact reviewed Bot-scope refresh for a newer team resource identity (SKILL16-01).
+   * Only allowedBots may differ; scope, denials, purpose, operations and physical identity remain unchanged. */
+  reviewedBotScope?: (resource: TeamResource) => boolean;
 }
 /** Explicit current resource view for protected UI; it contains no credential/profile/session handles. */
 export interface TeamResourcesView {

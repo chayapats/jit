@@ -71,9 +71,15 @@ export class TeamService {
       if (!items.length || items.length > 64 || teamCandidatesHash(items) !== reviewedHash) throw new AppError("team_resources_changed", 409);
       for (const item of items) {
         // GIT15-04: an existing row may only be refreshed to its owning catalog's newer identity (a repository selected
-        // again); every other field, including scope, purposes and Bot restrictions, must stay exactly as registered.
+        // again); every other field stays registered. Only the owning exact package review may refresh allowedBots;
+        // private scope, denials, purposes, operations and physical coordination never change through that seam.
         const existing = this.findResource(item.id);
-        if (existing && (item.revision <= existing.revision || canonical({ ...existing, revision: 0, generation: 0 }) !== canonical({ ...item, revision: 0, generation: 0 }))) throw new AppError("team_resources_changed", 409);
+        if (existing) {
+          const stable = (value: TeamResource) => ({ ...value, revision: 0, generation: 0 });
+          const same = canonical(stable(existing)) === canonical(stable(item));
+          const reviewedBots = existing.scope.kind === "team" && item.scope.kind === "team" && canonical({ ...stable(existing), allowedBots: null }) === canonical({ ...stable(item), allowedBots: null }) && this.options.reviewedBotScope?.(structuredClone(item)) === true;
+          if (item.revision <= existing.revision || !same && !reviewedBots) throw new AppError("team_resources_changed", 409);
+        }
         this.put(item, existing?.revision ?? 0);
       }
       const ids = items.map(item => item.id);

@@ -7,6 +7,8 @@ import { s14CodingTh } from "./s14-coding-th";
 import { s15WebTh } from "./s15-web-th";
 
 export const th = {
+  "s16.skills.privateComputerRequired": "package นี้จำกัดเฉพาะ Bot ที่เลือก โปรดกำหนด private computer ให้ Bot นี้ก่อนส่ง package เข้าเครื่อง",
+  "s16.skills.privateComputerUnavailable": "service นี้ยังไม่เปิดใช้ private computer ยังอ่าน package ภายในขอบเขตที่ review ไว้ได้",
   "s16.skills.title": "Skills / plugins",
   "s16.skills.lead": "นำเข้าแนวทางทำงาน ตรวจไฟล์ตาม pin และเลือก Bot ที่ใช้ได้ เนื้อหาที่นำเข้าไม่ให้สิทธิ์การทำงาน",
   "s16.skills.unavailable": "service นี้ยังไม่เปิดใช้ Skills",

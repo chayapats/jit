@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createTeamResourceTools, TeamService, type TeamContext, type TeamLease } from "../src/s15/team";
+import { createTeamResourceTools, teamCandidatesHash, TeamService, type TeamContext, type TeamLease } from "../src/s15/team";
 import { teamMemoryFixture } from "./fixtures/s15-team-memory";
 import { ref } from "./fixtures/s15-policy";
 
@@ -111,4 +111,18 @@ test("P1: repository-only work opens only its available tools with unrelated bro
   f.team.register(f.f.owner, "narrow_repo_after_open", 1, f.registration("repo", { revision: 2, deniedBots: ["bot"] }));
   await expect(session.tools[0]!.definition.execute({}, call)).rejects.toThrow("outside_scope");
   expect(reads).toBe(1); await session.close();
+});
+
+
+test("a protected reviewed Bot-scope refresh changes only allowedBots on a newer team identity and never promotes S14-private state", () => {
+  const f = fixture(), original = f.team.resourceRecord("account")!, narrowed = { ...original, revision: 2, allowedBots: ["bot"] };
+  const register = (value: typeof original) => f.team.registerReviewed(f.f.owner, crypto.randomUUID().replaceAll("-", ""), teamCandidatesHash([value]), () => [value]);
+  expect(() => register(narrowed)).toThrow("team_resources_changed");
+  f.options.reviewedBotScope = () => true; expect(register(narrowed)).toEqual(["account"]);
+  expect(f.team.resourceRecord("account")!.allowedBots).toEqual(["bot"]);
+  expect(() => register({ ...narrowed, revision: 3, deniedBots: ["bot2"] })).toThrow("team_resources_changed");
+  expect(() => register({ ...narrowed, revision: 3, operations: ["read"] })).toThrow("team_resources_changed");
+  expect(() => register({ ...narrowed, revision: 3, coordinationKey: "another-object" })).toThrow("team_resources_changed");
+  const historical = f.team.resourceRecord("private")!; expect(() => register({ ...historical, revision: 2, allowedBots: null, scope: { kind: "team" } })).toThrow("team_resources_changed");
+  expect(f.team.resourceRecord("private")!.scope).toEqual({ kind: "bot", botId: "bot", origin: "s14" });
 });
