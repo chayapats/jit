@@ -13,11 +13,11 @@ const fixtureFiles = [file("SKILL.md", "---\nname: emit\ndescription: Render the
 type Fixture = Awaited<ReturnType<typeof firstRunFixture>>;
 async function json<T>(response: Response, status = 200): Promise<T> { const text = await response.text(); expect({ status: response.status, text }).toMatchObject({ status }); return JSON.parse(text) as T; }
 const command = (f: Fixture, value: object, requestId = uid()) => f.request("/api/s16/client/skills/commands", "POST", { contract: "s16-skill-command/v1", requestId, ...value });
-async function fixture(connections = false, fileFeature = false, model?: Model) {
+async function fixture(connections = false, fileFeature = false, model?: Model, retention = true) {
   let f!: Fixture;
   const files = new Map<string, Uint8Array>(), calls: Record<string, unknown>[] = [];
   let gate: null | ((request: Record<string, unknown>) => Promise<void>) = null, lost = false;
-  f = await firstRunFixture(options => { const base = options.vm.transport!; return { ...options, skills: {}, ...(fileFeature ? { files: { memory: true } } : {}), ...(model ? { model: { ...options.model, scripted: () => model } } : {}), ...(connections ? { connections: { vault: options.githubWeb!.vault } } : {}), team: { ...options.team!, retention: () => ({ kind: "team" }) }, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, vm: { ...options.vm, transport: registration => {
+  f = await firstRunFixture(options => { const base = options.vm.transport!; return { ...options, skills: {}, ...(fileFeature ? { files: { memory: true } } : {}), ...(model ? { model: { ...options.model, scripted: () => model } } : {}), ...(connections ? { connections: { vault: options.githubWeb!.vault } } : {}), team: { ...options.team!, retention: () => retention ? { kind: "team" } : null }, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, vm: { ...options.vm, transport: registration => {
     const transport = base(registration), invoke = transport.invoke.bind(transport);
     transport.invoke = (async (request: Record<string, unknown>, input: Parameters<VmSshTransport["invoke"]>[1]) => {
       if (request.op !== "write" && request.op !== "read" && request.op !== "spawn") return invoke(request, input);
@@ -51,6 +51,20 @@ async function fixture(connections = false, fileFeature = false, model?: Model) 
   return { f, files, calls, detail, set gate(value: typeof gate) { gate = value; }, set lost(value: boolean) { lost = value; } };
 }
 const script = (detail: SkillDetail) => [{ type: "tool_call" as const, id: "load", name: "skill_load", arguments: { skillId: detail.record.id, unitId: detail.active!.units[0]!.id, offset: 0 } }, { type: "tool_call" as const, id: "run", name: "skill_run", arguments: { skillId: detail.record.id, script: "scripts/emit.py", arguments: [] } }];
+
+test("SKILL16-01: a full 128-file package with long portable UTF-8 paths stages in bounded commands through one session", async () => {
+  const h = await fixture(), { f } = h, files = [...fixtureFiles, ...Array.from({ length: 124 }, (_, i) => file(`resources/${"界".repeat(70)}/${"界".repeat(70)}_${i}/part.txt`, `part ${i}\n`))];
+  await json(await command(f, { kind: "skill.update", skillId: h.detail.record.id, expectedRevision: h.detail.record.revision, input: { kind: "folder", label: "Many resources", files } }));
+  const candidate = await json<SkillDetail>(await f.request(`/api/s16/client/skills/${h.detail.record.id}`)), sharing = f.service.skills!.recipients(f.owner(), candidate.record.id, candidate.candidate!.pin, {});
+  await json(await command(f, { kind: "skill.review", skillId: candidate.record.id, expectedRevision: candidate.record.revision, pin: candidate.candidate!.pin, availability: { kind: "team" }, executable: true, dependencies: {}, recipientsHash: sharing.hash }));
+  const detail = await json<SkillDetail>(await f.request(`/api/s16/client/skills/${h.detail.record.id}`)); f.script = script(detail);
+  const row = await f.chat("Run the package with its complete resources.", "many_skill_resources");
+  expect({ state: row.state, code: row.code }).toMatchObject({ state: "completed" }); expect(JSON.parse(row.evidence[1]!.content)).toMatchObject({ exitCode: 0, stdout: "wrote result.txt\n" });
+  const assembly = h.calls.filter(call => call.op === "spawn" && String(call.command).startsWith("set -eu\numask 077\n"));
+  expect(assembly.length).toBeGreaterThan(1); expect(assembly.every(call => Buffer.byteLength(String(call.command)) <= 60000)).toBe(true);
+  expect(f.vmCalls.filter(op => op === "init")).toHaveLength(1);
+  for (const item of files) expect([...h.files].some(([path, bytes]) => path.endsWith("/" + item.path) && Buffer.from(bytes).toString("base64") === item.base64)).toBe(true);
+});
 
 test("SKILL16-01: exact client review → CHAT instruction read → same placed VM script effect → retained pin/lineage and restart", async () => {
   const { f, detail, files, calls } = await fixture(); f.script = script(detail);
@@ -179,3 +193,22 @@ test("SKILL16-01: file work uses the same skill session and artifact-derived inp
   const before = h.calls.length, denied = await send("derived_without_package", selected.receipt!); expect(denied.result).toBeNull(); expect(h.calls).toHaveLength(before);
   expect(f.service.skills!.record(detail.record.id)!.activePin).toBe(detail.active!.pin);
 });
+
+
+for (const retention of [true, false]) test(`SKILL16-01: nine messages with nine private observations each keep usable history with retention ${retention}`, async () => {
+  const { f, detail } = await fixture(false, false, undefined, retention);
+  f.script = Array.from({ length: 9 }, (_, i) => ({ type: "tool_call" as const, id: "load_" + i, name: "skill_load", arguments: { skillId: detail.record.id, unitId: detail.active!.units[0]!.id, offset: 0 } }));
+  for (let task = 0; task < 9; task++) {
+    const before = f.prompts.length, id = "repeated_" + task, row = await f.chat(`Read the reviewed notes for task ${task}.`, id);
+    expect({ task, state: row.state, code: row.code }).toMatchObject({ state: "completed" }); expect(row.evidence).toHaveLength(9);
+    const work = f.service.conversation.options.policy.open(row.authority!), packet = f.service.memory.derivative(f.service.team.bind(work.actor), id);
+    expect(packet.dataRefs!.length).toBeLessThanOrEqual(16);
+    for (const value of packet.dataRefs!) expect(f.service.disclosure!.ancestry(work.authority, value).some(source => source.ref.id === detail.record.source.id)).toBe(true);
+    if (task === 8) for (let previous = 0; previous < 8; previous++) expect(f.prompts[before]).toContain(`Read the reviewed notes for task ${previous}.`);
+  }
+  expect(f.prompts.some(prompt => prompt.includes("Read the reviewed notes for task 0."))).toBe(true);
+  const active = f.service.skills!.record(detail.record.id)!;
+  await json(await command(f, { kind: "skill.revoke", skillId: active.id, expectedRevision: active.revision }));
+  f.script = []; const later = await f.chat("Continue after withdrawing the package.", "after_repeated_revoke");
+  expect(f.prompts.at(-1)).not.toContain("The test command is bun test."); expect(later.evidence).toEqual([]);
+}, 60000);

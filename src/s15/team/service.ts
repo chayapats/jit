@@ -125,7 +125,7 @@ export class TeamService {
   /** Opaque inference-only history identity; it cannot capture sources or obtain working resources. */
   bindHistory(actor: TeamActor): TeamContext {
     const authority = this.options.policy.work.guard(actor);
-    if (authority.mode !== "interpretation" || !this.options.fileLineage) throw new AppError("outside_scope", 403);
+    if (authority.mode !== "interpretation" || !this.options.fileLineage && !this.options.dataLineage) throw new AppError("outside_scope", 403);
     const handle = Object.freeze({}) as TeamContext; this.#contexts.set(handle, { actor, authority: structuredClone(authority) }); return handle;
   }
   /** Fresh authority check at every tool/read/handoff/publication boundary. */

@@ -9,6 +9,8 @@ import type { WorkAuthority } from "../src/s15/policy";
 import { SkillDirectory } from "../src/s16/skills/service";
 import type { SkillCommand, SkillRecord, SkillUse } from "../src/s16/skills/types";
 import { githubSkillFixture, commit } from "./fixtures/s16-skills";
+import { canonicalSkill, skillCommandHash } from "../src/s16/skills/encoding";
+import { canonical } from "../src/s15/policy/validation";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -53,6 +55,41 @@ test("checking updates leaves the active pin and resource current until a new ex
   const candidate = h.directory.record(first.id)!; expect(candidate.candidatePin).not.toBe(candidate.activePin); expect(candidate.resource).toEqual(active.resource);
   expect(h.directory.guard(work(active), oldUse).activePin).toBe(active.activePin); await h.review(candidate);
   expect(() => h.directory.guard(work(active), oldUse)).toThrow("skill_unavailable");
+});
+
+for (const kind of ["skill.import", "skill.update"] as const) test(`revocation fences active use while ${kind} is waiting on its first network read`, async () => {
+  const h = await fixture(), candidate = await h.imported(); await h.review(candidate); const active = h.directory.record(candidate.id)!;
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>(), original = h.github.network.request;
+  h.github.network.request = async (...args) => { entered.resolve(); await resume.promise; return original(...args); };
+  const pending = h.command({ kind, ...(kind === "skill.update" ? { skillId: active.id, expectedRevision: active.revision } : {}), input: { kind: "github", url: "https://github.com/owner/repo/tree/main/example" } }).then(value => value, error => error);
+  try {
+    await entered.promise; const revoked = h.command({ kind: "skill.revoke", skillId: active.id, expectedRevision: active.revision });
+    expect(h.directory.record(active.id)!.state).toBe("revoked"); expect(() => h.directory.guard(work(active), use(h, active))).toThrow("skill_unavailable");
+    resume.resolve(); await revoked;
+    const result = await pending;
+    if (kind === "skill.update") expect(result.message).toBe("stale_revision"); else expect(result.state).toBe("needs_review");
+    expect(h.directory.record(active.id)!.state).toBe("revoked"); await h.reopen(); expect(h.directory.record(active.id)!.state).toBe("revoked");
+  } finally { resume.resolve(); await pending; }
+});
+
+test("package encoding preserves small command identities and accepts a full 2 MiB folder without changing POLICY's limit", async () => {
+  const h = await fixture(), input = folder(), small = { contract: "s16-skill-command/v1", requestId: uid(), kind: "skill.import", input: folder() };
+  expect(canonicalSkill(small)).toBe(canonical(small)); expect(skillCommandHash(small)).toBe(digest("s16.skills.command.v1", small));
+  let remaining = 2 * 1024 * 1024 - input.files.reduce((n, file) => n + Buffer.from(file.base64, "base64").length, 0);
+  for (let i = 0; remaining; i++) { const bytes = Math.min(remaining, 65536); input.files.push(file(`resources/part_${i}.txt`, "a".repeat(bytes))); remaining -= bytes; }
+  expect(() => canonical(input)).toThrow("input_too_large");
+  const requestId = uid(), command = { ...small, requestId, input }, result = await h.directory.command(h.owner, command);
+  expect(h.directory.package(result.pin!).files.reduce((n, file) => n + file.bytes, 0)).toBe(2 * 1024 * 1024);
+  await h.reopen(); expect(await h.directory.command(h.owner, command)).toEqual(result); await h.review(h.directory.record(result.skillId)!);
+  expect(h.directory.detail(h.owner, result.skillId).active!.files.find(file => file.path === input.files.at(-1)!.path)!.base64).toBe(input.files.at(-1)!.base64);
+});
+
+test("verified GitHub packages above the policy envelope retain all immutable blob bytes", async () => {
+  const h = await fixture(), github = githubSkillFixture(new Map([["SKILL.md", Buffer.from(folder().files[0]!.base64, "base64").toString()], ["one.txt", "a".repeat(65536)], ["two.txt", "b".repeat(65536)]]));
+  h.github.network.request = github.network.request;
+  const result = await h.command({ kind: "skill.import", input: { kind: "github", url: "https://github.com/owner/repo" } });
+  expect(h.directory.package(result.pin!).files.filter(file => file.bytes === 65536)).toHaveLength(2); await h.reopen();
+  expect(h.directory.package(result.pin!).files.find(file => file.path === "two.txt")!.base64).toBe(Buffer.from("b".repeat(65536)).toString("base64"));
 });
 
 test("an unchanged update retains the active review without advertising a candidate or fencing current work", async () => {
@@ -179,4 +216,12 @@ test("the owner can re-review an unchanged pin against a newly reviewed dependen
   expect(() => h.directory.guard(work(current, "a", [current.resource, h.source.resource]), old)).toThrow("skill_dependency_unavailable");
   await review(); const fresh = h.directory.record(current.id)!; expect(fresh.activePin).toBe(current.activePin); expect(fresh.resource.revision).toBe(current.resource.revision + 1);
   expect(h.directory.guard(work(fresh, "a", [fresh.resource, h.source.resource]), use(h, fresh)).id).toBe(fresh.id);
+});
+
+
+test("package-sized encoding still refuses accessors, cycles, exotic values, credentials and an oversized envelope", () => {
+  let reads = 0; const getter = { get value() { reads++; return "no"; } }, cyclic: { self?: unknown } = {}; cyclic.self = cyclic;
+  for (const value of [getter, cyclic, new Date(), [undefined], { value: "Bearer " + "a".repeat(32) }]) expect(() => canonicalSkill(value)).toThrow();
+  expect(reads).toBe(0);
+  expect(() => canonicalSkill(Array.from({ length: 129 }, () => "a".repeat(65536)))).toThrow("input_too_large");
 });

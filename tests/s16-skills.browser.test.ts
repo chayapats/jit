@@ -22,6 +22,8 @@ browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, previe
   const copy = width === 1440 ? en : th, language = width === 1440 ? "en" : "th";
   const context = await browser.newContext({ viewport: { width, height: 900 }, locale: width === 1440 ? "en-US" : "th-TH" }), page = await context.newPage();
   const errors: string[] = [], external: string[] = [], posts: string[] = []; let lose = true, authorized = true;
+  type Gate = { entered: PromiseWithResolvers<void>; resume: PromiseWithResolvers<void> };
+  let detailGate: Gate | null = null, sharingGate: Gate | null = null;
   page.on("pageerror", error => errors.push(error.message));
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url()); if (url.origin !== f.config.origin) { external.push(request.url()); await route.abort(); return; }
@@ -30,6 +32,8 @@ browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, previe
     const response = await f.request(url.pathname + url.search, request.method(), body, { "accept-language": language, ...(!authorized ? { cookie: "jit_s14=withdrawn" } : {}) });
     if (request.method() === "POST" && url.pathname.endsWith("/messages") && response.status === 202) await f.service.drain();
     if (lose && body?.kind === "skill.import") { lose = false; await route.abort("failed"); return; }
+    if (request.method() === "GET" && /\/skills\/sk_[A-Za-z0-9_-]+$/.test(url.pathname) && detailGate) { const gate = detailGate; detailGate = null; gate.entered.resolve(); await gate.resume.promise; }
+    if (request.method() === "POST" && url.pathname.endsWith("/review-preview") && sharingGate) { const gate = sharingGate; sharingGate = null; gate.entered.resolve(); await gate.resume.promise; }
     await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
   });
   const directory = mkdtempSync(join(tmpdir(), "jit-browser-skill-"));
@@ -52,7 +56,14 @@ browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, previe
     f.script = [{ type: "tool_call", id: "load", name: "skill_load", arguments: { skillId: active.id, unitId, offset: 0 } }];
     await page.goto(f.config.origin + "/s16/chat/first"); await page.getByRole("textbox", { name: copy["s16.chat.prompt"], exact: true }).fill("Use the reviewed notes."); await page.getByRole("button", { name: copy["s16.chat.send"], exact: true }).click();
     await page.getByText(copy["s16.skills.used"].replace("{count}", "1"), { exact: true }).waitFor(); expect(f.prompts.some(prompt => prompt.includes("The test command is bun test."))).toBe(true);
-    await page.goto(f.config.origin + "/s16/connections"); await page.getByRole("tab", { name: copy["s16.skills.title"], exact: true }).click(); await page.getByRole("button", { name: copy["s16.skills.open"], exact: true }).click();
+    await page.goto(f.config.origin + "/s16/connections"); await page.getByRole("tab", { name: copy["s16.skills.title"], exact: true }).click();
+    const detailBarrier = { entered: Promise.withResolvers<void>(), resume: Promise.withResolvers<void>() }, sharingBarrier = { entered: Promise.withResolvers<void>(), resume: Promise.withResolvers<void>() };
+    detailGate = detailBarrier; sharingGate = sharingBarrier;
+    const reopen = page.getByRole("button", { name: copy["s16.skills.open"], exact: true });
+    try {
+      await reopen.click(); await detailBarrier.entered.promise; await reopen.click(); detailBarrier.resume.resolve();
+      await sharingBarrier.entered.promise; await reopen.click(); sharingBarrier.resume.resolve();
+    } finally { detailBarrier.resume.resolve(); sharingBarrier.resume.resolve(); }
     await detail.getByLabel(copy["s16.skills.selectedBots"], { exact: true }).check(); await detail.getByLabel(copy["s16.bots.mainName"], { exact: true }).check(); await detail.getByRole("button", { name: copy["s16.skills.confirm"], exact: true }).click();
     await page.getByText(copy["s16.skills.active"], { exact: true }).waitFor();
     f.script = [{ type: "tool_call", id: "stage", name: "skill_stage", arguments: { skillId: active.id } }];
@@ -61,7 +72,7 @@ browserTest.each([1440, 390])("actual Skills UI: GitHub receipt recovery, previe
     await page.getByRole("heading", { name: copy["s16.computers.title"], exact: true }).waitFor();
     await page.goto(f.config.origin + "/s16/connections"); await page.getByRole("tab", { name: copy["s16.skills.title"], exact: true }).click(); await page.getByRole("button", { name: copy["s16.skills.open"], exact: true }).click();
     await detail.getByRole("button", { name: copy["s16.skills.update"], exact: true }).click(); await page.getByLabel(copy["s16.skills.folder"], { exact: true }).check();
-    writeFileSync(join(directory, "SKILL.md"), "---\nname: browser-notes\ndescription: Updated fixture notes.\n---\nThe test command is bun test --timeout 30000.\n"); writeFileSync(join(directory, "LICENSE"), "MIT License\nSelf-authored updated fixture.\n");
+    writeFileSync(join(directory, "SKILL.md"), "---\nname: browser-notes\ndescription: Updated fixture notes.\n---\nThe test command is bun test --timeout 30000.\n"); writeFileSync(join(directory, "LICENSE"), "MIT License\nSelf-authored updated fixture.\n"); writeFileSync(join(directory, "one.txt"), "a".repeat(65536)); writeFileSync(join(directory, "two.txt"), "b".repeat(65536));
     await page.getByLabel(copy["s16.skills.chooseFolder"], { exact: true }).setInputFiles(directory); await page.getByRole("button", { name: copy["s16.skills.inspect"], exact: true }).click();
     await page.getByText(copy["s16.skills.candidate"], { exact: true }).waitFor(); expect(f.service.skills!.records()[0]!.activePin).toBe(oldPin); expect(f.service.skills!.records()[0]!.candidatePin).not.toBe(oldPin);
     await detail.getByRole("button", { name: copy["s16.skills.confirm"], exact: true }).click(); await page.waitForFunction(() => !document.querySelector(".skills .notice")?.textContent?.includes("…"));

@@ -30,6 +30,7 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
   const contexts = new Map<string, TeamContext>();
   const conversations = new Map<string, string>();
   const histories = new WeakMap<ConversationPolicyWork, TeamContext>();
+  const selectedHistory = new WeakMap<ConversationPolicyWork, Map<string, Ref[]>>();
   const historyContext = (work: ConversationPolicyWork) => { let value = histories.get(work); if (!value) { value = memory.options.team.bindHistory(work.actor); histories.set(work, value); } return value; };
   const context = (work: ConversationPolicyWork, requestId: string) => {
     let current = contexts.get(requestId);
@@ -79,7 +80,13 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
     artifacts(work, requestId, artifacts) { for (const artifact of artifacts) memory.derive(context(work, requestId), requestId, { id: memoryDerivativeId("artifact", artifact.id), kind: "artifact", text: null, workId: work.authority.id }); },
     allowHistory(requestId, text) { return memory.allowHistory(requestId, text); },
     ...(files || data ? {
-      history(work: ConversationPolicyWork, requestId: string, text: string) { try { memory.history(historyContext(work), requestId, text); memory.dataAncestry(historyContext(work), requestId, true); return true; } catch { return false; } },
+      history(work: ConversationPolicyWork, requestId: string, text: string) { try {
+        memory.history(historyContext(work), requestId, text); const lineage = memory.dataAncestry(historyContext(work), requestId, true);
+        const selected = new Map(selectedHistory.get(work)); selected.set(requestId, lineage);
+        // Admit bounded recent history before including its bytes. Capacity can omit an older fragment;
+        // it cannot abort the new message or discard an ancestor of a selected fragment.
+        dataRefs(...selected.values()); selectedHistory.set(work, selected); return true;
+      } catch { return false; } },
       guardHistory(work: ConversationPolicyWork, fragments: readonly { id: string; text: string }[]) { return filePins(...fragments.map(fragment => memory.history(historyContext(work), fragment.id, fragment.text))); },
     } : {}),
     ...(data ? { guardDataHistory(work: ConversationPolicyWork, fragments: readonly { id: string; text: string }[]) { return dataRefs(...fragments.map(fragment => memory.dataAncestry(historyContext(work), fragment.id, true))); } } : {}),

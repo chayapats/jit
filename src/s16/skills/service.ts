@@ -8,6 +8,7 @@ import type { SourceRecord } from "../connections/types";
 import { githubSkillSource, importGithubSkill } from "./github";
 import { parseSkillPackage } from "./package";
 import { skillLimits } from "./types";
+import { canonicalSkill, skillCommandHash } from "./encoding";
 import type { SkillAvailability, SkillCommand, SkillCommandStatus, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse, SkillVmCopy } from "./types";
 
 const schema = `CREATE TABLE skills(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);
@@ -98,24 +99,28 @@ export class SkillDirectory<Owner> {
     const state = this.options.membership(owner, command.requestId), result = { ...receipt, policy: state === "review_required" ? "review_required" as const : "installed" as const };
     this.owner(owner, current); this.store.db.query("UPDATE commands SET result_json=? WHERE id=?").run(canonical(result), command.requestId); return result;
   }
-  /** Serialized authenticated owner ingress. Exact IDs replay receipts or resume a pinned inert import, never code. */
+  /** Authenticated owner ingress: inert imports serialize, revocations bypass network waits. Exact IDs replay receipts or resume a pinned inert import, never code. */
   command(owner: Owner, value: unknown): Promise<SkillReceipt> {
     let snapshot: SkillCommand, generation: number, hash: string;
-    try { this.owner(owner); snapshot = structuredClone(value) as SkillCommand; canonical(snapshot); identity(snapshot.requestId); generation = this.options.ownerGeneration(); hash = digest("s16.skills.command.v1", snapshot); }
+    try { this.owner(owner); snapshot = structuredClone(value) as SkillCommand; canonicalSkill(snapshot); identity(snapshot.requestId); generation = this.options.ownerGeneration(); hash = skillCommandHash(snapshot); }
     catch (error) { return Promise.reject(error); }
     const previous = this.#queued.get(snapshot.requestId);
     if (previous && (previous.generation !== generation || previous.hash !== hash)) return Promise.reject(new AppError("request_id_conflict", 409));
     const queued = previous ?? { generation, hash, count: 0 }; queued.count++; this.#queued.set(snapshot.requestId, queued);
-    const run = this.#tail.then(async () => {
+    const execute = async () => {
       this.#active.add(snapshot.requestId);
       try { return await this.execute(owner, snapshot, generation); }
       finally { this.#active.delete(snapshot.requestId); if (--queued.count === 0) this.#queued.delete(snapshot.requestId); }
-    }); this.#tail = run.catch(() => {}); return run;
+    };
+    // Revocation commits its fence immediately, even while an unrelated network import is waiting.
+    // Import guards below re-read the record so an older in-flight update cannot restore revoked state.
+    const run = snapshot.kind === "skill.revoke" ? execute() : this.#tail.then(execute);
+    this.#tail = Promise.allSettled([this.#tail, run]).then(() => undefined); return run;
   }
   private async execute(owner: Owner, value: unknown, generation: number): Promise<SkillReceipt> {
-    this.owner(owner); if (generation !== this.options.ownerGeneration()) return fail("owner_changed"); canonical(value); const command = value as SkillCommand;
+    this.owner(owner); if (generation !== this.options.ownerGeneration()) return fail("owner_changed"); canonicalSkill(value); const command = value as SkillCommand;
     if (command.contract !== "s16-skill-command/v1") return fail("invalid_contract"); identity(command.requestId);
-    const hash = digest("s16.skills.command.v1", command);
+    const hash = skillCommandHash(command);
     const old = this.store.db.query<{ payload_hash: string; owner_generation: number; result_json: string }, [string]>("SELECT * FROM commands WHERE id=?").get(command.requestId);
     if (old) { if (old.payload_hash !== hash) return fail("request_id_conflict"); if (old.owner_generation !== generation) return fail("owner_changed"); return this.member(owner, command, JSON.parse(old.result_json)); }
     let record: SkillRecord | null = null;
@@ -128,8 +133,8 @@ export class SkillDirectory<Owner> {
       else { exact(input, ["kind", "url"]); if (input.kind !== "github") return fail("skill_origin_invalid"); githubSkillSource(input.url); }
       const pending = this.store.db.query<{ payload_hash: string; owner_generation: number; resolved_json: string | null }, [string]>("SELECT * FROM pending WHERE id=?").get(command.requestId);
       if (pending && (pending.payload_hash !== hash || pending.owner_generation !== generation)) return fail("request_id_conflict");
-      this.store.transaction(() => { this.store.capacity(); this.store.db.query("INSERT OR IGNORE INTO pending VALUES(?,?,?,NULL,?)").run(command.requestId, hash, generation, canonical(command)); });
-      const guard = () => { this.owner(owner); if (generation !== this.options.ownerGeneration()) fail("owner_changed"); };
+      this.store.transaction(() => { this.store.capacity(); this.store.db.query("INSERT OR IGNORE INTO pending VALUES(?,?,?,NULL,?)").run(command.requestId, hash, generation, canonicalSkill(command)); });
+      const guard = () => { this.owner(owner); if (generation !== this.options.ownerGeneration()) fail("owner_changed"); if (record) { const current = this.get(owner, record.id); if (current.revision !== record.revision || current.state === "revoked") fail("stale_revision"); } };
       if (folder) candidate = folder;
       else {
         const frozen = pending?.resolved_json ? JSON.parse(pending.resolved_json) as Extract<SkillOrigin, { kind: "github" }> : null;
@@ -159,7 +164,7 @@ export class SkillDirectory<Owner> {
       const now = this.options.now();
       if (!record && this.records().length >= skillLimits.packages) return fail("skill_capacity");
       if (!record) { const key = digest("s16.skill.identity.v1", command.requestId).slice(0, 24); record = { contract: "s16-skill/v1", id: `sk_${key}`, revision: 0, ownerGeneration: generation, state: "needs_review", activePin: null, candidatePin: null, review: null, resource: { id: `skr_${key}`, revision: 1, generation: 1 }, source: { id: `sks_${key}`, revision: 1, generation: 1 }, createdAt: now, updatedAt: now }; }
-      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin === record.activePin ? null : candidate.pin; if (command.kind === "skill.import" || command.kind === "skill.update") record.importSource = command.input.kind === "github" ? { kind: "github", url: command.input.url } : { kind: "folder", label: command.input.label }; }
+      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonicalSkill(candidate)); record.candidatePin = candidate.pin === record.activePin ? null : candidate.pin; if (command.kind === "skill.import" || command.kind === "skill.update") record.importSource = command.input.kind === "github" ? { kind: "github", url: command.input.url } : { kind: "folder", label: command.input.label }; }
       if (command.kind === "skill.review") { record.activePin = command.pin; record.candidatePin = null; record.state = "active"; record.review = { recipientsHash: sharing!.hash, recipients: sharing!.recipients, pin: command.pin, availability: this.availability(owner, command.availability), executable: command.executable, dependencies: structuredClone(command.dependencies), at: now }; }
       if (command.kind === "skill.availability") record.review = { ...record.review!, recipientsHash: sharing!.hash, recipients: sharing!.recipients, availability: this.availability(owner, command.availability), executable: command.executable, at: now };
       if (command.kind === "skill.revoke") record.state = "revoked";

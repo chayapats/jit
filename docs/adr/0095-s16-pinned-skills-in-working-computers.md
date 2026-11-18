@@ -210,3 +210,22 @@ work/workspace. Revocation during its actual model wait withholds the result and
 scenarios additionally change team availability to a selected Bot and follow the missing-private-computer hold to the
 real Computers setup page. These remain deterministic service/client/guest-protocol fixtures, not live physical guest
 or account attestations. Full exact-head release validation and external review remain required.
+
+
+### Release review corrections
+
+External review identified that serialized network imports could delay revocation, POLICY's small canonical envelope
+could reject valid package snapshots, repeated observation identities could exhaust recent-history lineage, and
+re-selecting the same package could discard its pending client responses. Revocation now commits outside that network
+queue, with post-wait record checks preventing stale updates from reviving it. Package-only encoding has an 8 MiB
+finite journal envelope while preserving POLICY's original 128 KiB limit, primitive validation and small-command hashes.
+DATA15 observations with the same work/source footprint reuse one immutable snapshot; CHAT still retains every actual
+evidence ID. History selects bounded complete fragments before unioning their ancestors. Repeated package selection
+leaves its in-flight detail/recipient requests intact. DATA15-only history can bind the existing inference-only TEAM
+privacy context without a FILE port; ordinary resource/capture operations still require work authority. Release evidence includes barriers for both network/import kinds,
+a complete 2 MiB folder/reopen/review, verified GitHub blobs above 128 KiB, nine actual messages with nine observations
+each with retention on/off, and delayed native detail/recipient responses plus large folder updates in both languages.
+A full 128-file package with long portable UTF-8 paths also exposed the backend command envelope: assembly now uses
+guarded batches of at most 60,000 bytes through the same session, with no automatic retry. Exact passed results and
+reviewed head remain in the PR. These corrections do not change installed policy or live-host
+acceptance requirements.

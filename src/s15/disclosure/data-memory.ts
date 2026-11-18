@@ -3,6 +3,7 @@ import type { DataLineagePort } from "../data-lineage";
 import type { ConversationDataMemory } from "../memory/conversation";
 import type { S15PolicyService, WorkAuthority } from "../policy";
 import type { DisclosureService } from "./types";
+import { canonical } from "../policy/validation";
 
 /** Current inference-only standing-resource projection. This does not admit work or create any tool rights. */
 export function historyPrivacy(policy: S15PolicyService, work: WorkAuthority): WorkAuthority {
@@ -16,8 +17,10 @@ export function disclosureMemory(policy: S15PolicyService, disclosure: Disclosur
       release(actor, values) { for (const value of values) disclosure.inherit(actor, value); },
     },
     conversation: { observed(work, evidence) {
-      if (!disclosure.lineage(work.actor).length) return [];
-      const ref = { id: "memd_" + createHash("sha256").update(evidence.id).digest("hex").slice(0, 32), revision: 1, generation: 1 };
+      const sources = disclosure.lineage(work.actor).map(source => source.ref); if (!sources.length) return [];
+      // CHAT retains each observation's evidence identity. DATA15 snapshots describe its source ancestry:
+      // repeated observations of the same footprint in a work need no additional immutable descendant.
+      const ref = { id: "memd_" + createHash("sha256").update(canonical({ workId: work.authority.id, sources })).digest("hex").slice(0, 32), revision: 1, generation: 1 };
       disclosure.derive(work.actor, ref, "text"); return [ref];
     } },
   };

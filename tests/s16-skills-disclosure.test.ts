@@ -10,6 +10,7 @@ import type { SkillAvailability, SkillRecord } from "../src/s16/skills/types";
 import { openDisclosureService, type DisclosureService, type DisclosureSource } from "../src/s15/disclosure";
 import type { ComposedDisclosure } from "../src/s15/disclosure/composition";
 import { disclosureMemory } from "../src/s15/disclosure/data-memory";
+import { createConversationMemory } from "../src/s15/memory/conversation";
 import { MemoryService } from "../src/s15/memory";
 import { TeamService } from "../src/s15/team";
 import { fixture, ref } from "./fixtures/s15-policy";
@@ -144,4 +145,24 @@ test("DATA15 narrowing preserves the original historical S14 private label rathe
   expect(original.provenance.scope).toEqual({ kind: "bot", botId: "bot", origin: "s14" });
   const derived = f.memory.retain(context, { id: "derived_historical", text: "The test command is bun test --timeout 30000.", origin: { kind: "work", id: "actual_observation", conversationId: null, at: h.f.now }, scope: { kind: "team" }, resources: [ref("account")], parents: [original.id], dataRefs: [value] })[0]!;
   expect(derived.provenance.scope).toEqual(original.provenance.scope);
+});
+
+test("bounded history omits an excess complete fragment before union while selected legacy descendants retain every private ancestor", async () => {
+  const h = await setup(), f = h.memory(), fragments: { id: string; text: string }[] = [];
+  h.f.add("purpose", ref("interpret")); h.f.input.purposes.push(ref("interpret")); h.f.input.interpretationPurpose = ref("interpret"); h.f.install();
+  for (let task = 0; task < 8; task++) {
+    const actor = h.admit(), context = f.team.bind(actor); h.disclosure.read(actor, h.active.source);
+    const packet = f.memory.prepare(context, `legacy_packet_${task}`, "Earlier request.");
+    const values = Array.from({ length: 9 }, (_, i) => ref(`legacy_descendant_${task}_${i}`));
+    for (const value of values) h.disclosure.derive(actor, value, "text");
+    f.memory.includeData(context, packet.id, values); fragments.push({ id: packet.id, text: "Earlier request." });
+  }
+  const authority = h.f.service.owner.prepareInterpretation(h.f.owner, { requestId: "bounded_history", selection: h.f.input.selections[0]!, bot: ref("bot"), expiresAt: 90000 }).authority;
+  const work = { actor: h.f.service.control.bindWork(authority.id), authority }, adapter = createConversationMemory(f.memory, undefined, f.data.conversation);
+  const selected = fragments.filter(fragment => adapter.history!(work, fragment.id, fragment.text)); expect(selected).toHaveLength(7);
+  const values = adapter.guardDataHistory!(work, selected); expect(values).toHaveLength(63);
+  const consumer = h.admit(); f.data.lineage.release(consumer, values); expect(h.disclosure.lineage(consumer).map(source => source.ref)).toEqual([h.active.source]);
+  expect(() => h.guard(consumer, "other")).toThrow("recipient_unapproved");
+  await h.command({ kind: "skill.revoke", skillId: h.active.id, expectedRevision: h.active.revision });
+  expect(() => adapter.guardDataHistory!(work, selected)).toThrow();
 });

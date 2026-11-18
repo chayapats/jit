@@ -100,8 +100,20 @@ export function createSkillRuntime<Owner>(options: {
       if (parent !== root && !parents.has(parent)) { parents.add(parent); commands.push(`mkdir -p -- ${quote(parent)}`); }
       commands.push(`cp -- ${quote(path)} ${quote(target)}`);
     }
-    guard(); const response = await session.backend.spawn({ command: commands.join("\n"), cwd: session.backend.workspaceRoot, signal }); guard(); current(work, id);
-    if (response.exitCode !== 0 || response.timedOut) return fail("skill_staging_failed"); return { path: root, pkg, session };
+    // A valid 128-file package can exceed one backend command when its UTF-8 paths are long.
+    // Each finite batch keeps the same placed session and ordinary claims; a failed/unknown batch is never retried.
+    const header = ["set -eu", "umask 077"];
+    const assemble = async (lines: string[]) => {
+      guard(); current(work, id); const response = await session.backend.spawn({ command: lines.join("\n"), cwd: session.backend.workspaceRoot, signal }); guard(); current(work, id);
+      if (response.exitCode !== 0 || response.timedOut) return fail("skill_staging_failed");
+    };
+    let batch = [...header], bytes = Buffer.byteLength(batch.join("\n"));
+    for (const line of commands.slice(header.length)) {
+      const size = Buffer.byteLength(line) + 1; if (size > 59000) return fail("skill_staging_failed");
+      if (bytes + size > 60000) { await assemble(batch); batch = [...header]; bytes = Buffer.byteLength(batch.join("\n")); }
+      batch.push(line); bytes += size;
+    }
+    await assemble(batch); return { path: root, pkg, session };
   }
   const port: ConversationToolPort<ConversationPolicyWork> = { async open(work, input): Promise<ConversationTools> {
     input.guard(); let ordinal = 0;

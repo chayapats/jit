@@ -27,7 +27,9 @@ path/hash/size entries. Applicable license/notice bytes remain part of the snaps
 outside a selected subfolder. No upstream runtime/authority, source code or dependency is installed by this importer.
 
 Limits: 64 retained package records, 128 files, 64 KiB/file, 2 MiB/package, 16 instruction units/dependencies, 32,000 bytes
-per instruction body, 144 import requests/60 seconds. Capacity refusal never evicts revocation or command identities.
+per instruction body, 144 import requests/60 seconds. Package/command journal encoding has its own bounded 8 MiB
+envelope for base64 and inspected metadata; POLICY retains its independent 128 KiB limit. Capacity refusal never evicts
+revocation or command identities.
 
 ## Exact owner review and recovery
 
@@ -39,7 +41,9 @@ session, Origin and CSRF checks. Imported text, model output and ordinary messag
 
 A discovered candidate keeps the active pin unchanged until review. An unchanged active pin can be re-reviewed after
 connection/provider changes without re-importing bytes. Review/availability/revoke advances the current resource and
-source revision, fencing prior package-use contexts. Membership reconciliation only changes connection/package resource
+source revision, fencing prior package-use contexts. Revocation commits without waiting behind import network work;
+every awaiting update rechecks the original record revision and cannot restore revoked state. Membership reconciliation
+only changes connection/package resource
 membership when the installed rules otherwise match the current default proposal; custom policy differences require
 the existing rules review. Replaying an old receipt cannot reinstall an old review over a later update or revocation.
 
@@ -73,7 +77,8 @@ result read and computer continuation rechecks loaded pins/dependencies. Source 
 
 `skill_stage` and `skill_run` require reviewed computer use and ordinary reversible-write/effect work. The original
 placed CHAT session is shared with the normal/file workflow; no second computer or host-local fallback is opened.
-Exact files transfer as individually bounded regular VM writes, then assemble below that work's guest `inputs` path.
+Exact files transfer as individually bounded regular VM writes, then assemble below that work's guest `inputs` path
+in guarded command batches of at most 60,000 UTF-8 bytes. An unknown/failed batch is never retried automatically.
 Only an inventoried bash/python3/node/bun script can be selected; arguments are literal bounded strings. Execution uses
 the actual session's public backend, policy claims, deadline, cancellation and evidence. Missing runtimes produce actual
 guest failure; Jit does not install a runtime or retry an uncertain operation. Results identify pin/script/session and
@@ -87,7 +92,11 @@ retaining those private-data restrictions; it is not silently granted the origin
 revoking a package fences its activation/current contexts, and does not erase already released guest-root copies.
 Later broader reviews cannot promote an older private copy. Other private inputs retain their independent gates.
 
-Actual tool observations retain DATA15 descendant refs in TEAM/MEM, even if extraction retained no claim. Selection is
+Actual tool observations retain DATA15 descendant refs in TEAM/MEM. Equivalent source footprints within a work share
+an immutable descendant while CHAT keeps each evidence identity. Inference history requires the owning FILE or DATA15
+privacy port. Recent history is selected within the descendant bound before its bytes are included; excess older
+fragments are omitted without aborting the new message. Selected fragments keep every ancestor, even if extraction
+retained no claim. Selection is
 metadata-only; actual selected bytes inherit complete source restrictions. Correction, forget, delegation, continuations
 and artifact-derived inputs preserve ancestry; original S14-private scope remains S14-private. Frozen sharing covers
 only this package/copy and the explicitly listed recipients, never future providers or unrelated private inputs.
