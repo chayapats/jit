@@ -63,6 +63,14 @@ test('aborting Mic intent while route health is pending cannot reserve quota lat
   expect((await f.service.status(f.owner)).usage).toMatchObject({ chargedMs: 0, reservedMs: 0 }); expect(f.transcriptions).toBe(0);
 });
 
+test('a later owner generation cannot cancel or read the old capture metadata', async () => {
+  const f = await fixture(), capture = await f.service.begin(f.owner, 'conversation', f.command());
+  f.generation = 2; await expect(f.service.cancel(f.owner, capture.id)).rejects.toThrow('voice_stale');
+  expect(() => f.service.inspect(f.owner, capture.id)).toThrow('voice_stale');
+  f.generation = 1; expect(f.service.inspect(f.owner, capture.id).state).toBe('capturing'); await f.service.cancel(f.owner, capture.id);
+  expect((await f.service.status(f.owner)).usage.reservedMs).toBe(0);
+});
+
 test('one snapshotted WAV has one transcription across concurrent retry, with no approval or work admission', async () => {
   const f = await fixture(), release = Promise.withResolvers<void>(); f.recording = release.promise;
   const capture = await f.service.begin(f.owner, 'conversation', f.command()), input = wav();

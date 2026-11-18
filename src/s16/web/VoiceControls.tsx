@@ -57,7 +57,8 @@ export function useVoice(options: { client: JitClient; enabled: boolean; canCapt
   const play = async (target: { requestId: string; revision: number; text: string }) => {
     const value = await begin('playback'); if (!value) return; value.target = { ...target };
     try {
-      const status = await inspect(value), command = await latest.current.client.preparePlayback(status.serverTime, value.conversationId, target.requestId, target.revision, target.text); value.id = command.requestId;
+      const status = await inspect(value); monitor(value);
+      const command = await latest.current.client.preparePlayback(status.serverTime, value.conversationId, target.requestId, target.revision, target.text); value.id = command.requestId;
       const result = await latest.current.client.playReply(command, value.stop.signal); if (!alive(value)) return;
       const bytes = Uint8Array.from(atob(result.wavBase64), character => character.charCodeAt(0));
       value.url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' })); value.audio = new Audio(value.url);

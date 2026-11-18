@@ -198,8 +198,8 @@ export class VoiceService<Actor> {
   }
   /** Cancel fences private drafts/playback only; it never stops or approves underlying CHAT work. */
   async cancel(owner: VoiceOwner<Actor>, id: string): Promise<VoiceCapture> {
-    this.owner(owner); const active = this.active.get(id); active?.abort.abort(); if (active) await active.promise.catch(() => {});
-    return this.journal.tx(() => { this.owner(owner); this.clock(); const record = this.get(id); record.state = 'cancelled'; record.reservedMs = 0; this.results.delete(id); this.save(record); return this.capture(record); });
+    this.owner(owner); this.owner(owner, this.get(id)); const active = this.active.get(id); active?.abort.abort(); if (active) await active.promise.catch(() => {});
+    return this.journal.tx(() => { this.owner(owner); this.clock(); const record = this.get(id); this.owner(owner, record); record.state = 'cancelled'; record.reservedMs = 0; this.results.delete(id); this.save(record); return this.capture(record); });
   }
   /** Native engine closure joins all children before journal/capacity custody closes. */
   close(): Promise<void> { return this.closing ??= (async () => { this.closed = true; for (const active of this.active.values()) active.abort.abort(); await this.engine.close(); await Promise.allSettled([...this.active.values()].map(value => value.promise)); this.results.clear(); this.journal.close(); })(); }

@@ -81,6 +81,10 @@ browserTest.each([1440, 390])('actual voice capture/edit/Send/playback at width 
     await controls.getByText(copy['s16.voice.playing'], { exact: true }).waitFor(); expect(h.syntheses).toBe(1);
     await controls.getByRole('button', { name: copy['s16.voice.interrupt'], exact: true }).click();
     expect(await page.evaluate(() => document.querySelector('.voice-playing') === null)).toBe(true); expect(requests(f)).toBe(1);
+    await listen.click(); await controls.getByText(copy['s16.voice.playing'], { exact: true }).waitFor(); h.available = false;
+    await controls.getByText(copy['s16.voice.unavailable'], { exact: true }).waitFor();
+    expect(await page.evaluate(() => document.querySelector('.voice-playing') === null)).toBe(true); expect(requests(f)).toBe(1);
+    h.available = true; await page.getByRole('button', { name: copy['s16.common.refresh'], exact: true }).click();
     await dictate.click(); await controls.getByRole('button', { name: copy['s16.voice.stop'], exact: true }).waitFor();
     await controls.getByRole('button', { name: copy['s16.voice.cancel'], exact: true }).click(); await stopped(page);
     expect(requests(f)).toBe(1); expect(h.transcriptions).toBe(1); expect(await transcript.count()).toBe(0);
