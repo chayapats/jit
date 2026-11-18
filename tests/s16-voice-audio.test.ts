@@ -1,8 +1,16 @@
 import { expect, test } from 'bun:test';
 import { captureAudio, captureWavInfo, encodeCaptureWav } from '../src/s16/voice/wav';
+import { speechWavInfo } from '../src/s16/voice/local';
 
 // Independently specified PCM fixture: [-32768, 0, 32767] in a standard 16 kHz mono WAV.
 const fixture = (): Uint8Array => Uint8Array.from(Buffer.from('524946462a00000057415645666d74201000000001000100803e0000007d000002001000646174610600000000800000ff7f', 'hex'));
+
+test('native macOS say filler is bounded synthesis metadata, while capture retains its strict canonical layout', () => {
+  const bytes = Uint8Array.from(Buffer.from('524946463600000057415645666d74201000000001000100803e0000007d000002001000464c4c520400000000000000646174610600000000800000ff7f', 'hex'));
+  expect(speechWavInfo(bytes).durationMs).toBe(0.1875); expect(() => captureWavInfo(bytes)).toThrow('voice_audio_invalid');
+  const unknown = bytes.slice(); unknown[36] = 0; expect(() => speechWavInfo(unknown)).toThrow('voice_audio_invalid');
+  const oversized = bytes.slice(); oversized[40] = 255; expect(() => speechWavInfo(oversized)).toThrow('voice_audio_invalid');
+});
 
 test('actual header/data bytes determine capture duration, including nonzero byte-offset views', () => {
   const wav = fixture(), wrapped = new Uint8Array(wav.length + 14); wrapped.set(wav, 7);

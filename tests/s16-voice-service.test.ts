@@ -56,6 +56,13 @@ test('Mic reserve/retry/cancel creates only a private draft; status starts no sp
   expect((await f.service.status(f.owner)).usage).toMatchObject({ chargedMs: 0, reservedMs: 0 });
 });
 
+test('aborting Mic intent while route health is pending cannot reserve quota later', async () => {
+  const f = await fixture(), release = Promise.withResolvers<void>(), stop = new AbortController(); f.availability = release.promise;
+  const pending = f.service.begin(f.owner, 'conversation', f.command(), stop.signal);
+  stop.abort(); release.resolve(); await expect(pending).rejects.toThrow('voice_cancelled');
+  expect((await f.service.status(f.owner)).usage).toMatchObject({ chargedMs: 0, reservedMs: 0 }); expect(f.transcriptions).toBe(0);
+});
+
 test('one snapshotted WAV has one transcription across concurrent retry, with no approval or work admission', async () => {
   const f = await fixture(), release = Promise.withResolvers<void>(); f.recording = release.promise;
   const capture = await f.service.begin(f.owner, 'conversation', f.command()), input = wav();

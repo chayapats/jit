@@ -94,7 +94,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       if (voicePath || capturePath) {
         if (!options.voice) throw new AppError('voice_unavailable', 503);
         if (url.search) throw new AppError('invalid_body');
-        if (capturePath && request.method === 'POST') { const capture = await options.voice.begin(currentOwner, capturePath[1]!, await body(request) as VoiceCaptureCommand); return json(options.voice.inspect(currentOwner, capture.id), 201); }
+        if (capturePath && request.method === 'POST') { const capture = await options.voice.begin(currentOwner, capturePath[1]!, await body(request) as VoiceCaptureCommand, request.signal); return json(options.voice.inspect(currentOwner, capture.id), 201); }
         if (voicePath && request.method === 'GET' && !voicePath[1]) { const status = await options.voice.status(currentOwner); currentOwner(); return json(status); }
         if (voicePath?.[1] === 'playback' && !voicePath[2] && request.method === 'POST') { const input = await body(request) as VoicePlaybackCommand; await options.voice.playback(currentOwner, input, request.signal); return options.voice.publishPlayback(currentOwner, input, value => json(value)); }
         if (voicePath?.[1] && voicePath[1] !== 'playback') {

@@ -110,12 +110,14 @@ export class VoiceService<Actor> {
     const at = this.now(); return { contract: 's16-voice/v1', available, serverTime: at, route: 'local', limits: { ...this.options.limits }, usage: this.usageAt(at) };
   }
   /** Reserve a bounded draft. Retried/expired identities cannot silently create another capture. */
-  async begin(owner: VoiceOwner<Actor>, conversationId: string, input: VoiceCaptureCommand): Promise<VoiceCapture> {
+  async begin(owner: VoiceOwner<Actor>, conversationId: string, input: VoiceCaptureCommand, signal?: AbortSignal): Promise<VoiceCapture> {
+    if (signal?.aborted) fail('voice_cancelled');
     exact(input, ['contract', 'requestId']); if (input.contract !== 's16-voice-capture/v1') fail('voice_request_invalid', 400); identity(conversationId); stamp(input.requestId);
     const command = structuredClone(input), hash = sha(canonical({ ...command, conversationId }));
     this.options.conversation(this.owner(owner), conversationId);
     if (!await this.engine.available()) fail('voice_unavailable', 503);
     return this.journal.tx(() => {
+      if (signal?.aborted) fail('voice_cancelled');
       this.options.conversation(this.owner(owner), conversationId); const at = this.clock(), old = this.find(command.requestId);
       if (old) { if (old.commandHash !== hash) fail('request_id_conflict'); this.owner(owner, old); this.prune(at); return this.capture(this.get(old.id)); }
       this.fresh(command.requestId, at); this.capacity(at, this.options.limits.captureMs);

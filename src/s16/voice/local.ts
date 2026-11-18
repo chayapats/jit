@@ -47,15 +47,18 @@ export function validateLocalVoiceConfig(value: unknown): asserts value is Local
     || !Number.isSafeInteger(value.timeoutMs) || (value.timeoutMs as number) < 1 || (value.timeoutMs as number) > 120000) throw new AppError('invalid_voice_config');
 }
 
-async function verifyArtifact(value: VoiceArtifact, executable: boolean, signal: AbortSignal): Promise<void> {
+async function verifyArtifact(value: VoiceArtifact, executable: boolean, signal: AbortSignal, health?: Map<string, string>): Promise<void> {
   if (await realpath(value.path) !== value.path) reject('voice_artifact_changed');
   const handle = await open(value.path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size < 1 || stat.size > (executable ? 256 * 1024 * 1024 : 1024 * 1024 * 1024) || stat.mode & 0o022 || executable && !(stat.mode & 0o111)) reject('voice_artifact_changed');
+    const key = value.path + '\n' + value.sha256, fingerprint = [stat.dev, stat.ino, stat.size, stat.mode, stat.mtimeMs, stat.ctimeMs].join(':');
+    if (health?.get(key) === fingerprint) return;
     const hash = createHash('sha256'), buffer = Buffer.alloc(65536); let total = 0;
     for (;;) { signal.throwIfAborted(); const read = await handle.read(buffer, 0, buffer.length, null); if (!read.bytesRead) break; total += read.bytesRead; if (total > stat.size) reject('voice_artifact_changed'); hash.update(buffer.subarray(0, read.bytesRead)); }
     if (total !== stat.size || hash.digest('hex') !== value.sha256) reject('voice_artifact_changed');
+    health?.set(key, fingerprint);
   } finally { await handle.close(); }
 }
 
@@ -76,7 +79,7 @@ export function speechWavInfo(bytes: Uint8Array): { durationMs: number } {
       if (rate < 8000 || rate > 48000 || alignment !== 2 || view.getUint32(start + 8, true) !== rate * alignment || length === 18 && view.getUint16(start + 16, true) !== 0) return invalid();
       format = { rate, alignment };
     } else if (kind === 'data') { if (size !== undefined || !length || length % 2) return invalid(); size = length; }
-    else if (!['JUNK', 'LIST', 'fact'].includes(kind)) return invalid();
+    else if (!['JUNK', 'FLLR', 'LIST', 'fact'].includes(kind)) return invalid();
     at = end + length % 2;
   }
   if (at !== bytes.length || !format || !size) return invalid();
@@ -117,7 +120,8 @@ export async function openLocalVoice(configured: LocalVoiceConfig, scratchPath: 
       recovered = true; return true;
     })().finally(() => { recovery = null; });
   };
-  const verify = async (signal: AbortSignal) => { if (config.synthesis.kind === 'say' && process.platform !== 'darwin') reject('voice_engine_unavailable'); await verifyArtifact(config.transcription.executable, true, signal); await verifyArtifact(config.transcription.model, false, signal); await verifyArtifact(config.synthesis.executable, true, signal); };
+  const health = new Map<string, string>();
+  const verify = async (signal: AbortSignal, cache?: Map<string, string>) => { if (config.synthesis.kind === 'say' && process.platform !== 'darwin') reject('voice_engine_unavailable'); await verifyArtifact(config.transcription.executable, true, signal, cache); await verifyArtifact(config.transcription.model, false, signal, cache); await verifyArtifact(config.synthesis.executable, true, signal, cache); };
   const job = <T>(context: VoiceProcessContext, body: (directory: string, context: VoiceProcessContext) => Promise<T>): Promise<T> => {
     const signal = AbortSignal.any([context.signal, shutdown.signal]), check = () => { if (closed || signal.aborted) reject('voice_cancelled'); context.guard(); };
     const running = (async () => {
@@ -145,7 +149,8 @@ export async function openLocalVoice(configured: LocalVoiceConfig, scratchPath: 
     } finally { context.signal.removeEventListener('abort', stop); stop(); await worker.exited; }
   };
   return {
-    async available() { if (closed) return false; try { if (!await recover()) return false; await verify(shutdown.signal); return !closed; } catch { return false; } },
+    // Health reads can reuse unchanged file metadata. Every actual speech job still rehashes all pinned artifacts.
+    async available() { if (closed) return false; try { if (!await recover()) return false; await verify(shutdown.signal, health); return !closed; } catch { return false; } },
     transcribe(input, context) {
       const wav = input.slice(); captureWavInfo(wav);
       return job(context, async (directory, current) => {
