@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppError } from "../src/errors";
 import type { SourceRecord } from "../src/s16/connections/types";
+import { digest } from "../src/s15/policy/validation";
 import type { WorkAuthority } from "../src/s15/policy";
 import { SkillDirectory } from "../src/s16/skills/service";
 import type { SkillCommand, SkillRecord, SkillUse } from "../src/s16/skills/types";
@@ -12,6 +13,7 @@ import { githubSkillFixture, commit } from "./fixtures/s16-skills";
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
 const ref = (id: string) => ({ id, revision: 1, generation: 1 });
+const recipientsHash = digest("s16.skill.recipients.v1", []);
 const uid = () => crypto.randomUUID().replaceAll("-", "");
 const file = (path: string, text: string) => ({ path, base64: Buffer.from(text).toString("base64") });
 const folder = (text = "Use the observed changes.") => ({ kind: "folder" as const, label: "Fixture folder", files: [file("SKILL.md", `---\nname: notes\ndescription: Work with the notes.\n---\n${text}\n`), file("LICENSE", "MIT License\nSelf-authored fixture.\n"), file("scripts/notes.py", "print(7)\n")] });
@@ -19,14 +21,14 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "jit-skills-")), path = join(root, "skills.sqlite"), owner = Object.freeze({}), github = githubSkillFixture();
   let generation = 1, memberFails = false, membership = 0;
   const source: SourceRecord = { contract: "s16-source/v1", id: "src_fixture", revision: 1, kind: "mcp", label: "Docs", endpoint: "https://docs.example.com/mcp", auth: { kind: "none", header: null, fingerprint: null, oauth: null }, state: "active", code: null, resource: ref("srcr_fixture"), recipient: ref("srcs_fixture"), source: ref("srcc_fixture"), catalog: { contract: "s16-source-catalog/v1", hash: "f".repeat(64), tools: [{ name: "read_notes", title: "Read notes", description: "Read fixture notes", inputSchema: { type: "object" }, schemaHash: "f".repeat(64), hint: { readOnly: true, destructive: false, method: null, operation: null }, suggested: "read", allowed: ["read", "change", "approval", "off"], binding: { kind: "mcp", tool: "read_notes" } }], skipped: [], truncated: false, server: { name: null, version: null, protocol: null }, discoveredAt: 1000 }, review: { revision: 1, catalogHash: "f".repeat(64), decisions: { read_notes: "read" }, reviewedAt: 1000 }, document: null, origin: { kind: "owner" }, createdAt: 1000, updatedAt: 1000, verifiedAt: 1000 };
-  const options = (create: boolean) => ({ path, installationId: "fixture", create, now: () => 1000, ownerGeneration: () => generation, requireOwner(actor: object) { if (actor !== owner) throw new AppError("authentication_required", 401); }, network: github.network, bots: () => [{ id: "a", name: "A" }, { id: "b", name: "B" }], dependency: (id: string) => id === source.id ? source : null, membership() { membership++; if (memberFails) throw Error("controlled membership failure"); return "installed" as const; } });
+  const options = (create: boolean) => ({ path, installationId: "fixture", create, now: () => 1000, ownerGeneration: () => generation, requireOwner(actor: object) { if (actor !== owner) throw new AppError("authentication_required", 401); }, network: github.network, bots: () => [{ id: "a", name: "A" }, { id: "b", name: "B" }], recipients: () => [], dependency: (id: string) => id === source.id ? source : null, membership() { membership++; if (memberFails) throw Error("controlled membership failure"); return "installed" as const; } });
   let directory = new SkillDirectory(options(true));
   const h = { owner, github, source, get directory() { return directory; }, get membership() { return membership; }, set memberFails(value: boolean) { memberFails = value; }, set generation(value: number) { generation = value; },
     async reopen() { await directory.close(); directory = new SkillDirectory(options(false)); },
     async close() { await directory.close(); rmSync(root, { recursive: true, force: true }); },
     command(command: Omit<SkillCommand, "contract" | "requestId"> & Record<string, unknown>, requestId = uid()) { return directory.command(owner, { contract: "s16-skill-command/v1", requestId, ...command }); },
     async imported() { const receipt = await directory.command(owner, { contract: "s16-skill-command/v1", requestId: uid(), kind: "skill.import", input: folder() }); return directory.record(receipt.skillId)!; },
-    review(record: SkillRecord, availability = { kind: "team" as const }) { return directory.command(owner, { contract: "s16-skill-command/v1", requestId: uid(), kind: "skill.review", skillId: record.id, expectedRevision: record.revision, pin: record.candidatePin, availability, executable: true, dependencies: {} }); },
+    review(record: SkillRecord, availability = { kind: "team" as const }) { return directory.command(owner, { contract: "s16-skill-command/v1", requestId: uid(), kind: "skill.review", skillId: record.id, expectedRevision: record.revision, pin: record.candidatePin, availability, executable: true, dependencies: {}, recipientsHash }); },
   };
   cleanups.push(() => h.close()); return h;
 }
@@ -55,7 +57,7 @@ test("checking updates leaves the active pin and resource current until a new ex
 
 test("team/Bot availability is a narrowing check and missing work resources never become authority", async () => {
   const h = await fixture(), candidate = await h.imported();
-  await h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "bots", botIds: ["a"] }, executable: false, dependencies: {} });
+  await h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "bots", botIds: ["a"] }, executable: false, dependencies: {}, recipientsHash });
   const active = h.directory.record(candidate.id)!, pin = use(h, active);
   expect(h.directory.guard(work(active), pin).review!.executable).toBe(false);
   expect(() => h.directory.guard({ ...work(active), mode: "interpretation" }, pin)).toThrow("outside_scope");
@@ -64,7 +66,7 @@ test("team/Bot availability is a narrowing check and missing work resources neve
 
 test("revocation is immediate even before membership settles and a replay cannot reinstall an older review", async () => {
   const h = await fixture(), candidate = await h.imported(), reviewId = uid();
-  const command = { contract: "s16-skill-command/v1", requestId: reviewId, kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {} };
+  const command = { contract: "s16-skill-command/v1", requestId: reviewId, kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {}, recipientsHash };
   const oldReceipt = await h.directory.command(h.owner, command), active = h.directory.record(candidate.id)!; h.memberFails = true;
   await expect(h.command({ kind: "skill.revoke", skillId: active.id, expectedRevision: active.revision })).rejects.toThrow("controlled membership failure");
   expect(() => h.directory.guard(work(active), use(h, active))).toThrow("skill_unavailable");
@@ -74,7 +76,7 @@ test("revocation is immediate even before membership settles and a replay cannot
 
 test("a lost membership reply reuses the committed exact review without bumping its revision", async () => {
   const h = await fixture(), candidate = await h.imported(), requestId = uid();
-  const command = { contract: "s16-skill-command/v1", requestId, kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {} };
+  const command = { contract: "s16-skill-command/v1", requestId, kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {}, recipientsHash };
   h.memberFails = true; await expect(h.directory.command(h.owner, command)).rejects.toThrow(); const committed = h.directory.record(candidate.id)!;
   await h.reopen(); h.memberFails = false; const receipt = await h.directory.command(h.owner, command); expect(receipt.revision).toBe(committed.revision); expect(receipt.policy).toBe("installed");
   expect(h.directory.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM reviews").get()!.n).toBe(1);
@@ -84,7 +86,7 @@ test("a dependency must match the current reviewed connection and remain in the 
   const h = await fixture(), imported = await h.command({ kind: "skill.import", input: { kind: "github", url: "https://github.com/owner/repo/tree/main/example" } });
   const candidate = h.directory.record(imported.skillId)!;
   await expect(h.review(candidate)).rejects.toThrow("skill_dependency_unavailable");
-  await h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: false, dependencies: { docs: { sourceId: h.source.id, catalogHash: h.source.catalog!.hash, reviewRevision: 1 } } });
+  await h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: false, dependencies: { docs: { sourceId: h.source.id, catalogHash: h.source.catalog!.hash, reviewRevision: 1 } }, recipientsHash: digest("s16.skill.recipients.v1", [h.source.recipient]) });
   const active = h.directory.record(candidate.id)!, pin = use(h, active);
   expect(() => h.directory.guard(work(active), pin)).toThrow("skill_dependency_outside_scope");
   expect(h.directory.guard(work(active, "a", [active.resource, h.source.resource]), pin).id).toBe(active.id);
@@ -132,7 +134,7 @@ test("a folder import interrupted before candidate commit resumes by identity wi
 
 test("status reads never reconcile membership; explicit identity recovery reconciles only its committed exact review", async () => {
   const h = await fixture(), candidate = await h.imported(), requestId = uid(); h.memberFails = true;
-  await expect(h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {} }, requestId)).rejects.toThrow("controlled membership failure");
+  await expect(h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "team" }, executable: true, dependencies: {}, recipientsHash }, requestId)).rejects.toThrow("controlled membership failure");
   const status = h.directory.status(h.owner, requestId); expect(status.state).toBe("complete");
   if (status.state === "complete") expect(status.receipt.policy).toBe("review_required");
   const before = h.membership; h.directory.status(h.owner, requestId); expect(h.membership).toBe(before);

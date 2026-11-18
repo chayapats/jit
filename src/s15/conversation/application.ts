@@ -54,6 +54,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
   #steerActors = new Map<string, OwnerActor>();
   #wake: (() => void) | null = null;
   constructor(readonly store: ConversationStore, readonly options: ConversationOptions<OwnerActor, WorkContext>) {
+    if (options.memory?.dataContract && !options.guardInterpretation) throw new AppError("data_lineage_required", 503);
     if (options.memory?.fileContract && (!store.fileMemory || !options.guardInterpretation)) throw new AppError("file_memory_required", 503);
     if (!options.memory?.fileContract && store.db.query("SELECT 1 FROM requests WHERE json_type(record_json,'$.fileMemory')='text' LIMIT 1").get()) throw new AppError("file_memory_required", 503);
     if (options.skills && !store.skillContract || !options.skills && (store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version === 5 || store.db.query("SELECT 1 FROM requests WHERE json_array_length(record_json,'$.skillUses')>0 LIMIT 1").get())) throw new AppError("skills_required", 503);
@@ -683,7 +684,7 @@ export class ConversationApplication<OwnerActor, WorkContext> {
       const interpreted = await runConversation({ directory: this.options.nativeDirectory, request, definitions: [], signal: abort.signal, clock: this.clock, scripted: this.options.interpreterModel ?? this.options.model, ...(this.options.routeAuth ? { routeAuth: this.options.routeAuth } : {}),
         interpretation: { ...request.interpretation!, context: interpretationContext.messages }, guard: () => { guard("model"); this.options.memory?.guardHistory?.(work!, interpretationContext.fragments); },
         onUsage: usage => this.store.transaction(() => { const current = this.store.request(id); current.interpretationUsage = usage; this.store.save(current); }),
-        ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => { const pins = this.options.memory?.guardHistory?.(work!, interpretationContext.fragments) ?? []; this.options.guardInterpretation!(work!, payload, pins); } } : {}),
+        ...(this.options.guardInterpretation ? { guardContext: (payload: unknown) => { const pins = this.options.memory?.guardHistory?.(work!, interpretationContext.fragments) ?? []; const data = this.options.memory?.guardDataHistory?.(work!, interpretationContext.fragments) ?? []; this.options.guardInterpretation!(work!, payload, pins, data); } } : {}),
         reserveModel: () => this.store.transaction(() => {
           guard("model"); const current = this.store.request(id);
           const attempt = current.interpretationAttempt ?? 1;

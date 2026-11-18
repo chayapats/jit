@@ -102,3 +102,65 @@ instruction/resource and VM-script result; revoke/update during model/tool waits
 unknown claims; composed production/fallback and computer-continuation guards; native English/Thai import/review/use
 and session-loss flows. Record exact tested heads, required CI/review and separate live guest/account/device limits.
 This ADR alone does not close #420 or certify those proofs.
+
+## Integration refinement: persistent VM copies and later memory
+
+Static tracing of DATA15 shows an integration requirement before exposing this feature: `vmInput` records every
+work source on the VM, and `vmOutput` reacquires those sources under a later work. Giving every package only its own
+resource would strand unrelated future work on that VM. Dropping the old source, clearing VM lineage, treating
+private bytes as public, or silently widening the new work would break the retained boundary.
+
+The implementation must distinguish the controller's current skill-use permission from data deliberately released
+to a working computer. Add a protected DATA15 VM-input projection seam: validate the original admitted source first,
+then record an immutable private VM-copy source with its actual computer custody, original package/source/pin,
+owner generation, frozen recipient approvals and an equal or narrower Bot scope. The projection is owning host code,
+never a model/source callback. It may not downgrade classification, grant an effect, introduce a recipient or ignore
+any other source. Non-team private know-how needs that Bot's actual private computer before guest release; a shared
+root cannot establish private Bot custody. A missing private computer is an explicit hold with the existing setup
+path, not a controller execution fallback. Team-reviewed know-how can use the existing shared computer.
+
+An imported package's review must bind the known recipient configuration as well as its file pin. Do not extend a
+past review to future model providers automatically. Mapping a dependency is not blanket consent for other private
+inputs: any deliberately configured sharing scope covers this package's exact source only; repository/file/memory
+inputs retain their own exact disclosure gates. Execution/working-computer use is an explicit part of the review,
+including when a text-only playbook will influence guest commands; no script file is needed to carry private data.
+
+Existing VM copies are ordinary released work data, not an installation of Jit state. Revoking/updating the package
+fences current skill-use contexts and future package activation/staging. It does not claim that already released
+bytes or arbitrary guest-root copies were erased. Their data source remains private under the original (never
+broadened) custody/recipient scope; stronger withdrawal/reset uses the owning computer/data recovery contract. A
+later wider review must not promote an older Bot-private copy to team scope. Keep these residuals visible in review.
+
+MEM must preserve the DATA15 lineage of actual tool observations, including later reads of a VM copy in work that
+did not load the playbook itself. Use the existing protected derive/inherit primitives and complete retained-source
+ancestry; owner corrections must retain those parents. Do not infer source provenance by matching model text, and do
+not taint unrelated owner-authored interpretation history with a playbook that was only listed. Private copy scope
+must constrain retention as well as physical sends. Prove a following ordinary task, private Bot placement, recipient
+changes, correction/forget, package revocation and computer continuation before accepting this refinement. This
+section is a selected implementation/proof obligation; the current import/directory core alone does not establish it.
+
+### Implemented lineage core (not end-to-end acceptance)
+
+The protected directory now freezes recipient refs under `s16.skill.recipients.v1`; the exact review/availability
+command includes that preview's `recipientsHash`. Text-only playbooks can be reviewed for computer use. DATA15's
+owning `projectVmInput` seam validates the admitted original before accepting an equal-classification, no-more-
+releasable, equal-or-narrower-Bot VM source. Immutable `s16-skill-vm-copy/v1` rows retain computer custody, original
+source/pin, owner generation and frozen recipient refs independently of the current package pointer.
+
+Actual tool observations can be registered as protected DATA15 descendants; optional TEAM/MEM `dataRefs` preserve
+these through claims, contexts, summaries, correction and delegation, including observations from a later work that
+only read the VM. Inspection/ranking is metadata-only; actual byte handoffs inherit restrictions. A context retains
+observation ancestry even when extraction retained no claim. Computer continuations copy those complete context
+references instead of recapturing an old instruction. Inference uses an owning, privacy-only standing-resource
+projection and final recipient check; it creates no execution authority.
+
+TEAM stamps format 3 for DATA15 ancestry, 4 when combined with file ancestry; MEM stamps 5 and 6 respectively. Existing
+formats remain readable under their existing ports. A reader lacking an owning port refuses the newer header before
+writable open; later file/timing writes preserve the stronger format. These formats protect rollback, not historical
+private-data conversion. The new ports are still opt-in and not yet exposed by the composition/client at this checkpoint.
+
+Deterministic core/regression evidence: 109 tests passed across nine actual files in the selected import, directory,
+continuity, disclosure, TEAM, MEM and file-memory suites; typecheck and `git diff --check` passed. The scenario suite
+`tests/s16-skills-disclosure.test.ts` covers ordinary following work, private computer placement, frozen-recipient
+changes, copied data after revocation/reopen, correction/forget and rollback refusal with unchanged bytes. Real
+composed model/tool invocation, executable VM effects and the rendered client remain required before #420 closes.

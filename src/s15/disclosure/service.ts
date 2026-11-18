@@ -53,6 +53,7 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
     if (!s || !s.active || !equal(s.ref, value)) fail('lineage_withdrawn');
     ref(s.resource); if (!classes.includes(s.classification)) fail('classification_unknown');
     if (typeof s.ownerReleasable !== 'boolean' || !contains(work.request.resources, s.resource)) fail('outside_scope');
+    if (s.botIds !== undefined && s.botIds !== null) { if (!Array.isArray(s.botIds) || s.botIds.length > 64) fail("invalid_shape"); s.botIds.forEach(id); if (!s.botIds.includes(work.request.bot.id)) fail("outside_scope"); }
     return clone(s);
   }
   function sources(work: WorkAuthority): DisclosureSource[] {
@@ -127,6 +128,14 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       source(work, value); const all = sources(work).map(s => s.ref); if (!contains(all, value)) all.push(clone(value)); if (all.length > 64) fail('lineage_capacity');
       journal.put(workKey(work), { kind: 'work', id: workKey(work), sources: all });
     }); },
+    lineage(actor, derived) {
+      const work = service().work.guard(actor); if (!derived) return clone(sources(work));
+      return result.ancestry(work, derived);
+    },
+    ancestry(work, derived) {
+      ref(derived); const record = journal.get<Record>(derivedKey(derived)); if (record.kind !== 'derived' || !equal(record.ref, derived)) fail('lineage_unknown');
+      return record.sources.map(value => source(work, value));
+    },
     derive(actor, derived, kind) { ref(derived); if (!['text', 'screenshot', 'artifact'].includes(kind)) fail('invalid_shape'); const work = service().work.guard(actor); journal.tx(() => {
       const value: Record = { kind: 'derived', id: derivedKey(derived), ref: clone(derived), workId: work.id, format: kind, sources: sources(work).map(s => s.ref) };
       const prior = journal.all<Record>().find(r => r.id === value.id); if (prior && !equal(prior, value)) fail('lineage_changed'); journal.put(value.id, value);
@@ -164,7 +173,12 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       id(vmId); const work = service().work.guard(actor as import('../policy').WorkActor);
       journal.tx(() => {
         const key = 'vm_' + vmId, prior = journal.all<Record>().find(row => row.kind === 'vm' && row.id === key)?.sources ?? [];
-        const merged = [...new Map([...prior, ...sources(work).map(s => s.ref)].map(r => [canonical(r), r])).values()];
+        const projected = sources(work).map(original => {
+          const target = source(work, options.projectVmInput?.(clone(work), vmId, clone(original)) ?? original.ref);
+          if (target.classification !== original.classification || !original.ownerReleasable && target.ownerReleasable || original.botIds && (!target.botIds || target.botIds.some(bot => !original.botIds!.includes(bot)))) fail('lineage_widened');
+          return target.ref;
+        });
+        const merged = [...new Map([...prior, ...projected].map(r => [canonical(r), r])).values()];
         if (merged.length > 64) fail('lineage_capacity'); journal.put(key, { kind: 'vm', id: key, sources: merged });
       });
     },

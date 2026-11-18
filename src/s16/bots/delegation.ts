@@ -49,11 +49,11 @@ export function createBotTools(options: BotToolOptions) {
   /** Capture the task as a TEAM source carrying its context's privacy ancestry (claims and file pins). */
   function capture(work: ConversationPolicyWork, parent: ConversationRequest, task: string, kind: "peer" | "temporary"): string {
     const context = team.bind(work.actor), sourceId = `as_${uid()}`;
-    const lineage = parent.memory && options.memory ? options.memory.contextLineage(context, parent.receipt.rootRequestId) : { sourceIds: [], private: false, filePins: [] };
+    const lineage = parent.memory && options.memory ? options.memory.contextLineage(context, parent.receipt.rootRequestId) : { sourceIds: [], private: false, filePins: [], dataRefs: [] };
     // Text written from Bot-private context stays private to that Bot: only a temporary worker (the same Bot) can take it.
     if (lineage.private && kind === "peer") throw new AppError("private_context", 409);
     team.capture(context, { id: sourceId, text: task, scope: lineage.private ? { kind: "bot", botId: work.authority.request.bot.id, origin: "s15" } : { kind: "team" },
-      origin: { kind: "work", id: work.authority.id, conversationId: parent.receipt.conversationId, at: conversation.clock.now() }, resources: [], parents: lineage.sourceIds, ...(lineage.filePins.length ? { filePins: lineage.filePins } : {}) });
+      origin: { kind: "work", id: work.authority.id, conversationId: parent.receipt.conversationId, at: conversation.clock.now() }, resources: [], parents: lineage.sourceIds, ...(lineage.filePins.length ? { filePins: lineage.filePins } : {}), ...(lineage.dataRefs.length ? { dataRefs: lineage.dataRefs } : {}) });
     // DATA15: the task inherits every source this work already read, so each later send of the child is checked for them.
     options.disclosure?.derive(work.actor, assignmentRef(sourceId, work.authority.ownerGeneration), "text");
     return sourceId;

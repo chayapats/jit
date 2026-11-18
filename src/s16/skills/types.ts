@@ -26,7 +26,7 @@ export interface SkillDependencyBinding { sourceId: string; catalogHash: string;
 /** Availability narrows use of this know-how; it is not a work grant or connection permission. */
 export type SkillAvailability = { kind: "team" } | { kind: "bots"; botIds: string[] };
 /** Frozen owner review of one exact candidate. */
-export interface SkillReview { pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding>; at: number }
+export interface SkillReview { recipientsHash: string; recipients: import("../../s15/policy").Ref[]; pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding>; at: number }
 /** Protected current pointers; immutable package bytes and past reviews remain in the owning journal. */
 export interface SkillRecord {
   contract: "s16-skill/v1"; id: string; revision: number; ownerGeneration: number; state: "needs_review" | "active" | "revoked";
@@ -41,11 +41,19 @@ export type SkillImport = { kind: "github"; url: string } | { kind: "folder"; la
 export type SkillCommand =
   | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.import"; input: SkillImport }
   | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.update"; skillId: string; expectedRevision: number; input: SkillImport }
-  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.review"; skillId: string; expectedRevision: number; pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding> }
-  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.availability"; skillId: string; expectedRevision: number; availability: SkillAvailability; executable: boolean }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.review"; skillId: string; expectedRevision: number; pin: string; availability: SkillAvailability; executable: boolean; dependencies: Record<string, SkillDependencyBinding>; recipientsHash: string }
+  | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.availability"; skillId: string; expectedRevision: number; availability: SkillAvailability; executable: boolean; recipientsHash: string }
   | { contract: "s16-skill-command/v1"; requestId: string; kind: "skill.revoke"; skillId: string; expectedRevision: number };
 /** A compact durable command result; package contents are obtained through a fresh authenticated detail read. */
 export interface SkillReceipt { contract: "s16-skill-receipt/v1"; requestId: string; skillId: string; revision: number; pin: string | null; state: SkillRecord["state"]; policy: "installed" | "review_required" | "not_needed" }
 
 /** A read-only import/review recovery projection; querying it starts no work or network request. */
 export type SkillCommandStatus = { contract: "s16-skill-command-status/v1"; requestId: string } & ({ state: "complete"; receipt: SkillReceipt } | { state: "queued" | "importing" | "interrupted" });
+
+/** Deliberately released working-computer data. Immutable custody and approvals survive package revocation;
+ * they never attest deletion of guest-root copies or widen a past private Bot scope. */
+export interface SkillVmCopy {
+  contract: "s16-skill-vm-copy/v1"; ref: import("../../s15/policy").Ref; resource: import("../../s15/policy").Ref;
+  source: import("../../s15/policy").Ref; skillId: string; pin: string; ownerGeneration: number; vmId: string;
+  botIds: string[] | null; recipients: import("../../s15/policy").Ref[]; createdAt: number;
+}

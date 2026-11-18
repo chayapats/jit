@@ -2,18 +2,19 @@ import { AppError } from "../../errors";
 import { ProtectedDataStore } from "../../s15/team/store";
 import { canonical, digest, equal } from "../../s15/policy/validation";
 import { exact, identity, integer } from "../../s15/conversation/validation";
-import type { WorkAuthority } from "../../s15/policy";
+import type { Ref, WorkAuthority } from "../../s15/policy";
 import type { SourceNetwork } from "../connections/net";
 import type { SourceRecord } from "../connections/types";
 import { githubSkillSource, importGithubSkill } from "./github";
 import { parseSkillPackage } from "./package";
-import type { SkillAvailability, SkillCommand, SkillCommandStatus, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse } from "./types";
+import type { SkillAvailability, SkillCommand, SkillCommandStatus, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse, SkillVmCopy } from "./types";
 
 const schema = `CREATE TABLE skills(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);
 CREATE TABLE packages(pin TEXT PRIMARY KEY,record_json TEXT NOT NULL);
 CREATE TABLE commands(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,kind TEXT NOT NULL,result_json TEXT NOT NULL);
 CREATE TABLE pending(id TEXT PRIMARY KEY,payload_hash TEXT NOT NULL,owner_generation INTEGER NOT NULL,resolved_json TEXT,input_json TEXT NOT NULL);
 CREATE TABLE reviews(id INTEGER PRIMARY KEY,skill_id TEXT NOT NULL,record_json TEXT NOT NULL);
+CREATE TABLE vm_copies(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);
 CREATE TABLE uses(id TEXT PRIMARY KEY,request_id TEXT NOT NULL,work_id TEXT NOT NULL,skill_id TEXT NOT NULL,pin TEXT NOT NULL,record_json TEXT NOT NULL);`;
 const fail = (code: string): never => { throw new AppError(code, 409); };
 /** Protected ports; the directory never receives a host shell, service credential or model principal. */
@@ -21,6 +22,8 @@ export interface SkillDirectoryOptions<Owner> {
   path: string; installationId: string; create: boolean; now(): number; ownerGeneration(): number; requireOwner(owner: Owner): void;
   network: SourceNetwork; bots(owner: Owner): readonly { id: string; name: string }[];
   dependency(id: string): SourceRecord | null;
+  /** Current configured model recipients. Review freezes this set; later providers require another exact review. */
+  recipients(): readonly Ref[];
   /** Reconcile only exact already-reviewed resource membership; custom rules stay behind their own owner review. */
   membership(owner: Owner, requestId: string): "installed" | "unchanged" | "review_required";
 }
@@ -57,6 +60,32 @@ export class SkillDirectory<Owner> {
       if (!record || record.state !== "active" || record.endpoint !== dep.endpoint || !record.catalog || !record.review || record.review.catalogHash !== record.catalog.hash || bound.catalogHash !== record.catalog.hash || bound.reviewRevision !== record.review.revision || !record.catalog.tools.some(tool => ["read", "change", "approval"].includes(record.review!.decisions[tool.name] ?? "off"))) fail("skill_dependency_unavailable");
     }
   }
+  /** Exact package-only sharing preview. Dependency mapping confers no consent for other private sources. */
+  recipients(owner: Owner, id: string, pin: string, bindings: SkillReview["dependencies"]): { hash: string; recipients: Ref[] } {
+    this.get(owner, id); const pkg = this.package(pin); this.dependencies(pkg, bindings);
+    const values = [...this.options.recipients(), ...Object.values(bindings).map(binding => this.options.dependency(binding.sourceId)!.recipient)];
+    const recipients = [...new Map(values.map(value => [canonical(value), structuredClone(value)])).values()].sort((a, b) => canonical(a).localeCompare(canonical(b)));
+    return { hash: digest("s16.skill.recipients.v1", recipients), recipients };
+  }
+  /** Protected lookup of released copies, including copies of older or revoked package pins. */
+  copies(): SkillVmCopy[] { return this.store.db.query<{ record_json: string }, []>("SELECT record_json FROM vm_copies ORDER BY rowid").all().map(row => JSON.parse(row.record_json)); }
+  /** DATA15-only projection, after it validated the original admitted source. No guest/model can register custody. */
+  copy(work: WorkAuthority, vmId: string, source: Ref, resource: Ref, privateBot: string | null): Ref {
+    identity(vmId); const record = this.records().find(row => equal(row.source, source));
+    if (!record?.activePin) return fail("skill_unavailable");
+    this.guard(work, { skillId: record.id, pin: record.activePin, unitId: null, resource: record.resource });
+    if (!record.review!.executable) return fail("skill_computer_use_disabled");
+    if (!work.request.resources.some(value => equal(value, resource))) return fail("outside_scope");
+    if (record.review!.availability.kind === "bots" && privateBot !== work.request.bot.id) return fail("skill_private_computer_required");
+    if (privateBot !== null && privateBot !== work.request.bot.id) return fail("outside_scope");
+    const botIds = privateBot === null ? null : [privateBot];
+    const id = "skv_" + digest("s16.skill.vm-copy.v1", { source, resource, vmId, botIds, ownerGeneration: work.ownerGeneration }).slice(0, 24);
+    const value: SkillVmCopy = { contract: "s16-skill-vm-copy/v1", ref: { id, revision: 1, generation: 1 }, resource: structuredClone(resource), source: structuredClone(source), skillId: record.id, pin: record.activePin, ownerGeneration: work.ownerGeneration, vmId, botIds, recipients: structuredClone(record.review!.recipients), createdAt: this.options.now() };
+    return this.store.transaction(() => { this.store.capacity(); const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM vm_copies WHERE id=?").get(id);
+      if (row) { const before = JSON.parse(row.record_json) as SkillVmCopy; if (!equal({ ...before, createdAt: 0 }, { ...value, createdAt: 0 })) return fail("lineage_changed"); return before.ref; }
+      this.store.db.query("INSERT INTO vm_copies VALUES(?,?)").run(id, canonical(value)); return value.ref;
+    });
+  }
   private receipt(requestId: string, record: SkillRecord): SkillReceipt { return { contract: "s16-skill-receipt/v1", requestId, skillId: record.id, revision: record.revision, pin: record.activePin ?? record.candidatePin, state: record.state, policy: "not_needed" }; }
   private member(owner: Owner, command: Pick<SkillCommand, "kind" | "requestId">, receipt: SkillReceipt): SkillReceipt {
     if (!["skill.review", "skill.availability", "skill.revoke"].includes(command.kind)) return receipt;
@@ -88,7 +117,7 @@ export class SkillDirectory<Owner> {
     if (old) { if (old.payload_hash !== hash) return fail("request_id_conflict"); if (old.owner_generation !== generation) return fail("owner_changed"); return this.member(owner, command, JSON.parse(old.result_json)); }
     let record: SkillRecord | null = null;
     if (command.kind !== "skill.import") { identity(command.skillId); integer(command.expectedRevision, 1); record = this.get(owner, command.skillId); if (record.revision !== command.expectedRevision || record.state === "revoked") return fail("stale_revision"); }
-    let candidate: SkillPackage | undefined;
+    let candidate: SkillPackage | undefined, sharing: { hash: string; recipients: Ref[] } | undefined;
     if (command.kind === "skill.import" || command.kind === "skill.update") {
       exact(command, ["contract", "requestId", "kind", ...(record ? ["skillId", "expectedRevision"] : []), "input"]);
       const input = command.input as SkillImport; let folder: SkillPackage | undefined;
@@ -109,16 +138,17 @@ export class SkillDirectory<Owner> {
       }
       guard();
     } else if (command.kind === "skill.review") {
-      exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision", "pin", "availability", "executable", "dependencies"]);
+      exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision", "pin", "availability", "executable", "dependencies", "recipientsHash"]);
       if (command.pin !== record!.candidatePin || typeof command.executable !== "boolean") return fail("skill_pin_invalid");
       const pkg = this.package(command.pin);
       if (!pkg.units.length && !pkg.dependencies.length && !pkg.scripts.length) return fail("skill_parts_unavailable");
-      if (command.executable && !pkg.scripts.length) return fail("skill_execution_unsupported");
       this.availability(owner, command.availability); this.dependencies(pkg, command.dependencies);
+      sharing = this.recipients(owner, record!.id, command.pin, command.dependencies); if (command.recipientsHash !== sharing.hash) return fail("skill_recipients_changed");
     } else if (command.kind === "skill.availability") {
-      exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision", "availability", "executable"]);
+      exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision", "availability", "executable", "recipientsHash"]);
       if (!record!.review || typeof command.executable !== "boolean") return fail("skill_review_required");
-      if (command.executable && !this.package(record!.activePin!).scripts.length) return fail("skill_execution_unsupported"); this.availability(owner, command.availability);
+      this.availability(owner, command.availability);
+      sharing = this.recipients(owner, record!.id, record!.activePin!, record!.review!.dependencies); if (command.recipientsHash !== sharing.hash) return fail("skill_recipients_changed");
     } else if (command.kind === "skill.revoke") exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision"]);
     else return fail("invalid_body");
     const result = this.store.transaction(() => {
@@ -126,8 +156,8 @@ export class SkillDirectory<Owner> {
       const now = this.options.now();
       if (!record) { const key = digest("s16.skill.identity.v1", command.requestId).slice(0, 24); record = { contract: "s16-skill/v1", id: `sk_${key}`, revision: 0, ownerGeneration: generation, state: "needs_review", activePin: null, candidatePin: null, review: null, resource: { id: `skr_${key}`, revision: 1, generation: 1 }, source: { id: `sks_${key}`, revision: 1, generation: 1 }, createdAt: now, updatedAt: now }; }
       if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin; }
-      if (command.kind === "skill.review") { record.activePin = command.pin; record.candidatePin = null; record.state = "active"; record.review = { pin: command.pin, availability: this.availability(owner, command.availability), executable: command.executable, dependencies: structuredClone(command.dependencies), at: now }; }
-      if (command.kind === "skill.availability") record.review = { ...record.review!, availability: this.availability(owner, command.availability), executable: command.executable, at: now };
+      if (command.kind === "skill.review") { record.activePin = command.pin; record.candidatePin = null; record.state = "active"; record.review = { recipientsHash: sharing!.hash, recipients: sharing!.recipients, pin: command.pin, availability: this.availability(owner, command.availability), executable: command.executable, dependencies: structuredClone(command.dependencies), at: now }; }
+      if (command.kind === "skill.availability") record.review = { ...record.review!, recipientsHash: sharing!.hash, recipients: sharing!.recipients, availability: this.availability(owner, command.availability), executable: command.executable, at: now };
       if (command.kind === "skill.revoke") record.state = "revoked";
       if (["skill.review", "skill.availability", "skill.revoke"].includes(command.kind)) { record.resource.revision++; record.source.revision++; this.store.db.query("INSERT INTO reviews(skill_id,record_json) VALUES(?,?)").run(record.id, canonical({ revision: record.revision + 1, review: record.review, state: record.state })); }
       record.revision++; record.updatedAt = now; this.save(record); const receipt = this.receipt(command.requestId, record);
