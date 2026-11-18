@@ -55,6 +55,28 @@ test("checking updates leaves the active pin and resource current until a new ex
   expect(() => h.directory.guard(work(active), oldUse)).toThrow("skill_unavailable");
 });
 
+test("an unchanged update retains the active review without advertising a candidate or fencing current work", async () => {
+  const h = await fixture(), first = await h.imported(); await h.review(first);
+  const active = h.directory.record(first.id)!, oldUse = use(h, active), requestId = uid();
+  const command = { contract: "s16-skill-command/v1", requestId, kind: "skill.update", skillId: first.id, expectedRevision: active.revision, input: folder() };
+  const receipt = await h.directory.command(h.owner, command), current = h.directory.record(first.id)!;
+  expect(current.activePin).toBe(active.activePin); expect(current.candidatePin).toBeNull(); expect(current.review).toEqual(active.review);
+  expect(current.resource).toEqual(active.resource); expect(current.source).toEqual(active.source);
+  expect(h.directory.guard(work(active), oldUse).id).toBe(first.id);
+  await h.reopen(); expect(await h.directory.command(h.owner, command)).toEqual(receipt); expect(h.directory.detail(h.owner, first.id).candidate).toBeNull();
+});
+
+test("sharing previews bind the record's active or candidate pin and cannot borrow another retained package", async () => {
+  const h = await fixture(), first = await h.imported(); await h.review(first);
+  const active = h.directory.record(first.id)!, other = await h.command({ kind: "skill.import", input: folder("Unrelated package.") });
+  expect(() => h.directory.recipients(h.owner, first.id, other.pin!, {})).toThrow("skill_pin_invalid");
+  expect(h.directory.recipients(h.owner, first.id, active.activePin!, {}).hash).toBe(recipientsHash);
+  await h.command({ kind: "skill.update", skillId: first.id, expectedRevision: active.revision, input: folder("Reviewed separately.") });
+  const candidate = h.directory.record(first.id)!;
+  expect(h.directory.recipients(h.owner, first.id, candidate.candidatePin!, {}).hash).toBe(recipientsHash);
+  expect(h.directory.recipients(h.owner, first.id, candidate.activePin!, {}).hash).toBe(recipientsHash);
+});
+
 test("team/Bot availability is a narrowing check and missing work resources never become authority", async () => {
   const h = await fixture(), candidate = await h.imported();
   await h.command({ kind: "skill.review", skillId: candidate.id, expectedRevision: candidate.revision, pin: candidate.candidatePin, availability: { kind: "bots", botIds: ["a"] }, executable: false, dependencies: {}, recipientsHash });

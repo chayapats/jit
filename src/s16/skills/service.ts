@@ -63,7 +63,9 @@ export class SkillDirectory<Owner> {
   }
   /** Exact package-only sharing preview. Dependency mapping confers no consent for other private sources. */
   recipients(owner: Owner, id: string, pin: string, bindings: SkillReview["dependencies"]): { hash: string; recipients: Ref[] } {
-    this.get(owner, id); const pkg = this.package(pin); this.dependencies(pkg, bindings);
+    const record = this.get(owner, id);
+    if (pin !== record.activePin && pin !== record.candidatePin) return fail("skill_pin_invalid");
+    const pkg = this.package(pin); this.dependencies(pkg, bindings);
     const values = [...this.options.recipients(), ...Object.values(bindings).map(binding => this.options.dependency(binding.sourceId)!.recipient)];
     const recipients = [...new Map(values.map(value => [canonical(value), structuredClone(value)])).values()].sort((a, b) => canonical(a).localeCompare(canonical(b)));
     return { hash: digest("s16.skill.recipients.v1", recipients), recipients };
@@ -157,7 +159,7 @@ export class SkillDirectory<Owner> {
       const now = this.options.now();
       if (!record && this.records().length >= skillLimits.packages) return fail("skill_capacity");
       if (!record) { const key = digest("s16.skill.identity.v1", command.requestId).slice(0, 24); record = { contract: "s16-skill/v1", id: `sk_${key}`, revision: 0, ownerGeneration: generation, state: "needs_review", activePin: null, candidatePin: null, review: null, resource: { id: `skr_${key}`, revision: 1, generation: 1 }, source: { id: `sks_${key}`, revision: 1, generation: 1 }, createdAt: now, updatedAt: now }; }
-      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin; if (command.kind === "skill.import" || command.kind === "skill.update") record.importSource = command.input.kind === "github" ? { kind: "github", url: command.input.url } : { kind: "folder", label: command.input.label }; }
+      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin === record.activePin ? null : candidate.pin; if (command.kind === "skill.import" || command.kind === "skill.update") record.importSource = command.input.kind === "github" ? { kind: "github", url: command.input.url } : { kind: "folder", label: command.input.label }; }
       if (command.kind === "skill.review") { record.activePin = command.pin; record.candidatePin = null; record.state = "active"; record.review = { recipientsHash: sharing!.hash, recipients: sharing!.recipients, pin: command.pin, availability: this.availability(owner, command.availability), executable: command.executable, dependencies: structuredClone(command.dependencies), at: now }; }
       if (command.kind === "skill.availability") record.review = { ...record.review!, recipientsHash: sharing!.hash, recipients: sharing!.recipients, availability: this.availability(owner, command.availability), executable: command.executable, at: now };
       if (command.kind === "skill.revoke") record.state = "revoked";
