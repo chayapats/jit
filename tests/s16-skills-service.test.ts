@@ -11,6 +11,7 @@ import type { SkillCommand, SkillRecord, SkillUse } from "../src/s16/skills/type
 import { githubSkillFixture, commit } from "./fixtures/s16-skills";
 import { canonicalSkill, skillCommandHash } from "../src/s16/skills/encoding";
 import { canonical } from "../src/s15/policy/validation";
+import { registerSecretFingerprint } from "../src/security/secret-fingerprints";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -70,6 +71,16 @@ for (const kind of ["skill.import", "skill.update"] as const) test(`revocation f
     if (kind === "skill.update") expect(result.message).toBe("stale_revision"); else expect(result.state).toBe("needs_review");
     expect(h.directory.record(active.id)!.state).toBe("revoked"); await h.reopen(); expect(h.directory.record(active.id)!.state).toBe("revoked");
   } finally { resume.resolve(); await pending; }
+});
+
+test("package encoding never reuses validation across new secrets, including registration during one traversal", () => {
+  const later = `later_secret_${uid()}`, repeated = `traversal_secret_${uid()}`;
+  expect(canonicalSkill([later, later])).toBe(canonical([later, later]));
+  registerSecretFingerprint(later); expect(() => canonicalSkill([later, later])).toThrow("credential_content_refused");
+  // A proxy trap can run synchronous application code while an unknown value is inspected. It cannot
+  // make a newly registered secret borrow the earlier string's validation in this same traversal.
+  const nested = new Proxy({ value: repeated }, { ownKeys(target) { registerSecretFingerprint(repeated); return Reflect.ownKeys(target); } });
+  expect(() => canonicalSkill({ first: repeated, second: nested })).toThrow("credential_content_refused");
 });
 
 test("package encoding preserves small command identities and accepts a full 2 MiB folder without changing POLICY's limit", async () => {

@@ -16,6 +16,10 @@ const modulus = 67_108_859, base = 131;
 const minimumLength = 8;
 /** length → rolling hash → HMAC hex digests */
 const registry = new Map<number, { power: number; hashes: Map<number, Set<string>> }>();
+let revision = 0;
+
+/** Process-local invalidation token for synchronous validation caches. Contains no secret/fingerprint value. */
+export const registeredSecretRevision = (): number => revision;
 
 const mac = (text: string) => createHmac("sha256", key).update(text, "utf8").digest("hex");
 function rolling(text: string, start: number, length: number): number {
@@ -42,6 +46,7 @@ function add(piece: string): void {
 /** Registers one secret value (values shorter than 8 characters are ignored). The value itself is not retained. */
 export function registerSecretFingerprint(value: string): void {
   if (typeof value !== "string") return;
+  revision++;
   add(value);
   if (value.includes("\n")) for (const line of value.split(/\r?\n/)) if (line.trim().length >= 16) add(line.trim());
 }

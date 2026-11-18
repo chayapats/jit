@@ -231,11 +231,12 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         } finally { route.close(); }
       },
       async reconcile(action, context) {
-        if (!options.site.reconcileEffect) throw new BrowserError('reconciliation_unsupported');
+        if (!options.site.reconcileEffect) return { outcome: 'unknown', actual: unknownUsage(), transportSettled: false };
         const payload = action.payload as Record<string, JsonValue>;
-        if (payload.contract !== 's15-browser-request/v1') throw new BrowserError('effect_semantics_unknown');
+        if (payload.contract !== 's15-browser-request/v1') return { outcome: 'unknown', actual: unknownUsage(), transportSettled: false };
         const { contract: _, ...request } = payload;
-        validateRequest(request as unknown as BrowserRequest);
+        try { validateRequest(request as unknown as BrowserRequest); }
+        catch { return { outcome: 'unknown', actual: unknownUsage(), transportSettled: false }; }
         return options.site.reconcileEffect(Object.freeze(request as unknown as BrowserRequest), context);
       },
     },
@@ -362,7 +363,16 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         return login;
       },
     },
-    close() { return closing ??= (async () => { closed = true; generation = continuity.advance(); stop(); await Promise.allSettled([...scopes].map(s => s.completion)); try { await engine.close(); } finally { egress.close(); continuity.close(); } })(); },
+    close() { return closing ??= (async () => {
+      closed = true; generation = continuity.advance(); stop();
+      // Closing the native browser settles its pending renderer operations. Keep broker/continuity
+      // custody until their scopes finish; killing a renderer does not recall a dispatched HTTP effect.
+      try {
+        const [native] = await Promise.allSettled([Promise.resolve().then(() => engine.close()), ...[...scopes].map(s => s.completion)]);
+        if (native.status === 'rejected') throw native.reason;
+      }
+      finally { egress.close(); continuity.close(); }
+    })(); },
   };
   return registration;
 }

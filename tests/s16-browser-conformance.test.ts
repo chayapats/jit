@@ -6,8 +6,8 @@ import { launchProtectedEngine } from '../src/s15/browser/engine';
 const realBrowser = describe.skipIf(process.env.JIT_BROWSER_LIVE !== '1');
 const observation = (result: BrowserResult): BrowserObservation => { if (result.state !== 'observed') throw Error(JSON.stringify(result)); return result.observation; };
 
-async function scenario(mode: 'static' | 'general') {
-  const server = browserSite(), trace: { path: string; navigation: boolean; sent: boolean; denied: boolean }[] = [], mutation = Promise.withResolvers<void>();
+async function scenario(mode: 'static' | 'general', delayMs = 0) {
+  const server = browserSite({ delayMs }), trace: { path: string; navigation: boolean; sent: boolean; denied: boolean }[] = [], mutation = Promise.withResolvers<void>();
   const f = await browserFixture(mode, server.site, options => launchProtectedEngine({ ...options, async request(wire) {
     const path = new URL(wire.request.url).pathname;
     if (!path.startsWith('/dynamic')) return options.request(wire);
@@ -33,6 +33,34 @@ async function scenario(mode: 'static' | 'general') {
 }
 
 realBrowser('S16 protected modern-browser conformance', () => {
+  for (const mode of ['static', 'general'] as const) test(`${mode}: denied download and redirect settle before immediate fresh navigation`, async () => {
+    const s = await scenario(mode, 250);
+    try {
+      for (const name of ['Download', 'Redirect']) {
+        await s.navigate('/clean-task');
+        expect((await s.run({ kind: 'click', target: await s.find(name) })).state).toBe('unsupported');
+        await s.navigate('/clean-task'); expect(observation(await s.run({ kind: 'read' })).text).toContain('Website task');
+      }
+      expect(s.server.received.some(row => row.path === '/download' || row.path.startsWith('/unknown-effect'))).toBe(false);
+    } finally { await s.close(); }
+  }, 60000);
+
+  for (const mode of ['static', 'general'] as const) test(`${mode}: takeover settles a cancelled held navigation before immediate fresh input`, async () => {
+    const s = await scenario(mode, 250);
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await s.navigate('/clean-task');
+        const page = observation(await s.run({ kind: 'read' })), button = page.elements.filter(element => element.name === 'confirm')[1]!;
+        const held = await s.run({ kind: 'click', target: button.id }); if (held.state !== 'held') throw Error('payment_not_held');
+        const owner = await s.f.gateway.owner.takeover(s.f.owner); s.f.gateway.owner.handBack(s.f.owner, owner.generation, true);
+        // No delay, retry, extra handoff or bypass of the old native operation's settlement.
+        await s.navigate('/clean-task');
+        expect(await s.f.work.resume(held.action)).toMatchObject({ state: 'unsupported' });
+        expect(s.server.received.filter(row => row.path === '/checkout')).toHaveLength(0);
+      }
+    } finally { await s.close(); }
+  }, 60000);
+
   test('static negative control cannot obtain or submit the JS-created authenticated task', async () => {
     const s = await scenario('static');
     try {
