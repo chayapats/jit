@@ -27,10 +27,10 @@ async function fixture(mode = 'normal', timeoutMs = 5000) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'jit-voice-local-'))), scratch = join(root, 'scratch'), executable = join(root, 'speech-fixture'), model = join(root, 'model with spaces.bin'), marker = join(root, 'started.json'), release = join(root, 'release');
   cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const source = `#!${process.execPath}
-import {existsSync,readFileSync,watch,writeFileSync} from 'node:fs';
+import {existsSync,readFileSync,renameSync,watch,writeFileSync} from 'node:fs';
 const args=process.argv.slice(2), option=name=>args[args.indexOf(name)+1];
 const mode=${JSON.stringify(mode)}, marker=${JSON.stringify(marker)}, release=${JSON.stringify(release)};
-writeFileSync(marker,JSON.stringify({pid:process.pid,cwd:process.cwd(),args,privateEnv:process.env.JIT_VOICE_PRIVATE_SENTINEL??null,model:args.includes('--model')?readFileSync(option('--model'),'utf8'):null}),{mode:0o600});
+writeFileSync(marker+'.tmp',JSON.stringify({pid:process.pid,cwd:process.cwd(),args,privateEnv:process.env.JIT_VOICE_PRIVATE_SENTINEL??null,model:args.includes('--model')?readFileSync(option('--model'),'utf8'):null}),{mode:0o600});renameSync(marker+'.tmp',marker);
 if(mode==='wait') await new Promise(()=>{});
 if(mode==='gate'&&!existsSync(release))await new Promise(resolve=>{const watcher=watch(${JSON.stringify(root)},()=>{if(existsSync(release)){watcher.close();resolve();}});if(existsSync(release)){watcher.close();resolve();}});
 if(mode==='fail'){process.stderr.write('private diagnostic must never escape');process.exit(1);}

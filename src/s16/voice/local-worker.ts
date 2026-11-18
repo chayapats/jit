@@ -1,6 +1,6 @@
 // Private finite process supervisor. Only its parent supplies a job over a fresh anonymous pipe.
 // Keeping stdin open is the parent's liveness lease: EOF/SIGTERM/deadline stops and joins the CLI.
-import { lstatSync, writeFileSync } from 'node:fs';
+import { lstatSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 if (import.meta.main) {
@@ -11,7 +11,11 @@ if (import.meta.main) {
   const respond = (state: string) => {
     finished = true;
     // A restarted service may remove this private scratch only after the actual CLI was joined.
-    if (directory) writeFileSync(join(directory, 'settled.json'), JSON.stringify({ state, worker: process.pid, child: child?.pid ?? null }), { mode: 0o600 });
+    if (directory) {
+      const temporary = join(directory, 'settled.tmp');
+      writeFileSync(temporary, JSON.stringify({ state, worker: process.pid, child: child?.pid ?? null }), { mode: 0o600 });
+      renameSync(temporary, join(directory, 'settled.json'));
+    }
     process.stdout.write(JSON.stringify({ state }) + '\n'); process.exit(0);
   };
   const run = async (raw: string) => {
