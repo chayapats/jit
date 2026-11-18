@@ -22,15 +22,19 @@ async function fixture() {
 }
 async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, language: string) {
   const external: string[] = [], errors: string[] = []; let revoked = false;
+  const holds: { path: string; stage: 'before' | 'after'; entered: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> }[] = [], releases: (() => void)[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') console.error('Chrome:', message.text()); });
   // Chrome's AudioWorklet fetch is not intercepted by Playwright routing. Serve the real module over HTTP.
   const server = Bun.serve({ hostname: '127.0.0.1', port: 3099, async fetch(request) {
     const url = new URL(request.url), headers = { ...Object.fromEntries(request.headers), 'accept-language': language, ...(revoked ? { cookie: 'jit_s14=revoked_fixture' } : {}) };
+    const index = holds.findIndex(hold => hold.path === url.pathname), hold = index < 0 ? undefined : holds.splice(index, 1)[0];
+    if (hold?.stage === 'before') { hold.entered.resolve(); await hold.release.promise; }
     const response = request.headers.get('content-type') === 'application/octet-stream'
       ? await f.raw(url.pathname, await request.arrayBuffer(), headers)
       : await f.request(url.pathname + url.search, request.method, request.method === 'POST' ? await request.json() : undefined, headers);
     if (request.method === 'POST' && /\/messages$/.test(url.pathname)) await f.service.conversation.drain();
+    if (hold?.stage === 'after') { hold.entered.resolve(); await hold.release.promise; }
     return response;
   } });
   await page.context().route('**/*', async route => {
@@ -50,10 +54,63 @@ async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, 
       return stream;
     };
   });
-  return { observed: { errors, external }, close: () => server.stop(true), revoke() { revoked = true; } };
+  return { observed: { errors, external }, close: () => { for (const release of releases) release(); return server.stop(true); }, revoke() { revoked = true; },
+    hold(path: string, stage: 'before' | 'after') { const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); holds.push({ path, stage, entered, release }); releases.push(() => release.resolve()); return { entered: entered.promise, release: () => release.resolve() }; } };
 }
 const stopped = (page: Page) => page.waitForFunction(() => (window as unknown as { voiceTest: { tracks: MediaStreamTrack[] } }).voiceTest.tracks.every(track => track.readyState === 'ended'));
 const requests = (f: Awaited<ReturnType<typeof composedFixture>>) => f.service.conversation.store.db.query<{ n: number }, []>('SELECT count(*) AS n FROM requests').get()!.n;
+
+browserTest('late permission and automatic recording stop leave time to submit the completed native clip', async () => {
+  const h = await fixture(), { f } = h, context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000);
+  const { observed, close } = await wire(page, f, 'en');
+  try {
+    await page.clock.install(); await page.goto('http://localhost:3099/s16/chat/conversation');
+    await page.evaluate(() => { (window as unknown as { voiceTest: { mode: string } }).voiceTest.mode = 'delay'; });
+    await page.getByRole('button', { name: en['s16.voice.dictate'], exact: true }).click();
+    await page.waitForFunction(() => !!(window as unknown as { voiceTest: { release: unknown } }).voiceTest.release);
+    // Fake wall clocks model permission taking longer than the original 15-second allowance.
+    f.advance(20000); await page.clock.fastForward(20000);
+    await page.evaluate(() => { (window as unknown as { voiceTest: { release: () => void } }).voiceTest.release(); });
+    await page.getByRole('button', { name: en['s16.voice.stop'], exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('.voice-recording output')?.textContent === '00:01');
+    f.advance(26000); await page.clock.fastForward(26000);
+    const draft = page.getByLabel(en['s16.voice.transcript'], { exact: true }); await draft.waitFor(); await stopped(page);
+    expect(await draft.inputValue()).toBe('Approve this draft only.'); expect(h.transcriptions).toBe(1); expect(requests(f)).toBe(0);
+    expect(h.duration).toBeGreaterThanOrEqual(1000); expect(h.duration).toBeLessThanOrEqual(30000); expect(observed).toEqual({ errors: [], external: [] });
+  } finally { await context.close(); await close(); await f.close(); }
+}, 90000);
+
+browserTest('an expired recording receipt never opens a microphone permission prompt', async () => {
+  const h = await fixture(), { f } = h, context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000);
+  const { observed, close, hold } = await wire(page, f, 'en');
+  try {
+    await page.clock.install(); await page.goto('http://localhost:3099/s16/chat/conversation');
+    const reservation = hold('/api/s16/client/conversations/conversation/voice/captures', 'after');
+    await page.getByRole('button', { name: en['s16.voice.dictate'], exact: true }).click(); await reservation.entered;
+    f.advance(46000); await page.clock.fastForward(46000); reservation.release();
+    await page.getByText(en['s16.voice.failed'], { exact: true }).waitFor();
+    expect(await page.evaluate(() => (window as unknown as { voiceTest: { calls: number } }).voiceTest.calls)).toBe(0);
+    expect(h.transcriptions).toBe(0); expect(requests(f)).toBe(0); expect(observed).toEqual({ errors: [], external: [] });
+  } finally { await context.close(); await close(); await f.close(); }
+}, 90000);
+
+browserTest('a pending recording health read cannot discard a completed editable transcript', async () => {
+  const h = await fixture(), { f } = h, context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000);
+  const { observed, close, hold } = await wire(page, f, 'en');
+  try {
+    await page.clock.install(); await page.goto('http://localhost:3099/s16/chat/conversation');
+    await page.getByRole('button', { name: en['s16.voice.dictate'], exact: true }).click(); await page.getByRole('button', { name: en['s16.voice.stop'], exact: true }).waitFor();
+    const health = hold('/api/s16/client/voice', 'before'); f.advance(2100); await page.clock.fastForward(2100); await health.entered;
+    await page.waitForFunction(() => document.querySelector('.voice-recording output')?.textContent === '00:01');
+    await page.getByRole('button', { name: en['s16.voice.stop'], exact: true }).click();
+    const draft = page.getByLabel(en['s16.voice.transcript'], { exact: true }); await draft.waitFor(); h.available = false; health.release();
+    await page.getByText(en['s16.voice.unavailable'], { exact: true }).waitFor();
+    expect(await draft.inputValue()).toBe('Approve this draft only.');
+    await page.getByRole('button', { name: en['s16.voice.useText'], exact: true }).click();
+    expect(await page.getByLabel(en['s16.chat.prompt'], { exact: true }).inputValue()).toBe('Approve this draft only.');
+    expect(requests(f)).toBe(0); expect(observed).toEqual({ errors: [], external: [] });
+  } finally { await context.close(); await close(); await f.close(); }
+}, 90000);
 
 browserTest.each([1440, 390])('actual voice capture/edit/Send/playback at width %i', async width => {
   const h = await fixture(), { f } = h, copy = width === 1440 ? en : th;

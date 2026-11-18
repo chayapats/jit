@@ -16,7 +16,7 @@ export function useVoice(options: { client: JitClient; enabled: boolean; canCapt
   const alive = (value: Slot) => mounted.current && slot.current === value && latest.current.enabled && latest.current.scope === value.scope;
   const dispose = async (value: Slot | null, remote = true) => {
     if (!value) return;
-    clearInterval(value.timer); value.stop.abort(); value.audio?.pause();
+    clearInterval(value.timer); delete value.timer; value.stop.abort(); value.audio?.pause();
     if (value.audio) { value.audio.onended = null; value.audio.onerror = null; value.audio.removeAttribute('src'); value.audio.load(); }
     if (value.url) URL.revokeObjectURL(value.url);
     await Promise.allSettled([value.recorder?.cancel(), remote && value.id ? latest.current.client.cancelVoice({ id: value.id, conversationId: value.conversationId }) : undefined]);
@@ -29,7 +29,7 @@ export function useVoice(options: { client: JitClient; enabled: boolean; canCapt
     await cleanup;
   };
   const inspect = async (value: Slot) => { const result = await latest.current.client.voiceStatus(value.stop.signal); if (!alive(value)) throw Error('voice_cancelled'); setStatus(result); if (!result.available) throw Error('voice_unavailable'); return result; };
-  const monitor = (value: Slot) => { let checking = false; value.timer = setInterval(() => { if (!alive(value) || checking) return; checking = true; void inspect(value).catch(error => failed(value, error)).finally(() => { checking = false; }); }, 2000); };
+  const monitor = (value: Slot) => { let checking = false; const timer = value.timer = setInterval(() => { if (!alive(value) || checking) return; checking = true; void inspect(value).catch(error => { if (value.timer === timer || error instanceof JitClientError && [401, 403].includes(error.status ?? 0)) return failed(value, error); }).finally(() => { checking = false; }); }, 2000); };
   const begin = async (kind: Slot['kind']): Promise<Slot | null> => {
     const sequence = ++turn.current, scope = latest.current.scope, previous = slot.current; slot.current = null;
     setDraft(''); setError(null); setElapsed(0); setPhase(kind === 'capture' ? 'reserving' : 'loading'); await dispose(previous);
@@ -43,12 +43,12 @@ export function useVoice(options: { client: JitClient; enabled: boolean; canCapt
       const capture = await latest.current.client.beginDictation(value.conversationId, command, value.stop.signal);
       if (!alive(value)) return; if (capture.state !== 'capturing') throw Error('voice_capture_expired');
       setPhase('permission'); monitor(value);
-      const recorder = await startVoiceRecording({ signal: value.stop.signal, durationMs: capture.maxDurationMs, deadline: requested + capture.expiresAt - status.serverTime, progress(ms) { if (alive(value)) setElapsed(old => Math.floor(old / 1000) === Math.floor(ms / 1000) ? old : ms); } });
+      const recorder = await startVoiceRecording({ signal: value.stop.signal, durationMs: capture.maxDurationMs, deadline: requested + capture.recordingEndsAt - status.serverTime, progress(ms) { if (alive(value)) setElapsed(old => Math.floor(old / 1000) === Math.floor(ms / 1000) ? old : ms); } });
       value.recorder = recorder;
       if (!alive(value)) { await recorder.cancel(); return; }
       setPhase('recording'); const wav = await recorder.done;
       delete value.recorder;
-      if (!alive(value)) return; clearInterval(value.timer); setPhase('transcribing');
+      if (!alive(value)) return; clearInterval(value.timer); delete value.timer; setPhase('transcribing');
       const transcript = await latest.current.client.transcribeDictation(capture, wav, value.stop.signal);
       if (!alive(value)) return; setDraft(transcript.text); setPhase('draft'); setStatus(old => old ? { ...old, usage: transcript.usage } : old);
       void latest.current.client.voiceStatus(value.stop.signal).then(fresh => { if (alive(value)) setStatus(fresh); }).catch(error => { if (!alive(value)) return; if (error instanceof JitClientError && [401, 403].includes(error.status ?? 0)) void failed(value, error); else setError(code(error)); });

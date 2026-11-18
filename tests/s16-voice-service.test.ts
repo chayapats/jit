@@ -92,6 +92,15 @@ test('permission/capture expiry releases an unused reservation and a pruned old 
   await expect(f.service.begin(f.owner, 'conversation', command)).rejects.toThrow('voice_request_expired'); expect(f.transcriptions).toBe(0);
 });
 
+test('a clip completed at the recording deadline retains a separate finite submission window', async () => {
+  const f = await fixture(), capture = await f.service.begin(f.owner, 'conversation', f.command());
+  expect(capture.expiresAt - capture.recordingEndsAt).toBe(15000);
+  f.at = capture.recordingEndsAt + 1;
+  const transcript = await f.service.transcribe(f.owner, capture.id, wav(), signal());
+  expect(transcript.text).toBe('Approve this draft only.'); expect(f.transcriptions).toBe(1);
+  expect(transcript.usage).toMatchObject({ chargedMs: 100, reservedMs: 0 });
+});
+
 test('local input budget persists across restart and clock rewind cannot reset the current quota day', async () => {
   const f = await fixture(100, 100), capture = await f.service.begin(f.owner, 'conversation', f.command());
   await f.service.transcribe(f.owner, capture.id, wav(), signal()); await f.reopen();

@@ -1,5 +1,5 @@
 /** Finite owner-client voice support; audio seconds do not measure compute time or provider billing. */
-export const voiceLimits = Object.freeze({ captureMs: 30000, synthesisMs: 60000, transcriptBytes: 16384, responseCacheBytes: 8 * 1024 * 1024, responseCacheMs: 300000, retentionMs: 7 * 86400000, requestAgeMs: 300000, operations: 4096 });
+export const voiceLimits = Object.freeze({ captureMs: 30000, permissionMs: 15000, submissionMs: 15000, synthesisMs: 60000, transcriptBytes: 16384, responseCacheBytes: 8 * 1024 * 1024, responseCacheMs: 300000, retentionMs: 7 * 86400000, requestAgeMs: 300000, operations: 4096 });
 /** Original request identity embeds its issuance time, so a pruned old command cannot become a fresh capture. */
 export function voiceRequestId(serverTime: number): string {
   if (!Number.isSafeInteger(serverTime) || serverTime < 0) throw Error('voice_time_invalid');
@@ -9,8 +9,8 @@ export function voiceRequestId(serverTime: number): string {
 export interface VoiceQuotaConfig { dailyMs: number; captureMs: number }
 /** Metadata-only local quota; unknown processing retains its conservative charge. All milliseconds round up. */
 export interface VoiceUsage { day: string; unit: 'local_audio_ms'; limitMs: number; chargedMs: number; reservedMs: number; conservativeMs: number }
-/** Capture is a private draft operation, never Bot work acceptance or an approval. */
-export interface VoiceCapture { id: string; conversationId: string; state: 'capturing' | 'processing' | 'ready' | 'cancelled' | 'failed' | 'unknown' | 'expired'; expiresAt: number; maxDurationMs: number }
+/** Capture is a private draft operation, never work/approval. Stop by recordingEndsAt; expiresAt separately bounds submission. */
+export interface VoiceCapture { id: string; conversationId: string; state: 'capturing' | 'processing' | 'ready' | 'cancelled' | 'failed' | 'unknown' | 'expired'; recordingEndsAt: number; expiresAt: number; maxDurationMs: number }
 /** Read-only configured capability and current local quota; paths, credentials and model data are absent. */
 export interface VoiceStatus { contract: 's16-voice/v1'; available: boolean; serverTime: number; route: 'local'; limits: VoiceQuotaConfig; usage: VoiceUsage }
 /** The owner's explicit Mic intent. It starts no conversation request or model operation. */

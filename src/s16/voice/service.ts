@@ -84,7 +84,7 @@ export class VoiceService<Actor> {
     const today = day(at), rows = this.all().filter(row => row.day === today);
     return { day: today, unit: 'local_audio_ms', limitMs: this.options.limits.dailyMs, chargedMs: rows.reduce((n, row) => n + row.chargedMs, 0), reservedMs: rows.reduce((n, row) => n + (row.state === 'capturing' && row.expiresAt <= at ? 0 : row.reservedMs), 0), conservativeMs: rows.reduce((n, row) => n + (row.conservative ? row.chargedMs : 0), 0) };
   }
-  private capture(record: Operation): VoiceCapture { return { id: record.id, conversationId: record.conversationId, state: record.state, expiresAt: record.expiresAt, maxDurationMs: record.boundMs }; }
+  private capture(record: Operation): VoiceCapture { return { id: record.id, conversationId: record.conversationId, state: record.state, recordingEndsAt: record.kind === 'capture' ? record.expiresAt - voiceLimits.submissionMs : record.expiresAt, expiresAt: record.expiresAt, maxDurationMs: record.boundMs }; }
   private cached<T extends VoiceTranscript | VoicePlayback>(id: string, owner: VoiceOwner<Actor>): T {
     const record = this.get(id); this.owner(owner, record);
     const result = this.results.get(id); if (!result || result.until <= this.now()) return fail(record.state === 'unknown' ? 'voice_outcome_unknown' : 'voice_result_expired');
@@ -121,7 +121,7 @@ export class VoiceService<Actor> {
       this.options.conversation(this.owner(owner), conversationId); const at = this.clock(), old = this.find(command.requestId);
       if (old) { if (old.commandHash !== hash) fail('request_id_conflict'); this.owner(owner, old); this.prune(at); return this.capture(this.get(old.id)); }
       this.fresh(command.requestId, at); this.capacity(at, this.options.limits.captureMs);
-      const record: Operation = { id: command.requestId, kind: 'capture', conversationId, generation: this.options.ownerGeneration(), commandHash: hash, state: 'capturing', createdAt: at, expiresAt: at + this.options.limits.captureMs + 15000, day: day(at), boundMs: this.options.limits.captureMs, reservedMs: this.options.limits.captureMs, chargedMs: 0, conservative: false, started: false, inputHash: null, inputMs: null };
+      const record: Operation = { id: command.requestId, kind: 'capture', conversationId, generation: this.options.ownerGeneration(), commandHash: hash, state: 'capturing', createdAt: at, expiresAt: at + this.options.limits.captureMs + voiceLimits.permissionMs + voiceLimits.submissionMs, day: day(at), boundMs: this.options.limits.captureMs, reservedMs: this.options.limits.captureMs, chargedMs: 0, conservative: false, started: false, inputHash: null, inputMs: null };
       this.save(record); return this.capture(record);
     });
   }

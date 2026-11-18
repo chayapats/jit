@@ -118,7 +118,7 @@ export class JitClient {
   }
   private voiceUsage(value: unknown): boolean { return record(value) && value.unit === 'local_audio_ms' && typeof value.day === 'string' && /^\d{4}-\d\d-\d\d$/.test(value.day) && [value.limitMs, value.chargedMs, value.reservedMs, value.conservativeMs].every(count); }
   private voiceCapture(value: unknown, expectedId: string, conversationId: string): value is VoiceCapture {
-    return record(value) && value.id === expectedId && value.conversationId === conversationId && ['capturing', 'processing', 'ready', 'cancelled', 'failed', 'unknown', 'expired'].includes(String(value.state)) && count(value.expiresAt) && count(value.maxDurationMs) && (value.maxDurationMs as number) <= 60000;
+    return record(value) && value.id === expectedId && value.conversationId === conversationId && ['capturing', 'processing', 'ready', 'cancelled', 'failed', 'unknown', 'expired'].includes(String(value.state)) && count(value.recordingEndsAt) && count(value.expiresAt) && (value.recordingEndsAt as number) <= (value.expiresAt as number) && count(value.maxDurationMs) && (value.maxDurationMs as number) <= 60000;
   }
   /** Creates one local immutable send identity; callers retain this command through response loss. */
   prepareMessage(conversationId: string, text: string, files: readonly FileReference[] = []): ClientMessage {

@@ -14,6 +14,7 @@ export async function startVoiceRecording(options: { signal: AbortSignal; durati
   if (options.signal.aborted) throw failure('voice_cancelled');
   let stream: MediaStream | undefined, context: AudioContext | undefined, source: MediaStreamAudioSourceNode | undefined, node: AudioWorkletNode | undefined, silent: GainNode | undefined;
   const deadline = options.deadline ?? performance.now() + options.durationMs + 15000;
+  if (!Number.isFinite(deadline) || deadline <= performance.now()) throw failure('voice_capture_expired');
   let stopping = false, finished = false, frames = 0, maximum = Math.floor(options.durationMs * 16), chunks: Float32Array[] = [];
   let timeout: ReturnType<typeof setTimeout> | undefined, watchdog: ReturnType<typeof setTimeout> | undefined;
   const complete = Promise.withResolvers<Uint8Array>(); void complete.promise.catch(() => {});
