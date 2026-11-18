@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import type { VmSession } from '../../src/s15/vm';
@@ -10,9 +10,13 @@ import { vmQuote } from '../../src/s15/vm/host';
  * it does not attest against a hypervisor/browser-engine exploit or certify another installation. */
 export async function proveProtectedBrowserBoundary(session: VmSession, profilePath: string) {
   if (process.env.JIT_S15_ARM64_EVIDENCE !== '1' || process.platform !== 'linux') throw Error('explicit_linux_boundary_evidence_required');
-  const rows = Bun.spawnSync(['ps', '-eo', 'pid=,args=']);
-  const browser = rows.stdout.toString().split('\n').filter(row => row.includes(`--user-data-dir=${profilePath}`) && row.includes('--remote-debugging-pipe'));
-  if (rows.exitCode !== 0 || browser.length !== 1 || browser[0]!.includes('--remote-debugging-port') || existsSync(join(profilePath, 'DevToolsActivePort'))) throw Error('browser_pipe_unproven');
+  // Read exact NUL-separated kernel argv, rather than a terminal-width-dependent `ps` rendering.
+  const browser: string[][] = [];
+  for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+    let args: string[]; try { args = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); } catch { continue; }
+    if (args.includes(`--user-data-dir=${profilePath}`) && args.includes('--remote-debugging-pipe')) browser.push(args);
+  }
+  if (browser.length !== 1 || browser[0]!.some(arg => arg.startsWith('--remote-debugging-port')) || existsSync(join(profilePath, 'DevToolsActivePort'))) throw Error(`browser_pipe_unproven:${browser.length}:${existsSync(join(profilePath, 'DevToolsActivePort'))}`);
   const cookiePaths = [join(profilePath, 'Default', 'Cookies'), join(profilePath, 'Default', 'Network', 'Cookies')].filter(existsSync);
   if (!cookiePaths.length) throw Error('browser_cookie_file_unproven');
   const marker = join(profilePath, 'jit-boundary-canary'); writeFileSync(marker, randomBytes(32), { mode: 0o600 });

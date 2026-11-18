@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { composeS15 } from '../../src/s15/composition';
 import { RemoteVmManagement } from '../../src/s15/vm/remote';
@@ -17,6 +17,9 @@ const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 }), proof = {
 const selection = { route: ref('route'), model: ref('model'), effort: 'low' }, modelBound = { ...zero(), calls: 1, steps: 1, activeMs: 10000 };
 const route: ApprovedModelRoute = { selection, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: modelBound, rank: { ordinary: 0, difficult: 0 } };
 const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha: input.sha, architecture: process.arch, controller: 'jit-s15-arm', workingVm: 'jit-work-arm', modelInference: 'not_run', ownerCredentials: 'not_used', controlledLoopbackDnsDial: true, startedAt: new Date().toISOString(), cases: {} };
+const buildCommand = (argv: string[]) => { const result = Bun.spawnSync(argv); if (result.exitCode !== 0) throw Error('build_fact_unavailable'); return result.stdout.toString().trim(); };
+const binaryHash = (path: string) => { const hash = buildCommand(['sha256sum', path]).split(/\s/)[0]!; if (!/^[a-f0-9]{64}$/.test(hash)) throw Error('build_hash_unavailable'); return hash; };
+report.build = { bun: { version: process.versions.bun, sha256: binaryHash(process.execPath) }, browser: { version: buildCommand([input.browser, '--version']), sha256: binaryHash(input.browser) }, kernel: buildCommand(['uname', '-r']), playwright: JSON.parse(readFileSync(new URL('../../node_modules/playwright-core/package.json', import.meta.url), 'utf8')).version };
 const cases = report.cases as Record<string, unknown>, site = browserSite(), manager = new RemoteVmManagement({ origin: input.relay, credential: () => input.credential, allowLoopback: true });
 const catalog = new Map<string, { ref: Ref; active: boolean }>();
 for (const [kind, names] of Object.entries({ purpose: ['evidence', 'interpret'], bot: ['bot'], resource: ['computer', 'account'], recipient: ['provider', 'payee', 'other'], route: ['route'], model: ['model'] })) for (const id of names) catalog.set(`${kind}:${id}`, { ref: ref(id), active: true });
