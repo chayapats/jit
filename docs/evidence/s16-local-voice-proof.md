@@ -1,6 +1,6 @@
 # VOICE16-01 local dictation and guarded playback
 
-Date: 2026-11-18. Runtime source: `bd6e317669a0f40d105636977f0379399989fa34`. Scope: #422, the bounded-dictation/playback portion of S16-AC15; FR-06/11/13/14/19/24/25/37/38; NFR-05/06/07/09/11. Contract: [s16-voice/v1](../contracts/s16-voice-v1.md), [ADR 0096](../adr/0096-s16-bounded-local-dictation-and-playback.md), [operator runbook](../runbooks/s16-local-voice.md).
+Date: 2026-11-18. Runtime source: `60679513fdf70d0f9b32e409387023e7068dafae`. Scope: #422, the bounded-dictation/playback portion of S16-AC15; FR-06/11/13/14/19/24/25/37/38; NFR-05/06/07/09/11. Contract: [s16-voice/v1](../contracts/s16-voice-v1.md), [ADR 0096](../adr/0096-s16-bounded-local-dictation-and-playback.md), [operator runbook](../runbooks/s16-local-voice.md).
 
 This evidence uses the actual optional composed voice service, shared client, local process supervisor and React/AudioWorklet bundle. Model, interpretation and working-VM work remain scripted fixtures. Native speech uses actual local executables/model files; no microphone, private recording, provider credential, metered API or owner-host activation is used. Installation paths and full private receipts remain ignored `.local` records. Public facts below contain build/artifact hashes and outcomes.
 
@@ -10,7 +10,7 @@ This evidence uses the actual optional composed voice service, shared client, lo
 
 | Observation | macOS ARM64 | Linux ARM64 |
 | --- | --- | --- |
-| Receipt UTC | `2026-11-18T05:08:55.691Z` | `2026-11-18T05:08:54.006Z` |
+| Receipt UTC | `2026-11-18T05:45:53.063Z` | `2026-11-18T05:48:28.227Z` |
 | Runtime | Bun `1.4.2` (`43848b5a7`) | Ubuntu 24.04.5, Bun `1.4.2` (`744846f84`) |
 | STT | whisper.cpp v1.9.2, `tiny.en`, language `en`, CPU-only fixed arguments | whisper.cpp v1.9.2 CPU build, `base.en`, language `en`, same fixed arguments |
 | TTS | Explicit local `say`, installed `Samantha`, rate 165 | eSpeak NG `1.51+dfsg-12build1`, installed `en-us`, rate 165 |
@@ -24,7 +24,7 @@ Usage dates are intentionally `1970-01-01` under the composed fixture's determin
 
 | SHA-256 artifact | macOS ARM64 | Linux ARM64 |
 | --- | --- | --- |
-| `whisper-cli` | `40bca494d49af736058eb3f33cbcebaa020eacf6d0087b623f334946e1ab2128` | `a41992e086d3a4edf9b73100730e51e8671535261a67d29e77fe513f3b138344` |
+| `whisper-cli` | `40bca494d49af736058eb3f33cbcebaa020eacf6d0087b623f334946e1ab2128` | `651c5ca81bbd648da226598e0349ec097ffb1c74dd04f8e8f249e807b1758bb6` |
 | Synthesis executable | `29f947458332d87ae788ba874728bfbe5fc39a30b6249522569ddbd11bd2bb5c` | `89402b6a13d29ab2edb0570c809796751b22a5d031828897cfb1b370dafa9c29` |
 | Model | `921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f` | `a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002` |
 | Canonical input WAV | `dec53bc57d9f07d9b5c133aa91c069c91e2d2b3050f85c90ff032037ad87d3af` | `75b061d3b158a198b8fc7b9a029dba7c2d2eee0af2b5223a585f4500b6d15a7b` |
@@ -36,7 +36,7 @@ Both public models came from Hugging Face repository `ggerganov/whisper.cpp`, im
 
 ## Browser and owning-service behavior
 
-`JIT_S16_BROWSER_TESTS=1 bun test tests/s16-voice.browser.test.ts`: **4 pass, 0 fail, 57 assertions**. The real English 1440 px and Thai 390 px React layouts use native Chrome fake media devices and the actual fixed AudioWorklet over a loopback HTTP server. Sound is muted; no physical microphone is opened. Keyboard-started reply playback, no horizontal overflow, elapsed capture, Stop, editable transcript, Add to message and ordinary Send are exercised. Before Send there is no CHAT request/model history; Cancel creates no additional work. Playback interruption and later local route loss stop client audio without stopping the underlying conversation request. Controlled permission denial/track-mute, late permission after navigation and actual owner-cookie rejection exercise cleanup/text fallback and private-draft clearing. The session-negative case's HTTP 401 is expected.
+`JIT_S16_BROWSER_TESTS=1 bun test tests/s16-voice.browser.test.ts`: **7 pass, 0 fail, 71 assertions**. The real English 1440 px and Thai 390 px React layouts use native Chrome fake media devices and the actual fixed AudioWorklet over a loopback HTTP server. Sound is muted; no physical microphone is opened. Keyboard-started reply playback, no horizontal overflow, elapsed capture, Stop, editable transcript, Add to message and ordinary Send are exercised. Before Send there is no CHAT request/model history; Cancel creates no additional work. Playback interruption and later local route loss stop client audio without stopping the underlying conversation request. Controlled permission denial/track-mute, late permission after navigation and actual owner-cookie rejection exercise cleanup/text fallback and private-draft clearing. The session-negative case's HTTP 401 is expected. Fake wall-clock barriers also cover permission delayed beyond fifteen seconds, automatic recording stop followed by successful upload, an expired recording receipt opening no microphone prompt, and a late recording-health response preserving the completed editable transcript.
 
 Chrome AudioWorklet fetches bypassed the older Playwright request-route harness; the final test uses a real isolated HTTP server rather than substituting a fake worklet. The successful native capture uses the actual browser AudioContext/AudioWorklet classes. Screenshots were inspected for desktop/mobile layout; they are private test artifacts, not physical-device evidence.
 
@@ -44,9 +44,15 @@ Chrome AudioWorklet fetches bypassed the older Playwright request-route harness;
 
 ## Durability, bounds and regression coverage
 
-At source revision above, `bun test tests/s16-voice-audio.test.ts tests/s16-voice-local.test.ts tests/s16-voice-service.test.ts tests/s16-voice-client.test.ts` passed **28 tests / 153 assertions** on both macOS and Linux ARM64. Subsequent test-only work adds the authenticated-worklet case (seven client tests / 35 assertions); runtime code is unchanged. The core covers strict actual PCM bytes, 30-second limits, native `say` filler without relaxing capture input, pinned artifacts, minimal process environment, actual cancellation/deadline/close joining, actual controller SIGKILL plus supervisor settlement, journal reopen/unknown quota/no replay, route-health races, stale generation and reply/source guards. These process-crash fixtures use actual subprocesses with controlled CLI output; they are distinct from the actual speech proof above.
+At the source revision above, `bun test tests/s16-voice-audio.test.ts tests/s16-voice-local.test.ts tests/s16-voice-service.test.ts tests/s16-voice-client.test.ts` passed **30 tests / 164 assertions** on both macOS and Linux ARM64. This includes the authenticated-worklet case (seven client tests / 35 assertions) and a completed clip submitted during the separate finite submission window. The core covers strict actual PCM bytes, 30-second limits, native `say` filler without relaxing capture input, pinned artifacts, minimal process environment, actual cancellation/deadline/close joining, actual controller SIGKILL plus supervisor settlement, journal reopen/unknown quota/no replay, route-health races, stale generation and reply/source guards. These process-crash fixtures use actual subprocesses with controlled CLI output; they are distinct from the actual speech proof above.
 
-The pre-hardening composed/runtime/package regression at `e589e4e0` passed **251 tests / 1,464 assertions across thirteen files**. Final revision validation also runs affected service/client regressions, `bun install --frozen-lockfile`, `bun run typecheck`, `bun run upstream:check` and `git diff --check`; the PR records its exact final head/results. Linux ARM64 typecheck and provenance checks passed after its native proof. Package tests exercise the existing source inventory, which ships the supervisor/worklet without bundling speech models or binaries.
+The composed/runtime/package regression at the final runtime source above passed **254 tests / 1,479 assertions across thirteen files**. Frozen install, typecheck, upstream provenance and committed diff checks passed; the PR records its final head (including subsequent evidence-only changes). Linux ARM64 typecheck passed after its repeated native proof; provenance passed on both platforms. Package tests exercise the existing source inventory, which ships the supervisor/worklet without bundling speech models or binaries.
+
+## Review and CI corrections
+
+Review identified that slow permission could let recording end at submission expiry. Capture receipts now separate `recordingEndsAt` and a submission deadline fifteen seconds later. Expired recording receipts refuse before asking for microphone access. A delayed capture-health failure can update availability without discarding an already completed transcript; owner/authentication rejection still withholds it.
+
+The initial ARM64 CI shard 5 failed when a crash-test marker became visible before its JSON write completed. The controlled marker is now published by atomic rename, and the production supervisor similarly publishes its complete settlement receipt only after joining the actual CLI. No timeout/assertion was weakened. The exact failing shard command passed locally: **641 pass, 17 opt-in skips, 0 fail, 66,627 assertions across 52 files**. Updated native/controller-crash suites passed on Linux ARM64 as recorded above; the fresh PR CI run must still pass on its own final head before merge.
 
 ## Failed experiments and remaining acceptance
 
