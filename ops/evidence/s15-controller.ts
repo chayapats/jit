@@ -80,8 +80,10 @@ try {
   check((await run({ kind: 'navigate', url: site.origin + '/dynamic' })).state === 'ok', 'dynamic_navigation_failed');
   const dynamic = await run({ kind: 'read' }); if (dynamic.state !== 'observed') throw Error('dynamic_observation_failed');
   check(dynamic.observation.text.includes('Launch day: Friday / Launch project'), 'dynamic_hydration_failed');
-  const message = dynamic.observation.elements.find(element => element.name === 'message')!, confirm = dynamic.observation.elements.find(element => element.name === 'confirm')!;
+  const message = dynamic.observation.elements.find(element => element.name === 'message')!;
   check((await run({ kind: 'type', target: message.id, value: 'Exact reference-host browser effect' })).state === 'ok', 'dynamic_edit_failed');
+  const edited = await run({ kind: 'read' }); if (edited.state !== 'observed') throw Error('dynamic_edited_observation_failed');
+  const confirm = edited.observation.elements.find(element => element.name === 'confirm')!;
   const dynamicHold = await run({ kind: 'click', target: confirm.id }); if (dynamicHold.state !== 'held') throw Error('dynamic_effect_not_held');
   check(!site.received.some(row => row.path === '/dynamic-send'), 'dynamic_effect_sent_before_approval');
   const action = service.policy.owner.inspect(owner, dynamicHold.action).action;
