@@ -1,3 +1,4 @@
+import { SkillsView } from "./SkillsView";
 import { useEffect, useRef, useState } from "react";
 import type { Locale, MessageKey } from "../../i18n";
 import { JitClientError, type JitClient } from "../client";
@@ -10,6 +11,7 @@ export interface ConnectionsViewProps {
   client: JitClient; t: Copy; locale: Locale;
   /** Server capability. When false, no request is made and no control is shown. */
   available: boolean;
+  skillsAvailable?: boolean;
   seed: ConnectionSeed | null;
   /** OAuth return (`?oauth=<sourceId>` or `?oauth_error=`): finishing sign-in is the owner's same flow. */
   oauth: { sourceId: string | null; error: string | null } | null;
@@ -34,9 +36,9 @@ const authInput = (c: Credentials) => c.kind === "bearer" ? { kind: "bearer" as 
  * review of their discovered tools. Every change is one explicit command, never retried silently: an unknown outcome
  * is checked again with the same command identity. Secrets are typed here only, sent once and cleared from the form.
  */
-export function ConnectionsView({ client, t, locale, available, seed, oauth, onFailure, onOpenConversation }: ConnectionsViewProps) {
+export function ConnectionsView({ client, t, locale, available, skillsAvailable = false, seed, oauth, onFailure, onOpenConversation }: ConnectionsViewProps) {
   const [data, setData] = useState<ClientConnectionsView | null>(null), [loadError, setLoadError] = useState<string | null>(null), [reload, setReload] = useState(0);
-  const [tab, setTab] = useState<"apps" | "sources">(seed && seed.kind !== "github" ? "sources" : "apps");
+  const [tab, setTab] = useState<"apps" | "sources" | "skills">(/^#skill-command=/.test(location.hash) || !available && skillsAvailable ? "skills" : seed && seed.kind !== "github" ? "sources" : "apps");
   const [pending, setPending] = useState<Pending | null>(null), [confirm, setConfirm] = useState<{ kind: "github" } | { kind: "source"; source: ClientSource } | null>(null);
   const [reviewing, setReviewing] = useState<string | null>(null), [choices, setChoices] = useState<Record<string, ClientToolClass>>({});
   const [token, setToken] = useState(""), [repos, setRepos] = useState<string[] | null>(null), [replacing, setReplacing] = useState(false);
@@ -103,7 +105,7 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
     {pending.state === "error" && <p>{t(pending.code === "source_oauth_stale" ? "s16.connections.oauthFailed" : "s16.connections.failed", { reason: pending.code ?? "" })}</p>}
   </div>;
   const local = problem && <div role="alert" className="notice"><p>{t(problem === "source_oauth_stale" ? "s16.connections.oauthFailed" : "s16.connections.failed", { reason: problem })}</p></div>;
-  if (!available) return <section className="connections" aria-labelledby="connections-title"><h1 id="connections-title">{t("s16.connections.title")}</h1><p>{t("s16.connections.unavailable")}</p><p><a href="/resources">{t("s16.nav.connections")}</a></p></section>;
+  if (!available && !skillsAvailable) return <section className="connections" aria-labelledby="connections-title"><h1 id="connections-title">{t("s16.connections.title")}</h1><p>{t("s16.connections.unavailable")}</p><p><a href="/resources">{t("s16.nav.connections")}</a></p></section>;
 
   const github = data?.github ?? null;
   const selected = repos ?? github?.selected ?? [];
@@ -168,17 +170,19 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
     <h1 id="connections-title">{t("s16.connections.title")}</h1>
     <p className="lead">{t("s16.connections.lead")}</p>
     {returnTo && <p className="notice">{t("s16.connections.fromChat")} <button type="button" className="memory-link" onClick={() => onOpenConversation(returnTo)}>{t("s16.connections.back")}</button></p>}
-    {!data && !loadError && <p role="status">{t("s16.common.loading")}</p>}
+    {available && !data && !loadError && <p role="status">{t("s16.common.loading")}</p>}
     {loadError && <p role="alert">{t("s16.connections.loadFailed", { reason: loadError })} <button type="button" onClick={() => setReload(value => value + 1)}>{t("s16.connections.retry")}</button></p>}
     {status}{local}
     {confirm && <div className="notice confirm" role="alertdialog" aria-labelledby="connection-confirm"><p id="connection-confirm">{confirm.kind === "github" ? t("s16.connections.github.removeConfirm") : t("s16.connections.removeConfirm", { name: confirm.source.label })}</p>
       <button type="button" className="primary" disabled={busy} onClick={() => { if (confirm.kind === "github") { if (github) void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "github.remove", expectedRevision: github.revision }, "s16.connections.github.removed"); } else void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "source.remove", sourceId: confirm.source.id, expectedRevision: confirm.source.revision }, "s16.connections.removed"); }}>{confirm.kind === "github" ? t("s16.connections.github.remove") : t("s16.connections.remove")}</button>
       <button type="button" onClick={() => setConfirm(null)}>{t("s16.connections.cancel")}</button></div>}
-    {data && <>
-      <div role="tablist" aria-label={t("s16.connections.title")} className="tabs">
-        <button type="button" role="tab" id="tab-apps" aria-controls="panel-apps" aria-selected={tab === "apps"} onClick={() => setTab("apps")}>{t("s16.connections.tabApps")}</button>
-        <button type="button" role="tab" id="tab-sources" aria-controls="panel-sources" aria-selected={tab === "sources"} onClick={() => setTab("sources")}>{t("s16.connections.tabSources")} ({data.sources.length})</button>
+    {(data || skillsAvailable) && <>
+      <div role="tablist" aria-label={t("s16.connections.title")} className="tabs" onKeyDown={event => { if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return; const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")], index = tabs.indexOf(globalThis.document.activeElement as HTMLButtonElement), next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; event.preventDefault(); tabs[next]?.click(); tabs[next]?.focus(); }}>
+        <button type="button" disabled={!available} tabIndex={tab === "apps" ? 0 : -1} role="tab" id="tab-apps" aria-controls="panel-apps" aria-selected={tab === "apps"} onClick={() => setTab("apps")}>{t("s16.connections.tabApps")}</button>
+        <button type="button" disabled={!available} tabIndex={tab === "sources" ? 0 : -1} role="tab" id="tab-sources" aria-controls="panel-sources" aria-selected={tab === "sources"} onClick={() => setTab("sources")}>{t("s16.connections.tabSources")} ({data?.sources.length ?? 0})</button>
+        {skillsAvailable && <button type="button" role="tab" id="tab-skills" aria-controls="panel-skills" aria-selected={tab === "skills"} tabIndex={tab === "skills" ? 0 : -1} onClick={() => setTab("skills")}>{t("s16.skills.title")}</button>}
       </div>
+      {tab === "skills" ? <div role="tabpanel" id="panel-skills" aria-labelledby="tab-skills"><SkillsView client={client} t={t} available={skillsAvailable} onFailure={onFailure} /></div> : data && <>
       {tab === "apps" && <div role="tabpanel" id="panel-apps" aria-labelledby="tab-apps">
         {!github ? <p>{t("s16.connections.unavailable")}</p> : <article className="computer-card connection-card">
           <header><h2>{t("s16.connections.github.title")}</h2>{github.state === "connected" && <span className="pill ok">{t("s16.connections.github.connected", { login: github.login ?? "" })}</span>}{github.state === "reconnect_required" && <span className="pill warn">{t("s16.connections.state.reconnect_required")}</span>}</header>
@@ -216,6 +220,7 @@ export function ConnectionsView({ client, t, locale, available, seed, oauth, onF
           <div className="actions"><button type="submit" className="primary" disabled={busy || kind !== "openapi" && !endpoint.trim() || kind !== "mcp" && !document.trim()}>{t("s16.connections.submit")}</button></div>
         </form>
       </div>}
+      </>}
     </>}
   </section>;
 }

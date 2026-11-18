@@ -3,7 +3,7 @@ import type { FileSourcePin } from "../file-lineage";
 /** Claim classification is distinct from evidence status; no memory classification grants authority. */
 export interface MemoryCandidate { kind: "fact" | "inference"; category: "fact" | "preference" | "working_knowledge"; text: string; quote: string }
 /** Provenance-preserving future interoperability seam. It is data only; no Jod transport/import is implemented. */
-export interface MemoryProvenance { origin: SourceOrigin; scope: DataScope; resources: Ref[]; teamSourceId: string | null; sourceHash: string; filePins?: FileSourcePin[] }
+export interface MemoryProvenance { origin: SourceOrigin; scope: DataScope; resources: Ref[]; teamSourceId: string | null; sourceHash: string; filePins?: FileSourcePin[]; dataRefs?: Ref[] }
 /** Version-one retained assertion. A fact records a statement/observation, never an authenticated decision. */
 export interface MemoryClaim extends MemoryCandidate {
   contract: "s15-memory-claim/v1"; id: string; revision: number; sourceId: string;
@@ -26,7 +26,7 @@ export interface MemoryClaimView extends MemoryClaim { sourceState: "current" | 
 /** JSON owner inspection contains lifecycle/provenance even when forgotten text has been removed. */
 export interface MemoryView { contract: "s15-memory-view/v1"; claims: MemoryClaimView[]; nativePolicy: "fresh_sessions_retire_on_close" }
 /** Every derivative conservatively retains the complete original context lineage, regardless of citations. */
-export interface MemoryDerivative { id: string; kind: "context" | "native" | "summary" | "artifact" | "work"; claimIds: string[]; sourceIds: string[]; state: "active" | "retired"; text: string | null; workId: string | null; filePins?: FileSourcePin[];
+export interface MemoryDerivative { id: string; kind: "context" | "native" | "summary" | "artifact" | "work"; claimIds: string[]; sourceIds: string[]; state: "active" | "retired"; text: string | null; workId: string | null; filePins?: FileSourcePin[]; dataRefs?: Ref[];
   /** Creation time of contexts/derivatives written by MEM v1 timing; absent on older rows. Not authority. */
   at?: number }
 /** Owner-only usage summary for inspection; counts retained lineage, never remote/model byte recall. */
@@ -42,7 +42,7 @@ export interface MemoryOptions {
   now?: () => number;
 }
 /** Original trusted ingress/observation; candidates are untrusted extraction proposals grounded in its bytes. */
-export interface MemoryInput { id: string; text: string; origin: SourceOrigin; scope: DataScope; resources: Ref[]; parents: string[]; filePins?: FileSourcePin[] }
+export interface MemoryInput { id: string; text: string; origin: SourceOrigin; scope: DataScope; resources: Ref[]; parents: string[]; filePins?: FileSourcePin[]; dataRefs?: Ref[] }
 /** Generic protected data API seam used by CHAT; memory receives no policy installation/approval method. */
 export interface MemoryOwnerApi<Actor = OwnerActor> { view(actor: Actor): MemoryView; command(actor: Actor, input: unknown): unknown }
 export type { OwnerActor, TeamContext };

@@ -34,6 +34,8 @@ export function createFileWorkflow(options: {
   disclosure(): DisclosureService | undefined;
   guardResource(work: ConversationPolicyWork, write: boolean): void;
   request(workId: string): ConversationRequest;
+  /** SKILL16-01: artifact-derived inputs also inherit the owning DATA15 descendant, including non-file observations. */
+  inheritArtifactData?: boolean;
   /**
    * FILE16-01C working-computer integration (explicit S16 computers). File work that may change things also
    * opens its VM attempt: the public core tools plus `computer_file_put` (stage one selected input's exact
@@ -73,6 +75,7 @@ export function createFileWorkflow(options: {
     // A revision input carries its parent artifact's private sources: each is a current DATA15 source of
     // this work too, so recipient checks and withdrawal see the complete original ancestry.
     for (const id of lineage(row)) {
+      if (options.inheritArtifactData) { const parent = files.origin(work.actor, id); if (parent) options.disclosure()!.inherit(work.actor, { id: parent.id, revision: 1, generation: current.ownerGeneration }); }
       if (row.fileInputs!.some(file => file.id === id)) continue;
       const source = files.source(id);
       if (!source?.active || !equal(source.resource, options.resource)) throw new AppError("lineage_withdrawn");

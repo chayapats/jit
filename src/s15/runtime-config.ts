@@ -41,6 +41,8 @@ export interface S15RuntimeConfig {
   /** Explicit S16 connections (`s16-connections/v1`, CONN16-01/MCP16-01/OPEN16-01): GitHub and HTTPS MCP/OpenAPI/GraphQL
    * tool sources connected from the client. Requires `disclosure`. Omission keeps an installation without them. */
   connections?: boolean;
+  /** SKILL16-01 pinned package import/review and working-computer use; requires DATA15. */
+  skills?: boolean;
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -87,6 +89,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.computers !== undefined && typeof value.computers !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.desktop !== undefined && (typeof value.desktop !== 'boolean' || value.desktop && value.computers !== true)) throw new AppError('invalid_s15_config');
   if (value.bots !== undefined && typeof value.bots !== 'boolean') throw new AppError('invalid_s15_config');
+  if (value.skills !== undefined && (typeof value.skills !== 'boolean' || value.skills && !value.disclosure)) throw new AppError('invalid_s15_config');
   if (value.connections !== undefined && (typeof value.connections !== 'boolean' || value.connections && !value.disclosure)) throw new AppError('invalid_s15_config');
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;

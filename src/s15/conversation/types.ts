@@ -155,6 +155,8 @@ export interface ConversationEvent {
 export interface ConversationEvidence { kind?: "input"; id: string; tool: string; inputHash: string; outputHash: string; content: string; isError: boolean; at: number }
 /** Durable request lifecycle. Claimed interrupted work is reconcile-only and is never automatically replayed. */
 export interface ConversationRequest {
+  /** Guarded imported know-how dependencies; no pin is owner or execution authority. */
+  skillUses?: import("../../s16/skills/types").SkillUse[];
   receipt: ConversationReceipt; command: ConversationCommand; owner: ConversationOwner;
   /** Latest immutable owner command, distinct from the root command when filling a material hold. */
   interpretationRequest: ConversationCommand;
@@ -197,6 +199,7 @@ export interface ConversationRequest {
 /** Optional protected sourced-memory integration. Model/retrieval data can never enter interpretation authority. */
 export interface ConversationMemoryPort<WorkContext> {
   fileContract?: "s16-file-memory/v1";
+  dataContract?: "s16-data-memory/v1";
   prepare(work: WorkContext, request: ConversationRequest, ingress?: { receivedAt: number; priorRequests?: readonly ConversationRequest[] }): { section: string; retained: NonNullable<ConversationRequest["memory"]>["retained"] };
   guard(work: WorkContext, requestId: string): void;
   observe?(work: WorkContext, request: ConversationRequest, evidence: ConversationEvidence, observations?: readonly ConversationEvidence[]): NonNullable<ConversationRequest["memory"]>["retained"];
@@ -204,6 +207,7 @@ export interface ConversationMemoryPort<WorkContext> {
   artifacts?(work: WorkContext, requestId: string, artifacts: readonly FileArtifact[]): void;
   allowHistory(requestId: string, originalText: string): boolean;
   history?(work: WorkContext, requestId: string, originalText: string): boolean;
+  guardDataHistory?(work: WorkContext, fragments: readonly { id: string; text: string }[]): import("../policy").Ref[];
   guardHistory?(work: WorkContext, fragments: readonly { id: string; text: string }[]): FileSourcePin[];
   release(requestId: string): void;
 }
@@ -222,11 +226,13 @@ export interface ConversationOptions<OwnerActor, WorkContext> {
    * and MODEL15 renewals on the same store share one single-flight token request. */
   routeAuth?: Pick<import("schway/host").HostAuthSelection, "store" | "lifecycle" | "fetch">;
   /** Privacy-only check before the public interpreter stream; it grants no tools or execution scope. */
-  guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[]) => void;
+  guardInterpretation?: (work: WorkContext, request: unknown, files?: readonly FileSourcePin[], data?: readonly import("../policy").Ref[]) => void;
   /** Protected MODEL15 composition for work execution. Interpretation remains isolated and tool-free. */
   /** `countModelCall` must run before every model stream: it enforces and durably counts `limits.modelCalls`. */
   runWork?: (input: { work: WorkContext; request: ConversationRequest; definitions: readonly ToolDefinition[]; memorySection: string | undefined; continuationSection?: string | undefined; screenOutcomes?: readonly import("../../s16/computers/needs-you-types").ComputerScreenOutcome[] | undefined; signal: AbortSignal; guard(): void; countModelCall(): void; observeInput(evidence: ConversationEvidence): void; steering: ModelStepSteering }) => Promise<{ text: string; usage: HostRunUsage | null }>;
   /** Picks one carried set before the send; delivery shares only the committed result-publication transaction. */
+  /** Every use, later send/tool and publication reacquires the owning imported-data fences. */
+  skills?: { guard(work: WorkContext, request: ConversationRequest): void };
   screenOutcomes?: { prepare(request: ConversationRequest): import("../../s16/computers/needs-you-types").ComputerScreenOutcome[]; delivered(request: ConversationRequest): void;
     /** Host scheduling proof. The composition also confirms the original work's durable VM affinity. */
     resumption?(cardId: string): import("../../s16/computers/needs-you-types").ComputerScreenResumption | null };

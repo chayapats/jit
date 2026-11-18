@@ -1,3 +1,6 @@
+import type { SkillDirectory } from "./skills/service";
+import { skillDetail, skillFile, skillsView } from "./skills/owner-view";
+import { skillLimits } from "./skills/types";
 import { AppError } from "../errors";
 import type { ConversationApplication, ConversationHttpAuthentication } from "../s15/conversation";
 import { conversationList, conversationOwnerView, conversationPendingNeeds, conversationRequestView } from "../s15/conversation/owner-view";
@@ -27,7 +30,7 @@ import { connectionLimits } from "./connections/types";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -61,6 +64,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
       computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files), ...(options.screen ? { screen: true } : {}) } : { available: false, code: "computers_unavailable" },
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
+      skills: options.skills ? { available: true, contract: "s16-client-skills/v1" } : { available: false, code: "skills_unavailable" },
       connections: options.connections ? { available: true, contract: "s16-client-connections/v1", kinds: ["mcp", "openapi", "graphql"], github: !!options.connections.options.github, oauth: true } : { available: false, code: "connections_unavailable" } };
   };
   return async request => {
@@ -229,6 +233,23 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST" && bot[1] && !fixed && bot[2] === "duplicate") { const input = await body(request); exact(input, ["name"]); return json(options.bots.duplicate(currentOwner(), bot[1], input.name), 201); }
         if (request.method === "POST" && bot[1] === "commands" && !bot[2]) { const input = await body(request); const receipt = options.bots.command(currentOwner(), input); return json(receipt); }
         throw new AppError("method_rejected", 405);
+      }
+      const skill = /^\/api\/s16\/client\/skills(?:\/(commands|[A-Za-z0-9_-]{1,128})(?:\/([A-Za-z0-9_-]{1,128})(?:\/(resume))?)?)?$/.exec(url.pathname);
+      if (skill) {
+        if (skill[3] && skill[1] !== "commands") throw new AppError("not_found", 404);
+        const directory = options.skills; if (!directory) throw new AppError("skills_unavailable", 503);
+        if (skill[2] !== "files" && url.search) throw new AppError("invalid_body");
+        if (!skill[1] && request.method === "GET") return json(skillsView(directory, currentOwner(), (options.connections?.records() ?? []).map(record => ({ id: record.id, label: record.label, endpoint: record.endpoint, state: record.state, catalogHash: record.catalog?.hash ?? null, reviewRevision: record.review?.revision ?? null }))));
+        if (skill[1] === "commands") {
+          if (!skill[2] && request.method === "POST") { const input = await body(request, skillLimits.totalBytes * 2); const receipt = await directory.command(currentOwner(), input); currentOwner(); return json(receipt); }
+          if (skill[2] && request.method === "GET" && !skill[3]) return json(directory.status(currentOwner(), skill[2]));
+          if (skill[2] && skill[3] === "resume" && request.method === "POST") { exact(await body(request), []); const receipt = await directory.resume(currentOwner(), skill[2]); currentOwner(); return json(receipt); }
+        } else if (skill[1]) {
+          if (!skill[2] && request.method === "GET") return json(skillDetail(directory, currentOwner(), skill[1]));
+          if (skill[2] === "files" && request.method === "GET") { if ([...url.searchParams.keys()].sort().join(",") !== "path,pin") throw new AppError("invalid_body"); return json(skillFile(directory, currentOwner(), skill[1], url.searchParams.get("pin")!, url.searchParams.get("path")!)); }
+          if (skill[2] === "review-preview" && request.method === "POST") { const input = await body(request); exact(input, ["pin", "dependencies"]); return json(directory.recipients(currentOwner(), skill[1], input.pin as string, input.dependencies as import("./skills/types").SkillReview["dependencies"])); }
+        }
+        throw new AppError("not_found", 404);
       }
       const connection = /^\/api\/s16\/client\/connections(?:\/(commands))?$/.exec(url.pathname);
       if (connection) {

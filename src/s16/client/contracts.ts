@@ -30,6 +30,8 @@ export interface ClientCapabilities {
   bots?: { available: false; code: "bots_unavailable" } | { available: true; contract: "s16-client-bots/v1"; delegation: boolean };
   /** CONN16-01/MCP16-01/OPEN16-01 connections (`s16-client-connections/v1`): GitHub plus HTTPS tool sources. */
   connections?: { available: false; code: "connections_unavailable" } | { available: true; contract: "s16-client-connections/v1"; kinds: ("mcp" | "openapi" | "graphql")[]; github: boolean; oauth: boolean };
+  /** SKILL16-01 explicit pinned package review, bounded preview and original-identity recovery. */
+  skills?: { available: false; code: "skills_unavailable" } | { available: true; contract: "s16-client-skills/v1" };
   /** MODEL16-01: configured routes and recorded work usage; reads never start provider work. */
   models?: { available: true; contract: "s16-client-models/v1" };
 }

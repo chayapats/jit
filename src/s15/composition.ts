@@ -1,3 +1,7 @@
+import { SkillDirectory } from "../s16/skills/service";
+import { createSkillRuntime, skillVmSessions } from "../s16/skills/runtime";
+import { skillDisclosure } from "../s16/skills/disclosure";
+import { disclosureMemory } from "./disclosure/data-memory";
 import { ComputerContinuations } from "../s16/computers/continuation";
 import { websiteHostSensitive } from "./browser/sites";
 import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -100,6 +104,8 @@ export interface S15CompositionOptions {
    * Secrets live only in `vault`; `network` is a deterministic DNS/dial seam for tests (production passes none). A
    * reviewed source joins the standing rules through the owner's review, as one connection-membership revision. */
   connections?: { vault: import('../exec/connections').ConnectionVault; network?: SourceNetworkPorts };
+  /** Explicit SKILL16-01 pinned inert packages and guarded working-computer use; requires DATA15. */
+  skills?: { network?: SourceNetworkPorts };
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -154,7 +160,7 @@ export function composeS15ReadHandlers(handlers: readonly ReadHandler[]): ReadHa
  */
 export async function composeS15(options: S15CompositionOptions) {
   if (options.runtime !== 's15' || !isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError('s15_opt_in_required');
-  if (options.files && !options.disclosure) throw new AppError('classification_unknown');
+  if ((options.files || options.skills) && !options.disclosure) throw new AppError('classification_unknown');
   const webGithubEnabled = !options.github && !!options.githubWeb;
   if (!options.disclosure && (options.browser || options.google || options.github || webGithubEnabled || options.connections)) throw new AppError('classification_unknown');
   if (options.disclosure && (options.browser && !options.disclosure.browserRoute || options.google && !options.disclosure.googleRoute || (options.github || webGithubEnabled) && !options.disclosure.githubRoute)) throw new AppError('route_unknown');
@@ -164,8 +170,12 @@ export async function composeS15(options: S15CompositionOptions) {
   // CONN16-01: everything read from a connected source is a private DATA15 source of that service (ADR 0089).
   let connections: ConnectionDirectory<OwnerActor> | undefined;
   if (options.connections && options.disclosure) options = { ...options, disclosure: sourceDisclosure(options.disclosure, { records: () => connections?.records() ?? [], record: id => connections?.record(id) ?? null, providers: () => [...new Map(options.model.registry.list().map(r => [r.recipient.id, r.recipient] as const)).values()], work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
+  let skills: SkillDirectory<OwnerActor> | undefined;
+  let skillComputer: (work: import('./policy').WorkAuthority, vmId: string) => { resource: Ref; botId: string | null } = () => { throw new AppError('skill_computer_unavailable', 409); };
+  let skillCopyCurrent: (vmId: string, resource: Ref) => boolean = () => false;
+  if (options.skills && options.disclosure) options = { ...options, disclosure: skillDisclosure(options.disclosure, { directory: () => skills, ownerGeneration: options.owner.generation, computer: (work, vmId) => skillComputer(work, vmId), copyCurrent: (vmId, resource) => skillCopyCurrent(vmId, resource), work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -178,7 +188,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -210,7 +220,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const credentials = createHostCredentialLifecycle(options.credentials?.store ? { store: options.credentials.store } : {});
     cleanup.push(async () => { await closeCredentialLifecycle(credentials); });
     const routeAuth = { lifecycle: credentials, ...(options.credentials?.fetch ? { fetch: options.credentials.fetch } : {}) };
-    const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create, !!options.files, options.files?.memory === true); cleanup.push(() => store.close());
+    const store = new ConversationStore(join(root, 'conversation.sqlite'), options.installationId, options.create, !!options.files, options.files?.memory === true, !!options.skills); cleanup.push(() => store.close());
     let files: FileStore<OwnerActor | WorkActor> | undefined;
     const vmStore = new VmStore(join(root, 'vm.sqlite')); cleanup.push(() => vmStore.close());
     // POOL15-01: `vm.id` names the team's working-computer pool and its default member; other members are
@@ -218,6 +228,8 @@ export async function composeS15(options: S15CompositionOptions) {
     // TEAM16-01: protected private assignments live in the same VM journal as the pool rows they constrain.
     const scopes = options.computers ? new ComputerScopes(vmStore, options.vm.id, options.clock?.now ?? Date.now) : null;
     const pool = new VmPool({ store: vmStore, id: options.vm.id, ...(options.vm.limits ? { maxSessions: options.vm.limits.maxSessions } : {}), ...(options.clock ? { now: options.clock.now } : {}), ...(scopes ? { scope: scopes, wakeable: true } : {}) });
+    skillComputer = (work, vmId) => { if (!pool.has(vmId) || !work.request.resources.some(ref => equal(ref, options.vm.resource))) throw new AppError('outside_scope', 403); return { resource: options.vm.resource, botId: scopes?.privateBot(vmId) ?? null }; };
+    skillCopyCurrent = (vmId, resource) => pool.has(vmId) && equal(resource, options.vm.resource);
     // GIT15-04: the GitHub service recipient is current only while the Web connection exists.
     const disclosureCatalogs = options.disclosure ? { ...options.disclosure.catalogs, source: (value: Ref) => files?.source(value.id) ?? options.disclosure!.catalogs.source(value), recipient: (value: Ref) => { const row = githubConnections?.recipient(value.id) ?? (/^srcr_/.test(value.id) ? connections?.catalog(value.id) ?? null : null); return row ? (equal(row.ref, value) ? row : null) : options.disclosure!.catalogs.recipient(value); } } : undefined;
     const disclosure = options.disclosure ? openDisclosureService({ ...options.disclosure, catalogs: disclosureCatalogs!, ...(options.clock ? { now: options.clock.now } : {}), runtime: 's15', path: join(root, 'disclosure.sqlite'), create: options.create, installationId: options.installationId }) : undefined;
@@ -257,7 +269,7 @@ export async function composeS15(options: S15CompositionOptions) {
       cleanup.push(() => files!.close());
       await files.parser?.recover();
     }
-    const fileWorkflow = files ? createFileWorkflow({ store: files, resource: options.vm.resource, policy: () => policy, disclosure: () => disclosure,
+    const fileWorkflow = files ? createFileWorkflow({ inheritArtifactData: !!options.skills, store: files, resource: options.vm.resource, policy: () => policy, disclosure: () => disclosure,
       // FILE16-01C: file work reaches the same placed, TEAM-coordinated working computer as ordinary VM work.
       ...(options.computers ? { computer: { vm: { openAttempt: (actor, input) => workingVm.openAttempt(actor, input) }, vmId: options.vm.id, resourceId: options.vm.resource.id } } : {}),
       guardResource(current, write) { team.resource(team.bind(current.actor), options.vm.resource.id, write ? 'write' : 'read'); },
@@ -269,6 +281,9 @@ export async function composeS15(options: S15CompositionOptions) {
     };
     // CONN16-01: connected tool sources (ADR 0089). The directory owns their identities; the runtime their calls.
     const sourceNetwork = options.connections ? openSourceNetwork(options.connections.network ?? {}) : undefined;
+    const skillNetwork = options.skills ? openSourceNetwork(options.skills.network ?? {}) : undefined;
+    if (sourceNetwork) cleanup.push(() => sourceNetwork.close());
+    if (skillNetwork) cleanup.push(() => skillNetwork.close());
     let sourceRuntime: ReturnType<typeof createSourceRuntime<OwnerActor>> | undefined;
     if (options.connections) {
       const githubPort = githubConnections ? (gc => ({
@@ -293,9 +308,28 @@ export async function composeS15(options: S15CompositionOptions) {
         ...(disclosure ? { disclosure: { protectAdapter: adapter => disclosure.protectAdapter(adapter, sourceRoute), guardRead: (work, payload) => disclosure.guardRead(work, sourceRoute, payload), recordRead: (actor, source) => disclosure.read(actor, source) } } : {}) });
       cleanup.push(() => sourceRuntime!.close());
     }
+    let skillRuntime: ReturnType<typeof createSkillRuntime<OwnerActor>> | undefined;
+    let currentSkillSession: (workId: string) => import('./vm').VmSession | null = () => null;
+    if (options.skills) {
+      skills = new SkillDirectory<OwnerActor>({ path: join(root, 'skills.sqlite'), installationId: options.installationId, create: options.create || created.includes('skills.sqlite'), now: clockNow, ownerGeneration: options.owner.generation,
+        requireOwner: owner => { policy.owner.current(owner); }, network: skillNetwork!,
+        bots: owner => bots ? bots.view(owner).bots.filter(bot => bot.state === 'active').map(bot => ({ id: bot.id, name: bot.name })) : [{ id: options.conversation.bot.id, name: '' }],
+        recipients: () => [...new Map(options.model.registry.list().map(route => [canonical(route.recipient), route.recipient] as const)).values()],
+        dependency: id => connections?.record(id) ?? null, membership: (owner, requestId) => connectionMembership(owner, requestId) }); cleanup.push(() => skills!.close());
+      skillRuntime = createSkillRuntime({ directory: skills, policy: () => policy, disclosure: disclosure!, now: clockNow,
+        request: workId => { const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY CASE WHEN state='running' THEN 0 ELSE 1 END,rowid DESC LIMIT 1").get(workId); if (!row) throw new AppError('outside_scope'); return store.request(row.id); },
+        recordUse: (requestId, pin) => conversation.recordSkillUse(requestId, pin),
+        resource: (work, resource, write) => { team.resource(team.bind(work.actor), resource.id, write ? 'write' : 'read'); }, session: workId => currentSkillSession(workId) });
+    }
     const currentCatalogs: CatalogPort = { ...(options.catalogs.allowsModel ? { allowsModel: options.catalogs.allowsModel } : {}), current: (kind, id) => {
         // A created, archived or restored Bot's identity is the directory's; an archived Bot is inactive everywhere.
         const bot = kind === 'bot' ? bots?.catalog(id) : null; if (bot) return bot;
+        if (skills && (kind === 'resource' || kind === 'lineage') && /^sk[rsv]_/.test(id)) {
+          const record = skills.records().find(record => (kind === 'resource' ? record.resource : record.source).id === id), copy = kind === 'lineage' ? skills.copies().find(copy => copy.ref.id === id) : null;
+          if (record) return { ref: kind === 'resource' ? record.resource : record.source, active: record.state === 'active' && record.ownerGeneration === options.owner.generation() };
+          if (copy) return { ref: copy.ref, active: copy.ownerGeneration === options.owner.generation() && skillCopyCurrent(copy.vmId, copy.resource) };
+          return null;
+        }
         // A Web-connected repository that was unselected or whose connection was removed is inactive whatever TEAM says.
         // CONN16-01: a removed (or never reviewed) source is inactive everywhere, whatever TEAM says.
         const source = connections && /^src[rsc]?_[a-f0-9]{24}$/.test(id) && (kind === 'resource' || kind === 'recipient' || kind === 'input' || kind === 'lineage') ? connections.catalog(id) : null;
@@ -314,7 +348,7 @@ export async function composeS15(options: S15CompositionOptions) {
     policy = openPolicyService({ runtime: 's15', path: join(root, 'policy.sqlite'), create: options.create, installationId: options.installationId,
       ...(options.adoption ? { activityGuard: () => options.adoption!.service.guardActivity() } : {}), ownerGeneration: options.owner.generation, verifyOwner, catalogs: vmIntegration.catalogs(disclosure ? disclosure.catalogs(currentCatalogs) : currentCatalogs),
       adapters: [vmIntegration.adapter, ...(fileWorkflow ? [fileWorkflow.adapter] : []), ...(disclosure ? [disclosure.adapter] : []), ...(browser ? [browser.adapter] : []), ...(google?.adapters ?? []), ...(githubAdapter ? [githubAdapter] : []), ...(sourceRuntime ? [sourceRuntime.adapter] : []), ...(options.adapters ?? []).map(adapter => disclosure && options.disclosure?.adapterRoutes?.[adapter.id] ? disclosure.protectAdapter(adapter, options.disclosure.adapterRoutes[adapter.id]!) : adapter)],
-      reads: composeS15ReadHandlers([...vmIntegration.reads, ...(fileWorkflow ? [fileWorkflow.readHandler] : []), ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(webGithub ? [{ operation: 'read' as const, validate: (payload: import('./policy').JsonValue, context: { work: import('./policy').WorkAuthority; resource: Ref }) => githubReadHandler(githubConnections!.repositories()).validate(payload, context) }, webGithub.readHandler] : []), ...(sourceRuntime ? [sourceRuntime.readHandler] : []), ...(options.reads ?? [])]),
+      reads: composeS15ReadHandlers([...vmIntegration.reads, ...(fileWorkflow ? [fileWorkflow.readHandler] : []), ...(browser ? [browser.readHandler] : []), ...(google ? [google.readHandler] : []), ...(options.github ? [githubReadHandler(options.github.repositories)] : []), ...(webGithub ? [{ operation: 'read' as const, validate: (payload: import('./policy').JsonValue, context: { work: import('./policy').WorkAuthority; resource: Ref }) => githubReadHandler(githubConnections!.repositories()).validate(payload, context) }, webGithub.readHandler] : []), ...(sourceRuntime ? [sourceRuntime.readHandler] : []), ...(skillRuntime ? [skillRuntime.readHandler] : []), ...(options.reads ?? [])]),
       ...(options.clock ? { now: options.clock.now } : {}), ...(options.subscriptionModels ? { subscriptionModels: options.subscriptionModels } : {}) });
     cleanup.push(() => policy.control.close()); disclosure?.attach(policy); browser?.attach(policy); google?.attach(policy);
     const fileLineage: FileLineagePort | undefined = options.files?.memory && files ? {
@@ -326,7 +360,8 @@ export async function composeS15(options: S15CompositionOptions) {
         files!.verifyPins(actor, pins);
       },
     } : undefined;
-    team = new TeamService({ runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, ...(fileLineage ? { fileLineage } : {}), producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
+    const dataMemory = skills && disclosure ? disclosureMemory(policy, disclosure) : undefined;
+    team = new TeamService({ ...(dataMemory ? { dataLineage: dataMemory.lineage } : {}), ...(skills ? { reviewedBotScope: (resource: TeamResource) => { const record = skills!.records().find(record => equal(record.resource, { id: resource.id, revision: resource.revision, generation: resource.generation })); return !!record && record.ownerGeneration === options.owner.generation() && record.state === 'active' && !!record.review && equal(resource.allowedBots, record.review.availability.kind === 'team' ? null : record.review.availability.botIds); } } : {}), runtime: 's15', path: join(root, 'team.sqlite'), create: options.create, installationId: options.installationId, policy, maxConcurrentOperations: options.team?.maxConcurrentOperations ?? 16, ...(fileLineage ? { fileLineage } : {}), producerCurrent(producer) { try { const work = policy.work.guard(policy.control.bindWork(producer.workId)); return equal(work.request.bot, producer.bot) && work.policyRevision === producer.policyRevision && work.ownerGeneration === producer.ownerGeneration; } catch { return false; } }, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => team.close());
     const memory = new MemoryService({ runtime: 's15', path: join(root, 'memory.sqlite'), create: options.create, installationId: options.installationId, team, retention: work => options.team?.retention(work) ?? null, ...(options.clock ? { now: options.clock.now } : {}) }); cleanup.push(() => memory.close());
     const activeGuards = new Map<string, () => void>();
     const requireOwner = (actor: object) => { policy.owner.current(actor as OwnerActor); };
@@ -414,8 +449,11 @@ export async function composeS15(options: S15CompositionOptions) {
       cleanup.push(async () => { reattach.abort(); await reattaching; });
     }
     // Placement runs before the TEAM lease so the lease, its fence and its stop-proof link name the exact member.
-    const workingVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore, { partition: options.computers ? 'workspace' : 'member' }), pool,
+    const placedVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore, { partition: options.computers ? 'workspace' : 'member' }), pool,
       options.computers ? actor => policy.work.guard(actor as WorkActor).request.bot.id : undefined);
+    const trackedVm = skillVmSessions(placedVm);
+    currentSkillSession = trackedVm.session;
+    const workingVm = skills ? trackedVm.vm : placedVm;
     // Protected TEAM/VM reconciliation: leases left unknown by a crash or by recovery are released only on
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
@@ -508,18 +546,28 @@ export async function composeS15(options: S15CompositionOptions) {
     const ports = () => [vmPort, ...(github ? githubIds().map(id => ({ resourceId: id, port: githubPorts.get(id) ?? (githubPorts.set(id, createGithubConversationTools(github, id)), githubPorts.get(id)!) })) : []),
       // CONN16-01: each reviewed source's tools, scoped to its one resource; every call rereads the live review.
       ...(connections && sourceRuntime ? connections.reviewed().map(r => ({ resourceId: r.resource.id, port: sourcePorts.get(r.id) ?? (sourcePorts.set(r.id, sourceRuntime!.port(r.resource.id)), sourcePorts.get(r.id)!) })) : []), ...(options.tools ?? [])];
+    const filePort = fileWorkflow && skillRuntime ? { ...fileWorkflow.port, async open(current: ConversationPolicyWork, row: import('./conversation').ConversationRequest, input: Parameters<NonNullable<typeof fileWorkflow>['port']['open']>[2]) {
+      input.guard(); if (disclosure && options.disclosure) for (const source of options.disclosure.workSources(current.authority)) disclosure.read(current.actor, source);
+      const base = await fileWorkflow.port.open(current, row, input), opened = [base];
+      try { const context = team.bind(current.actor), guard = () => { input.guard(); for (const resource of current.authority.request.resources) team.resource(context, resource.id); };
+        const extra = await skillRuntime!.port.open(current, { ...input, guard }); opened.push(extra);
+        const fixed = [...base.tools, ...extra.tools], sourced: typeof fixed = [];
+        for (const source of connections?.reviewed() ?? []) if (sourceRuntime && current.authority.request.resources.some(resource => equal(resource, source.resource))) { const tools = await sourceRuntime.port(source.resource.id).open(current, { ...input, guard }); opened.push(tools); sourced.push(...tools.tools); }
+        return { tools: [...fixed, ...sourced.slice(0, Math.max(0, 64 - fixed.length))], completionHold: () => opened.map(port => port.completionHold?.()).find(Boolean) ?? null, async cancel() { await Promise.all(opened.map(port => port.cancel())); }, async close() { await Promise.all(opened.map(port => port.close())); } };
+      } catch (error) { await Promise.allSettled(opened.map(port => port.cancel())); await Promise.allSettled(opened.map(port => port.close())); throw error; }
+    } } : fileWorkflow?.port;
     conversation = new ConversationApplication(store, { policy: conversationPolicy, ...(needsYou ? { screenOutcomes: { prepare: (request: import('./conversation/types').ConversationRequest) => needsYou.prepare(request), delivered: (request: import('./conversation/types').ConversationRequest) => needsYou.delivered(request), resumption(cardId: string) {
         const proof = needsYou.resumption(cardId); if (!proof) return null;
         const source = store.request(proof.requestId); return source.authority && pool.holder(source.authority.id) === proof.vmId ? proof : null;
-      } } } : {}), memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined), ...(fileWorkflow ? { files: fileWorkflow.port } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
+      } } } : {}), memory: createConversationMemory(memory, options.files?.memory && fileWorkflow && disclosure ? { ...fileWorkflow.memory, disclose(current, pins) { for (const pin of pins) disclosure!.read(current.actor, pin.source); } } : undefined, dataMemory?.conversation), ...(filePort ? { files: filePort } : {}), ...(skillRuntime ? { skills: { guard: skillRuntime.guard } } : {}), nativeDirectory: join(root, 'native-chat'), routeAuth, ...(options.interpreter ? { interpreterModel: options.interpreter } : {}), ...(options.clock ? { clock: options.clock } : {}),
       ...(bots ? { admitConversation: (conversationId: string) => bots!.admitConversation(conversationId), maxDelegatedRuns: delegationLimits.installationConcurrent, delegationSessions: () => { try { return vmStore.registration(options.vm.id).maxSessions; } catch { return 0; } } } : {}),
-      ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = []) {
+      ...(disclosure && modelDisclosure && options.disclosure ? { guardInterpretation(current: ConversationPolicyWork, payload: unknown, files: readonly import('./file-lineage').FileSourcePin[] = [], data: readonly Ref[] = []) {
         const candidate = options.model.registry.current(current.authority.request.selection); if (!candidate || candidate.availability !== 'available') throw new AppError('route_unavailable');
         const standing = policy.control.policyForWork(current.authority.id);
         // Privacy check conservatively covers all standing resources because isolated owner/assistant
         // history can contain derived results. This projection is never admitted or used for tools.
         const privacy = { ...current.authority, request: { ...current.authority.request, resources: standing.resources } };
-        privacy.request.fences = [...(privacy.request.fences ?? []), ...options.disclosure!.workSources(privacy).map(ref => ({ kind: 'lineage' as const, ref })), ...files.map(pin => ({ kind: 'lineage' as const, ref: pin.source }))];
+        privacy.request.fences = [...(privacy.request.fences ?? []), ...options.disclosure!.workSources(privacy).map(ref => ({ kind: 'lineage' as const, ref })), ...files.map(pin => ({ kind: 'lineage' as const, ref: pin.source })), ...data.flatMap(value => disclosure.ancestry(privacy, value).map(source => ({ kind: 'lineage' as const, ref: source.ref })))];
         modelDisclosure.guard(privacy, candidate, payload);
       } } : {}),
       tools: { async open(current, input) {
@@ -533,6 +581,7 @@ export async function composeS15(options: S15CompositionOptions) {
           for (const registration of ports()) if (current.authority.request.resources.some(r => r.id === registration.resourceId)) { const tools = await registration.port.open(current, { ...input, guard: scopedGuard }); opened.push(tools); if ([...sourcePorts.values()].includes(registration.port)) sourceOpened.add(tools); }
           if (google || browser) opened.push(await effects.tools.open(current, { ...input, guard: scopedGuard }));
           if (botTools) opened.push(await botTools.port.open(current, { ...input, guard: scopedGuard }));
+          if (skillRuntime) opened.push(await skillRuntime.port.open(current, { ...input, guard: scopedGuard }));
           if (connectionTools) opened.push(await connectionTools.open(current, { ...input, guard: scopedGuard }));
           // CONN16-01: a run offers at most 64 tools (CHAT's bound). Connected-source tools fill what the other tools leave,
           // in source and catalog order; the rest are not offered to this run rather than failing it.
@@ -602,6 +651,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const known: { ref: Ref; kind: TeamResource['kind']; label: string }[] = [{ ref: options.vm.resource, kind: 'workspace', label: options.vm.id }];
       if (options.browser) known.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.label ?? options.browser.ownerUi?.site ?? options.browser.resource.id });
       for (const r of gh?.repositories ?? []) known.push({ ref: r.resource, kind: 'data', label: r.name });
+      for (const record of skills?.records().filter(record => record.state === 'active' && record.activePin && record.ownerGeneration === options.owner.generation()) ?? []) known.push({ ref: record.resource, kind: 'data', label: skills!.package(record.activePin!).name });
       for (const record of connections?.reviewed() ?? []) known.push({ ref: record.resource, kind: 'account', label: record.label });
       for (const account of [options.google?.mailAccount, options.google?.calendarAccount]) { try { const a = account?.(); if (a) known.push({ ref: a.resource, kind: 'account', label: a.account }); } catch { /* Unavailable connection: not offered. */ } }
       return known;
@@ -617,6 +667,7 @@ export async function composeS15(options: S15CompositionOptions) {
       if (browser && options.browser && active('resource', options.browser.resource)) resources.push({ ref: options.browser.resource, kind: 'browser', label: options.browser.label ?? options.browser.ownerUi?.site ?? options.browser.resource.id, adapters: [{ id: browser.adapter.id, operations: ['browser_request'] }] });
       for (const r of gh?.repositories ?? []) if (active('resource', r.resource)) resources.push({ ref: r.resource, kind: 'repository', label: r.name, adapters: [{ id: 's15_github', operations: ['push', 'pr_create', 'pr_update', 'review_reply', 'merge'] }] });
       for (const record of connections?.reviewed() ?? []) if (active('resource', record.resource) && active('recipient', record.recipient)) resources.push({ ref: record.resource, kind: 'source', label: record.label, adapters: [{ id: sourceAdapterId, operations: [sourceOperation] }], recipient: record.recipient });
+      for (const record of skills?.records().filter(record => record.state === 'active' && record.activePin && record.ownerGeneration === options.owner.generation()) ?? []) if (active('resource', record.resource)) resources.push({ ref: record.resource, kind: 'skill', label: skills!.package(record.activePin!).name, adapters: [] });
       const extraRecipients = githubConnections ? (active('recipient', s15GithubRecipient) && resources.some(r => r.kind === 'repository') ? [{ ...s15GithubRecipient }] : []) : (options.disclosure?.githubRecipients ?? []).filter(r => gh && active('recipient', r));
       return { selections, resources, extraRecipients, bot: active('bot', options.conversation.bot) ? options.conversation.bot : null };
     };
@@ -643,12 +694,13 @@ export async function composeS15(options: S15CompositionOptions) {
       const known = composedResources();
       return standing.resources.filter((ref, index) => standing.resources.findIndex(other => other.id === ref.id) === index).flatMap((ref): TeamResource[] => {
         // A registered row is offered again only to refresh it to a newer owning identity, with every other field unchanged.
-        const registered = team.resourceRecord(ref.id);
-        if (registered) return ref.revision > registered.revision ? [{ ...registered, revision: ref.revision, generation: ref.generation }] : [];
+        const registered = team.resourceRecord(ref.id), skill = skills?.records().find(record => record.resource.id === ref.id);
+        const skillScope = skill?.review ? { allowedBots: skill.review.availability.kind === 'team' ? null : skill.review.availability.botIds } : {};
+        if (registered) return ref.revision > registered.revision ? [{ ...registered, ...skillScope, revision: ref.revision, generation: ref.generation }] : [];
         const rules = standing.rules.filter(rule => rule.mode !== 'deny' && rule.resources.some(r => r.id === ref.id));
         const purposes = [...new Set((rules.length ? rules.flatMap(rule => rule.purposes) : standing.purposes.filter(p => p.id !== standing.interpretationPurpose?.id)).map(p => p.id))];
         const match = known.find(item => item.ref.id === ref.id);
-        return [{ contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id }];
+        return [{ contract: 's15-team-resource/v1', id: ref.id, revision: ref.revision, generation: ref.generation, label: match?.label ?? ref.id, kind: match?.kind ?? 'data', scope: { kind: 'team' }, purposes, allowedBots: null, ...skillScope, deniedBots: [], operations: ['read', 'write', 'input'], active: true, coordinationKey: ref.id }];
       });
     };
     /**
@@ -660,7 +712,7 @@ export async function composeS15(options: S15CompositionOptions) {
     const connectionMembership = (owner: OwnerActor, requestId: string): 'installed' | 'unchanged' | 'review_required' => {
       const current = policy.owner.current(owner), next = defaultPolicyInput(owner, null)?.scopeInput;
       if (!current || !next) return 'review_required';
-      const managed = (id: string) => /^gh_|^src[rs]?_[a-f0-9]{24}$/.test(id) || id === s15GithubRecipient.id;
+      const managed = (id: string) => /^gh_|^src[rs]?_[a-f0-9]{24}$|^skr_[a-f0-9]{24}$/.test(id) || id === s15GithubRecipient.id;
       const githubOps = new Set(['push', 'pr_create', 'pr_update', 'review_reply', 'merge']);
       const strip = (p: PolicyInput) => canonical({ purposes: p.purposes, bots: p.bots, selections: p.selections, interpretationPurpose: p.interpretationPurpose ?? null, budget: p.budget ? { ...p.budget, startsAt: 0, expiresAt: 0 } : null,
         resources: p.resources.filter(r => !managed(r.id)), recipients: p.recipients.filter(r => !managed(r.id)),
@@ -747,7 +799,7 @@ export async function composeS15(options: S15CompositionOptions) {
           const rows: import('./web').S15PolicyRow[] = [
             ...(scope.bot ? [{ kind: 'bot' as const, id: scope.bot.id, label: scope.bot.id, detail: null }] : []),
             { kind: 'purpose', id: s15DefaultRefs.work.id, label: s15DefaultRefs.work.id, detail: 'work' }, { kind: 'purpose', id: s15DefaultRefs.interpretation.id, label: s15DefaultRefs.interpretation.id, detail: 'interpretation' },
-            ...scope.resources.map(r => ({ kind: r.kind === 'account' ? 'computer' as const : r.kind === 'source' ? 'connection' as const : r.kind, id: r.ref.id, label: r.label, detail: null })),
+            ...scope.resources.map(r => ({ kind: r.kind === 'account' ? 'computer' as const : r.kind === 'source' || r.kind === 'skill' ? 'connection' as const : r.kind, id: r.ref.id, label: r.label, detail: null })),
             ...scope.selections.map(s => ({ kind: 'model' as const, id: s.selection.model.id, label: s.label, detail: s.charge })),
             ...scope.selections.filter((s, i, all) => all.findIndex(o => o.recipient.id === s.recipient.id) === i).map(s => ({ kind: 'recipient' as const, id: s.recipient.id, label: s.label.split(' · ')[0]!, detail: 'provider' as const })),
             ...scope.extraRecipients.map(r => ({ kind: 'recipient' as const, id: r.id, label: 'GitHub', detail: 'github' as const })) ];
@@ -784,7 +836,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -802,7 +854,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, bots, connections, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
+    const composed = { policy, conversation, team, memory, files, bots, connections, skills, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },
