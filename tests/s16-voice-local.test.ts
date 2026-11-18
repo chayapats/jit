@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { openLocalVoice, speechWavInfo, validateLocalVoiceConfig, type LocalVoiceConfig, type LocalVoiceEngine } from '../src/s16/voice/local';
 import { encodeCaptureWav } from '../src/s16/voice/wav';
 import { AppError } from '../src/errors';
+import { VoiceService } from '../src/s16/voice/service';
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -97,10 +98,30 @@ test('SIGKILL of the owning controller closes its liveness pipe and the survivin
     await waitFile(f.marker); const marker = JSON.parse(readFileSync(f.marker, 'utf8')), settled = join(marker.cwd, 'settled.json');
     parent.kill('SIGKILL'); await parent.exited; await waitFile(settled);
     expect(JSON.parse(readFileSync(settled, 'utf8'))).toMatchObject({ state: 'cancelled', child: marker.pid }); expect(() => process.kill(marker.pid, 0)).toThrow();
+    const reopened = await openLocalVoice(f.config, f.scratch);
+    try { expect(await reopened.available()).toBe(true); expect(readdirSync(f.scratch)).toEqual([]); } finally { await reopened.close(); }
   } finally { parent.kill(); await parent.exited; }
 });
 
 test('voice configuration has no remote endpoint, arbitrary flags or silently selected route', () => {
   expect(() => validateLocalVoiceConfig({ url: 'https://example.com' })).toThrow('invalid_voice_config');
   expect(() => speechWavInfo(new Uint8Array())).toThrow('voice_audio_invalid');
+});
+
+test('a real controller crash retains its started quota and cannot replay the original transcription after journal recovery', async () => {
+  const f = await fixture('wait'); await f.engine.close(); const journal = join(f.root, 'voice.sqlite');
+  const parent = Bun.spawn([process.execPath, join(import.meta.dir, 'fixtures/s16-voice-parent.ts')], { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore', env: { ...process.env, JIT_LOCAL_VOICE_FIXTURE: '1' } });
+  parent.stdin.write(JSON.stringify({ config: f.config, scratch: f.scratch, journal })); parent.stdin.end();
+  try {
+    await waitFile(f.marker); const marker = JSON.parse(readFileSync(f.marker, 'utf8')); parent.kill('SIGKILL'); await parent.exited; await waitFile(join(marker.cwd, 'settled.json'));
+    const capture = JSON.parse(readFileSync(join(f.root, 'capture.json'), 'utf8'));
+    const service = await VoiceService.open({ path: journal, installationId: 'fixture', create: false, limits: { dailyMs: 120000, captureMs: 30000 }, now: () => 1000000,
+      ownerGeneration: () => 1, requireOwner() {}, conversation() {}, reply() { throw Error('not_used'); }, engine: () => openLocalVoice(f.config, f.scratch) });
+    try {
+      expect(service.inspect(() => ({}), capture.id).state).toBe('unknown');
+      expect((await service.status(() => ({}))).usage).toMatchObject({ chargedMs: 100, reservedMs: 0 });
+      expect(() => service.transcribe(() => ({}), capture.id, wav(), new AbortController().signal)).toThrow('voice_outcome_unknown');
+      expect(JSON.parse(readFileSync(f.marker, 'utf8')).pid).toBe(marker.pid); expect(() => process.kill(marker.pid, 0)).toThrow(); expect(readdirSync(f.scratch)).toEqual([]);
+    } finally { await service.close(); }
+  } finally { parent.kill(); await parent.exited; }
 });

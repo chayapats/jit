@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { constants, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { AppError } from '../../errors';
 import { captureWavInfo } from './wav';
@@ -27,6 +27,16 @@ export const localSpeechLimits = Object.freeze({ textCharacters: 2000, textBytes
 const reject = (code: string): never => { throw new AppError(code, 503); };
 const record = (value: unknown, keys: string[]): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype && Object.keys(value).sort().join() === keys.sort().join();
 const artifact = (value: unknown): value is VoiceArtifact => record(value, ['path', 'sha256']) && typeof value.path === 'string' && isAbsolute(value.path) && resolve(value.path) === value.path && !/[\x00-\x1f\x7f]/.test(value.path) && value.path.length < 2048 && typeof value.sha256 === 'string' && /^[a-f0-9]{64}$/.test(value.sha256);
+
+async function boundedFile(path: string, max: number): Promise<Buffer> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat(); if (!stat.isFile() || stat.size < 1 || stat.size > max) reject('voice_audio_limit');
+    const buffer = Buffer.alloc(Math.min(65536, max + 1)), chunks: Buffer[] = []; let total = 0;
+    for (;;) { const read = await handle.read(buffer, 0, Math.min(buffer.length, max + 1 - total), null); if (!read.bytesRead) break; total += read.bytesRead; if (total > max) reject('voice_audio_limit'); chunks.push(Buffer.from(buffer.subarray(0, read.bytesRead))); }
+    if (total !== stat.size) reject('voice_audio_limit'); return Buffer.concat(chunks);
+  } finally { await handle.close(); }
+}
 
 /** Dependency-free configuration shape validation; actual regular-file hashes are checked before every process. */
 export function validateLocalVoiceConfig(value: unknown): asserts value is LocalVoiceConfig {
@@ -82,23 +92,50 @@ export async function openLocalVoice(configured: LocalVoiceConfig, scratchPath: 
   await mkdir(scratchPath, { recursive: true, mode: 0o700 });
   if (await realpath(scratchPath) !== scratchPath || (await lstat(scratchPath)).mode & 0o077) throw new AppError('invalid_voice_config');
   const shutdown = new AbortController(), jobs = new Set<Promise<unknown>>(); let closed = false;
+  let recovered = false, recovery: Promise<boolean> | null = null;
+  const recover = (): Promise<boolean> => {
+    if (recovered) return Promise.resolve(true);
+    return recovery ??= (async () => {
+      for (const name of await readdir(scratchPath)) {
+        if (!/^localvoice-[A-Za-z0-9]+$/.test(name)) reject('voice_recovery_pending');
+        const directory = join(scratchPath, name), stat = await lstat(directory);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.mode & 0o077) reject('voice_recovery_pending');
+        let intent: { state?: string; worker?: number } | undefined;
+        try { const data = await boundedFile(join(directory, 'intent.json'), 256); intent = JSON.parse(data.toString('utf8')); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+        if (intent && intent.state !== 'preparing') {
+          try {
+            const data = await boundedFile(join(directory, 'settled.json'), 512);
+            const settled = JSON.parse(data.toString('utf8')) as { state?: string; worker?: number };
+            if (intent.state !== 'worker' || !Number.isSafeInteger(intent.worker) || settled.worker !== intent.worker || !['completed', 'cancelled', 'failed', 'timeout', 'limit'].includes(settled.state ?? '')) return false;
+          } catch { return false; }
+        }
+        // No intent (or preparing) means no command could have been supplied. Otherwise only the
+        // supervisor's receipt, written after actually joining its child, permits scratch deletion.
+        await rm(directory, { recursive: true, force: true });
+      }
+      recovered = true; return true;
+    })().finally(() => { recovery = null; });
+  };
   const verify = async (signal: AbortSignal) => { if (config.synthesis.kind === 'say' && process.platform !== 'darwin') reject('voice_engine_unavailable'); await verifyArtifact(config.transcription.executable, true, signal); await verifyArtifact(config.transcription.model, false, signal); await verifyArtifact(config.synthesis.executable, true, signal); };
   const job = <T>(context: VoiceProcessContext, body: (directory: string, context: VoiceProcessContext) => Promise<T>): Promise<T> => {
     const signal = AbortSignal.any([context.signal, shutdown.signal]), check = () => { if (closed || signal.aborted) reject('voice_cancelled'); context.guard(); };
     const running = (async () => {
       let directory: string | undefined;
-      try { check(); await verify(signal); check(); directory = await mkdtemp(join(scratchPath, 'localvoice-')); await chmod(directory, 0o700); check(); return await body(directory, { ...context, signal, guard: check }); }
+      try { check(); if (!await recover()) reject('voice_recovery_pending'); await verify(signal); check(); directory = await mkdtemp(join(scratchPath, 'localvoice-')); await chmod(directory, 0o700); check(); return await body(directory, { ...context, signal, guard: check }); }
       catch (error) { if (signal.aborted) return reject('voice_cancelled'); if (error instanceof AppError) throw error; return reject('voice_engine_unavailable'); }
       finally { if (directory) await rm(directory, { recursive: true, force: true }); }
     })();
     jobs.add(running); void running.then(() => jobs.delete(running), () => jobs.delete(running)); return running;
   };
   const execute = async (argv: string[], directory: string, output: string, bytes: number, context: VoiceProcessContext) => {
+    await writeFile(join(directory, 'intent.json'), JSON.stringify({ state: 'preparing' }), { mode: 0o600 });
     context.guard();
     const worker = Bun.spawn([process.execPath, new URL('./local-worker.ts', import.meta.url).pathname, '--local-voice-worker'], { cwd: directory, stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', TMPDIR: directory } });
     const stop = () => { try { worker.stdin.end(); } catch { /* The worker may have exited already. */ } };
     context.signal.addEventListener('abort', stop, { once: true });
     try {
+      writeFileSync(join(directory, 'intent.json'), JSON.stringify({ state: 'worker', worker: worker.pid }), { mode: 0o600 });
       context.guard(); context.started(); context.guard();
       worker.stdin.write(JSON.stringify({ argv, cwd: directory, timeoutMs: config.timeoutMs, output, bytes }) + '\n');
       const [code, raw] = await Promise.all([worker.exited, new Response(worker.stdout).text()]);
@@ -107,9 +144,8 @@ export async function openLocalVoice(configured: LocalVoiceConfig, scratchPath: 
       if (state !== 'completed') reject(state === 'timeout' ? 'voice_process_timeout' : state === 'limit' ? 'voice_audio_limit' : state === 'cancelled' ? 'voice_cancelled' : 'voice_engine_unavailable');
     } finally { context.signal.removeEventListener('abort', stop); stop(); await worker.exited; }
   };
-  const boundedFile = async (path: string, max: number) => { const stat = await lstat(path); if (!stat.isFile() || stat.size < 1 || stat.size > max) reject('voice_audio_limit'); const bytes = await readFile(path); if (bytes.length !== stat.size || bytes.length > max) reject('voice_audio_limit'); return bytes; };
   return {
-    async available() { if (closed) return false; try { await verify(shutdown.signal); return !closed; } catch { return false; } },
+    async available() { if (closed) return false; try { if (!await recover()) return false; await verify(shutdown.signal); return !closed; } catch { return false; } },
     transcribe(input, context) {
       const wav = input.slice(); captureWavInfo(wav);
       return job(context, async (directory, current) => {
@@ -126,6 +162,7 @@ export async function openLocalVoice(configured: LocalVoiceConfig, scratchPath: 
     },
     synthesize(text, context) {
       if (typeof text !== 'string' || !text.trim() || !text.isWellFormed() || text.length > localSpeechLimits.textCharacters || Buffer.byteLength(text) > localSpeechLimits.textBytes || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) throw new AppError('voice_text_limit');
+      if (config.synthesis.kind === 'say' && text.includes('[[')) throw new AppError('voice_text_unsupported');
       return job(context, async (directory, current) => {
         const input = join(directory, 'reply.txt'), output = join(directory, 'speech.wav'); await writeFile(input, text, { mode: 0o600 }); current.guard();
         const argv = config.synthesis.kind === 'say' ? ['-v', config.synthesis.voice, '-r', '165', '--file-format=WAVE', '--data-format=LEI16@16000', '--channels=1', '-f', input, '-o', output] : ['-v', config.synthesis.voice, '-s', '165', '-f', input, '-w', output];

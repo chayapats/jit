@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 if (import.meta.main) {
   if (process.argv[2] !== '--local-voice-worker') process.exit(2);
-  let child: ReturnType<typeof Bun.spawn> | undefined, reason: string | null = null, finished = false, directory: string | undefined;
+  let child: ReturnType<typeof Bun.spawn> | undefined, reason: string | null = null, finished = false, directory: string | undefined = process.cwd();
   const stop = (code: string) => { reason ??= code; if (child && !finished) { try { child.kill('SIGKILL'); } catch { /* Exit may have won the race. */ } } };
   process.on('SIGTERM', () => stop('cancelled')); process.on('SIGINT', () => stop('cancelled'));
   const respond = (state: string) => {
