@@ -118,15 +118,17 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
     let started = false, resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; });
     const start = (event: { frameId: string }) => { if (event.frameId === mainFrame) started = true; };
     const stop = (event: { frameId: string }) => { if (event.frameId === mainFrame && started) resolve(); };
+    const closed = () => resolve();
     session.on('Page.frameStartedLoading', start); session.on('Page.frameStoppedLoading', stop);
-    return { promise, close() { session.off('Page.frameStartedLoading', start); session.off('Page.frameStoppedLoading', stop); } };
+    page.on('close', closed);
+    return { promise, started: () => started, close() { session.off('Page.frameStartedLoading', start); session.off('Page.frameStoppedLoading', stop); page.off('close', closed); } };
   };
   const checked = async <T>(promise: Promise<T>, input: EngineInputContext): Promise<T> => {
     input.guard();
-    let cancel!: () => void;
-    const aborted = new Promise<never>((_, reject) => { cancel = () => reject(new BrowserError('cancelled')); input.signal.addEventListener('abort', cancel, { once: true }); if (input.signal.aborted) cancel(); });
-    try { const result = await Promise.race([promise, aborted]); input.guard(); return result; }
-    finally { input.signal.removeEventListener('abort', cancel); }
+    // The gateway returns its fenced result immediately, but retains the input lease until this actual
+    // browser operation settles. An abort race alone would let an old error document interrupt the next
+    // navigation after takeover. Browser cancellation is not settlement of a separate broker effect.
+    const result = await promise; input.guard(); return result;
   };
   const click = async (el: ElementHandle<HTMLElement | SVGElement>, input: EngineInputContext): Promise<void> => {
     await checked(el.waitForElementState('visible', { timeout: 5000 }), input);
@@ -140,18 +142,20 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
     const navigates = await checked(expectNative(el), input);
     const stopped = navigates ? navigationStopped() : null;
     const navigation = navigates ? page.waitForNavigation({ waitUntil: 'networkidle', timeout: 30000 }).then(() => null, (error: unknown) => error) : null;
+    const settled = navigation?.then(async error => { if (stopped?.started()) await stopped.promise; return error; });
+    let issued = false;
     try {
-      input.guard(); const down = session.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, x, y, clickCount: 1 });
+      input.guard(); issued = true; const down = session.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', buttons: 1, x, y, clickCount: 1 });
       // Both halves are enqueued in the same synchronous turn; cancellation cannot leave a queued half-click.
       input.guard(); const up = session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', buttons: 0, x, y, clickCount: 1 });
       await Promise.all([down, up]); input.guard();
-      if (navigation && stopped) {
+      if (settled) {
         // A denied navigation can still commit Chromium's error document after waitForNavigation rejects.
         // Wait for the frame's real stop event before another input can replace it.
-        const [error] = await checked(Promise.all([navigation, stopped.promise]), input);
+        const error = await checked(settled, input);
         if (error) throw new BrowserError('navigation_failed');
       }
-    } finally { stopped?.close(); }
+    } finally { try { if (issued && settled) await settled; } finally { stopped?.close(); } }
   };
   const fill = async (el: ElementHandle<HTMLElement | SVGElement>, value: string, input: EngineInputContext): Promise<void> => {
     await checked(el.waitForElementState('editable', { timeout: 5000 }), input);
@@ -168,7 +172,10 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       targets.clear(); expected = { method: 'GET', url: new URL(url).href, bodyBase64: '' }; input.guard();
       // Match native navigation's readiness barrier so initial JS reads stay inside the bounded scope.
       // Quiescence acknowledges navigation; exact request guards still decide authority and outcomes.
-      await checked(page.goto(url, { waitUntil: options.mode === 'general' ? 'networkidle' : 'domcontentloaded' }), input);
+      const stopped = navigationStopped();
+      try { await checked(page.goto(url, { waitUntil: options.mode === 'general' ? 'networkidle' : 'domcontentloaded' }), input); }
+      catch (error) { if (stopped.started()) await stopped.promise; throw error; }
+      finally { stopped.close(); }
     },
     async read(generation) {
       targets.clear(); const n = ++serial;

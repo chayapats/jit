@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { composeS15 } from '../../src/s15/composition';
 import { RemoteVmManagement } from '../../src/s15/vm/remote';
@@ -6,8 +6,9 @@ import { FixturePaymentPort, createFixturePaymentAdapter } from '../../src/s15/p
 import { zero, equal } from '../../src/s15/policy/validation';
 import type { PolicyInput, Ref } from '../../src/s15/policy';
 import type { ApprovedModelRoute } from '../../src/s15/model';
-import { browserSite } from '../../tests/fixtures/s15-browser';
+import { browserSite, loopbackFixtureEgress } from '../../tests/fixtures/s15-browser';
 import type { BrowserOperation, BrowserResult } from '../../src/s15/browser';
+import { proveProtectedBrowserBoundary } from './s16-browser-boundary';
 
 // Opt-in paired controller process. Secret relay material arrives over stdin and is never persisted/logged.
 if (process.env.JIT_S15_ARM64_EVIDENCE !== '1') throw Error('explicit_s15_evidence_opt_in_required');
@@ -15,7 +16,10 @@ const input = JSON.parse(await Bun.stdin.text()) as { relay: string; bootstrap: 
 const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 }), proof = {}, now = Date.now(), until = now + 3600000;
 const selection = { route: ref('route'), model: ref('model'), effort: 'low' }, modelBound = { ...zero(), calls: 1, steps: 1, activeMs: 10000 };
 const route: ApprovedModelRoute = { selection, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: modelBound, rank: { ordinary: 0, difficult: 0 } };
-const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha: input.sha, architecture: process.arch, controller: 'jit-s15-arm', workingVm: 'jit-work-arm', modelInference: 'not_run', ownerCredentials: 'not_used', startedAt: new Date().toISOString(), cases: {} };
+const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha: input.sha, architecture: process.arch, controller: 'jit-s15-arm', workingVm: 'jit-work-arm', modelInference: 'not_run', ownerCredentials: 'not_used', controlledLoopbackDnsDial: true, startedAt: new Date().toISOString(), cases: {} };
+const buildCommand = (argv: string[]) => { const result = Bun.spawnSync(argv); if (result.exitCode !== 0) throw Error('build_fact_unavailable'); return result.stdout.toString().trim(); };
+const binaryHash = (path: string) => { const hash = buildCommand(['sha256sum', path]).split(/\s/)[0]!; if (!/^[a-f0-9]{64}$/.test(hash)) throw Error('build_hash_unavailable'); return hash; };
+report.build = { bun: { version: process.versions.bun, sha256: binaryHash(process.execPath) }, browser: { version: buildCommand([input.browser, '--version']), sha256: binaryHash(input.browser) }, kernel: buildCommand(['uname', '-r']), playwright: JSON.parse(readFileSync(new URL('../../node_modules/playwright-core/package.json', import.meta.url), 'utf8')).version };
 const cases = report.cases as Record<string, unknown>, site = browserSite(), manager = new RemoteVmManagement({ origin: input.relay, credential: () => input.credential, allowLoopback: true });
 const catalog = new Map<string, { ref: Ref; active: boolean }>();
 for (const [kind, names] of Object.entries({ purpose: ['evidence', 'interpret'], bot: ['bot'], resource: ['computer', 'account'], recipient: ['provider', 'payee', 'other'], route: ['route'], model: ['model'] })) for (const id of names) catalog.set(`${kind}:${id}`, { ref: ref(id), active: true });
@@ -35,7 +39,7 @@ const service = await composeS15({ runtime: 's15', directory: join(input.output,
   model: { registry: { list: () => [route], current: s => equal(s, selection) ? route : null, pins: () => ({ route: null, model: null, effort: null }) }, limits: { turns: 3, attempts: 1, activeMs: 30000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 } },
   vm: { id: 'arm', resource: ref('computer'), managers: new Map([['remote_lima', manager]]), destination: () => null,
     upperBound: op => ({ ...zero(), calls: 1, reads: ['read', 'setup'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }) },
-  browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: input.browser, site: site.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 2097152, activeMs: 30000 } },
+  browser: { mode: 'general', egress: loopbackFixtureEgress, resource: ref('account'), fences: [], executablePath: input.browser, site: site.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 2097152, activeMs: 30000 } },
   adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
 });
 const owner = service.policy.owner.authenticate(proof); service.policy.owner.install(owner, 'evidence_policy', 0, policy);
@@ -64,7 +68,37 @@ try {
   const usage = service.policy.control.usage(); await service.vm.recover(owner, { vmId: 'arm', snapshotId: snapshot.id }); check(equal(usage, service.policy.control.usage()), 'policy_rewound'); await service.vm.start(owner, 'arm');
   const restored = await open(); const marker = await restored.session.backend.spawn({ command: 'cat /var/lib/jit-evid15-marker', cwd: restored.session.backend.workspaceRoot }); check(marker.stdout === 'baseline', 'snapshot_restore_failed'); await restored.session.close(); cases.snapshotRecovery = { passed: true, snapshot: snapshot.id, protectedPolicyUnchanged: true, prevention: false };
   const { actor } = admit('account'), browser = service.browser!.open(actor);
-  const run = (operation: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'click'; target?: string }) => browser.execute({ ...operation, generation: browser.state().generation } as BrowserOperation);
+  const run = (operation: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'click'; target?: string } | { kind: 'type' | 'select'; target: string; value: string }) => browser.execute({ ...operation, generation: browser.state().generation } as BrowserOperation);
+  report.stage = 'protected_login';
+  check((await run({ kind: 'navigate', url: site.origin + '/login' })).state === 'ok', 'login_navigation_failed');
+  check((await run({ kind: 'read' })).state === 'denied', 'login_surface_disclosed');
+  const login = await service.browser!.owner.takeover(owner);
+  await service.browser!.owner.input(owner, login.generation, { kind: 'type', field: 'password', value: site.password() });
+  await service.browser!.owner.input(owner, login.generation, { kind: 'click', field: 'confirm' });
+  await service.browser!.owner.input(owner, login.generation, { kind: 'type', field: 'otp', value: site.code() });
+  await service.browser!.owner.input(owner, login.generation, { kind: 'click', field: 'confirm' });
+  check(service.browser!.owner.handBack(owner, login.generation).login === 'checking', 'login_not_checking');
+  check(await service.browser!.owner.checkSession(owner) === 'signed_in', 'protected_login_unverified');
+  report.stage = 'authenticated_dynamic_task';
+  check((await run({ kind: 'navigate', url: site.origin + '/dynamic' })).state === 'ok', 'dynamic_navigation_failed');
+  const dynamic = await run({ kind: 'read' }); if (dynamic.state !== 'observed') throw Error('dynamic_observation_failed');
+  check(dynamic.observation.text.includes('Launch day: Friday / Launch project'), 'dynamic_hydration_failed');
+  const message = dynamic.observation.elements.find(element => element.name === 'message')!;
+  check((await run({ kind: 'type', target: message.id, value: 'Exact reference-host browser effect' })).state === 'ok', 'dynamic_edit_failed');
+  const edited = await run({ kind: 'read' }); if (edited.state !== 'observed') throw Error('dynamic_edited_observation_failed');
+  const confirm = edited.observation.elements.find(element => element.name === 'confirm')!;
+  const dynamicHold = await run({ kind: 'click', target: confirm.id }); if (dynamicHold.state !== 'held') throw Error('dynamic_effect_not_held');
+  check(!site.received.some(row => row.path === '/dynamic-send'), 'dynamic_effect_sent_before_approval');
+  const action = service.policy.owner.inspect(owner, dynamicHold.action).action;
+  service.policy.owner.decide(owner, { requestId: 'dynamic_exact_approval', action: dynamicHold.action, decision: 'approve', expiresAt: action.expiresAt });
+  check((await browser.resume(dynamicHold.action)).state === 'ok', 'dynamic_effect_unverified');
+  check(site.received.filter(row => row.path === '/dynamic-send').length === 1, 'dynamic_effect_not_once');
+  check((await browser.resume(dynamicHold.action)).state === 'unsupported', 'dynamic_effect_replayed');
+  cases.authenticatedDynamicTask = { passed: true, hydration: 'actual_fetch_and_xhr', login: 'actual_fixture_password_and_totp_protected_owner_port', dispatch: 'exact_approved_once_verified_by_body_hash', credentialsExported: false };
+  report.stage = 'protected_browser_guest_boundary'; const boundaryGuest = await open();
+  cases.protectedBrowserGuestBoundary = { ...await proveProtectedBrowserBoundary(boundaryGuest.session, join(input.output, 'protected', 'profiles')), externalNetwork: (await manager.inspect()).network };
+  await boundaryGuest.session.close();
+  report.stage = 'browser_communication_hold';
   const nav = await run({ kind: 'navigate', url: site.origin + '/clean-task' }); check(nav.state === 'ok', 'browser_navigation_failed');
   const read = await run({ kind: 'read' }); check(read.state === 'observed', 'browser_observation_failed');
   if (read.state !== 'observed') throw Error('browser_observation_failed');

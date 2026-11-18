@@ -83,8 +83,13 @@ export function browserSite(options: { delayMs?: number } = {}) {
     return html('Unknown endpoint', 404);
   } });
   const origin = server.url.origin;
+  const site = browserSitePolicy(origin);
+  return { origin, site, received, set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
+}
+/** Trusted controlled-site semantics, reusable by a separate crash/restart process without its server or credentials. */
+export function browserSitePolicy(origin: string): BrowserSitePolicy {
   const verifyResponse = (r: { status: number; body: Uint8Array }): 'succeeded' | 'unknown' => r.status === 200 && Buffer.from(r.body).includes(Buffer.from('Request accepted')) ? 'succeeded' : 'unknown';
-  const site: BrowserSitePolicy = {
+  return {
     loginDocuments: [origin + '/login', origin + '/two-factor'], session: { url: origin + '/session', cookie: 'jit_session', signedInStatus: 200, signedOutStatus: 401 },
     observable: url => { const u = new URL(url); return u.origin === origin && ['/', '/clean-task', '/message', '/checkout', '/edit', '/attacks', '/dynamic', '/dynamic-tamper', '/dynamic-send'].includes(u.pathname); },
     classify(r) {
@@ -106,8 +111,8 @@ export function browserSite(options: { delayMs?: number } = {}) {
       return null;
     },
   };
-  return { origin, site, received, set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
 }
+
 /** Real policy service and disposable protected profile shared by deterministic and opt-in engine tests. */
 export async function browserFixture(mode: BrowserMode, site: BrowserSitePolicy, factory?: (options: EngineOptions) => Promise<BrowserEngine>, clock?: BrowserClock, egress: BrowserEgressPorts = loopbackFixtureEgress) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'jit-protected-browser-')));
