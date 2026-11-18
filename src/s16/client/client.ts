@@ -1,3 +1,5 @@
+import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
+import type { SkillDetail, SkillsView } from "../skills/owner-view";
 import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouResult } from "../computers/needs-you-types";
 import type { ClientModelsView } from "./contracts";
 import type { BrowserActionCard } from "../computers/browser-cards";
@@ -323,6 +325,51 @@ export class JitClient {
   private botProposal(value: unknown): value is ClientBotProposal {
     return record(value) && value.contract === "s16-bot-proposal/v1" && identifier(value.id) && sha256(value.proposalHash) && record(value.draft) && value.draft.contract === "s16-bot-draft/v1" && typeof value.draft.name === "string"
       && ["pending", "accepted", "dismissed"].includes(value.state as string) && Array.isArray(value.resources) && Array.isArray(value.missing) && record(value.source);
+  }
+  /** SKILL16-01 owner catalog; reading it never imports, activates or executes a package. */
+  async skills(signal?: AbortSignal): Promise<SkillsView> {
+    const data = await this.call("/skills", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-skills/v1" || !Array.isArray(data.items) || data.items.length > 64 || !data.items.every(item => record(item) && this.skillRecord(item.record) && typeof item.name === "string" && typeof item.description === "string") || !Array.isArray(data.bots) || !data.bots.every(bot => record(bot) && identifier(bot.id) && typeof bot.name === "string") || !Array.isArray(data.dependencies) || !data.dependencies.every(dep => record(dep) && identifier(dep.id) && typeof dep.endpoint === "string" && typeof dep.label === "string") || !record(data.limits)) return invalid();
+    return data as unknown as SkillsView;
+  }
+  /** Exact bounded package metadata/parts/license preview; file bytes are requested separately. */
+  async skill(skillId: string, signal?: AbortSignal): Promise<SkillDetail> {
+    const data = await this.call(`/skills/${id(skillId)}`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-client-skill/v1" || !this.skillRecord(data.record) || data.record.id !== skillId || !count(data.releasedCopies)) return invalid();
+    for (const pkg of [data.active, data.candidate]) if (pkg !== null && (!record(pkg) || pkg.contract !== "s16-skill-package/v1" || !sha256(pkg.pin) || typeof pkg.name !== "string" || !Array.isArray(pkg.files) || pkg.files.length > 128 || !pkg.files.every(file => record(file) && typeof file.path === "string" && sha256(file.sha256) && count(file.bytes)) || !Array.isArray(pkg.units) || pkg.units.length > 16 || !pkg.units.every(unit => record(unit) && identifier(unit.id) && typeof unit.name === "string" && typeof unit.description === "string" && typeof unit.userOnly === "boolean") || !Array.isArray(pkg.dependencies) || !Array.isArray(pkg.scripts) || !Array.isArray(pkg.unsupported) || !Array.isArray(pkg.licenseFiles) || !record(pkg.origin))) return invalid();
+    return data as unknown as SkillDetail;
+  }
+  /** Literal current package file for escaped owner preview. A path never addresses the controller filesystem. */
+  async skillFile(skillId: string, pin: string, path: string, signal?: AbortSignal): Promise<SkillFile> {
+    if (!sha256(pin)) return invalid(); const data = await this.call(`/skills/${id(skillId)}/files?pin=${encodeURIComponent(pin)}&path=${encodeURIComponent(path)}`, "GET", undefined, signal);
+    if (!record(data) || data.path !== path || !sha256(data.sha256) || !count(data.bytes) || (data.bytes as number) > 65536 || typeof data.base64 !== "string" || data.base64.length > 87384) return invalid(); return data as unknown as SkillFile;
+  }
+  /** Read-only exact recipient preview. The hash is supplied with the later explicit owner review. */
+  async skillRecipients(skillId: string, pin: string, dependencies: Record<string, SkillDependencyBinding>, signal?: AbortSignal): Promise<{ hash: string; recipients: { id: string; revision: number; generation: number }[] }> {
+    const data = await this.call(`/skills/${id(skillId)}/review-preview`, "POST", { pin, dependencies }, signal);
+    if (!record(data) || !sha256(data.hash) || !Array.isArray(data.recipients) || !data.recipients.every(modelRef)) return invalid(); return data as { hash: string; recipients: { id: string; revision: number; generation: number }[] };
+  }
+  /** One exact owner command; unknown outcomes keep the original identity and are never retried here. */
+  async skillCommand(command: SkillCommand, signal?: AbortSignal): Promise<SkillReceipt> {
+    const value = structuredClone(command); if (value.contract !== "s16-skill-command/v1" || !identifier(value.requestId)) throw new JitClientError("invalid_skill_command", null, "not_sent", value.requestId);
+    const data = await this.call("/skills/commands", "POST", value, signal, value.requestId); return this.skillReceipt(data, value.requestId);
+  }
+  /** Original-identity status lookup. This GET never starts an interrupted import or changes policy membership. */
+  async skillCommandStatus(requestId: string, signal?: AbortSignal): Promise<SkillCommandStatus> {
+    const data = await this.call(`/skills/commands/${id(requestId)}`, "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-skill-command-status/v1" || data.requestId !== requestId || !["complete", "queued", "importing", "interrupted"].includes(data.state as string)) return invalid(); if (data.state === "complete") this.skillReceipt(data.receipt, requestId);
+    return data as unknown as SkillCommandStatus;
+  }
+  /** Explicitly resumes only that original inert import or already committed exact membership review. */
+  async resumeSkillCommand(requestId: string, signal?: AbortSignal): Promise<SkillReceipt> {
+    const data = await this.call(`/skills/commands/${id(requestId)}/resume`, "POST", {}, signal, requestId); return this.skillReceipt(data, requestId);
+  }
+  private skillReceipt(value: unknown, requestId: string): SkillReceipt {
+    if (!record(value) || value.contract !== "s16-skill-receipt/v1" || value.requestId !== requestId || !identifier(value.skillId) || !count(value.revision) || value.pin !== null && !sha256(value.pin) || !["needs_review", "active", "revoked"].includes(value.state as string) || !["installed", "review_required", "not_needed"].includes(value.policy as string)) throw new JitClientError("client_protocol_invalid", null, "unknown", requestId);
+    return value as unknown as SkillReceipt;
+  }
+  private skillRecord(value: unknown): value is import("../skills/types").SkillRecord {
+    return record(value) && value.contract === "s16-skill/v1" && identifier(value.id) && count(value.revision) && count(value.ownerGeneration) && ["needs_review", "active", "revoked"].includes(value.state as string) && (value.activePin === null || sha256(value.activePin)) && (value.candidatePin === null || sha256(value.candidatePin)) && modelRef(value.resource) && modelRef(value.source) && (value.review === null || record(value.review) && sha256(value.review.pin) && sha256(value.review.recipientsHash) && Array.isArray(value.review.recipients) && value.review.recipients.every(modelRef) && record(value.review.availability) && ["team", "bots"].includes(value.review.availability.kind as string) && typeof value.review.executable === "boolean" && record(value.review.dependencies));
   }
   /** CONN16-01 connections: GitHub, tool sources (with their review state) and open chat cards. Reading connects nothing. */
   async connections(signal?: AbortSignal): Promise<ClientConnectionsView> {

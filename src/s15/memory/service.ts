@@ -1,4 +1,5 @@
 import { AppError } from "../../errors";
+import { dataRefs } from "../data-lineage";
 import { filePins, type FileSourcePin } from "../file-lineage";
 import { lexicalScore, lexicalTerms } from "../../memory/lexical";
 import { digest } from "../conversation/validation";
@@ -26,7 +27,7 @@ export class MemoryService {
   constructor(readonly options: MemoryOptions) {
     if (options.runtime !== "s15") throw new AppError("s15_opt_in_required");
     this.now = options.now ?? Date.now;
-    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495437, MEMORY_SCHEMA_V1, !!options.team.options.fileLineage, options.team.options.fileLineage ? [1, 2, 3, 4] : [1, 3]);
+    this.store = new ProtectedDataStore(options.path, options.installationId, options.create, 0x4a495437, MEMORY_SCHEMA_V1, !!options.team.options.fileLineage, options.team.options.fileLineage ? (options.team.options.dataLineage ? [1, 2, 3, 4, 5, 6] : [1, 2, 3, 4]) : (options.team.options.dataLineage ? [1, 3, 5] : [1, 3]));
   }
   private owner(actor: OwnerActor): void { this.options.team.options.policy.owner.current(actor); }
   private rows<T>(table: "sources" | "claims" | "derivatives"): T[] {
@@ -44,17 +45,18 @@ export class MemoryService {
   private suppressed(text: string): boolean { return !!this.store.db.query("SELECT 1 FROM suppressions WHERE fingerprint=?").get(fingerprint(text)); }
   private saveClaim(claim: MemoryClaim): void { this.store.db.query("INSERT INTO claims VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET lifecycle=excluded.lifecycle,record_json=excluded.record_json").run(claim.id, claim.lifecycle, canonical(claim)); }
   private format(): number { return this.store.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version; }
-  private fileFormat(pins: readonly FileSourcePin[] | undefined): void { if (pins?.length) { if (!this.options.team.options.fileLineage) throw new AppError("file_memory_required", 503); this.store.db.exec(`PRAGMA user_version=${this.format() >= 3 ? 4 : 2}`); } }
-  private saveSource(source: SourceRecord): void { this.fileFormat(source.filePins); this.store.db.query("INSERT INTO sources VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(source.id, source.sourceHash, canonical(source)); }
+  private fileFormat(pins: readonly FileSourcePin[] | undefined): void { if (pins?.length) { if (!this.options.team.options.fileLineage) throw new AppError("file_memory_required", 503); this.store.db.exec(`PRAGMA user_version=${this.format() >= 5 ? 6 : this.format() >= 3 ? 4 : 2}`); } }
+  private dataFormat(values: readonly import("../policy").Ref[] | undefined): void { if (values?.length) { if (!this.options.team.options.dataLineage) throw new AppError("data_lineage_required", 503); this.store.db.exec(`PRAGMA user_version=${[2, 4, 6].includes(this.format()) ? 6 : 5}`); } }
+  private saveSource(source: SourceRecord): void { this.fileFormat(source.filePins); this.dataFormat(source.dataRefs); this.store.db.query("INSERT INTO sources VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET record_json=excluded.record_json").run(source.id, source.sourceHash, canonical(source)); }
   private saveDerivative(value: MemoryDerivative): void {
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(value.id);
     if (row) {
       const previous = JSON.parse(row.record_json) as MemoryDerivative;
-      if (previous.kind !== value.kind || previous.workId !== value.workId || previous.state === "retired" && value.state !== "retired" || previous.claimIds.some(id => !value.claimIds.includes(id)) || previous.sourceIds.some(id => !value.sourceIds.includes(id)) || filePins(previous.filePins).some(pin => !filePins(value.filePins).some(next => canonical(next) === canonical(pin)))) throw new AppError("source_id_conflict", 409);
+      if (previous.kind !== value.kind || previous.workId !== value.workId || previous.state === "retired" && value.state !== "retired" || previous.claimIds.some(id => !value.claimIds.includes(id)) || previous.sourceIds.some(id => !value.sourceIds.includes(id)) || filePins(previous.filePins).some(pin => !filePins(value.filePins).some(next => canonical(next) === canonical(pin))) || dataRefs(previous.dataRefs).some(pin => !dataRefs(value.dataRefs).some(next => canonical(next) === canonical(pin)))) throw new AppError("source_id_conflict", 409);
     }
     // Stamp inside the caller's transaction. Old prefix writers must refuse this store on rollback.
-    if (value.id.startsWith("memory:")) this.store.db.exec(`PRAGMA user_version=${[2, 4].includes(this.format()) ? 4 : 3}`);
-    this.fileFormat(value.filePins);
+    if (value.id.startsWith("memory:")) this.store.db.exec(`PRAGMA user_version=${this.format() >= 5 ? this.format() : [2, 4].includes(this.format()) ? 4 : 3}`);
+    this.fileFormat(value.filePins); this.dataFormat(value.dataRefs);
     this.store.db.query("INSERT INTO derivatives VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,record_json=excluded.record_json").run(value.id, value.state, canonical(value));
   }
   /** Access is checked before payload relevance, including transitive claims, sources and resources. */
@@ -68,6 +70,7 @@ export class MemoryService {
       if (claim.lifecycle !== "active" || !source.active || !inScope(source.scope, work.request.bot.id)) return false;
       for (const pin of source.resources) { const current = history ? this.options.team.historyResource(context, pin.id) : this.options.team.resource(context, pin.id); if (current.revision !== pin.revision || current.generation !== pin.generation) return false; }
       if (source.filePins?.length && !this.options.team.options.fileLineage?.current(source.filePins)) return false;
+      this.options.team.verifyData(context, dataRefs(source.dataRefs), history);
       if (source.teamSourceId) { if (history) this.options.team.historyAncestry(context, [source.teamSourceId]); else this.options.team.ancestry(context, [source.teamSourceId]); }
       for (const parent of claim.dependencies) if (!this.accessible(context, this.claim(parent), seen, memo, history)) return false;
       return true;
@@ -83,7 +86,7 @@ export class MemoryService {
    * private data remains private and cannot create execution, decisions, grants or account changes.
    */
   retain(context: TeamContext, input: MemoryInput, candidates: readonly MemoryCandidate[] = extractMemory(input.text)): MemoryClaim[] {
-    canonical(input); exact(input, ["id", "text", "origin", "scope", "resources", "parents", ...(input.filePins ? ["filePins"] : [])]); identity(input.id); content(input.text, 32768); origin(input.origin); scope(input.scope); ids(input.parents, 128);
+    canonical(input); exact(input, ["id", "text", "origin", "scope", "resources", "parents", ...(input.filePins ? ["filePins"] : []), ...(input.dataRefs ? ["dataRefs"] : [])]); identity(input.id); content(input.text, 32768); origin(input.origin); scope(input.scope); ids(input.parents, 128);
     if (!Array.isArray(input.resources) || input.resources.length > 32) throw new AppError("invalid_source"); input.resources.forEach(reference);
     if (!Array.isArray(candidates) || candidates.length > 16) throw new AppError("invalid_memory_extraction");
     const work = this.options.team.guard(context), allowed = this.options.retention(work);
@@ -96,7 +99,10 @@ export class MemoryService {
     dependencies.forEach(parent => { if (!this.accessible(context, parent)) throw new AppError("memory_context_stale", 409); });
     // Materialize inherited privacy/resource ceilings now so a later owner correction cannot erase
     // an uncited private ancestor merely by replacing the assertion's content.
-    const effectiveScope = input.scope.kind === "bot" ? input.scope : dependencies.find(parent => parent.provenance.scope.kind === "bot")?.provenance.scope ?? input.scope;
+    const lineage = dataRefs(input.dataRefs, ...dependencies.map(parent => parent.provenance.dataRefs));
+    const privateData = this.options.team.verifyData(context, lineage).private;
+    const inheritedScope = input.scope.kind === "bot" ? input.scope : dependencies.find(parent => parent.provenance.scope.kind === "bot")?.provenance.scope ?? input.scope;
+    const effectiveScope = privateData && inheritedScope.kind === "team" ? { kind: "bot" as const, botId: work.request.bot.id, origin: "s15" as const } : inheritedScope;
     const resourceMap = new Map(input.resources.map(pin => [pin.id, pin]));
     const pins = filePins(input.filePins, ...dependencies.map(parent => parent.provenance.filePins)); this.options.team.verifyFiles(context, pins);
     for (const pin of pins) { const before = resourceMap.get(pin.resource.id); if (before && canonical(before) !== canonical(pin.resource)) throw new AppError("stale_authority", 409); resourceMap.set(pin.resource.id, pin.resource); }
@@ -108,7 +114,7 @@ export class MemoryService {
     const sourceHash = digest(input.text), existing = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM sources WHERE id=?").get(input.id);
     if (existing) {
       const source = JSON.parse(existing.record_json) as SourceRecord;
-      if (source.sourceHash !== sourceHash || canonical(source.origin) !== canonical(input.origin) || canonical(source.scope) !== canonical(effectiveScope) || canonical(source.resources) !== canonical(effectiveResources) || canonical(filePins(source.filePins)) !== canonical(pins)) throw new AppError("source_id_conflict", 409);
+      if (source.sourceHash !== sourceHash || canonical(source.origin) !== canonical(input.origin) || canonical(source.scope) !== canonical(effectiveScope) || canonical(source.resources) !== canonical(effectiveResources) || canonical(filePins(source.filePins)) !== canonical(pins) || canonical(dataRefs(source.dataRefs)) !== canonical(lineage)) throw new AppError("source_id_conflict", 409);
       return source.active ? this.rows<MemoryClaim>("claims").filter(claim => claim.sourceId === input.id && this.accessible(context, claim)) : [];
     }
     if (this.store.db.query("SELECT 1 FROM suppressions WHERE fingerprint=?").get(sourceHash)) return [];
@@ -124,13 +130,13 @@ export class MemoryService {
     if (!accepted.length) return [];
     // Capture before MEM commit. A stranded protected source is inaccessible without a retained claim.
     const parents = [...new Set(input.parents.flatMap(parent => this.claim(parent).provenance.teamSourceId ?? []))];
-    const captured = this.options.team.capture(context, { ...input, ...(pins.length ? { filePins: pins } : {}), text: [...new Set(accepted.map(candidate => candidate.quote))].join("\n"), scope: effectiveScope, resources: effectiveResources, parents });
+    const captured = this.options.team.capture(context, { ...input, ...(pins.length ? { filePins: pins } : {}), ...(lineage.length ? { dataRefs: lineage } : {}), text: [...new Set(accepted.map(candidate => candidate.quote))].join("\n"), scope: effectiveScope, resources: effectiveResources, parents });
     return this.store.transaction(() => {
       this.store.capacity(); this.options.team.guard(context);
-      const source: SourceRecord = { id: input.id, active: true, origin: input.origin, scope: effectiveScope, resources: effectiveResources, teamSourceId: captured.id, sourceHash, ...(pins.length ? { filePins: pins } : {}) };
+      const source: SourceRecord = { id: input.id, active: true, origin: input.origin, scope: effectiveScope, resources: effectiveResources, teamSourceId: captured.id, sourceHash, ...(pins.length ? { filePins: pins } : {}), ...(lineage.length ? { dataRefs: lineage } : {}) };
       this.saveSource(source);
       const retained = accepted.map(candidate => {
-        const claim: MemoryClaim = { contract: "s15-memory-claim/v1", id: id(), revision: 1, ...candidate, sourceId: source.id, provenance: { origin: source.origin, scope: source.scope, resources: source.resources, teamSourceId: source.teamSourceId, sourceHash, ...(pins.length ? { filePins: pins } : {}) }, createdAt: this.now(), lifecycle: "active", confirmation: candidate.kind === "inference" || input.origin.kind === "historical" ? "unconfirmed" : input.origin.kind === "owner_message" ? "owner_stated" : "observed", supersedes: null, correction: null, dependencies: input.parents, authority: "none" };
+        const claim: MemoryClaim = { contract: "s15-memory-claim/v1", id: id(), revision: 1, ...candidate, sourceId: source.id, provenance: { origin: source.origin, scope: source.scope, resources: source.resources, teamSourceId: source.teamSourceId, sourceHash, ...(pins.length ? { filePins: pins } : {}), ...(lineage.length ? { dataRefs: lineage } : {}) }, createdAt: this.now(), lifecycle: "active", confirmation: candidate.kind === "inference" || input.origin.kind === "historical" ? "unconfirmed" : input.origin.kind === "owner_message" ? "owner_stated" : "observed", supersedes: null, correction: null, dependencies: input.parents, authority: "none" };
         this.saveClaim(claim); return claim;
       });
       return retained;
@@ -147,13 +153,14 @@ export class MemoryService {
     const claims: MemoryClaim[] = []; let bytes = 0;
     for (const { claim } of ranked) { const next = Buffer.byteLength(canonical(claim)); if (claims.length >= 16 || bytes + next > 16384) continue; bytes += next; claims.push(claim); }
     const sourceIds = [...new Set(claims.map(claim => claim.sourceId))];
+    const lineage = dataRefs(...claims.map(claim => claim.provenance.dataRefs)); this.options.team.releaseData(context, lineage);
     const pins = filePins(selectedFiles, ...claims.map(claim => claim.provenance.filePins)); this.options.team.verifyFiles(context, pins);
     this.store.transaction(() => {
       this.store.capacity(); claims.forEach(claim => { if (!this.accessible(context, claim)) throw new AppError("memory_context_stale", 409); });
       const workId = this.options.team.guard(context).id;
       const at = this.now();
-      this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), at });
-      this.saveDerivative({ id: memoryDerivativeId("native", requestId), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), at });
+      this.saveDerivative({ id: requestId, kind: "context", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), ...(lineage.length ? { dataRefs: lineage } : {}), at });
+      this.saveDerivative({ id: memoryDerivativeId("native", requestId), kind: "native", claimIds: claims.map(c => c.id), sourceIds, state: "active", text: null, workId, ...(pins.length ? { filePins: pins } : {}), ...(lineage.length ? { dataRefs: lineage } : {}), at });
     });
     return { id: requestId, claims, section: canonical({ authority: "none", claims }), retained: [] };
   }
@@ -173,25 +180,41 @@ export class MemoryService {
         if (derivative.kind !== (derivativeId === packetId ? "context" : "native")) throw new AppError("memory_context_stale", 409);
         derivative.claimIds = [...new Set([...derivative.claimIds, ...claimIds])];
         derivative.sourceIds = [...new Set([...derivative.sourceIds, ...claimIds.map(id => this.claim(id).sourceId)])];
+        const lineage = dataRefs(derivative.dataRefs, ...claimIds.map(id => this.claim(id).provenance.dataRefs)); if (lineage.length) derivative.dataRefs = lineage;
         const pins = filePins(derivative.filePins, ...claimIds.map(id => this.claim(id).provenance.filePins)); if (pins.length) derivative.filePins = pins;
         if (derivative.claimIds.length > 128 || derivative.sourceIds.length > 128) throw new AppError("output_limit");
         this.saveDerivative(derivative);
       }
     });
   }
+  /** Add actual DATA15 observations even when extraction retained no claim. Context privacy cannot depend on ranking. */
+  includeData(context: TeamContext, packetId: string, input: readonly import("../policy").Ref[]): void {
+    const values = dataRefs(input); if (!values.length) return;
+    this.store.transaction(() => {
+      this.guard(context, packetId); this.options.team.verifyData(context, values);
+      const native = memoryDerivativeId("native", packetId), nativeId = this.store.db.query("SELECT 1 FROM derivatives WHERE id=?").get(native) ? native : memoryId(`native_${packetId}`);
+      for (const id of [packetId, nativeId]) {
+        const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(id);
+        if (!row) throw new AppError("memory_context_stale", 409);
+        const value = JSON.parse(row.record_json) as MemoryDerivative; value.dataRefs = dataRefs(value.dataRefs, values); this.saveDerivative(value);
+      }
+    });
+  }
   /** Final context guard used before models, tools, result commit and subsequent publication. */
   guard(context: TeamContext, packetId: string): void {
-    const value = this.packet(context, packetId); this.options.team.verifyFiles(context, value.filePins ?? []);
+    const value = this.packet(context, packetId); this.options.team.verifyFiles(context, value.filePins ?? []); this.options.team.releaseData(context, dataRefs(value.dataRefs));
   }
   private packet(context: TeamContext, packetId: string, history = false): MemoryDerivative {
     this.options.team.guard(context); derivativeIdentity(packetId);
     const row = this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(packetId);
     const value = row ? JSON.parse(row.record_json) as MemoryDerivative : null;
     if (!value || value.state !== "active" || value.claimIds.some(id => !this.accessible(context, this.claim(id), new Set(), new Map(), history)) || value.sourceIds.some(id => !this.source(id).active) || value.filePins?.length && !this.options.team.options.fileLineage?.current(value.filePins)) throw new AppError("memory_context_stale", 409);
-    return value;
+    this.options.team.verifyData(context, dataRefs(value.dataRefs), history); return value;
   }
   /** Exact metadata-only packet ancestry; it never scans unrelated files or returns private claim bytes. */
   ancestry(context: TeamContext, packetId: string): FileSourcePin[] { return filePins(this.packet(context, packetId).filePins); }
+  /** Complete immutable DATA15 descendant ancestry; metadata selection alone releases no bytes. */
+  dataAncestry(context: TeamContext, packetId: string, history = false): import("../policy").Ref[] { return dataRefs(this.packet(context, packetId, history).dataRefs); }
   /** A generated paraphrase cannot silently become a new source after an ancestor was forgotten or
    * corrected. Actual independent observations still use ordinary quote/hash suppression. */
   retainGeneratedFiles(context: TeamContext, packetId: string): boolean {
@@ -214,7 +237,7 @@ export class MemoryService {
       this.guard(context, packetId);
       const parent = JSON.parse(this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(packetId)!.record_json) as MemoryDerivative;
       if (this.store.db.query("SELECT 1 FROM derivatives WHERE id=?").get(value.id)) throw new AppError("source_id_conflict", 409);
-      this.store.capacity(); this.saveDerivative({ ...structuredClone(value), claimIds: parent.claimIds, sourceIds: parent.sourceIds, state: "active", ...(parent.filePins?.length ? { filePins: parent.filePins } : {}), at: this.now() });
+      this.store.capacity(); this.saveDerivative({ ...structuredClone(value), claimIds: parent.claimIds, sourceIds: parent.sourceIds, state: "active", ...(parent.filePins?.length ? { filePins: parent.filePins } : {}), ...(parent.dataRefs?.length ? { dataRefs: parent.dataRefs } : {}), at: this.now() });
     });
   }
   /** Derived content read always rechecks original claim/resource/private scope before returning bytes. */
@@ -222,9 +245,9 @@ export class MemoryService {
    * DELEG16-01: TEAM ancestry of one request's context packet (every claim it included and its file pins), so text an
    * assigning Bot writes from that context keeps the same privacy labels when it is handed to another Bot.
    */
-  contextLineage(context: TeamContext, packetId: string): { sourceIds: string[]; private: boolean; filePins: FileSourcePin[] } {
+  contextLineage(context: TeamContext, packetId: string): { sourceIds: string[]; private: boolean; filePins: FileSourcePin[]; dataRefs: import("../policy").Ref[] } {
     const derivative = this.derivative(context, packetId), claims = derivative.claimIds.map(id => this.claim(id));
-    return { sourceIds: [...new Set(claims.flatMap(claim => claim.provenance.teamSourceId ?? []))], private: claims.some(claim => claim.provenance.scope.kind === "bot"), filePins: filePins(derivative.filePins) };
+    return { sourceIds: [...new Set(claims.flatMap(claim => claim.provenance.teamSourceId ?? []))], private: claims.some(claim => claim.provenance.scope.kind === "bot") || this.options.team.verifyData(context, dataRefs(derivative.dataRefs)).private, filePins: filePins(derivative.filePins), dataRefs: dataRefs(derivative.dataRefs) };
   }
   derivative(context: TeamContext, derivativeId: string): MemoryDerivative { this.guard(context, derivativeId); return JSON.parse(this.store.db.query<{ record_json: string }, [string]>("SELECT record_json FROM derivatives WHERE id=?").get(derivativeId)!.record_json) as MemoryDerivative; }
   /** Ordinary CHAT history/replay cannot reintroduce forgotten/corrected source or retired summaries. */
@@ -336,7 +359,7 @@ export class MemoryService {
       if (input.kind === "memory.correct") {
         const source: SourceRecord = { ...structuredClone(root.provenance), id: `correction_${replacementId}`, active: true, teamSourceId: null, sourceHash: digest(input.text), origin: { kind: "owner_message", id: input.requestId, conversationId: root.provenance.origin.conversationId, at: this.now() } };
         this.saveSource(source);
-        corrected = { ...structuredClone(root), id: replacementId!, revision: 1, text: input.text, quote: input.text, kind: "fact", confirmation: "owner_stated", sourceId: source.id, provenance: { origin: source.origin, resources: source.resources, scope: source.scope, teamSourceId: null, sourceHash: source.sourceHash, ...(source.filePins?.length ? { filePins: source.filePins } : {}) }, lifecycle: "active", createdAt: this.now(), supersedes: root.id, correction: null, dependencies: [], authority: "none" };
+        corrected = { ...structuredClone(root), id: replacementId!, revision: 1, text: input.text, quote: input.text, kind: "fact", confirmation: "owner_stated", sourceId: source.id, provenance: { origin: source.origin, resources: source.resources, scope: source.scope, teamSourceId: null, sourceHash: source.sourceHash, ...(source.filePins?.length ? { filePins: source.filePins } : {}), ...(source.dataRefs?.length ? { dataRefs: source.dataRefs } : {}) }, lifecycle: "active", createdAt: this.now(), supersedes: root.id, correction: null, dependencies: [], authority: "none" };
         this.saveClaim(corrected);
       }
       const result = { contract: "s15-memory-receipt/v1", requestId: input.requestId, kind: input.kind, claim: corrected ? { id: corrected.id, revision: corrected.revision } : null, impact: affected.impact };

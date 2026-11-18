@@ -2,6 +2,8 @@ import type { ConversationMemoryPort, ConversationRequest } from "../conversatio
 import type { ConversationPolicyWork } from "../conversation/policy-port";
 import type { TeamContext } from "../team";
 import type { MemoryService } from "./service";
+import { dataRefs } from "../data-lineage";
+import type { Ref } from "../policy";
 import { filePins, type FileSourcePin } from "../file-lineage";
 import { extractMemory } from "./extract";
 import { digest } from "../conversation/validation";
@@ -15,15 +17,20 @@ export interface ConversationFileMemory {
   disclose(work: ConversationPolicyWork, pins: readonly FileSourcePin[]): void;
 }
 
+/** Protected actual-observation snapshot. The owning DATA15 journal records every source already read;
+ * neither model text nor claim extraction determines ancestry. */
+export interface ConversationDataMemory { observed(work: ConversationPolicyWork, evidence: ConversationEvidence): Ref[] }
+
 /**
  * Small additive CHAT adapter: capture actual owner ingress after policy admission; supply only
  * labelled memory data; guard every later model/tool/publication; exclude withdrawn ordinary history.
  * Every request gets fresh Schway native ownership, retired by CHAT's existing finally path.
  */
-export function createConversationMemory(memory: MemoryService, files?: ConversationFileMemory): ConversationMemoryPort<ConversationPolicyWork> {
+export function createConversationMemory(memory: MemoryService, files?: ConversationFileMemory, data?: ConversationDataMemory): ConversationMemoryPort<ConversationPolicyWork> {
   const contexts = new Map<string, TeamContext>();
   const conversations = new Map<string, string>();
   const histories = new WeakMap<ConversationPolicyWork, TeamContext>();
+  const selectedHistory = new WeakMap<ConversationPolicyWork, Map<string, Ref[]>>();
   const historyContext = (work: ConversationPolicyWork) => { let value = histories.get(work); if (!value) { value = memory.options.team.bindHistory(work.actor); histories.set(work, value); } return value; };
   const context = (work: ConversationPolicyWork, requestId: string) => {
     let current = contexts.get(requestId);
@@ -31,6 +38,7 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
     return current;
   };
   return {
+    ...(data ? { dataContract: "s16-data-memory/v1" as const } : {}),
     ...(files ? { fileContract: "s16-file-memory/v1" as const } : {}),
     prepare(work, request: ConversationRequest, ingress) {
       conversations.set(request.receipt.rootRequestId, request.receipt.conversationId);
@@ -46,17 +54,19 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
       memory.include(current, packet.id, retained.map(claim => claim.id));
       // Copy dependencies, never recapture the old instruction as fresh owner ingress. Forget/withdrawal
       // must invalidate this new native context as well as the original work observations.
-      for (const prior of ingress?.priorRequests ?? []) if (prior.memory) memory.include(current, packet.id, memory.derivative(current, prior.receipt.rootRequestId).claimIds);
+      for (const prior of ingress?.priorRequests ?? []) if (prior.memory) { const previous = memory.derivative(current, prior.receipt.rootRequestId); memory.include(current, packet.id, previous.claimIds); memory.includeData(current, packet.id, previous.dataRefs ?? []); }
       files?.disclose(work, memory.ancestry(current, packet.id));
       return { section: packet.section, retained: retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin })) };
     },
     guard(work, requestId) { const current = context(work, requestId); memory.guard(current, requestId); files?.disclose(work, memory.ancestry(current, requestId)); },
     observe(work, request, evidence, observations) {
       const current = context(work, request.receipt.rootRequestId), authority = memory.options.team.guard(current), scope = memory.options.retention(authority);
-      if (!scope || evidence.isError) return [];
+      const lineage = data?.observed(work, evidence) ?? []; memory.includeData(current, request.receipt.rootRequestId, lineage);
+      // Errors can still contain private observations; keep their context ancestry without extracting facts.
+      if (evidence.isError || !scope) return [];
       const packet = memory.derivative(current, request.receipt.rootRequestId);
       const text = request.fileInputs ? files?.observed(work, request, evidence, observations) : evidence.content; if (!text) return [];
-      const retained = memory.retain(current, { id: memoryId(`evidence_${evidence.id}`), text, origin: { kind: "work", id: memoryId(evidence.id), conversationId: request.receipt.conversationId, at: evidence.at }, scope, resources: authority.request.resources, parents: packet.claimIds, ...(packet.filePins?.length ? { filePins: packet.filePins } : {}) });
+      const retained = memory.retain(current, { id: memoryId(`evidence_${evidence.id}`), text, origin: { kind: "work", id: memoryId(evidence.id), conversationId: request.receipt.conversationId, at: evidence.at }, scope, resources: authority.request.resources, parents: packet.claimIds, ...(packet.dataRefs?.length ? { dataRefs: packet.dataRefs } : {}), ...(packet.filePins?.length ? { filePins: packet.filePins } : {}) });
       memory.include(current, request.receipt.rootRequestId, retained.map(claim => claim.id));
       return retained.map(claim => ({ id: claim.id, kind: claim.kind, category: claim.category, source: claim.provenance.origin }));
     },
@@ -69,10 +79,17 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
     },
     artifacts(work, requestId, artifacts) { for (const artifact of artifacts) memory.derive(context(work, requestId), requestId, { id: memoryDerivativeId("artifact", artifact.id), kind: "artifact", text: null, workId: work.authority.id }); },
     allowHistory(requestId, text) { return memory.allowHistory(requestId, text); },
-    ...(files ? {
-      history(work: ConversationPolicyWork, requestId: string, text: string) { try { memory.history(historyContext(work), requestId, text); return true; } catch { return false; } },
+    ...(files || data ? {
+      history(work: ConversationPolicyWork, requestId: string, text: string) { try {
+        memory.history(historyContext(work), requestId, text); const lineage = memory.dataAncestry(historyContext(work), requestId, true);
+        const selected = new Map(selectedHistory.get(work)); selected.set(requestId, lineage);
+        // Admit bounded recent history before including its bytes. Capacity can omit an older fragment;
+        // it cannot abort the new message or discard an ancestor of a selected fragment.
+        dataRefs(...selected.values()); selectedHistory.set(work, selected); return true;
+      } catch { return false; } },
       guardHistory(work: ConversationPolicyWork, fragments: readonly { id: string; text: string }[]) { return filePins(...fragments.map(fragment => memory.history(historyContext(work), fragment.id, fragment.text))); },
     } : {}),
+    ...(data ? { guardDataHistory(work: ConversationPolicyWork, fragments: readonly { id: string; text: string }[]) { return dataRefs(...fragments.map(fragment => memory.dataAncestry(historyContext(work), fragment.id, true))); } } : {}),
     release(requestId) { contexts.delete(requestId); conversations.delete(requestId); },
   };
 }

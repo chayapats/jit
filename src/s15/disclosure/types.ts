@@ -5,7 +5,7 @@ import type { ApprovedModelRoute } from '../model';
 /** Source classification is owning-service state, never a model label or text-pattern inference. */
 export type DataClass = 'public' | 'private' | 'personal' | 'business';
 /** Immutable source scope. Unknown, withdrawn or changed revisions fail closed. */
-export interface DisclosureSource { ref: Ref; resource: Ref; classification: DataClass; active: boolean; ownerReleasable: boolean }
+export interface DisclosureSource { ref: Ref; resource: Ref; classification: DataClass; active: boolean; ownerReleasable: boolean; botIds?: string[] | null }
 /** Explicit protected approval for a recipient, purpose, resources and classes. Null sources means
  * all current revisions inside that resource/class scope, not every resource or a new purpose. */
 export interface RecipientApproval { recipient: Ref; purpose: Ref; resources: Ref[]; dataClasses: DataClass[]; sources: Ref[] | null; expiresAt: number }
@@ -32,6 +32,9 @@ export interface DisclosureOptions {
   runtime: 's15'; path: string; create: boolean; installationId: string;
   catalogs: DisclosureCatalog; routes: readonly DisclosureRoute[]; now?: () => number;
   browserSource?: (work: WorkAuthority, url: string, format: 'response' | 'text' | 'image') => Ref | null;
+  /** Owning-host projection for deliberately released VM copies. Original source validation precedes it;
+   * classification, releasability and Bot scope may only stay equal or narrow. No imported callback is accepted. */
+  projectVmInput?: (work: WorkAuthority, vmId: string, source: DisclosureSource) => Ref;
   /** Exact protected VM registry host mapping, never guest-supplied recipient metadata. */
   registryRecipient?: (destination: string) => Ref | null;
 }
@@ -58,6 +61,11 @@ export interface DisclosureService {
   /** Stamp before releasing an actual read. All subsequent output, including uncited derived text,
    * inherits the work's monotonic accumulated restrictions. */
   read(actor: WorkActor, source: Ref): void;
+  /** Metadata-only current original/derived ancestry. It stamps no read and is never a model tool. */
+  lineage(actor: WorkActor, derived?: Ref): DisclosureSource[];
+  /** Privacy-only metadata inspection over an owning, already guarded projection (for interpretation history).
+   * It grants no read, resource, work or dispatch authority and never writes lineage. */
+  ancestry(work: WorkAuthority, derived: Ref): DisclosureSource[];
   /** Register text/image/artifact descendants with every source already read by this work. */
   derive(actor: WorkActor, derived: Ref, kind: 'text' | 'screenshot' | 'artifact'): void;
   /** Import only a protected descendant's recorded ancestors, rechecking current source access. */

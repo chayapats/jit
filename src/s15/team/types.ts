@@ -1,4 +1,5 @@
 import type { OwnerActor, Ref, S15PolicyService, WorkActor, WorkAuthority } from "../policy";
+import type { DataLineagePort } from "../data-lineage";
 import type { FileLineagePort, FileSourcePin } from "../file-lineage";
 
 /** Versioned privacy label; S14 material must retain its exact private Bot owner. */
@@ -27,6 +28,8 @@ export interface TeamSource {
   producer: { workId: string; bot: Ref; policyRevision: number; ownerGeneration: number };
   active: boolean;
   filePins?: FileSourcePin[];
+  /** Immutable DATA15 descendant references; their owning journal retains all original restrictions. */
+  dataRefs?: Ref[];
 }
 declare const contextBrand: unique symbol, leaseBrand: unique symbol;
 /** Process-local identity; JSON, source text and stored metadata cannot recreate it. */
@@ -46,6 +49,11 @@ export interface TeamOptions {
   producerCurrent: (producer: TeamSource["producer"]) => boolean;
   /** Explicit precise-file integration. Absence refuses file-aware continuity. */
   fileLineage?: FileLineagePort;
+  /** Explicit owning-service lineage integration; older readers refuse its stamped sources. */
+  dataLineage?: DataLineagePort;
+  /** Owning exact reviewed Bot-scope refresh for a newer team resource identity (SKILL16-01).
+   * Only allowedBots may differ; scope, denials, purpose, operations and physical identity remain unchanged. */
+  reviewedBotScope?: (resource: TeamResource) => boolean;
 }
 /** Explicit current resource view for protected UI; it contains no credential/profile/session handles. */
 export interface TeamResourcesView {
