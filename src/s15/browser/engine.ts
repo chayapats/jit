@@ -123,9 +123,16 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
   };
   const checked = async <T>(promise: Promise<T>, input: EngineInputContext): Promise<T> => {
     input.guard();
-    let cancel!: () => void;
-    const aborted = new Promise<never>((_, reject) => { cancel = () => reject(new BrowserError('cancelled')); input.signal.addEventListener('abort', cancel, { once: true }); if (input.signal.aborted) cancel(); });
-    try { const result = await Promise.race([promise, aborted]); input.guard(); return result; }
+    let stopped: Promise<void> | null = null;
+    const cancel = () => { stopped ??= session.send('Page.stopLoading').then(() => {}); void stopped.catch(() => {}); };
+    input.signal.addEventListener('abort', cancel, { once: true }); if (input.signal.aborted) cancel();
+    // The gateway returns its fenced result immediately, but retains the input lease until this actual
+    // browser operation settles. An abort race alone would let an old error document interrupt the next
+    // navigation after takeover. Stop only renderer loading; an already-dispatched broker effect is separate.
+    try {
+      let result: T; try { result = await promise; } finally { if (stopped) await stopped; }
+      input.guard(); return result;
+    }
     finally { input.signal.removeEventListener('abort', cancel); }
   };
   const click = async (el: ElementHandle<HTMLElement | SVGElement>, input: EngineInputContext): Promise<void> => {
@@ -148,7 +155,12 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       if (navigation && stopped) {
         // A denied navigation can still commit Chromium's error document after waitForNavigation rejects.
         // Wait for the frame's real stop event before another input can replace it.
-        const [error] = await checked(Promise.all([navigation, stopped.promise]), input);
+        const error = await checked(navigation.then(async error => {
+          // A prevented/aborted navigation may never start a frame. Its navigation wait is finite;
+          // acknowledged stop completes that path without waiting forever for an absent stop event.
+          if (error) { await session.send('Page.stopLoading'); return error; }
+          await stopped.promise; return null;
+        }), input);
         if (error) throw new BrowserError('navigation_failed');
       }
     } finally { stopped?.close(); }
