@@ -33,6 +33,18 @@ async function scenario(mode: 'static' | 'general', delayMs = 0) {
 }
 
 realBrowser('S16 protected modern-browser conformance', () => {
+  for (const mode of ['static', 'general'] as const) test(`${mode}: denied download and redirect settle before immediate fresh navigation`, async () => {
+    const s = await scenario(mode, 250);
+    try {
+      for (const name of ['Download', 'Redirect']) {
+        await s.navigate('/clean-task');
+        expect((await s.run({ kind: 'click', target: await s.find(name) })).state).toBe('unsupported');
+        await s.navigate('/clean-task'); expect(observation(await s.run({ kind: 'read' })).text).toContain('Website task');
+      }
+      expect(s.server.received.some(row => row.path === '/download' || row.path.startsWith('/unknown-effect'))).toBe(false);
+    } finally { await s.close(); }
+  }, 60000);
+
   for (const mode of ['static', 'general'] as const) test(`${mode}: takeover settles a cancelled held navigation before immediate fresh input`, async () => {
     const s = await scenario(mode, 250);
     try {

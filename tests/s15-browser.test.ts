@@ -16,6 +16,7 @@ function fake() {
   let options!: EngineOptions, url = '', next: BrowserRequest | null = null, cookie: string | null = null;
   let sent = 0, denied = 0, frames = 0, physicalInputs = 0, noWait = false;
   let beforeInput: ((input: EngineInputContext) => Promise<void>) | null = null, nextOwner: BrowserRequest | null = null;
+  let onClose: (() => void | Promise<void>) | null = null;
   const responses: BrokerResponse[] = []; let afterNavigate: BrowserRequest | null = null; let blockRead: (() => Promise<void>) | null = null;
   const make = (target: string): BrowserRequest => ({ url: target, method: 'GET', contentType: '', bodyBase64: '', navigation: true });
   async function request(r: BrowserRequest, attributable = true) { await options.request({ request: r, cookies: cookie ?? '', main: true, document: true, attributable, async send(response) { sent++; url = r.url; responses.push(response); if (response.setCookies.length) cookie = response.setCookies.map(v => v.split(';')[0]).join('; '); }, async deny() { denied++; } }); }
@@ -24,9 +25,9 @@ function fake() {
     async read(generation) { await blockRead?.(); return { id: 'observation', generation, url, text: 'Observed content', truncated: false, elements: [{ id: 'e1_1', tag: 'button', name: 'Read more', type: 'submit' }] }; },
     async image() { frames++; return new Uint8Array([1, 2, 3]); },
     async interact(_kind, _target, _value, _generation, input) { await beforeInput?.(input); input.guard(); physicalInputs++; if (next) { const r = next; next = null; const job = request(r); if (noWait) void job.catch(() => {}); else await job; } },
-    async ownerInput(_value, input) { await beforeInput?.(input); input.guard(); physicalInputs++; if (nextOwner) { const r = nextOwner; nextOwner = null; const job = request(r); if (noWait) void job.catch(() => {}); else await job; } }, async cookie() { return cookie; }, async close() {},
+    async ownerInput(_value, input) { await beforeInput?.(input); input.guard(); physicalInputs++; if (nextOwner) { const r = nextOwner; nextOwner = null; const job = request(r); if (noWait) void job.catch(() => {}); else await job; } }, async cookie() { return cookie; }, async close() { await onClose?.(); },
   };
-  return { responses, set noWait(value: boolean) { noWait = value; }, set beforeInput(fn: ((input: EngineInputContext) => Promise<void>) | null) { beforeInput = fn; }, set nextOwner(r: BrowserRequest) { nextOwner = r; }, get physicalInputs() { return physicalInputs; }, factory: async (o: EngineOptions) => { options = o; return engine; }, make, request, set afterNavigate(r: BrowserRequest) { afterNavigate = r; }, set next(r: BrowserRequest) { next = r; }, set cookie(v: string | null) { cookie = v; }, set blockRead(v: (() => Promise<void>) | null) { blockRead = v; }, get sent() { return sent; }, get denied() { return denied; }, get frames() { return frames; } };
+  return { responses, set onClose(value: (() => void | Promise<void>) | null) { onClose = value; }, set noWait(value: boolean) { noWait = value; }, set beforeInput(fn: ((input: EngineInputContext) => Promise<void>) | null) { beforeInput = fn; }, set nextOwner(r: BrowserRequest) { nextOwner = r; }, get physicalInputs() { return physicalInputs; }, factory: async (o: EngineOptions) => { options = o; return engine; }, make, request, set afterNavigate(r: BrowserRequest) { afterNavigate = r; }, set next(r: BrowserRequest) { next = r; }, set cookie(v: string | null) { cookie = v; }, set blockRead(v: (() => Promise<void>) | null) { blockRead = v; }, get sent() { return sent; }, get denied() { return denied; }, get frames() { return frames; } };
 }
 async function setup(mode: 'static' | 'general' = 'static', clock?: BrowserClock) {
   const server = browserSite(), engine = fake(); cleanup.push(() => server.close());
@@ -36,6 +37,16 @@ async function setup(mode: 'static' | 'general' = 'static', clock?: BrowserClock
   return { ...f, server, engine, execute };
 }
 const post = (url: string, data: string): BrowserRequest => ({ method: 'POST', url, contentType: 'application/x-www-form-urlencoded', bodyBase64: Buffer.from(data).toString('base64'), navigation: true });
+
+test('close initiates native shutdown before awaiting its pending input and never permits that input to reach the service', async () => {
+  const f = await setup(), entered = Promise.withResolvers<void>(), native = Promise.withResolvers<void>(), closed = Promise.withResolvers<void>();
+  f.engine.beforeInput = async () => { entered.resolve(); await native.promise; };
+  f.engine.onClose = () => { closed.resolve(); native.resolve(); };
+  f.engine.next = post(f.server.origin + '/edit', 'note=Must+not+leave');
+  const pending = f.execute({ kind: 'click', target: 'e1_1' }); await entered.promise;
+  const closing = f.gateway.close(); await closed.promise; await closing;
+  expect((await pending).state).not.toBe('ok'); expect(f.engine.physicalInputs).toBe(0); expect(f.server.received.some(row => row.path === '/edit')).toBe(false);
+});
 
 describe.each(['static', 'general'] as const)('protected browser %s mode', mode => {
   test('ordinary navigation/read uses real read claims without per-page approval', async () => {

@@ -4,6 +4,7 @@ import { connect } from 'node:net';
 import { join } from 'node:path';
 import type { BrowserEgressPorts, BrowserOperation, BrowserResult, BrowserObservation, BrowserSitePolicy } from '../src/s15/browser';
 import { browserFixture, browserSite, fixturePublicAddress } from './fixtures/s15-browser';
+import { launchProtectedEngine } from '../src/s15/browser/engine';
 
 const live = describe.skipIf(process.env.JIT_BROWSER_LIVE !== '1');
 const observed = (result: BrowserResult): BrowserObservation => { expect(result.state).toBe('observed'); if (result.state !== 'observed') throw Error(JSON.stringify(result)); return result.observation; };
@@ -11,9 +12,13 @@ const observed = (result: BrowserResult): BrowserObservation => { expect(result.
 live('opt-in real protected browser engine', () => {
   for (const mode of ['static', 'general'] as const) {
     test(`${mode}: actual navigation, JS boundary, login/TOTP, exact send/payment/disclosure holds, edit, redirect/popup/download denial`, async () => {
-      const server = browserSite({ delayMs: 250 }); const f = await browserFixture(mode, server.site);
+      const server = browserSite({ delayMs: 250 }), nativeFailures: string[] = [];
+      const f = await browserFixture(mode, server.site, async options => {
+        const engine = await launchProtectedEngine(options);
+        return { ...engine, async navigate(...args) { try { return await engine.navigate(...args); } catch (error) { nativeFailures.push((error instanceof Error ? error.message.split('\n')[0]! : 'native_error').replace(/https?:\/\/\S+/g, '<fixture>')); throw error; } } };
+      });
       const run = (input: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'screenshot' | 'click'; target?: string } | { kind: 'type' | 'select'; target: string; value: string }): Promise<BrowserResult> => f.work.execute({ ...input, generation: f.work.state().generation } as BrowserOperation);
-      const nav = async (path: string) => { expect(await run({ kind: 'navigate', url: server.origin + path })).toMatchObject({ state: 'ok' }); };
+      const nav = async (path: string) => { expect({ path, result: await run({ kind: 'navigate', url: server.origin + path }), nativeFailures }).toMatchObject({ result: { state: 'ok' } }); };
       const click = async (name: string) => { const page = observed(await run({ kind: 'read' })); const target = page.elements.find(e => e.name === name); expect(target).toBeDefined(); return run({ kind: 'click', target: target!.id }); };
       const reset = async () => { const owner = await f.gateway.owner.takeover(f.owner); f.gateway.owner.handBack(f.owner, owner.generation, true); await nav('/clean-task'); };
       try {

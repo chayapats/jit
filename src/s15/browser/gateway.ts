@@ -363,7 +363,16 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         return login;
       },
     },
-    close() { return closing ??= (async () => { closed = true; generation = continuity.advance(); stop(); await Promise.allSettled([...scopes].map(s => s.completion)); try { await engine.close(); } finally { egress.close(); continuity.close(); } })(); },
+    close() { return closing ??= (async () => {
+      closed = true; generation = continuity.advance(); stop();
+      // Closing the native browser settles its pending renderer operations. Keep broker/continuity
+      // custody until their scopes finish; killing a renderer does not recall a dispatched HTTP effect.
+      try {
+        const [native] = await Promise.allSettled([Promise.resolve().then(() => engine.close()), ...[...scopes].map(s => s.completion)]);
+        if (native.status === 'rejected') throw native.reason;
+      }
+      finally { egress.close(); continuity.close(); }
+    })(); },
   };
   return registration;
 }
