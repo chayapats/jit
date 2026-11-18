@@ -1,15 +1,25 @@
 import { createHash } from "node:crypto";
 import { canonical, fail } from "../../s15/policy/validation";
+import { registeredSecretRevision } from "../../security/secret-fingerprints";
 
 /** Package-only JSON envelope: base64 for 2 MiB plus retained instruction bodies/metadata fits within an 8 MiB journal envelope.
  * Primitive validation, secret refusal, exact ordering and depth/container limits match POLICY. POLICY's
  * own 128 KiB bound remains unchanged; no caller can supply a larger limit to its canonicalizer. */
 export function canonicalSkill(value: unknown): string {
   const seen = new Set<object>(), parts: string[] = []; let bytes = 0;
+  // Repeated resource bytes are common in maximum-sized folders. Reuse only synchronous primitive
+  // validation at the same secret-registry revision; never retain validation across calls or new secrets.
+  const strings = new Map<string, string>(); let secrets = registeredSecretRevision();
+  const primitive = (value: unknown): string => {
+    if (typeof value !== "string") return canonical(value);
+    const current = registeredSecretRevision(); if (current !== secrets) { strings.clear(); secrets = current; }
+    let encoded = strings.get(value); if (encoded === undefined) { encoded = canonical(value); strings.set(value, encoded); }
+    return encoded;
+  };
   const append = (part: string) => { bytes += Buffer.byteLength(part); if (bytes > 8 * 1024 * 1024) fail("input_too_large"); parts.push(part); };
   const walk = (value: unknown, depth: number): void => {
     if (depth > 16) fail("invalid_shape");
-    if (value === null || typeof value !== "object") { append(canonical(value)); return; }
+    if (value === null || typeof value !== "object") { append(primitive(value)); return; }
     if (seen.has(value)) fail("invalid_shape"); seen.add(value);
     if (Array.isArray(value)) {
       if (value.length > 256 || Reflect.ownKeys(value).length !== value.length + 1) fail("invalid_shape");
