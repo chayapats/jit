@@ -7,6 +7,7 @@ import type { SourceNetwork } from "../connections/net";
 import type { SourceRecord } from "../connections/types";
 import { githubSkillSource, importGithubSkill } from "./github";
 import { parseSkillPackage } from "./package";
+import { skillLimits } from "./types";
 import type { SkillAvailability, SkillCommand, SkillCommandStatus, SkillImport, SkillOrigin, SkillPackage, SkillReceipt, SkillRecord, SkillReview, SkillUse, SkillVmCopy } from "./types";
 
 const schema = `CREATE TABLE skills(id TEXT PRIMARY KEY,record_json TEXT NOT NULL);
@@ -139,7 +140,7 @@ export class SkillDirectory<Owner> {
       guard();
     } else if (command.kind === "skill.review") {
       exact(command, ["contract", "requestId", "kind", "skillId", "expectedRevision", "pin", "availability", "executable", "dependencies", "recipientsHash"]);
-      if (command.pin !== record!.candidatePin || typeof command.executable !== "boolean") return fail("skill_pin_invalid");
+      if (command.pin !== (record!.candidatePin ?? record!.activePin) || typeof command.executable !== "boolean") return fail("skill_pin_invalid");
       const pkg = this.package(command.pin);
       if (!pkg.units.length && !pkg.dependencies.length && !pkg.scripts.length) return fail("skill_parts_unavailable");
       this.availability(owner, command.availability); this.dependencies(pkg, command.dependencies);
@@ -154,8 +155,9 @@ export class SkillDirectory<Owner> {
     const result = this.store.transaction(() => {
       this.owner(owner, record ?? undefined); if (generation !== this.options.ownerGeneration()) fail("owner_changed"); this.store.capacity();
       const now = this.options.now();
+      if (!record && this.records().length >= skillLimits.packages) return fail("skill_capacity");
       if (!record) { const key = digest("s16.skill.identity.v1", command.requestId).slice(0, 24); record = { contract: "s16-skill/v1", id: `sk_${key}`, revision: 0, ownerGeneration: generation, state: "needs_review", activePin: null, candidatePin: null, review: null, resource: { id: `skr_${key}`, revision: 1, generation: 1 }, source: { id: `sks_${key}`, revision: 1, generation: 1 }, createdAt: now, updatedAt: now }; }
-      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin; }
+      if (candidate) { this.store.db.query("INSERT OR IGNORE INTO packages VALUES(?,?)").run(candidate.pin, canonical(candidate)); record.candidatePin = candidate.pin; if (command.kind === "skill.import" || command.kind === "skill.update") record.importSource = command.input.kind === "github" ? { kind: "github", url: command.input.url } : { kind: "folder", label: command.input.label }; }
       if (command.kind === "skill.review") { record.activePin = command.pin; record.candidatePin = null; record.state = "active"; record.review = { recipientsHash: sharing!.hash, recipients: sharing!.recipients, pin: command.pin, availability: this.availability(owner, command.availability), executable: command.executable, dependencies: structuredClone(command.dependencies), at: now }; }
       if (command.kind === "skill.availability") record.review = { ...record.review!, recipientsHash: sharing!.hash, recipients: sharing!.recipients, availability: this.availability(owner, command.availability), executable: command.executable, at: now };
       if (command.kind === "skill.revoke") record.state = "revoked";

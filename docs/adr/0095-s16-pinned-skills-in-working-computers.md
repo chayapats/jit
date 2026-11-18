@@ -164,3 +164,27 @@ continuity, disclosure, TEAM, MEM and file-memory suites; typecheck and `git dif
 `tests/s16-skills-disclosure.test.ts` covers ordinary following work, private computer placement, frozen-recipient
 changes, copied data after revocation/reopen, correction/forget and rollback refusal with unchanged bytes. Real
 composed model/tool invocation, executable VM effects and the rendered client remain required before #420 closes.
+
+
+### Runtime/client implementation checkpoint
+
+The opt-in composition now wires the directory, pure package data resources, guarded instruction/resource tools,
+actual placed-session VM staging/script invocation, TEAM/MEM ancestry, artifact-derived input inheritance and shared
+client endpoints described in [s16-skills-v1](../contracts/s16-skills-v1.md). The new S15 installer enables the explicit
+option; existing installed/omitted options and S14 default retain their contracts. Package resources add no effect
+adapter or action rule. An exact review can reconcile membership only under the existing custom-policy comparison.
+
+The Connections Skills/plugins tab uses the actual services for GitHub/folder import, separate bounded file preview,
+license/unsupported-part inventory, current dependency mapping, exact sharing/computer/Bot review, candidate update,
+revocation and original-identity recovery. An unchanged active pin can be reviewed again when a dependency/provider
+changes; a moving GitHub update locator is retained separately from immutable provenance. Human-only units remain
+explicitly unavailable for automatic invocation. Chat shows the actual guarded use pins, alongside tool evidence.
+
+Observed checkpoint evidence: 190 deterministic tests passed across 16 selected skills/CHAT/VM/FILE/TEAM/MEM/client/
+connections/i18n suites; two actual Chromium scenarios passed in English at 1440 px and Thai at 390 px. The native
+scenarios cover a lost import reply/reload with one original import, GitHub/license/unsupported preview, exact review,
+actual chat instruction observation, folder candidate update, revoke, keyboard focus, width and session-loss withholding.
+The composed scenarios prove an actual fixture-VM file effect through one placed session, before-start revocation and
+a lost script reply with retained guest bytes/unknown evidence and no restart replay. Typecheck, diff and immutable
+upstream/license checks passed at that checkpoint. Additional re-review, fallback, file/continuation and receiver-change
+conformance plus the complete exact-head release suite/review remain required; no live guest/account/host claim follows.

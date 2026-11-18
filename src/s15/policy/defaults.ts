@@ -35,7 +35,7 @@ export function s15DefaultCatalog(models: readonly { recipient: Ref }[]): Defaul
 }
 
 /** A composed resource the default rule may cover, with the trusted adapters that act on it. */
-export interface DefaultResource { ref: Ref; kind: 'computer' | 'browser' | 'repository' | 'account' | 'source'; label: string; adapters: { id: string; operations: string[] }[];
+export interface DefaultResource { ref: Ref; kind: 'computer' | 'browser' | 'repository' | 'account' | 'source' | 'skill'; label: string; adapters: { id: string; operations: string[] }[];
   /** CONN16-01: the protected service recipient of a connected app/tool source (`kind: 'source'`), which receives its calls. */
   recipient?: Ref }
 /** An approved model route the proposal selects, with its provider recipient and charge. */
@@ -71,7 +71,7 @@ export function s15DefaultPolicy(input: {
   const unique = <T extends Ref>(items: readonly T[]) => items.filter((item, index) => items.findIndex(other => other.id === item.id) === index);
   // CONN16-01 (ADR 0089): connected app/tool sources get their own rule, so connecting, reviewing or removing one changes
   // no rule that other work uses (POLICY's membership exemption keeps that work current).
-  const sources = input.resources.filter(r => r.kind === 'source'), work = input.resources.filter(r => r.kind !== 'source');
+  const sources = input.resources.filter(r => r.kind === 'source'), work = input.resources.filter(r => r.kind !== 'source' && r.kind !== 'skill');
   if (!work.length) return null;
   const resources = unique(input.resources.map(r => structuredClone(r.ref)));
   const sourceRecipients = unique(sources.flatMap(r => r.recipient ? [structuredClone(r.recipient)] : []));

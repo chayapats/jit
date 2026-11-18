@@ -135,3 +135,13 @@ test("DATA15 metadata survives extraction with no claim, retains every ancestor 
   f.checkRollback(); const fresh = f.team.bind(actor); expect(f.memory.dataAncestry(fresh, packet.id)).toEqual([ref1, ref2]);
   expect(f.team.source(fresh, "captured").dataRefs).toEqual([ref1]);
 });
+
+
+test("DATA15 narrowing preserves the original historical S14 private label rather than replacing it with an S15 label", async () => {
+  const h = await setup(); h.privateBot = "bot"; const actor = h.admit(); h.disclosure.read(actor, h.active.source); h.disclosure.vmInput(actor, "vm");
+  const next = h.admit([ref("account")]); h.disclosure.vmOutput(next, "vm"); const f = h.memory(), context = f.team.bind(next), value = ref("historical_descendant"); h.disclosure.derive(next, value, "text");
+  const original = f.memory.retain(context, { id: "historical", text: "The test command is bun test.", origin: { kind: "historical", id: "s14_original", conversationId: null, at: 10 }, scope: { kind: "bot", botId: "bot", origin: "s14" }, resources: [ref("account")], parents: [], dataRefs: [value] })[0]!;
+  expect(original.provenance.scope).toEqual({ kind: "bot", botId: "bot", origin: "s14" });
+  const derived = f.memory.retain(context, { id: "derived_historical", text: "The test command is bun test --timeout 30000.", origin: { kind: "work", id: "actual_observation", conversationId: null, at: h.f.now }, scope: { kind: "team" }, resources: [ref("account")], parents: [original.id], dataRefs: [value] })[0]!;
+  expect(derived.provenance.scope).toEqual(original.provenance.scope);
+});

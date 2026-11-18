@@ -19,7 +19,7 @@ export interface SkillPackage {
   files: SkillFile[]; units: SkillUnit[]; scripts: SkillScript[]; dependencies: SkillDependency[]; unsupported: UnsupportedSkillPart[];
 }
 /** Independent finite custody and model-input bounds; oversize imports refuse rather than silently dropping files. */
-export const skillLimits = Object.freeze({ files: 128, fileBytes: 65536, totalBytes: 2 * 1024 * 1024, units: 16, bodyBytes: 32000, dependencies: 16, metadataBytes: 16384, importRequests: 144, importMs: 60000 });
+export const skillLimits = Object.freeze({ packages: 64, files: 128, fileBytes: 65536, totalBytes: 2 * 1024 * 1024, units: 16, bodyBytes: 32000, dependencies: 16, metadataBytes: 16384, importRequests: 144, importMs: 60000 });
 
 /** Owner-reviewed existing connection; imports never create or change that connection or its tool decisions. */
 export interface SkillDependencyBinding { sourceId: string; catalogHash: string; reviewRevision: number }
@@ -30,6 +30,8 @@ export interface SkillReview { recipientsHash: string; recipients: import("../..
 /** Protected current pointers; immutable package bytes and past reviews remain in the owning journal. */
 export interface SkillRecord {
   contract: "s16-skill/v1"; id: string; revision: number; ownerGeneration: number; state: "needs_review" | "active" | "revoked";
+  /** Original owner-selected update locator. Provenance remains the resolved immutable package, not this moving URL. */
+  importSource?: { kind: "github"; url: string } | { kind: "folder"; label: string };
   activePin: string | null; candidatePin: string | null; review: SkillReview | null;
   resource: import("../../s15/policy").Ref; source: import("../../s15/policy").Ref; createdAt: number; updatedAt: number;
 }

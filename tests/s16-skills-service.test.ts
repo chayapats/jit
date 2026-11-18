@@ -147,3 +147,14 @@ test("the owner generation is bound at queue ingress, before another command or 
   h.generation = 2; await expect(queued).rejects.toThrow("owner_changed"); expect(h.directory.records()).toEqual([]);
   expect(h.directory.store.db.query<{ n: number }, []>("SELECT count(*) AS n FROM pending").get()!.n).toBe(0);
 });
+
+
+test("the owner can re-review an unchanged pin against a newly reviewed dependency without re-importing its bytes", async () => {
+  const h = await fixture(), receipt = await h.command({ kind: "skill.import", input: { kind: "github", url: "https://github.com/owner/repo/tree/main/example" } });
+  let current = h.directory.record(receipt.skillId)!;
+  const review = () => h.command({ kind: "skill.review", skillId: current.id, expectedRevision: current.revision, pin: current.candidatePin ?? current.activePin, availability: { kind: "team" }, executable: false, dependencies: { docs: { sourceId: h.source.id, catalogHash: h.source.catalog!.hash, reviewRevision: h.source.review!.revision } }, recipientsHash: digest("s16.skill.recipients.v1", [h.source.recipient]) });
+  await review(); current = h.directory.record(current.id)!; const old = use(h, current); h.source.review!.revision++;
+  expect(() => h.directory.guard(work(current, "a", [current.resource, h.source.resource]), old)).toThrow("skill_dependency_unavailable");
+  await review(); const fresh = h.directory.record(current.id)!; expect(fresh.activePin).toBe(current.activePin); expect(fresh.resource.revision).toBe(current.resource.revision + 1);
+  expect(h.directory.guard(work(fresh, "a", [fresh.resource, h.source.resource]), use(h, fresh)).id).toBe(fresh.id);
+});

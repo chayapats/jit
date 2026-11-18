@@ -60,9 +60,9 @@ export function createConversationMemory(memory: MemoryService, files?: Conversa
     guard(work, requestId) { const current = context(work, requestId); memory.guard(current, requestId); files?.disclose(work, memory.ancestry(current, requestId)); },
     observe(work, request, evidence, observations) {
       const current = context(work, request.receipt.rootRequestId), authority = memory.options.team.guard(current), scope = memory.options.retention(authority);
-      if (evidence.isError) return [];
       const lineage = data?.observed(work, evidence) ?? []; memory.includeData(current, request.receipt.rootRequestId, lineage);
-      if (!scope) return [];
+      // Errors can still contain private observations; keep their context ancestry without extracting facts.
+      if (evidence.isError || !scope) return [];
       const packet = memory.derivative(current, request.receipt.rootRequestId);
       const text = request.fileInputs ? files?.observed(work, request, evidence, observations) : evidence.content; if (!text) return [];
       const retained = memory.retain(current, { id: memoryId(`evidence_${evidence.id}`), text, origin: { kind: "work", id: memoryId(evidence.id), conversationId: request.receipt.conversationId, at: evidence.at }, scope, resources: authority.request.resources, parents: packet.claimIds, ...(packet.dataRefs?.length ? { dataRefs: packet.dataRefs } : {}), ...(packet.filePins?.length ? { filePins: packet.filePins } : {}) });

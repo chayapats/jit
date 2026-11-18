@@ -101,7 +101,8 @@ export class MemoryService {
     // an uncited private ancestor merely by replacing the assertion's content.
     const lineage = dataRefs(input.dataRefs, ...dependencies.map(parent => parent.provenance.dataRefs));
     const privateData = this.options.team.verifyData(context, lineage).private;
-    const effectiveScope = privateData ? { kind: "bot" as const, botId: work.request.bot.id, origin: "s15" as const } : input.scope.kind === "bot" ? input.scope : dependencies.find(parent => parent.provenance.scope.kind === "bot")?.provenance.scope ?? input.scope;
+    const inheritedScope = input.scope.kind === "bot" ? input.scope : dependencies.find(parent => parent.provenance.scope.kind === "bot")?.provenance.scope ?? input.scope;
+    const effectiveScope = privateData && inheritedScope.kind === "team" ? { kind: "bot" as const, botId: work.request.bot.id, origin: "s15" as const } : inheritedScope;
     const resourceMap = new Map(input.resources.map(pin => [pin.id, pin]));
     const pins = filePins(input.filePins, ...dependencies.map(parent => parent.provenance.filePins)); this.options.team.verifyFiles(context, pins);
     for (const pin of pins) { const before = resourceMap.get(pin.resource.id); if (before && canonical(before) !== canonical(pin.resource)) throw new AppError("stale_authority", 409); resourceMap.set(pin.resource.id, pin.resource); }

@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import type { SourceNetwork } from "../../src/s16/connections/net";
 
 export const commit = "a".repeat(40), treeId = "b".repeat(40);
-export function githubSkillFixture() {
+export function githubSkillFixture(files?: Map<string, string>) {
   const hits: string[] = [], headers: Record<string, string>[] = [];
-  const sourceFiles = new Map([
+  const sourceFiles = files ?? new Map([
     ["example/plugin.json", '{"name":"notes","version":"1.0.0","license":"MIT"}'],
     ["example/skills/notes/SKILL.md", "---\nname: notes\ndescription: Read the selected documentation.\n---\nUse the already reviewed docs connection.\n"],
     ["example/mcp.json", '{"mcpServers":{"docs":{"type":"streamable-http","url":"https://docs.example.com/mcp"}}}'],
