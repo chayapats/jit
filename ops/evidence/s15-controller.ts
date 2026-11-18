@@ -6,7 +6,7 @@ import { FixturePaymentPort, createFixturePaymentAdapter } from '../../src/s15/p
 import { zero, equal } from '../../src/s15/policy/validation';
 import type { PolicyInput, Ref } from '../../src/s15/policy';
 import type { ApprovedModelRoute } from '../../src/s15/model';
-import { browserSite } from '../../tests/fixtures/s15-browser';
+import { browserSite, loopbackFixtureEgress } from '../../tests/fixtures/s15-browser';
 import type { BrowserOperation, BrowserResult } from '../../src/s15/browser';
 
 // Opt-in paired controller process. Secret relay material arrives over stdin and is never persisted/logged.
@@ -15,7 +15,7 @@ const input = JSON.parse(await Bun.stdin.text()) as { relay: string; bootstrap: 
 const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 }), proof = {}, now = Date.now(), until = now + 3600000;
 const selection = { route: ref('route'), model: ref('model'), effort: 'low' }, modelBound = { ...zero(), calls: 1, steps: 1, activeMs: 10000 };
 const route: ApprovedModelRoute = { selection, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: modelBound, rank: { ordinary: 0, difficult: 0 } };
-const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha: input.sha, architecture: process.arch, controller: 'jit-s15-arm', workingVm: 'jit-work-arm', modelInference: 'not_run', ownerCredentials: 'not_used', startedAt: new Date().toISOString(), cases: {} };
+const report: Record<string, unknown> = { contract: 's15-arm64-evidence/v1', sha: input.sha, architecture: process.arch, controller: 'jit-s15-arm', workingVm: 'jit-work-arm', modelInference: 'not_run', ownerCredentials: 'not_used', controlledLoopbackDnsDial: true, startedAt: new Date().toISOString(), cases: {} };
 const cases = report.cases as Record<string, unknown>, site = browserSite(), manager = new RemoteVmManagement({ origin: input.relay, credential: () => input.credential, allowLoopback: true });
 const catalog = new Map<string, { ref: Ref; active: boolean }>();
 for (const [kind, names] of Object.entries({ purpose: ['evidence', 'interpret'], bot: ['bot'], resource: ['computer', 'account'], recipient: ['provider', 'payee', 'other'], route: ['route'], model: ['model'] })) for (const id of names) catalog.set(`${kind}:${id}`, { ref: ref(id), active: true });
@@ -35,7 +35,7 @@ const service = await composeS15({ runtime: 's15', directory: join(input.output,
   model: { registry: { list: () => [route], current: s => equal(s, selection) ? route : null, pins: () => ({ route: null, model: null, effort: null }) }, limits: { turns: 3, attempts: 1, activeMs: 30000, outputBytes: 32768, contextWindow: 32768, inputChars: 65536 } },
   vm: { id: 'arm', resource: ref('computer'), managers: new Map([['remote_lima', manager]]), destination: () => null,
     upperBound: op => ({ ...zero(), calls: 1, reads: ['read', 'setup'].includes(op.kind) ? 1 : 0, outputBytes: op.outputBytes, activeMs: op.timeoutMs }) },
-  browser: { mode: 'general', resource: ref('account'), fences: [], executablePath: input.browser, site: site.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 2097152, activeMs: 30000 } },
+  browser: { mode: 'general', egress: loopbackFixtureEgress, resource: ref('account'), fences: [], executablePath: input.browser, site: site.site, upperBound: { ...zero(), steps: 1, reads: 1, outputBytes: 2097152, activeMs: 30000 } },
   adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
 });
 const owner = service.policy.owner.authenticate(proof); service.policy.owner.install(owner, 'evidence_policy', 0, policy);
