@@ -126,6 +126,20 @@ export class VoiceService<Actor> {
   /** Inspect current capture metadata without exposing its transcript/audio or admitting new work. */
   inspect(owner: VoiceOwner<Actor>, id: string): VoiceCapture { this.owner(owner); const record = this.get(id); this.owner(owner, record); return { ...this.capture(record), state: record.state === 'capturing' && record.expiresAt <= this.now() ? 'expired' : record.state }; }
 
+  /** Final synchronous draft release, after every transport wait. A transcript is never an approval or message. */
+  publishTranscript<T>(owner: VoiceOwner<Actor>, id: string, publish: (value: VoiceTranscript) => T): T {
+    this.owner(owner); if (this.get(id).kind !== 'capture') fail('voice_request_invalid');
+    return publish(this.cached<VoiceTranscript>(id, owner));
+  }
+  /** Reacquire current reply/source permission in the same synchronous turn that the owner transport serializes audio. */
+  publishPlayback<T>(owner: VoiceOwner<Actor>, command: VoicePlaybackCommand, publish: (value: VoicePlayback) => T): T {
+    this.owner(owner); const record = this.get(command.requestId); this.owner(owner, record);
+    if (record.kind !== 'playback' || record.commandHash !== sha(canonical(command))) fail('request_id_conflict');
+    const reply = this.options.reply(this.owner(owner), command.conversationId, command.targetRequestId);
+    if (reply.revision !== command.targetRevision || sha(reply.text) !== command.textSha256) fail('voice_result_changed');
+    return publish(this.cached<VoicePlayback>(record.id, owner));
+  }
+
   private run<T extends VoiceTranscript | VoicePlayback>(owner: VoiceOwner<Actor>, record: Operation, signal: AbortSignal, body: (context: VoiceProcessContext) => Promise<T>, finalGuard?: () => void): Promise<T> {
     const abort = new AbortController(), stop = () => abort.abort(); signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
     const guard = () => { if (abort.signal.aborted) fail('voice_cancelled'); const current = this.get(record.id); this.owner(owner, current); if (current.state !== 'processing') fail('voice_cancelled'); };

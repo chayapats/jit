@@ -133,6 +133,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       // CONN16-01/MCP16-01/OPEN16-01: apps and tool sources the owner connects; secrets stay in the protected vault.
       ...(config.connections ? { connections: { vault } } : {}),
       ...(config.skills ? { skills: {} } : {}),
+      ...(config.voice ? { voice: config.voice } : {}),
       ...(config.files ? { files: { ...(typeof config.files === 'object' ? { parserRuntime: binaryFileRuntime(config.files, config.directory, env), imageProbes: config.files.imageProbes } : {}), ...(config.fileMemory ? { memory: true } : {}) } } : {}),
       recipients,
       owner: { authenticate: token => { const auth = ownerApp.authenticate(token); return { proof: auth.actor, csrf: auth.csrf }; }, generation, verifyOwner: requireOwner, verifyCsrf: (expected, supplied) => ownerApp.verifyCsrf(expected, supplied) }, catalogs,

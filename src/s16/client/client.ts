@@ -1,4 +1,6 @@
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
+import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
+import { captureWavInfo, VoiceAudioError } from "../voice/wav";
 import type { SkillDetail, SkillsView } from "../skills/owner-view";
 import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouResult } from "../computers/needs-you-types";
 import type { ClientModelsView } from "./contracts";
@@ -62,6 +64,61 @@ export class JitClient {
     if (limits !== null && (!record(limits) || !count(limits.concurrency) || !record(limits.perWork) || ![limits.perWork.calls, limits.perWork.steps, limits.perWork.activeMs].every(count))) return invalid();
     if (!count(data.budget.unsettled)) return invalid();
     return data as unknown as ClientModelsView;
+  }
+  /** Read configured local speech health/quota without microphone, model or process activity. */
+  async voiceStatus(signal?: AbortSignal): Promise<VoiceStatus> {
+    const data = await this.call('/voice', 'GET', undefined, signal);
+    if (!record(data) || data.contract !== 's16-voice/v1' || typeof data.available !== 'boolean' || data.route !== 'local' || !count(data.serverTime) || !record(data.limits) || !count(data.limits.captureMs) || !count(data.limits.dailyMs) || !this.voiceUsage(data.usage)) return invalid();
+    return data as unknown as VoiceStatus;
+  }
+  /** Freeze one intentional Mic identity using the service's clock sample, retained through uncertain responses. */
+  prepareDictation(serverTime: number): VoiceCaptureCommand { return Object.freeze({ contract: 's16-voice-capture/v1', requestId: voiceRequestId(serverTime) }); }
+  /** Explicit reserve only; the caller requests microphone permission separately after seeing this receipt. */
+  async beginDictation(conversationId: string, command: VoiceCaptureCommand, signal?: AbortSignal): Promise<VoiceCapture> {
+    const input = structuredClone(command); id(conversationId); id(input.requestId);
+    const data = await this.call(`/conversations/${conversationId}/voice/captures`, 'POST', input, signal, input.requestId);
+    if (!this.voiceCapture(data, input.requestId, conversationId)) return invalid(); return data as unknown as VoiceCapture;
+  }
+  /** Inspect an original draft; no microphone capture or transcription is reconstructed. */
+  async dictationStatus(capture: Pick<VoiceCapture, 'id' | 'conversationId'>, signal?: AbortSignal): Promise<VoiceCapture> {
+    const input = structuredClone(capture); id(input.id); id(input.conversationId);
+    const data = await this.call(`/voice/${input.id}`, 'GET', undefined, signal);
+    if (!this.voiceCapture(data, input.id, input.conversationId)) return invalid(); return data as unknown as VoiceCapture;
+  }
+  /** Submit strict snapshotted PCM once. The transcript remains editable data; this never calls Send or Decide. */
+  async transcribeDictation(capture: Pick<VoiceCapture, 'id' | 'conversationId'>, bytes: Uint8Array, signal?: AbortSignal): Promise<VoiceTranscript> {
+    const input = structuredClone(capture), wav = new Uint8Array(bytes); id(input.id); id(input.conversationId);
+    try { captureWavInfo(wav); } catch (error) { throw new JitClientError(error instanceof VoiceAudioError ? error.code : 'voice_audio_invalid', null, 'not_sent', input.id); }
+    const data = await this.call(`/voice/${input.id}/transcribe`, 'POST', undefined, signal, input.id, wav);
+    if (!record(data) || data.contract !== 's16-voice-transcript/v1' || !this.voiceCapture(data.capture, input.id, input.conversationId) || data.capture.state !== 'ready' || typeof data.text !== 'string' || new TextEncoder().encode(data.text).length > 16384 || !this.voiceUsage(data.usage)) return invalid();
+    return data as unknown as VoiceTranscript;
+  }
+  /** Stop only voice; underlying conversation work and exact approval state remain unchanged. */
+  async cancelVoice(operation: { id: string; conversationId: string }, signal?: AbortSignal): Promise<VoiceCapture> {
+    const input = structuredClone(operation); id(input.id); id(input.conversationId);
+    const data = await this.call(`/voice/${input.id}/cancel`, 'POST', {}, signal, input.id);
+    if (!this.voiceCapture(data, input.id, input.conversationId) || data.state !== 'cancelled') return invalid(); return data as unknown as VoiceCapture;
+  }
+  /** Freeze a specific currently displayed reply; hashing is local and does not start synthesis or work. */
+  async preparePlayback(serverTime: number, conversationId: string, requestId: string, revision: number, text: string): Promise<VoicePlaybackCommand> {
+    const generation = this.#sessionGeneration; id(conversationId); id(requestId);
+    if (!count(revision) || !revision || typeof text !== 'string' || !text.trim() || text.length > 2000 || new TextEncoder().encode(text).length > 8192) throw new JitClientError('voice_text_limit', null, 'not_sent');
+    const textSha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))), byte => byte.toString(16).padStart(2, '0')).join('');
+    if (generation !== this.#sessionGeneration) throw new JitClientError('client_response_stale', null, 'not_sent');
+    return Object.freeze({ contract: 's16-voice-playback/v1', requestId: voiceRequestId(serverTime), conversationId, targetRequestId: requestId, targetRevision: revision, textSha256 });
+  }
+  /** Synthesize once; late/stale replies use the same transport generation fences as ordinary owner projections. */
+  async playReply(command: VoicePlaybackCommand, signal?: AbortSignal): Promise<VoicePlayback> {
+    const input = structuredClone(command); id(input.requestId); id(input.conversationId); id(input.targetRequestId);
+    const data = await this.call('/voice/playback', 'POST', input, signal, input.requestId);
+    if (!record(data) || data.contract !== 's16-voice-playback/v1' || data.id !== input.requestId || data.conversationId !== input.conversationId || data.targetRequestId !== input.targetRequestId || !count(data.durationMs) || (data.durationMs as number) > 60000 || typeof data.wavBase64 !== 'string' || data.wavBase64.length > 5592408 || !this.voiceUsage(data.usage)) return invalid();
+    try { const decoded = atob(data.wavBase64); if (!decoded.length || decoded.length > 4 * 1024 * 1024 || btoa(decoded) !== data.wavBase64 || decoded.slice(0, 4) !== 'RIFF' || decoded.slice(8, 12) !== 'WAVE') return invalid(); }
+    catch { return invalid(); }
+    return data as unknown as VoicePlayback;
+  }
+  private voiceUsage(value: unknown): boolean { return record(value) && value.unit === 'local_audio_ms' && typeof value.day === 'string' && /^\d{4}-\d\d-\d\d$/.test(value.day) && [value.limitMs, value.chargedMs, value.reservedMs, value.conservativeMs].every(count); }
+  private voiceCapture(value: unknown, expectedId: string, conversationId: string): value is VoiceCapture {
+    return record(value) && value.id === expectedId && value.conversationId === conversationId && ['capturing', 'processing', 'ready', 'cancelled', 'failed', 'unknown', 'expired'].includes(String(value.state)) && count(value.expiresAt) && count(value.maxDurationMs) && (value.maxDurationMs as number) <= 60000;
   }
   /** Creates one local immutable send identity; callers retain this command through response loss. */
   prepareMessage(conversationId: string, text: string, files: readonly FileReference[] = []): ClientMessage {
