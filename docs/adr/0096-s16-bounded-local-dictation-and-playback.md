@@ -1,5 +1,5 @@
 ---
-status: selected engineering contract for implementation; no voice availability claimed yet
+status: implemented optional local dictation/playback; installation and full voice acceptance remain separate
 date: 2026-11-18
 scope: VOICE16-01 (#422); S16-AC15; FR-06/11/13/14/19/24/25/37/38; NFR-05/06/07/09/11
 ---
@@ -34,7 +34,7 @@ These are comparison observations, not upstream vulnerability claims. No upstrea
 
 ## Selected ownership and custody
 
-The proposed [s16-voice/v1](../contracts/s16-voice-v1.md) owns finite client capture sessions and local speech usage. It adds no Bot tool, message admission or approval authority. The configured voice route is installation-owned, opt-in and contains no credentials. Its artifact paths/hashes are protected configuration; clients get labels, capabilities and limits only. No automatic binary/model download or installation activation occurs.
+The implemented [s16-voice/v1](../contracts/s16-voice-v1.md) owns finite client capture sessions and local speech usage. It adds no Bot tool, message admission or approval authority. The configured voice route is installation-owned, opt-in and contains no credentials. Its artifact paths/hashes are protected configuration; clients get labels, capabilities and limits only. No automatic binary/model download or installation activation occurs.
 
 The owner starts dictation with a deliberate Mic press. The authenticated service reserves finite local quota before capture. The browser then requests microphone permission, captures bounded PCM and stops every track/audio node on Stop, Cancel, permission loss, page/target/session change or deadline. Cancelled/late permission promises immediately stop any subsequently supplied stream. No browser speech-recognition service is contacted.
 
@@ -49,6 +49,10 @@ Use finite per-capture duration, WAV bytes, transcript/reply bytes, local proces
 Audio/transcript scratch is private and short-lived, never in model prompts, working VM, exports, raw errors or logs. Submitted text uses existing conversation retention. Metadata-only quota receipts remain protected; abandoned pending operations are terminal after restart and cannot silently replay. Shutdown kills and actually joins local children before removing scratch/releasing capacity. Browser stop and server settlement are separate facts.
 
 This is a new optional voice journal/port, not a migration of CHAT, TEAM, MEM, FILE or policy meaning. S14 stays default; S15 opt-in and omitted-runtime compatibility stay. No existing owner host/account/policy is changed by implementation. Packaging verifies the optional feature without bundling a model/binary or asserting device acceptance. #422 closes only after actual composed client/service and native speech evidence plus required checks/review; this document alone does not complete it.
+
+The [operator runbook](../runbooks/s16-local-voice.md) describes explicit configuration, artifact licenses/pins, usage and recovery. Runtime source reaches the shipped package through the existing `src` inventory, including the independent supervisor and fixed worklet. No new package dependency or imported upstream asset is required. Health metadata caching is descriptive only: each actual speech job rehashes executable/model pins. A valid bounded macOS `say` WAV may include `FLLR` padding; synthesis validation accepts it without weakening the canonical capture format.
+
+[Local speech evidence](../evidence/s16-local-voice-proof.md) records actual macOS/Linux ARM64 speech, the real English/Thai bundle, process-crash/unknown-usage fixtures, exact artifact hashes, failed experiments and remaining acceptance. Linux eSpeak NG required the separately pinned `base.en` model to pass the unchanged known-speech assertions; the smaller `tiny.en` failure is retained as a quality limit. This is not full continuous-voice/device acceptance.
 
 ## Verification obligations
 

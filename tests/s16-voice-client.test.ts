@@ -88,3 +88,12 @@ test('omitting voice preserves text service and creates no voice journal', async
   await client.send(client.prepareMessage('conversation', 'Continue through ordinary text.')); await f.service.conversation.drain();
   expect((await client.snapshot('conversation')).conversation.rows[0]!.result).not.toBeNull();
 });
+
+test('the fixed AudioWorklet shares owner authentication and no-store browser headers', async () => {
+  const { f } = await fixture(), response = await f.request('/s16/voice-worklet.js');
+  expect(response.status).toBe(200); expect(response.headers.get('content-type')).toBe('text/javascript; charset=utf-8');
+  expect(response.headers.get('cache-control')).toBe('private, no-store');
+  expect(response.headers.get('content-security-policy')).toContain("worker-src 'self'"); expect(response.headers.get('content-security-policy')).toContain('media-src blob:');
+  expect((await f.request('/s16/voice-worklet.js', 'GET', undefined, { cookie: 'jit_s14=wrong_session' })).status).toBe(401);
+  expect((await f.request('/s16/voice-worklet.js?module=other')).status).toBe(405);
+});

@@ -1,6 +1,6 @@
 # s16-voice/v1
 
-Status: selected contract for #422 implementation ([ADR 0096](../adr/0096-s16-bounded-local-dictation-and-playback.md)); **not an implemented capability yet**. #423 owns continuous calls. This draft records decisions before behavior changes and must be reconciled with actual exported signatures/endpoints/tests before delivery.
+Status: implemented optional local dictation/playback for #422 ([ADR 0096](../adr/0096-s16-bounded-local-dictation-and-playback.md)). Explicit protected-host configuration is required; omission keeps text behavior. #423 owns continuous calls. The [runbook](../runbooks/s16-local-voice.md) records setup, opt-in evidence and platform/device limits.
 
 ## Protected host route
 
@@ -21,7 +21,20 @@ All operations use the current shared-client owner session, exact Host/Origin, C
 | Synthesize reply | One identity with exact conversation/request/revision/text hash. Reacquire current guarded owner projection; synthesize only its published result. Return bounded WAV after current authorization/source checks |
 | Interrupt playback | Stop client audio immediately, revoke its object URL and fence pending synthesis/play responses; underlying work remains separate |
 
-These are semantic operations; final HTTP paths and exported types are frozen with the implementation. Client retries never invent an identity or automatically replay speech. No transcript is automatically submitted to CHAT. Owner Send uses the ordinary frozen message command/receipt and unchanged exact-decision surface. Cancel before Send creates no conversation request/work.
+The protected HTTP paths and shared `JitClient` methods are:
+
+| HTTP | Client method / result |
+| --- | --- |
+| `GET /api/s16/client/voice` | `voiceStatus` → `VoiceStatus`, including current `serverTime`, limits and local usage |
+| `POST /api/s16/client/conversations/:conversationId/voice/captures` | `prepareDictation(serverTime)` creates a `VoiceCaptureCommand`; `beginDictation` → `VoiceCapture` |
+| `GET /api/s16/client/voice/:id` | `dictationStatus` → current `VoiceCapture` metadata |
+| `POST /api/s16/client/voice/:id/transcribe` | `transcribeDictation(capture, wav)` sends bounded `application/octet-stream`; → `VoiceTranscript` |
+| `POST /api/s16/client/voice/:id/cancel` | `cancelVoice` sends `{}`; → terminal/current `VoiceCapture` metadata |
+| `POST /api/s16/client/voice/playback` | `preparePlayback` creates the exact `VoicePlaybackCommand`; `playReply` → `VoicePlayback` |
+
+Types are exported through `src/s16/client`; the owning shapes live in `src/s16/voice/contracts.ts`. The additive bootstrap capability states that the API is configured; `voiceStatus.available` reports actual local route health. It does not grant microphone or work authority. Command JSON accepts exact keys; raw capture accepts no client-provided duration or transcript. Playback returns bounded `wavBase64` for a same-origin-client Blob, its actual duration and usage. Draft/audio results are private, no-store and memory-only.
+
+Client retries never invent an identity or automatically replay speech. No transcript is automatically submitted to CHAT. Owner Send uses the ordinary frozen message command/receipt and unchanged exact-decision surface. Cancel before Send creates no conversation request/work. `useVoice` owns one client lifecycle shared by the composer and reply buttons; `startVoiceRecording` uses the authenticated fixed `/s16/voice-worklet.js`, finite PCM buffers and a reservation-relative deadline. There is no browser recognition/synthesis fallback. View/conversation changes, session bootstrap/clear, owner rejection, track loss, cancellation and limits fence pending responses and dispose native resources. English/Thai controls keep a separately labelled editable transcript before Add to message and ordinary Send.
 
 ## Audio and finite usage
 
@@ -39,7 +52,7 @@ Raw audio stays in client memory and protected service scratch. The local engine
 
 The service owns a separate versioned voice/quota journal with bounded metadata and no audio. It retains original command identities and conservative charges across process loss. A restarted pending local operation becomes terminal/unknown, with no reconstructed execution. Missing/expired draft/audio results are reported honestly; automatic re-recording, re-synthesis or re-submission is forbidden. #423 will extend continuity for confirmed continuous-call turns using the existing durable CHAT receipt, rather than treating a voice response as work acceptance.
 
-The implemented core uses `VoiceService.open` with an exclusive protected journal lease before its engine factory opens scratch. `begin`, `inspect`, `transcribe`, `playback`, `cancel`, `status` and memoized `close` accept trusted current-owner ingress closures; they are not model tools or serialized actor APIs. Client composition remains pending. Command IDs embed issuance time (`voiceRequestId`); first admission permits five minutes of age and thirty seconds of future skew. Retained retries reuse the original binding. Terminal metadata may expire after seven days, but an old timestamped identity still cannot become a new capture. A persisted clock high-water prevents clock rewind from resetting a quota day. At most 4,096 retained operations and 8 MiB / sixteen short-lived response-cache entries are permitted; storage exhaustion refuses new voice work honestly.
+The implementation uses `VoiceService.open` with an exclusive protected journal lease before its engine factory opens scratch. `begin`, `inspect`, `transcribe`, `playback`, `cancel`, `status`, final synchronous `publishTranscript`/`publishPlayback` and memoized `close` accept trusted current-owner ingress closures; they are not model tools or serialized actor APIs. The HTTP handler finishes streamed body cleanup before processing/publication and runs the final publisher in the same synchronous turn as response serialization. A source withdrawn after synthesis resolves still cannot release cached audio. The optional composed service reacquires owning conversation/result projections and closes voice before releasing its base protected ledgers. Command IDs embed issuance time (`voiceRequestId`); first admission permits five minutes of age and thirty seconds of future skew. Retained retries reuse the original binding. Terminal metadata may expire after seven days, but an old timestamped identity still cannot become a new capture. A persisted clock high-water prevents clock rewind from resetting a quota day. At most 4,096 retained operations and 8 MiB / sixteen short-lived response-cache entries are permitted; storage exhaustion refuses new voice work honestly.
 
 Accepted input duration is known from strict PCM bytes and rounded up to quota milliseconds when transcription starts. Synthesis starts with its conservative maximum and narrows only after a valid actual WAV result. Failed/unknown started processing does not refund the charge. The independent local supervisor retains a private stdin liveness lease; controller loss, cancellation or its own deadline kills and joins its CLI before writing a metadata-only settlement receipt. A reopened engine cleans abandoned scratch only when no command could have been supplied or the matching supervisor receipt proves settlement. An unproven orphan keeps the route unavailable. Runtime composition must place scratch in protected temporary storage outside application state/backups, while the metadata-only journal remains durable. No raw audio/draft is an ordinary export.
 
