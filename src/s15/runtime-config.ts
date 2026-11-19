@@ -10,6 +10,9 @@ import type { GithubRuntimeConfig } from './github/runtime';
 import type { RuntimeDisclosureConfig } from './disclosure/runtime';
 import type { S15CompositionOptions } from './composition';
 import { validateBinaryFileConfig, type BinaryFileConfig } from '../s16/files/config';
+import { validateLocalVoiceConfig, type LocalVoiceConfig } from '../s16/voice/local';
+import { validateVoiceQuota } from '../s16/voice/service';
+import type { VoiceQuotaConfig } from '../s16/voice/contracts';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
 export interface S15RuntimeConfig {
@@ -43,6 +46,8 @@ export interface S15RuntimeConfig {
   connections?: boolean;
   /** SKILL16-01 pinned package import/review and working-computer use; requires DATA15. */
   skills?: boolean;
+  /** Explicit configured local owner speech. No credential, provider URL, arbitrary flags or automatic installation. */
+  voice?: { local: LocalVoiceConfig; quota: VoiceQuotaConfig };
   recurring?: import('./policy/recurring').RecurringRuleOptions;
   /**
    * The team's working-computer pool (POOL15-01). `id` names the pool and its default member; with `local` the
@@ -91,6 +96,10 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.bots !== undefined && typeof value.bots !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.skills !== undefined && (typeof value.skills !== 'boolean' || value.skills && !value.disclosure)) throw new AppError('invalid_s15_config');
   if (value.connections !== undefined && (typeof value.connections !== 'boolean' || value.connections && !value.disclosure)) throw new AppError('invalid_s15_config');
+  if (value.voice !== undefined) {
+    try { if (!value.voice || typeof value.voice !== 'object' || Object.keys(value.voice).sort().join() !== 'local,quota') throw Error(); validateLocalVoiceConfig(value.voice.local); validateVoiceQuota(value.voice.quota); }
+    catch { throw new AppError('invalid_s15_config'); }
+  }
   if (value.policy && (!value.disclosure || value.policy.resources.some(r => !value.disclosure!.sources.some(s => equal(s.resource, r))))) throw new AppError('classification_unknown');
   return value;
 }

@@ -1,10 +1,14 @@
 import { SkillDirectory } from "../s16/skills/service";
+import { VoiceService } from "../s16/voice/service";
+import { openLocalVoice, type LocalVoiceConfig, type LocalVoiceEngine } from "../s16/voice/local";
+import type { VoiceQuotaConfig } from "../s16/voice/contracts";
+import { tmpdir } from 'node:os';
 import { createSkillRuntime, skillVmSessions } from "../s16/skills/runtime";
 import { skillDisclosure } from "../s16/skills/disclosure";
 import { disclosureMemory } from "./disclosure/data-memory";
 import { ComputerContinuations } from "../s16/computers/continuation";
 import { websiteHostSensitive } from "./browser/sites";
-import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { fsyncSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { createS16ModelsPort } from '../s16/models';
 import { createS16ClientHandler } from '../s16/http';
@@ -39,7 +43,7 @@ import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type
 import { AppError } from '../errors';
 import { openPolicyService, type ActionAdapter, type AuthenticatedOwner, type CatalogPort, type OwnerActor, type PolicyInput, type ReadHandler, type Ref, type S15PolicyService, type SubscriptionModels, type WorkActor } from './policy';
 import { canonical, digest, equal, unknownUsage } from './policy/validation';
-import { ConversationApplication, ConversationStore, conversationRequestView, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
+import { ConversationApplication, ConversationStore, conversationOwnerView, conversationRequestView, createConversationHandler, createConversationPolicy, createConversationVmTools, type ConversationPolicyWork, type ConversationToolPort } from './conversation';
 import { WorkingVmService, VmEnrollment, VmManagers, VmPolicyIntegration, VmPool, VmStore, LocalVmProvisioning, createVmApi, isVmLocalManagement, placeWorkingVm, probeLocalVmHost, startLocalVmControl, type LocalVmControlOptions, type WorkingVmOptions } from './vm';
 import { privateLocalVmResources } from './vm/local';
 import { registerProtectedBrowser, type BrowserOptions, type BrowserRegistration } from './browser';
@@ -106,6 +110,9 @@ export interface S15CompositionOptions {
   connections?: { vault: import('../exec/connections').ConnectionVault; network?: SourceNetworkPorts };
   /** Explicit SKILL16-01 pinned inert packages and guarded working-computer use; requires DATA15. */
   skills?: { network?: SourceNetworkPorts };
+  /** Explicit local owner voice, outside Bot execution. Scratch defaults outside state/backups; injected engine/scratch
+   * are trusted test/host seams, never runtime-client fields. A configured route changes no standing policy. */
+  voice?: { local: LocalVoiceConfig; quota: VoiceQuotaConfig; engine?: () => Promise<LocalVoiceEngine>; scratchDirectory?: string };
   /** Selected host transition. Status is read-only; its activity guard fences work and records released
    * activity durably. Composition cannot activate/release or import old authority through this port. */
   adoption?: { service: Pick<import('./adoption').AdoptionService, 'status' | 'guardActivity'>; authenticate(owner: OwnerActor): import('./adoption').AdoptionOwner };
@@ -175,7 +182,7 @@ export async function composeS15(options: S15CompositionOptions) {
   let skillCopyCurrent: (vmId: string, resource: Ref) => boolean = () => false;
   if (options.skills && options.disclosure) options = { ...options, disclosure: skillDisclosure(options.disclosure, { directory: () => skills, ownerGeneration: options.owner.generation, computer: (work, vmId) => skillComputer(work, vmId), copyCurrent: (vmId, resource) => skillCopyCurrent(vmId, resource), work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -188,7 +195,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -836,7 +843,13 @@ export async function composeS15(options: S15CompositionOptions) {
         return (['owner_named_send', 'github_default'] as const).some(mode => proposed.rules.some(r => r.mode === mode) && !current.rules.some(r => r.mode === mode));
       } catch { return false; }
     };
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const voice = options.voice ? await VoiceService.open<OwnerActor>({ path: join(root, 'voice.sqlite'), installationId: options.installationId, create: options.create || created.includes('voice.sqlite'), limits: options.voice.quota, now: clockNow,
+      requireOwner, ownerGeneration: options.owner.generation,
+      conversation: (owner, id) => { conversationOwnerView(conversation, owner, id); },
+      reply: (owner, id, requestId) => { const row = conversationRequestView(conversation, owner, requestId); if (row.receipt.conversationId !== id || !row.result) throw new AppError('voice_result_unavailable', 409); return { revision: row.revision, text: row.result.text }; },
+      engine: options.voice.engine ?? (() => openLocalVoice(options.voice!.local, options.voice!.scratchDirectory ?? join(realpathSync(tmpdir()), 'jit-voice-' + new Bun.CryptoHasher('sha256').update(options.installationId + '\n' + realpathSync(root)).digest('hex').slice(0, 24)))) }) : undefined;
+    if (voice) cleanup.push(() => voice.close());
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler);
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -854,7 +867,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, bots, connections, skills, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
+    const composed = { policy, conversation, team, memory, files, bots, connections, skills, voice, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

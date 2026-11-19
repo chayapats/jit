@@ -1,4 +1,7 @@
 import type { SkillDirectory } from "./skills/service";
+import type { VoiceService } from "./voice/service";
+import type { VoiceCaptureCommand, VoicePlaybackCommand } from "./voice/contracts";
+import { captureAudio, VoiceAudioError } from "./voice/wav";
 import { skillDetail, skillFile, skillsView } from "./skills/owner-view";
 import { skillLimits } from "./skills/types";
 import { AppError } from "../errors";
@@ -30,7 +33,7 @@ import { connectionLimits } from "./connections/types";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local owner audio; creates no Bot work or decisions. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -65,6 +68,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files), ...(options.screen ? { screen: true } : {}) } : { available: false, code: "computers_unavailable" },
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
       skills: options.skills ? { available: true, contract: "s16-client-skills/v1" } : { available: false, code: "skills_unavailable" },
+      voice: options.voice ? { available: true, contract: "s16-voice/v1", route: "local" } : { available: false, code: "voice_unavailable" },
       connections: options.connections ? { available: true, contract: "s16-client-connections/v1", kinds: ["mcp", "openapi", "graphql"], github: !!options.connections.options.github, oauth: true } : { available: false, code: "connections_unavailable" } };
   };
   return async request => {
@@ -85,6 +89,32 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST") options.authentication.verifyCsrf(current.csrf, request.headers.get("x-csrf-token"));
         return current.actor;
       };
+      const voicePath = /^\/api\/s16\/client\/voice(?:\/(playback|[A-Za-z0-9_-]{1,128})(?:\/(transcribe|cancel))?)?$/.exec(url.pathname);
+      const capturePath = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/voice\/captures$/.exec(url.pathname);
+      if (voicePath || capturePath) {
+        if (!options.voice) throw new AppError('voice_unavailable', 503);
+        if (url.search) throw new AppError('invalid_body');
+        if (capturePath && request.method === 'POST') { const capture = await options.voice.begin(currentOwner, capturePath[1]!, await body(request) as VoiceCaptureCommand, request.signal); return json(options.voice.inspect(currentOwner, capture.id), 201); }
+        if (voicePath && request.method === 'GET' && !voicePath[1]) { const status = await options.voice.status(currentOwner); currentOwner(); return json(status); }
+        if (voicePath?.[1] === 'playback' && !voicePath[2] && request.method === 'POST') { const input = await body(request) as VoicePlaybackCommand; await options.voice.playback(currentOwner, input, request.signal); return options.voice.publishPlayback(currentOwner, input, value => json(value)); }
+        if (voicePath?.[1] && voicePath[1] !== 'playback') {
+          const captureId = voicePath[1];
+          if (request.method === 'GET' && !voicePath[2]) return json(options.voice.inspect(currentOwner, captureId));
+          if (request.method === 'POST' && voicePath[2] === 'cancel') { exact(await body(request), []); const cancelled = await options.voice.cancel(currentOwner, captureId); currentOwner(); return json(cancelled); }
+          if (request.method === 'POST' && voicePath[2] === 'transcribe') {
+            if (request.headers.get('content-type') !== 'application/octet-stream' || !request.body) throw new AppError('unsupported_content_type', 415);
+            const capture = options.voice.inspect(currentOwner, captureId); if (capture.state === 'expired') throw new AppError('voice_capture_expired', 409);
+            const reader = request.body.getReader(), chunks: Uint8Array[] = []; let length = 0, wav: Buffer;
+            try {
+              for (;;) { const chunk = await reader.read(); currentOwner(); if (chunk.done) break; length += chunk.value.byteLength; if (length > captureAudio.bytes) throw new AppError('body_too_large', 413); chunks.push(chunk.value); }
+              currentOwner(); wav = Buffer.concat(chunks);
+            } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+            currentOwner(); await options.voice.transcribe(currentOwner, captureId, wav!, request.signal);
+            return options.voice.publishTranscript(currentOwner, captureId, value => json(value));
+          }
+        }
+        throw new AppError('method_rejected', 405);
+      }
       const uploadCreate = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/uploads$/.exec(url.pathname);
       if (uploadCreate && request.method === "POST") {
         if (!options.files || !app.options.files) throw new AppError("upload_unavailable", 503);
@@ -329,6 +359,6 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         app.stop(current.actor, work[1]!); return json({ state: "stop_requested" });
       }
       throw new AppError("not_found", 404);
-    } catch (error) { return json({ error: error instanceof AppError ? error.code : "client_unavailable" }, error instanceof AppError ? error.status : 503); }
+    } catch (error) { return json({ error: error instanceof AppError || error instanceof VoiceAudioError ? error.code : "client_unavailable" }, error instanceof AppError ? error.status : error instanceof VoiceAudioError ? 400 : 503); }
   };
 }
