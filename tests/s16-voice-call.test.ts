@@ -52,6 +52,13 @@ test('End while route health is pending fences the admitted call before a late b
   } finally { release.resolve(); await pending.catch(() => {}); }
 });
 
+test('a control response reacquires call generation at final HTTP publication', async () => {
+  const s = await fixture(), call = await s.start(), calls = s.f.service.voice!.calls!, original = calls.control.bind(calls);
+  calls.control = async (...args) => { const result = await original(...args); s.f.generation = 2; return result; };
+  await expect(s.client.controlVoiceCall(call.id, { contract: 's16-voice-call-control/v1', revision: call.revision, kind: 'mute' })).rejects.toMatchObject({ code: 'voice_stale', status: 403 });
+  expect(count(s.f)).toBe(0); expect(s.heard).toBe(0); expect(s.spoken).toBe(0);
+});
+
 test('call transcript stays data until confirmed, then message/steer recovery uses one original identity', async () => {
   const s = await fixture(), call = await s.start(), capture = await s.capture(call);
   expect(count(s.f)).toBe(0); expect(s.f.modelPrompts).toEqual([]);

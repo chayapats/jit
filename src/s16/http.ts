@@ -101,7 +101,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (call && request.method === 'GET' && !call[2]) return json(calls.view(currentOwner, call[1]!));
         if (call && request.method === 'POST') {
           const input = await body(request);
-          if (call[2] === 'control') { const result = await calls.control(currentOwner, call[1]!, input); currentOwner(); return json(result); }
+          if (call[2] === 'control') { const result = await calls.control(currentOwner, call[1]!, input); return json(calls.view(currentOwner, result.id)); }
           if (call[2] === 'turns') { const result = calls.confirm(currentOwner, call[1]!, input); void app.drain().catch(() => {}); currentOwner(); return json(result, 202); }
           if (call[2] === 'captures') { const result = await calls.capture(currentOwner, call[1]!, input, request.signal); currentOwner(); return json(voice.inspect(currentOwner, result.id), 201); }
           if (call[2] === 'playback') {
