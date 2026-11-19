@@ -34,11 +34,11 @@ export function ProtectedBrowser({ client, t, onClose, onFailure }: { client: Ji
     } catch (failure) { if (alive.current && turn === epoch.current) fail(failure); }
   };
   useEffect(() => {
-    alive.current = true; dialog.current?.showModal(); heading.current?.focus(); void refresh();
+    const element = dialog.current; alive.current = true; element?.showModal(); heading.current?.focus(); void refresh();
     const timer = setInterval(() => { if (!sending.current) void refresh(false); }, 3000);
     const visibility = () => { epoch.current++; clear(); if (document.visibilityState === 'visible' && !sending.current) void refresh(); };
     document.addEventListener('visibilitychange', visibility);
-    return () => { alive.current = false; epoch.current++; clearInterval(timer); document.removeEventListener('visibilitychange', visibility); if (image.current) URL.revokeObjectURL(image.current); dialog.current?.close(); };
+    return () => { alive.current = false; epoch.current++; clearInterval(timer); document.removeEventListener('visibilitychange', visibility); if (image.current) URL.revokeObjectURL(image.current); element?.close(); };
   }, []);
   const send = async (command: Command) => {
     const previous = current.current; if (!previous || sending.current) return;

@@ -99,3 +99,19 @@ test('Bot settlement and release do not wait for or cancel independent owner inp
   } finally { release.resolve(); await ownerInput; }
   expect(s.inputs).toBe(1);
 });
+
+for (const status of [401, 403]) test(`a ${status} protected frame fences another private frame whose body arrives later`, async () => {
+  const s = await setup(), release = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(); let frames = 0;
+  const client = new JitClient({ origin: 'http://localhost:3099', async fetch(request) {
+    const url = new URL(request.url);
+    if (!url.pathname.endsWith('/protected-browser/frame')) return s.f.request(url.pathname, request.method, undefined, Object.fromEntries(request.headers));
+    if (++frames > 1) return Response.json({ error: status === 401 ? 'authentication_required' : 'authorization_required' }, { status });
+    const body = new ReadableStream<Uint8Array>({ async start(controller) { entered.resolve(); await release.promise; controller.enqueue(new Uint8Array(40)); controller.close(); } });
+    return new Response(body, { headers: { 'content-type': 'image/png' } });
+  } });
+  await client.bootstrap();
+  const pending = client.protectedBrowserFrame(1).then(() => 'published', error => error.code as string);
+  try { await entered.promise; await expect(client.protectedBrowserFrame(1)).rejects.toMatchObject({ code: status === 401 ? 'authentication_required' : 'authorization_required' }); }
+  finally { release.resolve(); }
+  expect(await pending).toBe('client_response_stale');
+});

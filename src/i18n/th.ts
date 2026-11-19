@@ -5783,6 +5783,8 @@ export const th = {
   "s16.card.amount": "จำนวนเงิน",
   "s16.card.target": "ปลายทาง",
   "s16.card.request": "คำขอ",
+  "s16.card.queryField": "ข้อมูลใน URL: {field}",
+  "s16.card.formField": "ข้อมูลใน form: {field}",
   "s16.card.recipients": "ผู้รับ",
   "s16.card.body": "เนื้อหาที่จะส่งจริง",
   "s16.card.remembered": "เมื่ออนุมัติแล้ว ระบบจะจำผู้รับนี้ไว้ใช้ครั้งต่อไป ลบออกได้ที่หน้าผู้รับ",

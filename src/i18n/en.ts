@@ -5779,6 +5779,8 @@ export const en: Record<MessageKey, string> = {
   "s16.card.amount": "Amount",
   "s16.card.target": "Target",
   "s16.card.request": "Request",
+  "s16.card.queryField": "Query field: {field}",
+  "s16.card.formField": "Form field: {field}",
   "s16.card.recipients": "Recipients",
   "s16.card.body": "Exact content",
   "s16.card.remembered": "After you approve, this recipient is remembered for later work. You can remove it under Recipients.",

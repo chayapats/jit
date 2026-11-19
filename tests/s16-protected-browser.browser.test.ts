@@ -19,16 +19,16 @@ const uid = () => crypto.randomUUID().replaceAll('-', '');
 
 for (const width of [1440, 390]) native(`actual composed protected login, async approval and team session reuse at ${width}`, async () => {
   const website = browserSite({ asyncIntent: 'fetch' }), copy = width === 1440 ? en : th;
-  let plan: { kind: 'navigate' | 'read' | 'send'; url?: string } = { kind: 'read' }, stage = 0;
+  let plan: { kind: 'navigate' | 'read' | 'send' | 'edit'; url?: string; value?: string } = { kind: 'read' }, stage = 0;
   const prompts: string[] = [];
   const model: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request: ModelRequest) {
     prompts.push(JSON.stringify(request)); const last = request.items.at(-1), result = last?.type === 'tool_result' ? JSON.parse(last.content) : null;
     let arguments_: Record<string, unknown> | null = null;
     if (stage === 0) arguments_ = { kind: 'state' };
     else if (stage === 1) arguments_ = plan.kind === 'navigate' ? { kind: 'navigate', url: plan.url!, generation: result.generation } : { kind: 'read', generation: result.generation };
-    else if (stage === 2 && plan.kind === 'send') {
-      const target = result.observation?.elements.find((element: { name: string }) => element.name === 'xhr');
-      if (!target) throw Error('missing_async_target'); arguments_ = { kind: 'click', target: target.id, generation: result.observation.generation };
+    else if (stage === 2 && (plan.kind === 'send' || plan.kind === 'edit')) {
+      const target = result.observation?.elements.find((element: { name: string }) => element.name === (plan.kind === 'edit' ? 'message' : 'xhr'));
+      if (!target) throw Error('missing_async_target'); arguments_ = { kind: plan.kind === 'edit' ? 'type' : 'click', target: target.id, generation: result.observation.generation, ...(plan.kind === 'edit' ? { value: plan.value! } : {}) };
     }
     stage++;
     yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: arguments_ ? [{ type: 'tool_call', id: uid(), name: 'protected_browser', arguments: arguments_ }] : [{ type: 'text', text: 'Completed using current protected browser observations.' }] } };
@@ -61,7 +61,9 @@ for (const width of [1440, 390]) native(`actual composed protected login, async 
   try {
     const navigation = await run({ kind: 'navigate', url: website.origin + '/login' }); expect(navigation.row.evidence.at(-1)?.content).toContain('"state":"ok"');
     await page.goto('http://localhost:3099/s16/chat/conversation');
-    const open = page.getByRole('button', { name: copy['s16.protected.title'], exact: true }); await open.click();
+    const open = page.getByRole('button', { name: copy['s16.protected.title'], exact: true }); await open.waitFor();
+    if (process.env.JIT_S16_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.JIT_S16_SCREENSHOT_DIR}/protected-entry-${width}.png` });
+    await open.click();
     const dialog = page.getByRole('dialog', { name: copy['s16.protected.title'] }); await dialog.getByRole('button', { name: copy['s16.protected.takeover'], exact: true }).click();
     for (const field of ['password', 'otp'] as const) {
       const input = dialog.getByLabel(field, { exact: true }); await input.waitFor(); await input.fill(field === 'password' ? website.password() : website.code());
@@ -84,10 +86,15 @@ for (const width of [1440, 390]) native(`actual composed protected login, async 
     await dialog.getByRole('button', { name: copy['s16.protected.close'], exact: true }).click();
     expect(website.attempts()).toEqual({ login: 1, verification: 1 });
     await run({ kind: 'navigate', url: website.origin + '/dynamic' });
+    const message = '\u0e17\u0e14\u0e2a\u0e2d\u0e1a + Friday';
+    const edited = await run({ kind: 'edit', value: message }); expect(edited.row.evidence.at(-1)?.content).toContain('"state":"ok"');
     const sent = await run({ kind: 'send' }); expect(sent.row.slips[0]?.state).toBe('pending'); expect(website.received.filter(request => request.path === '/dynamic-send')).toHaveLength(0);
     await page.reload();
     const card = page.getByRole('region', { name: copy['s16.card.title.website'] }); await card.waitFor();
-    expect(await card.getByText('Launch+day%3A+Friday', { exact: false }).count()).toBeGreaterThan(0);
+    expect(await card.getByText(message, { exact: true }).count()).toBe(1);
+    expect(await card.getByText(new URLSearchParams({ recipient: 'team', message }).toString(), { exact: true }).count()).toBe(1);
+    if (process.env.JIT_S16_SCREENSHOT_DIR) await card.screenshot({ path: `${process.env.JIT_S16_SCREENSHOT_DIR}/protected-card-${width}.png` });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     const approve = card.getByRole('button', { name: copy['s16.card.approve'], exact: true }); await approve.focus(); await page.keyboard.press('Enter');
     await f.service.conversation.drain(); await card.waitFor({ state: 'detached' });
     expect(website.received.filter(request => request.path === '/dynamic-send')).toHaveLength(1);

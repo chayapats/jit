@@ -56,7 +56,7 @@ export class JitClient {
     const { csrf: _csrf, ...projection } = data as unknown as ClientBootstrap;
     return projection;
   }
-  /** Reads protected route configuration and measured/unknown budgets; starts no provider work. */
+  /** Reads current protected-browser custody and sign-in capability; starts no Bot work. */
   async protectedBrowser(signal?: AbortSignal): Promise<ProtectedBrowserView> {
     const data = await this.call('/protected-browser', 'GET', undefined, signal);
     if (!protectedBrowserView(data)) return invalid(); return data;
@@ -81,7 +81,8 @@ export class JitClient {
     const session = this.#sessionGeneration; let response: Response;
     try { response = await this.#fetch(new Request(`${this.origin}/api/s16/client/protected-browser/frame?generation=${generation}`, { credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', ...(signal ? { signal } : {}) })); }
     catch { throw new JitClientError('client_unavailable', null, 'not_sent'); }
-    if (session !== this.#sessionGeneration) throw new JitClientError('client_response_stale', response.status, 'response');
+    if (session !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError('client_response_stale', response.status, 'response'); }
+    if (response.status === 401 || response.status === 403) this.clear();
     if (!response.ok) { const data = await this.json(response, 'GET', null); throw new JitClientError(safeCode(record(data) ? data.error : null), response.status, 'response'); }
     if (response.headers.get('content-type')?.split(';')[0] !== 'image/png') return invalid();
     const blob = await response.blob();
