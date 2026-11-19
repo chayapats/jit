@@ -74,3 +74,5 @@
 .desktop-origin { overflow-wrap: anywhere; }
 .desktop-settings p { margin: .6rem 0; }
 .desktop-version { display: block; margin-bottom: .5rem; font-family: monospace; }
+
+.voice-call{display:flex;flex-direction:column;max-height:45dvh;overflow:hidden}.voice-call>.voice-actions,.voice-call>p{flex-shrink:0}.voice-call>p{margin:0}.voice-call-body{min-height:0;overflow:auto;padding:3px}.voice-call .call-confirm{flex-shrink:0;border-top:1px solid var(--line);padding-top:8px}.voice-call .call-confirm .primary{margin-left:0}.voice-call .voice-draft p{margin:4px 0}.voice-call .call-turns ol{padding-inline-start:24px;margin:8px 0}.voice-call .call-turns summary{cursor:pointer}

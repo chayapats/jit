@@ -12,7 +12,7 @@ export interface VoiceUsage { day: string; unit: 'local_audio_ms'; limitMs: numb
 /** Capture is a private draft operation, never work/approval. Stop by recordingEndsAt; expiresAt separately bounds submission. */
 export interface VoiceCapture { id: string; conversationId: string; state: 'capturing' | 'processing' | 'ready' | 'cancelled' | 'failed' | 'unknown' | 'expired'; recordingEndsAt: number; expiresAt: number; maxDurationMs: number }
 /** Read-only configured capability and current local quota; paths, credentials and model data are absent. */
-export interface VoiceStatus { contract: 's16-voice/v1'; available: boolean; serverTime: number; route: 'local'; limits: VoiceQuotaConfig; usage: VoiceUsage }
+export interface VoiceStatus { contract: 's16-voice/v1'; available: boolean; serverTime: number; route: 'local'; limits: VoiceQuotaConfig; usage: VoiceUsage; calls?: typeof import('./call-contracts').voiceCallLimits }
 /** The owner's explicit Mic intent. It starts no conversation request or model operation. */
 export interface VoiceCaptureCommand { contract: 's16-voice-capture/v1'; requestId: string }
 /** Only the exact currently published result can be synthesized; client text is never the source. */

@@ -37,7 +37,7 @@ export interface ClientCapabilities {
   /** BROW16-01B protected sign-in/control, separate from the working computer's desktop. */
   protectedBrowser?: { available: true; contract: 's16-protected-browser/v1' };
   /** Owner audio API is configured; actual local binary/model health and quota are read from its status endpoint. */
-  voice?: { available: false; code: "voice_unavailable" } | { available: true; contract: "s16-voice/v1"; route: "local" };
+  voice?: { available: false; code: "voice_unavailable" } | { available: true; contract: "s16-voice/v1"; route: "local"; callContract?: "s16-voice-call/v1" };
 }
 /** Authenticated, no-store bootstrap. CSRF stays in the transport, outside persisted client state. */
 export interface ClientBootstrap {

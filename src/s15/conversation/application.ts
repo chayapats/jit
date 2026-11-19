@@ -464,6 +464,13 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     const current = this.options.policy.requireOwner(actor);
     if (current.id !== request.owner.id || current.generation !== request.owner.generation) throw new AppError("authentication_required", 401);
   }
+  /** Current owner/generation guard for bounded conversation metadata admission. This does not
+   * publish content: result/evidence consumers must still use the guarded view/publish surfaces. */
+  requireConversationOwner(actor: OwnerActor, conversationId: string): void {
+    this.options.policy.requireOwner(actor); identity(conversationId);
+    const rows = this.store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE conversation_id=? ORDER BY rowid DESC LIMIT 32").all(conversationId);
+    for (const row of rows) this.owner(actor, this.store.request(row.id));
+  }
   private clarification(original: ConversationCommand, next: ConversationCommand, intent: ConversationIntent): ConversationIntent {
     // This slice resolves a selected issue only. Other material changes use a distinct clear request.
     const candidates = [...original.text.matchAll(/(?:issue\s*|#)(\d+)/gi)].map(match => `issue:${match[1]}`);
