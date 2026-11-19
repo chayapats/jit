@@ -131,6 +131,10 @@ The opt-in S15 TEAM/MEM implementation now retains relevant sourced subsets auto
 
 **Input lease:** A generation-bound exclusive right to send input to one browser/desktop. Reads/screenshots do not imply input ownership.
 
+**Protected input intent (S16):** A trusted host mapping from a bounded, credential-free pre-input snapshot to one complete request. A private nonce binds work/generation, exact bytes, source ceiling and finite expiry; only one matching actual request can proceed through current POLICY/DATA15. This is exact-effect equivalence, not JavaScript call-stack attribution or page/model authority ([ADR 0097](docs/adr/0097-s16-protected-input-intents-and-client-workflow.md)).
+
+**Protected browser control (S16):** The authenticated owner view of the existing protected browser, separate from the working-computer screen. Current POLICY owner authority controls transient login input and observed session checks even after a Bot releases its work lease. Closing/disconnecting retains owner control; work completion cannot invalidate that control or its session probe. Configured login support is explicit; the provisioned read-only browser does not acquire sign-in support from this UI.
+
 **Takeover:** Owner control of a Bot browser/desktop while agent input is fenced. Returning control is not approval of a held effect.
 
 **External effect:** An action leaving the execution boundary, including remote edits, communications, publication, payments and deletion. S15 distinguishes ordinary reversible authorized edits, narrowly captured standing exceptions and human-required actions. S14 retains exact-effect approval contracts. Unknown tools/actions cannot bypass the applicable mediation.
