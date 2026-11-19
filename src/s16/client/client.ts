@@ -28,14 +28,14 @@ export interface JitClientOptions {
   fetchBytes?: (request: Request, bytes: Uint8Array<ArrayBuffer>) => Promise<Response>;
 }
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const identifier = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 128 && !/[^A-Za-z0-9_-]/.test(value);
 const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : "client_unavailable";
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 const nullableCount = (value: unknown) => value === null || count(value);
 const modelRef = (value: unknown) => record(value) && identifier(value.id) && count(value.revision) && count(value.generation);
 const modelChoice = (value: unknown) => record(value) && modelRef(value.route) && modelRef(value.model) && typeof value.effort === "string";
 const quantity = (value: unknown) => nullableCount(value) || typeof value === "string" && /^[0-9]+$/.test(value);
-const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const sha256 = (value: unknown) => typeof value === "string" && value.length === 64 && !/[^a-f0-9]/.test(value);
 const invalid = (): never => { throw new JitClientError("client_protocol_invalid", null, "response"); };
 const id = (value: string) => { if (!identifier(value)) throw new JitClientError("invalid_identity", null, "not_sent"); return value; };
 const callLimits = (value: unknown): boolean => record(value) && Object.keys(value).length === Object.keys(voiceCallLimits).length && Object.entries(voiceCallLimits).every(([key, bound]) => value[key] === bound);

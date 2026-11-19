@@ -1,0 +1,40 @@
+{
+  "name": "jit-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.ts",
+  "engines": {
+    "bun": "1.4.2",
+    "node": "^22.13.0 || ^24.3.0 || >=26.0.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "prebuild": "bun tools/locales.ts && expo prebuild --no-install",
+    "bundle:ios": "bun tools/locales.ts && expo export --platform ios --output-dir dist/ios",
+    "bundle:android": "bun tools/locales.ts && expo export --platform android --output-dir dist/android"
+  },
+  "dependencies": {
+    "expo": "58.0.26",
+    "expo-build-properties": "58.0.12",
+    "expo-crypto": "58.0.8",
+    "expo-document-picker": "58.0.5",
+    "expo-file-system": "58.0.14",
+    "expo-notifications": "58.1.9",
+    "expo-secure-store": "58.0.3",
+    "expo-system-ui": "58.0.7",
+    "react": "19.3.0",
+    "react-native": "0.88.1",
+    "react-native-safe-area-context": "5.11.1",
+    "react-native-webview": "14.0.1"
+  },
+  "expo": {
+    "autolinking": {
+      "nativeModulesDir": "./modules"
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}

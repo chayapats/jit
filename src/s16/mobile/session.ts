@@ -17,7 +17,7 @@ export interface MobileProjection {
 export class MobileProjectionError extends Error {
   constructor(readonly code: "mobile_not_ready" | "mobile_target_invalid" | "mobile_response_stale") { super(code); this.name = "MobileProjectionError"; }
 }
-const identifier = (id: string) => /^[A-Za-z0-9_-]{1,128}$/.test(id);
+const identifier = (id: string) => typeof id === "string" && id.length >= 1 && id.length <= 128 && !/[^A-Za-z0-9_-]/.test(id);
 const code = (error: unknown): string => error instanceof JitClientError || error instanceof MobileClientError || error instanceof MobileProjectionError ? error.code : "mobile_request_failed";
 
 /**
