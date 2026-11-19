@@ -130,6 +130,11 @@ export class RoutineService<Actor> {
       proposalHash: digest("s16.routine.proposal.v1", { draft: clean, ownerGeneration: owner.generation, policyRevision: catalog!.policyRevision }) };
   }
   /** Bounded owner list, newest first. Reading never ticks, dispatches or notifies. */
+  /** All current-owner configuration identities, independent of the 64-row navigation window. */
+  search(actor: Actor): Routine[] {
+    const owner = this.options.principal(actor);
+    return this.#routines().filter(routine => routine.owner.ownerId === owner.ownerId && routine.owner.generation === owner.generation).map(routine => structuredClone(routine));
+  }
   list(actor: Actor): RoutineList {
     const owner = this.options.principal(actor);
     const routines = this.#routines().filter(routine => routine.owner.ownerId === owner.ownerId && routine.owner.generation === owner.generation).reverse().slice(0, 64);

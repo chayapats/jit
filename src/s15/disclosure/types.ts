@@ -1,4 +1,4 @@
-import type { ActionAdapter, ActionDraft, ActionRef, AdapterResult, BudgetVector, CatalogPort, DisclosureDetails, JsonValue, PreparedResult, Ref, S15PolicyService, WorkActor, WorkAuthority } from '../policy';
+import type { ActionAdapter, ActionDraft, ActionRef, AdapterResult, BudgetVector, CatalogPort, DisclosureDetails, JsonValue, PreparedResult, Ref, S15PolicyService, WorkActor, WorkAuthority, OwnerActor } from '../policy';
 import type { BrowserRequest } from '../browser';
 import type { ApprovedModelRoute } from '../model';
 
@@ -66,6 +66,9 @@ export interface DisclosureService {
   /** Privacy-only metadata inspection over an owning, already guarded projection (for interpretation history).
    * It grants no read, resource, work or dispatch authority and never writes lineage. */
   ancestry(work: WorkAuthority, derived: Ref): DisclosureSource[];
+  /** Authenticated owner-only current ancestry metadata for search. No source bytes, work admission,
+   * recipient release, lineage write or model/tool capability is created by this inspection. */
+  ownerAncestry(owner: OwnerActor, derived: Ref): DisclosureSource[];
   /** Register text/image/artifact descendants with every source already read by this work. */
   derive(actor: WorkActor, derived: Ref, kind: 'text' | 'screenshot' | 'artifact'): void;
   /** Import only a protected descendant's recorded ancestors, rechecking current source access. */

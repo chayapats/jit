@@ -5,14 +5,17 @@ This is an authenticated owner projection, not model retrieval or a grant.
 
 ## Objects and visibility
 
-Kinds are `history` (root CHAT request), `work` (WORK responsibility), `routine`,
+Kinds are `history` (text-bearing CHAT command), `work` (WORK responsibility), `routine`,
 `memory` (MEM claim), and `artifact` (committed immutable file). IDs are their
 original owning IDs, never hashes of display text. Each result has a bounded
 title/snippet, current state, timestamp, producer Bot if known, original source
-destination and current label-set revision. History includes retained requests
-beyond the 32-row thread/64-conversation navigation windows. Work includes both
-CHAT tool work and separately assigned WORK responsibilities without pretending
-one is the other.
+destination and current label-set revision. History includes tool-executing CHAT
+requests as well as discussion, clarification replies and steers, beyond the 32-row thread/64-conversation navigation
+windows. Work means the distinct, separately assigned WORK responsibilities;
+their original IDs are not aliased with CHAT request IDs. Both remain searchable
+in All, without pretending a conversation request is an assigned responsibility.
+A clarification/steer retains its own command ID and opens its original root
+request; decisions without text do not become synthetic history messages.
 
 Every read resolves current ownership, generation, original service guards,
 file/claim/source withdrawals and MEM history suppression before projecting
@@ -21,6 +24,13 @@ including its owner-message title. Non-published rows may expose only currently
 safe owner ingress. Memory includes active/current claims only; erased/inactive
 text and unavailable file pins cannot match. Artifacts use the exact existing
 committed-library intersection and original download/preview guards.
+
+MEM additionally intersects current TEAM/resource pins and DATA15 ancestry.
+The protected, owner-authenticated `DisclosureService.ownerAncestry` returns
+only current original metadata for an exact retained descendant. It creates no
+work, recipient release, reservation, source read or lineage write. Missing,
+withdrawn or changed originals refuse; a selected Bot also intersects each
+original private Bot ceiling. This is not a model/tool port.
 
 The owner can inspect their own authorized private scopes; `bot` narrows
 producer/history ownership, and MEM also intersects transitive Bot-private
@@ -48,7 +58,7 @@ change rank; pagination is a live view, not a frozen private snapshot.
 
 Candidate capacity is 10,000 across all families; overflow returns
 `search_capacity` (413), never partial results/counts. Searchable text is bounded
-per owner record and response uses the existing client byte ceiling. No body,
+to 65,536 UTF-16 units per owner record and response uses the existing client byte ceiling. No body,
 query history or projection is written to an index, log or browser storage.
 
 `GET /api/s16/client/search/objects/:kind/:id` resolves one current result and
@@ -79,6 +89,8 @@ command recovery; it does not erase the owner's source or execute anything.
 
 Additive tables hold at most 10,000 object label sets and 10,000 command
 receipts; capacity refuses new admissions without evicting unknown receipts.
+Organization bytes also count against CHAT's existing finite custody ceiling;
+original-command read-back/replay remains available when new admissions refuse.
 No new composition journal or format stamp is needed. Old releases may ignore
 organization, while source/file/skill authority stamps remain effective.
 

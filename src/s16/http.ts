@@ -1,4 +1,5 @@
 import type { SkillDirectory } from "./skills/service";
+import type { SearchDirectory } from './search/service';
 import type { VoiceService } from "./voice/service";
 import type { VoiceCaptureCommand, VoicePlaybackCommand } from "./voice/contracts";
 import { captureAudio, VoiceAudioError } from "./voice/wav";
@@ -35,7 +36,7 @@ import type { ProtectedBrowserPort } from './protected-browser';
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -64,6 +65,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
+      ...(options.search ? { search: { available: true as const, contract: 's16-client-search/v1' as const, kinds: ['history' as const, 'work' as const, 'memory' as const, ...(options.routines ? ['routine' as const] : []), ...(options.files ? ['artifact' as const] : [])] } } : {}),
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
@@ -328,6 +330,16 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         // A source document (OpenAPI/GraphQL) may be up to 1 MiB; owner/session and CSRF are checked again after the body.
         if (request.method === "POST" && connection[1] === "commands") { const input = await body(request, connectionLimits.documentBytes + 65_536); const owner = currentOwner(); return json(await options.connections.command(owner, input)); }
         throw new AppError("method_rejected", 405);
+      }
+      const search = /^\/api\/s16\/client\/search(?:\/(labels|commands\/([A-Za-z0-9_-]{1,128})|objects\/(history|work|routine|memory|artifact)\/([A-Za-z0-9_-]{1,128})))?$/.exec(url.pathname);
+      if (search) {
+        if (!options.search) throw new AppError('search_unavailable', 503);
+        if (request.method === 'GET' && !search[1]) return json(options.search.search(currentOwner(), url.searchParams));
+        if (url.search) throw new AppError('invalid_search_query');
+        if (request.method === 'GET' && search[2]) return json(options.search.receipt(currentOwner(), search[2]));
+        if (request.method === 'GET' && search[3] && search[4]) return json(options.search.object(currentOwner(), { kind: search[3], id: search[4] }));
+        if (request.method === 'POST' && search[1] === 'labels') { const input = await body(request, 4096); return json(options.search.command(currentOwner(), input)); }
+        throw new AppError('method_rejected', 405);
       }
       const memory = /^\/api\/s16\/client\/memory(?:\/(commands|[A-Za-z0-9_-]{1,128}))?$/.exec(url.pathname);
       if (memory) {
