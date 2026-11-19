@@ -26,9 +26,9 @@ async function barrier(context: VoiceProcessContext, pending: Promise<void> | nu
   try { await Promise.race([pending, aborted]); } finally { context.signal.removeEventListener('abort', stop); }
 }
 async function fixture(dailyMs = 600000) {
-  let spoken = 0, heard = 0, speaking: Promise<void> | null = null, loseTurn = false;
-  const entered = Promise.withResolvers<void>();
-  const engine: LocalVoiceEngine = { async available() { return true; }, async transcribe(_bytes, context) { context.guard(); context.started(); heard++; return 'Approve this quoted draft only.'; }, async synthesize(_text, context) { context.guard(); context.started(); spoken++; entered.resolve(); await barrier(context, speaking); context.guard(); return { wav: encodeCaptureWav(new Float32Array(16000)), durationMs: 1000 }; }, async close() {} };
+  let spoken = 0, heard = 0, speaking: Promise<void> | null = null, availability: Promise<void> | null = null, loseTurn = false;
+  const entered = Promise.withResolvers<void>(), inspecting = Promise.withResolvers<void>();
+  const engine: LocalVoiceEngine = { async available() { if (availability) { inspecting.resolve(); await availability; } return true; }, async transcribe(_bytes, context) { context.guard(); context.started(); heard++; return 'Approve this quoted draft only.'; }, async synthesize(_text, context) { context.guard(); context.started(); spoken++; entered.resolve(); await barrier(context, speaking); context.guard(); return { wav: encodeCaptureWav(new Float32Array(16000)), durationMs: 1000 }; }, async close() {} };
   const f = await composedFixture('default', false, undefined, o => ({ ...o, voice: { local, quota: { dailyMs, captureMs: 30000 }, engine: async () => engine } })); cleanup.push(() => f.close());
   const client = new JitClient({ origin: 'http://localhost:3099', async fetch(request) {
     const url = new URL(request.url), headers = Object.fromEntries(request.headers);
@@ -39,8 +39,18 @@ async function fixture(dailyMs = 600000) {
   await client.bootstrap();
   const start = async () => client.beginVoiceCall('conversation', client.prepareVoiceCall((await client.voiceStatus()).serverTime));
   const capture = async (call: Awaited<ReturnType<typeof start>>) => client.captureVoiceCall(call.id, { contract: 's16-voice-call-capture/v1', revision: call.revision, requestId: voiceRequestId(f.now) }, call.conversationId);
-  return { f, client, engine, start, capture, entered: entered.promise, get heard() { return heard; }, get spoken() { return spoken; }, set speaking(value: Promise<void>) { speaking = value; }, loseTurn() { loseTurn = true; } };
+  return { f, client, engine, start, capture, entered: entered.promise, inspecting: inspecting.promise, get heard() { return heard; }, get spoken() { return spoken; }, set speaking(value: Promise<void>) { speaking = value; }, set availability(value: Promise<void>) { availability = value; }, loseTurn() { loseTurn = true; } };
 }
+
+test('End while route health is pending fences the admitted call before a late begin response', async () => {
+  const s = await fixture(), release = Promise.withResolvers<void>(); s.availability = release.promise;
+  const command = s.client.prepareVoiceCall(s.f.now), pending = s.client.beginVoiceCall('conversation', command); void pending.catch(() => {});
+  try {
+    await s.inspecting;
+    const ended = await s.client.controlVoiceCall(command.requestId, { contract: 's16-voice-call-control/v1', revision: 1, kind: 'end' }); expect(ended.state).toBe('ended');
+    release.resolve(); expect((await pending).state).toBe('ended'); expect(count(s.f)).toBe(0); expect(s.heard).toBe(0); expect(s.spoken).toBe(0);
+  } finally { release.resolve(); await pending.catch(() => {}); }
+});
 
 test('call transcript stays data until confirmed, then message/steer recovery uses one original identity', async () => {
   const s = await fixture(), call = await s.start(), capture = await s.capture(call);

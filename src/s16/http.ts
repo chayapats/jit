@@ -97,7 +97,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         const voice = options.voice, calls = voice?.calls; if (!voice || !calls) throw new AppError('voice_unavailable', 503);
         if (url.search) throw new AppError('invalid_body');
         if (callList && request.method === 'GET') return json({ contract: 's16-voice-calls/v1', calls: calls.list(currentOwner, callList[1]!) });
-        if (callList && request.method === 'POST') { const input = await body(request); const result = await calls.begin(currentOwner, callList[1]!, input); currentOwner(); return json(calls.view(currentOwner, result.id), 201); }
+        if (callList && request.method === 'POST') { const input = await body(request); const result = await calls.begin(currentOwner, callList[1]!, input, request.signal); currentOwner(); return json(calls.view(currentOwner, result.id), 201); }
         if (call && request.method === 'GET' && !call[2]) return json(calls.view(currentOwner, call[1]!));
         if (call && request.method === 'POST') {
           const input = await body(request);

@@ -91,27 +91,41 @@ export class VoiceCallService<Actor> {
     return this.all().filter(call => call.generation === this.options.generation() && call.conversationId === conversationId).slice(0, 8).map(call => this.view(owner, call.id));
   }
   /** Explicit Call intent; an old identity returns its original ended lifecycle instead of admitting another call. */
-  async begin(owner: VoiceOwner<Actor>, conversationId: string, value: unknown): Promise<VoiceCallView> {
+  async begin(owner: VoiceOwner<Actor>, conversationId: string, value: unknown, signal?: AbortSignal): Promise<VoiceCallView> {
+    if (signal?.aborted) return fail('voice_cancelled');
     exact(value, ['contract', 'requestId']); if (value.contract !== 's16-voice-call-begin/v1') return fail('voice_request_invalid', 400);
     const input = structuredClone(value) as unknown as VoiceCallBegin; issuedAt(input.requestId); identity(conversationId);
     this.options.conversation(this.owner(owner), conversationId);
-    const status = await this.speech.status(owner); if (!status.available) return fail('voice_unavailable', 503);
-    this.journal.tx(() => {
+    const fresh = this.journal.tx(() => {
       this.options.conversation(this.owner(owner), conversationId); const at = this.options.clock();
       for (const call of this.all()) {
         if (call.state !== 'ended' && call.expiresAt <= at) this.finish(call, 'timeout');
         if (call.state === 'ended' && call.createdAt < at - voiceLimits.retentionMs) { this.journal.db.query('DELETE FROM voice_call_turns WHERE call_id=?').run(call.id); this.journal.db.query('DELETE FROM voice_calls WHERE id=?').run(call.id); }
       }
       const old = this.all().find(call => call.id === input.requestId);
-      if (old) { this.owner(owner, old); if (old.conversationId !== conversationId) fail('request_id_conflict'); return; }
+      if (old) { this.owner(owner, old); if (old.conversationId !== conversationId) fail('request_id_conflict'); return false; }
       const issued = issuedAt(input.requestId); if (issued < at - voiceLimits.requestAgeMs || issued > at + 30000) fail('voice_request_expired');
       if (this.all().some(call => call.state !== 'ended') || !this.speech.idle()) fail('voice_busy');
       if (this.all().length >= voiceCallLimits.retainedCalls) fail('voice_storage_limit');
-      if (status.usage.chargedMs + status.usage.reservedMs >= status.usage.limitMs) fail('voice_budget_exhausted');
       const call: CallRecord = { id: input.requestId, conversationId, generation: this.options.generation(), revision: 1, createdAt: at, expiresAt: at + voiceCallLimits.durationMs, state: 'active', reason: null, lastResume: null };
-      this.save(call); this.arm(call);
+      this.save(call); this.arm(call); return true;
     });
-    return this.view(owner, input.requestId);
+    if (!fresh) return this.view(owner, input.requestId);
+    // Admit the metadata identity before route-health awaits, so an immediate End can fence it while preparing.
+    const abort = () => this.journal.tx(() => this.finish(this.get(input.requestId), 'owner'));
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      if (signal?.aborted) { abort(); fail('voice_cancelled'); }
+      const status = await this.speech.status(owner), call = this.get(input.requestId); this.owner(owner, call);
+      if (signal?.aborted) fail('voice_cancelled');
+      if (call.state === 'ended') return this.view(owner, call.id);
+      if (!status.available) fail('voice_unavailable', 503);
+      if (status.usage.chargedMs + status.usage.reservedMs >= status.usage.limitMs) fail('voice_budget_exhausted');
+      return this.view(owner, input.requestId);
+    } catch (error) {
+      this.journal.tx(() => this.finish(this.get(input.requestId), error instanceof AppError && error.code === 'voice_budget_exhausted' ? 'budget' : signal?.aborted ? 'owner' : 'unavailable'));
+      throw error;
+    } finally { signal?.removeEventListener('abort', abort); }
   }
   /** Narrowing mute/end is safe when repeated; explicit resume is bound to exactly the current revision. */
   async control(owner: VoiceOwner<Actor>, id: string, value: unknown): Promise<VoiceCallView> {
