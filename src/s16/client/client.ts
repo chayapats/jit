@@ -1,6 +1,7 @@
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
 import { captureWavInfo, VoiceAudioError } from "../voice/wav";
+import { voiceCallLimits, type VoiceCallBegin, type VoiceCallCapture, type VoiceCallConfirm, type VoiceCallControl, type VoiceCallPlayback, type VoiceCallView } from '../voice/call-contracts';
 import type { SkillDetail, SkillsView } from "../skills/owner-view";
 import type { ComputerNeedsYouCard, ComputerNeedsYouCommand, ComputerNeedsYouResult } from "../computers/needs-you-types";
 import type { ClientModelsView } from "./contracts";
@@ -30,6 +31,19 @@ const quantity = (value: unknown) => nullableCount(value) || typeof value === "s
 const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const invalid = (): never => { throw new JitClientError("client_protocol_invalid", null, "response"); };
 const id = (value: string) => { if (!identifier(value)) throw new JitClientError("invalid_identity", null, "not_sent"); return value; };
+const callLimits = (value: unknown): boolean => record(value) && Object.keys(value).length === Object.keys(voiceCallLimits).length && Object.entries(voiceCallLimits).every(([key, bound]) => value[key] === bound);
+const callView = (value: unknown): value is VoiceCallView => {
+  if (!record(value) || value.contract !== 's16-voice-call/v1' || !identifier(value.id) || !identifier(value.conversationId) || !count(value.revision) || !value.revision || !count(value.serverTime) || !count(value.expiresAt) || !['active', 'muted', 'ended'].includes(String(value.state)) || !callLimits(value.limits)) return false;
+  if (value.state === 'ended' ? !['owner', 'timeout', 'turn_limit', 'restart', 'budget', 'unavailable'].includes(String(value.reason)) : value.reason !== null) return false;
+  return Array.isArray(value.turns) && value.turns.length <= voiceCallLimits.turns && value.turns.every((turn, index) => {
+    if (!record(turn) || turn.ordinal !== index + 1 || turn.requestId !== `${value.id}_t${index + 1}` || !['message', 'steer'].includes(String(turn.kind)) || (turn.kind === 'message' ? turn.target !== null : !identifier(turn.target)) || !['unaccepted', 'accepted', 'unavailable'].includes(String(turn.state))) return false;
+    if (turn.state !== 'accepted') return turn.receipt === null;
+    const receipt = turn.receipt;
+    if (!record(receipt) || receipt.requestId !== turn.requestId || receipt.conversationId !== value.conversationId) return false;
+    return turn.kind === 'message' ? receipt.contract === 's15-conversation-receipt/v1' && identifier(receipt.rootRequestId) && count(receipt.receivedAt)
+      : receipt.contract === 's16-conversation-steer-receipt/v1' && receipt.target === turn.target && ['queued', 'sent', 'applied', 'resubmitted', 'unapplied', 'uncertain'].includes(String(receipt.state)) && (receipt.followUp === null || identifier(receipt.followUp));
+  });
+};
 
 /**
  * Shared Web/native client over the protected Jit service. Sends never auto-retry, redirects are refused,
@@ -102,7 +116,7 @@ export class JitClient {
   /** Read configured local speech health/quota without microphone, model or process activity. */
   async voiceStatus(signal?: AbortSignal): Promise<VoiceStatus> {
     const data = await this.call('/voice', 'GET', undefined, signal);
-    if (!record(data) || data.contract !== 's16-voice/v1' || typeof data.available !== 'boolean' || data.route !== 'local' || !count(data.serverTime) || !record(data.limits) || !count(data.limits.captureMs) || !count(data.limits.dailyMs) || !this.voiceUsage(data.usage)) return invalid();
+    if (!record(data) || data.contract !== 's16-voice/v1' || typeof data.available !== 'boolean' || data.route !== 'local' || !count(data.serverTime) || !record(data.limits) || !count(data.limits.captureMs) || !count(data.limits.dailyMs) || !this.voiceUsage(data.usage) || data.calls !== undefined && !callLimits(data.calls)) return invalid();
     return data as unknown as VoiceStatus;
   }
   /** Freeze one intentional Mic identity using the service's clock sample, retained through uncertain responses. */
@@ -145,10 +159,62 @@ export class JitClient {
   async playReply(command: VoicePlaybackCommand, signal?: AbortSignal): Promise<VoicePlayback> {
     const input = structuredClone(command); id(input.requestId); id(input.conversationId); id(input.targetRequestId);
     const data = await this.call('/voice/playback', 'POST', input, signal, input.requestId);
+    return this.playbackResult(data, input);
+  }
+  private playbackResult(data: unknown, input: VoicePlaybackCommand): VoicePlayback {
     if (!record(data) || data.contract !== 's16-voice-playback/v1' || data.id !== input.requestId || data.conversationId !== input.conversationId || data.targetRequestId !== input.targetRequestId || !count(data.durationMs) || (data.durationMs as number) > 60000 || typeof data.wavBase64 !== 'string' || data.wavBase64.length > 5592408 || !this.voiceUsage(data.usage)) return invalid();
     try { const decoded = atob(data.wavBase64); if (!decoded.length || decoded.length > 4 * 1024 * 1024 || btoa(decoded) !== data.wavBase64 || decoded.slice(0, 4) !== 'RIFF' || decoded.slice(8, 12) !== 'WAVE') return invalid(); }
     catch { return invalid(); }
     return data as unknown as VoicePlayback;
+  }
+  /** Freeze one explicit finite Call intent; this starts neither microphone capture nor CHAT work. */
+  prepareVoiceCall(serverTime: number): VoiceCallBegin { return Object.freeze({ contract: 's16-voice-call-begin/v1', requestId: voiceRequestId(serverTime) }); }
+  /** Current call metadata only; reading never resumes the microphone, sends a turn or synthesizes a reply. */
+  async voiceCalls(conversationId: string, signal?: AbortSignal): Promise<VoiceCallView[]> {
+    const data = await this.call(`/conversations/${id(conversationId)}/voice/calls`, 'GET', undefined, signal);
+    if (!record(data) || data.contract !== 's16-voice-calls/v1' || !Array.isArray(data.calls) || data.calls.length > 8 || !data.calls.every(view => callView(view) && view.conversationId === conversationId)) return invalid();
+    return data.calls as VoiceCallView[];
+  }
+  /** Begin once from an owner gesture; retain the original begin identity through response loss. */
+  async beginVoiceCall(conversationId: string, command: VoiceCallBegin, signal?: AbortSignal): Promise<VoiceCallView> {
+    const input = structuredClone(command); id(input.requestId); id(conversationId);
+    const data = await this.call(`/conversations/${conversationId}/voice/calls`, 'POST', input, signal, input.requestId);
+    if (!callView(data) || data.id !== input.requestId || data.conversationId !== conversationId) return invalid(); return data;
+  }
+  /** Recover the original accepted/unaccepted turn identities without resending audio/text. */
+  async voiceCall(callId: string, signal?: AbortSignal): Promise<VoiceCallView> {
+    const data = await this.call(`/voice/calls/${id(callId)}`, 'GET', undefined, signal);
+    if (!callView(data) || data.id !== callId) return invalid(); return data;
+  }
+  /** Mute/end narrow voice only. Resume uses the exact displayed revision and never changes CHAT work. */
+  async controlVoiceCall(callId: string, command: VoiceCallControl, signal?: AbortSignal): Promise<VoiceCallView> {
+    const input = structuredClone(command); id(callId);
+    const data = await this.call(`/voice/calls/${callId}/control`, 'POST', input, signal, `${callId}_c${input.revision}_${input.kind}`);
+    if (!callView(data) || data.id !== callId) return invalid(); return data;
+  }
+  /** Freeze the owner's confirmed text/target. The original ordinal stays fixed after an uncertain send. */
+  prepareVoiceCallTurn(view: VoiceCallView, text: string, target: string | null): VoiceCallConfirm {
+    id(view.id); if (target !== null) id(target);
+    if (typeof text !== 'string' || !text.trim() || new TextEncoder().encode(text).length > 16384 || view.turns.length >= voiceCallLimits.turns) throw new JitClientError('invalid_text', null, 'not_sent');
+    return Object.freeze({ contract: 's16-voice-call-turn/v1', revision: view.revision, ordinal: view.turns.length + 1, text, target });
+  }
+  /** One explicit Send turn. A retry must retain the whole command, not create another ordinal. */
+  async sendVoiceCallTurn(callId: string, command: VoiceCallConfirm, signal?: AbortSignal): Promise<VoiceCallView> {
+    const input = structuredClone(command); id(callId);
+    const data = await this.call(`/voice/calls/${callId}/turns`, 'POST', input, signal, `${callId}_t${input.ordinal}`);
+    if (!callView(data) || data.id !== callId || !data.turns.some(turn => turn.ordinal === input.ordinal)) return invalid(); return data;
+  }
+  /** Reserve an existing finite capture for one live call revision; raw capture still uses the fixed worklet. */
+  async captureVoiceCall(callId: string, command: VoiceCallCapture, conversationId: string, signal?: AbortSignal): Promise<VoiceCapture> {
+    const input = structuredClone(command); id(callId); id(conversationId); id(input.requestId);
+    const data = await this.call(`/voice/calls/${callId}/captures`, 'POST', input, signal, input.requestId);
+    if (!this.voiceCapture(data, input.requestId, conversationId)) return invalid(); return data;
+  }
+  /** Guarded synthesis may overlap that call's one listening capture; interruption still never cancels work. */
+  async playVoiceCallReply(callId: string, command: VoiceCallPlayback, signal?: AbortSignal): Promise<VoicePlayback> {
+    const input = structuredClone(command); id(callId); id(input.request.requestId);
+    const data = await this.call(`/voice/calls/${callId}/playback`, 'POST', input, signal, input.request.requestId);
+    return this.playbackResult(data, input.request);
   }
   private voiceUsage(value: unknown): boolean { return record(value) && value.unit === 'local_audio_ms' && typeof value.day === 'string' && /^\d{4}-\d\d-\d\d$/.test(value.day) && [value.limitMs, value.chargedMs, value.reservedMs, value.conservativeMs].every(count); }
   private voiceCapture(value: unknown, expectedId: string, conversationId: string): value is VoiceCapture {

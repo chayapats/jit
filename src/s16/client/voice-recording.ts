@@ -1,4 +1,5 @@
 import { encodeCaptureWav } from '../voice/wav';
+import { VoiceSegmenter } from './voice-segmentation';
 
 /** Fixed authenticated same-origin AudioWorklet module; callers never supply scripts or a remote recognizer. */
 export const voiceWorkletPath = '/s16/voice-worklet.js';
@@ -8,7 +9,7 @@ const failure = (code: string) => new Error(code);
 const stopTracks = (stream?: MediaStream) => { for (const track of stream?.getTracks() ?? []) track.stop(); };
 
 /** Explicit gesture-only capture with late-permission fencing, finite PCM buffers and native track/node cleanup. */
-export async function startVoiceRecording(options: { signal: AbortSignal; durationMs: number; deadline?: number; progress(ms: number): void }): Promise<VoiceRecording> {
+export async function startVoiceRecording(options: { signal: AbortSignal; durationMs: number; deadline?: number; progress(ms: number): void; /** Calls alone opt into local silence segmentation and synchronous playback interruption. */ segment?: { onSpeech(): void } }): Promise<VoiceRecording> {
   if (!navigator.mediaDevices?.getUserMedia || typeof AudioContext !== 'function' || typeof AudioWorkletNode !== 'function') throw failure('voice_capture_unsupported');
   if (!Number.isFinite(options.durationMs) || options.durationMs < 1 || options.durationMs > 30000) throw failure('voice_capture_expired');
   if (options.signal.aborted) throw failure('voice_cancelled');
@@ -16,6 +17,7 @@ export async function startVoiceRecording(options: { signal: AbortSignal; durati
   const deadline = options.deadline ?? performance.now() + options.durationMs + 15000;
   if (!Number.isFinite(deadline) || deadline <= performance.now()) throw failure('voice_capture_expired');
   let stopping = false, finished = false, frames = 0, maximum = Math.floor(options.durationMs * 16), chunks: Float32Array[] = [];
+  const segment = options.segment ? new VoiceSegmenter() : null;
   let timeout: ReturnType<typeof setTimeout> | undefined, watchdog: ReturnType<typeof setTimeout> | undefined;
   const complete = Promise.withResolvers<Uint8Array>(); void complete.promise.catch(() => {});
   const interrupted = Promise.withResolvers<never>(); void interrupted.promise.catch(() => {});
@@ -42,10 +44,12 @@ export async function startVoiceRecording(options: { signal: AbortSignal; durati
     if (options.signal.aborted || finished) throw failure('voice_cancelled');
     maximum = Math.floor(Math.min(options.durationMs, deadline - performance.now()) * 16); if (maximum < 1) throw failure('voice_capture_expired');
     node = new AudioWorkletNode(context, 'jit-voice-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], processorOptions: { maximumFrames: maximum } });
+    const stop = () => { if (finished || stopping) return; stopping = true; stopTracks(stream); clearTimeout(timeout); node!.port.postMessage({ kind: 'stop' }); watchdog = setTimeout(() => { void refuse('voice_capture_unavailable'); }, 1500); };
     const finish = async () => {
       if (finished) return; finished = true;
       try {
         if (!frames) throw failure('voice_audio_empty');
+        if (segment && !segment.hasSpeech) throw failure('voice_no_speech');
         const samples = new Float32Array(frames); let at = 0; for (const chunk of chunks) { samples.set(chunk, at); at += chunk.length; }
         chunks = []; const wav = encodeCaptureWav(samples); await close();
         if (options.signal.aborted) throw failure('voice_cancelled'); complete.resolve(wav);
@@ -54,13 +58,19 @@ export async function startVoiceRecording(options: { signal: AbortSignal; durati
     node.port.onmessage = event => {
       if (finished || options.signal.aborted) return;
       const data = event.data;
-      if (data?.kind === 'samples' && data.samples instanceof Float32Array && data.samples.length > 0 && data.samples.length <= 1024 && frames + data.samples.length <= maximum) { chunks.push(data.samples); frames += data.samples.length; options.progress(frames / 16); }
+      if (data?.kind === 'samples' && data.samples instanceof Float32Array && data.samples.length > 0 && data.samples.length <= 1024 && frames + data.samples.length <= maximum) {
+        try {
+          chunks.push(data.samples); frames += data.samples.length; options.progress(frames / 16);
+          const activity = segment?.push(data.samples);
+          if (activity?.onset) options.segment!.onSpeech();
+          if (activity?.end === 'silence') stop(); else if (activity?.end === 'no_speech') void refuse('voice_no_speech');
+        } catch { void refuse('voice_audio_invalid'); }
+      }
       else if (data?.kind === 'ended') void finish();
       else void refuse('voice_audio_invalid');
     };
     source = context.createMediaStreamSource(stream); silent = context.createGain(); silent.gain.value = 0; source.connect(node); node.connect(silent); silent.connect(context.destination);
     await Promise.race([context.resume(), interrupted.promise]); if (options.signal.aborted) throw failure('voice_cancelled');
-    const stop = () => { if (finished || stopping) return; stopping = true; stopTracks(stream); clearTimeout(timeout); node!.port.postMessage({ kind: 'stop' }); watchdog = setTimeout(() => { void refuse('voice_capture_unavailable'); }, 1500); };
     if (!finished) { clearTimeout(timeout); timeout = setTimeout(stop, Math.max(0, Math.min(options.durationMs, deadline - performance.now()))); }
     return { done, stop, async cancel() { await refuse('voice_cancelled'); await close(); } };
   } catch (error) {

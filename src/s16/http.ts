@@ -34,7 +34,7 @@ import type { ProtectedBrowserPort } from './protected-browser';
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local owner audio; creates no Bot work or decisions. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -70,7 +70,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       ...(options.protectedBrowser ? { protectedBrowser: { available: true as const, contract: 's16-protected-browser/v1' as const } } : {}),
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
       skills: options.skills ? { available: true, contract: "s16-client-skills/v1" } : { available: false, code: "skills_unavailable" },
-      voice: options.voice ? { available: true, contract: "s16-voice/v1", route: "local" } : { available: false, code: "voice_unavailable" },
+      voice: options.voice ? { available: true, contract: "s16-voice/v1", route: "local", ...(options.voice.calls ? { callContract: 's16-voice-call/v1' as const } : {}) } : { available: false, code: "voice_unavailable" },
       connections: options.connections ? { available: true, contract: "s16-client-connections/v1", kinds: ["mcp", "openapi", "graphql"], github: !!options.connections.options.github, oauth: true } : { available: false, code: "connections_unavailable" } };
   };
   return async request => {
@@ -91,6 +91,26 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST") options.authentication.verifyCsrf(current.csrf, request.headers.get("x-csrf-token"));
         return current.actor;
       };
+      const callList = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/voice\/calls$/.exec(url.pathname);
+      const call = /^\/api\/s16\/client\/voice\/calls\/([A-Za-z0-9_-]{1,128})(?:\/(control|turns|captures|playback))?$/.exec(url.pathname);
+      if (callList || call) {
+        const voice = options.voice, calls = voice?.calls; if (!voice || !calls) throw new AppError('voice_unavailable', 503);
+        if (url.search) throw new AppError('invalid_body');
+        if (callList && request.method === 'GET') return json({ contract: 's16-voice-calls/v1', calls: calls.list(currentOwner, callList[1]!) });
+        if (callList && request.method === 'POST') { const input = await body(request); const result = await calls.begin(currentOwner, callList[1]!, input, request.signal); currentOwner(); return json(calls.view(currentOwner, result.id), 201); }
+        if (call && request.method === 'GET' && !call[2]) return json(calls.view(currentOwner, call[1]!));
+        if (call && request.method === 'POST') {
+          const input = await body(request);
+          if (call[2] === 'control') { const result = await calls.control(currentOwner, call[1]!, input); return json(calls.view(currentOwner, result.id)); }
+          if (call[2] === 'turns') { const result = calls.confirm(currentOwner, call[1]!, input); void app.drain().catch(() => {}); currentOwner(); return json(result, 202); }
+          if (call[2] === 'captures') { const result = await calls.capture(currentOwner, call[1]!, input, request.signal); currentOwner(); return json(voice.inspect(currentOwner, result.id), 201); }
+          if (call[2] === 'playback') {
+            await calls.playback(currentOwner, call[1]!, input, request.signal);
+            return voice.publishPlayback(currentOwner, (input as { request: VoicePlaybackCommand }).request, value => json(value));
+          }
+        }
+        throw new AppError('method_rejected', 405);
+      }
       const voicePath = /^\/api\/s16\/client\/voice(?:\/(playback|[A-Za-z0-9_-]{1,128})(?:\/(transcribe|cancel))?)?$/.exec(url.pathname);
       const capturePath = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/voice\/captures$/.exec(url.pathname);
       if (voicePath || capturePath) {
