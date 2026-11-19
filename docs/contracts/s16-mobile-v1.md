@@ -44,6 +44,8 @@ An app notification tap or `jit://open/<service-sha256>/<conversation-id>[/<requ
 
 ## Protected native notifications
 
+The client keeps a strict bounded per-service subscription record only in device-only SecureStore: version, service hash, platform provider, canonical OS token, locale and `subscribing | enabled | disabling` intent. The token never appears in rendered state, ordinary files or exports. Persist the intent before the explicit POST; storage failure sends nothing. An uncertain response or restart performs only the original token-hash lookup, never an automatic subscribe/unsubscribe. A currently enabled display requires current OS permission, the current OS token and a current-owner service subscription. Token rotation requires explicit removal of the old binding before a new opt-in. Permission requests occur only after an Enable gesture; denied, provisional, unconfigured, token-changed and uncertain states remain visible. OS sheets may background the app, but their result requires fresh authentication and unchanged service/session/selection before any write. Late results cannot cross a target switch, even A → B → A.
+
 Native notifications are opt-in, additive to Web Push. They require an explicit configured APNs or FCM provider with protected credentials and a separate `native-notifications.sqlite` journal in the composition inventory. No selection means no native store/routes/capability. S14, S15 runtime selection, installed policy and historical private scope are unchanged.
 
 Authenticated routes under `/api/s16/client/native-notifications` retain current Host/session checks, exact Origin and CSRF for POST, fresh checks after body streaming, exact keys and private/no-store responses:
