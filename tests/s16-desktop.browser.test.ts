@@ -2,10 +2,11 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "playwright-core";
 import { composedFixture } from "./fixtures/s15-composition";
 import { en } from "../src/i18n/en";
-import { guardDesktopContext } from "../src/s16/desktop/boundary";
+import { connectDesktopWindow, desktopIgnoredDefaults, openDesktopSession } from "../src/s16/desktop/launcher";
+import { openDesktopConnection } from "../src/s16/desktop/connection";
+import { th } from "../src/i18n/th";
 
 const browserTest = process.env.JIT_S16_DESKTOP_TESTS === "1" ? test : test.skip;
 const phase = (value: string) => { if (process.env.JIT_DESKTOP_TRACE === "1") console.error("desktop proof: " + value); };
@@ -18,24 +19,20 @@ browserTest("installs and launches the actual client in a standalone browser-own
   const origin = `http://127.0.0.1:${server.port}`;
   const profile = mkdtempSync(join(tmpdir(), "jit-desktop-browser-"));
   f = await composedFixture("default", false, undefined, options => ({ ...options, origin, files: {} }));
-  const context = await chromium.launchPersistentContext(profile, { executablePath: process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: process.env.JIT_DESKTOP_HEADED !== "1", locale: "en-US", args: ["--no-first-run", "--disable-background-networking"] });
+  const session = await openDesktopSession({ root: profile, service: origin, browser: process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: process.env.JIT_DESKTOP_HEADED !== "1", locale: "en" });
+  const context = session.context;
   context.setDefaultTimeout(10000);
-  await guardDesktopContext(context, origin);
-  const browser = context.browser()!, cdp = await browser.newBrowserCDPSession(), manifestId = origin + "/s16/";
+  const cdp = session.cdp, manifestId = origin + "/s16/";
   let installed = false;
   try {
     const cookie = f.ownerCookie.slice("jit_s14=".length);
     await context.addCookies([{ name: "jit_s14", value: cookie, url: origin, httpOnly: true, sameSite: "Strict" }]);
-    const page = context.pages()[0] ?? await context.newPage(); await page.goto(manifestId);
-    await page.locator('[data-desktop-state="ready"]').waitFor({ state: "attached" });
+    const connected = await connectDesktopWindow(session), app = await connected.ready; installed = true;
     const release = await (await fetch(origin + "/s16/desktop-release.json")).json();
-    await cdp.send("PWA.install", { manifestId, installUrlOrBundleUrl: manifestId }); installed = true;
-    await cdp.send("PWA.changeAppUserSettings", { manifestId, displayMode: "standalone" });
-    const opened = context.waitForEvent("page");
-    const launched = await cdp.send("PWA.launch", { manifestId });
-    expect(typeof launched.targetId).toBe("string");
-    const app = await opened;
-    await app.waitForURL(manifestId); await app.locator('[data-desktop-state="ready"]').waitFor({ state: "attached" });
+    await app.locator('[data-desktop-state="ready"]').waitFor({ state: "attached" });
+    const command = await cdp.send("Browser.getBrowserCommandLine");
+    expect(command.arguments).toContain("--remote-debugging-pipe"); expect(command.arguments).not.toContain("--no-sandbox");
+    expect(command.arguments.some((arg: string) => arg.startsWith("--remote-debugging-port") || desktopIgnoredDefaults.includes(arg))).toBe(false);
     expect(await app.evaluate(() => matchMedia("(display-mode: standalone)").matches)).toBe(true);
     expect(new URL(app.url()).origin).toBe(origin);
     expect(await cdp.send("PWA.getOsAppState", { manifestId })).toMatchObject({ fileHandlers: [] });
@@ -56,13 +53,29 @@ browserTest("installs and launches the actual client in a standalone browser-own
     await expect(hostile.goto(origin + "/controlled-redirect")).rejects.toThrow();
     expect(outsideRequests).toBe(0);
     expect(f.vmCalls).toEqual([]);
-    phase("closing hostile window"); await hostile.close(); phase("hostile window closed");
+    // The refused navigation can leave Chrome's error-page target mid-transition. Close it with the owned browser,
+    // after uninstall, rather than awaiting a per-page close during that native transition.
+    phase("adversarial navigation verified");
   } finally {
-    // Stop application traffic before uninstall. Keep one neutral tab so Chrome remains alive for the OS command.
-    phase("closing application windows");
-    const neutral = await context.newPage().catch(() => null);
-    for (const page of context.pages()) if (page !== neutral) await page.close().catch(() => {});
     phase("uninstalling temporary app"); if (installed) await cdp.send("PWA.uninstall", { manifestId }).catch(() => {});
-    phase("closing browser"); await context.close(); phase("stopping fixture HTTP"); await server.stop(true); await outside.stop(true); phase("closing owning service"); await f.close(); rmSync(profile, { recursive: true, force: true }); phase("cleanup complete");
+    phase("closing browser"); await session.close(); phase("stopping fixture HTTP"); await server.stop(true); await outside.stop(true); phase("closing owning service"); await f.close(); rmSync(profile, { recursive: true, force: true }); phase("cleanup complete");
   }
+}, 30000);
+
+browserTest.each(["en", "th"] as const)("connection window chooses only a service in %s and owns no authenticated session", async locale => {
+  const window = await openDesktopConnection({ browser: process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", locale, headless: true });
+  const copy = locale === "en" ? en : th;
+  try {
+    await window.page.getByLabel(copy["s16.desktop.address"], { exact: true }).fill("https://user:password@jit.example.test");
+    await window.page.getByRole("button", { name: copy["s16.desktop.connect"], exact: true }).click();
+    await window.page.getByText(copy["s16.desktop.addressInvalid"], { exact: true }).waitFor();
+    expect(await window.page.context().cookies()).toEqual([]);
+    const other = await window.page.context().newPage();
+    expect(await other.evaluate(() => typeof Reflect.get(window, "jitDesktopConnect"))).toBe("undefined"); await other.close();
+    await window.page.getByLabel(copy["s16.desktop.address"], { exact: true }).fill("https://jit.example.test/s16/");
+    await window.page.getByRole("button", { name: copy["s16.desktop.connect"], exact: true }).focus(); await window.page.keyboard.press("Enter");
+    expect(await window.choice).toBe("https://jit.example.test");
+    await window.page.setViewportSize({ width: 390, height: 800 }); expect(await window.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  } finally { await window.close(); }
+  expect(window.page.isClosed()).toBe(true);
 }, 30000);

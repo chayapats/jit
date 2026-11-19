@@ -6570,4 +6570,10 @@ export const en: Record<MessageKey, string> = {
   "s16.desktop.unavailable": "Unable to load the complete app. Reconnect and reopen Jit.",
   "s16.desktop.offline": "Disconnected. Reconnect to the same service to read current work. No actions are queued offline.",
   "s16.desktop.reconnect": "Reconnect",
+  "s16.desktop.connectTitle": "Connect to your Jit",
+  "s16.desktop.connectLead": "Enter the address of your existing Jit service. You will sign in there.",
+  "s16.desktop.address": "Service address",
+  "s16.desktop.connect": "Connect",
+  "s16.desktop.connectPrivacy": "This window only chooses a service. It never receives your password, session or work.",
+  "s16.desktop.addressInvalid": "Use the HTTPS address of your Jit service, without a password, query or fragment.",
 };

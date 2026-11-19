@@ -6574,4 +6574,10 @@ export const th = {
   "s16.desktop.unavailable": "โหลดแอปได้ไม่ครบ ให้เชื่อมต่อแล้วเปิด Jit อีกครั้ง",
   "s16.desktop.offline": "ขาดการเชื่อมต่อ เชื่อม service เดิมอีกครั้งเพื่ออ่านงานล่าสุด ไม่มีการเข้าคิวคำสั่งระหว่างออฟไลน์",
   "s16.desktop.reconnect": "เชื่อมต่ออีกครั้ง",
+  "s16.desktop.connectTitle": "เชื่อมต่อ Jit ของคุณ",
+  "s16.desktop.connectLead": "ใส่ที่อยู่ service Jit ที่มีอยู่แล้ว แล้วเข้าสู่ระบบที่นั่น",
+  "s16.desktop.address": "ที่อยู่ service",
+  "s16.desktop.connect": "เชื่อมต่อ",
+  "s16.desktop.connectPrivacy": "หน้าต่างนี้ใช้เลือก service เท่านั้น ไม่รับรหัสผ่าน session หรืองานของคุณ",
+  "s16.desktop.addressInvalid": "ใช้ที่อยู่ HTTPS ของ service Jit โดยไม่มีรหัสผ่าน query หรือ fragment",
 } as const;
