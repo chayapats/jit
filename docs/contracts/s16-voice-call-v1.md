@@ -1,6 +1,6 @@
 # s16-voice-call/v1
 
-Status: selected contract for CALL16-01 (#423), implementation/evidence pending. [ADR 0098](../adr/0098-s16-continuous-local-voice-turns.md) owns the decision. This extends the optional [local voice contract](s16-voice-v1.md), using existing CHAT messages and [steering](s16-steering-v1.md); it adds no grant, decision or model/provider loop.
+Status: implemented optional contract for CALL16-01 (#423), with [scoped evidence](../evidence/s16-voice-call-proof.md). [ADR 0098](../adr/0098-s16-continuous-local-voice-turns.md) owns the decision. This extends the optional [local voice contract](s16-voice-v1.md), using existing CHAT messages and [steering](s16-steering-v1.md); it adds no grant, decision or model/provider loop.
 
 ## Intent, capture and turns
 
@@ -48,10 +48,12 @@ At most one capture and one playback can reserve/process concurrently, and only 
 
 Mute/end stop browser tracks, nodes, buffers and audio immediately, then fence/cancel the corresponding service speech operations. Resume requires the exact current revision; it advances a muted or disconnected active binding so old capture/playback responses cannot revive. Retrying the retained resume command returns its original revision without cancelling a new capture. Repeated narrowing mute/end controls are safe; a stale resume refuses. The confirmed-turn ceiling ends the call with `turn_limit` after accepting its last text command. Expiry has a host-owned timer, advances/fences the call and aborts its speech processes; source/owner/route/budget loss also prevents new processing/publication. Ending voice never invokes CHAT stop, clears effect uncertainty or loses ordinary text results.
 
-The client also stops native resources on permission/track loss, hidden/unloaded document, conversation/target/session changes and disconnect. It displays Listening, Transcribing, Review transcript, Thinking, Speaking, Muted, Reconnecting and Ended with visible limits, microphone state and accepted/applied facts. It fences late native permission, transcription and audio promises independently of remote settlement. Reconnect reads facts; no automatic send, re-recording or re-synthesis occurs.
+The client also stops native resources on permission/track loss, hidden/unloaded document, conversation/target/session changes and disconnect. It displays Listening, Transcribing, Review transcript, Thinking, Needs attention, Speaking, Muted, Paused, Reconnecting and Ended with visible limits, microphone state and accepted/applied facts. A held/terminal CHAT request without a result shows attention in chat, not fabricated speech or indefinite Thinking. It fences late native permission, transcription, Resume and audio promises independently of remote settlement. Reconnect reads facts; no automatic send, re-recording or re-synthesis occurs. A pending confirmed send retains its exact text. An acknowledged End plus a current unaccepted/absent turn allows explicit discard of that unsent draft; accepted/unavailable original receipts remain subject to recovery and cannot be discarded as proof of non-admission.
 
 ## Compatibility and evidence
 
 Call/turn tables are additive metadata in the optional protected voice journal. Older binaries ignore them; message/steer/effect schemas, existing scope/history, S14 default and S15 opt-in retain their meanings. No owner-host activation occurs. New state must ship through existing runtime/package inventory with no new dependencies or copied upstream assets.
 
 Delivery requires actual service/client/UI and native speech evidence described by ADR 0098, including multi-turn request/effect counts, silence segmentation, barge-in, accepted response loss/restart recovery, withdrawal, all finite limits and English/Thai keyboard/mobile behavior. Isolated state tests or this document do not complete #423. Live device/account evidence and exact owner-host adoption remain #431/#432.
+
+See the [implemented-build evidence](../evidence/s16-voice-call-proof.md) and [operator runbook](../runbooks/s16-local-voice.md) for the tested scope and remaining device/language limits.
