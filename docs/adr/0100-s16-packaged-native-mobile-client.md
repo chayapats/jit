@@ -1,0 +1,50 @@
+---
+status: selected engineering for MOBILE16-01; conformance and device acceptance remain separate
+date: 2026-11-19
+scope: S16-AC17; FR-10/11/18/24/25/28/35/37/38; NFR-05/07/09/11/13
+---
+
+# Package a native client of the existing protected service
+
+## Inputs and alternatives
+
+The owner requires a packaged mobile client, foreground continuity, supported files/results, exact approvals and native notifications (#426). Jit and Schway retain their existing authority and execution ownership. S16-D06–D11, ADRs 0064/0074/0075/0076/0077/0084/0085 and the authored S16/Mobbin handoff apply. GitHub work is autonomous; deployment, real account setup and device login are separate acceptance, not implementation prerequisites.
+
+Inspected baseline: `0b1e69b9a015413e15f2aa35dbb35e9bf59c5745`, including the desktop review's session-continuity and private-view fencing. #395/#400 are closed. The issue is assigned to the owner and has its own `jit/426-mobile-client` worktree; no competing implementation PR was found at dispatch.
+
+| Choice | Benefits | Costs and decision |
+| --- | --- | --- |
+| Existing PWA | Existing React UI, exact approvals and Web Push | Retain as the browser baseline. It does not provide this ticket's native keystore/picker/lifecycle/token adapters or an independently packaged native app. |
+| Narrow WKWebView/Android WebView wrapper | Reuses every DOM component | Requires two native cookie/navigation/popup stacks, native bridges for permissions/files/push, background fencing and hostile-content isolation. Desktop's demonstrated same-host cross-port cookie problem still needs an explicit boundary. Smaller visual code does not remove these obligations. |
+| Pinned Rakazo mobile app | Expo 57 and useful session/target generation concepts | Inspected commit `abf3c08145a05cba92a912d6c24fdfb5f569d0e0`, mobile package blob `66e7c9a78c769f62604795a158b8fff61774c1a5` and thread-sync blob `4c9448426fd0271d24aabff8ab556b3e595fa35e`. Its saved-private-thread fallback, runtime/RPC/auth, telemetry and updater assumptions do not fit Jit's fresh protected reads. Adapt the generation concept, not the competing stack. |
+| Authored React Native/Expo client | Shares `JitClient`, types, IDs, dictionaries and owning receipts; real native controls, permissions and secure storage | Selected. A separate client package carries a larger native dependency/build lifecycle, explicit lifecycle guards and OS conformance. No copied Rakazo runtime or DOM-to-native claim. |
+
+Select Expo **58.0.26**, React **19.3.0**, React Native **0.88.1**, Bun **1.4.2** and an isolated Node **24.22.3** toolchain. Expo 57.0.31 was compared; its React 19.2.3/RN 0.86.3 pins diverge from Jit's existing React. SDK 58 matches React and has a native PCM stream rather than requiring a new recording codec/module. The installed system Node 25.5.0 is outside Expo's declared engine range and is left unchanged. Official registry archives were SHA-512 checked before source inspection; the private Node archive was checked against the official SHA-256 inventory before execution.
+
+Native inputs: `expo-crypto` 58.0.8, `expo-document-picker` 58.0.5, `expo-file-system` 58.0.14, `expo-notifications` 58.1.9, `expo-secure-store` 58.0.3, `expo-audio` 58.0.12, `expo-screen-capture` 58.0.6, `expo-build-properties` 58.0.12, `react-native-safe-area-context` 5.11.1 and `react-native-webview` 14.0.1. These inspected packages declare MIT; the frozen resolved dependency/native distribution inventory must retain each actual license/notice. Expo's own bare template 58.0.35 was inspected, SHA-256 `4b32af1fa03a1687f51992acefd8923ead96c1dd229eb25504adb78a1c561299`; generation must retain applicable provenance. No broad upstream app/source/assets are imported. A template or dependency license is not a license audit of its transitive/native binaries.
+
+## Native boundary and lifecycle
+
+The client is a native React renderer. It never loads a protected service page into an authenticated WebView. Expo Fetch's inspected native sources support manual/error redirects and omit the cookie jar when `credentials: omit`; the adapter always sets these explicitly. On iOS the public `ExpoFetchCustomExtension` configures an ephemeral, cache-free, cookie-free URL session before React starts. Request and response `no-store` and Android's uncached native client retain no private HTTP cache. Exact full origin includes the port. Only literal-loopback HTTP is allowed for development; remote services need HTTPS and normal platform TLS validation. No certificate bypass, alternate auth server, bearer credential URL or global cookie sharing.
+
+Reuse the actual service's `/s14/login` password POST and exact 303 session cookie; do not follow its redirect. The native adapter stores only the bounded expiring cookie in the platform SecureStore, keyed by a hash of the complete canonical origin, with device-only/unlocked custody where supported. CSRF remains ephemeral in `JitClient`. The service remains authoritative on every request. A native storage failure is visible; there is no plaintext fallback. Sign out removes only this client's local credential and state; it does not change the owner's account or server policy.
+
+Inactive/background, service/target switch, authentication failure and explicit reconnect advance a generation, abort outstanding reads/capture and remove private projections before I/O. Late work cannot restore them. Foreground restores only after fresh authenticated bootstrap and target reads; no saved private thread fallback. Native app-switcher protection covers inactive snapshots independently of delayed JavaScript. A bounded original mutation identity can survive uncertainty; restart/foreground only reads its owning receipt. Sending again is explicit and reuses the immutable command identity, never a reconstructed effect or automatic offline queue. Same-session RAM drafts may return only after authenticated continuity revalidation; service/session changes discard them.
+
+Native notice/deep-link input selects only a previously configured service hash and validated opaque document/object IDs. It cannot add a service, provide a cookie, construct a command or approve an action. Opening always performs current authenticated reads; approval binds the displayed current revision/hash and one new decision identity through existing CHAT.
+
+## Files, audio and native delivery
+
+Use the native document picker, with cancellation leaving the draft/identity unchanged. Selected bounded bytes pass through existing upload identity/hash/type and sanitizer contracts. A cancelled picker is not an upload or send. Downloads and previews recheck current service/lineage; private bytes are not public URL/cache entries. HTML alone uses a disposable nonpersistent WebView with no Jit cookies, scripts, host bridge, network, file access or parent navigation. Other results use native text/image views. Files are explicitly exported through an owner-selected native destination, never a generic host command.
+
+Native microphone use starts only from a visible gesture after current voice capability/quota checks and OS permission. Expo Audio's actual PCM buffers retain their reported sample rate/channel count; bounded authored conversion supplies the existing canonical mono 16 kHz WAV contract. No cloud speech route, raw audio persistence or background capture is introduced. Background, target change, cancel and finite limits stop native capture and fence late data. Permission denial/restoration is a real product state. Simulator signals do not establish microphone quality or Thai accuracy.
+
+Web Push (#441) remains unchanged. Add explicit protected native push adapters for direct APNs and FCM, rather than introducing Expo Push Service/EAS accounts. Reuse existing `NoticeProducer` identities/projections with a separate opt-in native notification journal and delivery queue. A subscription belongs to the current owner generation. New native stores are additive composition inventory; omitted configuration creates nothing and preserves every existing runtime default. The contract specifies exact register/read/remove and delivery recovery bounds.
+
+APNs/FCM credentials stay on the protected service, never in app bundles, working execution, public logs or exports. Only fixed provider endpoints receive generic notices with opaque IDs/path/service hash; no result, message, recipient, amount, filename, session or approval authority. Provider acceptance is not device delivery. Missing configuration/OS permission returns capability-unavailable state. Live provider credentials/signing/device acceptance remain #431; no absent account blocks deterministic adapter or owning-service proofs.
+
+## Platforms, packaging and acceptance
+
+Target iOS **16.4+** (inspected Expo podspec) and Android **API 24+** (inspected RN 0.88.1 catalog; target 36/compile 37). Freeze the generated effective minimums/toolchain in build receipts; refuse an incompatible generated/native target rather than claiming unbuilt support. Build local self-hosted release bundles; no Expo Go, remote OTA feed, telemetry, EAS billing/account or store publication is required. Every native artifact carries exact source/lock/toolchain/OS/architecture, package hash and applicable notices. Keep the preceding compatible artifact; client rollback cannot roll back protected service facts or revive revoked state.
+
+The [mobile contract](../contracts/s16-mobile-v1.md) precedes code. Acceptance requires actual packaged simulator/emulator owning paths for file-to-result, background/foreground barriers, target/session switches, unknown send recovery, exact changed approval and native permission/notice adapters. Add deterministic adversarial origin/redirect/keystore/deep-link/payload cases and English/Thai, safe-area, keyboard and accessibility checks. A separate exact-device checklist retains OS keystore/backup, physical mic, real APNs/FCM delivery, account/signing and app-store/owner-host acceptance under #431/#432. Source presence, a Metro preview or a push HTTP success cannot close #426.
