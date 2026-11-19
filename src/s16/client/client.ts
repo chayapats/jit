@@ -683,7 +683,7 @@ function needsYouCard(value: unknown, conversationId: string): value is Computer
 }
 
 function protectedBrowserView(value: unknown): value is ProtectedBrowserView {
-  if (!record(value) || value.contract !== 's16-protected-browser/v1' || !count(value.generation) || !value.generation || typeof value.settling !== 'boolean' || !['not_signed_in', 'owner_control', 'checking', 'signed_in', 'cancelled', 'unknown'].includes(String(value.login))) return false;
+  if (!record(value) || value.contract !== 's16-protected-browser/v1' || typeof value.signIn !== 'boolean' || !count(value.generation) || !value.generation || typeof value.settling !== 'boolean' || !['not_signed_in', 'owner_control', 'checking', 'signed_in', 'cancelled', 'unknown'].includes(String(value.login))) return false;
   const action = value.reconciliation;
   return action === null || record(action) && identifier(action.id) && count(action.revision) && typeof action.actionHash === 'string' && /^[a-f0-9]{64}$/.test(action.actionHash);
 }

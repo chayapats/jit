@@ -6552,4 +6552,10 @@ export const th = {
   "s16.voice.permissionDenied": "สิทธิ์ไมโครโฟนถูกปฏิเสธหรือหยุดแล้ว คุณยังใช้ข้อความได้",
   "s16.voice.budget": "ใช้เสียงถึงขีดจำกัดแล้ว ใช้ข้อความต่อได้",
   "s16.voice.failed": "เสียงหยุดแล้ว คุณยังใช้ข้อความต่อได้",
+  "s16.protected.unsupported": "เว็บไซต์นี้ยังไม่รองรับการเข้าสู่ระบบผ่านเบราว์เซอร์ที่ปลอดภัย",
+  "s15.browser.intent_unsupported": "ตัวควบคุมนี้ยังไม่มี protected input intent ที่รองรับ",
+  "s15.browser.intent_request_changed": "request หรือความหมายเปลี่ยนหลังเลือก input จึงยังไม่ได้ส่งอะไร",
+  "s15.browser.intent_already_prepared": "input นี้มี request รออยู่แล้ว",
+  "s15.browser.controls_unsupported": "เบราว์เซอร์นี้ยังไม่มีตัวควบคุมสำหรับเจ้าของ",
+  "s15.browser.browser_command_capacity": "การควบคุมรอบนี้ครบจำนวนคำสั่งแล้ว ให้รับการควบคุมใหม่",
 } as const;

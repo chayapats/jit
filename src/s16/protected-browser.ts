@@ -5,7 +5,7 @@ import { PolicyError } from '../s15/policy/validation';
 import { canonical, exact, identity, integer } from '../s15/conversation/validation';
 
 /** Safe current facts from the one protected browser, independent of the working computer's screen. */
-export interface ProtectedBrowserView extends BrowserOwnerState { contract: 's16-protected-browser/v1' }
+export interface ProtectedBrowserView extends BrowserOwnerState { contract: 's16-protected-browser/v1'; signIn: boolean }
 /** Owner commands are transient ingress, never conversation messages, drafts or durable receipts. */
 export type ProtectedBrowserCommand = { contract: 's16-protected-browser-command/v1'; requestId: string; generation: number } & (
   | { kind: 'takeover' } | { kind: 'check_session' }
@@ -39,10 +39,10 @@ const safeError = (error: unknown): never => { if (error instanceof BrowserError
 /** Reuse POLICY and its existing protected owner port. Duplicate transient input joins its first attempt;
  * only command identity/kind/target and a value-free promise are retained in memory. No text or text hash
  * is persisted. A restart loses these handles and advances browser continuity, so old input cannot replay. */
-export function createProtectedBrowserPort<Actor>(options: { browser: BrowserRegistration; owner(actor: Actor): OwnerActor }): ProtectedBrowserPort<Actor> {
+export function createProtectedBrowserPort<Actor>(options: { browser: BrowserRegistration; signIn: boolean; owner(actor: Actor): OwnerActor }): ProtectedBrowserPort<Actor> {
   const browser = options.browser.owner;
   const attempts = new Map<string, { identity: string; generation: number; settled: boolean; run: Promise<void> }>();
-  const view = (actor: Actor): ProtectedBrowserView => ({ contract: 's16-protected-browser/v1', ...browser.state(options.owner(actor)) });
+  const view = (actor: Actor): ProtectedBrowserView => ({ contract: 's16-protected-browser/v1', signIn: options.signIn, ...browser.state(options.owner(actor)) });
   return {
     view,
     async controls(actor, generation) { try { return await browser.controls(options.owner(actor), generation); } catch (error) { return safeError(error); } },
@@ -55,7 +55,8 @@ export function createProtectedBrowserPort<Actor>(options: { browser: BrowserReg
       if (!attempt) {
         if (current.generation !== value.generation) throw new AppError('stale_input', 409);
         for (const [id, previous] of attempts) if (previous.settled && previous.generation !== current.generation) attempts.delete(id);
-        if (attempts.size >= 512) throw new AppError('browser_command_capacity', 409);
+        // Keep one bounded recovery slot: a fresh takeover advances continuity and makes old inputs stale.
+        if (attempts.size >= (value.kind === 'takeover' ? 513 : 512)) throw new AppError('browser_command_capacity', 409);
         const run = (async () => {
           if (value.kind === 'takeover') await browser.takeover(owner, value.generation);
           else if (value.kind === 'input') await browser.input(owner, value.generation, value.input);

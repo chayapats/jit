@@ -60,3 +60,9 @@ test('all protected owner routes enforce authenticated origin and CSRF and rejec
   expect((await s.f.request(base + '/commands', 'POST', { ...command, approve: true })).status).toBe(400);
   expect((await s.f.request(base + '?generation=1')).status).toBe(400);
 });
+
+test('a read-only configured browser truthfully reports that protected sign-in is unavailable', async () => {
+  const f = await composedFixture(); cleanups.push(() => f.close());
+  const response = await f.request('/api/s16/client/protected-browser'); expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ contract: 's16-protected-browser/v1', signIn: false, login: 'not_signed_in' });
+});

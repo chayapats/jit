@@ -6548,4 +6548,10 @@ export const en: Record<MessageKey, string> = {
   "s16.voice.permissionDenied": "Microphone access stopped or was denied. Your text is still available.",
   "s16.voice.budget": "The local voice limit is reached. Continue with text.",
   "s16.voice.failed": "Voice stopped. You can continue with text.",
+  "s16.protected.unsupported": "Protected sign-in is not available for this website yet.",
+  "s15.browser.intent_unsupported": "This control has no supported protected input intent.",
+  "s15.browser.intent_request_changed": "The request or its meaning changed after input selection. Nothing was sent.",
+  "s15.browser.intent_already_prepared": "This input already has a pending request.",
+  "s15.browser.controls_unsupported": "Visible owner controls are unavailable on this browser.",
+  "s15.browser.browser_command_capacity": "This control session has reached its command limit. Take control again.",
 };

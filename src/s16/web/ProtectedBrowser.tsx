@@ -59,10 +59,11 @@ export function ProtectedBrowser({ client, t, onClose, onFailure }: { client: Ji
   return <dialog className="protected-browser computer-screen" ref={dialog} aria-labelledby="protected-browser-title" onCancel={event => { event.preventDefault(); onClose(); }}>
     <header className="screen-bar"><h2 id="protected-browser-title" tabIndex={-1} ref={heading}>{t('s16.protected.title')}</h2><button type="button" onClick={onClose}>{t('s16.protected.close')}</button></header>
     <p>{t('s16.protected.note')}</p>
+    {view && !view.signIn && <p className="notice">{t('s16.protected.unsupported')}</p>}
     <p role="status" aria-live="polite">{busy ? t('s16.protected.working') : view ? t((`s16.protected.${view.settling ? 'settling' : view.login}`) as MessageKey) : t('s16.common.loading')}</p>
     {error && <div className="notice warn" role="alert"><p>{t('s16.protected.disconnected')}</p><details><summary>{t('s16.common.details')}</summary><code>{error}</code></details></div>}
     <div className="actions">
-      {view && !driving && <button type="button" disabled={busy || view.settling} onClick={() => void send({ kind: 'takeover' })}>{t('s16.protected.takeover')}</button>}
+      {view?.signIn && !driving && <button type="button" disabled={busy || view.settling} onClick={() => void send({ kind: 'takeover' })}>{t('s16.protected.takeover')}</button>}
       {view?.login === 'owner_control' && <><button type="button" disabled={busy || view.settling} onClick={() => void send({ kind: 'hand_back', cancel: false })}>{t('s16.protected.return')}</button><button type="button" disabled={busy} onClick={() => void send({ kind: 'hand_back', cancel: true })}>{t('s16.protected.cancel')}</button></>}
       {view?.login === 'checking' && <button type="button" disabled={busy} onClick={() => void send({ kind: 'check_session' })}>{t('s16.protected.check')}</button>}
       {view?.reconciliation && <button type="button" disabled={busy} onClick={() => void send({ kind: 'reconcile', action: view.reconciliation! })}>{t('s16.protected.reconcile')}</button>}
