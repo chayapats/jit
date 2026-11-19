@@ -104,7 +104,7 @@ export async function firstRunFixture(tune?: (options: S15CompositionOptions, co
   service = await composeS15(options(true)); enroll();
   const owner = () => service.policy.owner.authenticate(proof);
   const headers = { cookie: `jit_s14=${session}`, origin: config.origin, 'x-csrf-token': csrf };
-  return { config, parent, directory, routes, vault, github, vmCalls, prompts, csrf,
+  return { config, parent, directory, routes, vault, github, vmCalls, prompts, csrf, ownerCookie: headers.cookie,
     get service() { return service; }, owner, get now() { return now; }, advance(ms: number) { now += ms; },
     set interpretation(value: Record<string, unknown>) { interpretation = value; }, set script(value: typeof script) { script = value; },
     async page(path: string, locale = 'th') { const response = await service.fetch(new Request(config.origin + path, { headers: { ...headers, 'accept-language': locale } })); return { status: response.status, html: await response.text(), location: response.headers.get('location') }; },

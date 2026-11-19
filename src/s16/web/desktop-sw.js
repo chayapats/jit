@@ -24,6 +24,7 @@ async function desktopBytes(response, asset) {
 }
 
 async function desktopComplete() {
+  if (!(await caches.keys()).includes(desktopCache)) return false;
   const cache = await caches.open(desktopCache), marker = await cache.match(desktopMarker);
   if (!marker) return false;
   try {
@@ -53,6 +54,9 @@ async function desktopInstall() {
       for (const asset of desktop.assets) await target.put(asset.path, await stage.match(asset.path));
       await target.put(desktopMarker, Response.json({ id: desktop.id, completedAt: Date.now() }));
       if (!await desktopComplete()) { await target.delete(desktopMarker); throw new Error("desktop_package_incomplete"); }
+    } catch (error) {
+      if (!await desktopComplete()) await caches.delete(desktopCache);
+      throw error;
     } finally { clearTimeout(timer); await caches.delete(staging); }
   })();
   try { return await desktopInstalling; } finally { desktopInstalling = null; }

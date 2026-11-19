@@ -1,4 +1,4 @@
-import type { APIResponse, BrowserContext, Page } from "playwright-core";
+import type { APIResponse, BrowserContext, Page, Request as BrowserRequest } from "playwright-core";
 import { desktopDocument } from "./release";
 
 /** Canonical connection selection. A URL is a service identity, never an executable, credential or command. */
@@ -26,7 +26,7 @@ export const desktopResponseBytes = 128 * 1024 * 1024;
  * redirects. Playwright routes see only the first URL of a redirect chain, so we use zero-follow/zero-retry fetch
  * and never forward an unchecked Location to Chrome. No generic privileged renderer binding is installed.
  */
-export async function guardDesktopContext(context: BrowserContext, service: string): Promise<void> {
+export async function guardDesktopContext(context: BrowserContext, service: string, observe?: (request: BrowserRequest, status: number, body: Uint8Array) => void): Promise<void> {
   const origin = desktopService(service), redirects = new WeakMap<Page, number>();
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
@@ -55,6 +55,7 @@ export async function guardDesktopContext(context: BrowserContext, service: stri
       const declared = response.headers()["content-length"];
       if (declared && Number(declared) > desktopResponseBytes) { await route.abort("failed"); return; }
       const body = await response.body(); if (body.byteLength > desktopResponseBytes) { await route.abort("failed"); return; }
+      observe?.(request, status, body);
       await route.fulfill({ response, body });
     } catch { await route.abort("failed").catch(() => {}); }
     finally { await response?.dispose().catch(() => {}); }

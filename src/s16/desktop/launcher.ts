@@ -4,13 +4,10 @@ import { desktopLaunchUrl, guardDesktopContext } from "./boundary";
 import { desktopProfile, leaseDesktopProfile, prepareDesktopStartup } from "./storage";
 import { desktopBrowser } from "./executable";
 export { desktopBrowser, desktopExecutable } from "./executable";
-
-/** Product launch removes testing shortcuts affecting browser protection, native audio, storage and Web Push. */
-export const desktopIgnoredDefaults = Object.freeze([
-  "--password-store=basic", "--use-mock-keychain", "--disable-background-networking", "--disable-component-update",
-  "--disable-component-extensions-with-background-pages", "--disable-client-side-phishing-detection", "--disable-ipc-flooding-protection",
-  "--disable-popup-blocking", "--disable-prompt-on-repost", "--unsafely-disable-devtools-self-xss-warnings", "--mute-audio",
-]);
+import { desktopIgnoredDefaults } from "./browser-options";
+import { installDesktopOwnerLinks } from "./owner-links";
+import { openDesktopOwnerWindow, type DesktopOwnerWindow, type DesktopOwnerWindowRequest } from "./owner-window";
+export { desktopIgnoredDefaults } from "./browser-options";
 
 /** Trusted native host session; none of this object is exposed to a renderer. */
 export interface DesktopSession { context: BrowserContext; cdp: CDPSession; origin: string; profileId: string; browserVersion: string; close(): Promise<void>; closed: Promise<void> }
@@ -18,9 +15,9 @@ export interface DesktopSession { context: BrowserContext; cdp: CDPSession; orig
 /**
  * Starts only the managed exact-service profile, sandbox and private debugging pipe. The explicit headless option
  * belongs to opt-in conformance callers; product CLI never accepts it or arbitrary browser flags. No native permission
- * is pre-granted, no owner profile is imported and no service-window host binding is installed.
+ * is pre-granted and no owner profile is imported. The only service binding is the receipt-bound owner-link handoff.
  */
-export async function openDesktopSession(options: { root: string; service: string; browser: string; locale: Locale; headless?: boolean }): Promise<DesktopSession> {
+export async function openDesktopSession(options: { root: string; service: string; browser: string; locale: Locale; headless?: boolean; /** Trusted native host integration/conformance seam. Installed config and renderers cannot supply it. */ ownerWindow?: (request: DesktopOwnerWindowRequest) => Promise<DesktopOwnerWindow> }): Promise<DesktopSession> {
   if (!["darwin", "linux"].includes(process.platform)) throw new Error("desktop_platform_unsupported");
   const executablePath = desktopBrowser(options.browser), profile = desktopProfile(options.root, options.service), release = leaseDesktopProfile(profile.directory);
   let context: BrowserContext | undefined;
@@ -30,14 +27,15 @@ export async function openDesktopSession(options: { root: string; service: strin
     phase = "launch";
     context = await chromium.launchPersistentContext(userDataDir, { executablePath, headless: options.headless ?? false, chromiumSandbox: true, locale: options.locale === "en" ? "en-US" : "th-TH", viewport: null, ignoreDefaultArgs: [...desktopIgnoredDefaults], args: ["--no-first-run", "--enable-automation"] });
     if (context.pages().some(page => page.url() !== "about:blank")) throw new Error("desktop_startup_not_blank");
-    phase = "guard"; await guardDesktopContext(context, profile.origin);
+    const ownerLinks = await installDesktopOwnerLinks(context, { origin: profile.origin, open: options.ownerWindow ?? (request => openDesktopOwnerWindow(request, { browser: executablePath, ...(options.headless === undefined ? {} : { headless: options.headless }) })) });
+    phase = "guard"; await guardDesktopContext(context, profile.origin, ownerLinks.capture);
     const browser = context.browser()!, cdp = await browser.newBrowserCDPSession();
     phase = "command_line"; const command = await cdp.send("Browser.getBrowserCommandLine") as { arguments: string[] };
     if (!command.arguments.includes("--remote-debugging-pipe") || command.arguments.some(arg => arg.startsWith("--remote-debugging-port") || arg === "--no-sandbox" || desktopIgnoredDefaults.includes(arg))) throw new Error("desktop_browser_boundary_invalid");
     // Restore Chrome's ordinary user-visible download behavior, rather than Playwright's temporary test directory.
     phase = "downloads"; await cdp.send("Browser.setDownloadBehavior", { behavior: "default", eventsEnabled: true });
     const closed = Promise.withResolvers<void>();
-    context.once("close", () => { release(); closed.resolve(); });
+    context.once("close", () => { void ownerLinks.close().finally(() => { release(); closed.resolve(); }); });
     return { context, cdp, origin: profile.origin, profileId: profile.id, browserVersion: browser.version(), closed: closed.promise, async close() { await context!.close(); await closed.promise; } };
   } catch (error) { await context?.close().catch(() => {}); release(); throw new Error(error instanceof Error && /^desktop_[a-z_]+$/.test(error.message) ? error.message : `desktop_browser_${phase}_unavailable`); }
 }

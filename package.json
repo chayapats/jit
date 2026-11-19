@@ -14,6 +14,7 @@
     "host:probe": "bun src/probe-cli.ts",
     "ops:drill": "bun src/ops-cli.ts",
     "ops:package": "bun ops/package/bun-build.ts",
+    "ops:desktop": "bun ops/desktop/main.ts",
     "ops:service": "bun src/main.ts service",
     "ops:smoke": "bun ops/package/arm64-smoke.ts",
     "s15:evidence:arm64": "bun ops/evidence/s15-arm64.ts",

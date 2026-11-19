@@ -3,10 +3,11 @@ import { openDesktopConnection } from "./connection";
 import { connectDesktopWindow, openDesktopSession } from "./launcher";
 // Trusted native-host exports are used by the installed runtime and its conformance runner, never exposed to pages.
 export { connectDesktopWindow, openDesktopSession, openDesktopConnection };
+export { openDesktopOwnerWindow } from "./owner-window";
 
 /**
  * Installed entry: choose only a service in a credential-free browser, destroy that browser, then open the separate
- * authenticated profile. No secret, callback, generic command or native bridge crosses between the two contexts.
+ * authenticated profile. No secret, generic command or native bridge crosses between the connection contexts.
  */
 export async function runInstalledDesktop(root: string): Promise<void> {
   const installation = desktopInstallation(root); let service = installation.service;
