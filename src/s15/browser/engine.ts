@@ -241,7 +241,7 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       for (let i = 0, count = Math.min(await all.count(), 32); i < count; i++) {
         const el = all.nth(i); if (!await el.isVisible() || !await el.isEnabled()) continue;
         const data = await el.evaluate(element => {
-          const button = element instanceof HTMLButtonElement || element instanceof HTMLInputElement && ['submit', 'button'].includes(element.type);
+          const button = element instanceof HTMLButtonElement || element instanceof HTMLInputElement && ['submit', 'button', 'checkbox', 'radio', 'reset'].includes(element.type);
           const label = element.getAttribute('aria-label') || ('labels' in element ? Array.from((element as HTMLInputElement).labels ?? []).map(label => label.textContent).join(' ') : '') || (button ? element.textContent : element.getAttribute('placeholder')) || element.getAttribute('name') || 'Field';
           return { kind: button ? 'button' as const : element.getAttribute('type') === 'password' || element.getAttribute('autocomplete') === 'one-time-code' ? 'password' as const : 'text' as const, label: label.trim().slice(0, 160) };
         });
