@@ -2,7 +2,7 @@
 
 Date: 2026-11-19. Scope: #409 / BROW16-01B; S16-AC06; FR-07/17/37/38/40/41 and NFR-07/10/14. Contracts: [ADR 0097](../adr/0097-s16-protected-input-intents-and-client-workflow.md), [s16-modern-browser/v1](../contracts/s16-modern-browser-v1.md), existing POLICY/DATA15 and unchanged `s15-browser-request/v1` actions. This extends the [#408 isolation/reference record](s16-protected-browser-reference.md).
 
-Protected runtime/client source: `1d357a5e8976c4a836f11174c4cbac37b8ff9e19`. Working-VM runner source: `02d181903cbd4256ad54d3da114afe8d01f96634`; the later lease fix changes no working-VM/browser/screen implementation. Later documentation-only commits must not be described as new native runs. Installation addresses, profile paths, TLS keys, frames and raw receipts stay in ignored `.local` records.
+Protected native-suite source: `1d357a5e8976c4a836f11174c4cbac37b8ff9e19`. Final client/card source: `191259865aa81dbf944d35ff5bf23c5eda846825`. Working-VM runner source: `02d181903cbd4256ad54d3da114afe8d01f96634`; the later lease fix changes no working-VM/browser/screen implementation. Each result below retains its tested source; later documentation commits are not new native runs. Installation addresses, profile paths, TLS keys, frames and raw receipts stay in ignored `.local` records.
 
 ## Protected actual-service/client workflow
 
@@ -14,7 +14,7 @@ The tests use the production S15 composition, POLICY/DATA15, authenticated share
 2. The owner opens the distinct protected view, takes control and enters password/2FA through opaque current-document controls. Input goes directly to the protected owner port; no conversation command/draft retains it.
 3. A disconnect covers the frame and keeps owner control. Reconnect refreshes current facts; the service records one password submission and one 2FA submission, with no repeated login.
 4. Return to Bot enters Checking; an actual protected cookie-bearing session probe verifies Signed in.
-5. A real JavaScript application hydrates through fetch and XHR. Its async send is held before service delivery. The in-chat exact card shows the actual request/body and a keyboard approval releases one verified effect.
+5. A real JavaScript application hydrates through fetch and XHR. A Bot edits its message to Unicode text with a literal `+`; its async send is held before service delivery. The in-chat exact card shows readable decoded form fields alongside the original request/body, and a keyboard approval releases one verified effect. Query/form display preserves repeated names, empty values and order without changing payload bytes or the action hash.
 6. A second authorized Bot opens a fresh work closure and uses the same protected session without copying cookies or logging in again. Prompts and non-profile stores contain no login password. Mobile has no horizontal overflow; private screenshot artifacts were visually inspected.
 
 The ordinary provisioned read-only browser reports `signIn: false`; displaying the new view does not enable unsupported sign-in or general-mode handlers. Closing the protected view never hands control back. Frame/control responses are no-store and generation-bound; HTTP reauthenticates after asynchronous waits.
@@ -41,6 +41,8 @@ The following run at protected source `1d357a5e8976c4a836f11174c4cbac37b8ff9e19`
 | Protected owner/client, intents, browser/egress/DATA15, Parallel/Web settings and voice regression (12 files) | 217 pass, 0 fail, 1,205 assertions |
 
 Frozen install, typecheck and upstream provenance checks pass. Package/runtime/installer/upstream coverage at `02d181903cbd4256ad54d3da114afe8d01f96634` passes 218 tests with 1,344 assertions. PR checks/review record the final head. The old external protected-browser Excalidraw case is filtered out; the public task below uses the working VM as S16-D09 requires.
+
+Final client/card source `191259865aa81dbf944d35ff5bf23c5eda846825` also passes `bun run typecheck`; `bun test --timeout 30000 tests/s16-action-card.test.ts tests/s16-protected-browser.test.ts tests/s16-client.test.ts` (**33 pass, 0 fail, 188 assertions**); and `JIT_S16_BROWSER_TESTS=1 bun test --timeout 30000 tests/s16-protected-browser.browser.test.ts tests/s16-approval.browser.test.ts` (**4 pass, 0 fail, 164 assertions**). The latter uses the actual bundle at English 1440px and Thai 390px, with keyboard approval and no horizontal overflow. Entry, owner and readable Unicode-card screenshots were visually inspected. Two concurrent-response barriers verify that a 401/403 frame clears client authority and withholds another private frame whose body arrives later.
 
 | Component | Observed version / SHA-256 |
 | --- | --- |
