@@ -92,6 +92,16 @@ test('same-call duplex retains both reservations, mute aborts speech and old bin
   } finally { release.resolve(); await outcome; }
 });
 
+test('completed call synthesis publishes with its exact call binding while retaining the listening reservation', async () => {
+  const s = await fixture(), row = await s.f.chat('Describe the task.'), call = await s.start(); await s.capture(call);
+  const target = await s.client.request(row.receipt.requestId); if (!target.row.result) throw Error('missing_reply');
+  const request = await s.client.preparePlayback(s.f.now, 'conversation', row.receipt.requestId, target.row.revision, target.row.result.text);
+  const reply = await s.client.playVoiceCallReply(call.id, { contract: 's16-voice-call-playback/v1', revision: call.revision, request });
+  expect(reply).toMatchObject({ id: request.requestId, targetRequestId: row.receipt.requestId, durationMs: 1000 }); expect(Buffer.from(reply.wavBase64, 'base64').subarray(0, 4).toString()).toBe('RIFF');
+  expect((await s.client.voiceStatus()).usage).toMatchObject({ reservedMs: 30000, chargedMs: 1000, conservativeMs: 0 }); expect(s.spoken).toBe(1);
+  await s.client.playVoiceCallReply(call.id, { contract: 's16-voice-call-playback/v1', revision: call.revision, request }); expect(s.spoken).toBe(1);
+});
+
 test('call expiry ends capture and preserves accepted text; no fresh turn may be admitted after expiry', async () => {
   const s = await fixture(), call = await s.start(), confirmed = s.client.prepareVoiceCallTurn(call, 'A durable text result.', null);
   await s.client.sendVoiceCallTurn(call.id, confirmed); await s.f.service.conversation.drain(); const capture = await s.capture(call);
@@ -153,4 +163,14 @@ test('credential-shaped confirmed text is refused before a turn intent or text h
   await expect(s.client.sendVoiceCallTurn(call.id, s.client.prepareVoiceCallTurn(call, credential, null))).rejects.toMatchObject({ code: 'credential_content_refused' });
   expect((await s.client.voiceCall(call.id)).turns).toEqual([]); expect(count(s.f)).toBe(0);
   const bytes = readFileSync(join(s.f.directory, 'voice.sqlite')); expect(bytes.includes(Buffer.from(credential))).toBe(false); expect(bytes.includes(Buffer.from(createHash('sha256').update(credential).digest('hex')))).toBe(false);
+});
+
+
+for (const withdrawal of ['source', 'owner'] as const) test(`same-call synthesis cannot publish after ${withdrawal} withdrawal`, async () => {
+  const s = await fixture(), row = await s.f.chat('Describe the controlled task.'), call = await s.start(), release = Promise.withResolvers<void>(); s.speaking = release.promise;
+  await s.capture(call); const target = await s.client.request(row.receipt.requestId); if (!target.row.result) throw Error('missing_reply');
+  const pending = s.client.playVoiceCallReply(call.id, { contract: 's16-voice-call-playback/v1', revision: call.revision, request: await s.client.preparePlayback(s.f.now, 'conversation', row.receipt.requestId, target.row.revision, target.row.result.text) });
+  const outcome = pending.then(() => 'published', error => error.code as string);
+  try { await s.entered; if (withdrawal === 'source') s.f.sourceLive = false; else s.f.generation = 2; release.resolve(); expect(await outcome).not.toBe('published'); expect(s.spoken).toBe(1); expect(count(s.f)).toBe(1); }
+  finally { release.resolve(); await outcome; }
 });

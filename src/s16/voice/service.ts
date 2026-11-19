@@ -154,7 +154,7 @@ export class VoiceService<Actor> {
   /** Reacquire current reply/source permission in the same synchronous turn that the owner transport serializes audio. */
   publishPlayback<T>(owner: VoiceOwner<Actor>, command: VoicePlaybackCommand, publish: (value: VoicePlayback) => T): T {
     this.owner(owner); const record = this.get(command.requestId); this.owner(owner, record);
-    if (record.kind !== 'playback' || record.commandHash !== sha(canonical(command))) fail('request_id_conflict');
+    if (record.kind !== 'playback' || record.commandHash !== sha(canonical(record.call ? { ...command, call: record.call } : command))) fail('request_id_conflict');
     const reply = this.options.reply(this.owner(owner), command.conversationId, command.targetRequestId);
     if (reply.revision !== command.targetRevision || sha(reply.text) !== command.textSha256) fail('voice_result_changed');
     return publish(this.cached<VoicePlayback>(record.id, owner));
