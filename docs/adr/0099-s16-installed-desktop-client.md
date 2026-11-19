@@ -1,5 +1,5 @@
 ---
-status: selected for DESKTOP16-01 implementation; acceptance evidence pending
+status: implemented with deterministic and installed-package fixture evidence; physical/live acceptance tracked separately
 date: 2026-11-19
 scope: DESKTOP16-01; S16-AC16; FR-04/10/18/23/24/32/35/38/40; NFR-05/07/08/11/12/13/14
 ---
@@ -58,3 +58,5 @@ The [handoff contract](../contracts/s16-desktop-v1.md#bounded-owner-link-handoff
 Deterministic package/worker tests cover incomplete install, corruption, redirects, stale packages, activation/recovery and strict cache exclusions. Actual installed Chromium windows use the real bundled client and owning protected service for file-to-result, original receipt/reconnect, exact approval, Bots and computer views. Adversarial origins/navigation and deep links cannot obtain a session or invoke native execution. Browser permissions are requested only by their actual owner controls; install requests none. Local API Host/Origin/token rejection and inspect-versus-execute regressions remain required.
 
 macOS/Linux/Windows support claims are bounded by actual receipts; missing physical-device, signed-browser, live Web Push/account and owner-host proof remain honestly tracked under #431/#432. No deterministic fixture is described as live acceptance, and parent #392 remains open.
+
+Implementation and immutable build/acceptance receipts: [DESKTOP16-01 proof](../evidence/s16-desktop-proof.md). Physical/live/cutover inputs remain explicitly separate.

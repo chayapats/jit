@@ -1,6 +1,6 @@
 # S16 installed desktop client v1
 
-Owner: DESKTOP16-01 [#425](https://github.com/chayapats/jit/issues/425). Decision: [ADR 0099](../adr/0099-s16-installed-desktop-client.md). Status: selected contract before implementation; executable conformance and receipts pending. Requirements: S16-AC16; FR-04/10/18/23/24/32/35/38/40; NFR-05/07/08/11/12/13/14. Retain [s16-client/v1](s16-client-v1.md), [file custody](s16-files-v1.md), [Web Push](s16-notifications-v1.md) and [local API](local-api-v1.md) authority.
+Owner: DESKTOP16-01 [#425](https://github.com/chayapats/jit/issues/425). Decision: [ADR 0099](../adr/0099-s16-installed-desktop-client.md). Status: implemented; [installed-package conformance](../evidence/s16-desktop-proof.md) records exact revisions and separate physical/live limits. Requirements: S16-AC16; FR-04/10/18/23/24/32/35/38/40; NFR-05/07/08/11/12/13/14. Retain [s16-client/v1](s16-client-v1.md), [file custody](s16-files-v1.md), [Web Push](s16-notifications-v1.md) and [local API](local-api-v1.md) authority.
 
 ## `s16-desktop/v1`
 

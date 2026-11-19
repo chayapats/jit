@@ -87,4 +87,5 @@ browserTest.each(["allow", "decline"] as const)("native OAuth %s uses the owning
     expect(source.state.providerCookies).toEqual([""]); expect(callbacks).toEqual([""]); expect(commands).toEqual(consent === "allow" ? ["source.add", "source.oauth_complete"] : ["source.add"]);
     expect(f.vmCalls).toEqual([]); expect(new URL(page.url()).origin).toBe(origin);
   } finally { await session?.close(); await server.stop(true); await source.close(); await f?.close(); rmSync(root, { recursive: true, force: true }); }
-}, 30000);
+// Three signed-browser launches include platform keychain startup/teardown; keep this opt-in case finitely bounded.
+}, 60000);
