@@ -35,7 +35,7 @@ export async function guardDesktopContext(context: BrowserContext, service: stri
       // The protected context's request transport must never attach its cookie jar for a foreign/opaque document.
       let source: string | null = null;
       try { source = request.serviceWorker()?.url() ?? request.frame().url(); } catch { /* No proven initiator. */ }
-      if (!source || new URL(source).origin !== origin) { await route.abort("blockedbyclient"); return; }
+      if (!source || new URL(source).origin !== origin || !["https:", "http:"].includes(new URL(source).protocol)) { await route.abort("blockedbyclient"); return; }
     }
     let response: APIResponse | undefined;
     try {

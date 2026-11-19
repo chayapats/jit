@@ -21,6 +21,7 @@ export interface DesktopSession { context: BrowserContext; cdp: CDPSession; orig
  * is pre-granted, no owner profile is imported and no service-window host binding is installed.
  */
 export async function openDesktopSession(options: { root: string; service: string; browser: string; locale: Locale; headless?: boolean }): Promise<DesktopSession> {
+  if (!["darwin", "linux"].includes(process.platform)) throw new Error("desktop_platform_unsupported");
   const executablePath = desktopBrowser(options.browser), profile = desktopProfile(options.root, options.service), release = leaseDesktopProfile(profile.directory);
   let context: BrowserContext | undefined;
   let phase = "profile";

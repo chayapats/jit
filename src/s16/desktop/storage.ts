@@ -6,7 +6,7 @@ import { desktopService } from "./boundary";
 const owned = (uid: number) => process.getuid === undefined || uid === process.getuid();
 /** Real owner-only directory. Existing symlinks, foreign ownership and broad access refuse instead of adoption. */
 export function privateDesktopDirectory(path: string): string {
-  if (!isAbsolute(path) || resolve(path) !== path) throw new Error("desktop_path_invalid");
+  if (!isAbsolute(path) || resolve(path) !== path || /[\u0000-\u001f]/.test(path)) throw new Error("desktop_path_invalid");
   const parent = realpathSync(dirname(path)), target = join(parent, basename(path));
   if (!existsSync(target)) mkdirSync(target, { mode: 0o700 });
   const info = lstatSync(target);
@@ -26,10 +26,15 @@ export function readDesktopRecord(path: string, maxBytes = 65536): unknown {
 
 /** Durable owner-only atomic record replacement in an already protected directory. Never follows a final symlink. */
 export function writeDesktopRecord(path: string, value: unknown): void {
+  writeDesktopFile(path, Buffer.from(JSON.stringify(value) + "\n"));
+}
+
+/** Atomically writes a private native bootstrap/entry file; callers supply only authored, verified bytes. */
+export function writeDesktopFile(path: string, value: Uint8Array, mode: 0o600 | 0o700 = 0o600): void {
   const info = lstatSync(path, { throwIfNoEntry: false });
   if (info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !owned(info.uid))) throw new Error("desktop_record_invalid");
-  const temp = join(dirname(path), ".record-" + crypto.randomUUID()), fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { writeFileSync(fd, JSON.stringify(value) + "\n"); fsyncSync(fd); }
+  const temp = join(dirname(path), ".record-" + crypto.randomUUID()), fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+  try { writeFileSync(fd, value); fsyncSync(fd); }
   catch (error) { rmSync(temp, { force: true }); throw error; } finally { closeSync(fd); }
   renameSync(temp, path); const parent = openSync(dirname(path), constants.O_RDONLY);
   try { fsyncSync(parent); } finally { closeSync(parent); }
@@ -50,8 +55,8 @@ export function desktopProfile(root: string, service: string): { directory: stri
  * Single writer for a managed private profile. A dead owner's exact lease can be recovered; no live process is killed.
  * PID reuse conservatively refuses. Browser's own SingletonLock remains an additional independent check.
  */
-export function leaseDesktopProfile(directory: string): () => void {
-  const path = join(directory, "launcher.lock");
+export function leaseDesktopProfile(directory: string, kind: "launcher" | "installation" = "launcher"): () => void {
+  const path = join(directory, kind + ".lock");
   const acquire = () => { mkdirSync(path, { mode: 0o700 }); writeDesktopRecord(join(path, "owner.json"), { contract: "s16-desktop-lease/v1", pid: process.pid }); };
   try { acquire(); } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

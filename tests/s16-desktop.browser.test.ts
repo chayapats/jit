@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { composedFixture } from "./fixtures/s15-composition";
 import { en } from "../src/i18n/en";
 import { connectDesktopWindow, desktopIgnoredDefaults, openDesktopSession } from "../src/s16/desktop/launcher";
 import { openDesktopConnection } from "../src/s16/desktop/connection";
 import { th } from "../src/i18n/th";
+import { activeNativeDesktop, installNativeDesktop } from "../src/s16/desktop/installation";
 
 const browserTest = process.env.JIT_S16_DESKTOP_TESTS === "1" ? test : test.skip;
 const phase = (value: string) => { if (process.env.JIT_DESKTOP_TRACE === "1") console.error("desktop proof: " + value); };
@@ -19,7 +21,13 @@ browserTest("installs and launches the actual client in a standalone browser-own
   const origin = `http://127.0.0.1:${server.port}`;
   const profile = mkdtempSync(join(tmpdir(), "jit-desktop-browser-"));
   f = await composedFixture("default", false, undefined, options => ({ ...options, origin, files: {} }));
-  const session = await openDesktopSession({ root: profile, service: origin, browser: process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: process.env.JIT_DESKTOP_HEADED !== "1", locale: "en" });
+  const browserPath = process.env.JIT_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  let host = { openDesktopSession, connectDesktopWindow };
+  if (process.env.JIT_S16_DESKTOP_ARTIFACT) {
+    installNativeDesktop({ artifact: process.env.JIT_S16_DESKTOP_ARTIFACT, root: profile, runtime: { bun: process.execPath, browser: browserPath, locale: "en", service: origin } });
+    const selected = activeNativeDesktop(profile); host = await import(pathToFileURL(join(selected.directory, "main.js")).href);
+  }
+  const session = await host.openDesktopSession({ root: profile, service: origin, browser: browserPath, headless: process.env.JIT_DESKTOP_HEADED !== "1", locale: "en" });
   const context = session.context;
   context.setDefaultTimeout(10000);
   const cdp = session.cdp, manifestId = origin + "/s16/";
@@ -27,7 +35,7 @@ browserTest("installs and launches the actual client in a standalone browser-own
   try {
     const cookie = f.ownerCookie.slice("jit_s14=".length);
     await context.addCookies([{ name: "jit_s14", value: cookie, url: origin, httpOnly: true, sameSite: "Strict" }]);
-    const connected = await connectDesktopWindow(session), app = await connected.ready; installed = true;
+    const connected = await host.connectDesktopWindow(session), app = await connected.ready; installed = true;
     const release = await (await fetch(origin + "/s16/desktop-release.json")).json();
     await app.locator('[data-desktop-state="ready"]').waitFor({ state: "attached" });
     const command = await cdp.send("Browser.getBrowserCommandLine");
