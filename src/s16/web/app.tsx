@@ -26,6 +26,7 @@ import { ConnectionRequestCard, ConnectionsView, type ConnectionSeed } from "./C
 import type { ClientConnectionsView } from "../client/contracts";
 import { copy } from "./copy";
 import { useNotifications } from "./useNotifications";
+import { DesktopSettings } from "./DesktopSettings";
 
 type Chip = { key: string; name: string; bytes: number; file?: File; state: "selected" | "uploading" | "validating" | "ready" | "error"; code?: string; receipt?: FileReceipt; uploadId?: string; command?: FileUploadCommand };
 type Draft = { text: string; chips: Chip[]; pending?: ClientMessage; recoveryId?: string; notFound?: boolean; pendingSteer?: ClientSteer };
@@ -59,7 +60,7 @@ function App() {
   const [needsYouScreen, setNeedsYouScreen] = useState<{ vmId: string; title: string; cardId: string } | null>(null);
   const needsYouReturnFocus = useRef<string | null>(null);
   // CONN16-01: Connections page, a chat card's prefill and the OAuth return; chat cards come from the protected read.
-  const [connections, setConnections] = useState(connectionsPath), [connectionSeed, setConnectionSeed] = useState<ConnectionSeed | null>(null), [oauth] = useState(oauthReturn), [connectionsData, setConnectionsData] = useState<ClientConnectionsView | null>(null);
+  const [connections, setConnections] = useState(connectionsPath), [connectionSeed, setConnectionSeed] = useState<ConnectionSeed | null>(null), [connectionsData, setConnectionsData] = useState<ClientConnectionsView | null>(null);
   // BOT16-01: Bots pages, the Bot chosen for a not-yet-started conversation, and chat proposal cards.
   const [botsPage, setBotsPage] = useState<BotsPage | null>(botsPath), [chosenBot, setChosenBot] = useState<Record<string, string>>({}), [botsData, setBotsData] = useState<ClientBotsView | null>(null);
   const [memory, setMemory] = useState(memoryPath), [memoryClaim, setMemoryClaim] = useState<string | null>(() => memoryPath() ? recoveryHash() ?? null : null);
@@ -70,6 +71,7 @@ function App() {
   const sendLock = useRef(false), target = useRef(conversation), generation = useRef(0), picker = useRef<HTMLInputElement>(null), composer = useRef<HTMLTextAreaElement>(null), inspector = useRef<HTMLElement>(null), returnFocus = useRef<HTMLElement | null>(null), transfers = useRef(new Map<string, { stop: AbortController; cancelled: boolean }>());
   const [libraryRefresh, setLibraryRefresh] = useState(0), viewTurn = useRef(0), draftsRef = useRef(drafts); draftsRef.current = drafts;
   const refreshing = useRef<{ id: string; turn: number; stop: AbortController } | null>(null), privacyEpoch = useRef(0);
+  const metadataRefresh = useRef(Promise.resolve());
   const draft = drafts[conversation] ?? empty(), capabilities = boot?.capabilities.uploads, rows = snapshot ? [...(historicalRow && !snapshot.conversation.rows.some(row => row.requestId === historicalRow.requestId) ? [historicalRow] : []), ...snapshot.conversation.rows.map(row => historicalRow?.requestId === row.requestId ? historicalRow : row)] : [];
   useEffect(() => { if (snapshot && historicalFocus.current) { const element = document.getElementById(`request-${historicalFocus.current}`); if (element) { historicalFocus.current = null; element.focus(); element.scrollIntoView({ block: "start" }); } } }, [snapshot, historicalRow]);
   const artifactCaps = boot?.capabilities.artifacts.available ? boot.capabilities.artifacts : null, libraryAvailable = artifactCaps?.library === "s16-client-artifacts/v1", htmlPreview = artifactCaps?.html === "sandboxed_static";
@@ -79,6 +81,11 @@ function App() {
   // A retained steer with an unknown outcome is resent only with its original ID and target, never as new work.
   const steerMode = !!draft.pendingSteer || !!steering && !draft.chips.length && !pendingId;
   const notifications = useNotifications(client, { available: !!boot?.capabilities.notifications?.available, locale, onOpen: () => { void refresh().catch(() => {}); } });
+  useEffect(() => {
+    const offline = () => { hidePrivate("client_unavailable"); setVoiceSession(value => value + 1); }, online = () => { void bootstrap(); };
+    window.addEventListener("offline", offline); window.addEventListener("online", online);
+    return () => { window.removeEventListener("offline", offline); window.removeEventListener("online", online); };
+  }, []);
   // BOT16-01: the roster and this conversation's Bot. A not-yet-started conversation shows the Bot chosen for it.
   const roster = boot?.bots ?? [], mainBot = roster.find(bot => bot.main);
   const currentBot = roster.find(bot => bot.id === (!rows.length && chosenBot[conversation] ? chosenBot[conversation] : snapshot?.botId)) ?? mainBot;
@@ -86,10 +93,19 @@ function App() {
   const archivedBot = currentBot?.state === "archived";
   const change = (id: string, update: (draft: Draft) => Draft) => setDrafts(old => ({ ...old, [id]: update(old[id] ?? empty()) }));
   function closePreview() { const id = preview?.id; setPreview(null); if (returnFocus.current?.isConnected) returnFocus.current.focus(); else if (id) document.querySelector<HTMLElement>(`[data-preview-for="${id}"]`)?.focus(); }
-  function hidePrivate(error: unknown) {
+  function withholdPrivateProjection(retainMutationSession = false) {
+    generation.current++; privacyEpoch.current++; if (!retainMutationSession) client.clear(); refreshing.current?.stop.abort(); refreshing.current = null;
+    // A lost mutation reply alone does not revoke the established session needed to recover its exact identity.
+    // Retain only capabilities in that case; private bootstrap metadata and every view still have to be read again.
+    setBoot(current => retainMutationSession && current ? { contract: current.contract, capabilities: current.capabilities, conversations: [], needsYou: [] } : null);
+    setSnapshot(null); setBotsData(null); setConnectionsData(null); setRoutineAttention(null); setConnectionSeed(null); setRoutineSeed(null); setBotsPage(current => current?.kind === "new" ? { kind: "new" } : current);
+    historicalTarget.current = null; historicalFocus.current = null; setHistoricalRow(null); needsYouReturnFocus.current = null; setNeedsYouScreen(null); setPreview(null);
+  }
+  function hidePrivate(error: unknown, retainMutationSession = false) {
     const code = typeof error === "string" ? error : errorCode(error); if (code === "client_response_stale") return;
-    generation.current++; privacyEpoch.current++; refreshing.current?.stop.abort(); refreshing.current = null; setSnapshot(null); historicalTarget.current = null; historicalFocus.current = null; setHistoricalRow(null); needsYouReturnFocus.current = null; setNeedsYouScreen(null); setPreview(null); setError(code);
-    if (["authentication_required", "csrf_rejected", "authorization_required"].includes(code) || error instanceof JitClientError && [401, 403].includes(error.status ?? 0)) {
+    const lostAuthentication = ["authentication_required", "csrf_rejected", "authorization_required"].includes(code) || error instanceof JitClientError && [401, 403].includes(error.status ?? 0);
+    withholdPrivateProjection(retainMutationSession && !lostAuthentication && navigator.onLine); setError(code);
+    if (lostAuthentication) {
       client.clear(); setBoot(null); setDrafts({}); setSearch(""); setSending(false); setAuthHidden(true);
       for (const transfer of transfers.current.values()) { transfer.cancelled = true; transfer.stop.abort(); } transfers.current.clear();
       requestAnimationFrame(() => notice.current?.focus());
@@ -122,10 +138,29 @@ function App() {
     } catch (error) { if (epoch === privacyEpoch.current && view === viewTurn.current) hidePrivate(error); }
   }
   async function bootstrap() {
+    const authentication = client.authenticationRevision;
+    withholdPrivateProjection(); setError(null);
     setVoiceSession(value => value + 1);
     const epoch = privacyEpoch.current;
-    try { const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return; setBoot(data); setAuthHidden(false); await refresh(); const recovery = drafts[target.current]?.recoveryId; if (recovery && epoch === privacyEpoch.current) await recover(target.current, recovery); }
+    try { const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return; const sameAuthentication = authentication === client.authenticationRevision; if (!sameAuthentication) { setDrafts({}); setChosenBot({}); setSearch(""); } setBoot(data); setAuthHidden(false); await refresh(); const recovery = sameAuthentication ? drafts[target.current]?.recoveryId : undefined; if (recovery && epoch === privacyEpoch.current) await recover(target.current, recovery); }
     catch (error) { if (epoch === privacyEpoch.current && errorCode(error) !== "client_response_stale") { hidePrivate(error); setBoot(null); } }
+  }
+  /** A conclusive owner mutation already updated its current view. Refresh navigation without discarding its receipt;
+   * serialize these reads and fence the entire UI if the authenticated binding changes or a read fails. */
+  function refreshMetadata() {
+    const epoch = privacyEpoch.current;
+    const next = metadataRefresh.current.catch(() => {}).then(async () => {
+      if (epoch !== privacyEpoch.current) return;
+      const authentication = client.authenticationRevision;
+      try {
+        const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return;
+        const changed = authentication !== client.authenticationRevision;
+        if (changed) { withholdPrivateProjection(true); setDrafts({}); setChosenBot({}); setSearch(""); }
+        setBoot(data); setAuthHidden(false);
+        if (changed && chatPath()) await refresh();
+      } catch (error) { if (epoch === privacyEpoch.current && errorCode(error) !== "client_response_stale") hidePrivate(error); }
+    });
+    metadataRefresh.current = next; return next;
   }
   /** Routines view; a seed opens the review sheet prefilled from the composer. Nothing is saved until the owner saves. */
   function openRoutines(id: string | null = null, seed: RoutineSeed | null = null) { viewTurn.current++; closePreview(); setComputers(false); setConnections(false); setBotsPage(null); setMemory(false); setLibrary(false); setMenu(false); setRoutineId(id); setRoutineSeed(seed); setRoutines(true); history.pushState(null, "", `/s16/routines${id ? '/' + id : ''}`); }
@@ -271,7 +306,7 @@ function App() {
       if (id === target.current) await refresh(id);
     } catch (error) {
       if (error instanceof JitClientError && (error.outcome === "not_sent" || error.outcome === "response")) change(id, ({ pendingSteer: _steer, ...current }) => current);
-      if (id === target.current) hidePrivate(error);
+      if (id === target.current) hidePrivate(error, error instanceof JitClientError && error.outcome === "unknown");
     } finally { setSending(false); }
   }
   /** Moves the composer text into a fresh, independent conversation instead of steering the running work. */
@@ -289,10 +324,10 @@ function App() {
       const command = client.prepareMessage(id, draft.text, draft.chips.map(chip => ({ id: chip.receipt!.id, sha256: chip.receipt!.sha256 }))); change(id, draft => ({ ...draft, pending: command })); setSending(true); history.replaceState(null, "", `/s16/chat/${id}#${command.requestId}`);
       await client.send(command); change(id, () => empty()); if (id === target.current) { history.replaceState(null, "", `/s16/chat/${id}`); await refresh(id); }
       setVoiceSession(value => value + 1);
-      const epoch = privacyEpoch.current, data = await client.bootstrap(); if (epoch === privacyEpoch.current) setBoot(data);
+      await refreshMetadata();
     } catch (error) {
       if (error instanceof JitClientError && (error.outcome === "not_sent" || error.outcome === "response" && ["invalid_text", "file_unavailable", "file_count_limit", "file_message_limit", "body_too_large", "invalid_contract", "invalid_body", "outside_scope", "upload_unavailable"].includes(error.code))) change(id, ({ pending: _pending, notFound: _notFound, ...draft }) => draft);
-      if (id === target.current) hidePrivate(error);
+      if (id === target.current) hidePrivate(error, error instanceof JitClientError && error.outcome === "unknown");
     } finally { sendLock.current = false; setSending(false); }
   }
   /** BOT16-01: a new conversation is bound to its chosen Bot before its first message or routine; a started one keeps its Bot. */
@@ -334,25 +369,26 @@ function App() {
       <a href="/work">{t("s15.nav.work")}</a><button aria-current={library && libraryAvailable ? "page" : undefined} onClick={() => { if (libraryAvailable) { openLibrary(); return; } if (memory) navigate(conversation); setComputers(false); setConnections(false); setBotsPage(null); setRoutines(false); setLibrary(true); setMenu(false); }}>{t("s16.nav.artifacts")}</button><div className="rail-secondary">{boot?.capabilities.routines?.available && <button aria-current={routines ? "page" : undefined} onClick={() => openRoutines()}>{t("s16.nav.routines")} {(routineAttention ?? boot.routines?.attention ?? 0) > 0 && <span className="count">{routineAttention ?? boot.routines?.attention}</span>}</button>}{boot?.capabilities.memory?.available ? <button aria-current={memory ? "page" : undefined} onClick={() => openMemory()}>{t("s16.nav.memory")}</button> : <a href="/memory">{t("s16.nav.memory")}</a>}{boot?.capabilities.computers?.available && <button aria-current={computers ? "page" : undefined} onClick={() => openComputers()}>{t("s16.nav.computers")}</button>}{(boot?.capabilities.connections?.available || boot?.capabilities.skills?.available) ? <button aria-current={connections ? "page" : undefined} onClick={() => openConnections()}>{t("s16.nav.connections")}</button> : <a href="/resources">{t("s16.nav.connections")}</a>}<a href="/rules">{t("s16.nav.settings")}</a>{boot?.capabilities.notifications?.available && <div className="notify-control"><span>{t("s16.notify.settings")}: {t(!notifications.status ? "s16.common.loading" : notifications.status.support === "unsupported" ? "s16.notify.unsupported" : notifications.status.support === "denied" ? "s16.notify.denied" : notifications.status.code && !notifications.status.enabled ? "s16.notify.failed" : notifications.status.enabled ? "s16.notify.on" : "s16.notify.off")}</span>{notifications.status && notifications.status.support !== "unsupported" && notifications.status.support !== "denied" && <button type="button" disabled={notifications.busy} onClick={() => void (notifications.status?.enabled ? notifications.disable() : notifications.enable()).catch(() => {})}>{t(notifications.status.enabled ? "s16.notify.disable" : "s16.notify.enable")}</button>}</div>}<label>{t("s16.common.language")} <select value={locale} onChange={event => setLocale(event.target.value === "en" ? "en" : "th")}><option value="th">TH</option><option value="en">English</option></select></label></div>
     </nav>
     <main id="conversation-main"><header className="chat-header"><button className="menu-toggle" aria-label={t("s16.common.menu")} onClick={() => setMenu(!menu)}>☰</button><div><h1>{currentBot ? botName(t, currentBot) : t("s16.chat.title")}</h1><p>{t("s16.chat.lead")}</p></div><button onClick={() => { setLibraryRefresh(value => value + 1); void bootstrap(); }}>{t("s16.common.refresh")}</button>{boot?.capabilities.protectedBrowser?.available && <button type="button" onClick={() => setProtectedView(true)}>{t("s16.protected.title")}</button>}</header>
-      {protectedView && boot?.capabilities.protectedBrowser?.available && <ProtectedBrowser client={client} t={t} onClose={() => setProtectedView(false)} onFailure={hidePrivate} />}
+    <details className="desktop-panel"><summary>{t("s16.desktop.title")}</summary><DesktopSettings t={t} locale={locale} onReconnect={() => { void bootstrap(); }} /></details>
+      {protectedView && boot?.capabilities.protectedBrowser?.available && <ProtectedBrowser key={privacyEpoch.current} client={client} t={t} onClose={() => setProtectedView(false)} onFailure={hidePrivate} />}
       {connections ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <ConnectionsView key={connectionSeed?.requestId ?? ""} client={client} t={t} locale={locale} available={!!boot.capabilities.connections?.available} skillsAvailable={!!boot.capabilities.skills?.available} seed={connectionSeed} oauth={oauth} onFailure={hidePrivate} onOpenConversation={navigate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <ConnectionsView key={`${privacyEpoch.current}:${connectionSeed?.requestId ?? ""}`} client={client} t={t} locale={locale} available={!!boot.capabilities.connections?.available} skillsAvailable={!!boot.capabilities.skills?.available} seed={connectionSeed} oauth={oauthReturn()} onFailure={hidePrivate} onOpenConversation={navigate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : botsPage ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <BotsView client={client} t={t} locale={locale} available={!!boot.capabilities.bots?.available} modelsAvailable={!!boot.capabilities.models?.available} page={botsPage} onNavigate={openBots} onStartChat={startChat} onOpenConversation={navigate} onChanged={() => { void bootstrap(); }} onFailure={hidePrivate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <BotsView key={privacyEpoch.current} client={client} t={t} locale={locale} available={!!boot.capabilities.bots?.available} modelsAvailable={!!boot.capabilities.models?.available} page={botsPage} onNavigate={openBots} onStartChat={startChat} onOpenConversation={navigate} onChanged={() => { if (handoffPrivacy === privacyEpoch.current) void refreshMetadata(); }} onFailure={hidePrivate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : computers ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <ComputersView client={client} t={t} locale={locale} names={Object.fromEntries(roster.filter(bot => !bot.main).map(bot => [bot.id, bot.name]))} available={!!boot.capabilities.computers?.available} files={!!(boot.capabilities.computers?.available && boot.capabilities.computers.files)} screen={!!(boot.capabilities.computers?.available && boot.capabilities.computers.screen)} onFailure={hidePrivate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <ComputersView key={privacyEpoch.current} client={client} t={t} locale={locale} names={Object.fromEntries(roster.filter(bot => !bot.main).map(bot => [bot.id, bot.name]))} available={!!boot.capabilities.computers?.available} files={!!(boot.capabilities.computers?.available && boot.capabilities.computers.files)} screen={!!(boot.capabilities.computers?.available && boot.capabilities.computers.screen)} onFailure={hidePrivate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : routines ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <RoutinesView key={routineId ?? ""} client={client} t={t} locale={locale} available={!!boot.capabilities.routines?.available} artifacts={!!(boot.capabilities.routines?.available && boot.capabilities.routines.reactions.artifacts)} initialRoutine={routineId} seed={routineSeed} onFailure={hidePrivate} onOpenConversation={navigate} onAttention={setRoutineAttention} onSelect={id => { if (routinesPath()) history.replaceState(null, "", `/s16/routines${id ? '/' + id : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <RoutinesView key={`${privacyEpoch.current}:${routineId ?? ""}`} client={client} t={t} locale={locale} available={!!boot.capabilities.routines?.available} artifacts={!!(boot.capabilities.routines?.available && boot.capabilities.routines.reactions.artifacts)} initialRoutine={routinesPath()?.[1] ?? null} seed={routineSeed} onFailure={hidePrivate} onOpenConversation={navigate} onAttention={value => { if (handoffPrivacy === privacyEpoch.current) setRoutineAttention(value); }} onSelect={id => { if (routinesPath()) history.replaceState(null, "", `/s16/routines${id ? '/' + id : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : memory ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <MemoryView key={memoryClaim ?? ""} client={client} t={t} locale={locale} available={!!boot.capabilities.memory?.available} initialClaim={memoryClaim} onFailure={hidePrivate} onOpenConversation={navigate} onSelect={claim => { if (memoryPath()) history.replaceState(null, "", `/s16/memory${claim ? '#' + claim : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <MemoryView key={`${privacyEpoch.current}:${memoryClaim ?? ""}`} client={client} t={t} locale={locale} available={!!boot.capabilities.memory?.available} initialClaim={memoryPath() ? recoveryHash() ?? null : null} onFailure={hidePrivate} onOpenConversation={navigate} onSelect={claim => { if (memoryPath()) history.replaceState(null, "", `/s16/memory${claim ? '#' + claim : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : library && (libraryAvailable || !boot && artifactsPath()) ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
-        {boot ? <ArtifactLibrary key={libraryArtifact ?? ""} refresh={libraryRefresh} client={client} t={t} locale={locale} revisions={artifactCaps?.revisions === true && !!capabilities?.available} html={htmlPreview} initialArtifact={libraryArtifact} onFailure={hidePrivate} onOpenConversation={navigate} onRevise={reviseArtifact} onSelect={artifact => { if (artifactsPath()) history.replaceState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
+        {boot ? <ArtifactLibrary key={`${privacyEpoch.current}:${libraryArtifact ?? ""}`} refresh={libraryRefresh} client={client} t={t} locale={locale} revisions={artifactCaps?.revisions === true && !!capabilities?.available} html={htmlPreview} initialArtifact={artifactsPath()?.[1] ?? null} onFailure={hidePrivate} onOpenConversation={navigate} onRevise={reviseArtifact} onSelect={artifact => { if (artifactsPath()) history.replaceState(null, "", `/s16/artifacts${artifact ? '/' + artifact : ''}`); }} /> : !error && <p role="status">{t("s16.common.loading")}</p>}
       </div> : <>
       <div className="transcript" aria-busy={!snapshot && !error}>
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
@@ -395,9 +431,9 @@ function App() {
         {needsYouScreen && <ComputerScreen key="needs-you-screen" client={client} t={t} vmId={needsYouScreen.vmId} title={needsYouScreen.title} onClose={() => { needsYouReturnFocus.current = needsYouScreen.cardId; setNeedsYouScreen(null); void refresh(); }} onFailure={hidePrivate} />}
       </div>
       <form className="composer" onSubmit={event => { event.preventDefault(); void send(); }} onDragOver={event => event.preventDefault()} onDrop={event => { event.preventDefault(); choose(event.dataTransfer.files); }}>
-        <div className="chips" aria-live="polite">{draft.chips.map(chip => <div className="upload-chip" key={chip.key}><span>{chip.name} · {chip.bytes.toLocaleString()} bytes</span><small>{chip.state === "validating" ? t("s16.files.validating") : chip.state === "uploading" ? t("s16.files.uploading", { name: chip.name }) : chip.state === "ready" ? t("s16.files.ready") : chip.state === "error" ? t("s16.files.failed") : t("s16.files.selected")}</small>{(chip.state === "uploading" || chip.state === "validating") && <progress aria-label={chip.state === "validating" ? t("s16.files.validating") : t("s16.files.uploading", { name: chip.name })} />}{chip.receipt && fileDetails(chip.receipt)}{chip.state === "error" && <><code>{chip.code}</code><button type="button" onClick={() => void upload(conversation, chip)}>{t("s16.files.recover")}</button></>}<button type="button" aria-label={t("s16.files.removeFromMessage", { name: chip.name })} onClick={() => void remove(chip)}>×</button></div>)}</div>
+        <div className="chips" aria-live="polite">{boot && draft.chips.map(chip => <div className="upload-chip" key={chip.key}><span>{chip.name} · {chip.bytes.toLocaleString()} bytes</span><small>{chip.state === "validating" ? t("s16.files.validating") : chip.state === "uploading" ? t("s16.files.uploading", { name: chip.name }) : chip.state === "ready" ? t("s16.files.ready") : chip.state === "error" ? t("s16.files.failed") : t("s16.files.selected")}</small>{(chip.state === "uploading" || chip.state === "validating") && <progress aria-label={chip.state === "validating" ? t("s16.files.validating") : t("s16.files.uploading", { name: chip.name })} />}{chip.receipt && fileDetails(chip.receipt)}{chip.state === "error" && <><code>{chip.code}</code><button type="button" onClick={() => void upload(conversation, chip)}>{t("s16.files.recover")}</button></>}<button type="button" aria-label={t("s16.files.removeFromMessage", { name: chip.name })} onClick={() => void remove(chip)}>×</button></div>)}</div>
         {archivedBot && <p className="notice" role="status">{t("s16.bots.archivedChat", { name: currentBot ? botName(t, currentBot) : "" })}</p>}
-        {steerMode && <p className="steer-hint" role="status">{t("s16.steer.hint")} {!draft.pendingSteer && <button type="button" className="memory-link" onClick={separateConversation}>{t("s16.steer.newChat")}</button>}</p>}<label className="visually-hidden" htmlFor="message">{t("s16.chat.prompt")}</label><textarea ref={composer} id="message" value={draft.text} disabled={!!pendingId || !!draft.pendingSteer || archivedBot} placeholder={t("s16.chat.prompt")} onChange={event => change(conversation, draft => ({ ...draft, text: event.target.value }))} onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); choose(event.clipboardData.files); } }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+        {steerMode && <p className="steer-hint" role="status">{t("s16.steer.hint")} {!draft.pendingSteer && <button type="button" className="memory-link" onClick={separateConversation}>{t("s16.steer.newChat")}</button>}</p>}<label className="visually-hidden" htmlFor="message">{t("s16.chat.prompt")}</label><textarea ref={composer} id="message" value={boot ? draft.text : ""} disabled={!boot || !!pendingId || !!draft.pendingSteer || archivedBot} placeholder={t("s16.chat.prompt")} onChange={event => change(conversation, draft => ({ ...draft, text: event.target.value }))} onPaste={event => { if (event.clipboardData.files.length) { event.preventDefault(); choose(event.clipboardData.files); } }} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
         {pendingId && !sending && <div className="notice"><p>{t(draft.recoveryId && draft.notFound ? "s16.chat.originalNotFound" : "s16.chat.unknown")}</p><button type="button" onClick={() => void recover()}>{t("s16.chat.recover")}</button>{draft.notFound && (draft.pending ? <button type="button" onClick={() => void resend()}>{t("s16.chat.resend")}</button> : <button type="button" onClick={composeReplacement}>{t("s16.chat.composeReplacement")}</button>)}<code>{pendingId}</code></div>}
         {voiceEnabled && !call.active && <VoiceControls voice={voice} t={t} canCapture={canCapture} />}
         {callEnabled && <VoiceCallControls call={call} t={t} canStart={canCapture} />}

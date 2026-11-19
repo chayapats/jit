@@ -313,8 +313,10 @@ describe("owner screen API under the real composition", () => {
       vm: { ...o.vm, managers: new Map([...o.vm.managers].map(([id, manager]) => [id, Object.assign(manager, { screen: () => screen.value })])) } }));
     closers.push(() => f.close());
     expect((await (await f.request("/api/s16/client/bootstrap")).json()).capabilities.computers).toMatchObject({ available: true, screen: true });
-    // The page shows frames only from in-memory blob URLs; no remote or data image source is allowed.
-    expect((await f.request("/s16/computers")).headers.get("content-security-policy")).toContain("img-src blob:;");
+    // Screen frames remain in-memory blobs; the installed client's public app icons also need the same origin.
+    // Keep the exact finite source list: neither remote nor data image sources may be added.
+    const imagePolicy = (await f.request("/s16/computers")).headers.get("content-security-policy")!.split(";").find(directive => directive.trim().startsWith("img-src "))!.trim().split(/\s+/);
+    expect(imagePolicy).toEqual(["img-src", "'self'", "blob:"]);
     const view = await (await f.request("/api/s16/client/computers/vm/screen")).json();
     expect(view).toMatchObject({ contract: "s16-computer-screen/v1", vmId: "vm", available: true, state: "agent", generation: 0, scope: { kind: "shared" } });
     const frame = await f.request("/api/s16/client/computers/vm/screen/frame?generation=0");

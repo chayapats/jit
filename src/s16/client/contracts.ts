@@ -43,6 +43,8 @@ export interface ClientCapabilities {
 export interface ClientBootstrap {
   contract: "s16-client-bootstrap/v1";
   csrf: string;
+  /** Opaque non-credential session continuity hash. Older v1 services may omit it; it never grants authority. */
+  sessionScope?: string;
   capabilities: ClientCapabilities;
   /** With Bots, each entry also names the Bot the conversation talks to. */
   conversations: (ConversationListEntry & { botId?: string })[];

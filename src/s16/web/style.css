@@ -66,5 +66,13 @@
 .protected-browser{width:min(960px,calc(100vw - 24px));max-height:90dvh;box-sizing:border-box;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:20px;background:var(--card);color:var(--text);margin:auto}.protected-browser::backdrop{background:rgb(0 0 0 / .65)}.protected-browser .actions{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}.protected-browser .screen-type label{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.protected-browser .screen-type input{box-sizing:border-box;min-width:0!important;width:min(320px,100%)}.protected-browser .screen-frame{margin:16px 0}.protected-browser>button{margin:8px 8px 0 0}.protected-browser h2{font-size:20px;flex:1;margin:0}.protected-browser h2:focus{outline:none}
 /* VOICE16-01: recording and editable transcripts stay beside the ordinary composer. */
 .voice-controls{display:grid;gap:8px;min-width:0;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:12px;overflow-wrap:anywhere}.voice-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.voice-actions output{font-variant-numeric:tabular-nums}.voice-controls small{display:block;color:var(--muted)}.voice-recording{border-color:var(--accent,#285c50)}.voice-draft{display:grid;gap:8px;min-width:0}.voice-draft label{display:grid;gap:6px}.composer .voice-draft textarea{min-height:96px;width:100%;box-sizing:border-box}.voice-draft p,.voice-error p{margin:0;font-size:.875rem}.voice-draft button{justify-self:start}.voice-error code{overflow-wrap:anywhere}.voice-listen{margin:4px 0 12px}.voice-controls button{white-space:normal;text-align:start}
+/* The installed-client panel uses the existing restrained service UI and keyboard-native details control. */
+.desktop-panel { margin: .5rem 1rem; max-width: 52rem; }
+.desktop-panel summary { cursor: pointer; padding: .5rem; }
+.desktop-settings { padding: .5rem; border: 1px solid currentColor; border-radius: .6rem; }
+.desktop-settings h2 { font-size: 1rem; margin-top: 0; }
+.desktop-origin { overflow-wrap: anywhere; }
+.desktop-settings p { margin: .6rem 0; }
+.desktop-version { display: block; margin-bottom: .5rem; font-family: monospace; }
 
 .voice-call{display:flex;flex-direction:column;max-height:45dvh;overflow:hidden}.voice-call>.voice-actions,.voice-call>p{flex-shrink:0}.voice-call>p{margin:0}.voice-call-body{min-height:0;overflow:auto;padding:3px}.voice-call .call-confirm{flex-shrink:0;border-top:1px solid var(--line);padding-top:8px}.voice-call .call-confirm .primary{margin-left:0}.voice-call .voice-draft p{margin:4px 0}.voice-call .call-turns ol{padding-inline-start:24px;margin:8px 0}.voice-call .call-turns summary{cursor:pointer}

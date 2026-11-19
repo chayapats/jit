@@ -1,5 +1,6 @@
 import { SkillsView } from "./SkillsView";
 import { useEffect, useRef, useState } from "react";
+import { nativeOwnerLink } from "../client/owner-link";
 import type { Locale, MessageKey } from "../../i18n";
 import { JitClientError, type JitClient } from "../client";
 import type { ClientConnectionCommand, ClientConnectionRequest, ClientConnectionsView, ClientSource, ClientSourceKind, ClientToolClass } from "../client/contracts";
@@ -77,8 +78,13 @@ export function ConnectionsView({ client, t, locale, available, skillsAvailable 
     commands.current++; setPending({ command, message, state: "pending" }); setConfirm(null); setProblem(null);
     try {
       const receipt = await client.connectionCommand(command);
-      if (receipt.authorize) { location.assign(receipt.authorize); return; }
-      setPending({ command, message, state: "done", policy: receipt.policy });
+      if (receipt.authorize) {
+        setReviewing(null);
+        const opened = await nativeOwnerLink(receipt.authorize);
+        if (opened === null) { location.assign(receipt.authorize); return; }
+        if (!opened) throw new JitClientError("source_oauth_handoff_failed", null, "response");
+      }
+      setPending({ command, message: receipt.authorize ? "s16.connections.state.authorizing" : message, state: "done", policy: receipt.policy });
       if (receipt.source && receipt.source.state === "needs_review") openReview(receipt.source);
       commands.current++; setReload(value => value + 1);
     } catch (error) {
@@ -111,7 +117,10 @@ export function ConnectionsView({ client, t, locale, available, skillsAvailable 
   const selected = repos ?? github?.selected ?? [];
   const tokenForm = (submit: MessageKey) => <form className="connection-form" onSubmit={event => { event.preventDefault(); const value = token; setToken(""); setReplacing(false); void run({ contract: "s16-connection-command/v1", requestId: uid(), kind: "github.connect", token: value }, "s16.connections.github.done"); }}>
     <label>{t("s16.connections.github.token")} <input type="password" autoComplete="off" spellCheck={false} value={token} onChange={event => setToken(event.target.value)} required /></label>
-    <p className="limits">{t("s16.connections.secretNote")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer noopener">{t("s16.connections.github.create")}</a></p>
+    <p className="limits">{t("s16.connections.secretNote")} <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer noopener" onClick={event => {
+      if (typeof Reflect.get(globalThis, "jitDesktopOwnerLink") !== "function") return;
+      event.preventDefault(); void nativeOwnerLink("https://github.com/settings/personal-access-tokens/new").then(opened => { if (!opened) setProblem("source_owner_link_unavailable"); });
+    }}>{t("s16.connections.github.create")}</a></p>
     <div className="actions"><button type="submit" className="primary" disabled={busy || !token.trim()}>{t(submit)}</button></div>
   </form>;
   const policyLine = (value: "installed" | "review_required" | "not_needed") => value === "installed" ? <span className="pill ok">{t("s16.connections.policyInstalled")}</span> : value === "review_required" ? <span>{t("s16.connections.policyReview")} <a href="/rules">{t("s16.connections.reviewRules")}</a></span> : null;
