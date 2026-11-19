@@ -45,8 +45,21 @@ async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, 
     await route.continue();
   });
   await page.addInitScript(() => {
-    const state = { calls: 0, level: 0, mode: 'native', release: null as (() => void) | null, entries: [] as { context: AudioContext; gain: GainNode; start: number }[], tracks: [] as MediaStreamTrack[], audio: [] as HTMLMediaElement[] };
+    const state = { deferTurn: false, loseDeferredTurn: false, turnEntered: false, turnStatus: 0, turnSettled: false, releaseTurn: null as (() => void) | null, calls: 0, level: 0, mode: 'native', release: null as (() => void) | null, entries: [] as { context: AudioContext; gain: GainNode; start: number }[], tracks: [] as MediaStreamTrack[], audio: [] as HTMLMediaElement[] };
     Object.assign(window, { callTest: state });
+    const fetch = window.fetch.bind(window);
+    window.fetch = Object.assign(async (...[input, init]: Parameters<typeof window.fetch>) => {
+      const response = await fetch(input, init), url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (state.deferTurn && url.pathname.endsWith('/turns')) {
+        state.deferTurn = false;
+        // Preserve the actual native response/headers/body. Only its delivery promise is delayed,
+        // after real HTTP acceptance, so newer controls can proceed without CDP lifecycle races.
+        await response.clone().arrayBuffer(); state.turnStatus = response.status; state.turnEntered = true;
+        await new Promise<void>(resolve => { state.releaseTurn = resolve; }); state.turnSettled = true;
+        if (state.loseDeferredTurn) throw new TypeError('Controlled delayed response loss');
+      }
+      return response;
+    }, window.fetch);
     const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices), play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () { if (!state.audio.includes(this)) state.audio.push(this); return play.call(this); };
     navigator.mediaDevices.getUserMedia = async constraints => {
@@ -236,10 +249,12 @@ for (const lost of [false, true]) browserTest(`review recovery: a late accepted 
     await page.goto('http://localhost:3099/s16/chat/conversation'); const controls = page.getByRole('region', { name: en['s16.call.title'], exact: true });
     await controls.getByRole('button', { name: en['s16.call.start'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); await speech(page);
     const transcript = controls.getByLabel(en['s16.call.transcript'], { exact: true }); await transcript.waitFor(); await transcript.fill('The first exact confirmed turn.');
-    const original = await callView(s.f), delayed = w.hold(`/api/s16/client/voice/calls/${original.id}/turns`, true); if (lost) w.loseTurn();
-    await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await delayed.entered; stage = 'accepted held';
-    const muted = page.waitForResponse(response => response.url().endsWith(`/voice/calls/${original.id}/control`));
-    await controls.getByRole('button', { name: en['s16.call.mute'], exact: true }).click(); await muted; stage = 'muted response received'; await stopped(page);
+    const original = await callView(s.f);
+    await page.evaluate(lost => { const state = (window as unknown as { callTest: { deferTurn: boolean; loseDeferredTurn: boolean } }).callTest; state.deferTurn = true; state.loseDeferredTurn = lost; }, lost);
+    await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click();
+    await page.waitForFunction(() => (window as unknown as { callTest: { turnEntered: boolean } }).callTest.turnEntered); stage = 'accepted held';
+    expect(await page.evaluate(() => (window as unknown as { callTest: { turnStatus: number } }).callTest.turnStatus)).toBe(202);
+    await controls.getByRole('button', { name: en['s16.call.mute'], exact: true }).click(); stage = 'muted'; await stopped(page);
     await controls.getByRole('button', { name: en['s16.call.resume'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); await speech(page); await transcript.waitFor();
     await transcript.fill('A newer editable draft must survive.'); stage = 'new draft';
     if (lost) {
@@ -247,8 +262,8 @@ for (const lost of [false, true]) browserTest(`review recovery: a late accepted 
       await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.speaking'] }).waitFor(); expect(count(s.f)).toBe(2);
       await speech(page); await transcript.waitFor(); await transcript.fill('A newer editable draft must survive.'); stage = 'new draft';
     }
-    const settled = lost ? page.waitForEvent('requestfailed', request => request.url().endsWith(`/voice/calls/${original.id}/turns`)) : page.waitForEvent('requestfinished', request => request.url().endsWith(`/voice/calls/${original.id}/turns`));
-    delayed.release(); stage = 'released original'; await settled; stage = 'original network settled'; await rendered(page); stage = 'rendered';
+    await page.evaluate(() => (window as unknown as { callTest: { releaseTurn: () => void } }).callTest.releaseTurn()); stage = 'released original';
+    await page.waitForFunction(() => (window as unknown as { callTest: { turnSettled: boolean } }).callTest.turnSettled); await rendered(page); stage = 'rendered';
     expect(await transcript.inputValue()).toBe('A newer editable draft must survive.'); expect(await controls.getByRole('status').innerText()).toContain(en['s16.call.phase.review']); expect(count(s.f)).toBe(lost ? 2 : 1);
     await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.speaking'] }).waitFor();
     expect(count(s.f)).toBe(lost ? 3 : 2); expect((await callView(s.f)).turns.map((turn: { requestId: string }) => turn.requestId)).toEqual(Array.from({ length: lost ? 3 : 2 }, (_, ordinal) => `${original.id}_t${ordinal + 1}`));
