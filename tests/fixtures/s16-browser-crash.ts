@@ -10,8 +10,14 @@ import { fixture, ref } from './s15-policy';
 // Real disposable Chromium/controller process. The parent owns the service effect and kills this process
 // after its request was actually received, while the response is withheld outside this process.
 if (process.env.JIT_BROWSER_LIVE !== '1') throw Error('explicit_browser_evidence_required');
-const input = JSON.parse(await Bun.stdin.text()) as { phase: 'dispatch' | 'recover'; directory: string; origin: string; readback: string };
+const input = JSON.parse(await Bun.stdin.text()) as { phase: 'dispatch' | 'recover'; directory: string; origin: string; readback: string; asyncIntent?: boolean };
 const fresh = input.phase === 'dispatch', site = browserSitePolicy(input.origin);
+if (input.asyncIntent) site.intent = snapshot => {
+  if (snapshot.target.name !== 'async_send') return null;
+  const fields = new Map(snapshot.fields.map(field => [field.name, field.values]));
+  if (fields.get('recipient')?.length !== 1 || fields.get('message')?.length !== 1) return null;
+  return { method: 'POST', url: input.origin + '/message', contentType: 'application/x-www-form-urlencoded;charset=UTF-8', bodyBase64: Buffer.from(new URLSearchParams({ recipient: fields.get('recipient')![0]!, message: fields.get('message')![0]! }).toString()).toString('base64'), navigation: false };
+};
 const gateway = await registerProtectedBrowser({ runtime: 's15', mode: 'general', resource: ref('account'), fences: [],
   continuity: { path: join(input.directory, 'continuity.sqlite'), create: fresh }, profilePath: join(input.directory, 'profile'),
   executablePath: process.env.JIT_BROWSER_EXECUTABLE ?? '/usr/bin/chromium', site, egress: loopbackFixtureEgress, now: () => 1000,
@@ -29,7 +35,7 @@ try {
     ensure((await work.execute({ kind: 'navigate', url: input.origin + '/clean-task', generation: work.state().generation })).state === 'ok', 'navigation_failed');
     const page = await work.execute({ kind: 'read', generation: work.state().generation });
     if (page.state !== 'observed') throw Error('observation_failed');
-    const target = page.observation.elements.find(e => e.name === 'confirm'); ensure(target, 'target_missing');
+    const target = page.observation.elements.find(e => e.name === (input.asyncIntent ? 'async_send' : 'confirm')); ensure(target, 'target_missing');
     const held = await work.execute({ kind: 'click', target: target!.id, generation: work.state().generation });
     if (held.state !== 'held') throw Error('effect_not_held');
     f.service.owner.decide(f.owner, { requestId: 'crash_exact_approval', action: held.action, decision: 'approve', expiresAt: 20000 });

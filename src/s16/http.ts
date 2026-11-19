@@ -24,6 +24,7 @@ import type { BotDirectory } from "./bots/service";
 import type { ConnectionDirectory } from "./connections/service";
 import type { S16ModelsPort } from "./models";
 import { connectionLimits } from "./connections/types";
+import type { ProtectedBrowserPort } from './protected-browser';
 
 /**
  * Opaque-origin, script-free rendering of one committed HTML artifact. `sandbox` without tokens disables
@@ -33,7 +34,7 @@ import { connectionLimits } from "./connections/types";
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -66,6 +67,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
       computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files), ...(options.screen ? { screen: true } : {}) } : { available: false, code: "computers_unavailable" },
+      ...(options.protectedBrowser ? { protectedBrowser: { available: true as const, contract: 's16-protected-browser/v1' as const } } : {}),
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
       skills: options.skills ? { available: true, contract: "s16-client-skills/v1" } : { available: false, code: "skills_unavailable" },
       voice: options.voice ? { available: true, contract: "s16-voice/v1", route: "local", ...(options.voice.calls ? { callContract: 's16-voice-call/v1' as const } : {}) } : { available: false, code: "voice_unavailable" },
@@ -220,6 +222,22 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST" && notify[1] === "subscribe") { const input = await body(request); return json(options.notifications.subscribe(currentOwner(), input)); }
         if (request.method === "POST" && notify[1] === "unsubscribe") { const input = await body(request); return json(options.notifications.unsubscribe(currentOwner(), input)); }
         throw new AppError("method_rejected", 405);
+      }
+      const protectedBrowser = /^\/api\/s16\/client\/protected-browser(?:\/(frame|controls|commands))?$/.exec(url.pathname);
+      if (protectedBrowser) {
+        const port = options.protectedBrowser; if (!port) throw new AppError('browser_unavailable', 503);
+        if (request.method === 'GET' && ['frame', 'controls'].includes(protectedBrowser[1] ?? '')) {
+          const generation = url.searchParams.get('generation');
+          if ([...url.searchParams.keys()].join() !== 'generation' || !/^[1-9][0-9]{0,15}$/.test(generation ?? '') || !Number.isSafeInteger(Number(generation))) throw new AppError('invalid_body');
+          if (protectedBrowser[1] === 'controls') { const controls = await port.controls(currentOwner(), Number(generation)); currentOwner(); return json({ contract: 's16-protected-browser-controls/v1', generation: Number(generation), controls }); }
+          const bytes = await port.frame(currentOwner(), Number(generation)); currentOwner();
+          if (bytes.length > 8 * 1048576) throw new AppError('client_response_limit', 413);
+          return new Response(new Uint8Array(bytes), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'", 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin', Vary: 'Cookie' } });
+        }
+        if (url.search) throw new AppError('invalid_body');
+        if (request.method === 'GET' && !protectedBrowser[1]) return json(port.view(currentOwner()));
+        if (request.method === 'POST' && protectedBrowser[1] === 'commands') { const input = await body(request, 16384); const result = await port.command(currentOwner(), input); currentOwner(); return json(result); }
+        throw new AppError('method_rejected', 405);
       }
       const screen = /^\/api\/s16\/client\/computers\/(?:screen\/(commands)|([A-Za-z0-9_-]{1,128})\/screen(?:\/(frame))?)$/.exec(url.pathname);
       if (screen) {

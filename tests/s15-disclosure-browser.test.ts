@@ -10,27 +10,33 @@ import { fixture, ref } from './fixtures/s15-policy';
 
 const cleanups: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
-async function setup() {
+async function setup(asyncIntent = false) {
   const dir = mkdtempSync(join(tmpdir(), 'jit-disclosure-browser-')); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const received: { url: string; body: string }[] = [];
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request): Promise<Response> {
     const url = new URL(request.url); received.push({ url: request.url, body: await request.text() });
     return url.pathname === '/redirect' ? new Response(null, { status: 302, headers: { location: server.url.origin + '/new?private=redirected' } }) : new Response('Observed website content', { headers: { 'content-type': 'text/html' } });
   } }); cleanups.push(() => server.stop(true));
-  const origin = server.url.origin, approvals: RecipientApproval[] = [];
+  const origin = server.url.origin, approvals: RecipientApproval[] = []; let sourceActive = true;
   const d = openDisclosureService({ runtime: 's15', path: join(dir, 'lineage.sqlite'), create: true, installationId: 'browser_disclosure', now: () => 1000,
-    catalogs: { source: r => ['public', 'private'].includes(r.id) ? { ref: r, resource: ref('account'), classification: r.id as 'public' | 'private', active: true, ownerReleasable: true } : null,
+    catalogs: { source: r => ['public', 'private'].includes(r.id) ? { ref: r, resource: ref('account'), classification: r.id as 'public' | 'private', active: r.id !== 'private' || sourceActive, ownerReleasable: true } : null,
       recipient: r => ['payee', 'new_service'].includes(r.id) ? { ref: r, active: true } : null, approvals: () => approvals },
     routes: [{ id: 'browser', kind: 'browser', resolve: (_work, payload) => {
       const u = new URL((payload as { url: string }).url); return u.origin !== origin ? null : [ref(u.pathname === '/new' ? 'new_service' : 'payee')];
     } }], browserSource: (_w, url) => ref(new URL(url).pathname === '/private' ? 'private' : 'public') }); cleanups.push(() => d.close());
-  let engineOptions!: EngineOptions, currentUrl = '', next: BrowserRequest | null = null, attributable = true, denied = 0;
+  let engineOptions!: EngineOptions, currentUrl = '', next: BrowserRequest | null = null, attributable = true, denied = 0, before: Promise<void> | null = null;
+  const entered = Promise.withResolvers<void>();
   const get = (url: string): BrowserRequest => ({ method: 'GET', url, contentType: '', bodyBase64: '', navigation: true });
-  const request = async (r: BrowserRequest) => engineOptions.request({ request: r, main: true, document: true, attributable, cookies: '', send: async () => { currentUrl = r.url; }, deny: async () => { denied++; } });
-  const engine: BrowserEngine = { navigate: async url => request(get(url)), interact: async () => { if (next) await request(next); },
+  const request = async (r: BrowserRequest, intent?: string) => engineOptions.request({ request: r, main: true, document: r.navigation, attributable, ...(intent ? { intent } : {}), cookies: '', send: async () => { if (r.navigation) currentUrl = r.url; }, deny: async () => { denied++; } });
+  const engine: BrowserEngine = { navigate: async url => request(get(url)), interact: async (_kind, _target, _value, _generation, input) => {
+    if (!next) return;
+    const plan = asyncIntent ? input.prepareIntent?.({ url: currentUrl, kind: 'click', value: null, target: { tag: 'button', name: 'send', type: 'button' }, fields: [] }) : null;
+    entered.resolve(); await before; input.guard(); await request(next, plan?.nonce);
+    if (plan) { const code = await plan.settled; if (code) throw new Error(code); }
+  },
     read: async generation => ({ id: 'observed', generation, url: currentUrl, text: 'Private derived content', truncated: false, elements: [] }), image: async () => new Uint8Array([1]), cookie: async () => null, ownerInput: async () => {}, close: async () => {} };
   const gateway = await registerProtectedBrowser({ runtime: 's15', mode: 'general', resource: ref('account'), fences: [], continuity: { path: join(dir, 'browser.sqlite'), create: true },
-    profilePath: join(dir, 'profile'), executablePath: '/unused', site: { classify: r => new URL(r.url).origin !== origin ? null : r.method === 'GET' ? { kind: 'read', private: new URL(r.url).pathname === '/private' } : { kind: 'effect', classes: ['ordinary_edit'], recipients: [], transaction: null, impact: 'reversible', verifyResponse: () => 'succeeded' }, observable: () => true, loginDocuments: [], session: null },
+    profilePath: join(dir, 'profile'), executablePath: '/unused', site: { ...(asyncIntent ? { intent: () => next } : {}), classify: r => new URL(r.url).origin !== origin ? null : r.method === 'GET' ? { kind: 'read', private: new URL(r.url).pathname === '/private' } : { kind: 'effect', classes: ['ordinary_edit'], recipients: [], transaction: null, impact: 'reversible', verifyResponse: () => 'succeeded' }, observable: () => true, loginDocuments: [], session: null },
     upperBound: { attempts: 0, calls: 1, steps: 1, reads: 1, outputBytes: 10000, activeMs: 100, spendMinor: '0' }, now: () => 1000, disclosure: d.browser('browser'), egress: loopbackFixtureEgress }, async options => { engineOptions = options; return engine; });
   const f = fixture({ adapters: [gateway.adapter], reads: [gateway.readHandler], catalogs: base => d.catalogs(base) });
   cleanups.push(() => f.cleanup()); cleanups.push(() => gateway.close());
@@ -40,8 +46,38 @@ async function setup() {
   f.install(); gateway.attach(f.service); d.attach(f.service); const actor = f.admit({ access: 'effect' }).actor!, work = gateway.open(actor);
   const execute = (input: Omit<Extract<BrowserOperation, { kind: 'navigate' }>, 'generation'> | { kind: 'read' | 'screenshot' | 'click'; target?: string }) => work.execute({ ...input, generation: work.state().generation } as BrowserOperation);
   const approve = (action: import('../src/s15/policy').ActionRef) => f.service.owner.decide(f.owner, { requestId: 'approval_' + action.id, action, decision: 'approve', expiresAt: 20000 });
-  return { f, d, gateway, work, actor, received, origin, get, execute, approve, approvals, set next(r: BrowserRequest) { next = r; }, set attributable(v: boolean) { attributable = v; }, denied: () => denied };
+  return { f, d, gateway, work, actor, received, origin, get, execute, approve, approvals, entered: entered.promise, get sourceActive() { return sourceActive; }, set sourceActive(v: boolean) { sourceActive = v; }, get before() { return before; }, set before(v: Promise<void> | null) { before = v; }, set next(r: BrowserRequest) { next = r; }, set attributable(v: boolean) { attributable = v; }, denied: () => denied };
 }
+
+test('an async private query uses its pre-input lineage ceiling and releases only the exact approved GET', async () => {
+  const x = await setup(true); await x.execute({ kind: 'navigate', url: x.origin + '/private' });
+  x.next = { ...x.get(x.origin + '/new?q=Derived+private+text'), navigation: false };
+  const held = await x.execute({ kind: 'click', target: 'e1_1' }); expect(held.state).toBe('held'); if (held.state !== 'held') throw Error('expected_hold');
+  expect(x.received).toHaveLength(1); expect(x.f.service.owner.actionSlip(x.f.owner, held.action).action.disclosure?.dataClasses).toContain('private');
+  x.approve(held.action); expect((await x.work.resume(held.action)).state).toBe('ok'); expect(x.received).toHaveLength(2);
+});
+
+for (const phase of ['input', 'approval'] as const) test(`withdrawn private source during the async ${phase} wait sends no disclosure bytes`, async () => {
+  const x = await setup(true); await x.execute({ kind: 'navigate', url: x.origin + '/private' });
+  x.next = { ...x.get(x.origin + '/new?q=Derived+private+text'), navigation: false };
+  if (phase === 'input') {
+    const release = Promise.withResolvers<void>(); x.before = release.promise;
+    const result = x.execute({ kind: 'click', target: 'e1_1' }); await x.entered; x.sourceActive = false; release.resolve();
+    expect((await result).state).not.toBe('ok');
+  } else {
+    const held = await x.execute({ kind: 'click', target: 'e1_1' }); if (held.state !== 'held') throw Error('expected_hold');
+    x.approve(held.action); x.sourceActive = false; await expect(x.work.resume(held.action)).rejects.toMatchObject({ code: 'outside_scope' });
+  }
+  expect(x.received).toHaveLength(1);
+});
+
+test('changed source ancestry after input preparation cannot widen an already planned async query', async () => {
+  const x = await setup(true); await x.execute({ kind: 'navigate', url: x.origin + '/private' });
+  x.next = { ...x.get(x.origin + '/new?q=Derived+private+text'), navigation: false };
+  const release = Promise.withResolvers<void>(); x.before = release.promise;
+  const result = x.execute({ kind: 'click', target: 'e1_1' }); await x.entered; x.d.read(x.actor, ref('public')); release.resolve();
+  expect((await result).state).not.toBe('ok'); expect(x.received).toHaveLength(1);
+});
 
 test('ordinary public pages and public queries do not need a per-page approval', async () => {
   const x = await setup(); expect((await x.execute({ kind: 'navigate', url: x.origin + '/public' })).state).toBe('ok');
