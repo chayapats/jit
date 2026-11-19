@@ -98,3 +98,10 @@ test('abort after handoff closes the exact transport, independently of guest or 
   const channel = await connectFirecrackerVsock({ socketPath: f.path, guestPort: 52, signal: abort.signal, guard() {} });
   abort.abort(); await channel.closed; expect(channel.socket.destroyed).toBe(true); expect(f.commands).toHaveLength(1);
 });
+
+test('a mutable configuration reload cannot change the selected socket, port or guard during negotiation', async () => {
+  const f = await fixture(socket => socket.write('OK 12\n')), other = await fixture(socket => socket.write('OK 99\n')); let guards = 0;
+  const options = { socketPath: f.path, guestPort: 52, guard() { guards++; options.socketPath = other.path; options.guestPort = 99; options.guard = () => {}; } };
+  const channel = await connectFirecrackerVsock(options);
+  expect(guards).toBe(3); expect(f.commands).toEqual(['CONNECT 52\n']); expect(other.commands).toEqual([]); channel.close(); await channel.closed;
+});

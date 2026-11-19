@@ -50,6 +50,26 @@ pinned-host-key, authentication, transport capacity and operation bounds.
 
 ## Lifecycle and evidence
 
+The protected API transport permits only GET `/`, `/version`, `/vm/config` and
+the fixed PUT `/actions` `InstanceStart` body. Unix selection and the guard are
+pinned at construction, rather than changed by a mutable config object. There
+is no DNS/TCP fallback, redirect, ambient credential or automatic retry. Each
+original operation holds one of at most four slots through actual descriptor
+close, with an overall five-second preparation/connect/body/guard budget,
+8 KiB headers and 32 KiB strict UTF-8/duplicate-key-free object JSON. `not_sent`,
+`unknown` and complete `response` are transport observations; none alone proves
+the mutation's effect or authorizes a replacement. A mutation's durable intent
+and current authority must precede the API invocation.
+
+API profile inspection reads the exact version and closed configuration
+between matching instance states, within a separate 15-second total budget.
+It accepts one selected writeback/synchronous root disk, the selected kernel/
+arguments/optional initrd, selected CPU/memory and one selected vsock CID/path.
+NICs, extra disks, vhost-user sockets, MMDS, RAM-loaded/partial boot metadata,
+unknown/configured auxiliary devices and unreviewed paths refuse. These facts
+remain `api_reported`; an independent protected host process/executable/disk/
+socket binding is still required before readiness or isolation can be claimed.
+
 Management accepts only closed inspect/start/stop/checkpoint/restore/retire
 operations on one protected computer. It never accepts arbitrary API paths,
 argv, host files or a model-selected binary. Host prerequisites and immutable

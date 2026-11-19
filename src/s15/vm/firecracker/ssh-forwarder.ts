@@ -18,6 +18,7 @@ export interface FirecrackerSshForwarder {
  * and is retained until both original descriptors close. Pipe backpressure bounds opaque SSH buffers.
  */
 export async function openFirecrackerSshForwarder(options: FirecrackerVsockOptions & { maxConnections?: number }): Promise<FirecrackerSshForwarder> {
+  options = Object.freeze({ ...options });
   const maximum = options.maxConnections ?? 16;
   if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 16) throw new AppError('vm_vsock_invalid');
   const timeoutMs = validateFirecrackerVsock(options);

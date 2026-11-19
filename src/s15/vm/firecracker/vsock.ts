@@ -41,6 +41,8 @@ export function validateFirecrackerVsock(options: FirecrackerVsockOptions): numb
  * This is a transport primitive, not a VM identity proof, management API or protected-host shell.
  */
 export async function connectFirecrackerVsock(options: FirecrackerVsockOptions): Promise<FirecrackerVsockChannel> {
+  // Pin selection across asynchronous guards; a configuration reload must create a new channel.
+  options = Object.freeze({ ...options });
   const timeoutMs = validateFirecrackerVsock(options);
   if (options.signal?.aborted) throw aborted();
   return new Promise<FirecrackerVsockChannel>((resolve, reject) => {
