@@ -27,7 +27,7 @@ export async function buildMobileArtifact(raw: MobileBuildSelection): Promise<Mo
   const git = (args: string[]) => { const result = Bun.spawnSync(["git", "-C", source, ...args], { stdout: "pipe", stderr: "pipe" }); if (result.exitCode) throw Error("mobile_source_unavailable"); return result.stdout.toString().trim(); };
   if (git(["status", "--porcelain"])) throw Error("mobile_source_dirty");
   const commit = git(["rev-parse", "HEAD"]), privateRoot = join(source, ".local/mobile-builds", randomUUID()); mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
-  const node = realpathSync(selection.node), env: Record<string, string | undefined> = { ...process.env, PATH: dirname(node) + ":" + process.env.PATH, NODE_BINARY: node, EXPO_NO_TELEMETRY: "1", EXPO_NO_DOTENV: "1", CI: "1" }; delete env.NODE_OPTIONS;
+  const node = realpathSync(selection.node), env: Record<string, string | undefined> = { ...process.env, PATH: dirname(node) + ":" + process.env.PATH, NODE_BINARY: node, EXPO_NO_TELEMETRY: "1", EXPO_NO_DOTENV: "1", CI: "1" }; delete env.NODE_OPTIONS; delete env.JIT_MOBILE_CONFIG_STAGE;
   let step = 0;
   const run = async (args: string[], cwd = project): Promise<string> => {
     const log = join(privateRoot, `${String(++step).padStart(2, "0")}.log`), fd = openSync(log, "wx", 0o600);
@@ -40,7 +40,9 @@ export async function buildMobileArtifact(raw: MobileBuildSelection): Promise<Mo
   await run([process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"], source);
   await run([process.execPath, "install", "--frozen-lockfile", "--ignore-scripts"]);
   await run([process.execPath, "run", "typecheck"]); await run([process.execPath, "tools/locales.ts"]);
-  await run([node, "node_modules/expo/bin/cli", "prebuild", "--no-install", "--platform", selection.platform === "android" ? "android" : "ios"]);
+  env.JIT_MOBILE_CONFIG_STAGE = "prebuild";
+  try { await run([node, "node_modules/expo/bin/cli", "prebuild", "--no-install", "--platform", selection.platform === "android" ? "android" : "ios"]); }
+  finally { delete env.JIT_MOBILE_CONFIG_STAGE; delete env.JIT_MOBILE_GOOGLE_SERVICES; }
   const native: string[] = [];
   let payload: string;
   if (selection.platform === "ios-simulator") {

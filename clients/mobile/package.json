@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "prebuild": "bun tools/locales.ts && expo prebuild --no-install",
+    "prebuild": "bun tools/locales.ts && JIT_MOBILE_CONFIG_STAGE=prebuild expo prebuild --no-install",
     "bundle:ios": "bun tools/locales.ts && expo export --platform ios --output-dir dist/ios",
     "bundle:android": "bun tools/locales.ts && expo export --platform android --output-dir dist/android"
   },
