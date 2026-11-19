@@ -25,6 +25,7 @@ import { ConnectionRequestCard, ConnectionsView, type ConnectionSeed } from "./C
 import type { ClientConnectionsView } from "../client/contracts";
 import { copy } from "./copy";
 import { useNotifications } from "./useNotifications";
+import { DesktopSettings } from "./DesktopSettings";
 
 type Chip = { key: string; name: string; bytes: number; file?: File; state: "selected" | "uploading" | "validating" | "ready" | "error"; code?: string; receipt?: FileReceipt; uploadId?: string; command?: FileUploadCommand };
 type Draft = { text: string; chips: Chip[]; pending?: ClientMessage; recoveryId?: string; notFound?: boolean; pendingSteer?: ClientSteer };
@@ -78,6 +79,11 @@ function App() {
   // A retained steer with an unknown outcome is resent only with its original ID and target, never as new work.
   const steerMode = !!draft.pendingSteer || !!steering && !draft.chips.length && !pendingId;
   const notifications = useNotifications(client, { available: !!boot?.capabilities.notifications?.available, locale, onOpen: () => { void refresh().catch(() => {}); } });
+  useEffect(() => {
+    const offline = () => { hidePrivate("client_unavailable"); setVoiceSession(value => value + 1); }, online = () => { void bootstrap(); };
+    window.addEventListener("offline", offline); window.addEventListener("online", online);
+    return () => { window.removeEventListener("offline", offline); window.removeEventListener("online", online); };
+  }, []);
   // BOT16-01: the roster and this conversation's Bot. A not-yet-started conversation shows the Bot chosen for it.
   const roster = boot?.bots ?? [], mainBot = roster.find(bot => bot.main);
   const currentBot = roster.find(bot => bot.id === (!rows.length && chosenBot[conversation] ? chosenBot[conversation] : snapshot?.botId)) ?? mainBot;
@@ -330,6 +336,7 @@ function App() {
       <a href="/work">{t("s15.nav.work")}</a><button aria-current={library && libraryAvailable ? "page" : undefined} onClick={() => { if (libraryAvailable) { openLibrary(); return; } if (memory) navigate(conversation); setComputers(false); setConnections(false); setBotsPage(null); setRoutines(false); setLibrary(true); setMenu(false); }}>{t("s16.nav.artifacts")}</button><div className="rail-secondary">{boot?.capabilities.routines?.available && <button aria-current={routines ? "page" : undefined} onClick={() => openRoutines()}>{t("s16.nav.routines")} {(routineAttention ?? boot.routines?.attention ?? 0) > 0 && <span className="count">{routineAttention ?? boot.routines?.attention}</span>}</button>}{boot?.capabilities.memory?.available ? <button aria-current={memory ? "page" : undefined} onClick={() => openMemory()}>{t("s16.nav.memory")}</button> : <a href="/memory">{t("s16.nav.memory")}</a>}{boot?.capabilities.computers?.available && <button aria-current={computers ? "page" : undefined} onClick={() => openComputers()}>{t("s16.nav.computers")}</button>}{(boot?.capabilities.connections?.available || boot?.capabilities.skills?.available) ? <button aria-current={connections ? "page" : undefined} onClick={() => openConnections()}>{t("s16.nav.connections")}</button> : <a href="/resources">{t("s16.nav.connections")}</a>}<a href="/rules">{t("s16.nav.settings")}</a>{boot?.capabilities.notifications?.available && <div className="notify-control"><span>{t("s16.notify.settings")}: {t(!notifications.status ? "s16.common.loading" : notifications.status.support === "unsupported" ? "s16.notify.unsupported" : notifications.status.support === "denied" ? "s16.notify.denied" : notifications.status.code && !notifications.status.enabled ? "s16.notify.failed" : notifications.status.enabled ? "s16.notify.on" : "s16.notify.off")}</span>{notifications.status && notifications.status.support !== "unsupported" && notifications.status.support !== "denied" && <button type="button" disabled={notifications.busy} onClick={() => void (notifications.status?.enabled ? notifications.disable() : notifications.enable()).catch(() => {})}>{t(notifications.status.enabled ? "s16.notify.disable" : "s16.notify.enable")}</button>}</div>}<label>{t("s16.common.language")} <select value={locale} onChange={event => setLocale(event.target.value === "en" ? "en" : "th")}><option value="th">TH</option><option value="en">English</option></select></label></div>
     </nav>
     <main id="conversation-main"><header className="chat-header"><button className="menu-toggle" aria-label={t("s16.common.menu")} onClick={() => setMenu(!menu)}>☰</button><div><h1>{currentBot ? botName(t, currentBot) : t("s16.chat.title")}</h1><p>{t("s16.chat.lead")}</p></div><button onClick={() => { setLibraryRefresh(value => value + 1); void bootstrap(); }}>{t("s16.common.refresh")}</button>{boot?.capabilities.protectedBrowser?.available && <button type="button" onClick={() => setProtectedView(true)}>{t("s16.protected.title")}</button>}</header>
+    <details className="desktop-panel"><summary>{t("s16.desktop.title")}</summary><DesktopSettings t={t} locale={locale} onReconnect={() => { void bootstrap(); }} /></details>
       {protectedView && boot?.capabilities.protectedBrowser?.available && <ProtectedBrowser client={client} t={t} onClose={() => setProtectedView(false)} onFailure={hidePrivate} />}
       {connections ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}

@@ -1,6 +1,6 @@
 // Jit S16 notification worker (s16-notifications/v1). Hand-written classic script, no dependencies, no build step.
-// It shows Web Push notices and opens their in-app path. It has no fetch handler and caches no response: pages, API
-// and every authenticated answer always go to the network. A notice payload carries only an opaque ID, a kind and a
+// It shows Web Push notices and opens their in-app path. The optional desktop extension caches only an inventoried
+// public client package. APIs and every authenticated answer always go to the network. A notice carries an ID, kind and
 // same-origin path; the title and body come from the localized text Jit fills into the line below, so nothing private
 // is shown, stored or sent. A notification only opens the conversation; it never approves, decides or starts anything.
 const config = { copy: {}, icon: null };
@@ -10,7 +10,7 @@ const paths = /^\/s16(?:\/(?:chat|routines)\/[A-Za-z0-9_-]{1,128})?$/;
 const prefs = "jit-s16-notification-prefs";
 const localeKey = "/s16/sw-locale";
 
-self.addEventListener("install", () => { self.skipWaiting(); });
+self.addEventListener("install", () => { if (!config.desktop) self.skipWaiting(); });
 self.addEventListener("activate", event => { event.waitUntil(self.clients.claim()); });
 
 // The page tells the worker its language when the owner turns notifications on or changes the language.

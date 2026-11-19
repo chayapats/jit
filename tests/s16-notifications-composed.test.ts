@@ -132,10 +132,10 @@ test("notification routes keep the protected client checks; the worker is public
   const worker = await raw("/s16/sw.js", {});
   expect(worker.status).toBe(200);
   expect(worker.headers.get("cache-control")).toBe("no-store"); expect(worker.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-  expect(worker.headers.get("content-security-policy")).toBe("default-src 'none'; img-src 'self'");
+  expect(worker.headers.get("content-security-policy")).toBe("default-src 'none'; connect-src 'self'; img-src 'self'");
   const script = await worker.text();
   for (const text of ["จิตรอคุณอยู่", "Jit needs you", "Jit finished", "งานประจำมีผลใหม่", "notificationclick", "showNotification"]) expect(script).toContain(text);
-  expect(script).not.toContain("addEventListener(\"fetch\""); expect(script).not.toContain(settings.publicKey);
+  expect(script).toContain("s16-desktop-release/v1"); expect(script).not.toContain(settings.publicKey);
   expect((await raw("/s16/sw.js?v=1", {})).status).toBe(405);
   expect((await raw("/s16/sw.js", { method: "POST" })).status).toBe(405);
 

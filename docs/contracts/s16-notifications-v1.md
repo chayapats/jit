@@ -65,7 +65,7 @@ Disclosure: browser push services (Google FCM, Mozilla autopush, Apple, Microsof
 
 ## Service worker
 
-`GET /s16/sw.js` serves a hand-written classic worker without a session (it holds no installation or owner data), `no-store`, `nosniff`, CSP `default-src 'none'; img-src 'self'`. Its default scope is `/s16/`. It has no fetch handler and caches no response.
+`GET /s16/sw.js` serves a hand-written classic worker without a session (it holds no installation or owner data), `no-store`, `nosniff`, CSP `default-src 'none'; connect-src 'self'; img-src 'self'`. Its default scope is `/s16/`. DESKTOP16-01 adds the [desktop public-package lifecycle](s16-desktop-v1.md): a fetch handler can serve only its generated, hash-verified public assets and neutral S16 document shell. Private pages/responses, APIs, files, approvals and effects remain network-only and are never cached or queued. Standalone notification-only generation retains no fetch handler. The Web Push subscription, payload, click and permission contracts below are unchanged.
 
 - `push`: validates the payload shape and shows a localized generic title/body (`s16.notify.<kind>.title|body` from both dictionaries), `tag` = notice ID, `data.path`. An unreadable payload shows the generic `s16.notify.generic.*` notice pointing at `/s16`.
 - Language: the page posts `{ type: "jit-locale", locale }`; the worker keeps it in a small Cache Storage entry. Otherwise `navigator.language` starting with `en` selects English, else Thai.

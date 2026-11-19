@@ -108,6 +108,8 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
   const headers = { cookie: `jit_s14=${secretSession}`, origin: 'http://localhost:3099', 'x-csrf-token': csrf, 'content-type': 'application/json' };
   return { parent, directory, options, modelPrompts, interpreterPrompts, recipientApprovals, google, engine, recordService, policyInput: policy, route, protocol, payment, files, vmCalls, records, choice,
+    /** Controlled fixture credential for actual loopback HTTP/browser tests. Never emitted in evidence. */
+    ownerCookie: headers.cookie,
     get service() { return service; }, get owner() { return owner; }, get liveVm() { return liveVm; }, get implementations() { return implementations; }, get snapshots() { return snapshots; }, dataSources, get uploads() { return uploads; },
     get now() { return now; }, advance(ms: number) { now += ms; }, set generation(v: number) { generation = v; }, set sourceLive(v: boolean) { sourceLive = v; },
     set interpretation(value: typeof interpretation) { interpretation = value; }, set cleanupConfirmed(value: boolean) { cleanupConfirmed = value; }, set script(value: typeof script) { script = value; },
