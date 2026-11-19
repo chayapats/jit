@@ -1,0 +1,27 @@
+{
+  "contract": "s16-mobile-build-tools/v1",
+  "gradle": {
+    "version": "9.4.1",
+    "source": "https://services.gradle.org/distributions/gradle-9.4.1-bin.zip",
+    "sha256": "2ab2958f2a1e51120c326cad6f385153bb11ee93b3c216c5fccebfdfbb7ec6cb"
+  },
+  "aapt2": {
+    "version": "9.2.1-15009934",
+    "files": [
+      {
+        "name": "aapt2-9.2.1-15009934-osx.jar",
+        "source": "https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/9.2.1-15009934/aapt2-9.2.1-15009934-osx.jar",
+        "officialSha1": "10df937bff78cf8a6d4a45b017864ae4eb64a037",
+        "sha256": "ece4bbeb8a9b89410943cd83a12446a93741d1a8a249873d830653bd84fb9d44",
+        "bytes": 4416438
+      },
+      {
+        "name": "aapt2-9.2.1-15009934.pom",
+        "source": "https://dl.google.com/dl/android/maven2/com/android/tools/build/aapt2/9.2.1-15009934/aapt2-9.2.1-15009934.pom",
+        "officialSha1": "7d871be74e3b2a0512b81ba111b390f012dd74fa",
+        "sha256": "3f422e9f421a692446b3cc480a1c78b53b29ea934fd67ad52786ef5cd6a67e87",
+        "bytes": 1096
+      }
+    ]
+  }
+}
