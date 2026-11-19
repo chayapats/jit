@@ -9,7 +9,7 @@ function secureStore() {
   const port: MobileSecureStore = { async get(key) { return records.get(key) ?? null; }, async set(key, value) { writes.push(key); records.set(key, value); }, async delete(key) { records.delete(key); } };
   return { port, records, writes };
 }
-const response = (url: string, value: Response) => ({ url, status: value.status, redirected: false, body: value.body, headers: value.headers });
+const response = (url: string, value: Response): Response => { Object.defineProperty(value, "url", { value: url }); return value; };
 const login = (url: string, more: Record<string, string> = {}) => response(url, new Response(null, { status: 303, headers: { Location: "/", "Set-Cookie": "__Host-jit_s14=" + cookie + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400; Secure", ...more } }));
 async function seed(store: ReturnType<typeof secureStore>, serviceOrigin: string, value = cookie, expiresAt = Date.now() + 3600000) {
   const service = await mobileServiceId(serviceOrigin);
@@ -69,11 +69,22 @@ test("authenticated native requests retain exact target, empty cookie jar and ze
   substitute = ""; length = "999999999"; await expect(native.fetch(request())).rejects.toMatchObject({ code: "mobile_response_limit" }); expect(calls).toHaveLength(3);
 });
 
+test("the streaming native response survives when the platform global Response constructor is unusable", async () => {
+  const store = secureStore(); await seed(store, origin); const original = globalThis.Response;
+  const value = response(origin + "/api/s16/client/bootstrap", Response.json({ native: true }));
+  const native = new MobileTransport({ origin, store: store.port, fetch: async () => value }); await native.restore();
+  try {
+    globalThis.Response = new Proxy(original, { construct() { throw Error("Legacy RN Response cannot synthesize the streaming binary body"); } });
+    const retained = await native.fetch(new Request(origin + "/api/s16/client/bootstrap"));
+    expect(retained).toBe(value); expect(retained.bodyUsed).toBe(false); expect(await retained.json()).toEqual({ native: true });
+  } finally { globalThis.Response = original; }
+});
+
 test("background cancellation settles before an uncooperative late native response and disposes it", async () => {
   const store = secureStore(); await seed(store, origin); const arrived = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let disposed = false;
   const native = new MobileTransport({ origin, store: store.port, fetch: async url => {
     arrived.resolve(); await release.promise;
-    return { url, status: 200, redirected: false, headers: new Headers({ "Content-Type": "application/json" }), body: new ReadableStream({ cancel() { disposed = true; } }) };
+    return response(url, new Response(new ReadableStream({ cancel() { disposed = true; } }), { headers: { "Content-Type": "application/json" } }));
   } });
   await native.restore(); const pending = native.fetch(new Request(origin + "/api/s16/client/bootstrap")); await arrived.promise; native.pause();
   await expect(pending).rejects.toMatchObject({ code: "mobile_request_failed" });
@@ -84,7 +95,7 @@ test("background cancellation settles before an uncooperative late native respon
 test("background also aborts a stalled private body after successful headers", async () => {
   const store = secureStore(); await seed(store, origin); const reading = Promise.withResolvers<void>(); let disposed = false;
   // Disable eager stream pulling: this barrier proves the adapter reached its body read after validating headers.
-  const native = new MobileTransport({ origin, store: store.port, fetch: async url => ({ url, status: 200, redirected: false, headers: new Headers({ "Content-Type": "application/json" }), body: new ReadableStream({ pull() { reading.resolve(); }, cancel() { disposed = true; } }, { highWaterMark: 0 }) }) });
+  const native = new MobileTransport({ origin, store: store.port, fetch: async url => response(url, new Response(new ReadableStream({ pull() { reading.resolve(); }, cancel() { disposed = true; } }, { highWaterMark: 0 }), { headers: { "Content-Type": "application/json" } })) });
   await native.restore(); const pending = native.fetch(new Request(origin + "/api/s16/client/bootstrap")); await reading.promise; native.pause();
   await expect(pending).rejects.toMatchObject({ code: "mobile_request_failed" }); expect(disposed).toBe(true);
 });

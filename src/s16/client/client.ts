@@ -19,7 +19,12 @@ export class JitClientError extends Error {
 }
 /** Fetch injection supports native session adapters and deterministic tests. Native adapters add the
  * authenticated cookie and exact configured Origin on POST; browsers supply Origin themselves. */
-export interface JitClientOptions { origin: string; fetch?: (request: Request) => Promise<Response> }
+export interface JitClientOptions {
+  origin: string;
+  fetch?: (request: Request) => Promise<Response>;
+  /** Native ArrayBuffer-safe binary POST port. Same request/session/redirect guards; bytes are an immutable snapshot. */
+  fetchBytes?: (request: Request, bytes: Uint8Array<ArrayBuffer>) => Promise<Response>;
+}
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : "client_unavailable";
@@ -52,6 +57,7 @@ const callView = (value: unknown): value is VoiceCallView => {
 export class JitClient {
   readonly origin: string;
   readonly #fetch: (request: Request) => Promise<Response>;
+  readonly #fetchBytes: JitClientOptions["fetchBytes"];
   #csrf: string | null = null;
   #sessionGeneration = 0;
   #authenticatedBefore = false;
@@ -60,7 +66,7 @@ export class JitClient {
   constructor(options: JitClientOptions) {
     const url = new URL(options.origin);
     if (!["https:", "http:"].includes(url.protocol) || url.origin !== options.origin || url.username || url.password) throw new JitClientError("client_origin_invalid", null, "not_sent");
-    this.origin = url.origin; this.#fetch = options.fetch ?? (request => fetch(request));
+    this.origin = url.origin; this.#fetch = options.fetch ?? (request => fetch(request)); this.#fetchBytes = options.fetchBytes;
   }
   /** Read current capabilities/navigation and establish CSRF for explicit subsequent commands. */
   async bootstrap(signal?: AbortSignal): Promise<Omit<ClientBootstrap, "csrf">> {
@@ -713,9 +719,10 @@ export class JitClient {
     if (signal?.aborted) throw new JitClientError("aborted", null, "not_sent", requestId);
     const headers: Record<string, string> = { accept: "application/json" };
     if (method === "POST") { headers["content-type"] = raw ? "application/octet-stream" : "application/json"; headers["x-csrf-token"] = this.#csrf!; }
-    const request = new Request(`${this.origin}/api/s16/client${path}`, { method, headers, credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}), ...(raw ? { body: new Uint8Array(raw).buffer } : body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const nativeBytes = raw && this.#fetchBytes ? new Uint8Array(raw) : undefined;
+    const request = new Request(`${this.origin}/api/s16/client${path}`, { method, headers, credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}), ...(nativeBytes ? {} : raw ? { body: new Uint8Array(raw).buffer } : body === undefined ? {} : { body: JSON.stringify(body) }) });
     let response: Response;
-    try { response = await this.#fetch(request); }
+    try { response = nativeBytes ? await this.#fetchBytes!(request, nativeBytes) : await this.#fetch(request); }
     catch { throw new JitClientError(signal?.aborted ? "aborted" : "connection_lost", null, method === "POST" ? "unknown" : "not_sent", requestId); }
     if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId); }
     if (response.status === 401 || response.status === 403) this.clear();

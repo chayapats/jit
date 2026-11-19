@@ -4,8 +4,8 @@ export interface MobileSecureStore {
   set(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
 }
-/** Narrow native Fetch result; no browser cookie jar, redirect following or renderer bridge is part of this port. */
-export type MobileFetchResponse = Pick<Response, "status" | "headers" | "body" | "url" | "redirected">;
+/** Streaming native Fetch response, including clone/blob support; the legacy RN global Response is insufficient. */
+export type MobileFetchResponse = Response;
 /** Actual Expo/native fetch injection. Tests supply protocol or owning-service fixtures explicitly. */
 export type MobileFetch = (url: string, init: RequestInit) => Promise<MobileFetchResponse>;
 /** Safe diagnostics never contain a password, cookie, private response, native path or underlying error message. */
@@ -116,12 +116,20 @@ export class MobileTransport {
   }
   /** JitClient fetch injection. Renderer/file/deep-link input cannot broaden the authenticated destination. */
   async fetch(request: Request): Promise<Response> {
+    return this.#authenticatedFetch(request);
+  }
+  /** Same boundary for immutable binary uploads without RN's incompatible Request/Blob ArrayBuffer constructor. */
+  async fetchBytes(request: Request, bytes: Uint8Array<ArrayBuffer>): Promise<Response> {
+    if (request.method !== "POST" || bytes.byteLength > mobileTransportLimits.responseBytes) return fail("mobile_response_limit");
+    return this.#authenticatedFetch(request, new Uint8Array(bytes));
+  }
+  async #authenticatedFetch(request: Request, nativeBytes?: Uint8Array<ArrayBuffer>): Promise<Response> {
     const generation = this.#generation; this.#current(generation);
     const url = new URL(request.url);
     if (url.origin !== this.origin || url.username || url.password || url.hash || !(url.pathname === "/api/s16/client" || url.pathname.startsWith("/api/s16/client/")) || !["GET", "POST"].includes(request.method)) return fail("mobile_origin_invalid");
     if (!this.authenticated) { this.#credential = null; return fail("mobile_session_missing"); }
     const headers = new Headers(request.headers); headers.delete("authorization"); headers.set("Cookie", this.#cookieName() + "=" + this.#credential!.token); headers.set("Origin", this.origin); headers.set("Cache-Control", "no-store"); headers.set("Pragma", "no-cache");
-    const body = request.method === "POST" ? await request.arrayBuffer() : undefined; this.#current(generation);
+    const body = request.method === "POST" ? nativeBytes?.buffer ?? await request.arrayBuffer() : undefined; this.#current(generation);
     const response = await this.#network(url.href, { method: request.method, headers, ...(body !== undefined ? { body } : {}), signal: request.signal, redirect: "error" }, generation, mobileTransportLimits.responseMs, mobileTransportLimits.responseBytes);
     if (response.status === 401 || response.status === 403) {
       await this.#storage(async key => { this.#current(generation); await this.#store.delete(key); this.#current(generation); this.#credential = null; });
@@ -133,7 +141,7 @@ export class MobileTransport {
     const abort = () => { stop.abort(); interrupted.reject(new MobileClientError("mobile_request_failed")); };
     if (init.signal?.aborted || nativeStop.aborted) return fail("mobile_request_failed");
     init.signal?.addEventListener("abort", abort, { once: true }); nativeStop.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(abort, timeoutMs); let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, rawResponse: MobileFetchResponse | undefined, finished = false;
+    const timer = setTimeout(abort, timeoutMs); let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, rawResponse: MobileFetchResponse | undefined, finished = false, complete = false;
     try {
       const pending = this.#fetch(url, { ...init, credentials: "omit", signal: stop.signal });
       // A broken native transport may resolve after cancellation. Dispose it without allowing a late private read.
@@ -143,15 +151,15 @@ export class MobileTransport {
       if (response.redirected || response.url !== url || response.status < 200 || response.status > 599 || init.redirect !== "manual" && response.status >= 300 && response.status < 400) return fail("mobile_response_invalid");
       const length = response.headers.get("content-length");
       if (length !== null && (!/^[0-9]+$/.test(length) || Number(length) > maxBytes)) return fail("mobile_response_limit");
-      reader = response.body?.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
+      // Expo Fetch supplies the stream-aware Response. RN's global Response constructor has no streaming body
+      // and its Blob constructor rejects ArrayBuffer input. Validate a clone, then retain the real native response.
+      reader = response.clone().body?.getReader(); let bytes = 0;
       while (reader) {
         const part = await Promise.race([reader.read(), interrupted.promise]); this.#current(generation); if (stop.signal.aborted) return fail("mobile_request_failed"); if (part.done) break;
-        bytes += part.value.byteLength; if (bytes > maxBytes) return fail("mobile_response_limit"); chunks.push(part.value);
+        bytes += part.value.byteLength; if (bytes > maxBytes) return fail("mobile_response_limit");
       }
-      const joined = new Uint8Array(bytes); let offset = 0; for (const chunk of chunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
-      const headers = new Headers(response.headers); headers.delete("content-encoding"); headers.delete("content-length");
-      return new Response([204, 205, 304].includes(response.status) ? null : joined, { status: response.status, headers });
+      complete = true; return response;
     } catch (error) { if (error instanceof MobileClientError) throw error; this.#current(generation); return fail("mobile_request_failed"); }
-    finally { finished = true; clearTimeout(timer); init.signal?.removeEventListener("abort", abort); nativeStop.removeEventListener("abort", abort); stop.abort(); if (reader) void reader.cancel().catch(() => {}); else void rawResponse?.body?.cancel().catch(() => {}); }
+    finally { finished = true; clearTimeout(timer); init.signal?.removeEventListener("abort", abort); nativeStop.removeEventListener("abort", abort); if (!complete) { stop.abort(); void rawResponse?.body?.cancel().catch(() => {}); } void reader?.cancel().catch(() => {}); }
   }
 }
