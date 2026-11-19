@@ -78,6 +78,7 @@ public final class JitNativeGateModule: Module {
   public func definition() -> ModuleDefinition {
     Name("JitNativeGate")
     Events("lifecycle")
+    AsyncFunction("nativePushConfigured") { true }.runOnQueue(.main)
     OnStartObserving {
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }

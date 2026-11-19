@@ -73,6 +73,11 @@ class JitNativeGateModule : Module() {
   private val listener: (Map<String, Any>) -> Unit = { value -> sendEvent("lifecycle", value) }
   override fun definition() = ModuleDefinition {
     Name("JitNativeGate")
+    AsyncFunction("nativePushConfigured") {
+      val context = appContext.reactContext ?: return@AsyncFunction false
+      val id = context.resources.getIdentifier("google_app_id", "string", context.packageName)
+      id != 0 && context.resources.getString(id).isNotBlank()
+    }.runOnQueue(Queues.MAIN)
     Events("lifecycle")
     OnStartObserving { JitNativeGateRuntime.addListener(listener) }
     OnStopObserving { JitNativeGateRuntime.removeListener(listener) }

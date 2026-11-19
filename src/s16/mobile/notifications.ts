@@ -7,6 +7,8 @@ import { mobileServiceId, type MobileSecureStore } from "./transport";
 /** Native permission and OS token adapter. Only requestPermission can display an OS prompt. */
 export interface MobileNotificationOs {
   readonly provider: NativeProviderKind;
+  /** Read-only local configuration check; no permission request, token acquisition or provider registration. */
+  configured?(): Promise<boolean>;
   permission(): Promise<"granted" | "denied" | "undetermined" | "provisional">;
   requestPermission(): Promise<"granted" | "denied" | "undetermined" | "provisional">;
   token(): Promise<string>;
@@ -64,6 +66,7 @@ export class MobileNotifications {
   async #revalidate(binding: Binding): Promise<void> { await finite(this.os.active()); await this.session.restore(); this.#check(binding); }
   async #available(binding: Binding): Promise<void> {
     if (!this.session.projection.bootstrap?.capabilities.nativeNotifications?.available) failure("mobile_notification_unavailable");
+    if (this.os.configured && !await finite(this.os.configured())) failure("mobile_notification_unavailable"); this.#check(binding);
     const settings = await this.session.perform((client, signal) => client.nativeNotificationSettings(signal)); this.#check(binding);
     if (settings.service !== await mobileServiceId(this.session.transport.origin) || !settings.providers.some(provider => provider.provider === this.os.provider && provider.available)) failure("mobile_notification_unavailable");
     this.#check(binding);
@@ -75,13 +78,13 @@ export class MobileNotifications {
   async #run(operation: () => Promise<void>): Promise<void> {
     if (this.#working) return; this.#working = true; this.#publish(this.#view.state, this.#view.canDisable);
     try { await operation(); }
-    catch (error) { this.#publish("uncertain", this.#view.canDisable); throw error; }
+    catch (error) { this.#publish(error && typeof error === "object" && "code" in error && error.code === "mobile_notification_unavailable" ? "unavailable" : "uncertain", this.#view.canDisable); throw error; }
     finally { this.#working = false; this.#publish(this.#view.state, this.#view.canDisable); }
   }
   /** Read-only recovery of the original protected token; permission restoration never registers or sends work. */
   async refresh(): Promise<void> { return this.#run(async () => {
     const binding = this.#binding(), saved = await this.#saved(binding);
-    if (!this.session.projection.bootstrap?.capabilities.nativeNotifications?.available) { this.#publish("unavailable", !!saved); return; }
+    if (!this.session.projection.bootstrap?.capabilities.nativeNotifications?.available || this.os.configured && !await finite(this.os.configured())) { this.#check(binding); this.#publish("unavailable", !!saved); return; } this.#check(binding);
     if (!saved) { this.#publish("off"); return; }
     const subscribed = await this.#lookup(binding, saved), permission = await finite(this.os.permission()); this.#check(binding);
     if (!subscribed) { this.#publish("off", false); return; }

@@ -71,6 +71,16 @@ test("denial and unavailable setup never acquire a token; storage failure sends 
   } finally { await f.m.close(); }
 });
 
+test("missing native Android client configuration is unavailable before OS permission and never registers a token", async () => {
+  const f = await fixture();
+  try {
+    f.os.configured = async () => false;
+    await f.control.refresh(); expect(f.control.projection.state).toBe("unavailable");
+    await expect(f.control.enable("th")).rejects.toMatchObject({ code: "mobile_notification_unavailable" });
+    expect(f.control.projection.state).toBe("unavailable"); expect(f.requests).toBe(0); expect(f.tokenReads).toBe(0); expect(f.m.f.vmCalls).toEqual([]);
+  } finally { await f.m.close(); }
+});
+
 test("token rotation and revoked permission cannot display enabled; explicit disable removes the original binding", async () => {
   const f = await fixture(); let posts = 0;
   try {

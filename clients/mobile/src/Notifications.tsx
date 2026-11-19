@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import { MobileNotifications, type MobileNotificationOs, type MobileNotificationView } from "../../../src/s16/mobile/notifications";
 import { nativeNotice, type NativeNotice } from "../../../src/s16/mobile/notices";
 import { nativeActive } from "./files";
+import Gate from "../modules/jit-native-gate";
 import { Button, UiText, type Ui } from "./ui";
 
 function permission(value: Notifications.NotificationPermissionsStatus): Awaited<ReturnType<MobileNotificationOs["permission"]>> {
@@ -15,12 +16,13 @@ function permission(value: Notifications.NotificationPermissionsStatus): Awaited
 export function notificationOs(title: string): MobileNotificationOs {
   return {
     provider: Platform.OS === "ios" ? "apns" : "fcm", active: nativeActive,
+    configured: () => Gate.nativePushConfigured(),
     async permission() { return permission(await Notifications.getPermissionsAsync()); },
     async requestPermission() {
       if (Platform.OS === "android") await Notifications.setNotificationChannelAsync("jit-work", { name: title, importance: Notifications.AndroidImportance.DEFAULT, lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE });
       return permission(await Notifications.requestPermissionsAsync({ ios: { allowAlert: true, allowSound: true, allowBadge: false, allowProvisional: false } }));
     },
-    async token() { const token = await Notifications.getDevicePushTokenAsync(); if (token.type !== Platform.OS || typeof token.data !== "string") throw Object.assign(Error(), { code: "mobile_notification_unavailable" }); return token.data; }
+    async token() { try { const token = await Notifications.getDevicePushTokenAsync(); if (token.type !== Platform.OS || typeof token.data !== "string") throw Error(); return token.data; } catch { throw Object.assign(Error(), { code: "mobile_notification_unavailable" }); } }
   };
 }
 const stateKeys: Record<MobileNotificationView["state"], Parameters<Ui["t"]>[0]> = {
