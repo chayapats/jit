@@ -71,3 +71,25 @@ native('SPA observations bind the actual safe route and refuse text and screensh
     for (const kind of ['read', 'screenshot'] as const) expect(await s.run({ kind })).toEqual({ state: 'denied', code: 'secret_boundary' });
   } finally { await s.close(); }
 }, 60000);
+
+native('completed Bot leases release during real owner input and a waiting session probe without losing custody', async () => {
+  const s = await scenario('fetch');
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  try {
+    expect((await s.run({ kind: 'navigate', url: s.server.origin + '/login' })).state).toBe('ok');
+    const owner = await s.f.gateway.owner.takeover(s.f.owner), before = s.f.gateway.owner.state(s.f.owner);
+    s.f.work.release(); expect(s.f.gateway.owner.state(s.f.owner)).toEqual(before);
+    const controls = await s.f.gateway.owner.controls(s.f.owner, owner.generation), password = controls.find(control => control.kind === 'password');
+    if (!password) throw Error('password_control_missing');
+    await s.f.gateway.owner.input(s.f.owner, owner.generation, { kind: 'type', field: password.id, value: s.server.password() });
+    const handBack = s.f.gateway.owner.handBack(s.f.owner, owner.generation);
+    const waitingWork = s.f.gateway.open(s.f.admit({ access: 'effect', readLimit: 1000 }).actor!);
+    s.server.beforeResponse = async path => { if (path === '/session') { entered.resolve(); await release.promise; } };
+    const probe = s.f.gateway.owner.checkSession(s.f.owner); await entered.promise;
+    waitingWork.release(); expect(s.f.gateway.owner.state(s.f.owner).generation).toBe(handBack.generation);
+    release.resolve(); expect(await probe).toBe('signed_in');
+    const next = s.f.gateway.open(s.f.admit({ access: 'effect', readLimit: 1000 }).actor!);
+    try { expect((await next.execute({ kind: 'navigate', url: s.server.origin + '/dynamic', generation: next.state().generation })).state).toBe('ok'); expect((await next.execute({ kind: 'read', generation: next.state().generation })).state).toBe('observed'); }
+    finally { next.release(); }
+  } finally { release.resolve(); await s.close(); }
+}, 60000);

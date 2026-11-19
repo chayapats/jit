@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { JitClient } from '../src/s16/client';
 import type { BrowserEngine } from '../src/s15/browser/engine';
-import { composedFixture } from './fixtures/s15-composition';
+import { composedFixture, ref } from './fixtures/s15-composition';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -65,4 +65,37 @@ test('a read-only configured browser truthfully reports that protected sign-in i
   const f = await composedFixture(); cleanups.push(() => f.close());
   const response = await f.request('/api/s16/client/protected-browser'); expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ contract: 's16-protected-browser/v1', signIn: false, login: 'not_signed_in' });
+});
+
+for (const phase of ['owner_control', 'checking'] as const) test(`a completed Bot releases its lease during ${phase} without fencing owner control or the session probe`, async () => {
+  const s = await setup(), { f, client } = s, gateway = f.service.browser!;
+  const admit = () => {
+    const receipt = f.service.policy.owner.admit(f.owner, { requestId: crypto.randomUUID().replaceAll('-', ''), intent: 'execute', access: 'effect', purpose: ref('purpose'), bot: ref('bot'), resources: [ref('account')], recipients: [ref('provider'), ref('browser_service')], selection: f.choice, selectionPin: null, expiresAt: 800000, readLimit: 100 });
+    if (!receipt.work) throw Error('work_not_admitted'); return f.service.policy.control.bindWork(receipt.work.id);
+  };
+  const work = gateway.open(admit()), initial = await client.protectedBrowser();
+  let controlled = (await client.protectedBrowserCommand({ contract: 's16-protected-browser-command/v1', requestId: 'takeover', generation: initial.generation, kind: 'takeover' })).view;
+  if (phase === 'checking') controlled = (await client.protectedBrowserCommand({ contract: 's16-protected-browser-command/v1', requestId: 'hand_back', generation: controlled.generation, kind: 'hand_back', cancel: false })).view;
+  work.release();
+  expect(await client.protectedBrowser()).toMatchObject({ generation: controlled.generation, login: phase });
+  if (phase === 'owner_control') {
+    await client.protectedBrowserCommand({ contract: 's16-protected-browser-command/v1', requestId: 'transient_input', generation: controlled.generation, kind: 'input', input: { kind: 'type', field: 'o1_0', value: 'synthetic-after-work-completion' } }); expect(s.inputs).toBe(1);
+  }
+  const next = gateway.open(admit()); expect(next.state()).toMatchObject({ generation: controlled.generation, login: phase }); next.release();
+});
+
+test('Bot settlement and release do not wait for or cancel independent owner input', async () => {
+  const s = await setup(), { f, client } = s;
+  const receipt = f.service.policy.owner.admit(f.owner, { requestId: 'input_overlap_work', intent: 'execute', access: 'effect', purpose: ref('purpose'), bot: ref('bot'), resources: [ref('account')], recipients: [ref('provider'), ref('browser_service')], selection: f.choice, selectionPin: null, expiresAt: 800000, readLimit: 100 });
+  if (!receipt.work) throw Error('work_not_admitted'); const work = f.service.browser!.open(f.service.policy.control.bindWork(receipt.work.id));
+  const initial = await client.protectedBrowser(), view = (await client.protectedBrowserCommand({ contract: 's16-protected-browser-command/v1', requestId: 'overlap_takeover', generation: initial.generation, kind: 'takeover' })).view;
+  const release = Promise.withResolvers<void>(); s.before = release.promise;
+  const ownerInput = client.protectedBrowserCommand({ contract: 's16-protected-browser-command/v1', requestId: 'overlap_input', generation: view.generation, kind: 'input', input: { kind: 'type', field: 'o1_0', value: 'synthetic-overlap' } });
+  try {
+    await s.entered;
+    // The owner status response is a separate protocol barrier while owner input is still deliberately held.
+    expect(await Promise.race([work.settled().then(() => 'settled'), client.protectedBrowser().then(() => 'status')])).toBe('settled');
+    work.release(); expect((await client.protectedBrowser()).generation).toBe(view.generation);
+  } finally { release.resolve(); await ownerInput; }
+  expect(s.inputs).toBe(1);
 });

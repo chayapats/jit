@@ -356,9 +356,18 @@ export async function registerProtectedBrowser(options: BrowserOptions, factory:
         },
         async settled() {
           if (actor !== workActor || currentLease !== lease) throw new BrowserError('stale_input');
-          await Promise.allSettled([...scopes].filter(s => s.actor === workActor).map(s => s.completion));
+          await Promise.allSettled([...scopes].filter(s => s.actor === workActor && !s.owner).map(s => s.completion));
         },
-        release() { if (actor !== workActor || currentLease !== lease) return; if (busy || pending.size || login === 'owner_control') throw new BrowserError('input_busy'); generation = continuity.advance(); stop(); actor = null; currentLease = null; },
+        release() {
+          if (actor !== workActor || currentLease !== lease) return;
+          if (login === 'owner_control' || login === 'checking') {
+            if ([...scopes].some(s => s.actor === workActor && !s.owner) || [...pending.values()].some(p => p.scope.actor === workActor)) throw new BrowserError('input_busy');
+            // Takeover already fenced this Bot. Its completion must not cancel independent owner input/probes.
+            actor = null; currentLease = null; return;
+          }
+          if (busy || pending.size) throw new BrowserError('input_busy');
+          generation = continuity.advance(); stop(); actor = null; currentLease = null;
+        },
         async resume(action, signal) {
           bound(); if (signal?.aborted) return { state: 'denied', code: 'cancelled' };
           if (login === 'owner_control') return { state: 'denied', code: 'owner_control' };
