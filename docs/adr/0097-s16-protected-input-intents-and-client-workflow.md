@@ -47,6 +47,8 @@ A completed Bot can release its agent lease while the owner holds control or the
 
 The authored protected-browser surface is visibly distinct from the working-computer screen. It shows Taking control, fresh frame/owner control, Return to Bot, Checking session, actual signed-in/unknown state, and a stale/disconnected cover. Agent frames/observations are withheld on secret surfaces. Closing/disconnecting preserves the protected hold, never silently returns agent control. Team reuse depends on current resource/work/input leases and protected observed session facts, without copying cookies or a second per-Bot login ceremony. A held external action uses the existing in-chat exact card; browser control itself does not approve it.
 
+Owner control discovery preserves opaque IDs for the same actual DOM controls, document and generation across concurrent views. Discovery is serialized and remains bounded; a new document or takeover invalidates earlier handles. Background status polling cannot discard an in-flight full owner refresh; a missing frame is retried from current facts rather than left covered indefinitely.
+
 Public and trusted-site proof continues through the working VM browser, with a real public website task and one owner-authenticated trusted-site fixture. Sensitive proof uses a controlled modern website and actual protected ports/native Chromium with synthetic login/TOTP, asynchronous mutations, exact holds and read-back. No live private account is required for independent implementation. Preserve anonymous/free-first Parallel research, bounded query/URL audit and untrusted provenance; a browser failure never selects a different account/vendor/billing route.
 
 ## Durability, compatibility and evidence

@@ -67,6 +67,8 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
   let expectedIntent: EngineIntent | null = null;
   const targets = new Map<string, { handle: ElementHandle<HTMLElement | SVGElement>; generation: number; url: string }>(); let serial = 0;
   const ownerTargets = new Map<string, { handle: ElementHandle<HTMLElement | SVGElement>; generation: number; url: string }>();
+  let ownerDocument = 0, ownerDiscovery: Promise<unknown> = Promise.resolve();
+  page.on('framenavigated', frame => { if (frame === page.mainFrame()) { ownerDocument++; for (const target of ownerTargets.values()) void target.handle.dispose().catch(() => {}); ownerTargets.clear(); } });
   const safeHeaders = (response: BrokerResponse): Record<string, string> => ({
     ...response.headers, ...(response.setCookies.length ? { 'set-cookie': response.setCookies.join('\n') } : {}), 'referrer-policy': 'no-referrer', 'x-dns-prefetch-control': 'off', 'x-content-type-options': 'nosniff', 'permissions-policy': 'camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=()',
     'content-security-policy': options.mode === 'static'
@@ -235,20 +237,38 @@ export async function launchProtectedEngine(options: EngineOptions): Promise<Bro
       return { id: `observation_${n}`, generation, url: page.url(), text: bytes.subarray(0, 32768).toString('utf8'), truncated: bytes.length > 32768, elements };
     },
     async location() { return page.evaluate(() => location.href); },
-    async ownerControls(generation) {
-      ownerTargets.clear(); const n = ++serial, url = page.url(), result: BrowserOwnerControl[] = [];
-      const all = page.locator('input:not([type=hidden]):not([type=file]),textarea,button');
-      for (let i = 0, count = Math.min(await all.count(), 32); i < count; i++) {
-        const el = all.nth(i); if (!await el.isVisible() || !await el.isEnabled()) continue;
-        const data = await el.evaluate(element => {
-          const button = element instanceof HTMLButtonElement || element instanceof HTMLInputElement && ['submit', 'button', 'checkbox', 'radio', 'reset'].includes(element.type);
-          const label = element.getAttribute('aria-label') || ('labels' in element ? Array.from((element as HTMLInputElement).labels ?? []).map(label => label.textContent).join(' ') : '') || (button ? element.textContent : element.getAttribute('placeholder')) || element.getAttribute('name') || 'Field';
-          return { kind: button ? 'button' as const : element.getAttribute('type') === 'password' || element.getAttribute('autocomplete') === 'one-time-code' ? 'password' as const : 'text' as const, label: label.trim().slice(0, 160) };
-        });
-        const handle = await el.elementHandle(); if (!handle) continue;
-        const id = `o${n}_${i}`; ownerTargets.set(id, { handle, generation, url }); result.push({ id, ...data });
-      }
-      if (url !== page.url()) { ownerTargets.clear(); throw new BrowserError('stale_target'); } return result;
+    ownerControls(generation) {
+      const discover = async () => {
+        const n = ++serial, url = page.url(), document = ownerDocument, result: BrowserOwnerControl[] = [];
+        const previous = [...ownerTargets].filter(([, target]) => target.generation === generation && target.url === url);
+        const captured: { handle: ElementHandle<HTMLElement | SVGElement>; data: Omit<BrowserOwnerControl, 'id'>; index: number }[] = [];
+        const retained = new Set<ElementHandle<HTMLElement | SVGElement>>();
+        try {
+          const all = page.locator('input:not([type=hidden]):not([type=file]),textarea,button');
+          for (let i = 0, count = Math.min(await all.count(), 32); i < count; i++) {
+            const el = all.nth(i); if (!await el.isVisible() || !await el.isEnabled()) continue;
+            const data = await el.evaluate(element => {
+              const button = element instanceof HTMLButtonElement || element instanceof HTMLInputElement && ['submit', 'button', 'checkbox', 'radio', 'reset'].includes(element.type);
+              const label = element.getAttribute('aria-label') || ('labels' in element ? Array.from((element as HTMLInputElement).labels ?? []).map(label => label.textContent).join(' ') : '') || (button ? element.textContent : element.getAttribute('placeholder')) || element.getAttribute('name') || 'Field';
+              return { kind: button ? 'button' as const : element.getAttribute('type') === 'password' || element.getAttribute('autocomplete') === 'one-time-code' ? 'password' as const : 'text' as const, label: label.trim().slice(0, 160) };
+            });
+            const handle = await el.elementHandle(); if (handle) captured.push({ handle, data, index: i });
+          }
+          // Compare actual nodes in one private evaluation; page labels/order never identify a retained control.
+          const matches = await page.evaluate(({ known, current }) => current.map(element => known.indexOf(element)), { known: previous.map(([, target]) => target.handle), current: captured.map(field => field.handle) });
+          if (document !== ownerDocument || url !== page.url()) throw new BrowserError('stale_target');
+          const next = new Map<string, { handle: ElementHandle<HTMLElement | SVGElement>; generation: number; url: string }>();
+          for (let i = 0; i < captured.length; i++) {
+            const field = captured[i]!, prior = previous[matches[i]!], id = prior?.[0] ?? `o${n}_${field.index}`, handle = prior?.[1].handle ?? field.handle;
+            retained.add(handle); next.set(id, { handle, generation, url }); result.push({ id, ...field.data });
+          }
+          for (const target of ownerTargets.values()) if (!retained.has(target.handle)) void target.handle.dispose().catch(() => {});
+          ownerTargets.clear(); for (const [id, target] of next) ownerTargets.set(id, target);
+          return result;
+        } finally { await Promise.allSettled(captured.filter(field => !retained.has(field.handle)).map(field => field.handle.dispose())); }
+      };
+      // Concurrent initial discoveries must not mint competing maps for the same document/generation.
+      const task = ownerDiscovery.then(discover); ownerDiscovery = task.catch(() => {}); return task;
     },
     async image(control) {
       const url = page.url(), secret = () => page.locator('input[type=password],input[autocomplete=one-time-code],input[type=file]').count();

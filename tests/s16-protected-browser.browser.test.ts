@@ -50,10 +50,12 @@ for (const width of [1440, 390]) native(`actual composed protected login, async 
   await client.bootstrap(); f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['account'], access: 'effect', subject: null };
   const run = async (next: typeof plan) => { plan = next; stage = 0; const command = client.prepareMessage('conversation', 'Complete the selected protected website step'); await client.send(command); await f.service.conversation.drain(); return client.request(command.requestId); };
   const context = await browser.newContext({ viewport: { width, height: 900 }, locale: width === 1440 ? 'en-US' : 'th-TH' }), errors: string[] = [], external: string[] = [];
-  let disconnect = false;
+  let disconnect = false, delayFrame = false;
+  const slowFrame = { entered: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
   await context.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url()); if (url.origin !== 'http://localhost:3099') { external.push(url.origin); await route.abort(); return; }
     if (disconnect && url.pathname.includes('/protected-browser')) { await route.abort(); return; }
+    if (delayFrame && url.pathname.endsWith('/protected-browser/frame')) { delayFrame = false; slowFrame.entered.resolve(); await slowFrame.release.promise; }
     const response = await f.request(url.pathname + url.search, request.method(), request.method() === 'POST' ? request.postDataJSON() : undefined, { ...request.headers(), host: 'localhost:3099' });
     await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
   });
@@ -65,6 +67,14 @@ for (const width of [1440, 390]) native(`actual composed protected login, async 
     if (process.env.JIT_S16_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.JIT_S16_SCREENSHOT_DIR}/protected-entry-${width}.png` });
     await open.click();
     const dialog = page.getByRole('dialog', { name: copy['s16.protected.title'] }); await dialog.getByRole('button', { name: copy['s16.protected.takeover'], exact: true }).click();
+    await dialog.getByRole('img').waitFor();
+    await dialog.getByRole('button', { name: copy['s16.protected.close'], exact: true }).click();
+    // Reopening an existing owner view must retain a slow full refresh across a background poll tick.
+    await page.clock.install(); delayFrame = true; await open.click(); await slowFrame.entered.promise;
+    await page.clock.fastForward(3100); slowFrame.release.resolve(); await page.clock.resume();
+    await dialog.getByRole('img').waitFor();
+    // Another tab's control discovery must not invalidate this view's already displayed handles.
+    await client.protectedBrowserControls((await client.protectedBrowser()).generation);
     for (const field of ['password', 'otp'] as const) {
       const input = dialog.getByLabel(field, { exact: true }); await input.waitFor(); await input.fill(field === 'password' ? website.password() : website.code());
       await input.press('Enter');
@@ -105,5 +115,5 @@ for (const width of [1440, 390]) native(`actual composed protected login, async 
     const secret = website.password(); expect(prompts.some(prompt => prompt.includes(secret))).toBe(false);
     for (const entry of readdirSync(f.directory, { recursive: true, withFileTypes: true })) if (entry.isFile() && !entry.parentPath.includes('/profiles')) expect(readFileSync(join(entry.parentPath, entry.name)).includes(Buffer.from(secret))).toBe(false);
     expect(errors).toEqual([]); expect(external).toEqual([]);
-  } finally { await context.close(); await f.close(); website.close(); }
+  } finally { slowFrame.release.resolve(); await context.close(); await f.close(); website.close(); }
 }, 120000);

@@ -13,29 +13,30 @@ type Command = Omit<Extract<ProtectedBrowserCommand, { kind: 'input' }>, 'contra
 export function ProtectedBrowser({ client, t, onClose, onFailure }: { client: JitClient; t: Copy; onClose(): void; onFailure(error: unknown): void }) {
   const [view, setView] = useState<ProtectedBrowserView | null>(null), [controls, setControls] = useState<BrowserOwnerControl[]>([]), [draft, setDraft] = useState<Record<string, string>>({});
   const [frame, setFrame] = useState<string | null>(null), [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
-  const dialog = useRef<HTMLDialogElement>(null), heading = useRef<HTMLHeadingElement>(null), current = useRef<ProtectedBrowserView | null>(null), image = useRef<string | null>(null), epoch = useRef(0), sending = useRef(false), alive = useRef(true);
+  const dialog = useRef<HTMLDialogElement>(null), heading = useRef<HTMLHeadingElement>(null), current = useRef<ProtectedBrowserView | null>(null), image = useRef<string | null>(null), epoch = useRef(0), sending = useRef(false), alive = useRef(true), refreshing = useRef(0);
   const clear = () => { if (image.current) URL.revokeObjectURL(image.current); image.current = null; setFrame(null); setControls([]); setDraft({}); };
   const fail = (failure: unknown) => {
     clear(); setError(failure instanceof JitClientError ? failure.code : 'client_unavailable');
     if (failure instanceof JitClientError && ([401, 403].includes(failure.status ?? 0) || ['authentication_required', 'authorization_required', 'csrf_rejected'].includes(failure.code))) onFailure(failure);
   };
   const refresh = async (full = true) => {
-    const turn = ++epoch.current;
+    const turn = ++epoch.current; refreshing.current++;
     try {
       const next = await client.protectedBrowser(); if (!alive.current || turn !== epoch.current) return;
       const changed = next.generation !== current.current?.generation || next.login !== current.current?.login;
       current.current = next; setView(next); setError(null);
       if (changed || next.login !== 'owner_control' || next.settling || document.visibilityState !== 'visible') clear();
-      if ((full || changed) && next.login === 'owner_control' && !next.settling && document.visibilityState === 'visible') {
+      if ((full || changed || !image.current) && next.login === 'owner_control' && !next.settling && document.visibilityState === 'visible') {
         const [blob, fields] = await Promise.all([client.protectedBrowserFrame(next.generation), client.protectedBrowserControls(next.generation)]);
         if (!alive.current || turn !== epoch.current) return;
         clear(); image.current = URL.createObjectURL(blob); setFrame(image.current); setControls(fields);
       }
     } catch (failure) { if (alive.current && turn === epoch.current) fail(failure); }
+    finally { refreshing.current--; }
   };
   useEffect(() => {
     const element = dialog.current; alive.current = true; element?.showModal(); heading.current?.focus(); void refresh();
-    const timer = setInterval(() => { if (!sending.current) void refresh(false); }, 3000);
+    const timer = setInterval(() => { if (!sending.current && !refreshing.current) void refresh(false); }, 3000);
     const visibility = () => { epoch.current++; clear(); if (document.visibilityState === 'visible' && !sending.current) void refresh(); };
     document.addEventListener('visibilitychange', visibility);
     return () => { alive.current = false; epoch.current++; clearInterval(timer); document.removeEventListener('visibilitychange', visibility); if (image.current) URL.revokeObjectURL(image.current); element?.close(); };

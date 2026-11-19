@@ -5,6 +5,24 @@ import { browserFixture, browserSite } from './fixtures/s15-browser';
 
 const native = process.env.JIT_BROWSER_LIVE === '1' ? test : test.skip;
 const observation = (result: BrowserResult): BrowserObservation => { if (result.state !== 'observed') throw Error(JSON.stringify(result)); return result.observation; };
+
+native('concurrent owner views keep current-document control IDs usable until takeover', async () => {
+  const server = browserSite(), f = await browserFixture('general', server.site);
+  try {
+    expect((await f.work.execute({ kind: 'navigate', url: server.origin + '/login', generation: f.work.state().generation })).state).toBe('ok');
+    const owner = await f.gateway.owner.takeover(f.owner);
+    const [first, second] = await Promise.all([f.gateway.owner.controls(f.owner, owner.generation), f.gateway.owner.controls(f.owner, owner.generation)]);
+    expect(first).toEqual(second);
+    expect(await f.gateway.owner.controls(f.owner, owner.generation)).toEqual(first);
+    const password = first.find(control => control.kind === 'password'); if (!password) throw Error('password_control_missing');
+    await f.gateway.owner.input(f.owner, owner.generation, { kind: 'type', field: password.id, value: server.password() });
+    const next = await f.gateway.owner.takeover(f.owner, owner.generation);
+    const fresh = await f.gateway.owner.controls(f.owner, next.generation); expect(fresh.map(control => control.id)).not.toContain(password.id);
+    await expect(f.gateway.owner.input(f.owner, next.generation, { kind: 'type', field: password.id, value: server.password() })).rejects.toMatchObject({ code: 'stale_target' });
+    expect(server.attempts()).toEqual({ login: 0, verification: 0 });
+  } finally { await f.cleanup(); server.close(); }
+}, 60000);
+
 async function scenario(mode: 'fetch' | 'xhr' | 'double' | 'tamper') {
   const server = browserSite({ asyncIntent: mode }), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   server.beforeResponse = async path => { if (path === '/dynamic-intent-ready') { entered.resolve(); await release.promise; } };
