@@ -137,8 +137,10 @@ export class MobileTransport {
     return response;
   }
   async #network(url: string, init: RequestInit, generation: number, timeoutMs: number, maxBytes: number): Promise<Response> {
-    this.#current(generation); const stop = new AbortController(), interrupted = Promise.withResolvers<never>(), nativeStop = this.#stop.signal;
-    const abort = () => { stop.abort(); interrupted.reject(new MobileClientError("mobile_request_failed")); };
+    this.#current(generation); const stop = new AbortController(), nativeStop = this.#stop.signal;
+    let rejectInterrupted!: (error: MobileClientError) => void;
+    const interrupted = new Promise<never>((_resolve, reject) => { rejectInterrupted = reject; });
+    const abort = () => { stop.abort(); rejectInterrupted(new MobileClientError("mobile_request_failed")); };
     if (init.signal?.aborted || nativeStop.aborted) return fail("mobile_request_failed");
     init.signal?.addEventListener("abort", abort, { once: true }); nativeStop.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(abort, timeoutMs); let reader: ReadableStreamDefaultReader<Uint8Array> | undefined, rawResponse: MobileFetchResponse | undefined, finished = false, complete = false;
@@ -146,7 +148,7 @@ export class MobileTransport {
       const pending = this.#fetch(url, { ...init, credentials: "omit", signal: stop.signal });
       // A broken native transport may resolve after cancellation. Dispose it without allowing a late private read.
       void pending.then(response => { if (finished) void response.body?.cancel().catch(() => {}); }, () => {});
-      const response = rawResponse = await Promise.race([pending, interrupted.promise]); this.#current(generation);
+      const response = rawResponse = await Promise.race([pending, interrupted]); this.#current(generation);
       if (stop.signal.aborted) return fail("mobile_request_failed");
       if (response.redirected || response.url !== url || response.status < 200 || response.status > 599 || init.redirect !== "manual" && response.status >= 300 && response.status < 400) return fail("mobile_response_invalid");
       const length = response.headers.get("content-length");
@@ -155,7 +157,7 @@ export class MobileTransport {
       // and its Blob constructor rejects ArrayBuffer input. Validate a clone, then retain the real native response.
       reader = response.clone().body?.getReader(); let bytes = 0;
       while (reader) {
-        const part = await Promise.race([reader.read(), interrupted.promise]); this.#current(generation); if (stop.signal.aborted) return fail("mobile_request_failed"); if (part.done) break;
+        const part = await Promise.race([reader.read(), interrupted]); this.#current(generation); if (stop.signal.aborted) return fail("mobile_request_failed"); if (part.done) break;
         bytes += part.value.byteLength; if (bytes > maxBytes) return fail("mobile_response_limit");
       }
       complete = true; return response;

@@ -27,29 +27,35 @@ const code = (error: unknown): string => error instanceof JitClientError || erro
 export class MobileSession {
   readonly transport: MobileTransport;
   readonly #client: JitClient;
+  readonly #reader: JitClient;
   readonly #listeners = new Set<() => void>();
   #generation = 0;
   #target: string | null = null;
+  #selectionRevision = 0;
   #stop = new AbortController();
   #frame: MobileProjection;
+  #poll: Promise<void> | null = null;
   constructor(transport: MobileTransport) {
     this.transport = transport; this.#client = new JitClient({ origin: transport.origin, fetch: request => transport.fetch(request), fetchBytes: (request, bytes) => transport.fetchBytes(request, bytes) });
+    this.#reader = new JitClient({ origin: transport.origin, fetch: request => transport.fetch(request) });
     this.#frame = this.#empty("locked");
   }
   /** Stable immutable frame reference for native useSyncExternalStore; publishes no historical fallback. */
   get projection(): MobileProjection { return this.#frame; }
+  /** Target/service-login selection continuity for an owner OS sheet; background alone does not change it. */
+  get selectionRevision(): number { return this.#selectionRevision; }
   /** Subscribe to projection changes only. The returned function releases this renderer's listener. */
   subscribe(listener: () => void): () => void { this.#listeners.add(listener); return () => { this.#listeners.delete(listener); }; }
   #empty(phase: MobileProjection["phase"], error: string | null = null): MobileProjection { return Object.freeze({ generation: this.#generation, phase, conversationId: null, bootstrap: null, snapshot: null, code: error, authenticationRevision: this.#client.authenticationRevision }); }
   #publish(frame: MobileProjection): void { this.#frame = Object.freeze(frame); for (const listener of this.#listeners) listener(); }
   #fence(phase: MobileProjection["phase"], error: string | null = null): number {
-    this.#generation++; this.#stop.abort(); this.#stop = new AbortController(); this.#client.clear(); this.transport.pause(); this.#publish(this.#empty(phase, error)); return this.#generation;
+    this.#generation++; this.#stop.abort(); this.#stop = new AbortController(); this.#client.clear(); this.#reader.clear(); this.transport.pause(); this.#publish(this.#empty(phase, error)); return this.#generation;
   }
   #current(generation: number): void { if (generation !== this.#generation) throw new MobileProjectionError("mobile_response_stale"); }
   /** Inactive/background clears private views synchronously, independently of any outstanding provider response. */
   background(): void { this.#fence("background"); }
   /** Discard client-local credential/state only. Does not revoke an account, policy or remote work. */
-  async signOut(): Promise<void> { const generation = this.#fence("locked"); this.#target = null; try { await this.transport.forget(); } catch (error) { if (generation === this.#generation) this.#publish(this.#empty("locked", code(error))); throw error; } }
+  async signOut(): Promise<void> { this.#selectionRevision++; const generation = this.#fence("locked"); this.#target = null; try { await this.transport.forget(); } catch (error) { if (generation === this.#generation) this.#publish(this.#empty("locked", code(error))); throw error; } }
   /** Restore native credentials, then reacquire bootstrap and the current target before private publication. */
   async restore(): Promise<void> {
     const generation = this.#fence("loading"); this.transport.resume();
@@ -58,6 +64,7 @@ export class MobileSession {
   }
   /** One visible owner's password entry, through the existing service ingress; no stored password or retry. */
   async signIn(password: string): Promise<void> {
+    this.#selectionRevision++;
     const generation = this.#fence("loading"); this.#target = null; this.transport.resume();
     try { await this.transport.signIn(password); this.#current(generation); await this.#load(generation); }
     catch (error) { this.#failed(generation, error); throw error; }
@@ -71,12 +78,29 @@ export class MobileSession {
   /** Select only an opaque document identity. Old target responses cannot appear under the next target. */
   async selectConversation(conversationId: string | null): Promise<void> {
     if (conversationId !== null && !identifier(conversationId)) throw new MobileProjectionError("mobile_target_invalid");
-    this.#target = conversationId; await this.foreground();
+    this.#selectionRevision++; this.#target = conversationId; await this.foreground();
   }
   async #load(generation: number): Promise<void> {
     const signal = this.#stop.signal, target = this.#target, bootstrap = await this.#client.bootstrap(signal); this.#current(generation);
     const snapshot = target ? await this.#client.snapshot(target, signal) : null; this.#current(generation);
     this.#publish({ generation, phase: "ready", conversationId: target, bootstrap, snapshot, code: null, authenticationRevision: this.#client.authenticationRevision });
+  }
+  /** Read-only active refresh; never rotates the command client's binding or starts/replays work. */
+  poll(): Promise<void> {
+    if (this.#poll) return this.#poll;
+    if (this.#frame.phase !== "ready") return Promise.resolve();
+    const generation = this.#generation, target = this.#target, scope = this.#frame.bootstrap?.sessionScope;
+    const pending = (async () => {
+      try {
+        const signal = this.#stop.signal, bootstrap = await this.#reader.bootstrap(signal); this.#current(generation);
+        if (!scope || bootstrap.sessionScope !== scope) throw new MobileProjectionError("mobile_response_stale");
+        const snapshot = target ? await this.#reader.snapshot(target, signal) : null; this.#current(generation);
+        this.#publish({ generation, phase: "ready", conversationId: target, bootstrap, snapshot, code: null, authenticationRevision: this.#client.authenticationRevision });
+      } catch (error) { this.#failed(generation, error); throw error; }
+    })();
+    this.#poll = pending;
+    void pending.finally(() => { if (this.#poll === pending) this.#poll = null; }).catch(() => {});
+    return pending;
   }
   #failed(generation: number, error: unknown): void {
     if (generation !== this.#generation) return;
@@ -91,6 +115,11 @@ export class MobileSession {
     if (this.#frame.phase !== "ready") throw new MobileProjectionError("mobile_not_ready");
     const generation = this.#generation;
     try { const result = await operation(this.#client, this.#stop.signal); this.#current(generation); return result; }
-    catch (error) { this.#failed(generation, error); throw error; }
+    catch (error) {
+      this.#current(generation);
+      // A protected lookup can truthfully report an absent original receipt without losing authentication.
+      if (!(error instanceof JitClientError && error.status === 404 && error.outcome === "response")) this.#failed(generation, error);
+      throw error;
+    }
   }
 }
