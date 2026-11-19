@@ -24,7 +24,7 @@ async function fixture(answer = true, dailyMs = 600000) {
 }
 async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, language: string) {
   const errors: string[] = [], external: string[] = [], playbackIds: string[] = [];
-  let lost = false, beforeAdmission = false;
+  let lost = false, beforeAdmission = false, lostControl: { kind: string; before: boolean } | null = null;
   const holds: { path: string; after: boolean; entered: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> }[] = [], releases: (() => void)[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const server = Bun.serve({ hostname: '127.0.0.1', port: 3099, async fetch(request) {
@@ -40,7 +40,8 @@ async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, 
   await page.context().route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     if (url.origin !== 'http://localhost:3099') { external.push(url.origin); await route.abort(); return; }
-    if (lost && url.pathname.endsWith('/turns')) { lost = false; if (!beforeAdmission) await route.fetch(); await route.abort('failed'); return; }
+    if (lost && url.pathname.endsWith('/turns')) { lost = false; try { if (!beforeAdmission) await route.fetch(); if (!page.isClosed()) await route.abort('failed'); } catch (failure) { if (!page.isClosed()) throw failure; } return; }
+    if (lostControl && url.pathname.endsWith('/control') && JSON.parse(request.postData() ?? 'null')?.kind === lostControl.kind) { const loss = lostControl; lostControl = null; if (!loss.before) await route.fetch(); await route.abort('failed'); return; }
     await route.continue();
   });
   await page.addInitScript(() => {
@@ -59,7 +60,7 @@ async function wire(page: Page, f: Awaited<ReturnType<typeof composedFixture>>, 
       return destination.stream;
     };
   });
-  return { errors, external, playbackIds, loseTurn(before = false) { lost = true; beforeAdmission = before; }, hold(path: string, after = false) { const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); holds.push({ path, after, entered, release }); releases.push(() => release.resolve()); return { entered: entered.promise, release: () => release.resolve() }; }, async close() { for (const release of releases) release(); await server.stop(true); } };
+  return { errors, external, playbackIds, loseTurn(before = false) { lost = true; beforeAdmission = before; }, loseControl(kind: string, before = false) { lostControl = { kind, before }; }, hold(path: string, after = false) { const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); holds.push({ path, after, entered, release }); releases.push(() => release.resolve()); return { entered: entered.promise, release: () => release.resolve() }; }, async close() { for (const release of releases) release(); await server.stop(true); } };
 }
 async function level(page: Page, value: number) {
   await page.evaluate(value => { const state = (window as unknown as { callTest: { level: number; entries: { context: AudioContext; gain: GainNode; start: number }[] } }).callTest; state.level = value; for (const entry of state.entries) if (entry.context.state !== 'closed') { entry.gain.gain.setValueAtTime(value, entry.context.currentTime); entry.start = entry.context.currentTime; } }, value);
@@ -71,6 +72,7 @@ async function speech(page: Page) {
 }
 const stopped = (page: Page) => page.waitForFunction(() => (window as unknown as { callTest: { tracks: MediaStreamTrack[]; audio: HTMLMediaElement[] } }).callTest.tracks.every(track => track.readyState === 'ended') && (window as unknown as { callTest: { audio: HTMLMediaElement[] } }).callTest.audio.every(audio => audio.paused));
 const callView = async (f: Awaited<ReturnType<typeof composedFixture>>) => (await (await f.request('/api/s16/client/conversations/conversation/voice/calls')).json()).calls[0];
+const rendered = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 
 for (const width of [1440, 390]) browserTest(`actual finite voice conversation, silence, barge-in and mute at ${width}`, async () => {
   const s = await fixture(), copy = width === 1440 ? en : th, context = await browser.newContext({ viewport: { width, height: 900 }, locale: width === 1440 ? 'en-US' : 'th-TH' }), page = await context.newPage(); page.setDefaultTimeout(15000);
@@ -224,5 +226,67 @@ browserTest('an unaccepted lost send can be explicitly discarded only after End 
     await controls.getByRole('button', { name: en['s16.call.end'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.ended'] }).waitFor();
     expect(await transcript.inputValue()).toBe('This exact send has no receipt.'); expect(count(s.f)).toBe(0); expect((await callView(s.f)).turns).toEqual([]);
     await controls.getByRole('button', { name: en['s16.call.discardUnsent'], exact: true }).click(); expect(await controls.getByRole('button', { name: en['s16.call.start'], exact: true }).isEnabled()).toBe(true); expect(count(s.f)).toBe(0); expect(w.errors).toEqual([]);
+  } finally { await context.close(); await w.close(); await s.f.close(); }
+}, 90000);
+
+for (const lost of [false, true]) browserTest(`review recovery: a late accepted send ${lost ? 'failure' : 'response'} cannot erase a newer transcript`, async () => {
+  const s = await fixture(), context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000); const w = await wire(page, s.f, 'en');
+  try {
+    await page.goto('http://localhost:3099/s16/chat/conversation'); const controls = page.getByRole('region', { name: en['s16.call.title'], exact: true });
+    await controls.getByRole('button', { name: en['s16.call.start'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); await speech(page);
+    const transcript = controls.getByLabel(en['s16.call.transcript'], { exact: true }); await transcript.waitFor(); await transcript.fill('The first exact confirmed turn.');
+    const original = await callView(s.f), delayed = w.hold(`/api/s16/client/voice/calls/${original.id}/turns`, true); if (lost) w.loseTurn();
+    await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await delayed.entered;
+    const muted = page.waitForResponse(response => response.url().endsWith(`/voice/calls/${original.id}/control`));
+    await controls.getByRole('button', { name: en['s16.call.mute'], exact: true }).click(); await (await muted).finished(); await stopped(page);
+    await controls.getByRole('button', { name: en['s16.call.resume'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); await speech(page); await transcript.waitFor();
+    await transcript.fill('A newer editable draft must survive.');
+    if (lost) {
+      // An accepted receipt releases the old pending mutation even while its HTTP response hangs.
+      await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.speaking'] }).waitFor(); expect(count(s.f)).toBe(2);
+      await speech(page); await transcript.waitFor(); await transcript.fill('A newer editable draft must survive.');
+    }
+    const settled = lost ? page.waitForEvent('requestfailed', request => request.url().endsWith(`/voice/calls/${original.id}/turns`)) : page.waitForEvent('requestfinished', request => request.url().endsWith(`/voice/calls/${original.id}/turns`));
+    delayed.release(); await settled; await rendered(page);
+    expect(await transcript.inputValue()).toBe('A newer editable draft must survive.'); expect(await controls.getByRole('status').innerText()).toContain(en['s16.call.phase.review']); expect(count(s.f)).toBe(lost ? 2 : 1);
+    await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.speaking'] }).waitFor();
+    expect(count(s.f)).toBe(lost ? 3 : 2); expect((await callView(s.f)).turns.map((turn: { requestId: string }) => turn.requestId)).toEqual(Array.from({ length: lost ? 3 : 2 }, (_, ordinal) => `${original.id}_t${ordinal + 1}`));
+    await controls.getByRole('button', { name: en['s16.call.end'], exact: true }).click(); await stopped(page); expect(w.errors).toEqual([]);
+  } finally { await context.close(); await w.close(); await s.f.close(); }
+}, 90000);
+
+browserTest('review recovery: checking a send lost before admission retains an exact retry and fences Resume', async () => {
+  const s = await fixture(), context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000); const w = await wire(page, s.f, 'en');
+  try {
+    await page.goto('http://localhost:3099/s16/chat/conversation'); const controls = page.getByRole('region', { name: en['s16.call.title'], exact: true });
+    await controls.getByRole('button', { name: en['s16.call.start'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); await speech(page);
+    const transcript = controls.getByLabel(en['s16.call.transcript'], { exact: true }); await transcript.waitFor(); await transcript.fill('Retry the original unaccepted identity.'); w.loseTurn(true);
+    await controls.getByRole('button', { name: en['s16.call.send'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.reconnecting'] }).waitFor(); await stopped(page);
+    const original = await callView(s.f), read = page.waitForResponse(response => response.request().method() === 'GET' && response.url().endsWith(`/voice/calls/${original.id}`));
+    await controls.getByRole('button', { name: en['s16.call.recover'], exact: true }).click(); await (await read).finished(); await rendered(page);
+    expect(await controls.getByRole('button', { name: en['s16.call.retry'], exact: true }).isEnabled()).toBe(true); expect(await controls.getByRole('button', { name: en['s16.call.resume'], exact: true }).isDisabled()).toBe(true);
+    expect((await callView(s.f)).revision).toBe(original.revision); expect(count(s.f)).toBe(0); await stopped(page);
+    await controls.getByRole('button', { name: en['s16.call.retry'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.paused'] }).waitFor();
+    expect((await callView(s.f)).turns[0].requestId).toBe(`${original.id}_t1`); expect(count(s.f)).toBe(1); expect(s.spoken).toBe(0);
+    await controls.getByRole('button', { name: en['s16.call.resume'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor();
+    await controls.getByRole('button', { name: en['s16.call.end'], exact: true }).click(); await stopped(page); expect(w.errors).toEqual([]);
+  } finally { await context.close(); await w.close(); await s.f.close(); }
+}, 90000);
+
+for (const before of [false, true]) browserTest(`review recovery: lost End ${before ? 'before' : 'after'} admission permits metadata recovery without microphone revival`, async () => {
+  const s = await fixture(), context = await browser.newContext(), page = await context.newPage(); page.setDefaultTimeout(15000); const w = await wire(page, s.f, 'en');
+  try {
+    await page.goto('http://localhost:3099/s16/chat/conversation'); const controls = page.getByRole('region', { name: en['s16.call.title'], exact: true });
+    await controls.getByRole('button', { name: en['s16.call.start'], exact: true }).click(); await controls.getByText(en['s16.call.microphone'], { exact: true }).waitFor(); w.loseControl('end', before);
+    await controls.getByRole('button', { name: en['s16.call.end'], exact: true }).click(); await controls.getByRole('status').filter({ hasText: en['s16.call.phase.reconnecting'] }).waitFor(); await stopped(page);
+    const previous = await callView(s.f), media = await page.evaluate(() => (window as unknown as { callTest: { calls: number } }).callTest.calls);
+    await controls.getByRole('button', { name: en['s16.call.recover'], exact: true }).click();
+    if (before) {
+      await controls.locator('code').filter({ hasText: 'voice_call_end_pending' }).waitFor({ state: 'attached' }); expect(await controls.getByRole('button', { name: en['s16.call.resume'], exact: true }).isDisabled()).toBe(true);
+      await controls.getByRole('button', { name: en['s16.call.end'], exact: true }).click();
+    }
+    await controls.getByRole('status').filter({ hasText: en['s16.call.phase.ended'] }).waitFor(); await stopped(page);
+    expect((await callView(s.f)).id).toBe(previous.id); expect((await callView(s.f)).state).toBe('ended'); expect(count(s.f)).toBe(0);
+    expect(await page.evaluate(() => (window as unknown as { callTest: { calls: number } }).callTest.calls)).toBe(media); expect(s.heard).toBe(0); expect(s.spoken).toBe(0); expect(w.errors).toEqual([]);
   } finally { await context.close(); await w.close(); await s.f.close(); }
 }, 90000);

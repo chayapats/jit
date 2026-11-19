@@ -23,6 +23,12 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
   const [error, setError] = useState<string | null>(null), [draft, setDraft] = useState(''), [microphone, setMicrophone] = useState(false), [remaining, setRemaining] = useState(0);
   const alive = (s: Session) => mounted.current && session.current === s && latest.current.enabled && latest.current.scope === s.scope;
   const show = (s: Session, next: Phase) => { s.phase = next; if (alive(s)) setPhase(next); };
+  // Owner controls supersede older asynchronous mutations. Their eventual settlement cannot block
+  // a recovered turn, overwrite a newer draft, or clear the current mutation's guard.
+  const change = (s: Session) => {
+    const epoch = ++s.epoch; s.mutations = 1; s.checking = false;
+    return { current: () => alive(s) && s.epoch === epoch, done: () => { if (s.epoch === epoch) s.mutations = 0; } };
+  };
   const drop = async (part: Part | null, remote = true) => {
     if (!part) return;
     part.stop.abort(); part.audio?.pause();
@@ -41,13 +47,13 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
     s.view = next; s.id = next.id; setView(next);
   };
   const end = async (s: Session, reason?: string) => {
-    dispose(s); if (!alive(s)) return; if (reason) setError(reason); show(s, 'ending'); s.epoch++;
-    if (!s.id) { show(s, 'ended'); return; }
+    dispose(s); if (!alive(s)) return; const mutation = change(s); if (reason) setError(reason); show(s, 'ending');
+    if (!s.id) { show(s, 'ended'); mutation.done(); return; }
     try {
-      const next = await latest.current.client.controlVoiceCall(s.id, { contract: 's16-voice-call-control/v1', revision: s.view?.revision ?? 1, kind: 'end' }); update(s, next);
-      if (alive(s)) { if (s.pending && next.turns.find(turn => turn.ordinal === s.pending!.ordinal)?.state === 'accepted') { s.pending = null; setDraft(''); latest.current.onAccepted(); } show(s, 'ended'); }
+      const next = await latest.current.client.controlVoiceCall(s.id, { contract: 's16-voice-call-control/v1', revision: s.view?.revision ?? 1, kind: 'end' }); if (!mutation.current()) return; update(s, next);
+      if (s.pending && next.turns.find(turn => turn.ordinal === s.pending!.ordinal)?.state === 'accepted') { s.pending = null; setDraft(''); latest.current.onAccepted(); } show(s, 'ended');
     }
-    catch (failure) { fail(s, failure); }
+    catch (failure) { if (mutation.current()) fail(s, failure); } finally { mutation.done(); }
   };
   const fail = (s: Session, failure: unknown) => {
     if (!alive(s)) return;
@@ -62,9 +68,10 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
   };
   const interrupt = (s: Session) => { s.skipReply = true; const previous = s.playback; s.playback = null; void drop(previous); if (alive(s) && s.consent) show(s, s.capture?.recorder ? 'listening' : s.phase); };
   const mute = async (s: Session, reason?: string) => {
-    s.consent = false; quiet(s); s.epoch++; s.mutations++; if (alive(s)) { if (!s.pending) setDraft(''); if (reason) setError(reason); show(s, 'muted'); }
-    try { if (s.id) update(s, await latest.current.client.controlVoiceCall(s.id, { contract: 's16-voice-call-control/v1', revision: s.view?.revision ?? 1, kind: 'mute' })); }
-    catch (failure) { fail(s, failure); } finally { s.mutations--; }
+    if (!alive(s) || s.root.signal.aborted || s.view?.state === 'ended') return;
+    s.consent = false; quiet(s); const mutation = change(s); if (!s.pending) setDraft(''); if (reason) setError(reason); show(s, 'muted');
+    try { if (s.id) { const next = await latest.current.client.controlVoiceCall(s.id, { contract: 's16-voice-call-control/v1', revision: s.view?.revision ?? 1, kind: 'mute' }); if (!mutation.current()) return; update(s, next); if (next.state === 'ended') show(s, 'ended'); } }
+    catch (failure) { if (mutation.current()) fail(s, failure); } finally { mutation.done(); }
   };
   const listen = async (s: Session) => {
     if (!alive(s) || !s.consent || !s.view || s.view.state !== 'active' || s.capture || s.pending) return;
@@ -130,7 +137,7 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
       const changed = !!s.view && next.revision !== s.view.revision; update(s, next); setStatus(health); setRemaining(Math.max(0, s.deadlineAt - performance.now()));
       if (next.state !== 'active' || changed) { s.consent = false; quiet(s); show(s, next.state === 'ended' ? 'ended' : next.state === 'muted' ? 'muted' : 'reconnecting'); clearInterval(s.poll); return; }
       if (!health.available) { await end(s, 'voice_unavailable'); return; } void speak(s);
-    } catch (failure) { if (alive(s) && epoch === s.epoch) fail(s, failure); } finally { s.checking = false; }
+    } catch (failure) { if (alive(s) && epoch === s.epoch) fail(s, failure); } finally { if (epoch === s.epoch) s.checking = false; }
   };
   const watch = (s: Session) => { clearInterval(s.poll); s.poll = setInterval(() => { void poll(s); }, 2000); };
   const create = (existing: VoiceCallView | null = null): Session => ({ scope: latest.current.scope, conversationId: latest.current.conversationId, id: existing?.id ?? null, view: existing, root: new AbortController(), consent: false, capture: null, playback: null, pending: null, target: null, waiting: false, attention: false, skipReply: false, played: existing?.turns.length ?? 0, phase: 'preparing', mutations: 0, epoch: 0, checking: false, deadlineAt: Infinity });
@@ -146,34 +153,35 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
     } catch (failure) { if (s.consent) fail(s, failure); }
   };
   const recover = async (resume: boolean) => {
-    const s = session.current ?? create(view); if (!s.id) return; session.current = s; const epoch = ++s.epoch; s.mutations++; setError(null);
-    const current = () => alive(s) && epoch === s.epoch && !s.root.signal.aborted;
+    const s = session.current ?? create(view); if (!s.id) return; session.current = s; const mutation = change(s); setError(null);
     try {
-      const requested = performance.now(); let next = await latest.current.client.voiceCall(s.id); if (!current()) return;
+      const requested = performance.now(); let next = await latest.current.client.voiceCall(s.id); if (!mutation.current()) return;
       update(s, next);
       if (s.pending && next.turns.find(turn => turn.ordinal === s.pending!.ordinal)?.state === 'accepted') { s.pending = null; setDraft(''); latest.current.onAccepted(); }
-      if (next.state === 'ended') { show(s, 'ended'); return; }
-      if (next.turns.some(turn => turn.state === 'unaccepted')) { setError('voice_turn_recovery_required'); show(s, 'reconnecting'); return; }
+      if (next.state === 'ended') { dispose(s); show(s, 'ended'); return; }
+      // Ending fences media permanently, but its lost response still permits read-only recovery.
+      if (s.root.signal.aborted) { setError('voice_call_end_pending'); show(s, 'reconnecting'); return; }
+      if (s.pending || next.turns.some(turn => turn.state === 'unaccepted')) { setError('voice_turn_recovery_required'); show(s, 'reconnecting'); return; }
       if (!resume) { show(s, 'paused'); return; }
       if (performance.now() >= s.deadlineAt) { await end(s, 'voice_call_time_limit'); return; }
       next = await latest.current.client.controlVoiceCall(s.id, { contract: 's16-voice-call-control/v1', revision: next.revision, kind: 'resume' });
-      if (!current()) return; update(s, next); if (next.state !== 'active') { show(s, 'ended'); return; }
+      if (!mutation.current() || s.root.signal.aborted) return; update(s, next); if (next.state !== 'active') { show(s, 'ended'); return; }
       s.consent = true; s.played = next.turns.length; s.skipReply = true; arm(s, requested); watch(s); void listen(s);
-    } catch (failure) { fail(s, failure); } finally { s.mutations--; }
+    } catch (failure) { if (mutation.current()) fail(s, failure); } finally { mutation.done(); }
   };
   const send = async () => {
     const s = session.current; if (!s?.view || !s.id || !alive(s) || s.mutations || !draft.trim() && !s.pending) return;
     let command: VoiceCallConfirm;
     try { command = s.pending ?? latest.current.client.prepareVoiceCallTurn(s.view, draft, s.target); } catch (failure) { setError(code(failure)); return; }
-    s.pending = command; s.mutations++; s.epoch++; show(s, 'thinking');
+    s.pending = command; const mutation = change(s), current = () => mutation.current() && !s.root.signal.aborted && s.pending === command; show(s, 'thinking');
     try {
-      const next = await latest.current.client.sendVoiceCallTurn(s.id, command, s.root.signal); if (!alive(s)) return; update(s, next);
+      const next = await latest.current.client.sendVoiceCallTurn(s.id, command, s.root.signal); if (!current()) return; update(s, next);
       if (next.turns.find(turn => turn.ordinal === command.ordinal)?.state !== 'accepted') { show(s, 'reconnecting'); return; }
       s.pending = null; setDraft(''); s.skipReply = false; s.waiting = true; s.attention = false; latest.current.onAccepted();
       if (s.view?.state === 'ended') { dispose(s); show(s, 'ended'); }
       else if (s.view?.state === 'muted') show(s, 'muted');
       else if (s.consent) { void listen(s); void speak(s); } else show(s, 'paused');
-    } catch (failure) { if (!s.root.signal.aborted) fail(s, failure); } finally { s.mutations--; }
+    } catch (failure) { if (current()) fail(s, failure); } finally { mutation.done(); }
   };
   useEffect(() => {
     mounted.current = true; let fresh = true; const stop = new AbortController(); setPhase('idle'); setView(null); setStatus(null); setDraft(''); setError(null); setMicrophone(false);
@@ -184,7 +192,10 @@ export function useVoiceCall(options: { client: JitClient; enabled: boolean; can
   }, [options.enabled, options.scope, options.client]);
   useEffect(() => { const s = session.current; if (!options.canStart && s?.consent) void end(s); }, [options.canStart]);
   const discardable = !!session.current?.pending && view?.state === 'ended' && !['accepted', 'unavailable'].includes(view.turns.find(turn => turn.ordinal === session.current!.pending!.ordinal)?.state ?? 'unaccepted');
-  return { phase, view, status, error, draft, setDraft, microphone, remaining, start, send, target: session.current?.target ?? null, active: !['idle', 'ended'].includes(phase), pending: !!session.current?.pending, discardable,
+  const pendingAccepted = session.current?.pending && view?.turns.find(turn => turn.ordinal === session.current!.pending!.ordinal)?.state === 'accepted';
+  const canResume = !session.current?.root.signal.aborted && (!session.current?.pending || !!pendingAccepted) && !session.current?.mutations && !view?.turns.some(turn => turn.state === 'unaccepted');
+  const canRetry = !!session.current?.pending && !session.current.root.signal.aborted && !session.current.mutations && view?.state === 'active' && view.revision === session.current.pending.revision;
+  return { phase, view, status, error, draft, setDraft, microphone, remaining, start, send, target: session.current?.target ?? null, active: !['idle', 'ended'].includes(phase), pending: !!session.current?.pending, discardable, canResume, canRetry,
     stop: () => session.current?.capture?.recorder?.stop(), mute: () => { if (session.current) void mute(session.current); }, interrupt: () => { if (session.current) interrupt(session.current); },
     end: () => { const s = session.current ?? create(view); session.current = s; void end(s); }, recover: () => void recover(false), resume: () => void recover(true),
     discard: () => { const s = session.current; if (!s || s.pending && !discardable) return; if (s.pending) { s.pending = null; setDraft(''); show(s, 'ended'); return; } setDraft(''); s.target = null; show(s, 'listening'); void listen(s); } };
@@ -200,17 +211,17 @@ export function VoiceCallControls({ call, t, canStart }: { call: ReturnType<type
       {call.microphone && <><span>{t('s16.call.microphone')}</span><button type="button" onClick={call.stop}>{t('s16.call.finish')}</button></>}
       {!['muted', 'paused', 'reconnecting', 'ending'].includes(call.phase) && <button type="button" onClick={call.mute}>{t('s16.call.mute')}</button>}
       {(call.phase === 'speaking' || call.phase === 'thinking') && <button type="button" onClick={call.interrupt}>{t('s16.call.interrupt')}</button>}
-      {['muted', 'paused', 'reconnecting'].includes(call.phase) && <><button type="button" onClick={call.recover}>{t('s16.call.recover')}</button><button type="button" disabled={call.view?.turns.some(turn => turn.state === 'unaccepted')} onClick={call.resume}>{t('s16.call.resume')}</button></>}
+      {['muted', 'paused', 'reconnecting'].includes(call.phase) && <><button type="button" onClick={call.recover}>{t('s16.call.recover')}</button><button type="button" disabled={!call.canResume} onClick={call.resume}>{t('s16.call.resume')}</button></>}
       <button type="button" onClick={call.end}>{t('s16.call.end')}</button></>}</div>
     {call.phase !== 'idle' && <p role="status" aria-live="polite">{t(`s16.call.phase.${call.phase}` as MessageKey)}{live && call.view && Number.isFinite(call.remaining) && <> · {String(Math.floor(seconds / 60)).padStart(2, '0')}:{String(seconds % 60).padStart(2, '0')}</>}</p>}
     {(call.phase === 'review' || call.pending) && <p className="call-target"><small>{t(call.target ? 's16.call.targetWork' : 's16.call.targetMessage')}</small></p>}
     <div className="voice-call-body">
       {(call.phase === 'review' || call.pending) && <div className="voice-draft"><label htmlFor={transcriptId}>{t('s16.call.transcript')}</label><textarea id={transcriptId} ref={transcript} rows={3} value={call.draft} readOnly={call.pending} maxLength={16384} onChange={event => call.setDraft(event.target.value)} /><p>{t('s16.call.review')}</p></div>}
-      {call.error && <div role="alert" className="voice-error"><p>{t(call.error === 'voice_no_speech' ? 's16.call.quiet' : call.error === 'voice_budget_exhausted' ? 's16.voice.budget' : 's16.call.failed')}</p><details><summary>{t('s16.common.details')}</summary><code>{call.error}</code></details></div>}
+      {call.error && <div role="alert" className="voice-error"><p>{t(call.error === 'voice_no_speech' ? 's16.call.quiet' : call.error === 'voice_budget_exhausted' ? 's16.voice.budget' : call.error === 'voice_call_end_pending' ? 's16.call.endPending' : call.error === 'voice_turn_recovery_required' ? 's16.call.turnPending' : 's16.call.failed')}</p><details><summary>{t('s16.common.details')}</summary><code>{call.error}</code></details></div>}
       {live && <small>{t('s16.call.note')}</small>}{(!live || !usage) && <small>{t('s16.call.limits')}</small>}
       {live && usage && <><details><summary>{t('s16.call.usageSummary', { used: (usage.chargedMs / 1000).toFixed(1), limit: (usage.limitMs / 1000).toFixed(0) })}</summary><small>{t('s16.call.limits')}</small><small>{t('s16.voice.usage', { used: (usage.chargedMs / 1000).toFixed(1), reserved: (usage.reservedMs / 1000).toFixed(1), limit: (usage.limitMs / 1000).toFixed(0) })}</small></details>{usage.conservativeMs > 0 && <small>{t('s16.voice.conservative', { seconds: (usage.conservativeMs / 1000).toFixed(1) })}</small>}</>}
       {call.view && !!call.view.turns.length && <details className="call-turns"><summary>{t('s16.call.turns', { count: call.view.turns.length })}</summary><ol>{call.view.turns.map(turn => <li key={turn.ordinal}>{t(`s16.call.turn.${turn.state}` as MessageKey)}{turn.receipt?.contract === 's16-conversation-steer-receipt/v1' && <> · {t(`s16.steer.${turn.receipt.state}` as MessageKey)}</>}</li>)}</ol></details>}
     </div>
-    {(call.phase === 'review' || call.pending) && <div className="voice-actions call-confirm"><button type="button" className="primary" onClick={() => void call.send()} disabled={!call.draft.trim() || !['review', 'reconnecting'].includes(call.phase)}>{t(call.pending ? 's16.call.retry' : 's16.call.send')}</button><button type="button" disabled={call.pending && !call.discardable} onClick={call.discard}>{t(call.discardable ? 's16.call.discardUnsent' : 's16.call.discard')}</button></div>}
+    {(call.phase === 'review' || call.pending) && <div className="voice-actions call-confirm"><button type="button" className="primary" onClick={() => void call.send()} disabled={!call.draft.trim() || (call.pending ? !call.canRetry : call.phase !== 'review')}>{t(call.pending ? 's16.call.retry' : 's16.call.send')}</button><button type="button" disabled={call.pending && !call.discardable} onClick={call.discard}>{t(call.discardable ? 's16.call.discardUnsent' : 's16.call.discard')}</button></div>}
   </section>;
 }

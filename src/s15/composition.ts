@@ -846,7 +846,7 @@ export async function composeS15(options: S15CompositionOptions) {
     };
     const voice = options.voice ? await VoiceService.open<OwnerActor>({ path: join(root, 'voice.sqlite'), installationId: options.installationId, create: options.create || created.includes('voice.sqlite'), limits: options.voice.quota, now: clockNow,
       requireOwner, ownerGeneration: options.owner.generation,
-      conversation: (owner, id) => { conversationOwnerView(conversation, owner, id); },
+      conversation: (owner, id) => { conversation.requireConversationOwner(owner, id); },
       calls: { submit: (owner, command) => conversation.submit(owner, command), steer: (owner, command) => conversation.steer(owner, command), receipt: (owner, id) => conversation.receipt(owner, id), steerReceipt: (owner, id) => conversation.steerReceipt(owner, id) },
       reply: (owner, id, requestId) => { const row = conversationRequestView(conversation, owner, requestId); if (row.receipt.conversationId !== id || !row.result) throw new AppError('voice_result_unavailable', 409); return { revision: row.revision, text: row.result.text }; },
       engine: options.voice.engine ?? (() => openLocalVoice(options.voice!.local, options.voice!.scratchDirectory ?? join(realpathSync(tmpdir()), 'jit-voice-' + new Bun.CryptoHasher('sha256').update(options.installationId + '\n' + realpathSync(root)).digest('hex').slice(0, 24)))) }) : undefined;

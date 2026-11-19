@@ -6579,6 +6579,8 @@ export const en: Record<MessageKey, string> = {
   "s16.call.discardUnsent": "Discard unsent turn",
   "s16.call.quiet": "Microphone paused after silence. Resume when you are ready.",
   "s16.call.failed": "Voice paused. Your text and accepted turns remain in this chat. Check the original turn before retrying.",
+  "s16.call.endPending": "Microphone is off. End was not confirmed. Retry End to finish this voice conversation.",
+  "s16.call.turnPending": "Check this turn's original receipt before continuing. Retry the exact turn when available, or End and check before discarding unsent text.",
   "s16.call.phase.idle": "Ready for a voice conversation",
   "s16.call.phase.preparing": "Preparing voice conversation",
   "s16.call.phase.listening": "Listening",

@@ -59,6 +59,15 @@ test('a control response reacquires call generation at final HTTP publication', 
   expect(count(s.f)).toBe(0); expect(s.heard).toBe(0); expect(s.spoken).toBe(0);
 });
 
+test('fresh speech admission cannot inherit a conversation from a prior owner generation', async () => {
+  const s = await fixture(); await s.f.chat('Keep the original private conversation.'); s.f.generation = 2;
+  await s.client.bootstrap();
+  await expect(s.client.beginVoiceCall('conversation', s.client.prepareVoiceCall(s.f.now))).rejects.toMatchObject({ code: 'authentication_required', status: 401 });
+  await s.client.bootstrap();
+  await expect(s.client.beginDictation('conversation', s.client.prepareDictation(s.f.now))).rejects.toMatchObject({ code: 'authentication_required', status: 401 });
+  expect(s.heard).toBe(0); expect(s.spoken).toBe(0); expect(count(s.f)).toBe(1);
+});
+
 test('call transcript stays data until confirmed, then message/steer recovery uses one original identity', async () => {
   const s = await fixture(), call = await s.start(), capture = await s.capture(call);
   expect(count(s.f)).toBe(0); expect(s.f.modelPrompts).toEqual([]);
@@ -141,10 +150,15 @@ test('confirmed or quoted approval text never decides the original held effect',
 });
 
 test('the confirmed-turn ceiling ends voice while keeping all original text receipts', async () => {
-  const s = await fixture(); let call = await s.start();
+  const s = await fixture();
+  // A healthy scripted answer for every turn keeps this a call-limit/recovery test, rather than
+  // accumulating execute requests whose shared one-shot tool script supplies no fresh evidence.
+  s.f.interpretation = { intent: 'answer', purposeId: 'purpose', resourceIds: [], access: 'read', subject: null };
+  s.f.script = [{ type: 'text', text: 'Confirmed voice turn received.' }];
+  let call = await s.start();
   for (let ordinal = 1; ordinal <= voiceCallLimits.turns; ordinal++) { call = await s.client.sendVoiceCallTurn(call.id, s.client.prepareVoiceCallTurn(call, `Confirmed turn ${ordinal}.`, null)); await s.f.service.conversation.drain(); }
   expect(call).toMatchObject({ state: 'ended', reason: 'turn_limit' }); expect(call.turns).toHaveLength(32); expect(count(s.f)).toBe(32);
-  expect((await s.client.request(call.turns[0]!.requestId)).receipt.requestId).toBe(call.turns[0]!.requestId);
+  for (const turn of call.turns) expect(await s.client.request(turn.requestId)).toMatchObject({ receipt: { requestId: turn.requestId }, row: { ownerMessage: `Confirmed turn ${turn.ordinal}.`, state: 'done', result: { status: 'done' } } });
   await expect(s.client.captureVoiceCall(call.id, { contract: 's16-voice-call-capture/v1', revision: call.revision, requestId: voiceRequestId(s.f.now) }, 'conversation')).rejects.toMatchObject({ code: 'voice_call_inactive' });
 });
 
