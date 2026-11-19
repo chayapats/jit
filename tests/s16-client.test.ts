@@ -4,6 +4,7 @@ import { createS16ClientHandler } from "../src/s16/http";
 import { composedFixture } from "./fixtures/s15-composition";
 import { webFixture, origin as webOrigin } from "./fixtures/s15-web";
 import { mail } from "./fixtures/s15-effects";
+import { AppError } from "../src/errors";
 
 type Fixture = Awaited<ReturnType<typeof composedFixture>>;
 const fixtures: Fixture[] = [];
@@ -15,6 +16,39 @@ const transport = (f: Fixture) => async (request: Request) => {
   return f.request(url.pathname + url.search, request.method, request.method === "POST" ? await request.json() : undefined, Object.fromEntries(request.headers));
 };
 const client = (f: Fixture, fetch = transport(f)) => new JitClient({ origin, fetch });
+
+test("bootstrap continuity changes only after a validated new binding; CSRF stays private and a stale bootstrap cannot restore it", async () => {
+  const f = await fixture(), original = transport(f); let token = "fixture_scope_a", hold = false;
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const c = client(f, async request => {
+    const response = await original(request), value = await response.json();
+    const body = { ...value, csrf: token, sessionScope: new Bun.CryptoHasher("sha256").update(token).digest("hex") };
+    if (hold) { hold = false; entered.resolve(); await release.promise; }
+    return Response.json(body);
+  });
+  expect((await c.bootstrap())).not.toHaveProperty("csrf"); expect(c.authenticationRevision).toBe(0);
+  await c.bootstrap(); expect(c.authenticationRevision).toBe(0);
+  token = "fixture_scope_b"; await c.bootstrap(); expect(c.authenticationRevision).toBe(1);
+  hold = true; const stale = c.bootstrap(); await entered.promise;
+  token = "fixture_scope_c"; const current = await c.bootstrap(); expect(current).not.toHaveProperty("csrf"); expect(c.authenticationRevision).toBe(2);
+  release.resolve(); await expect(stale).rejects.toMatchObject({ code: "client_response_stale" }); expect(c.authenticationRevision).toBe(2);
+  c.clear(); await c.bootstrap(); expect(c.authenticationRevision).toBe(2);
+});
+
+test("the authenticated continuity hash distinguishes sessions and cannot authenticate or satisfy CSRF", async () => {
+  const f = await fixture();
+  const handler = createS16ClientHandler(f.service.conversation, { origin, cookieName: "jit_s14", authentication: {
+    authenticate(token) { if (!["scope_session_a", "scope_session_b"].includes(token)) throw new AppError("authentication_required", 401); return { actor: f.owner, csrf: "fixture_live_csrf" }; },
+    verifyCsrf(expected, supplied) { if (expected !== supplied) throw new AppError("csrf_rejected", 403); },
+  } });
+  const read = async (token: string) => handler(new Request(origin + "/api/s16/client/bootstrap", { headers: { Cookie: "jit_s14=" + token } }));
+  const first = await (await read("scope_session_a")).json(), second = await (await read("scope_session_b")).json();
+  expect(first.sessionScope).toMatch(/^[a-f0-9]{64}$/); expect(second.sessionScope).not.toBe(first.sessionScope);
+  expect((await (await read("scope_session_a")).json()).sessionScope).toBe(first.sessionScope);
+  expect((await read(first.sessionScope)).status).toBe(401);
+  expect((await handler(new Request(origin + "/api/s16/client/requests/work/stop", { method: "POST", headers: { Cookie: "jit_s14=scope_session_a", Origin: origin, "X-CSRF-Token": first.sessionScope, "Content-Type": "application/json" }, body: "{}" }))).status).toBe(403);
+  expect(f.vmCalls).toEqual([]);
+});
 
 test("the shared client performs a real composed VM call and returns only guarded owner evidence", async () => {
   const f = await fixture(), c = client(f), boot = await c.bootstrap();

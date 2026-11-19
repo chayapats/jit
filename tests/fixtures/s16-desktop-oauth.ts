@@ -3,6 +3,7 @@ import { pkceChallenge } from "../../src/s16/connections/oauth";
 
 /** Actual protected SourceNetwork transport to a controlled OAuth/MCP service; no external account or DNS is used. */
 export function desktopOAuthFixture() {
+  const usedCodes = new Set<string>(); let authorizations = 0;
   const state = { challenge: "", exchanged: 0, registered: 0, catalogReads: 0, providerCookies: [] as string[], code: "desktop_fixture_code", token: "desktop_fixture_access_token_0123456789" };
   const provider = "https://desktop-oauth.example.test";
   const rpc = (id: unknown, result: unknown) => Response.json({ jsonrpc: "2.0", id, result });
@@ -13,8 +14,8 @@ export function desktopOAuthFixture() {
     if (url.pathname === "/register") { state.registered++; return Response.json({ client_id: "desktop-fixture" }, { status: 201 }); }
     if (url.pathname === "/token") {
       const form = new URLSearchParams(await request.text());
-      if (form.get("code") !== state.code || pkceChallenge(form.get("code_verifier") ?? "") !== state.challenge || state.exchanged) return Response.json({ error: "invalid_grant" }, { status: 400 });
-      state.exchanged++; return Response.json({ access_token: state.token, token_type: "Bearer", expires_in: 3600 });
+      if (form.get("code") !== state.code || pkceChallenge(form.get("code_verifier") ?? "") !== state.challenge || usedCodes.has(state.code)) return Response.json({ error: "invalid_grant" }, { status: 400 });
+      usedCodes.add(state.code); state.exchanged++; return Response.json({ access_token: state.token, token_type: "Bearer", expires_in: 3600 });
     }
     if (url.pathname === "/mcp") {
       if (request.headers.get("authorization") !== `Bearer ${state.token}`) return new Response(null, { status: 401, headers: { "WWW-Authenticate": `Bearer resource_metadata="${at("/.well-known/oauth-protected-resource/mcp")}"` } });
@@ -31,6 +32,7 @@ export function desktopOAuthFixture() {
     network: { allowHttp: true, resolve: async () => [{ address: "93.184.215.14", family: 4 }], connect: () => dial({ host: "127.0.0.1", port: server.port! }) },
     /** Fixture HTML only, served at the advertised HTTPS provider by a trusted native test transport. */
     authorize(requestUrl: string, cookie: string | undefined) {
+      state.code = "desktop_fixture_code_" + ++authorizations;
       const url = new URL(requestUrl); state.providerCookies.push(cookie ?? ""); state.challenge = url.searchParams.get("code_challenge")!;
       const callback = new URL(url.searchParams.get("redirect_uri")!); callback.searchParams.set("state", url.searchParams.get("state")!); callback.searchParams.set("code", state.code);
       const escaped = callback.href.replaceAll("&", "&amp;").replaceAll('"', "&quot;");

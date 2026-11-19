@@ -74,10 +74,10 @@ export async function installDesktopOwnerLinks(context: BrowserContext, options:
       try {
         const frame = request.frame(), page = frame.page(); if (frame !== page.mainFrame() || !currentPage(page)) return;
         const command = request.postDataJSON() as unknown, receipt: unknown = JSON.parse(new TextDecoder().decode(body));
-        if (!record(command) || command.contract !== "s16-connection-command/v1" || !token(command.requestId) || !["source.add", "source.oauth_begin"].includes(String(command.kind)) || command.kind === "source.add" && (!record(command.auth) || command.auth.kind !== "oauth")) return;
+        if (!record(command) || command.contract !== "s16-connection-command/v1" || !token(command.requestId) || !["source.add", "source.oauth_begin", "source.reconnect"].includes(String(command.kind)) || command.kind !== "source.oauth_begin" && (!record(command.auth) || command.auth.kind !== "oauth")) return;
         if (!record(receipt) || receipt.contract !== "s16-connection-receipt/v1" || receipt.requestId !== command.requestId || receipt.kind !== command.kind || typeof receipt.authorize !== "string" || receipt.authorize.length > 8192 || !record(receipt.source)) return;
         const source = receipt.source;
-        if (!token(source.id) || !Number.isSafeInteger(source.revision) || Number(source.revision) < 1 || source.state !== "authorizing" || !record(source.auth) || source.auth.kind !== "oauth" || command.kind === "source.oauth_begin" && command.sourceId !== source.id) return;
+        if (!token(source.id) || !Number.isSafeInteger(source.revision) || Number(source.revision) < 1 || source.state !== "authorizing" || !record(source.auth) || source.auth.kind !== "oauth" || command.kind !== "source.add" && command.sourceId !== source.id) return;
         const url = new URL(receipt.authorize), dev = new URL(options.origin).protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname);
         if (url.origin === options.origin || url.username || url.password || url.hash || url.protocol !== "https:" && !(dev && url.protocol === "http:")) return;
         const state = url.searchParams.get("state");

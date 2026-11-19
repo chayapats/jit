@@ -54,9 +54,9 @@ bun run ops:desktop rollback --root "$install_root"
 
 There is no remote unattended native update feed. Ordinary updates must retain the v1 bootstrap digest/runtime/service selection. A changed bootstrap requires a separately reviewed migration; runtime/service mismatches refuse. At most eight sealed native releases are retained before explicit maintenance. Do not remove profiles, service records or the last valid release to bypass an error. Package hash verification detects corruption against the selected manifest; obtain that manifest/artifact through the trusted source/review channel, not an arbitrary download link. It is not a publisher signature.
 
-Only one native launcher may own a profile. A live/stale-but-reused PID refuses; the installer never kills a foreign process. Close the existing app before reopening. An invalid profile/record, missing runtime, signature mismatch, corrupt release or unavailable browser is a visible failure. Fix the exact input or restore a verified preceding artifact; never import another browser profile or weaken origin/session checks.
+Only one native launcher may own a profile. A live/stale-but-reused PID refuses; the installer never kills a foreign process. Closing the last owned app window closes the managed browser and pending provider windows, settles the launcher and releases the profile for reopening. Closing one of several windows retains the lease. The login-to-standalone handoff retains its already-open app window and profile. Background networking lasts only while the managed context remains open; closed-app OS notification behavior remains a #431 device check. An invalid profile/record, missing runtime, signature mismatch, corrupt release or unavailable browser is a visible failure. Fix the exact input or restore a verified preceding artifact; never import another browser profile or weaken origin/session checks.
 
-Offline/disconnect hides private projections that cannot be revalidated. Reconnect reads the current service/owner facts. An uncertain send retains only its request identity and recovers its existing durable receipt; there is no offline effect queue. Signing in again does not silently resend a command.
+Offline/disconnect unmounts private views and hides private projections until fresh service/owner reads complete. Explicit refresh also withholds unsent text and file chips during revalidation; they return only under the same authenticated session scope. A changed session discards them. A conclusive mutation can refresh navigation without discarding its current receipt under the same session; a failed read or changed scope fences that view. An uncertain send retains its original identity for explicit recovery; there is no offline effect queue. Signing in again does not silently resend a command.
 
 ## Verification and receipts
 
@@ -66,7 +66,8 @@ Run deterministic desktop package/worker/storage/lease/install/distribution/owne
 bun test --timeout 30000 tests/s16-desktop.browser.test.ts \
   tests/s16-desktop-oauth.browser.test.ts \
   tests/s16-desktop-workflow.browser.test.ts \
-  tests/s16-desktop-lifecycle.browser.test.ts
+  tests/s16-desktop-lifecycle.browser.test.ts \
+  tests/s16-desktop-connections.browser.test.ts
 ```
 
 These opt-in suites use real Chrome, the installed compiled native package, actual protected HTTP/client/worker paths and controlled model/provider/VM fixtures. They check exact downloaded bytes, single-use OAuth/PKCE, single admission recovery, one exact approved fixture effect, no install-induced host calls, permission denial and closed-window update activation. Record source/native/public package IDs, OS/browser/Bun/lock revisions, commands/counts and remaining physical/live inputs. Do not export profiles, cookies, OAuth codes/state, private payloads or installation-specific addresses. #431 owns live account/device/push acceptance; #432 owns service/owner-host activation.

@@ -87,3 +87,18 @@ test("closing a session also settles an in-flight native window without leaving 
   gate.resolve(); expect(await opening).toEqual({ opened: false }); await closing;
   expect(f.closes).toBe(1); expect(await f.call(f.capture("later"))).toEqual({ opened: false });
 });
+
+test("OAuth add, begin and reconnect use the same one-use source-bound handoff; a non-OAuth or substituted reconnect refuses", async () => {
+  for (const kind of ["source.add", "source.oauth_begin", "source.reconnect"]) {
+    const f = await fixture(); try {
+      const url = f.capture("reconnect", (command, receipt) => { command.kind = kind; receipt.kind = kind; if (kind !== "source.oauth_begin") command.auth = { kind: "oauth" }; });
+      expect(await f.call(url)).toEqual({ opened: true }); expect(await f.call(url)).toEqual({ opened: false });
+    } finally { await f.links.close(); }
+  }
+  for (const invalid of ["auth", "source"]) {
+    const f = await fixture(); try {
+      const url = f.capture("invalid", (command, receipt) => { command.kind = receipt.kind = "source.reconnect"; command.auth = { kind: invalid === "auth" ? "bearer" : "oauth" }; if (invalid === "source") command.sourceId = "other_source"; });
+      expect(await f.call(url)).toEqual({ opened: false }); expect(f.opened).toEqual([]);
+    } finally { await f.links.close(); }
+  }
+});

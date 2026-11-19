@@ -54,6 +54,9 @@ export class JitClient {
   readonly #fetch: (request: Request) => Promise<Response>;
   #csrf: string | null = null;
   #sessionGeneration = 0;
+  #authenticatedBefore = false;
+  #authenticationRevision = 0;
+  #authenticationScope: string | null = null;
   constructor(options: JitClientOptions) {
     const url = new URL(options.origin);
     if (!["https:", "http:"].includes(url.protocol) || url.origin !== options.origin || url.username || url.password) throw new JitClientError("client_origin_invalid", null, "not_sent");
@@ -61,15 +64,22 @@ export class JitClient {
   }
   /** Read current capabilities/navigation and establish CSRF for explicit subsequent commands. */
   async bootstrap(signal?: AbortSignal): Promise<Omit<ClientBootstrap, "csrf">> {
+    const previous = this.#csrf;
     this.clear(); const generation = this.#sessionGeneration;
     const data = await this.call("/bootstrap", "GET", undefined, signal);
     if (generation !== this.#sessionGeneration) throw new JitClientError("client_response_stale", null, "response");
     if (!record(data) || data.contract !== "s16-client-bootstrap/v1" || typeof data.csrf !== "string" || !data.csrf || data.csrf.length > 4096 || !record(data.capabilities) || data.capabilities.contract !== "s16-client-capabilities/v1" || !Array.isArray(data.conversations) || data.conversations.length > 64 || !Array.isArray(data.needsYou) || data.needsYou.length > 1024) return invalid();
     for (const entry of data.conversations) if (!record(entry) || !identifier(entry.conversationId) || typeof entry.firstMessage !== "string" || !Number.isSafeInteger(entry.latestAt)) return invalid();
-    this.#csrf = data.csrf;
+    if (data.sessionScope !== undefined && (typeof data.sessionScope !== "string" || !/^[a-f0-9]{64}$/.test(data.sessionScope))) return invalid();
+    const scope = typeof data.sessionScope === "string" ? data.sessionScope : null;
+    if (this.#authenticatedBefore && (scope ? scope !== this.#authenticationScope : previous !== data.csrf)) this.#authenticationRevision++;
+    this.#authenticationScope = scope;
+    this.#authenticatedBefore = true; this.#csrf = data.csrf;
     const { csrf: _csrf, ...projection } = data as unknown as ClientBootstrap;
     return projection;
   }
+  /** Local continuity marker only. A change/lost binding requires private UI revalidation; this conveys no authority or secret. */
+  get authenticationRevision(): number { return this.#authenticationRevision; }
   /** Reads current protected-browser custody and sign-in capability; starts no Bot work. */
   async protectedBrowser(signal?: AbortSignal): Promise<ProtectedBrowserView> {
     const data = await this.call('/protected-browser', 'GET', undefined, signal);

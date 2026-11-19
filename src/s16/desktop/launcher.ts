@@ -35,8 +35,14 @@ export async function openDesktopSession(options: { root: string; service: strin
     // Restore Chrome's ordinary user-visible download behavior, rather than Playwright's temporary test directory.
     phase = "downloads"; await cdp.send("Browser.setDownloadBehavior", { behavior: "default", eventsEnabled: true });
     const closed = Promise.withResolvers<void>();
+    let closing: Promise<void> | undefined;
+    const close = () => closing ??= (async () => { await context!.close(); await closed.promise; })();
     context.once("close", () => { void ownerLinks.close().finally(() => { release(); closed.resolve(); }); });
-    return { context, cdp, origin: profile.origin, profileId: profile.id, browserVersion: browser.version(), closed: closed.promise, async close() { await context!.close(); await closed.promise; } };
+    // Chrome may keep a background process after its last macOS window closes. A managed client owns that process:
+    // retain the lease across the login -> PWA handoff, then settle it when the actual last owned page is gone.
+    const watch = (page: Page) => page.once("close", () => { queueMicrotask(() => { if (!context!.pages().length) void close().catch(() => {}); }); });
+    context.on("page", watch); for (const page of context.pages()) watch(page);
+    return { context, cdp, origin: profile.origin, profileId: profile.id, browserVersion: browser.version(), closed: closed.promise, close };
   } catch (error) { await context?.close().catch(() => {}); release(); throw new Error(error instanceof Error && /^desktop_[a-z_]+$/.test(error.message) ? error.message : `desktop_browser_${phase}_unavailable`); }
 }
 

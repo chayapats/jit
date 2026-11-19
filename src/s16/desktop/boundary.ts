@@ -20,6 +20,8 @@ export function desktopLaunchUrl(origin: string, value?: string): string {
 const escape = (text: string) => text.replace(/[&<>"']/g, value => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[value]!);
 /** Maximum buffered protected-service response, above the current file/audio contracts. Never a disk cache. */
 export const desktopResponseBytes = 128 * 1024 * 1024;
+/** Finite whole-response budget covering owning multi-page connection discovery; individual server operations keep their own shorter bounds. */
+export const desktopResponseTimeoutMs = 15 * 60 * 1000;
 
 /**
  * Installs the native exact-service boundary before opening a page. It covers popups, cross-port requests and
@@ -39,7 +41,7 @@ export async function guardDesktopContext(context: BrowserContext, service: stri
     }
     let response: APIResponse | undefined;
     try {
-      response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30000 });
+      response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: desktopResponseTimeoutMs });
       const status = response.status(), location = response.headers().location;
       if (status >= 300 && status < 400 && location) {
         const next = new URL(location, url);

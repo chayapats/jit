@@ -5,6 +5,7 @@ import { captureAudio, VoiceAudioError } from "./voice/wav";
 import { skillDetail, skillFile, skillsView } from "./skills/owner-view";
 import { skillLimits } from "./skills/types";
 import { AppError } from "../errors";
+import { createHash } from "node:crypto";
 import type { ConversationApplication, ConversationHttpAuthentication } from "../s15/conversation";
 import { conversationList, conversationOwnerView, conversationPendingNeeds, conversationRequestView } from "../s15/conversation/owner-view";
 import { exact, parseCommandJson } from "../s15/conversation/validation";
@@ -345,7 +346,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (url.search) throw new AppError("invalid_body");
         const caps = await capabilities(), current = options.authentication.authenticate(cookies[0]!.slice(options.cookieName.length + 1)); app.options.policy.requireOwner(current.actor);
         const bound = options.bots, conversations = conversationList(app, current.actor, 64).map(entry => bound ? { ...entry, botId: bound.conversationBot(entry.conversationId) } : entry);
-        return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, capabilities: caps, conversations, ...(bound ? { bots: bound.view(current.actor).bots.map(item => ({ id: item.id, name: item.name, main: item.main, state: item.state })) } : {}), needsYou: conversationPendingNeeds(app, current.actor), ...(options.routines ? { routines: { attention: options.routines.list(current.actor).attention } } : {}), ...(options.policyUpdate?.(current.actor) ? { policyUpdate: true } : {}) } satisfies ClientBootstrap);
+        const sessionScope = createHash("sha256").update(JSON.stringify(["s16-client-session-scope/v1", cookies[0], current.csrf])).digest("hex");
+        return json({ contract: "s16-client-bootstrap/v1", csrf: current.csrf, sessionScope, capabilities: caps, conversations, ...(bound ? { bots: bound.view(current.actor).bots.map(item => ({ id: item.id, name: item.name, main: item.main, state: item.state })) } : {}), needsYou: conversationPendingNeeds(app, current.actor), ...(options.routines ? { routines: { attention: options.routines.list(current.actor).attention } } : {}), ...(options.policyUpdate?.(current.actor) ? { policyUpdate: true } : {}) } satisfies ClientBootstrap);
       }
       const conversation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})(?:\/(messages|events|decisions|steers))?$/.exec(url.pathname);
       if (conversation) {

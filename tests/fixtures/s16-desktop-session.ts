@@ -7,9 +7,10 @@ import { connectDesktopWindow, openDesktopSession } from "../../src/s16/desktop/
 import { activeNativeDesktop, installNativeDesktop } from "../../src/s16/desktop/installation";
 import { desktopProfile, prepareDesktopStartup, privateDesktopDirectory, writeDesktopRecord } from "../../src/s16/desktop/storage";
 import type { Locale } from "../../src/i18n";
+import type { S15CompositionOptions } from "../../src/s15/composition";
 
 /** Real loopback owning composition, HTTP and native profile. Only models/effect providers/VMs are scripted. */
-export async function desktopSessionFixture(locale: Locale, views = false) {
+export async function desktopSessionFixture(locale: Locale, views = false, configure?: (options: S15CompositionOptions) => S15CompositionOptions) {
   const root = mkdtempSync(join(tmpdir(), "jit-desktop-workflow-")); let f: Awaited<ReturnType<typeof composedFixture>> | undefined;
   let intercept: ((request: Request) => Response | null | Promise<Response | null>) | undefined;
   const messages: string[] = [], decisions: string[] = [];
@@ -27,7 +28,8 @@ export async function desktopSessionFixture(locale: Locale, views = false) {
   try {
     f = await composedFixture("default", false, undefined, options => {
       options.proposedPolicy!.rules[0]!.adapters.push("s16_files"); options.proposedPolicy!.rules[0]!.operations.push("artifact_create");
-      return { ...options, origin, files: {}, notifications: { fetch: async () => { throw new Error("fixture_push_unexpected"); } }, ...(views ? { bots: {}, computers: { idleStopMs: 1800000, sweepMs: 0 } } : {}) };
+      const next: S15CompositionOptions = { ...options, origin, files: {}, notifications: { fetch: async () => { throw new Error("fixture_push_unexpected"); } }, ...(views ? { bots: {}, computers: { idleStopMs: 1800000, sweepMs: 0 } } : {}) };
+      return configure ? configure(next) : next;
     });
     let host = { openDesktopSession, connectDesktopWindow };
     if (process.env.JIT_S16_DESKTOP_ARTIFACT) {

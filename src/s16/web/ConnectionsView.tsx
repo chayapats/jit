@@ -79,6 +79,7 @@ export function ConnectionsView({ client, t, locale, available, skillsAvailable 
     try {
       const receipt = await client.connectionCommand(command);
       if (receipt.authorize) {
+        setReviewing(null);
         const opened = await nativeOwnerLink(receipt.authorize);
         if (opened === null) { location.assign(receipt.authorize); return; }
         if (!opened) throw new JitClientError("source_oauth_handoff_failed", null, "response");
