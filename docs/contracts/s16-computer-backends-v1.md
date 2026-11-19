@@ -35,8 +35,10 @@ and the exact hypervisor binding before connection and revalidates after the
 handshake. The only negotiation sent is `CONNECT <guest port>\n`.
 Accept one bounded `OK <assigned host port>\n` line, then preserve every trailing
 byte exactly for SSH. The acknowledged host port is not the requested guest
-port; equality is not a valid check. The assigned port is a positive uint32.
-Reject malformed, oversized, non-ASCII, multi-line or incomplete negotiation.
+port; equality is not a valid check. Guest and assigned host ports are positive
+uint32 values below reserved `VMADDR_PORT_ANY` (`4294967295`). Reject malformed,
+oversized, non-ASCII or incomplete acknowledgement lines; subsequent bytes are
+opaque SSH data rather than an additional negotiation.
 
 Default handshake deadline is five seconds, independently shortened by the
 owning operation deadline/abort signal; the complete acknowledgement line is
