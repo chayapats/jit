@@ -6,11 +6,20 @@ export type BrowserMode = 'static' | 'general';
 export type LoginState = 'not_signed_in' | 'owner_control' | 'checking' | 'signed_in' | 'cancelled' | 'unknown';
 /** Credential-free actual intercepted bytes. Body uses canonical base64; no cookie, auth or arbitrary headers. */
 export interface BrowserRequest { method: string; url: string; contentType: string; bodyBase64: string; navigation: boolean }
+/** Bounded untrusted pre-input data, private to the protected host. Secret/hidden/file values are absent. */
+export interface BrowserInputSnapshot {
+  url: string; kind: 'click' | 'submit' | 'type' | 'select'; value: string | null;
+  target: { tag: string; type: string; name: string };
+  fields: { name: string; type: string; values: string[] }[];
+}
 /** Trusted semantics installed by protected host composition, never by page/model metadata. Null means unsupported. */
 export type RequestMeaning = { kind: 'read'; private: boolean } | { kind: 'login' } | { kind: 'unsupported'; code: string } | { kind: 'effect'; classes: ActionClass[]; recipients: Ref[]; transaction: Transaction | null; impact: 'reversible' | 'major'; github?: GithubConditions | null; verifyResponse?: (response: { status: number; body: Uint8Array }) => 'succeeded' | 'failed' | 'unknown' };
 /** Source/observation approval is separate from effect classification. Secret surfaces must return false. */
 export interface BrowserSitePolicy {
   classify(request: Readonly<BrowserRequest>, mode: BrowserMode): RequestMeaning | null;
+  /** Trusted installed semantics, never page/model code. Freeze one complete credential-free async effect or return null.
+   * Its actual request still requires current POLICY/DATA15 guards and an exact one-use dispatch. */
+  intent?(input: Readonly<BrowserInputSnapshot>, mode: BrowserMode): BrowserRequest | null;
   observable(url: string, mode: BrowserMode): boolean;
   /** Owner-only credential entry is restricted to these exact document URLs. */
   loginDocuments: readonly string[];
@@ -39,10 +48,14 @@ export type BrowserOperation = { kind: 'navigate'; url: string; generation: numb
 export type BrowserResult = { state: 'observed'; observation: BrowserObservation } | { state: 'image'; pngBase64: string; generation: number } | { state: 'held'; code: string; action: ActionRef } | { state: 'denied' | 'unsupported' | 'unknown'; code: string } | { state: 'ok'; generation: number };
 /** Transient owner input: only authenticated host ingress may call this port; never retain its value. */
 export type OwnerBrowserInput = { kind: 'type'; field: string; value: string } | { kind: 'click'; field: string };
+/** Current protected control facts. Settling withholds owner input until the previous native scope stops. */
+export interface BrowserOwnerState { generation: number; login: LoginState; reconciliation: ActionRef | null; settling: boolean }
+/** Owner-only visible controls. IDs are opaque current-document handles; labels contain no field values. */
+export interface BrowserOwnerControl { id: string; label: string; kind: 'text' | 'password' | 'button' }
 /** Protected work closure; cancellation fences all later input/releases/publication. An already released effect remains unknown/reconcile-only. Never expose the service or actor as a tool argument. */
 export interface BrowserWork { state(): { generation: number; login: LoginState; reconciliation: ActionRef | null }; execute(operation: BrowserOperation, signal?: AbortSignal): Promise<BrowserResult>; resume(action: ActionRef, signal?: AbortSignal): Promise<BrowserResult>; /** Host-only wait for this lease's already-started scopes; no input, dispatch or renewed authority. */ settled(): Promise<void>; release(): void }
 /** Owner-only live view/input. A takeover generation is checked on each frame/input; no secret bytes enter work results. */
-export interface BrowserOwner { takeover(actor: OwnerActor): Promise<{ generation: number }>; frame(actor: OwnerActor, generation: number): Promise<Uint8Array>; input(actor: OwnerActor, generation: number, input: OwnerBrowserInput): Promise<void>; handBack(actor: OwnerActor, generation: number, cancel?: boolean): { generation: number; login: LoginState }; checkSession(actor: OwnerActor): Promise<LoginState>; /** Charged read-only reconciliation; clear uncertainty only on conclusive service evidence. */ reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation> }
+export interface BrowserOwner { state(actor: OwnerActor): BrowserOwnerState; takeover(actor: OwnerActor, expected?: number): Promise<{ generation: number }>; controls(actor: OwnerActor, generation: number): Promise<BrowserOwnerControl[]>; frame(actor: OwnerActor, generation: number): Promise<Uint8Array>; input(actor: OwnerActor, generation: number, input: OwnerBrowserInput): Promise<void>; handBack(actor: OwnerActor, generation: number, cancel?: boolean): { generation: number; login: LoginState }; checkSession(actor: OwnerActor): Promise<LoginState>; /** Charged read-only reconciliation; clear uncertainty only on conclusive service evidence. */ reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation> }
 /** Explicit host composition hooks for the existing real policy service. Create before opening that service. */
 export interface BrowserRegistration { adapter: ActionAdapter; readHandler: ReadHandler; attach(policy: S15PolicyService): void; open(actor: WorkActor): BrowserWork; owner: BrowserOwner; close(): Promise<void> }
 /** Internal protected transport. No engine object or raw request resolver is an agent API. */

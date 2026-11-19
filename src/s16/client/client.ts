@@ -9,6 +9,8 @@ import { clientResponseBytes, type ClientConnectionsView, type ClientConnectionC
 import type { FileArtifact, FileReference, FileUpload, FileUploadCommand } from "../files/types";
 import type { ScreenCommand, ScreenCommandResult, ScreenView } from "../computers/screen";
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
+import type { BrowserOwnerControl } from '../../s15/browser';
+import type { ProtectedBrowserCommand, ProtectedBrowserResult, ProtectedBrowserView } from '../protected-browser';
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
 export class JitClientError extends Error {
@@ -54,7 +56,39 @@ export class JitClient {
     const { csrf: _csrf, ...projection } = data as unknown as ClientBootstrap;
     return projection;
   }
-  /** Reads protected route configuration and measured/unknown budgets; starts no provider work. */
+  /** Reads current protected-browser custody and sign-in capability; starts no Bot work. */
+  async protectedBrowser(signal?: AbortSignal): Promise<ProtectedBrowserView> {
+    const data = await this.call('/protected-browser', 'GET', undefined, signal);
+    if (!protectedBrowserView(data)) return invalid(); return data;
+  }
+  /** Visible owner controls contain no entered values. IDs are valid only for this document/takeover. */
+  async protectedBrowserControls(generation: number, signal?: AbortSignal): Promise<BrowserOwnerControl[]> {
+    if (!count(generation) || !generation) return invalid();
+    const data = await this.call(`/protected-browser/controls?generation=${generation}`, 'GET', undefined, signal);
+    if (!record(data) || data.contract !== 's16-protected-browser-controls/v1' || data.generation !== generation || !Array.isArray(data.controls) || data.controls.length > 32 || data.controls.some(control => !record(control) || typeof control.id !== 'string' || !/^o[0-9]+_[0-9]+$/.test(control.id) || typeof control.label !== 'string' || control.label.length > 160 || !['text', 'password', 'button'].includes(String(control.kind)))) return invalid();
+    return data.controls as BrowserOwnerControl[];
+  }
+  /** One owner input/control attempt, never automatically retried or stored by the transport. */
+  async protectedBrowserCommand(command: ProtectedBrowserCommand, signal?: AbortSignal): Promise<ProtectedBrowserResult> {
+    const input = structuredClone(command); id(input.requestId);
+    const data = await this.call('/protected-browser/commands', 'POST', input, signal, input.requestId);
+    if (!record(data) || data.contract !== 's16-protected-browser-result/v1' || data.requestId !== input.requestId || !protectedBrowserView(data.view)) return invalid();
+    return data as unknown as ProtectedBrowserResult;
+  }
+  /** Owner-only frame. Authentication changes withhold a response that started under an old session. */
+  async protectedBrowserFrame(generation: number, signal?: AbortSignal): Promise<Blob> {
+    if (!count(generation) || !generation) return invalid();
+    const session = this.#sessionGeneration; let response: Response;
+    try { response = await this.#fetch(new Request(`${this.origin}/api/s16/client/protected-browser/frame?generation=${generation}`, { credentials: 'same-origin', mode: 'same-origin', cache: 'no-store', redirect: 'error', referrerPolicy: 'no-referrer', ...(signal ? { signal } : {}) })); }
+    catch { throw new JitClientError('client_unavailable', null, 'not_sent'); }
+    if (session !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError('client_response_stale', response.status, 'response'); }
+    if (response.status === 401 || response.status === 403) this.clear();
+    if (!response.ok) { const data = await this.json(response, 'GET', null); throw new JitClientError(safeCode(record(data) ? data.error : null), response.status, 'response'); }
+    if (response.headers.get('content-type')?.split(';')[0] !== 'image/png') return invalid();
+    const blob = await response.blob();
+    if (session !== this.#sessionGeneration) throw new JitClientError('client_response_stale', response.status, 'response');
+    if (blob.size < 33 || blob.size > 8 * 1048576) return invalid(); return new Blob([blob], { type: 'image/png' });
+  }
   async models(signal?: AbortSignal): Promise<ClientModelsView> {
     const data = await this.call("/models", "GET", undefined, signal);
     if (!record(data) || data.contract !== "s16-client-models/v1" || !Array.isArray(data.routes) || data.routes.length > 64 || !record(data.budget) || !Array.isArray(data.budget.ceilings)) return invalid();
@@ -647,4 +681,10 @@ function needsYouCard(value: unknown, conversationId: string): value is Computer
     if (!record(next) || !["pending", "queued", "running", "completed", "held", "stopped", "covered", "unknown"].includes(String(next.state)) || next.requestId !== null && !identifier(next.requestId) || next.code !== null && !identifier(next.code)) return false;
   }
   return (value.generation === null || count(value.generation)) && (value.screenState === null || ["agent", "yield", "settling", "owner", "fenced"].includes(String(value.screenState))) && typeof value.canWatch === "boolean" && typeof value.canDecline === "boolean";
+}
+
+function protectedBrowserView(value: unknown): value is ProtectedBrowserView {
+  if (!record(value) || value.contract !== 's16-protected-browser/v1' || typeof value.signIn !== 'boolean' || !count(value.generation) || !value.generation || typeof value.settling !== 'boolean' || !['not_signed_in', 'owner_control', 'checking', 'signed_in', 'cancelled', 'unknown'].includes(String(value.login))) return false;
+  const action = value.reconciliation;
+  return action === null || record(action) && identifier(action.id) && count(action.revision) && typeof action.actionHash === 'string' && /^[a-f0-9]{64}$/.test(action.actionHash);
 }

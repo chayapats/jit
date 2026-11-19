@@ -34,6 +34,8 @@ export interface ClientCapabilities {
   skills?: { available: false; code: "skills_unavailable" } | { available: true; contract: "s16-client-skills/v1" };
   /** MODEL16-01: configured routes and recorded work usage; reads never start provider work. */
   models?: { available: true; contract: "s16-client-models/v1" };
+  /** BROW16-01B protected sign-in/control, separate from the working computer's desktop. */
+  protectedBrowser?: { available: true; contract: 's16-protected-browser/v1' };
   /** Owner audio API is configured; actual local binary/model health and quota are read from its status endpoint. */
   voice?: { available: false; code: "voice_unavailable" } | { available: true; contract: "s16-voice/v1"; route: "local" };
 }

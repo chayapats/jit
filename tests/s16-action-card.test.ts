@@ -26,3 +26,16 @@ test("an action shape without its own rows opens the complete exact payload", ()
   const facts = cardFacts(slip(["major_change"], { contract: "fixture", delete: ["x", "y"] }, { impact: "major" }));
   expect(facts.kind).toBe("decision"); expect(facts.known).toBe(false); expect(facts.payloadText).toContain('"delete"');
 });
+
+test("website cards decode query/form Unicode without changing exact bytes or losing repeated/empty fields", () => {
+  const message = "\u0e17\u0e14\u0e2a\u0e2d\u0e1a + Friday\nSecond line", body = new URLSearchParams([["message", message], ["recipient", "team"], ["recipient", "support"], ["empty", ""]]).toString();
+  const payload = { contract: "s15-browser-request/v1", method: "POST", url: "https://example.test/send?tag=one&tag=two+words&literal=%2B&empty=", contentType: "Application/X-Www-Form-Urlencoded; charset=UTF-8", bodyBase64: Buffer.from(body).toString("base64"), navigation: false };
+  const action = slip(["communication"], payload), original = action.payloadBytesBase64, facts = cardFacts(action);
+  expect(facts.requestFields).toEqual([
+    { source: "query", name: "tag", value: "one" }, { source: "query", name: "tag", value: "two words" }, { source: "query", name: "literal", value: "+" }, { source: "query", name: "empty", value: "" },
+    { source: "form", name: "message", value: message }, { source: "form", name: "recipient", value: "team" }, { source: "form", name: "recipient", value: "support" }, { source: "form", name: "empty", value: "" },
+  ]);
+  expect(facts.body).toBe(body); expect(JSON.parse(facts.payloadText)).toEqual(payload); expect(action.payloadBytesBase64).toBe(original);
+  expect(cardFacts(slip(["communication"], { ...payload, contentType: "text/plain" })).requestFields.every(field => field.source === "query")).toBe(true);
+  expect(cardFacts(slip(["communication"], { ...payload, url: "invalid", contentType: "text/plain" })).requestFields).toEqual([]);
+});

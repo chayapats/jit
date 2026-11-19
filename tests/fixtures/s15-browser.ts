@@ -21,12 +21,14 @@ export const loopbackFixtureEgress: BrowserEgressPorts = {
   resolve: async host => host === '127.0.0.1' ? [{ address: fixturePublicAddress, family: 4 }] : lookup(host, { all: true, verbatim: true }),
   connect: (address, port) => connect({ host: address === fixturePublicAddress ? '127.0.0.1' : address, port }),
 };
-/** Controlled real HTTP fixture, with ephemeral credentials never printed, tracked or stored in receipts. */
-export function browserSite(options: { delayMs?: number } = {}) {
+/** Controlled real HTTP fixture, with ephemeral credentials never printed, tracked or stored in receipts.
+ * TOTP uses a per-fixture clock, avoiding an unrelated real-time boundary between entry and submission. */
+export function browserSite(options: { delayMs?: number; asyncIntent?: 'fetch' | 'xhr' | 'double' | 'tamper' } = {}) {
+  const fixtureTime = Date.now();
   const password = randomBytes(24).toString('hex'), secret = randomBytes(20), session = randomBytes(24).toString('hex'), proof = randomBytes(24).toString('hex');
   let beforeResponse: ((path: string, request: Request) => Promise<void>) | null = null;
-  let secondFactor = false; const received: { path: string; method: string; body: string }[] = [];
-  const totp = (time = Date.now()) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64BE(BigInt(Math.floor(time / 30000))); const hash = createHmac('sha1', secret).update(bytes).digest(), offset = hash[19]! & 15; return String((hash.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0'); };
+  let secondFactor = false, loginAttempts = 0, verificationAttempts = 0; const received: { path: string; method: string; body: string }[] = [];
+  const totp = (time = fixtureTime) => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64BE(BigInt(Math.floor(time / 30000))); const hash = createHmac('sha1', secret).update(bytes).digest(), offset = hash[19]! & 15; return String((hash.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0'); };
   const html = (body: string, status = 200, headers: Record<string, string> = {}) => new Response(`<!doctype html><html><body>${body}</body></html>`, { status, headers: { 'content-type': 'text/html; charset=utf-8', ...headers } });
   const form = (action: string, fields: string, label = 'Continue') => `<form method="post" action="${action}">${fields}<button name="confirm" type="submit">${label}</button></form>`;
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
@@ -39,11 +41,13 @@ export function browserSite(options: { delayMs?: number } = {}) {
     if (path === '/app.js') return new Response(`document.querySelector('#js').textContent='JavaScript executed';fetch('/background',{method:'POST',body:'must not leave'});`, { headers: { 'content-type': 'application/javascript' } });
     if (path === '/login' && request.method === 'GET') return html(form('/login', '<input name="password" type="password" autocomplete="current-password">', 'Sign in'));
     if (path === '/login' && request.method === 'POST') {
+      loginAttempts++;
       const value = new URLSearchParams(body).get('password') ?? '';
       secondFactor = value.length === password.length && timingSafeEqual(Buffer.from(value), Buffer.from(password));
       return secondFactor ? html(form('/two-factor', '<input name="otp" autocomplete="one-time-code">', 'Verify')) : html('Rejected', 401);
     }
     if (path === '/two-factor' && request.method === 'POST') {
+      verificationAttempts++;
       const code = new URLSearchParams(body).get('otp');
       if (!secondFactor || code !== totp()) return html('Rejected', 401);
       const headers = new Headers({ 'content-type': 'text/html' });
@@ -65,17 +69,32 @@ export function browserSite(options: { delayMs?: number } = {}) {
           form.append(recipient, message, send); root.append(form);
           if (location.pathname === '/dynamic-tamper') form.addEventListener('submit', () => { recipient.value = 'support'; message.value = 'Substituted after input selection'; });
           const mutation = document.createElement('button'); mutation.type = 'button'; mutation.name = 'xhr'; mutation.textContent = 'Send with fetch';
-          mutation.onclick = () => { fetch('/dynamic-send', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'recipient=team&message=Unbound+fetch' }).catch(() => {}); }; root.append(mutation);
+          mutation.onclick = () => {
+            const mode = ${JSON.stringify(options.asyncIntent ?? null)};
+            if (!mode) { fetch('/dynamic-send', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'recipient=team&message=Unbound+fetch' }).catch(() => {}); return; }
+            void (async () => {
+              const ready = await fetch('/dynamic-intent-ready'); if (!ready.ok) throw Error('not ready');
+              const body = new URLSearchParams({ recipient: mode === 'tamper' ? 'support' : recipient.value, message: message.value }).toString();
+              const send = () => mode === 'xhr' ? new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open('POST', '/dynamic-send'); xhr.setRequestHeader('content-type', 'application/x-www-form-urlencoded;charset=UTF-8'); xhr.onload = () => xhr.status === 200 ? resolve() : reject(); xhr.onerror = reject; xhr.send(body); }) : fetch('/dynamic-send', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body }).then(response => { if (!response.ok) throw Error('refused'); });
+              if (mode === 'double') await Promise.allSettled([send(), send()]); else await send();
+              const result = document.createElement('output'); result.textContent = 'Async response observed'; root.append(result);
+            })().catch(() => { const result = document.createElement('output'); result.textContent = 'Async request refused'; root.append(result); });
+          }; root.append(mutation);
+          if (${JSON.stringify(!!options.asyncIntent)}) for (const route of ['next', 'secret']) {
+            const control = document.createElement('button'); control.type = 'button'; control.name = 'route_' + route; control.textContent = 'Show ' + route + ' route';
+            control.onclick = () => { history.pushState({}, '', route === 'next' ? '/dynamic-next' : '/login'); if (route === 'secret') { const password = document.createElement('input'); password.type = 'password'; root.append(password); } }; root.append(control);
+          }
         }).catch(() => { document.querySelector('main').textContent = 'Hydration unavailable'; });
       `, { headers: { 'content-type': 'application/javascript' } });
       if (!request.headers.get('cookie')?.includes(`jit_session=${session}`)) return html('Sign in required', 401);
       if (['/dynamic', '/dynamic-tamper'].includes(path)) return html('<main>JavaScript required to load the record</main><script src="/dynamic.js"></script>');
       if (path === '/dynamic-data') return Response.json({ title: 'Launch day: Friday' });
       if (path === '/dynamic-xhr') return Response.json({ project: 'Launch project' });
+      if (path === '/dynamic-intent-ready') return Response.json({ ready: true });
       if (path === '/dynamic-send' && request.method === 'POST') return Response.json({ acceptedSha256: createHash('sha256').update(body).digest('hex') });
     }
     if (path === '/task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a><input name="upload" type="file">`);
-    if (path === '/clean-task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a>`);
+    if (path === '/clean-task') return html(`<h1>Website task</h1>${form('/message', '<input name="recipient" value="team"><textarea name="message">Exact message</textarea><select name="channel"><option value="team">Team</option><option value="support">Support</option></select>', 'Read more')}${form('/checkout', '<input name="amount" value="2500"><input name="currency" value="USD">', 'Continue')}${form('/edit', '<input name="note" value="Reversible note">', 'Save')}<a href="/leak?private=business-note">Public search</a><a href="/redirect">Redirect</a><a href="/download">Download</a><a href="/popup" target="_blank">Popup</a>${options.asyncIntent ? `<button type="button" name="async_send">Send async record</button><script>document.querySelector('[name=async_send]').onclick=()=>{const fields=new URLSearchParams({recipient:document.querySelector('[name=recipient]').value,message:document.querySelector('[name=message]').value});fetch('/message',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded;charset=UTF-8'},body:fields.toString()}).catch(()=>{});};</script>` : ''}`);
     if (['/message', '/checkout', '/edit'].includes(path)) return html(`<h1>Request accepted</h1><a href="/clean-task">Back</a>`);
     if (path === '/redirect') return new Response(null, { status: 302, headers: { location: '/unknown-effect?private=redirected' } });
     if (path === '/download') return new Response('inert fixture file', { headers: { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename=fixture.txt' } });
@@ -84,19 +103,19 @@ export function browserSite(options: { delayMs?: number } = {}) {
   } });
   const origin = server.url.origin;
   const site = browserSitePolicy(origin);
-  return { origin, site, received, set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
+  return { origin, site, received, attempts: () => ({ login: loginAttempts, verification: verificationAttempts }), set beforeResponse(fn: ((path: string, request: Request) => Promise<void>) | null) { beforeResponse = fn; }, password: () => password, code: () => totp(), close: () => server.stop(true) };
 }
 /** Trusted controlled-site semantics, reusable by a separate crash/restart process without its server or credentials. */
 export function browserSitePolicy(origin: string): BrowserSitePolicy {
   const verifyResponse = (r: { status: number; body: Uint8Array }): 'succeeded' | 'unknown' => r.status === 200 && Buffer.from(r.body).includes(Buffer.from('Request accepted')) ? 'succeeded' : 'unknown';
   return {
     loginDocuments: [origin + '/login', origin + '/two-factor'], session: { url: origin + '/session', cookie: 'jit_session', signedInStatus: 200, signedOutStatus: 401 },
-    observable: url => { const u = new URL(url); return u.origin === origin && ['/', '/clean-task', '/message', '/checkout', '/edit', '/attacks', '/dynamic', '/dynamic-tamper', '/dynamic-send'].includes(u.pathname); },
+    observable: url => { const u = new URL(url); return u.origin === origin && ['/', '/clean-task', '/message', '/checkout', '/edit', '/attacks', '/dynamic', '/dynamic-next', '/dynamic-tamper', '/dynamic-send'].includes(u.pathname); },
     classify(r) {
       const u = new URL(r.url); if (u.origin !== origin) return null;
       if (u.pathname === '/download') return { kind: 'unsupported', code: 'download_unsupported' };
       if (['/login', '/two-factor'].includes(u.pathname) && r.method === 'POST') return { kind: 'login' };
-      if (['GET', 'HEAD'].includes(r.method) && !u.search && ['/dynamic', '/dynamic-tamper', '/dynamic.js', '/dynamic-data', '/dynamic-xhr'].includes(u.pathname)) return { kind: 'read', private: u.pathname !== '/dynamic.js' };
+      if (['GET', 'HEAD'].includes(r.method) && !u.search && ['/dynamic', '/dynamic-tamper', '/dynamic.js', '/dynamic-data', '/dynamic-xhr', '/dynamic-intent-ready'].includes(u.pathname)) return { kind: 'read', private: u.pathname !== '/dynamic.js' };
       if (['GET', 'HEAD'].includes(r.method) && !u.search && ['/', '/app.js', '/login', '/session', '/task', '/clean-task', '/attacks', '/redirect', '/download'].includes(u.pathname)) return { kind: 'read', private: ['/session', '/task', '/clean-task'].includes(u.pathname) };
       if (u.pathname === '/leak' && r.method === 'GET' && [...u.searchParams.keys()].join() === 'private') return { kind: 'effect', verifyResponse, classes: ['disclosure', 'new_egress'], recipients: [ref('other')], transaction: null, impact: 'reversible' };
       if (u.search || r.method !== 'POST') return null;
