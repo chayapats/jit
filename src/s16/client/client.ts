@@ -12,6 +12,8 @@ import type { ScreenCommand, ScreenCommandResult, ScreenView } from "../computer
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 import type { BrowserOwnerControl } from '../../s15/browser';
 import type { ProtectedBrowserCommand, ProtectedBrowserResult, ProtectedBrowserView } from '../protected-browser';
+import type { NativeNotificationSettings, NativeNotificationDevice, NativeProviderKind } from "../native-notifications/types";
+import { nativeToken } from "../mobile/notices";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
 export class JitClientError extends Error {
@@ -303,6 +305,28 @@ export class JitClient {
     }
     if (data.cursor !== cursor) return invalid();
     return data as unknown as ClientEvents;
+  }
+  /** Protected native setup only; configuration and OS subscription are not proof of physical delivery. */
+  async nativeNotificationSettings(signal?: AbortSignal): Promise<NativeNotificationSettings> {
+    const data = await this.call("/native-notifications", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-native-notifications/v1" || !sha256(data.service) || !count(data.devices) || (data.devices as number) > 20 || data.limit !== 20 || !Array.isArray(data.providers) || data.providers.length < 1 || data.providers.length > 2 || new Set(data.providers.map(provider => record(provider) ? provider.provider : null)).size !== data.providers.length || data.providers.some(provider => !record(provider) || !["apns", "fcm"].includes(String(provider.provider)) || typeof provider.available !== "boolean" || (provider.available ? provider.code !== null : provider.code !== "native_push_credentials_unavailable"))) return invalid();
+    if (typeof data.service !== "string" || data.service.length !== 64) return invalid();
+    return { contract: "s16-native-notifications/v1", service: data.service, devices: data.devices as number, limit: 20, providers: data.providers.map(provider => ({ provider: provider.provider, available: provider.available, code: provider.code })) };
+  }
+  /** Original OS token hash lookup. No registration or work starts from a settings restoration. */
+  async nativeNotificationDevice(hash: string, signal?: AbortSignal): Promise<NativeNotificationDevice> {
+    if (!sha256(hash) || hash.length !== 64) throw new JitClientError("native_push_token_invalid", null, "not_sent");
+    return this.nativeDevice(await this.call(`/native-notifications/devices/${hash}`, "GET", undefined, signal));
+  }
+  /** One explicit notification opt-in or disable; uncertain replies are recovered by read-only device lookup. */
+  async nativeNotificationSubscription(kind: "subscribe" | "unsubscribe", command: { provider: NativeProviderKind; token: string; locale?: "en" | "th" }, signal?: AbortSignal): Promise<NativeNotificationDevice> {
+    const input = structuredClone(command); nativeToken(input.provider, input.token);
+    if (!["subscribe", "unsubscribe"].includes(kind) || kind === "subscribe" && !["en", "th"].includes(String(input.locale))) throw new JitClientError("invalid_native_notification_command", null, "not_sent");
+    return this.nativeDevice(await this.call(`/native-notifications/${kind}`, "POST", kind === "subscribe" ? { provider: input.provider, token: input.token, locale: input.locale } : { provider: input.provider, token: input.token }, signal));
+  }
+  private nativeDevice(data: unknown): NativeNotificationDevice {
+    if (!record(data) || data.contract !== "s16-native-notification-device/v1" || typeof data.subscribed !== "boolean" || Object.keys(data).sort().join() !== "contract,subscribed") return invalid();
+    return data as unknown as NativeNotificationDevice;
   }
   /** Stops only the named work. The acknowledgement does not certify external process/effect settlement. */
   async stop(requestId: string, signal?: AbortSignal): Promise<void> {

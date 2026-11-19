@@ -14,8 +14,8 @@ export interface MobilePending {
 export class MobileCommandError extends Error {
   constructor(readonly code: "mobile_command_busy" | "mobile_pending_invalid" | "mobile_pending_limit" | "mobile_binding_changed" | "mobile_command_unavailable" | "stale_action") { super(code); this.name = "MobileCommandError"; }
 }
-const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const id = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 128 && !/[^A-Za-z0-9_-]/.test(value);
+const sha = (value: unknown): value is string => typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
 const writes = new Map<string, Promise<void>>();
 type Retained = { metadata: MobilePending; command: ClientMessage | ClientDecision };
 

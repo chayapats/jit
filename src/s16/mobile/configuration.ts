@@ -4,8 +4,8 @@ import { mobileOrigin, mobileServiceId } from "./transport";
 export interface MobileConfiguration { contract: "s16-mobile-configuration/v1"; locale: Locale; selected: string | null; services: readonly { readonly id: string; readonly origin: string }[] }
 /** Empty first-install configuration; no endpoint, permission or enrollment is inferred. */
 export const emptyMobileConfiguration: MobileConfiguration = Object.freeze({ contract: "s16-mobile-configuration/v1", locale: "th", selected: null, services: Object.freeze([]) });
-const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-const id = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const sha = (value: unknown): value is string => typeof value === "string" && value.length === 64 && /^[a-f0-9]{64}$/.test(value);
+const id = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 128 && !/[^A-Za-z0-9_-]/.test(value);
 /** Validate every restored service binding before any authenticated request; unknown keys are refused. */
 export async function mobileConfiguration(raw: string | null): Promise<MobileConfiguration> {
   if (raw === null) return emptyMobileConfiguration;
