@@ -6639,6 +6639,8 @@ export const en: Record<MessageKey, string> = {
   "s16.mobile.localSignOut": "Sign out on this device",
   "s16.mobile.work": "Work",
   "s16.mobile.permissions": "Device permissions",
+  "s16.mobile.voicePending": "An original dictation is still recorded. Check or discard it before recording again. Lost audio and transcript text are never reconstructed.",
+  "s16.mobile.voiceCheck": "Check original dictation",
   "s16.mobile.notifications": "Notifications",
   "s16.mobile.notificationOff": "Notifications are off for this service on this device.",
   "s16.mobile.notificationEnabled": "This device is subscribed. Physical delivery depends on its connection and OS settings.",
