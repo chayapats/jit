@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { browserSite } from './fixtures/s15-browser';
 
 const native = test.skipIf(process.env.JIT_BROWSER_LIVE !== '1');
-native('SIGKILL after real service dispatch preserves unknown continuity, then exact read-back clears it without replay', async () => {
-  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'jit-browser-crash-'))), site = browserSite();
+for (const asyncIntent of [false, true]) native(`SIGKILL after real ${asyncIntent ? 'async intent' : 'native form'} dispatch preserves unknown continuity, then exact read-back clears it without replay`, async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'jit-browser-crash-'))), site = browserSite(asyncIntent ? { asyncIntent: 'fetch' } : {});
   const received = Promise.withResolvers<void>(), response = Promise.withResolvers<void>(); let readbacks = 0;
   site.beforeResponse = async path => { if (path === '/message') { received.resolve(); await response.promise; } };
   const readback = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch(request) {
@@ -18,7 +18,7 @@ native('SIGKILL after real service dispatch preserves unknown continuity, then e
   } });
   const launch = (phase: 'dispatch' | 'recover') => {
     const child = Bun.spawn([process.execPath, join(import.meta.dir, 'fixtures/s16-browser-crash.ts')], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', env: process.env });
-    child.stdin.write(JSON.stringify({ phase, directory, origin: site.origin, readback: readback.url.origin })); child.stdin.end(); return child;
+    child.stdin.write(JSON.stringify({ phase, directory, origin: site.origin, readback: readback.url.origin, asyncIntent })); child.stdin.end(); return child;
   };
   // Kill only this test's exact pipe-controlled browser, never another profile or a system browser.
   const stopProfile = () => {
