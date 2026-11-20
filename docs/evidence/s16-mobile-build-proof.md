@@ -1,6 +1,6 @@
 # MOBILE16-01 native build and owning-fixture evidence
 
-Date: 2026-11-20. Runtime/tooling source: `6f476d0a015539ed8c34b9910a6986560589365b`, clean at both builds. Scope: #426, S16-AC17; FR-10/11/18/24/25/28/35/37/38; NFR-05/07/09/11/13. [ADR 0100](../adr/0100-s16-packaged-native-mobile-client.md), [s16-mobile/v1](../contracts/s16-mobile-v1.md), [build runbook](../../clients/mobile/README.md), [separate native/device checklist](../operations/s16-mobile-acceptance.md).
+Date: 2026-11-20. Runtime/tooling source: `c52b97175de61cefb1ec867e0fe4abf925274d07`, clean at both builds. Scope: #426, S16-AC17; FR-10/11/18/24/25/28/35/37/38; NFR-05/07/09/11/13. [ADR 0100](../adr/0100-s16-packaged-native-mobile-client.md), [s16-mobile/v1](../contracts/s16-mobile-v1.md), [build runbook](../../clients/mobile/README.md), [separate native/device checklist](../operations/s16-mobile-acceptance.md).
 
 **This is build/fixture evidence, not completed #426 acceptance.** Packaged native UI workflows remain pending because the environment's Agent device access is disabled. Its requested enablement is separate from these local builds. Do not merge/close #426 on this record alone. Physical devices, real APNs/FCM, signing/account setup and owner-host cutover remain #431/#432; no live credential, account, private recording, payment, production deployment or owner-host activation was used.
 
@@ -8,12 +8,14 @@ Date: 2026-11-20. Runtime/tooling source: `6f476d0a015539ed8c34b9910a69865605893
 
 Both were built by the actual local `ops/mobile/main.ts` builder from clean source, frozen root/client installations, CNG regeneration and reviewed native input pins. Both complete seals were reverified without installing or executing their payloads. Full native logs/selections and installation-specific paths remain in ignored local records. Source is retained in Git; native binaries remain local build artifacts.
 
+Each build extracted and verified the same immutable Git archive into a separate fresh private source tree: SHA-256 `aa167ec083dde40c1a4f339245a58d869ff5cad5dd3a2eac87cf84148b2e5fc4`, 1,628 files / 44,163,062 bytes. Every extracted file's Git blob identity, size and mode matched the selected commit before frozen installation and `expo prebuild --clean`. Existing ignored native projects were excluded and preserved. Each distribution includes sealed `build-source.json` provenance under `s16-mobile-build-source/v1`.
+
 | Payload | Build facts | SHA-256 / seal |
 | --- | --- | --- |
-| Android Release arm64, unsigned APK | 26,293,485 bytes; 22 files in the complete distribution; minimum API 24, target 36, compile 37 | APK `6f22715d60eb5a823cc91eb70cbbcbedeb8da6ed987a996a06db69af0c4120cf`; seal `c3b4bcbb79c717cb9b003bc718d434fe18eb6ae0c9fa1190f701343bcc3751a7` |
-| iOS Release arm64 simulator distribution | 215 files; deployment target 16.4; Xcode's normal simulator entitlement pipeline | Seal `07c3c9561695970cd9636388ec8b632b1a89faf767520ad096425daf176be9fd` |
-| iOS app executable | 2,979,728 bytes | `f9cb4d63f716387dbaa847383f1ed461f10e09e7ff52e17ea423c69c0c61e6fc` |
-| iOS bundled Hermes JS | 6,130,161 bytes, including the actual original notice inventory | `9f103af2eb327014fec951c4518f27e4c19f7c3b85c3085cf243707a3ef264be` |
+| Android Release arm64, unsigned APK | 26,312,465 bytes; 23 files in the complete distribution; minimum API 24, target 36, compile 37 | APK `63406780cc770ba196e01fcedc1f6d5e5d9432269369d8b1e133d9575589ef59`; seal `ee94bbd56e4de0b5807107171eef93e24a9bf832540cb6d58bf2d5b8f350d454` |
+| iOS Release arm64 simulator distribution | 216 files; deployment target 16.4; Xcode's normal simulator entitlement pipeline; `codesign --verify --deep --strict` passed | Seal `1b83e9416464e19c7aad41e4ff8a037cdd3660a0ae604041eb956b2c26d3e510` |
+| iOS app executable | 2,988,864 bytes | `e33b70ef7cc0d06e819f32e5319a2b05bbaf23f560bf7a8e545569482696885d` |
+| iOS bundled Hermes JS | 6,152,871 bytes, including the actual original notice inventory | `1a5e7fdb05c4b08175ce9d95b28d9262dea12229806b2d73a3933875eed46c60` |
 
 The manifest labels each distribution `acceptance: build-only`. Node 24.22.3 executable hash is `ba7073582822078d8c90bca3facacc46690bc5366fab4b815aeef9148cd6e854`; Bun is 1.4.2. iOS used Xcode 27.2 build 27B52, simulator SDK 27.2 and CocoaPods 1.16.2. Android used Temurin 21.0.13.1+2, build tools 37.0.0 and NDK 27.1.12297006; the manifest also hashes the Java launcher, SDK package and NDK properties. Root/client locks, CocoaPods lock, Apple/Android inputs, Gradle verification and notice index hashes are in each complete manifest.
 
@@ -24,6 +26,9 @@ Strict Gradle verification initially refused the unpinned AAPT2 resource compile
 | Area | Actual evidence and boundary |
 | --- | --- |
 | Protected service/session and mutations | Real composed service/shared client tests cover actual S14 password/session ingress, full-origin custody, redirect/body lifetime limits, stale generations/targets, immutable Send/decision identities, original receipt recovery, file hashes, changed exact approvals and one controlled effect. Native keystore/network ports are controlled fixtures; this is not a packaged renderer test. |
+| Unknown upload creation | The owning service reads the original create receipt by request identity and exact current owner/conversation/generation. Mobile checks are read-only even without an upload ID. An explicitly selected same-name/size/hash file may resume only a confirmed empty original upload; lost byte replies do not recreate or replay. Older services without creation lookup receive no unsupported request. No file bytes or picker URI are retained for recovery. |
+| Work polling and replacement | The owning mobile session composes 64 delayed snapshot reads across repeated real bootstrap polls without starvation, filters removed conversations, and aborts a dismissed batch without invalidating a healthy session. Authentication failures still fence. Replaced service handles are permanently retired, so late OS picker callbacks cannot restore them or write bytes; current-session OS sheets retain reversible background handling. |
+| Fresh native source | Actual Git/filesystem regressions reject dirty/reused destinations, symlinks, archive-attribute omissions and mode changes; ignored edited native projects remain untouched and excluded. Both release builds used the verified fresh snapshot and frozen local Expo template. |
 | Native notification service | Actual owning routes, journal and producer tests exercise opt-in inventory, Host/session/Origin/CSRF, reset during streaming, generic held-work notices, token-hash recovery, bounded retry/expiry, real child SIGKILL recovery, cursor atomicity and preserving installed policy/journal adoption after manifest rollback. ES256/RS256 and HTTP/2 provider protocol fixtures do not establish physical delivery. |
 | Subscription controller | Explicit OS permission/token adapters, unavailable native setup before permission, denied/provisional/rotation, persist-before-POST, unknown reply and restart lookup, original-token removal and A → B → A barriers. No automatic registration/replay or VM work. SDK configuration failure is unavailable; an uncertain subscription stays uncertain. |
 | Finite voice | Native Swift/Kotlin capture code compiled in both actual releases. Owning VOICE16/controller fixtures cover permission denial, finite canonical PCM, background/cancel/late-lease fences, editable draft only and original-ID recovery without recreating lost audio/transcript. Physical capture/Thai quality was not tested. |
@@ -35,20 +40,15 @@ Strict Gradle verification initially refused the unpinned AAPT2 resource compile
 
 ## Commands and results
 
-Both root and client `bun install --frozen-lockfile`, root/native `bun run typecheck` and `git diff --check` passed. The following affected suite passed **98 tests, zero failures, 824 assertions across 17 files** with native fixture opt-in and an explicitly selected verified Node binary:
+Both root and client `bun install --frozen-lockfile`, root/native `bun run typecheck`, upstream provenance verification (two files / six licenses) and `git diff --check` passed. The following affected suite passed **136 tests, zero failures, no skips, 3,389 assertions across 22 files** with native fixture opt-in and an explicitly selected verified Node binary:
 
 ```sh
 JIT_MOBILE_NATIVE_TESTS=1 JIT_MOBILE_NODE=<verified-node-24.22.3> \
-bun test --timeout 30000 \
-  tests/s16-mobile-transport.test.ts tests/s16-mobile-session.test.ts \
-  tests/s16-mobile-commands.test.ts tests/s16-mobile-input.test.ts \
-  tests/s16-mobile-login.test.ts tests/s16-mobile-notifications.test.ts \
-  tests/s16-mobile-voice.test.ts tests/s16-mobile-pcm.test.ts \
-  tests/s16-mobile-build-config.test.ts tests/s16-mobile-package.test.ts \
-  tests/s16-mobile-native-export.test.ts tests/s16-mobile-native-config.test.ts \
-  tests/s16-native-notifications.test.ts tests/s16-native-push-providers.test.ts \
-  tests/s16-native-notifications-composed.test.ts tests/s16-client.test.ts \
-  tests/s16-files-composed.test.ts
+bun test --timeout 60000 \
+  tests/s16-mobile-*.test.ts tests/s16-native-notifications*.test.ts \
+  tests/s16-native-push-providers.test.ts tests/s16-file-store.test.ts \
+  tests/s16-files-composed.test.ts tests/s16-client.test.ts \
+  tests/s15-web-i18n.test.ts
 
 JIT_S16_BROWSER_TESTS=1 bun test --timeout 30000 tests/s16-approval.browser.test.ts
 bun ops/mobile/main.ts build <ignored-versioned-build-selection>
