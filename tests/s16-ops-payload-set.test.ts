@@ -3,6 +3,7 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppError } from '../src/errors';
+import { canonical } from '../src/s15/conversation/validation';
 import { captureS16PayloadSet, s16PayloadSetManifestHash, verifyS16PayloadSet, type S16PayloadCapture, type S16PayloadVerification } from '../src/s16/operations/payload-set';
 
 const cleanup: string[] = [];
@@ -32,8 +33,28 @@ test('multiblock binary and empty payloads retain exact bytes and independent re
   expect(f.sources.map(source => readFileSync(source.path))).toEqual(before);
   expect(manifest).toMatchObject({ contract: 's16-payload-set/v1', scope: 'caller_selected_payloads', installationId: 'installation', capturedAt: 123, bytes: f.binary.length });
   expect(readFileSync(join(f.target, 'manifest.json'), 'utf8')).not.toContain(f.root);
+  expect(readFileSync(join(f.target, 'manifest.json'), 'utf8')).toBe(canonical(manifest)); expect(s16PayloadSetManifestHash(manifest)).toBe(hash(canonical(manifest)));
   const retained = readFileSync(join(f.target, 'manifest.json'));
   expect(() => captureS16PayloadSet(f.options)).toThrow(expect.objectContaining({ code: 's16_ops_point_unavailable' })); expect(readFileSync(join(f.target, 'manifest.json'))).toEqual(retained);
+});
+
+test('actual 512-file capture and receipt-bound verification exceed command limits without changing canonical bytes or weakening inventory checks', () => {
+  const f = fixture(), empty = f.sources[1]!;
+  f.options.sources = Array.from({ length: 512 }, (_, index) => ({ ...empty, name: 'payload_' + index.toString().padStart(4, '0') + '_'.repeat(170) }));
+  const { manifest, verification } = capture(f), bytes = readFileSync(join(f.target, 'manifest.json'));
+  expect(manifest.files).toHaveLength(512); expect(bytes.length).toBeGreaterThan(131_072); expect(s16PayloadSetManifestHash(manifest)).toBe(hash(bytes));
+  expect(verifyS16PayloadSet(verification)).toEqual(manifest);
+  expect(() => canonical(manifest)).toThrow(); // Application command/record limits remain unchanged.
+  writeFileSync(join(f.target, 'unowned'), '', { mode: 0o600 }); expect(() => verifyS16PayloadSet(verification)).toThrow(); unlinkSync(join(f.target, 'unowned'));
+  const selected = verification.files[300]!; writeFileSync(join(f.target, selected.name), 'changed'); expect(() => verifyS16PayloadSet(verification)).toThrow();
+});
+
+test.each(['files', 'manifest'] as const)('payload %s capacity refuses before creating output or calling source guards', kind => {
+  const f = fixture(), empty = f.sources[1]!;
+  f.options.sources = Array.from({ length: kind === 'files' ? 20_001 : 20_000 }, (_, index) => ({ ...empty, name: 'payload_' + index.toString().padStart(5, '0') + '_'.repeat(170) }));
+  f.options.guard = () => { throw Error('must refuse before maintenance/copy'); };
+  expect(() => captureS16PayloadSet(f.options)).toThrow(expect.objectContaining({ code: kind === 'files' ? 's16_ops_payload_invalid' : 's16_ops_capture_bounds' }));
+  expect(existsSync(f.target)).toBe(false);
 });
 
 test.each(['missing', 'hash', 'size', 'symlink', 'hardlink', 'mode', 'ancestor'] as const)('untrusted or changed source %s cannot publish a payload set', kind => {

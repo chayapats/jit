@@ -17,6 +17,13 @@ files, 1 GiB per file, 4 GiB total and 4 MiB of manifest metadata; callers may
 narrow the total ceiling. Empty files and an explicitly empty selected set are
 valid component inventories, never inferred installation completeness.
 
+The inventory encoder enforces these component bounds independently from the
+shared application's 256-entry/128 KiB command encoder. Each closed file record
+still uses that canonical encoding; larger arrays and directory comparisons
+use the component's explicit bounds. Existing small manifest bytes/hashes
+remain identical. A real 512-file capture/verification exceeds both command
+limits, while an oversized manifest/file count refuses before output creation.
+
 Each source must be an existing canonical private regular same-owner file,
 without symlink ancestors, executable/special permissions or multiple links.
 The source opens with no-follow/nonblocking flags. Inode, ownership, mode,

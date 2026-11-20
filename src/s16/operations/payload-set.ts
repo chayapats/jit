@@ -36,6 +36,22 @@ function validateFiles(files: readonly S16PayloadIdentity[]): void {
     total += file.bytes; if (total > totalBound) refuse('s16_ops_capture_bounds');
   }
 }
+// Payload inventory is bounded independently of a command receipt. Encoding each closed small
+// entry preserves canonical bytes without applying the shared 256-entry/128 KiB command limit.
+function fileArray(files: readonly S16PayloadIdentity[]): string {
+  if (Object.getPrototypeOf(files) !== Array.prototype || Reflect.ownKeys(files).length !== files.length + 1 ||
+    Object.entries(Object.getOwnPropertyDescriptors(files)).some(([key, descriptor]) => !('value' in descriptor) || key !== 'length' && !descriptor.enumerable)) refuse('s16_ops_payload_invalid');
+  return '[' + files.map(file => canonical(file)).join(',') + ']';
+}
+function manifestText(manifest: Readonly<S16PayloadSet>): string {
+  if (!manifest || Object.getPrototypeOf(manifest) !== Object.prototype || Reflect.ownKeys(manifest).length !== 7 ||
+    Object.values(Object.getOwnPropertyDescriptors(manifest)).some(descriptor => !('value' in descriptor) || !descriptor.enumerable) ||
+    Object.keys(manifest).sort().join(',') !== 'bytes,capturedAt,contract,files,id,installationId,scope') refuse('s16_ops_payload_invalid');
+  validateFiles(manifest.files);
+  const text = '{' + Object.keys(manifest).sort().map(key => JSON.stringify(key) + ':' + (key === 'files' ? fileArray(manifest.files) : canonical(manifest[key as keyof S16PayloadSet]))).join(',') + '}';
+  if (Buffer.byteLength(text) > manifestBound) refuse('s16_ops_capture_bounds');
+  return text;
+}
 function privateDirectory(path: string): void {
   if (!isAbsolute(path) || normalize(path) !== path) refuse('s16_ops_path_untrusted');
   try {
@@ -88,7 +104,7 @@ export function captureS16PayloadSet(options: S16PayloadCapture): Readonly<S16Pa
   const current = () => { if ((options.guard() as unknown) !== undefined) refuse('s16_ops_payload_invalid'); };
   const files = sources.map(source => Object.freeze({ name: source.name, bytes: source.bytes, sha256: source.sha256 }));
   const manifest = Object.freeze({ contract: 's16-payload-set/v1' as const, scope: 'caller_selected_payloads' as const, installationId: options.installationId, id: options.id, capturedAt, bytes, files: Object.freeze(files) });
-  const text = canonical(manifest); if (Buffer.byteLength(text) > manifestBound) refuse('s16_ops_capture_bounds');
+  const text = manifestText(manifest);
   current(); const target = join(options.directory, options.id);
   try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); } opsSyncDirectory(options.directory);
   for (const source of sources) {
@@ -99,7 +115,7 @@ export function captureS16PayloadSet(options: S16PayloadCapture): Readonly<S16Pa
   opsWrite(join(target, 'manifest.json'), text); return manifest;
 }
 /** Hash to retain in the outer current receipt; candidate self-hashing is never independent provenance. */
-export function s16PayloadSetManifestHash(manifest: Readonly<S16PayloadSet>): string { return sha(canonical(manifest)); }
+export function s16PayloadSetManifestHash(manifest: Readonly<S16PayloadSet>): string { return sha(manifestText(manifest)); }
 /** Verifies receipt-bound exact opaque files read-only; it neither restores them nor registers sources/grants. */
 export function verifyS16PayloadSet(options: S16PayloadVerification): Readonly<S16PayloadSet> {
   identity(options.installationId); validateFiles(options.files);
@@ -112,10 +128,12 @@ export function verifyS16PayloadSet(options: S16PayloadVerification): Readonly<S
     const value: unknown = JSON.parse(text.toString('utf8'));
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'bytes,capturedAt,contract,files,id,installationId,scope') refuse();
     const manifest = value as S16PayloadSet;
+    validateFiles(manifest.files);
     const files = options.files.map(file => ({ name: file.name, bytes: file.bytes, sha256: file.sha256 })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    const inventory = readdirSync(path).sort(), expectedInventory = [...files.map(file => file.name), 'manifest.json'].sort();
     if (manifest.contract !== 's16-payload-set/v1' || manifest.scope !== 'caller_selected_payloads' || manifest.installationId !== options.installationId || manifest.id !== options.id ||
-      !Number.isSafeInteger(manifest.capturedAt) || manifest.capturedAt < 0 || manifest.bytes !== files.reduce((n, file) => n + file.bytes, 0) || canonical(manifest.files) !== canonical(files) || canonical(manifest) !== text.toString('utf8') ||
-      canonical(readdirSync(path).sort()) !== canonical([...files.map(file => file.name), 'manifest.json'].sort())) refuse();
+      !Number.isSafeInteger(manifest.capturedAt) || manifest.capturedAt < 0 || manifest.bytes !== files.reduce((n, file) => n + file.bytes, 0) || fileArray(manifest.files) !== fileArray(files) || manifestText(manifest) !== text.toString('utf8') ||
+      inventory.length !== expectedInventory.length || inventory.some((name, index) => name !== expectedInventory[index])) refuse();
     for (const file of files) transfer(join(path, file.name), file);
     if (sha(opsRead(manifestPath, manifestBound)) !== options.manifestSha256) refuse();
     return Object.freeze({ ...manifest, files: Object.freeze(files.map(file => Object.freeze(file))) });
