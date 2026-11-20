@@ -12,10 +12,18 @@ export interface S16OperationsBinding { readonly id: string; readonly installati
 export interface S16OperationsAdoptionFence extends S16OperationsBinding {
   readonly contract: 's16-operations-adoption/v1'; readonly requestId: string; readonly configurationSha256: string; readonly createdAt: number;
 }
+/** Exact original maintenance admission gate, bound to current journal/configuration rather than an archive. */
+export interface S16OperationsFence extends S16OperationsBinding {
+  readonly contract: 's16-operations-maintenance/v1'; readonly operationId: string; readonly requestId: string;
+  readonly kind: S16OperationsRequest['kind']; readonly hash: string; readonly pointId: string | null;
+  readonly configurationSha256: string; readonly priorRevision: number; readonly createdAt: number;
+}
 /** An original durable physical boundary. Its metadata is never proof of execution or actor authority. */
 export interface S16OperationsAction {
   id: string; kind: 'replace' | 'remove_point' | 'select_package' | 'capture_native' | 'capture_backend';
-  priorSha256: string | null; targetSha256: string | null; state: 'intent' | 'confirmed' | 'unknown';
+  priorSha256: string | null; targetSha256: string | null; state: 'intent' | 'confirmed' | 'not_applied' | 'unknown';
+  /** Required in v2: owning readback, distinct from the immutable original intent. */
+  observedSha256?: string | null;
 }
 /** Deduplicated protected operation; unsettled states retain their original phase and request identity. */
 export interface S16OperationsRequest {
@@ -24,20 +32,24 @@ export interface S16OperationsRequest {
   status: 'running' | 'blocked' | 'unknown' | 'complete' | 'discarded'; pointId: string | null;
   cohortSha256: string | null; targetSha256: string | null; createdAt: number; updatedAt: number; revision: number;
   reason: string | null; actions: S16OperationsAction[];
+  /** Required in format v2; absent only on legacy read-only metadata. */
+  configurationSha256?: string; admittedRevision?: number;
 }
 /** Retained historical bytes; original operation receipts survive their later explicit removal. */
 export interface S16OperationsPoint { id: string; sha256: string; bytes: number; createdAt: number; operationId: string; state: 'retained' | 'removing' }
 /** Private current journal. It is never an ordinary export, historical authority or activation target. */
 export interface S16OperationsControl extends S16OperationsBinding {
-  contract: 's16-operations-control/v1'; revision: number;
+  contract: 's16-operations-control/v1' | 's16-operations-control/v2'; revision: number;
   adoption: { requestId: string; configurationSha256: string; createdAt: number };
   requests: S16OperationsRequest[]; points: S16OperationsPoint[];
 }
-const phases = {
+/** The only forward phase edges; blocked/unknown resumes never allocate a replacement request. */
+export const s16OperationsPhases = {
   backup: ['pending', 'capturing', 'verifying', 'complete'], export: ['pending', 'capturing', 'verifying', 'complete'],
   restore: ['pending', 'capturing', 'verifying', 'prepared', 'activating', 'complete'], upgrade: ['pending', 'capturing', 'verifying', 'prepared', 'activating', 'complete'],
   cleanup: ['pending', 'prepared', 'activating', 'complete'], uninstall: ['pending', 'prepared', 'activating', 'complete'],
 } as const;
+const phases = s16OperationsPhases;
 function refuse(): never { throw new AppError('s16_ops_control_invalid', 409); }
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const opaque = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
@@ -57,16 +69,23 @@ export function validateS16OperationsAdoptionFence(value: unknown): asserts valu
   validateS16OperationsBinding({ id: value.id, installationId: value.installationId, ownerIdentity: value.ownerIdentity }); identity(value.requestId);
   if (value.contract !== 's16-operations-adoption/v1' || !sha(value.configurationSha256) || !nat(value.createdAt)) refuse();
 }
+/** Validates the closed original gate envelope; a gate narrows admission and grants no execution authority. */
+export function validateS16OperationsFence(value: unknown): asserts value is S16OperationsFence {
+  fields(value, 'contract,id,installationId,ownerIdentity,operationId,requestId,kind,hash,pointId,configurationSha256,priorRevision,createdAt');
+  validateS16OperationsBinding({ id: value.id, installationId: value.installationId, ownerIdentity: value.ownerIdentity }); identity(value.requestId);
+  if (value.contract !== 's16-operations-maintenance/v1' || !opaque(value.operationId) || typeof value.kind !== 'string' || !Object.hasOwn(phases, value.kind) || !sha(value.hash) || value.pointId !== null && !opaque(value.pointId) || !sha(value.configurationSha256) || !nat(value.priorRevision) || !nat(value.createdAt)) refuse();
+}
 /** Validates the complete bounded metadata and cross-references; it does not execute or authorize any action. */
 export function validateS16OperationsControl(value: unknown): asserts value is S16OperationsControl {
   fields(value, 'contract,id,installationId,ownerIdentity,revision,adoption,requests,points');
   validateS16OperationsBinding({ id: value.id, installationId: value.installationId, ownerIdentity: value.ownerIdentity });
-  if (value.contract !== 's16-operations-control/v1' || !nat(value.revision)) refuse();
+  if (!['s16-operations-control/v1', 's16-operations-control/v2'].includes(value.contract as string) || !nat(value.revision)) refuse();
+  const v2 = value.contract === 's16-operations-control/v2';
   fields(value.adoption, 'requestId,configurationSha256,createdAt'); identity(value.adoption.requestId);
   if (!sha(value.adoption.configurationSha256) || !nat(value.adoption.createdAt) || !Array.isArray(value.requests) || value.requests.length > s16OperationsLimits.requests || !Array.isArray(value.points) || value.points.length > s16OperationsLimits.points) refuse();
   const requestIds = new Set<string>(), operationIds = new Set<string>(); let active = 0, bytes = 0;
   for (const request of value.requests) {
-    fields(request, 'id,requestId,kind,hash,phase,status,pointId,cohortSha256,targetSha256,createdAt,updatedAt,revision,reason,actions');
+    fields(request, 'id,requestId,kind,hash,phase,status,pointId,cohortSha256,targetSha256,createdAt,updatedAt,revision,reason,actions' + (v2 ? ',configurationSha256,admittedRevision' : ''));
     identity(request.requestId);
     if (!opaque(request.id) || operationIds.has(request.id) || requestIds.has(request.requestId as string) || typeof request.kind !== 'string' || !Object.hasOwn(phases, request.kind) || !sha(request.hash) ||
       typeof request.phase !== 'string' || request.phase !== 'discarded' && !(phases[request.kind as keyof typeof phases] as readonly string[]).includes(request.phase) ||
@@ -75,13 +94,21 @@ export function validateS16OperationsControl(value: unknown): asserts value is S
       !nat(request.createdAt) || !nat(request.updatedAt) || request.updatedAt < request.createdAt || !nat(request.revision) || request.revision < 1 || request.revision > value.revision ||
       request.reason !== null && (typeof request.reason !== 'string' || !/^s16_ops_[a-z0-9_]{1,64}$/.test(request.reason)) || !Array.isArray(request.actions) || request.actions.length > s16OperationsLimits.actions) refuse();
     if ((request.phase === 'complete') !== (request.status === 'complete') || (request.phase === 'discarded') !== (request.status === 'discarded')) refuse();
+    if (v2 && (!sha(request.configurationSha256) || !nat(request.admittedRevision) || request.admittedRevision < 1 || request.admittedRevision > (request.revision as number))) refuse();
     const actions = new Set<string>(); let unsettled = false, unknown = false;
     for (const action of request.actions) {
-      fields(action, 'id,kind,priorSha256,targetSha256,state'); identity(action.id);
+      fields(action, 'id,kind,priorSha256,targetSha256,state' + (v2 ? ',observedSha256' : '')); identity(action.id);
       if (actions.has(action.id as string) || !['replace', 'remove_point', 'select_package', 'capture_native', 'capture_backend'].includes(action.kind as string) ||
-        action.priorSha256 !== null && !sha(action.priorSha256) || action.targetSha256 !== null && !sha(action.targetSha256) || !['intent', 'confirmed', 'unknown'].includes(action.state as string) ||
+        action.priorSha256 !== null && !sha(action.priorSha256) || action.targetSha256 !== null && !sha(action.targetSha256) || !(v2 ? ['intent', 'confirmed', 'not_applied', 'unknown'] : ['intent', 'confirmed', 'unknown']).includes(action.state as string) ||
         ['replace', 'select_package'].includes(action.kind as string) && action.targetSha256 === null) refuse();
-      actions.add(action.id as string); unsettled ||= action.state !== 'confirmed'; unknown ||= action.state === 'unknown';
+      if (v2) {
+        if (action.observedSha256 !== null && !sha(action.observedSha256)) refuse();
+        if (['intent', 'unknown'].includes(action.state as string) && action.observedSha256 !== null ||
+          action.state === 'not_applied' && action.observedSha256 !== action.priorSha256 ||
+          action.state === 'confirmed' && (action.targetSha256 !== null ? action.observedSha256 !== action.targetSha256 :
+            action.kind === 'remove_point' ? action.observedSha256 !== null : !sha(action.observedSha256))) refuse();
+      }
+      actions.add(action.id as string); unsettled ||= !['confirmed', 'not_applied'].includes(action.state as string); unknown ||= action.state === 'unknown';
     }
     if (unsettled && ['complete', 'discarded'].includes(request.status as string) || unknown && !['unknown', 'blocked'].includes(request.status as string)) refuse();
     if (!['complete', 'discarded'].includes(request.status as string)) active++;
@@ -98,8 +125,17 @@ export function validateS16OperationsControl(value: unknown): asserts value is S
     const request = value.requests.find((row: S16OperationsRequest) => row.id === point.operationId) as S16OperationsRequest | undefined;
     if (!request || request.kind !== 'backup' || !['verifying', 'complete'].includes(request.phase) || request.pointId !== point.id || request.targetSha256 !== point.sha256) refuse(); pointIds.add(point.id);
   }
-  if (Buffer.byteLength(canonical(value)) > s16OperationsLimits.bytes) refuse();
+  if (Buffer.byteLength(encodeControl(value as unknown as S16OperationsControl)) > s16OperationsLimits.bytes) refuse();
 }
+// Each receipt keeps the existing 128 KiB canonical bound. The aggregate deliberately has its own
+// 4 MiB bound: passing it through the per-record encoder would prevent later settlement/admission.
+function encodeControl(value: S16OperationsControl): string {
+  return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + (key === 'requests'
+    ? '[' + value.requests.map(request => canonical(request)).join(',') + ']'
+    : canonical(value[key as keyof S16OperationsControl]))).join(',') + '}';
+}
+/** Encodes only validated bounded current control, retaining the smaller bound for every original receipt. */
+export function canonicalS16OperationsControl(value: S16OperationsControl): string { validateS16OperationsControl(value); return encodeControl(value); }
 function privateEntry(path: string, directory = false): BigIntStats {
   opsPath(path); const stat = lstatSync(path, { bigint: true }), uid = process.getuid?.();
   if (uid === undefined || stat.uid !== BigInt(uid) || stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n) || stat.mode & (directory ? 0o7077n : 0o7177n)) refuse();
@@ -113,7 +149,7 @@ export function readS16OperationsControl(directory: string): S16OperationsContro
     const path = join(directory, 'operations/control.json'), before = privateEntry(path), text = opsRead(path, s16OperationsLimits.bytes).toString('utf8');
     const value: unknown = JSON.parse(text); validateS16OperationsControl(value);
     const after = privateEntry(path);
-    if (canonical(value) !== text || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) refuse();
+    if (encodeControl(value) !== text || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) refuse();
     return value;
   } catch { return refuse(); }
 }
@@ -128,4 +164,24 @@ export function readS16OperationsAdoptionFence(directory: string): S16Operations
     if (canonical(value) !== text || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) refuse();
     return value;
   } catch { return refuse(); }
+}
+/** Reads only the private original operation gate, with exact bytes/inode guards and no missing-state initialization. */
+export function readS16OperationsFence(directory: string): S16OperationsFence {
+  try {
+    if (!isAbsolute(directory) || normalize(directory) !== directory) refuse();
+    const parent = join(directory, 'owner/owner.sqlite.ops'), path = join(parent, 'fence.json');
+    privateEntry(directory, true); privateEntry(join(directory, 'owner'), true); privateEntry(parent, true);
+    const before = privateEntry(path), text = opsRead(path, 4096).toString('utf8'), value: unknown = JSON.parse(text); validateS16OperationsFence(value);
+    const after = privateEntry(path);
+    if (canonical(value) !== text || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) refuse();
+    return value;
+  } catch { return refuse(); }
+}
+/** Matches a current gate to its immutable original request, or to the exact pre-admission revision after a crash. */
+export function assertS16OperationsFenceCurrent(control: S16OperationsControl, fence: S16OperationsFence): void {
+  validateS16OperationsFence(fence);
+  if (control.id !== fence.id || control.installationId !== fence.installationId || control.ownerIdentity !== fence.ownerIdentity) refuse();
+  const request = control.requests.find(row => row.requestId === fence.requestId);
+  if (!request) { if (control.revision !== fence.priorRevision || control.requests.some(row => !['complete', 'discarded'].includes(row.status))) refuse(); return; }
+  if (request.id !== fence.operationId || request.kind !== fence.kind || request.hash !== fence.hash || request.pointId !== fence.pointId || request.configurationSha256 !== fence.configurationSha256 || request.admittedRevision !== fence.priorRevision + 1 || request.createdAt !== fence.createdAt) refuse();
 }

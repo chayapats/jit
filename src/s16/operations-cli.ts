@@ -5,7 +5,8 @@ import { canonical } from '../s15/conversation/validation';
 import { readS15RuntimeConfig } from '../s15/runtime-config';
 import { adoptS16Operations } from './operations/adoption';
 import { openS16InstallationLease } from './operations/installation-lease';
-import { readS16OperationsAdoptionFence, readS16OperationsControl } from './operations/operations-state';
+import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS16OperationsControl, readS16OperationsFence } from './operations/operations-state';
+import { opsRead } from '../s14/ops-files';
 
 /** Explicit protected operator entry. It currently adopts/inspects metadata, never advertises aggregate recovery. */
 export function runS16OperationsCli(args: readonly string[]): object {
@@ -20,11 +21,20 @@ export function runS16OperationsCli(args: readonly string[]): object {
   if (!selected || !values.get('--config') || (command === 'adopt') !== values.has('--request-id')) throw new AppError('explicit_s15_config_required');
   const config = readS15RuntimeConfig(values.get('--config')!);
   if (command === 'adopt') return adoptS16Operations(config, values.get('--request-id')!);
-  const lease = openS16InstallationLease({ directory: config.directory, mode: 'shared' });
+  const lease = openS16InstallationLease({ directory: config.directory, mode: 'shared', observation: true });
   try {
     if (lease.operations && lease.operations.installationId !== config.installationId) throw new AppError('s16_ops_control_invalid', 409);
     const fencePath = join(config.directory, 'owner/owner.sqlite.ops/fence.json');
     if (lstatSync(fencePath, { throwIfNoEntry: false })) {
+      const envelope = JSON.parse(opsRead(fencePath, 4096).toString('utf8'));
+      if (envelope?.contract === 's16-operations-maintenance/v1') {
+        const fence = readS16OperationsFence(config.directory), control = readS16OperationsControl(config.directory);
+        if (!lease.operations || fence.installationId !== config.installationId) throw new AppError('s16_ops_control_invalid', 409);
+        assertS16OperationsFenceCurrent(control, fence); lease.assertCurrent();
+        const active = control.requests.find(request => request.id === fence.operationId);
+        return { contract: 's16-operations-status/v1', state: 'maintenance_pending', id: fence.id, requestId: fence.requestId, revision: control.revision,
+          active: active ? { requestId: active.requestId, kind: active.kind, phase: active.phase, status: active.status, reason: active.reason } : { requestId: fence.requestId, kind: fence.kind, phase: 'pending', status: 'running', reason: null } };
+      }
       const fence = readS16OperationsAdoptionFence(config.directory);
       if (fence.installationId !== config.installationId || lease.operations && canonical(lease.operations) !== canonical({ id: fence.id, installationId: fence.installationId, ownerIdentity: fence.ownerIdentity })) throw new AppError('s16_ops_control_invalid', 409);
       lease.assertCurrent(); return { contract: 's16-operations-status/v1', state: 'adoption_pending', id: fence.id, requestId: fence.requestId };

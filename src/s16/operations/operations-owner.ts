@@ -14,6 +14,7 @@ function refuse(code = 's16_ops_control_invalid'): never { throw new AppError(co
  */
 export function assertS16OperationsOwnerBinding(lease: S16InstallationLease, directory: string): void {
   assertS16InstallationLease(lease, directory); const binding = lease.operations;
+  if (lease.observation) refuse('s16_ops_observation_only');
   if (!binding) return;
   const ownerDirectory = join(directory, 'owner'), ownerPath = join(ownerDirectory, 'owner.sqlite'), opened: Database[] = [];
   const privateEntry = (path: string, directory = false) => {

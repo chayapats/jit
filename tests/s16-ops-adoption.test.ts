@@ -96,7 +96,7 @@ test('a missing owning ledger refuses adoption before a fence, journal or operat
 });
 
 test('structural lookalikes cannot mint an exclusive installation capability or publish a binding', async () => {
-  const f = await fixture(), fake: S16InstallationLease = { mode: 'exclusive', operations: null, assertCurrent() {}, close() {} };
+  const f = await fixture(), fake: S16InstallationLease = { mode: 'exclusive', observation: false, operations: null, assertCurrent() {}, close() {} };
   expect(() => bindS16OperationsLease(fake, f.directory, { id: 'a'.repeat(32), installationId: f.config.installationId, ownerIdentity: 'not-an-owner' })).toThrow(); expect(existsSync(f.control)).toBe(false);
 });
 

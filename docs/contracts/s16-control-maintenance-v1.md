@@ -24,8 +24,8 @@ meta epoch, JSON syntax and actual SQLite/FK integrity are required. Current
 owner identity is distinct from the configured S15 identity. Known retained
 website state is included even when a later config disables that browser.
 Unknown outer SQLite files, missing mandatory state and existing outer
-maintenance/capture fences refuse. The sole bounded exception is the exact
-current `s16-operations-adoption/v1` intent supplied by protected operator code,
+maintenance/capture fences refuse. Bounded exceptions are the exact
+current `s16-operations-adoption/v1` or [current maintenance intent](s16-operations-control-v2.md) supplied by protected operator code,
 matched to the actual owner, configuration and installation. Foreign/torn/
 changed fences still refuse; candidate archives never supply that expectation.
 
@@ -34,6 +34,13 @@ verified initial current journal and clear only completed initialization.
 They hold both process leases continuously, do not mutate application ledgers,
 and grant no effect, policy, restore or worker-admission authority. Only the
 known atomic receipt transition refreshes its owning exclusive lease guard.
+
+The protected `operations()` capability keeps both actual leases while writing
+the existing bound current journal. Its maintenance fence binds the exact
+original operation, current journal revision/configuration and actual owner.
+Only verified terminal metadata clears that original gate. Lost gates are
+rebuilt from current immutable fields, never by replaying an unknown effect.
+The capability performs no physical capture, activation or point deletion.
 
 `assertCurrent` rechecks both retained leases, runtime/current configuration
 binding, outer inventory and observed owner/ledger inodes/permissions/attributes.

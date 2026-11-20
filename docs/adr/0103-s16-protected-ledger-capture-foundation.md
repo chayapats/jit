@@ -71,7 +71,14 @@ The internal contracts are:
   [`s16-installation-lease/v2`](../contracts/s16-installation-lease-v2.md):
   bounded current metadata, explicit crash-resumable adoption and independent
   missing-journal refusal before selected owner/vault access. Operator
-  adopt/status works; request transitions/retention/aggregate actions remain.
+  adopt/status works; aggregate actions remain.
+- [`s16-operations-control/v2`](../contracts/s16-operations-control-v2.md):
+  durable original request/action transitions, expected revisions, immutable
+  intent/readback separation, point-custody metadata and future settlement
+  capacity reservation. Owning maintenance retains an exact original durable
+  fence; normal selected execution refuses pending control even if that fence
+  is lost. Status uses a distinct observation-only capability. Physical point
+  retention and aggregate capture/recovery are still separate requirements.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version

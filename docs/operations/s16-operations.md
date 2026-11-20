@@ -15,9 +15,13 @@ bun run s16:ops adopt --s15 --config /absolute/s15-runtime.json --request-id ori
 ```
 
 `status` is read-only and may share an installation lease with the running
-selected service. It reports `not_adopted`, `adoption_pending` or `adopted`,
+selected service. It reports `not_adopted`, `adoption_pending`, `maintenance_pending` or `adopted`,
 current revision/retained point count and bounded active-operation metadata.
 It does not report application/VM health, native settlement or backup coverage.
+Its observation-only lease cannot pass writable-owner admission. Nonterminal
+current operations refuse normal selected execution even if their physical
+maintenance fence is lost. Never remove a gate or edit current metadata to
+force admission; owning reconciliation must retain the original request.
 
 `adopt` requires the selected service/local commands to release their shared
 installation leases. It then validates all existing selected/retained runtime
@@ -36,7 +40,8 @@ receipt, retained lease and original fence together for protected recovery.
 They are excluded from historical points and ordinary exports.
 
 Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
-[current operations control](../contracts/s16-operations-control-v1.md),
+[initial operations control](../contracts/s16-operations-control-v1.md),
+[current journal writes](../contracts/s16-operations-control-v2.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
@@ -56,7 +61,16 @@ Dependency installation needs registry access or the installer's cache.
 
 ```sh
 bun ops/evidence/s16-operations-adoption.ts --old-commit d0c4c39f581994d5c10253110b6f5083c7777991 --receipt /absolute/private/fresh-receipt.json
+bun ops/evidence/s16-operations-adoption.ts --old-commit 1229c3c77c65fac900fb974dbfef4660541d00d9 --receipt /absolute/private/fresh-journal-receipt.json --profile journal
 ```
+
+The journal profile uses a v2-lease-aware, v1-control-only source as its
+positive control. It works after adoption, then refuses after the first v2
+journal write even with a simulated lost fence. The current package refuses
+pending execution, reads bounded status, restores only the original gate and
+settles the same disposable request without replay. Owner/lifecycle/vault bytes
+stay unchanged across refused commands and journal operations. This is a
+protected library drill; no incomplete backup/export command is exposed.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all

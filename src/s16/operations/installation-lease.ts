@@ -11,15 +11,19 @@ function refuse(code = 's16_ops_installation_lease_invalid'): never { throw new 
 interface ProcessLease {
   mode: 'shared' | 'exclusive'; references: number; processKey: string; readonly operations: Readonly<S16OperationsBinding> | null;
   assertCurrent(): void; release(): void;
+  pending(): boolean;
   bind(value: S16OperationsBinding): void;
 }
 const processLeases = new Map<string, ProcessLease>(), opening = new Set<string>();
 const capabilities = new WeakMap<object, ProcessLease>();
-function reference(lease: ProcessLease): S16InstallationLease {
-  lease.references++; let closed = false;
-  const capability = Object.freeze({ mode: lease.mode, get operations() { return lease.operations; }, assertCurrent() {
+function reference(lease: ProcessLease, observation: boolean): S16InstallationLease {
+  let closed = false;
+  const assertCurrent = () => {
     if (closed) refuse('s16_ops_installation_lease_closed'); lease.assertCurrent();
-  }, close() {
+    if (lease.mode === 'shared' && !observation && lease.pending()) refuse('s16_ops_reconciliation_required');
+  };
+  assertCurrent(); lease.references++;
+  const capability = Object.freeze({ mode: lease.mode, observation, get operations() { return lease.operations; }, assertCurrent, close() {
     if (closed) return;
     if (lease.references === 1) lease.release(); // An unknown close must retain the original reference.
     lease.references--; closed = true;
@@ -28,6 +32,8 @@ function reference(lease: ProcessLease): S16InstallationLease {
 /** Protected process lifetime only. A lease is never serialized, copied into an image or used as actor authority. */
 export interface S16InstallationLease {
   readonly mode: 'shared' | 'exclusive';
+  /** Observation reads status only; it cannot pass writable-owner admission. */
+  readonly observation: boolean;
   readonly operations: Readonly<S16OperationsBinding> | null;
   /** Requires the same private retained inode and the original live SQLite transaction. */
   assertCurrent(): void;
@@ -50,7 +56,7 @@ export function bindS16OperationsLease(lease: S16InstallationLease, directory: s
   assertS16ExclusiveInstallationLease(lease, directory); capabilities.get(lease)!.bind(binding);
 }
 /** Trusted explicit installation root. Only selected CLI first adoption may create a new lease. */
-export interface S16InstallationLeaseOptions { directory: string; mode: 'shared' | 'exclusive'; create?: boolean }
+export interface S16InstallationLeaseOptions { directory: string; mode: 'shared' | 'exclusive'; create?: boolean; observation?: boolean }
 function entry(path: string, directory = false): BigIntStats {
   try {
     opsPath(path); const stat = lstatSync(path, { bigint: true }), uid = process.getuid?.();
@@ -67,12 +73,12 @@ const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.
  */
 export function openS16InstallationLease(options: S16InstallationLeaseOptions): S16InstallationLease {
   const root = options.directory;
-  if (!isAbsolute(root) || normalize(root) !== root || !['shared', 'exclusive'].includes(options.mode) || options.mode === 'exclusive' && options.create) refuse();
+  if (!isAbsolute(root) || normalize(root) !== root || !['shared', 'exclusive'].includes(options.mode) || options.mode === 'exclusive' && (options.create || options.observation) || options.observation !== undefined && typeof options.observation !== 'boolean') refuse();
   const parent = entry(root, true), path = join(root, 's16-operations.lock.sqlite'), receipt = join(root, 's16-operations.lease.json');
   const processKey = `${parent.dev}:${parent.ino}`, held = processLeases.get(processKey);
   if (held) {
     if (held.mode !== 'shared' || options.mode !== 'shared') refuse('s16_ops_installation_busy');
-    held.assertCurrent(); return reference(held);
+    held.assertCurrent(); return reference(held, options.observation ?? false);
   }
   if (opening.has(processKey)) refuse('s16_ops_installation_busy');
   opening.add(processKey);
@@ -130,7 +136,7 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       if (control.id !== binding.id || control.installationId !== binding.installationId || control.ownerIdentity !== binding.ownerIdentity) refuse('s16_ops_control_invalid');
       return control;
     };
-    if (operations) verifyOperations(operations);
+    const observedControl = operations ? verifyOperations(operations) : undefined;
     const controlPath = join(root, 'operations/control.json'), controlEntry = operations ? entry(controlPath) : undefined;
     const owned = database, retained = entry(path);
     const assertCurrent = () => {
@@ -143,7 +149,8 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       }
     };
     assertCurrent();
-    const shared: ProcessLease = { mode: options.mode, references: 0, processKey, get operations() { return operations; }, assertCurrent, bind(value) {
+    const shared: ProcessLease = { mode: options.mode, references: 0, processKey, get operations() { return operations; }, assertCurrent,
+      pending: () => observedControl?.requests.some(request => !['complete', 'discarded'].includes(request.status)) ?? false, bind(value) {
       if (options.mode !== 'exclusive') refuse('s16_ops_installation_busy'); assertCurrent(); validateS16OperationsBinding(value);
       const control = verifyOperations(value), fence = readS16OperationsAdoptionFence(root);
       if (fence.id !== value.id || fence.installationId !== value.installationId || fence.ownerIdentity !== value.ownerIdentity || fence.requestId !== control.adoption.requestId || fence.configurationSha256 !== control.adoption.configurationSha256 || fence.createdAt !== control.adoption.createdAt) refuse('s16_ops_control_invalid');
@@ -156,8 +163,9 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       try { owned.close(true); } catch { return refuse('s16_ops_source_release_unknown'); }
       closed = true; processLeases.delete(processKey);
     } };
+    const capability = reference(shared, options.observation ?? false);
     processLeases.set(processKey, shared); opening.delete(processKey);
-    return reference(shared);
+    return capability;
   } catch (error) {
     try { database?.close(true); } catch { return refuse('s16_ops_source_release_unknown'); }
     opening.delete(processKey);

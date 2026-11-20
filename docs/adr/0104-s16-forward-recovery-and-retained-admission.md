@@ -90,8 +90,10 @@ No hosted backup service, telemetry or paid vendor becomes required.
 
 ADR 0103 supplies bounded SQL/byte capture, receipt verification, runtime
 inspection and selected-CLI lease participation. Those components do not
-implement this aggregate. Outer current-state inspection, complete owning
-inventory, protected retention, ordinary export, durable activation,
+implement this aggregate. Outer current-state inspection and the
+[current v2 journal/gate](../contracts/s16-operations-control-v2.md) are implemented
+as components. Complete owning inventory, physical protected retention,
+ordinary export, durable activation,
 compatible forward release selection and actual operator/client flows remain
 required. The protocol must refuse unsupported custody instead of silently
 shrinking the selected installation.

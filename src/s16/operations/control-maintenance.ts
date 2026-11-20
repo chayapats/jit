@@ -12,7 +12,8 @@ import type { S15RuntimeConfig } from '../../s15/runtime-config';
 import type { S16LedgerSource } from './ledger-set';
 import { bindS16OperationsLease, openS16InstallationLease } from './installation-lease';
 import { openS16RuntimeMaintenance, type S16RuntimeMaintenance } from './runtime-maintenance';
-import { readS16OperationsAdoptionFence, readS16OperationsControl, validateS16OperationsAdoptionFence, type S16OperationsAdoptionFence } from './operations-state';
+import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS16OperationsControl, readS16OperationsFence, validateS16OperationsAdoptionFence, validateS16OperationsFence, type S16OperationsAdoptionFence, type S16OperationsFence } from './operations-state';
+import { openS16OperationsJournal, type S16OperationsJournal, type S16OperationsJournalOptions } from './operations-journal';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -43,20 +44,24 @@ export interface S16ControlMaintenance {
   publishOperationsBinding(): void;
   /** Removes only the verified completed initial-adoption fence; unknown boundaries remain explicit. */
   completeAdoptionFence(): void;
+  /** Opens current durable metadata under this exact owning exclusion; never an archive or actor API. */
+  operations(options?: Pick<S16OperationsJournalOptions, 'now' | 'id' | 'after'>): S16OperationsJournal;
   assertCurrent(): void;
   close(): void;
 }
 /** A protected operator may resume only its independently read exact current adoption intent. Never archive input. */
-export interface S16ControlMaintenanceOptions { adoptionFence?: S16OperationsAdoptionFence }
+export interface S16ControlMaintenanceOptions { adoptionFence?: S16OperationsAdoptionFence; operationFence?: S16OperationsFence }
 /**
  * Opens selected/retained current control behind installation and CHAT exclusion without application
  * boot or missing-state initialization. Paths and exact current config originate only in trusted host
  * code; this capability is not a complete backup, ordinary export, actor or restore/admission grant.
  */
 export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16ControlMaintenanceOptions = {}): S16ControlMaintenance {
+  if (options.adoptionFence && options.operationFence) refuse();
   const configIdentity = canonical(config), root = config.directory, lease = openS16InstallationLease({ directory: root, mode: 'exclusive' });
   const configurationSha256 = createHash('sha256').update(configIdentity).digest('hex');
   let expectedFence = options.adoptionFence ? Object.freeze({ ...options.adoptionFence }) : undefined;
+  let expectedOperation = options.operationFence ? Object.freeze({ ...options.operationFence }) : undefined;
   let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const close = () => {
@@ -68,11 +73,16 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   };
   try {
     if (expectedFence) { validateS16OperationsAdoptionFence(expectedFence); if (expectedFence.installationId !== config.installationId || expectedFence.configurationSha256 !== configurationSha256) refuse(); }
+    if (expectedOperation) { validateS16OperationsFence(expectedOperation); if (!lease.operations || expectedOperation.id !== lease.operations.id || expectedOperation.installationId !== config.installationId || expectedOperation.configurationSha256 !== configurationSha256) refuse(); }
     if (lease.operations && lease.operations.installationId !== config.installationId) refuse();
     const ownerDirectory = join(root, 'owner'), ownerPath = join(ownerDirectory, 'owner.sqlite');
     const rootEntry = entry(root, true), ownerEntry = entry(ownerDirectory, true);
     const unfenced = () => {
       if (expectedFence) { if (canonical(readS16OperationsAdoptionFence(root)) !== canonical(expectedFence)) refuse(); }
+      else if (expectedOperation) {
+        if (canonical(readS16OperationsFence(root)) !== canonical(expectedOperation)) refuse();
+        assertS16OperationsFenceCurrent(readS16OperationsControl(root), expectedOperation);
+      }
       else assertS14OpsUnfenced(ownerPath);
       assertS14BackupUnfenced(ownerPath);
     }; unfenced();
@@ -102,7 +112,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const owners = outer[0]!.database.query<{ id: string }, []>(`SELECT ${boundedIdentity} FROM memory_identity LIMIT 2`).all(), lifecycle = outer[1]!.database.query<{ id: string }, []>(`SELECT ${boundedIdentity} FROM identity LIMIT 2`).all();
     if (owners.length !== 1 || lifecycle.length !== 1 || typeof owners[0]!.id !== 'string' || !owners[0]!.id || owners[0]!.id.length > 128 || owners[0]!.id !== lifecycle[0]!.id) refuse();
     const ownerIdentity = owners[0]!.id;
-    if (expectedFence && expectedFence.ownerIdentity !== ownerIdentity || lease.operations && lease.operations.ownerIdentity !== ownerIdentity) refuse();
+    if (expectedFence && expectedFence.ownerIdentity !== ownerIdentity || expectedOperation && expectedOperation.ownerIdentity !== ownerIdentity || lease.operations && lease.operations.ownerIdentity !== ownerIdentity) refuse();
     for (const source of outer.slice(2)) {
       const identities = source.database.query<{ installation: string }, []>('SELECT installation FROM identity LIMIT 2').all();
       const meta = source.database.query<{ json: string }, []>("SELECT json FROM records WHERE id='meta' AND length(CAST(json AS BLOB))<=4096").get();
@@ -118,6 +128,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     };
     const retainAdoptionFence = (fence: S16OperationsAdoptionFence) => {
       assertCurrent(); validateS16OperationsAdoptionFence(fence);
+      if (expectedOperation) refuse();
       if (fence.ownerIdentity !== ownerIdentity || fence.installationId !== config.installationId || fence.configurationSha256 !== configurationSha256 || lease.operations && lease.operations.id !== fence.id) refuse();
       if (expectedFence) { if (canonical(expectedFence) !== canonical(fence)) refuse(); return; }
       opsWrite(join(ownerPath + '.ops', 'fence.json'), canonical(fence)); expectedFence = Object.freeze({ ...fence }); assertCurrent();
@@ -134,7 +145,25 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       // assertCurrent just re-read the exact private original fence; only this owning bootstrap may remove it.
       unlinkSync(path); opsSyncDirectory(dirname(path)); expectedFence = undefined; assertCurrent();
     };
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence });
+    const operations = (journalOptions: Pick<S16OperationsJournalOptions, 'now' | 'id' | 'after'> = {}) => {
+      assertCurrent(); if (expectedFence || !lease.operations) refuse('s16_ops_adoption_required');
+      return openS16OperationsJournal({ ...journalOptions, directory: root, lease, configurationSha256, guard: assertCurrent,
+        retainFence(fence) {
+          assertCurrent(); validateS16OperationsFence(fence);
+          if (fence.id !== lease.operations!.id || fence.installationId !== config.installationId || fence.ownerIdentity !== ownerIdentity || fence.configurationSha256 !== configurationSha256) refuse();
+          assertS16OperationsFenceCurrent(readS16OperationsControl(root), fence);
+          if (expectedOperation) { if (canonical(expectedOperation) !== canonical(fence)) refuse(); return; }
+          opsWrite(join(ownerPath + '.ops', 'fence.json'), canonical(fence)); expectedOperation = Object.freeze({ ...fence }); assertCurrent();
+        }, clearFence(fence) {
+          assertCurrent(); if (!expectedOperation || canonical(expectedOperation) !== canonical(fence)) refuse();
+          const control = readS16OperationsControl(root); assertS16OperationsFenceCurrent(control, fence);
+          const request = control.requests.find(row => row.id === fence.operationId);
+          if (!request || !['complete', 'discarded'].includes(request.status) || request.actions.some(action => !['confirmed', 'not_applied'].includes(action.state))) refuse();
+          const path = join(ownerPath + '.ops', 'fence.json');
+          unlinkSync(path); opsSyncDirectory(dirname(path)); expectedOperation = undefined; assertCurrent();
+        } });
+    };
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

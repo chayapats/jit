@@ -4,8 +4,10 @@ Status: selected protected OPS16-01 operations metadata/adoption contract.
 Aggregate backup/export/restore/upgrade/uninstall implementation and acceptance
 remain incomplete under `s16-recovery-point/v1`.
 The current source implements strict read-only metadata validation, explicit
-adoption, v2 admission binding and operator adopt/status. Request transitions,
-point retention and aggregate action execution remain to be implemented.
+adoption, v2 admission binding and operator adopt/status. Current journal writes
+promote empty initial metadata to [v2](s16-operations-control-v2.md), which adds
+durable transitions, point-custody rows and pending-operation admission refusal.
+Physical retention and aggregate action execution remain to be implemented.
 
 ## Current identity and adoption
 
