@@ -22,6 +22,8 @@ import { captureS16HelperCohort, type S16HelperObservation, type S16HelperCohort
 import { captureS16FileCohort, type S16FileObservation } from '../files/custody';
 import { captureS16GithubArtifacts, type S16GithubArtifactObservation } from '../../s15/github/maintenance';
 import { removeS16Point, type S16PointRemovalOptions, type S16PointRemovalResult } from './point-retention';
+import { captureS16ExternalCustody, type S16ExternalObservation } from './external-custody';
+import { openS16PointCapture, type S16PointCaptureMaintenance, type S16PointCaptureOptions } from './point-capture';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -68,6 +70,10 @@ export interface S16ControlMaintenance {
   fileCustody(): S16FileObservation;
   /** Complete current GitHub bundle bytes/references, without recovery, Git, credentials or publication. */
   githubArtifacts(): S16GithubArtifactObservation;
+  /** Current backend/client/credential metadata; no secret/profile/disk copy or physical settlement. */
+  externalCustody(): S16ExternalObservation;
+  /** Owns aggregate capture and native disposal; close this session before releasing current control. */
+  pointCapture(requestId: string, options?: S16PointCaptureOptions): S16PointCaptureMaintenance;
   /** Explicit protected retention, confined to the original receipted historical point and durable plan. */
   removePoint(requestId: string, options: S16PointRemovalOptions): Readonly<S16PointRemovalResult>;
   assertCurrent(): void;
@@ -90,10 +96,11 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   let firecracker: FirecrackerControllerMaintenance | undefined;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const nativeSets = new Set<S16NativeSetMaintenance>();
+  const pointCaptures = new Set<S16PointCaptureMaintenance>();
   let helperReads = 0;
   const close = () => {
     if (closed) return; usable = false;
-    if (helperReads || [...nativeSets].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
     firecracker?.close();
     let failed = false;
     for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
@@ -213,7 +220,14 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
         async retain<T>(operation: () => Promise<T>) { assertCurrent(); helperReads++; try { return await operation(); } finally { helperReads--; } } });
     };
     const removePoint = (requestId: string, removalOptions: S16PointRemovalOptions) => removeS16Point({ directory: root, installationId: config.installationId, ownerIdentity, configurationSha256, lease, journal: operations(), guard: assertCurrent }, requestId, removalOptions);
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, removePoint });
+    const externalCustody = () => { const notifications = heldRuntime.sources.find(source => source.name === 'notifications.sqlite')?.database;
+      return captureS16ExternalCustody({ config, ownerIdentity, owner: outer[0]!.database, vm, ...(notifications ? { notifications } : {}), lease, guard: assertCurrent }); };
+    let context: S16ControlMaintenance;
+    const pointCapture = (requestId: string, captureOptions: S16PointCaptureOptions = {}) => {
+      assertCurrent(); for (const session of pointCaptures) { if (!session.released) refuse('s16_ops_point_capture_busy'); pointCaptures.delete(session); }
+      const session = openS16PointCapture({ ...captureOptions, config, requestId, lease, context, journal: operations() }); pointCaptures.add(session); return session;
+    };
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

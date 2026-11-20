@@ -9,11 +9,11 @@ import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS1
 import { opsRead } from '../s14/ops-files';
 import { openS16ControlMaintenance } from './operations/control-maintenance';
 
-/** Explicit protected operator entry for current metadata and receipted point retention; aggregate recovery remains separate. */
-export function runS16OperationsCli(args: readonly string[]): object {
+/** Protected operator entry for current metadata, verified control-plane backup and point retention; forward restore remains separate. */
+export async function runS16OperationsCli(args: readonly string[]): Promise<object> {
   const command = args[0], values = new Map<string, string>(); let selected = false;
-  if (!['adopt', 'status', 'cleanup'].includes(command ?? '')) throw new AppError('s16_ops_command_invalid');
-  const allowed = command === 'cleanup' ? ['--config', '--request-id', '--point-id', '--attempt'] : ['--config', '--request-id'];
+  if (!['adopt', 'status', 'cleanup', 'backup'].includes(command ?? '')) throw new AppError('s16_ops_command_invalid');
+  const allowed = command === 'cleanup' ? ['--config', '--request-id', '--point-id', '--attempt'] : command === 'backup' ? ['--config', '--request-id', '--attempt'] : ['--config', '--request-id'];
   for (let index = 1; index < args.length; index++) {
     const name = args[index]!;
     if (name === '--s15' && !selected) { selected = true; continue; }
@@ -23,10 +23,14 @@ export function runS16OperationsCli(args: readonly string[]): object {
   if (!selected || !values.get('--config') || (command !== 'status') !== values.has('--request-id') || command === 'cleanup' && !values.has('--point-id')) throw new AppError('explicit_s15_config_required');
   const config = readS15RuntimeConfig(values.get('--config')!);
   if (command === 'adopt') return adoptS16Operations(config, values.get('--request-id')!);
-  if (command === 'cleanup') {
+  if (command === 'cleanup' || command === 'backup') {
     const fence = join(config.directory, 'owner/owner.sqlite.ops/fence.json');
     const ctx = openS16ControlMaintenance(config, lstatSync(fence, { throwIfNoEntry: false }) ? { operationFence: readS16OperationsFence(config.directory) } : {});
-    try { return ctx.removePoint(values.get('--request-id')!, { pointId: values.get('--point-id')!, ...(values.has('--attempt') ? { attempt: values.get('--attempt')! } : {}) }); }
+    try {
+      if (command === 'cleanup') return ctx.removePoint(values.get('--request-id')!, { pointId: values.get('--point-id')!, ...(values.has('--attempt') ? { attempt: values.get('--attempt')! } : {}) });
+      const capture = ctx.pointCapture(values.get('--request-id')!, values.has('--attempt') ? { attempt: values.get('--attempt')! } : {});
+      try { return await capture.capture(); } finally { await capture.close(); }
+    }
     finally { ctx.close(); }
   }
   const lease = openS16InstallationLease({ directory: config.directory, mode: 'shared', observation: true });
@@ -59,6 +63,6 @@ export function runS16OperationsCli(args: readonly string[]): object {
 }
 
 if (import.meta.main) {
-  try { console.log(JSON.stringify(runS16OperationsCli(process.argv.slice(2)))); }
+  try { console.log(JSON.stringify(await runS16OperationsCli(process.argv.slice(2)))); }
   catch (error) { console.error(JSON.stringify({ error: error instanceof AppError ? error.code : 's16_ops_command_failed' })); process.exitCode = 1; }
 }

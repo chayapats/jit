@@ -44,7 +44,7 @@ export type S16PointDirectoryScope = 'root' | 'ledgers' | 'ledger-data' | 'paylo
 export interface S16PointInventory {
   readonly manifest: Readonly<S16RecoveryPoint>; readonly files: readonly Readonly<S16PointFile>[];
   readonly directories: readonly Readonly<{ scope: S16PointDirectoryScope; identity: string }>[];
-  readonly bytes: number; readonly metadataBytes: number;
+  readonly bytes: number; readonly metadataBytes: number; readonly catalogs: 'present' | 'absent';
 }
 const hash = (value: Uint8Array | string) => createHash('sha256').update(value).digest('hex');
 const hex = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -138,13 +138,14 @@ export function inspectS16PointFiles(root: string, expected: S16PointExpectation
   const payload = component('payloads', 'payloads', 'manifest.json') as S16PayloadSet;
   fields(payload, 'contract,scope,installationId,id,capturedAt,bytes,files');
   if (payload.contract !== 's16-payload-set/v1' || payload.scope !== 'caller_selected_payloads' || payload.installationId !== expected.installationId || payload.id !== expected.id || !nat(payload.capturedAt) || !nat(payload.bytes, s16PointLimits.payload) || !Array.isArray(payload.files) || payload.files.length > 20000 || s16PayloadSetManifestHash(payload) !== point.components.find(row => row.role === 'payloads')!.sha256) refuse();
-  let payloadBytes = 0, fileCount = 0, githubCount = 0; const nativeFiles = new Set<string>(), payloadByName = new Map<string, { bytes: number; sha256: string }>();
+  let payloadBytes = 0, fileCount = 0, githubCount = 0; const nativeFiles = new Set<string>(), catalogFiles = new Set<string>(), payloadByName = new Map<string, { bytes: number; sha256: string }>();
   for (const file of payload.files) {
     fields(file, 'name,bytes,sha256');
     if (typeof file.name !== 'string' || !nat(file.bytes, 1073741824) || !hex(file.sha256)) refuse(); payloadByName.set(file.name, { bytes: file.bytes, sha256: file.sha256 });
     if (/^file_[a-f0-9]{64}\.blob$/.test(file.name)) fileCount++;
     else if (/^github_bundle_[a-f0-9]{64}\.bundle$/.test(file.name)) githubCount++;
     else if (['native_plan.json', 'native_manifest.json'].includes(file.name) || /^native_[a-f0-9]{32}\.json$/.test(file.name)) nativeFiles.add(file.name);
+    else if (['file_cohort.json', 'github_cohort.json'].includes(file.name)) catalogFiles.add(file.name);
     else refuse(); payloadBytes += file.bytes; add('payloads', file.name, file.bytes, file.sha256);
   }
   if (payloadBytes !== payload.bytes) refuse();
@@ -154,6 +155,16 @@ export function inspectS16PointFiles(root: string, expected: S16PointExpectation
   if (capture.contract !== roles.capture[0] || capture.installationId !== expected.installationId || capture.operationId !== expected.operationId || capture.requestId !== expected.requestId || capture.cohortSha256 !== expected.cohortSha256) refuse(); identity(capture.requestId);
   fields(capture.files, 'sha256,files,pending,parserJobs'); fields(capture.github, 'sha256,bundles,correlations'); fields(capture.native, 'actionId,manifestSha256,planSha256,roots,pending');
   if (!hex(capture.files.sha256) || capture.files.files !== fileCount || !nat(capture.files.pending, 10000) || !nat(capture.files.parserJobs, 64) || !hex(capture.github.sha256) || capture.github.bundles !== githubCount || !nat(capture.github.correlations, 50000) || !hex(capture.native.planSha256) || !hex(capture.native.manifestSha256) || !nat(capture.native.roots, 20000) || !nat(capture.native.pending, 20000) || typeof capture.native.actionId !== 'string' || !/^native_set_[a-z0-9_]+_[a-f0-9]{64}$/.test(capture.native.actionId)) refuse();
+  if (catalogFiles.size && catalogFiles.size !== 2) refuse();
+  if (catalogFiles.size) {
+    const fileCatalog = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(read('payloads', 'file_cohort.json', capture.files.sha256)))), githubCatalog = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(read('payloads', 'github_cohort.json', capture.github.sha256))));
+    fields(fileCatalog, 'contract,installationId,present,files,pending,parser'); fields(githubCatalog, 'contract,installationId,present,namespace,lineage,bundles');
+    if (fileCatalog.contract !== 's16-file-cohort/v1' || githubCatalog.contract !== 's16-github-artifact-cohort/v1' || fileCatalog.installationId !== expected.installationId || githubCatalog.installationId !== expected.installationId || !Array.isArray(fileCatalog.files) || fileCatalog.files.length !== fileCount || !Array.isArray(fileCatalog.pending) || fileCatalog.pending.length !== capture.files.pending || !Array.isArray(object(fileCatalog.parser).jobs) || (object(fileCatalog.parser).jobs as unknown[]).length !== capture.files.parserJobs || !Array.isArray(githubCatalog.bundles) || githubCatalog.bundles.length !== githubCount) refuse();
+    const knownFiles = new Set<string>(); for (const row of fileCatalog.files) { const value = object(row), file = typeof value.name === 'string' && /^file_[a-f0-9]{64}\.blob$/.test(value.name) ? payloadByName.get(value.name) : undefined; if (!file || knownFiles.has(value.name as string) || file.bytes !== value.bytes || file.sha256 !== value.sha256) refuse(); knownFiles.add(value.name as string); }
+    let correlations = 0; const knownBundles = new Set<string>();
+    for (const row of githubCatalog.bundles) { const value = object(row), name = 'github_' + value.id + '.bundle', file = payloadByName.get(name); if (!file || knownBundles.has(name) || file.bytes !== value.bytes || file.sha256 !== value.sha256 || !Array.isArray(value.references)) refuse(); knownBundles.add(name); correlations += value.references.length; }
+    if (correlations !== capture.github.correlations) refuse();
+  }
   const plan = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(read('payloads', 'native_plan.json', capture.native.planSha256)))), native = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(read('payloads', 'native_manifest.json', capture.native.manifestSha256))));
   if (plan.contract !== 's16-native-set-plan/v1' || native.contract !== 's16-native-set/v1' || plan.installationId !== expected.installationId || native.installationId !== expected.installationId || plan.operationId !== expected.operationId || native.operationId !== expected.operationId || plan.requestId !== capture.requestId || native.requestId !== capture.requestId || plan.kind !== 'backup' || native.actionId !== capture.native.actionId || native.planSha256 !== capture.native.planSha256 || !Array.isArray(plan.roots) || !Array.isArray(plan.pending) || !Array.isArray(native.roots) || plan.roots.length !== capture.native.roots || native.roots.length !== capture.native.roots || plan.pending.length !== capture.native.pending || !nat(native.bytes, s16PointLimits.payload)) refuse();
   const nativeIds = new Set<string>(); let nativeBytes = 0;
@@ -179,5 +190,5 @@ export function inspectS16PointFiles(root: string, expected: S16PointExpectation
   current(); inventory();
   for (const file of files) if (s16PointEntryIdentity(s16PointEntry(s16PointMemberPath(root, expected.id, file.scope, file.name))) !== file.identity) refuse('s16_ops_point_changed');
   for (const dir of dirs) if (s16PointEntryIdentity(s16PointEntry(s16PointSubdirectory(root, expected.id, dir.scope), true), true) !== dir.identity) refuse('s16_ops_point_changed'); current();
-  return Object.freeze({ manifest: freeze(point), files: Object.freeze(files), directories: Object.freeze(dirs), bytes, metadataBytes });
+  return Object.freeze({ manifest: freeze(point), files: Object.freeze(files), directories: Object.freeze(dirs), bytes, metadataBytes, catalogs: catalogFiles.size ? 'present' : 'absent' });
 }

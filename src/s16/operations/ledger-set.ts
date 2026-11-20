@@ -1,10 +1,12 @@
 import { Database } from 'bun:sqlite';
-import { lstatSync, mkdirSync } from 'node:fs';
+import { lstatSync, mkdirSync, opendirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { isAbsolute, join, normalize } from 'node:path';
 import { AppError } from '../../errors';
 import { opsPath, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
 import { observeS16LedgerImage, validateS16LedgerReader, type S16LedgerImage } from './ledger-image';
+import { verifyS16PayloadSources } from './payload-set';
 
 const maximumBytes = 2_147_483_648;
 function refuse(code: string): never { throw new AppError(code, 409); }
@@ -31,6 +33,10 @@ export interface S16LedgerSetOptions {
   guard(): void;
   now?: () => number;
   maxBytes?: number;
+  /** Original protected staging only: compare every existing image to a fresh complete current cut; never overwrite. */
+  resume?: true;
+  /** Existing authenticated publication only: compare current sources and refuse every missing member. */
+  verifyOnly?: true;
 }
 
 /**
@@ -40,7 +46,7 @@ export interface S16LedgerSetOptions {
  */
 export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16LedgerSet> {
   identity(options.installationId);
-  if (!/^[a-f0-9]{32}$/.test(options.id) || !Array.isArray(options.sources) || !options.sources.length || options.sources.length > 256 || typeof options.guard !== 'function') refuse('s16_ops_capture_invalid');
+  if (!/^[a-f0-9]{32}$/.test(options.id) || !Array.isArray(options.sources) || !options.sources.length || options.sources.length > 256 || typeof options.guard !== 'function' || options.resume !== undefined && options.resume !== true || options.verifyOnly !== undefined && (options.verifyOnly !== true || !options.resume)) refuse('s16_ops_capture_invalid');
   const limit = options.maxBytes ?? maximumBytes;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximumBytes) refuse('s16_ops_capture_invalid');
   const ownerUid = process.getuid?.();
@@ -63,7 +69,13 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
   const target = join(options.directory, options.id), held: Database[] = [], images: S16LedgerSet['images'][number][] = [];
   let bytes = 0, releaseFailed = false;
   const sizes = new Map<Database, number>();
-  const current = () => { if ((options.guard() as unknown) !== undefined) refuse('s16_ops_capture_invalid'); };
+  let targetEntry: ReturnType<typeof lstatSync> | undefined;
+  const current = () => {
+    if ((options.guard() as unknown) !== undefined) refuse('s16_ops_capture_invalid');
+    if (targetEntry) { const now = lstatSync(target); if (!now.isDirectory() || now.isSymbolicLink() || now.uid !== ownerUid || now.mode & 0o7077 || now.ino !== targetEntry.ino || now.dev !== targetEntry.dev || now.mode !== targetEntry.mode) refuse('s16_ops_image_changed'); }
+  };
+  const inventory = () => { const names = new Set([...sources.map(source => source.name), 'manifest.json']), dir = opendirSync(target); let count = 0;
+    try { for (;;) { const item = dir.readSync(); if (!item) break; if (++count > sources.length + 1 || !names.has(item.name)) refuse('s16_ops_inventory_changed'); } } finally { dir.closeSync(); } };
   try {
     current();
     for (const source of sources) {
@@ -94,7 +106,9 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
       if (db.query<{ quick_check: string }, []>('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' || db.query('PRAGMA foreign_key_check').get()) refuse('s16_ops_continuity_invalid');
       sizes.set(db, size); planned += size;
     }
-    try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); }
+    if (lstatSync(target, { throwIfNoEntry: false })) { if (!options.resume) refuse('s16_ops_point_unavailable'); }
+    else { if (options.verifyOnly) refuse('s16_ops_point_unavailable'); try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); } }
+    targetEntry = lstatSync(target); current(); inventory();
     opsSyncDirectory(options.directory);
     for (const source of sources) {
       current();
@@ -104,7 +118,10 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
       if (data[18] !== data[19] || ![1, 2].includes(data[18]!)) refuse('s16_ops_image_invalid');
       data[18] = 1; data[19] = 1;
       const path = join(target, source.name);
-      opsWrite(path, data);
+      if (lstatSync(path, { throwIfNoEntry: false })) {
+        const existing = observeS16LedgerImage(path, { ...source.reader, ownerUid });
+        if (existing.bytes !== data.byteLength || existing.sha256 !== createHash('sha256').update(data).digest('hex')) refuse('s16_ops_image_changed');
+      } else { if (options.verifyOnly) refuse('s16_ops_image_changed'); opsWrite(path, data); }
       const staged = new Database(path, { readonly: true, create: false, strict: true });
       try {
         if (staged.query<{ quick_check: string }, []>('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' || staged.query('PRAGMA foreign_key_check').get()) refuse('s16_ops_continuity_invalid');
@@ -122,6 +139,9 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
     installationId: options.installationId, id: options.id, capturedAt, bytes, images: Object.freeze(images) });
   const text = canonical(manifest);
   if (Buffer.byteLength(text) > 131_072) refuse('s16_ops_capture_bounds');
-  opsWrite(join(target, 'manifest.json'), text);
+  const path = join(target, 'manifest.json'); current(); inventory();
+  if (lstatSync(path, { throwIfNoEntry: false })) verifyS16PayloadSources([{ name: 'manifest', path, bytes: Buffer.byteLength(text), sha256: createHash('sha256').update(text).digest('hex') }], current);
+  else { if (options.verifyOnly) refuse('s16_ops_image_changed'); opsWrite(path, text); }
+  current(); inventory();
   return manifest;
 }

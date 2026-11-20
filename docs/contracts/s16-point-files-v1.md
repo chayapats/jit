@@ -21,6 +21,12 @@ aliases must agree with capture metadata; their JSON is bounded but opaque
 native bodies are not decoded here. Actual native ancestry still requires the
 public SDK quarantine verifier, and SQL integrity its owning verifier.
 
+The producer also requires complete `file_cohort.json` and `github_cohort.json`
+payload catalogs. Their original cut hashes authenticate roles, pending/parser
+facts and exact payload correlations. They count toward the metadata bound. The
+mechanical inventory returns `catalogs: present|absent`; earlier format fixtures
+without catalogs remain readable for retention, without producer completeness.
+
 Aggregate metadata, including indices/reference/capture/native plan metadata,
 is at most 4 MiB. SQL is at most 2 GiB, payload data at most 4 GiB, total point
 bytes at most 6 GiB, 256 SQL sources and 20,000 payload files. Every file is a

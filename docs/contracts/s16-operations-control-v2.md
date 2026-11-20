@@ -1,8 +1,9 @@
 # s16-operations-control/v2
 
 Status: selected OPS16-01 current-journal write/admission contract. Aggregate
-point creation and recovery remain separate requirements. Physical retention is
-implemented by the [point-files layer](s16-point-files-v1.md) under this journal.
+point creation now uses the [protected producer](s16-point-capture-v1.md); forward
+recovery remains required. Physical retention is implemented by the
+[point-files layer](s16-point-files-v1.md) under this journal.
 The v2 writer and maintenance gate implement the protocol below; source/test
 presence is not aggregate acceptance.
 
@@ -72,3 +73,8 @@ to retained custody. Its settled action stays immutable; another allowed
 attempt needs a distinct action ID. Discard cannot strand removing custody.
 This ledger protocol does not itself delete directories or certify a point's
 physical inventory; that requires the aggregate verifier/retention coordinator.
+
+Only backup.verifying accepts the replace intent `point_publish_<targetSHA>` with
+null prior and the request's same non-null target. Record it after confirmed
+preparation and before atomic publication. Other replace intents still require
+prepared/activating. This is not a generic phase or unknown-effect bypass.

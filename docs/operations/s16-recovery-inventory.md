@@ -84,6 +84,14 @@ not remove its sidecars. The aggregate capturer therefore needs an explicit
 settled snapshot protocol; the observer refuses sidecars and never deletes
 them to make an image appear complete.
 
+The [protected producer](../contracts/s16-point-capture-v1.md) now combines actual
+current cuts, complete FILE/GitHub catalogs and separate
+[external/client references](../contracts/s16-external-custody-v1.md), then verifies
+and atomically publishes one independently receipted control-plane point. Device
+secure stores, credentials, profiles, live disks and root-helper state remain
+separately retained; their physical settlement is not inferred from the point.
+Forward activation, ordinary export and full lifecycle acceptance remain required.
+
 ## State outside the composition manifest
 
 The outer runtime also owns `owner/owner.sqlite`, its lifecycle/recovery
@@ -105,8 +113,8 @@ all known receipt-pinned and untrusted leftover bytes without boot recovery.
 Original pending/withdrawn rows, partial parser trees and unobserved container
 generation/job/settlement remain explicit. No scratch output becomes a receipt
 or usable artifact merely by inclusion. Unknown/unsafe/missing custody refuses;
-the actual aggregate still needs owning forward reconciliation and physical
-retention rather than assuming that a successful component cut settled it.
+forward recovery still requires owning reconciliation. Protected point capture/
+retention cannot assume that a successful byte cut settled those original effects.
 
 The current production composition routes CHAT interpretation to
 `runtime/native-chat/<rootRequestId>/interpretation_<attempt>` and work through

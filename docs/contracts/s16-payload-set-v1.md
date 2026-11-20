@@ -42,6 +42,12 @@ identities from verified owning metadata. It rejects changed/noncanonical
 metadata, missing/extra files and incorrect/untrusted bytes without repair.
 Candidate self-hashes are not independent provenance.
 
+Original unpublished producer staging may explicitly resume by verifying both
+current sources and matching existing members, never overwriting them. `verifyOnly`
+requires every member/index and cannot repair prepared/published points. Changed
+sources, extra names or missing verified members refuse. Default capture still
+refuses existing targets; these options grant no receipt or restore authority.
+
 `verifyS16PayloadSources` reuses the same finite streamed reader and exact owning
 hashes without creating a directory, copied file or manifest. The protected
 current guard runs around every read. This supplies the current

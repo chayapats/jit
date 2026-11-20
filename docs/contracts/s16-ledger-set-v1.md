@@ -84,3 +84,10 @@ image and compares all metadata. It requires rollback journal mode before
 opening SQLite, checks actual SQLite/foreign-key integrity read-only and
 rechecks file/manifest hashes. Returned metadata still grants no restore,
 current authority or aggregate completeness.
+
+The protected producer may resume original unpublished staging: compare each
+existing image to a fresh complete simultaneous current cut, without overwrite,
+then create only missing members. `verifyOnly` requires all images/manifests and
+cannot repair prepared/published points. Changed current bytes or unknown names
+refuse. Default capture still refuses an existing target. These options supply
+no original request, receipt or restore authority.

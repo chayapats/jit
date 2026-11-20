@@ -71,7 +71,10 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
   const source = (name: string, identityColumn?: 'id' | 'installation') => {
     const db = connections.get(name), reader = s16RuntimeReaders[name as keyof typeof s16RuntimeReaders]; if (!db || !reader) refuse('s16_ops_source_unavailable');
     const attached = db.query<{ name: string; file: string }, []>('PRAGMA database_list').all();
-    if (attached.length !== 1 || attached[0]!.name !== 'main' || attached[0]!.file !== join(runtimeDirectory, name) ||
+    // Owning read-only ORDER BY queries can open SQLite's private temp schema. Every custody
+    // query below is main-qualified; no other attached database may supply an owning row.
+    const main = attached.filter(row => row.name === 'main');
+    if (main.length !== 1 || attached.some(row => !['main', 'temp'].includes(row.name)) || main[0]!.file !== join(runtimeDirectory, name) ||
       db.query<{ application_id: number }, []>('PRAGMA main.application_id').get()?.application_id !== reader.applicationId || !reader.formats.includes(db.query<{ user_version: number }, []>('PRAGMA main.user_version').get()?.user_version ?? -1)) refuse();
     if (identityColumn) {
       const identities = db.query<{ installation: string }, []>(`SELECT ${identityColumn} AS installation FROM main.identity LIMIT 2`).all();

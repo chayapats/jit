@@ -83,3 +83,9 @@ action as `not_applied`, then block the original request. Partial files remain
 private; explicit owning resume and a distinct attempt are required. Unknown
 publication/release/journal boundaries stay fenced and unsettled. Closing retries
 resource disposal only, never capture or original native/VM effects.
+
+Protected aggregate verification may request `verifyCurrent`: compare complete
+current public native content and fresh deep quarantine even with an independent
+producer receipt. In backup.verifying this accepts only the original confirmed
+action and existing plan/manifest/receipt; no new capture/attempt is admitted.
+This strengthens current readback without turning old snapshots into authority.

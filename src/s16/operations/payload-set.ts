@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, writeSync, type BigIntStats } from 'node:fs';
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, opendirSync, openSync, readSync, readdirSync, writeSync, type BigIntStats } from 'node:fs';
 import { isAbsolute, join, normalize } from 'node:path';
 import { AppError } from '../../errors';
 import { opsPath, opsRead, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
@@ -21,6 +21,10 @@ export interface S16PayloadSet {
 export interface S16PayloadCapture {
   directory: string; installationId: string; id: string; sources: readonly S16PayloadSource[];
   guard(): void; now?: () => number; maxBytes?: number;
+  /** Original protected staging only: verify matching existing bytes against current sources, never overwrite. */
+  resume?: true;
+  /** Existing authenticated publication only: refuse missing members instead of repairing them. */
+  verifyOnly?: true;
 }
 /** Expected hash/identities originate in independent protected receipts and verified owning metadata. */
 export interface S16PayloadVerification {
@@ -108,7 +112,7 @@ export function verifyS16PayloadSources(sources: readonly S16PayloadSource[], gu
  */
 export function captureS16PayloadSet(options: S16PayloadCapture): Readonly<S16PayloadSet> {
   identity(options.installationId);
-  if (!/^[a-f0-9]{32}$/.test(options.id) || typeof options.guard !== 'function') refuse('s16_ops_payload_invalid');
+  if (!/^[a-f0-9]{32}$/.test(options.id) || typeof options.guard !== 'function' || options.resume !== undefined && options.resume !== true || options.verifyOnly !== undefined && (options.verifyOnly !== true || !options.resume)) refuse('s16_ops_payload_invalid');
   validateFiles(options.sources); privateDirectory(options.directory);
   const sources = options.sources.map(source => ({ ...source })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0), bytes = sources.reduce((n, source) => n + source.bytes, 0), limit = options.maxBytes ?? totalBound;
   if (!Number.isSafeInteger(limit) || limit < 0 || limit > totalBound || bytes > limit) refuse('s16_ops_capture_bounds');
@@ -118,16 +122,25 @@ export function captureS16PayloadSet(options: S16PayloadCapture): Readonly<S16Pa
   const manifest = Object.freeze({ contract: 's16-payload-set/v1' as const, scope: 'caller_selected_payloads' as const, installationId: options.installationId, id: options.id, capturedAt, bytes, files: Object.freeze(files) });
   const text = manifestText(manifest);
   current(); const target = join(options.directory, options.id);
-  try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); } opsSyncDirectory(options.directory);
+  if (lstatSync(target, { throwIfNoEntry: false })) { if (!options.resume) refuse('s16_ops_point_unavailable'); }
+  else { if (options.verifyOnly) refuse('s16_ops_point_unavailable'); try { mkdirSync(target, { mode: 0o700 }); } catch { refuse('s16_ops_point_unavailable'); } }
+  privateDirectory(target); const original = lstatSync(target); opsSyncDirectory(options.directory);
+  const targetCurrent = () => { current(); privateDirectory(target); const now = lstatSync(target); if (original.dev !== now.dev || original.ino !== now.ino || original.mode !== now.mode) refuse('s16_ops_image_changed'); };
+  const inventory = () => { const names = new Set([...files.map(file => file.name), 'manifest.json']), dir = opendirSync(target); let count = 0;
+    try { for (;;) { const item = dir.readSync(); if (!item) break; if (++count > files.length + 1 || !names.has(item.name)) refuse('s16_ops_inventory_changed'); } } finally { dir.closeSync(); } }; inventory();
   for (const source of sources) {
-    current(); privateDirectory(target); const file = join(target, source.name);
-    transfer(source.path, source, file); transfer(file, source); opsSyncDirectory(target); current();
+    targetCurrent(); const file = join(target, source.name);
+    if (lstatSync(file, { throwIfNoEntry: false })) transfer(source.path, source); else { if (options.verifyOnly) refuse('s16_ops_image_changed'); transfer(source.path, source, file); }
+    transfer(file, source); opsSyncDirectory(target); targetCurrent();
   }
-  current(); privateDirectory(target);
-  opsWrite(join(target, 'manifest.json'), text); return manifest;
+  targetCurrent(); inventory(); const path = join(target, 'manifest.json');
+  if (lstatSync(path, { throwIfNoEntry: false })) transfer(path, { name: 'manifest', bytes: Buffer.byteLength(text), sha256: sha(text) }); else { if (options.verifyOnly) refuse('s16_ops_image_changed'); opsWrite(path, text); }
+  targetCurrent(); inventory(); return manifest;
 }
 /** Hash to retain in the outer current receipt; candidate self-hashing is never independent provenance. */
 export function s16PayloadSetManifestHash(manifest: Readonly<S16PayloadSet>): string { return sha(manifestText(manifest)); }
+/** Exact bounded index bytes for protected aggregate budget planning; this supplies no capture/receipt authority. */
+export function s16PayloadSetManifestText(manifest: Readonly<S16PayloadSet>): string { return manifestText(manifest); }
 /** Verifies receipt-bound exact opaque files read-only; it neither restores them nor registers sources/grants. */
 export function verifyS16PayloadSet(options: S16PayloadVerification): Readonly<S16PayloadSet> {
   identity(options.installationId); validateFiles(options.files);

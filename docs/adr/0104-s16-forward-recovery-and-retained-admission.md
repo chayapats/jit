@@ -93,8 +93,10 @@ inspection and selected-CLI lease participation. Those components do not
 implement this aggregate. Outer current-state inspection and the
 [current v2 journal/gate](../contracts/s16-operations-control-v2.md) are implemented
 as components. [Physical point retention](../contracts/s16-point-files-v1.md)
-now uses authenticated file inventory and original durable plans. Complete owning inventory,
-ordinary export, durable activation,
+now uses authenticated file inventory and original durable plans. The
+[current producer](../contracts/s16-point-capture-v1.md) binds complete control
+cuts and separate external/client references before receipted publication.
+Ordinary export, durable forward activation,
 compatible forward release selection and actual operator/client flows remain
 required. The protocol must refuse unsupported custody instead of silently
 shrinking the selected installation.

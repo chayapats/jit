@@ -40,6 +40,12 @@ test('an explicitly empty current owning namespace does not initialize any missi
   namespace.assertCurrent();
 });
 
+test('SQLite private temp sorting and shadow names cannot replace main custody, and other attachments still refuse', async () => {
+  const f = await fixture(false), db = f.database('github.sqlite'); db.exec("CREATE TEMP TABLE identity(id TEXT);INSERT INTO temp.identity VALUES ('foreign');CREATE TEMP TABLE records(json TEXT)");
+  expect(db.query<{ name: string }, []>('PRAGMA database_list').all().map(row => row.name)).toContain('temp'); expect(f.resolve().roots).toEqual([]);
+  db.exec("ATTACH DATABASE ':memory:' AS foreign_source"); expect(f.resolve).toThrow(expect.objectContaining({ code: 's16_ops_native_custody_invalid' }));
+});
+
 test('per-root guards retain original ancestry and root inventory without treating sibling discovery as current publication', async () => {
   const f = await fixture(), namespace = f.resolve(), root = namespace.roots[0]!, guard = namespace.rootGuard(root.id); guard();
   expect(() => namespace.rootGuard('f'.repeat(32))).toThrow();

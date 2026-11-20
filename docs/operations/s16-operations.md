@@ -2,9 +2,9 @@
 
 Status: OPS16-01 implementation in progress in
 [#429](https://github.com/chayapats/jit/issues/429). The available operator
-commands below adopt/inspect protected operations metadata and explicitly remove
-an independently receipted historical point. Aggregate
-backup/export/restore/upgrade/uninstall is not yet available through this entry.
+commands adopt/inspect protected operations metadata, capture a current protected
+control-plane point and explicitly remove a receipted historical point. Ordinary
+export, forward restore and complete upgrade/uninstall remain in progress.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
 Run from the verified selected source package, with its pinned Bun and explicit
@@ -13,6 +13,7 @@ credential-free S15 configuration:
 ```sh
 bun run s16:ops status --s15 --config /absolute/s15-runtime.json
 bun run s16:ops adopt --s15 --config /absolute/s15-runtime.json --request-id original_adoption_id
+bun run s16:ops backup --s15 --config /absolute/s15-runtime.json --request-id original_backup_id
 ```
 
 `status` is read-only and may share an installation lease with the running
@@ -46,8 +47,32 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
-cutover; the remaining coordinator must cover full owning custody, point
-publication, ordinary export, quarantine/activation and compatible release selection.
+cutover; forward recovery still needs ordinary export, quarantine/activation,
+staging retirement and compatible release/client lifecycle selection.
+
+## Protected current control-plane backup
+
+`backup` requires the actual verified copied artifact, locked sealed dependencies
+and release notices. An unsealed checkout refuses before staging. Release selected
+service/local shared leases first. Code derives the executing package root; no
+input chooses a destination, reader or expected hash.
+
+The [producer](../contracts/s16-point-capture-v1.md) retains current SQL/native/
+FILE/GitHub/helper/external custody under original operation/action identities.
+Complete FILE/GitHub catalogs retain withdrawals, untrusted/pending bytes and
+older references without granting execution/publication rights. Journal intent
+precedes atomic publication, independent readback and the final current receipt.
+Retry the same request/config/package after interruption. Prepared/published
+points refuse missing or changed bytes instead of repairing them. A retired
+point is never recreated.
+
+Only conclusive no-publication readback permits a distinct local `--attempt` under
+the same request. Unknown publication/source release retains its gate. Staging
+quotas refuse without evicting unknown partials or receipts. Credentials, profiles,
+mutable disks, root-helper state and device secure storage stay separate; physical
+settlement remains unobserved. This command does not implement disk/device restore,
+forward activation or full lifecycle acceptance. No ordinary download or model tool
+exposes the protected point.
 
 ## Explicit historical-point retention
 

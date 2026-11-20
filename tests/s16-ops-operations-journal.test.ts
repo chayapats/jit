@@ -36,6 +36,20 @@ function context(f: Awaited<ReturnType<typeof fixture>>) {
   const ctx = openS16ControlMaintenance(f.config, existsSync(f.fence) ? { operationFence: readS16OperationsFence(f.directory) } : {}); cleanup.push(() => ctx.close()); return ctx;
 }
 const revision = (journal: S16OperationsJournal) => journal.read().revision;
+
+test('backup publication requires confirmed preparation and only the exact original target intent, without a generic phase bypass', async () => {
+  const missing = await fixture(), unprepared = context(missing).operations(); unprepared.begin(command, revision(unprepared)); unprepared.advance(command.requestId, revision(unprepared), 'capturing'); unprepared.advance(command.requestId, revision(unprepared), 'verifying', { targetSha256: target, cohortSha256: cohort }); const unchanged = unprepared.read();
+  expect(() => unprepared.recordIntent(command.requestId, revision(unprepared), { id: 'point_publish_' + target, kind: 'replace', priorSha256: null, targetSha256: target })).toThrow(expect.objectContaining({ code: 's16_ops_phase_invalid' })); expect(unprepared.read()).toEqual(unchanged);
+  const f = await fixture(), journal = context(f).operations(); journal.begin(command, revision(journal)); journal.advance(command.requestId, revision(journal), 'capturing');
+  const prepared = { id: 'point_capture_original_' + 'e'.repeat(64), kind: 'capture_backend' as const, priorSha256: null, targetSha256: null };
+  journal.recordIntent(command.requestId, revision(journal), prepared); journal.observeAction(command.requestId, revision(journal), prepared.id, 'applied', target);
+  journal.advance(command.requestId, revision(journal), 'verifying', { targetSha256: target, cohortSha256: cohort }); const before = journal.read();
+  const publication = { id: 'point_publish_' + target, kind: 'replace' as const, priorSha256: null, targetSha256: target };
+  for (const action of [{ ...publication, id: 'other' }, { ...publication, priorSha256: hash }, { ...publication, id: 'point_publish_' + hash, targetSha256: hash }, { ...publication, kind: 'select_package' as const }]) {
+    expect(() => journal.recordIntent(command.requestId, revision(journal), action)).toThrow(expect.objectContaining({ code: 's16_ops_phase_invalid' })); expect(journal.read()).toEqual(before);
+  }
+  journal.recordIntent(command.requestId, revision(journal), publication); expect(journal.read().requests[0]!.actions[1]).toMatchObject({ ...publication, state: 'intent' });
+});
 function finishBackup(journal: S16OperationsJournal, requestId: string) {
   journal.advance(requestId, revision(journal), 'capturing');
   journal.advance(requestId, revision(journal), 'verifying', { targetSha256: target, cohortSha256: cohort });

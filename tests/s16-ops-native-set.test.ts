@@ -60,6 +60,21 @@ test('explicitly empty native custody publishes an empty component without creat
   for (const path of ['native-chat', 'native-model']) expect(existsSync(join(f.runtimeDirectory, path))).toBe(false); expect(existsSync(join(f.directory, 'native-github'))).toBe(false);
 });
 
+test('verifying-phase native readback rechecks only an original confirmed component and cannot admit another capture action', async () => {
+  const f = await fixture(false), { ctx, journal, session: open } = f.start(), initial = open(), result = await initial.capture(); await initial.close();
+  journal.advance(requestId, journal.read().revision, 'verifying', { cohortSha256: 'e'.repeat(64), targetSha256: 'f'.repeat(64) }); const before = journal.read();
+  expect(() => ctx.nativeSet(requestId, settings)).toThrow(expect.objectContaining({ code: 's16_ops_phase_invalid' }));
+  const verification = ctx.nativeSet(requestId, { ...settings, verifyCurrent: true }); cleanup.push(() => verification.close()); expect(await verification.capture()).toEqual(result); await verification.close(); expect(journal.read()).toEqual(before);
+  const other = ctx.nativeSet(requestId, { ...settings, attempt: 'another', verifyCurrent: true }); cleanup.push(() => other.close()); await expect(other.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_phase_invalid' })); expect(journal.read()).toEqual(before);
+});
+
+test('an independent native receipt cannot hide a newer current public native identity during aggregate verification', async () => {
+  const f = await fixture(), { ctx, session: open } = f.start(), initial = open(); await initial.capture(); await initial.close(); const root = ctx.nativeNamespace().roots[0]!;
+  const host = await createHost({ workspaceRoot: join(root.directory, 'workspace'), homeDirectory: join(root.directory, 'home'), sessionDirectory: join(root.directory, 'sessions'), context: { policy: 'strict', systemPrompt: 'New current native fixture.', sections: [] }, tools: { policy: 'exact', definitions: [], hostedLookup: 'off' }, limits: { maxTurns: 1, maxConcurrentTools: 1, contextWindow: 32768, maxInputChars: 1024 } });
+  const added = await host.createSession(); await added.close(); await host.close(); const check = ctx.nativeSet(requestId, { ...settings, verifyCurrent: true }); cleanup.push(() => check.close());
+  await expect(check.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_changed' }));
+});
+
 test.each(['manifest', 'receipt', 'observed'] as const)('lost response after %s resumes the same operation/action without creating native identities or resetting capture time', async boundary => {
   const f = await fixture(), state = f.start(); let armed = true;
   const first = state.session({ ...settings, after(at) { if (armed && at === boundary) { armed = false; throw Error('fixture-response-loss'); } } });

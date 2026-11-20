@@ -150,7 +150,8 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
     if (control.revision !== expectedRevision) refuse('s16_ops_revision_conflict'); ensureFence(control, request);
     if (request.actions.length >= s16OperationsLimits.actions) refuse('s16_ops_capacity');
     if (action.kind === 'remove_point') refuse('s16_ops_phase_invalid'); // Only planPointRemoval may change point custody.
-    if (action.kind.startsWith('capture_') ? request.phase !== 'capturing' : !['prepared', 'activating'].includes(request.phase)) refuse('s16_ops_phase_invalid');
+    const pointPublication = request.kind === 'backup' && request.phase === 'verifying' && action.kind === 'replace' && action.priorSha256 === null && sha(request.targetSha256) && action.targetSha256 === request.targetSha256 && action.id === 'point_publish_' + request.targetSha256 && request.actions.some(row => row.kind === 'capture_backend' && row.state === 'confirmed' && row.observedSha256 === request.targetSha256);
+    if (action.kind.startsWith('capture_') ? request.phase !== 'capturing' : !['prepared', 'activating'].includes(request.phase) && !pointPublication) refuse('s16_ops_phase_invalid');
     request.actions.push({ ...clone(action), state: 'intent', observedSha256: null }); return save(control, request, expectedRevision);
   }, observeAction(requestId, expectedRevision, actionId, outcome, observedSha256) {
     if (!['applied', 'not_applied'].includes(outcome) || observedSha256 !== null && !sha(observedSha256)) refuse();

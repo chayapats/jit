@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppError } from '../src/errors';
@@ -20,6 +20,18 @@ function fixture() {
   const options: S16PayloadCapture = { directory, installationId: 'installation', id: 'a'.repeat(32), sources, now: () => 123, guard() {} };
   return { root, directory, binary, sources, options, target: join(directory, options.id) };
 }
+
+test('original partial payload staging resumes matching current sources without overwriting existing members', () => {
+  const f = fixture(), first = captureS16PayloadSet(f.options), path = join(f.target, first.files[0]!.name), before = statSync(path);
+  unlinkSync(join(f.target, 'manifest.json')); unlinkSync(join(f.target, first.files[1]!.name));
+  expect(captureS16PayloadSet({ ...f.options, resume: true })).toEqual(first); expect(statSync(path).ino).toBe(before.ino);
+});
+
+test('published payload verification refuses a missing member without repair and refuses changed current source bytes', () => {
+  const f = fixture(), first = captureS16PayloadSet(f.options), target = join(f.target, first.files[0]!.name);
+  writeFileSync(f.sources[0]!.path, 'changed current source', { mode: 0o600 }); expect(() => captureS16PayloadSet({ ...f.options, resume: true })).toThrow();
+  unlinkSync(target); expect(() => captureS16PayloadSet({ ...f.options, resume: true, verifyOnly: true })).toThrow(); expect(existsSync(target)).toBe(false);
+});
 function capture(f: ReturnType<typeof fixture>) {
   const manifest = captureS16PayloadSet(f.options);
   const verification: S16PayloadVerification = { ...f.options, files: manifest.files, manifestSha256: s16PayloadSetManifestHash(manifest) };

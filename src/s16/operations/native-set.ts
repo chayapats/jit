@@ -34,6 +34,8 @@ export interface S16NativeSetResult {
 /** Fault hooks observe durable boundaries; they cannot supply paths, hashes, authority or replacement IDs. */
 export interface S16NativeSetOptions {
   attempt: string; maxBytes: number;
+  /** Recheck complete current public native bytes and deep quarantine even with an independent producer receipt. */
+  verifyCurrent?: true;
   after?(boundary: 'intent' | 'plan' | 'root' | 'manifest' | 'receipt' | 'observed', rootId?: string): void;
 }
 /** Owned by the current control context; close it before releasing installation/CHAT exclusion. */
@@ -93,7 +95,7 @@ const roots = (namespace: S16NativeNamespace): Root[] => namespace.roots.map(({ 
 export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintenance {
   const { directory, requestId, attempt, maxBytes, journal } = owner;
   identity(requestId);
-  if (!/^[a-z0-9][a-z0-9_]{0,23}$/.test(attempt) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > payloadBound) refuse();
+  if (!/^[a-z0-9][a-z0-9_]{0,23}$/.test(attempt) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > payloadBound || owner.verifyCurrent !== undefined && owner.verifyCurrent !== true) refuse();
   let released = false, usable = true, busy = false;
   const held = new Set<S16NativeRootMaintenance>();
   const guard = () => {
@@ -102,7 +104,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
   };
   const current = () => {
     guard(); const control = journal.read(), request = control.requests.find(row => row.requestId === requestId);
-    if (!request || !['backup', 'restore', 'upgrade'].includes(request.kind) || request.phase !== 'capturing' || ['complete', 'discarded'].includes(request.status) || !sha(request.configurationSha256) || !Number.isSafeInteger(request.admittedRevision)) refuse('s16_ops_phase_invalid');
+    if (!request || !['backup', 'restore', 'upgrade'].includes(request.kind) || request.phase !== 'capturing' && !(request.kind === 'backup' && request.phase === 'verifying' && owner.verifyCurrent) || ['complete', 'discarded'].includes(request.status) || !sha(request.configurationSha256) || !Number.isSafeInteger(request.admittedRevision)) refuse('s16_ops_phase_invalid');
     return { control, request };
   }; current();
   const release = async (cap: S16NativeRootMaintenance) => {
@@ -127,6 +129,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
       const proposedText = text(proposed), prefix = 'native_set_' + attempt + '_';
       const prior = initial.request.actions.filter(row => row.id.startsWith(prefix)); if (prior.length > 1) refuse();
       const action = prior[0]; actionId = action?.id ?? prefix + hash(proposedText);
+      if (initial.request.phase === 'verifying' && (!action || action.state !== 'confirmed')) refuse('s16_ops_phase_invalid');
       if (!new RegExp('^' + prefix + '[a-f0-9]{64}$').test(actionId) || action && (action.kind !== 'capture_native' || action.priorSha256 !== null || action.targetSha256 !== null || action.state === 'not_applied')) refuse('s16_ops_request_conflict');
       const planSha256 = actionId.slice(prefix.length), staging = join(directory, 'operations/native-staging'), stage = join(staging, initial.request.id, actionId), data = join(stage, 'data');
       const planPath = join(stage, 'plan.json'), receiptPath = join(stage, 'receipt.json'); manifestPath = join(data, 'manifest.json');
@@ -135,6 +138,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
         journal.recordIntent(requestId, initial.control.revision, { id: actionId, kind: 'capture_native', priorSha256: null, targetSha256: null }); after('intent');
       }
       // A recorded action never silently switches its namespace, budget, timestamp or source plan.
+      if (initial.request.phase === 'verifying' && (!action || action.state !== 'confirmed' || !lstatSync(planPath, { throwIfNoEntry: false }))) refuse('s16_ops_phase_invalid');
       let planText = proposedText;
       if (lstatSync(planPath, { throwIfNoEntry: false })) planText = read(planPath, metadataBound).toString('utf8');
       if (hash(planText) !== planSha256) refuse('s16_ops_native_plan_changed');
@@ -165,6 +169,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
         if (!sha(saved.manifestSha256) || canonical(saved) !== canonical(receipt(saved.manifestSha256)) || independent !== null && independent !== saved.manifestSha256) refuse(); independent = saved.manifestSha256;
       }
       const published = !!lstatSync(manifestPath, { throwIfNoEntry: false });
+      if (initial.request.phase === 'verifying' && (!published || !independent || !lstatSync(receiptPath, { throwIfNoEntry: false }))) refuse('s16_ops_phase_invalid');
       if (independent && !published) refuse('s16_ops_native_set_invalid');
       if (published && !independent && planText !== proposedText) refuse('s16_ops_native_plan_changed');
       if (!published && (action?.state === 'confirmed' || planText !== proposedText)) refuse('s16_ops_native_plan_changed');
@@ -190,7 +195,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
       const planCopy = join(data, 'plan.json');
       if (published || lstatSync(planCopy, { throwIfNoEntry: false })) { if (read(planCopy, metadataBound).toString('utf8') !== planText) refuse(); }
       else opsWrite(planCopy, planText);
-      if (!independent) cleanScratch();
+      if (!independent || owner.verifyCurrent) cleanScratch();
       for (let index = 0; index < plan.roots.length; index++) {
         const root: Root = plan.roots[index]!, binding = selected.get(root.id)!, path = join(data, root.id + '.json'), rootGuard = namespace.rootGuard(root.id);
         const cap = await openS16NativeRoot({ directory: binding.directory, installationId: plan.installationId, id: root.id, references: root.references, custody: custody(root), now: () => plan.capturedAt,
@@ -207,7 +212,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
           total += file.bytes; if (absent) added += file.bytes;
           if (total + overhead > maxBytes || !independent && beforeBytes + added + 268_435_456 + metadataBound * 3 > stagingBound) refuse('s16_ops_capture_bounds');
           if (manifest && canonical(manifest.roots[index]) !== canonical(file)) refuse();
-          if (!independent) {
+          if (!independent || owner.verifyCurrent) {
             if (published || lstatSync(path, { throwIfNoEntry: false })) {
               const fresh = await cap.capture(), currentValue = JSON.parse(Buffer.from(fresh.bytes).toString('utf8')) as typeof value;
               // The public snapshot timestamp is copy metadata; all custody, native bytes and headers must match.
@@ -220,7 +225,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
           }
           files.push(file);
         } finally { await release(cap); }
-        if (!independent) cleanScratch(); after('root', root.id);
+        if (!independent || owner.verifyCurrent) cleanScratch(); after('root', root.id);
       }
       stageGuard(); namespace.assertCurrent();
       const actual: Manifest = { ...shell, roots: files, bytes: total }, encoded = text(actual), manifestSha256 = hash(encoded), componentBytes = total + Buffer.byteLength(encoded) + Buffer.byteLength(planText);

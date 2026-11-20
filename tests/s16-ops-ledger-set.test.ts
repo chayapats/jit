@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppError } from '../src/errors';
@@ -22,6 +22,20 @@ function fixture() {
   ] };
   return { root, directory, journal, vm, options, target: join(directory, options.id) };
 }
+
+test('original partial SQL staging resumes from a fresh simultaneous current cut without overwriting matching images', () => {
+  const f = fixture(), first = captureS16LedgerSet(f.options), preserved = join(f.target, first.images[0]!.name), before = statSync(preserved);
+  unlinkSync(join(f.target, 'manifest.json')); unlinkSync(join(f.target, first.images[1]!.name));
+  expect(captureS16LedgerSet({ ...f.options, resume: true })).toEqual(first); expect(statSync(preserved).ino).toBe(before.ino);
+  expect(f.journal.get('original')).toMatchObject({ state: 'unknown', usage: 7 });
+});
+
+test('published SQL verification refuses missing images without repair and current changes cannot retarget staging', () => {
+  const f = fixture(), first = captureS16LedgerSet(f.options), target = join(f.target, first.images[0]!.name), before = readFileSync(target);
+  f.journal.tx(() => f.journal.put('original', { state: 'unknown', usage: 8 }));
+  expect(() => captureS16LedgerSet({ ...f.options, resume: true })).toThrow(); expect(readFileSync(target)).toEqual(before);
+  unlinkSync(target); expect(() => captureS16LedgerSet({ ...f.options, resume: true, verifyOnly: true })).toThrow(); expect(existsSync(target)).toBe(false);
+});
 function image(path: string) { const db = new Database(path, { readonly: true, create: false }); cleanup.push(() => db.close()); return db; }
 
 test('owning model/VM handles produce exact private images of one SQLite cut without changing original unknown/usage/private custody', () => {
