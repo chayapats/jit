@@ -64,6 +64,9 @@ The internal contracts are:
   exclusive maintenance exclusion before owner/vault access. An independent
   inode receipt prevents silent lock recreation; CHAT exclusion and older
   bridge-build durable fences remain separately required.
+- [`s16-control-maintenance/v1`](../contracts/s16-control-maintenance-v1.md):
+  current outer owner/lifecycle/recipient/site inspection combined with both
+  process leases. Current outer custody is distinct from historical archives.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version
@@ -81,6 +84,10 @@ Images contain raw protected control state and never enter ordinary download,
 artifact, model or execution-plane paths.
 
 ## Remaining aggregate protocol
+
+[ADR 0104](0104-s16-forward-recovery-and-retained-admission.md) now selects
+the source aggregate contract and forward-recovery tradeoff. Its implementation
+and actual aggregate acceptance remain incomplete.
 
 The selected-runtime SQL and immutable-byte sets are components. They do not claim
 the outer owner/vault/site/recipient state, retained disabled stores, native

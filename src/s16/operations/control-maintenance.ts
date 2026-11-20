@@ -1,0 +1,107 @@
+import { Database } from 'bun:sqlite';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, type BigIntStats } from 'node:fs';
+import { join } from 'node:path';
+import { AppError } from '../../errors';
+import { opsPath } from '../../s14/ops-files';
+import { assertS14BackupUnfenced, assertS14OpsUnfenced } from '../../s14/ops-state';
+import { s14ApplicationId, s14SchemaVersion } from '../../s14/store';
+import { provisionedBrowserResource } from '../../s15/browser/provisioned';
+import { canonical } from '../../s15/conversation/validation';
+import type { S15RuntimeConfig } from '../../s15/runtime-config';
+import type { S16LedgerSource } from './ledger-set';
+import { openS16InstallationLease } from './installation-lease';
+import { openS16RuntimeMaintenance, type S16RuntimeMaintenance } from './runtime-maintenance';
+
+function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
+function entry(path: string, directory = false): BigIntStats {
+  try {
+    opsPath(path); const stat = lstatSync(path, { bigint: true }), uid = process.getuid?.();
+    if (uid === undefined || stat.uid !== BigInt(uid) || stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n) || stat.mode & (directory ? 0o7077n : 0o7177n)) refuse();
+    return stat;
+  } catch { return refuse(); }
+}
+const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && (a.isDirectory() && b.isDirectory() || a.nlink === b.nlink);
+function integrity(db: Database): void {
+  if (db.query<{ quick_check: string }, []>('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' || db.query('PRAGMA foreign_key_check').get()) refuse();
+  const quote = (name: string) => '"' + name.replaceAll('"', '""') + '"';
+  const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 257").all();
+  if (tables.length > 256) refuse();
+  for (const table of tables) for (const column of db.query<{ name: string; type: string }, []>(`PRAGMA table_info(${quote(table.name)})`).all()) {
+    if (column.type.toUpperCase() === 'TEXT' && (column.name === 'json' || column.name.endsWith('_json')) && db.query(`SELECT 1 FROM ${quote(table.name)} WHERE ${quote(column.name)} IS NOT NULL AND json_valid(${quote(column.name)})=0 LIMIT 1`).get()) refuse();
+  }
+}
+/** Protected current-control capability. Outer owner/lifecycle state is never historical restore authority. */
+export interface S16ControlMaintenance {
+  readonly runtime: S16RuntimeMaintenance;
+  readonly outer: readonly S16LedgerSource[];
+  readonly ownerIdentity: string;
+  assertCurrent(): void;
+  close(): void;
+}
+/**
+ * Opens selected/retained current control behind installation and CHAT exclusion without application
+ * boot or missing-state initialization. Paths and exact current config originate only in trusted host
+ * code; this capability is not a complete backup, ordinary export, actor or restore/admission grant.
+ */
+export function openS16ControlMaintenance(config: S15RuntimeConfig): S16ControlMaintenance {
+  const configIdentity = canonical(config), root = config.directory, lease = openS16InstallationLease({ directory: root, mode: 'exclusive' });
+  let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true;
+  const opened: Database[] = [], entries = new Map<string, BigIntStats>();
+  const close = () => {
+    if (closed) return; usable = false;
+    let failed = false;
+    for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
+    if (failed) refuse('s16_ops_source_release_unknown');
+    runtime?.close(); lease.close(); closed = true;
+  };
+  try {
+    const ownerDirectory = join(root, 'owner'), ownerPath = join(ownerDirectory, 'owner.sqlite');
+    const rootEntry = entry(root, true), ownerEntry = entry(ownerDirectory, true);
+    const unfenced = () => { assertS14OpsUnfenced(ownerPath); assertS14BackupUnfenced(ownerPath); }; unfenced();
+    runtime = openS16RuntimeMaintenance({ directory: join(root, 'runtime'), installationId: config.installationId, browserResourceId: config.browser?.resource.id ?? provisionedBrowserResource.id });
+    const websites = !!(!config.browser && config.disclosure) || !!lstatSync(join(root, 'browser-sites.sqlite'), { throwIfNoEntry: false });
+    const roles = [
+      { name: 'owner.sqlite', path: ownerPath, reader: { applicationId: s14ApplicationId, formats: [s14SchemaVersion] } },
+      { name: 'owner-lifecycle.sqlite', path: ownerPath + '.lifecycle.sqlite', reader: { applicationId: 0, formats: [0] } },
+      { name: 'recipients.sqlite', path: join(root, 'recipients.sqlite'), reader: { applicationId: 0x4a523136, formats: [1] } },
+      ...(websites ? [{ name: 'browser-sites.sqlite', path: join(root, 'browser-sites.sqlite'), reader: { applicationId: 0x4a425135, formats: [1] } }] : []),
+    ];
+    const inventory = () => ({ root: readdirSync(root).filter(name => name.endsWith('.sqlite')).sort(), owner: readdirSync(ownerDirectory).filter(name => name.endsWith('.sqlite')).sort() });
+    const expectedInventory = { root: ['s16-operations.lock.sqlite', 'recipients.sqlite', ...(websites ? ['browser-sites.sqlite'] : [])].sort(), owner: ['owner.sqlite', 'owner.sqlite.lifecycle.sqlite'] };
+    if (canonical(inventory()) !== canonical(expectedInventory)) refuse('s16_ops_inventory_changed');
+    const outer = roles.map(role => {
+      const before = entry(role.path); if (before.size < 512n || before.size > 1_073_741_824n) refuse();
+      const fd = openSync(role.path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK), header = Buffer.alloc(100);
+      try {
+        if (!same(before, fstatSync(fd, { bigint: true })) || readSync(fd, header, 0, 100, 0) !== 100 || header.toString('ascii', 0, 16) !== 'SQLite format 3\0' || header.readUInt32BE(68) !== role.reader.applicationId || !role.reader.formats.includes(header.readUInt32BE(60))) refuse('s16_ops_reader_unsupported');
+      } finally { closeSync(fd); }
+      const database = new Database(role.path, { readwrite: true, create: false, strict: true }); opened.push(database); database.exec('PRAGMA busy_timeout=10');
+      if (!same(before, entry(role.path)) || database.query<{ application_id: number }, []>('PRAGMA application_id').get()?.application_id !== role.reader.applicationId || !role.reader.formats.includes(database.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? -1)) refuse('s16_ops_reader_unsupported');
+      integrity(database); entries.set(role.path, entry(role.path));
+      return Object.freeze({ name: role.name, database, reader: Object.freeze({ applicationId: role.reader.applicationId, formats: Object.freeze(role.reader.formats) }) });
+    });
+    const boundedIdentity = "CASE WHEN typeof(id)='text' AND length(CAST(id AS BLOB)) BETWEEN 1 AND 128 THEN id ELSE NULL END AS id";
+    const owners = outer[0]!.database.query<{ id: string }, []>(`SELECT ${boundedIdentity} FROM memory_identity LIMIT 2`).all(), lifecycle = outer[1]!.database.query<{ id: string }, []>(`SELECT ${boundedIdentity} FROM identity LIMIT 2`).all();
+    if (owners.length !== 1 || lifecycle.length !== 1 || typeof owners[0]!.id !== 'string' || !owners[0]!.id || owners[0]!.id.length > 128 || owners[0]!.id !== lifecycle[0]!.id) refuse();
+    const ownerIdentity = owners[0]!.id;
+    for (const source of outer.slice(2)) {
+      const identities = source.database.query<{ installation: string }, []>('SELECT installation FROM identity LIMIT 2').all();
+      const meta = source.database.query<{ json: string }, []>("SELECT json FROM records WHERE id='meta' AND length(CAST(json AS BLOB))<=4096").get();
+      if (identities.length !== 1 || identities[0]!.installation !== config.installationId || !meta) refuse();
+      const value = JSON.parse(meta.json);
+      if (!value || value.kind !== 'meta' || typeof value.epoch !== 'string' || !/^[a-f0-9]{16}$/.test(value.epoch) || source.database.query<{ total: number }, []>("SELECT count(*) AS total FROM records WHERE json_extract(json,'$.kind')='meta'").get()?.total !== 1) refuse();
+    }
+    const heldRuntime = runtime;
+    const assertCurrent = () => {
+      if (closed || !usable) refuse('s16_ops_maintenance_closed'); lease.assertCurrent(); heldRuntime.assertCurrent(); unfenced();
+      if (canonical(config) !== configIdentity || !same(rootEntry, entry(root, true)) || !same(ownerEntry, entry(ownerDirectory, true)) || canonical(inventory()) !== canonical(expectedInventory)) refuse('s16_ops_inventory_changed');
+      for (const [path, before] of entries) { const current = entry(path); if (!same(before, current) || before.size !== current.size || before.mtimeNs !== current.mtimeNs || before.ctimeNs !== current.ctimeNs) refuse('s16_ops_image_changed'); }
+    };
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close });
+  } catch (error) {
+    // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
+    if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();
+    if (error instanceof AppError) throw error;
+    return refuse();
+  }
+}
