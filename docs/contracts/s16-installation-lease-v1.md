@@ -19,6 +19,15 @@ state opens. Shared/exclusive contention is finite and never steals a lock.
 SQLite releases OS locks on process death; that does not certify application,
 parser, native-provider, notification or computer settlement.
 
+Shared references within one process reuse the original SQLite connection and
+transaction, releasing it only after the last reference closes. Conflicting
+local openers refuse before opening any ordinary header descriptor. Closing an
+ordinary descriptor on a POSIX lock inode can release that process's record
+locks; local references therefore never repeat header reads or create another
+connection. Operator/capture code must not read/copy the retained lease inode
+as an ordinary file while held. Its private metadata/receipt checks use stat
+and the separate receipt, not another descriptor on the lock.
+
 First adoption by the selected CLI exclusively creates and durably initializes
 the private lease with application ID `0x4a4f3136`, reader 1 and one singleton.
 Initialization has no policy/credential/authority row. Only that fresh creator

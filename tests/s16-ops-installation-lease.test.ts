@@ -23,10 +23,16 @@ async function childLease(directory: string, mode: 'shared' | 'exclusive') {
   const reader = child.stdout.getReader(), first = await reader.read(); expect(new TextDecoder().decode(first.value)).toBe('held\n'); reader.releaseLock();
   return { child, async release() { child.stdin.end(); const [exit, error] = await Promise.all([child.exited, new Response(child.stderr).text()]); expect({ exit, error }).toEqual({ exit: 0, error: '' }); } };
 }
+async function expectChildExcluded(directory: string) {
+  const code = `import {openS16InstallationLease} from './src/s16/operations/installation-lease'; try { const lease=openS16InstallationLease({directory:process.env.JIT_LEASE_TEST_ROOT!,mode:'exclusive'}); console.log('incorrectly_acquired'); lease.close(); } catch { console.log('excluded'); }`;
+  const child = Bun.spawn([process.execPath, '-e', code], { env: { ...process.env, JIT_LEASE_TEST_ROOT: directory }, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  const [out, error, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect({ out, error, exit }).toEqual({ out: 'excluded\n', error: '', exit: 0 });
+}
 
 test('participating processes share a retained read lease, and maintenance stays excluded until every original reader closes', async () => {
-  const f = fixture(), first = open(f.directory, 'shared', true), other = await childLease(f.directory, 'shared');
-  const bytes = readFileSync(f.path); first.assertCurrent();
+  const f = fixture(); open(f.directory, 'shared', true).close(); const bytes = readFileSync(f.path);
+  const first = open(f.directory), other = await childLease(f.directory, 'shared'); first.assertCurrent();
   expect(() => open(f.directory, 'exclusive')).toThrow(); first.close();
   expect(() => open(f.directory, 'exclusive')).toThrow(); await other.release();
   const maintenance = open(f.directory, 'exclusive'); maintenance.assertCurrent();
@@ -34,10 +40,24 @@ test('participating processes share a retained read lease, and maintenance stays
   expect(readFileSync(f.path)).toEqual(bytes); expect(open(f.directory).assertCurrent()).toBeUndefined();
 });
 
+test('local shared references retain one original OS lease until the last reference closes, in either close order', async () => {
+  const f = fixture(), first = open(f.directory, 'shared', true), second = open(f.directory);
+  first.close(); expect(() => first.assertCurrent()).toThrow(); second.assertCurrent();
+  expect(() => open(f.directory, 'exclusive')).toThrow(); await expectChildExcluded(f.directory);
+  second.close(); const other = await childLease(f.directory, 'exclusive'); await other.release();
+});
+
 test('an exclusive maintenance process excludes participating local commands and OS death releases its original lock without unlinking state', async () => {
   const f = fixture(); open(f.directory, 'shared', true).close(); const bytes = readFileSync(f.path), other = await childLease(f.directory, 'exclusive');
   expect(() => open(f.directory)).toThrow(); other.child.kill('SIGKILL'); await other.child.exited;
   open(f.directory).assertCurrent(); expect(readFileSync(f.path)).toEqual(bytes);
+});
+
+test.each(['shared', 'exclusive'] as const)('a second local %s opener cannot release the original process OS lock through an ordinary header descriptor', async mode => {
+  const f = fixture(), original = open(f.directory, 'shared', true);
+  let second: S16InstallationLease | undefined; try { second = open(f.directory, mode); } catch { /* Local contention may refuse before acquiring. */ }
+  second?.close(); original.assertCurrent();
+  await expectChildExcluded(f.directory);
 });
 
 test.each(['missing', 'empty', 'reader', 'foreign', 'wal', 'singleton', 'symlink', 'hardlink', 'mode', 'receipt-missing', 'receipt-changed'] as const)('existing %s lease refuses without initialization, mode repair, downgrade or replacement', kind => {

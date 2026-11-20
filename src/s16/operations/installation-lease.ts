@@ -7,6 +7,21 @@ import { canonical } from '../../s15/conversation/validation';
 
 const applicationId = 0x4a4f3136;
 function refuse(code = 's16_ops_installation_lease_invalid'): never { throw new AppError(code, 409); }
+interface ProcessLease {
+  mode: 'shared' | 'exclusive'; references: number;
+  assertCurrent(): void; release(): void;
+}
+const processLeases = new Map<string, ProcessLease>(), opening = new Set<string>();
+function reference(lease: ProcessLease): S16InstallationLease {
+  lease.references++; let closed = false;
+  return Object.freeze({ mode: lease.mode, assertCurrent() {
+    if (closed) refuse('s16_ops_installation_lease_closed'); lease.assertCurrent();
+  }, close() {
+    if (closed) return;
+    if (lease.references === 1) lease.release(); // An unknown close must retain the original reference.
+    lease.references--; closed = true;
+  } });
+}
 /** Protected process lifetime only. A lease is never serialized, copied into an image or used as actor authority. */
 export interface S16InstallationLease {
   readonly mode: 'shared' | 'exclusive';
@@ -35,6 +50,13 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
   const root = options.directory;
   if (!isAbsolute(root) || normalize(root) !== root || !['shared', 'exclusive'].includes(options.mode) || options.mode === 'exclusive' && options.create) refuse();
   const parent = entry(root, true), path = join(root, 's16-operations.lock.sqlite'), receipt = join(root, 's16-operations.lease.json');
+  const processKey = `${parent.dev}:${parent.ino}`, held = processLeases.get(processKey);
+  if (held) {
+    if (held.mode !== 'shared' || options.mode !== 'shared') refuse('s16_ops_installation_busy');
+    held.assertCurrent(); return reference(held);
+  }
+  if (opening.has(processKey)) refuse('s16_ops_installation_busy');
+  opening.add(processKey);
   let fresh = false, database: Database | undefined, closed = false;
   try {
     if (options.create && !lstatSync(receipt, { throwIfNoEntry: false })) {
@@ -81,13 +103,15 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       if (!same(original, current) || retained.size !== current.size || retained.mtimeNs !== current.mtimeNs || retained.ctimeNs !== current.ctimeNs || !same(parent, entry(root, true)) || !same(receiptEntry, entry(receipt)) || opsRead(receipt, 1024).toString('utf8') !== expectedReceipt) refuse('s16_ops_installation_lease_changed');
     };
     assertCurrent();
-    return Object.freeze({ mode: options.mode, assertCurrent, close() {
-      if (closed) return;
+    const shared: ProcessLease = { mode: options.mode, references: 0, assertCurrent, release() {
       try { owned.close(true); } catch { return refuse('s16_ops_source_release_unknown'); }
-      closed = true;
-    } });
+      closed = true; processLeases.delete(processKey);
+    } };
+    processLeases.set(processKey, shared); opening.delete(processKey);
+    return reference(shared);
   } catch (error) {
     try { database?.close(true); } catch { return refuse('s16_ops_source_release_unknown'); }
+    opening.delete(processKey);
     if (error instanceof AppError && error.code.startsWith('s16_ops_')) throw error;
     if (['SQLITE_BUSY', 'SQLITE_LOCKED'].includes((error as { code?: string })?.code ?? '')) refuse('s16_ops_installation_busy');
     return refuse();
