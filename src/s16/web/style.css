@@ -86,7 +86,8 @@
 .search-heading p, .search-count, .search-result-meta, .search-label-editor p { color: var(--muted, #666); }
 .search-form { display: grid; gap: 16px; margin-block-end: 24px; }
 .search-form label, .search-label-editor label { display: grid; gap: 6px; font-size: .85rem; }
-.search-form input, .search-form select, .search-label-editor input { min-height: 42px; max-width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: inherit; font: inherit; }
+.search-form input, .search-form select, .search-label-editor input, .search-label-editor textarea { min-height: 42px; max-width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: inherit; font: inherit; }
+.search-label-editor textarea { resize: vertical; min-width: 0; }
 .search-form .search-query input { font-size: 1rem; }
 .search-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: end; gap: 12px; }
 .search-results { list-style: none; margin: 0; padding: 0; }

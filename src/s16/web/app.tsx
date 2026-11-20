@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Locale } from "../../i18n";
 import { JitClient, JitClientError } from "../client";
+import type { SearchLabelCommand } from "../client";
 import type { ClientArtifactItem, ClientBootstrap, ClientMessage, ClientRequest, ClientSnapshot, ClientSteer } from "../client/contracts";
 import type { ConversationSteer } from "../../s15/conversation/types";
 import type { FileArtifact, FileReceipt, FileUploadCommand } from "../files/types";
@@ -55,6 +56,8 @@ function App() {
   const [snapshot, setSnapshot] = useState<ClientSnapshot | null>(null), [error, setError] = useState<string | null>(null), [drafts, setDrafts] = useState<Record<string, Draft>>(() => { const id = chatPath() ? recoveryHash() : undefined; return id ? { [conversation]: { ...empty(), recoveryId: id } } : {}; }), [sending, setSending] = useState(false), [menu, setMenu] = useState(false), [searching, setSearching] = useState(searchPath);
   const [historicalRow, setHistoricalRow] = useState<ClientRequest["row"] | null>(null);
   const searchSource = useRef<Extract<SearchSource, { kind: "chat" }> | null>(null);
+  // Exact unresolved commands survive a private-view remount in RAM; authentication changes erase them.
+  const [searchPending, setSearchPending] = useState<SearchLabelCommand | null>(null);
   const historicalTarget = useRef<{ id: string; conversationId: string } | null>(null), historicalFocus = useRef<string | null>(null), historicalVersion = useRef(0);
   const [authHidden, setAuthHidden] = useState(false), notice = useRef<HTMLDivElement>(null);
   const [voiceSession, setVoiceSession] = useState(0);
@@ -110,7 +113,7 @@ function App() {
     const lostAuthentication = ["authentication_required", "csrf_rejected", "authorization_required"].includes(code) || error instanceof JitClientError && [401, 403].includes(error.status ?? 0);
     withholdPrivateProjection(retainMutationSession && !lostAuthentication && navigator.onLine); setError(code);
     if (lostAuthentication) {
-      client.clear(); setBoot(null); setDrafts({});  setSending(false); setAuthHidden(true);
+      client.clear(); setBoot(null); setDrafts({}); setSearchPending(null); setSending(false); setAuthHidden(true);
       for (const transfer of transfers.current.values()) { transfer.cancelled = true; transfer.stop.abort(); } transfers.current.clear();
       requestAnimationFrame(() => notice.current?.focus());
     }
@@ -146,7 +149,7 @@ function App() {
     withholdPrivateProjection(); setError(null);
     setVoiceSession(value => value + 1);
     const epoch = privacyEpoch.current;
-    try { const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return; const sameAuthentication = authentication === client.authenticationRevision; if (!sameAuthentication) { setDrafts({}); setChosenBot({});  } setBoot(data); setAuthHidden(false); await refresh(); const recovery = sameAuthentication ? drafts[target.current]?.recoveryId : undefined; if (recovery && epoch === privacyEpoch.current) await recover(target.current, recovery); }
+    try { const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return; const sameAuthentication = authentication === client.authenticationRevision; if (!sameAuthentication) { setDrafts({}); setChosenBot({}); setSearchPending(null); } setBoot(data); setAuthHidden(false); await refresh(); const recovery = sameAuthentication ? drafts[target.current]?.recoveryId : undefined; if (recovery && epoch === privacyEpoch.current) await recover(target.current, recovery); }
     catch (error) { if (epoch === privacyEpoch.current && errorCode(error) !== "client_response_stale") { hidePrivate(error); setBoot(null); } }
   }
   /** A conclusive owner mutation already updated its current view. Refresh navigation without discarding its receipt;
@@ -159,7 +162,7 @@ function App() {
       try {
         const data = await client.bootstrap(); if (epoch !== privacyEpoch.current) return;
         const changed = authentication !== client.authenticationRevision;
-        if (changed) { withholdPrivateProjection(true); setDrafts({}); setChosenBot({});  }
+        if (changed) { withholdPrivateProjection(true); setDrafts({}); setChosenBot({}); setSearchPending(null); }
         setBoot(data); setAuthHidden(false);
         if (changed && chatPath()) await refresh();
       } catch (error) { if (epoch === privacyEpoch.current && errorCode(error) !== "client_response_stale") hidePrivate(error); }
@@ -385,7 +388,7 @@ function App() {
       {protectedView && boot?.capabilities.protectedBrowser?.available && <ProtectedBrowser key={privacyEpoch.current} client={client} t={t} onClose={() => setProtectedView(false)} onFailure={hidePrivate} />}
       {searching ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p></div>}
-        {boot?.capabilities.search?.available ? <SearchView key={privacyEpoch.current} client={client} t={t} locale={locale} kinds={boot.capabilities.search.kinds} bots={roster.map(bot => ({ id: bot.id, name: botName(t, bot) }))} onOpen={openSearchSource} onClose={() => navigate(conversation)} onFailure={hidePrivate} /> : !error && <p role="status">{t(boot ? "s16.common.error" : "s16.common.loading")}</p>}
+        {boot?.capabilities.search?.available ? <SearchView key={privacyEpoch.current} client={client} t={t} locale={locale} kinds={boot.capabilities.search.kinds} bots={roster.map(bot => ({ id: bot.id, name: botName(t, bot) }))} pending={searchPending} onPendingChange={setSearchPending} onOpen={openSearchSource} onClose={() => navigate(conversation)} onFailure={hidePrivate} /> : !error && <p role="status">{t(boot ? "s16.common.error" : "s16.common.loading")}</p>}
       </div> : connections ? <div className="memory-main">
         {error && <div ref={notice} tabIndex={-1} role="alert" className="notice"><p>{t(authHidden ? "s16.common.authenticationRequired" : "s16.common.error")}</p><details><summary>{t("s16.common.details")}</summary><code>{error}</code></details></div>}
         {boot ? <ConnectionsView key={`${privacyEpoch.current}:${connectionSeed?.requestId ?? ""}`} client={client} t={t} locale={locale} available={!!boot.capabilities.connections?.available} skillsAvailable={!!boot.capabilities.skills?.available} seed={connectionSeed} oauth={oauthReturn()} onFailure={hidePrivate} onOpenConversation={navigate} /> : !error && <p role="status">{t("s16.common.loading")}</p>}

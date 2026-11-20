@@ -22,7 +22,7 @@ export const en: Record<MessageKey, string> = {
   "s16.search.open": "Open source",
   "s16.search.edit": "Edit labels",
   "s16.search.editFor": "Edit labels for {title}",
-  "s16.search.labelHint": "Separate up to eight labels with commas. Leave empty to remove labels.",
+  "s16.search.labelHint": "One label per line, up to eight labels. Leave empty to remove labels.",
   "s16.search.save": "Save labels",
   "s16.search.unknown": "The label update may have been saved. Check its original receipt before trying again.",
   "s16.search.check": "Check saved update",
