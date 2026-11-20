@@ -95,6 +95,25 @@ argv, host files or a model-selected binary. Host prerequisites and immutable
 binary/kernel/root-disk pins are explicit. A configured API, successful guest
 probe or cooperative unit response cannot assert strong stop/isolation.
 
+The selected launch plan uses matching `jailer`/`firecracker` basenames, a
+separate non-root VMM UID/GID, fixed jailed `/kernel`, optional `/initrd`,
+`/rootfs.ext4`, `/config.json` and `/run/{api,vsock}.sock`. The raw disk ceiling
+is 128 MiB–64 GiB. Cgroup v2 narrows CPU to selected vCPUs, memory to selected
+guest RAM plus 256 MiB VMM overhead, and processes/threads to 128; file limits
+are 256 descriptors and the selected disk's byte ceiling. No daemonization,
+new PID namespace, arbitrary flag or additional network namespace selection is
+accepted. The foreground jailer retains its PID when it execs the VMM. Its
+three injected numeric timing fields are allowed in exact pinned argv order.
+
+This is preparation only. The owning installer/manager must verify binary/
+kernel/rootfs provenance, exact jail custody and the protected launch receipt.
+The pinned jailer automatically creates some host device nodes, including
+optional userfaultfd/Nitro nodes when available: preflight must refuse unreviewed
+host devices before launch, rather than treating the argv as complete jail
+proof. Config-file execution is one `launch_and_start` mutation. Its durable
+intent/current guard precedes spawn; response loss never authorizes duplicate
+launch or `InstanceStart`.
+
 Keep transport closure, cooperative `guest_scope_empty`, strong `vm_stopped`
 and unknown outcomes distinct. Scope cancellation cannot stop siblings or
 silently escalate to a whole-machine stop. A hypervisor stop requires independent
