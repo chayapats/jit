@@ -27,6 +27,26 @@ limits. Every actual dispatch and publication rechecks those owning fences.
 Enrollment revocation, boot drift, restore and source withdrawal reject late
 output. Existing private-computer assignment never becomes shared by export.
 
+The protected registry retains legacy `bindingMac` rows as NIC bindings. A new
+`binding` is a closed alternative: `{kind:"nic",mac}` or
+`{kind:"firecracker-vsock",instanceId,guestCid,guestPort,selectionSha256}`.
+The two fields cannot coexist. The vsock selection digest pins the protected
+host selection; it is not an API/guest attestation. Only the owning manager may
+report it after exact host verification and guarded forwarder construction.
+Readiness requires that forwarder's exact IPv4 loopback endpoint and the pinned
+SSH identity/known-host files. A fabricated NIC, a different listener or a guest
+NIC echo cannot substitute. Stable selection and host boot fences continue
+through health checks, placement, idle release/start, restore and retirement.
+
+VM store format 2 is an explicit compatible reader for physical bindings;
+merely opening a format-1 store does not migrate it. Adoption runs outside a
+transaction and checkpoints `user_version=2` into the actual SQLite header
+before a new binding row can be saved. A busy reader or WAL-only version refuses
+adoption. Older format-1 binaries therefore refuse adopted state even after
+composition rollback; current readers preserve version 2 on reopen. This fence
+does not implement portable ancestry: that later format requires its own
+monotonic adoption before the first transferred guest byte.
+
 ## Bounded vsock lane
 
 The trusted host selects an absolute Unix socket and one configured guest SSH

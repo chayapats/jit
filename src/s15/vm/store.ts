@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import { chmodSync, lstatSync, mkdirSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 import { vmFail } from "./validation";
-import type { VmEndpoint, VmEvidence, VmMachineFacts } from "./types";
+import type { VmEndpoint, VmEvidence, VmMachineFacts, VmPhysicalBinding } from "./types";
+import { vmPhysicalBinding } from "./binding";
 
 /** Credential-free protected VM registry row. Private keys live in dedicated mode-0600 files. */
 export interface VmRegistration {
@@ -11,29 +12,38 @@ export interface VmRegistration {
   facts?: VmMachineFacts;
   /** Enrollment binding to the NIC observed independently through the management adapter. Missing is unproven. */
   bindingMac?: string;
+  /** Format-2 physical binding; exclusive with legacy bindingMac. */
+  binding?: VmPhysicalBinding;
   networkIsolated: boolean; maxSessions: number; reason: string | null; machineIdentity: string | null; boot: string | null;
 }
 /** Append-only claim/evidence metadata in a separate protected store; never a guest snapshot or S14 migration. */
 export class VmStore {
   readonly db: Database;
+  readonly #path: string;
   readonly #listeners = new Set<(row: VmRegistration, previous: VmRegistration | null) => void>();
   /** Synchronous lifecycle invalidation; no protected stream survives a VM fence/stop/restore. */
   onChange(listener: (row: VmRegistration, previous: VmRegistration | null) => void): () => void { this.#listeners.add(listener); return () => this.#listeners.delete(listener); }
   constructor(path: string) {
+    this.#path = path;
+    let existingFile = false;
     if (path !== ":memory:") {
       if (!path.startsWith("/")) vmFail("vm_invalid_setup");
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       const existing = lstatSync(path, { throwIfNoEntry: false });
       if (existing) {
+        existingFile = true;
         if (!existing.isFile() || existing.isSymbolicLink()) vmFail("vm_store_invalid");
         const fd = openSync(path, "r"), header = Buffer.alloc(100);
-        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== "SQLite format 3\0" || header.readUInt32BE(68) !== 0x4a495456 || header.readUInt32BE(60) !== 1) vmFail("vm_store_invalid"); }
+        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== "SQLite format 3\0" || header.readUInt32BE(68) !== 0x4a495456 || ![1, 2].includes(header.readUInt32BE(60))) vmFail("vm_store_invalid"); }
         finally { closeSync(fd); }
       }
     }
     this.db = new Database(path, { create: true, strict: true });
+    const format = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    if (![1, 2].includes(format) && (format !== 0 || existingFile)) { this.db.close(); vmFail("vm_store_invalid"); }
+    if (format === 0) this.db.exec("PRAGMA user_version=1");
     if (path !== ":memory:") chmodSync(path, 0o600);
-    this.db.exec(`PRAGMA application_id=1246319702; PRAGMA user_version=1; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+    this.db.exec(`PRAGMA application_id=1246319702; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS vm_registry (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS vm_sessions (id TEXT PRIMARY KEY, vm_id TEXT NOT NULL, work_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, unit TEXT NOT NULL, generation INTEGER NOT NULL);
@@ -44,6 +54,30 @@ export class VmStore {
   }
   /** Synchronous writer boundary; no transaction survives an I/O wait. */
   transaction<T>(run: () => T): T { return this.db.transaction(run).immediate(); }
+  /**
+   * Monotonically enables physical bindings before enrollment. Must run outside a transaction. The
+   * checkpoint must reach the actual database header before any format-2 row is written, so the old
+   * format-1 reader refuses even when a previous composition manifest is restored. Busy readers refuse
+   * adoption; a WAL-only version is insufficient. This does not enable portable-state ancestry yet.
+   */
+  enableVsockBindings(): void {
+    if (this.db.inTransaction) vmFail("vm_store_format_required");
+    const format = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
+    if (![1, 2].includes(format)) vmFail("vm_store_invalid");
+    if (format === 1) this.db.exec("PRAGMA user_version=2");
+    if (this.#path !== ":memory:") {
+      const result = this.db.query<{ busy: number; log: number; checkpointed: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
+      if (!result || result.busy !== 0) vmFail("vm_store_format_required");
+    }
+    this.assertVsockFormat();
+  }
+  private assertVsockFormat(): void {
+    if (this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version !== 2) vmFail("vm_store_format_required");
+    if (this.#path === ":memory:") return;
+    const fd = openSync(this.#path, "r"), header = Buffer.alloc(100);
+    try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.readUInt32BE(60) !== 2) vmFail("vm_store_format_required"); }
+    finally { closeSync(fd); }
+  }
   /** Reads only this protected registry, never a guest-supplied registration. */
   registration(id: string): VmRegistration {
     const row = this.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(id);
@@ -52,6 +86,10 @@ export class VmStore {
   }
   /** Writer-only trusted metadata update. */
   save(row: VmRegistration): void {
+    if (row.binding !== undefined) {
+      if (!vmPhysicalBinding(row)) vmFail("vm_identity_unproven");
+      this.assertVsockFormat();
+    }
     const prior = this.db.query<{ data: string }, [string]>("SELECT data FROM vm_registry WHERE id=?").get(row.id);
     this.db.query("INSERT INTO vm_registry VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data").run(row.id, JSON.stringify(row));
     for (const listener of this.#listeners) listener(row, prior ? JSON.parse(prior.data) : null);

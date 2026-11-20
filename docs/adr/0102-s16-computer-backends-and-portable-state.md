@@ -70,6 +70,14 @@ Unknown devices, MMDS, network interfaces, shared host resources, missing pins
 or drift refuse. SSH retains generated VM-only keys, a pinned host key, finite
 one-shot calls and the existing policy/claim/publication path.
 
+Enrollment, pool placement and lifecycle use a discriminated protected physical
+binding instead of requiring a dummy MAC for a NIC-free computer. Existing NIC
+rows remain compatible. Adopting a new physical binding explicitly stamps VM
+store format 2 into its checkpointed database header before saving that row;
+ordinary reads never upgrade or downgrade the format. A blocked checkpoint
+refuses adoption rather than relying on a WAL-only marker that old readers
+would miss. Portable ancestry still needs its separate reader transition.
+
 Cooperative guest unit cleanup remains `guest_scope_empty`, not hypervisor
 settlement. Strong stop requires independent confirmation that the exact VMM
 instance terminated and retained disk access settled; uncertainty keeps the

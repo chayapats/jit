@@ -21,6 +21,10 @@ export interface VmHostCommand {
   (argv: readonly string[], options: { input?: Uint8Array; timeoutMs: number; maxBytes: number; signal?: AbortSignal;
     env?: Readonly<Record<string, string>>; beforeStart?: () => void }): Promise<{ stdout: Uint8Array; exitCode: number }>;
 }
+/** Protected connection identity; a vsock selection is usable only through its verified host forwarder. */
+export type VmPhysicalBinding = { kind: "nic"; mac: string } | {
+  kind: "firecracker-vsock"; instanceId: string; guestCid: number; guestPort: number; selectionSha256: string;
+};
 /** Independently owned hypervisor observation. Guest output is never such an observation. */
 export interface VmMachineState {
   state: "running" | "stopped";
@@ -32,6 +36,12 @@ export interface VmMachineState {
   network: "isolated" | "proxy-only" | "unproven";
   /** NIC identity read from protected hypervisor configuration, never from a guest report. */
   nicMac?: string;
+  /**
+   * Alternative to nicMac. Only the protected manager may supply this after verifying its exact host
+   * process/jail/disk selection and guarded host-initiated vsock forwarder. API/guest metadata alone
+   * must never populate it. The forwarder's exact loopback endpoint is required in sshEndpoint.
+   */
+  binding?: VmPhysicalBinding;
   /** Lima/local QEMU protected host-forward binds the loopback SSH endpoint as well as the NIC. */
   sshEndpoint?: { host: string; port: number };
 }

@@ -9,7 +9,7 @@ import { defaultVmLimits, type VmEvidence, type VmLimits, type VmManagement, typ
 import { vmBytes, vmCanonical, vmFail, vmHash, vmId, vmLimits, vmPath, vmInteger, vmRecord } from "./validation";
 import { fetchVmArtifact, type VmArtifactRequest } from "./acquisition";
 import type { VmProxyLease } from "./proxy";
-import { vmIdentityMatches } from "./binding";
+import { vmHasBinding, vmIdentityMatches, vmManagementMatches } from "./binding";
 
 /** Protected composition dependencies; the service is opt-in and never replaces the S14 computer/runtime. */
 export interface WorkingVmOptions {
@@ -91,7 +91,7 @@ export class WorkingVmService implements WorkingVmPort {
       try {
         const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
         const machine = manager ? await manager.inspect() : null;
-        if (!machine || machine.state !== "running" || machine.identity !== row.machineIdentity || machine.boot !== row.boot || !row.bindingMac || machine.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
+        if (!machine || machine.state !== "running" || !vmManagementMatches(row, machine) || machine.boot !== row.boot || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
         if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
         const current = this.options.store.registration(row.id);
         if (current.generation !== row.generation || current.state !== "ready") vmFail("vm_fenced");
@@ -118,7 +118,7 @@ export class WorkingVmService implements WorkingVmPort {
     }
     const id = uuid(), unit = `jit-${id}.slice`, row = this.options.store.registration(input.vmId);
     if (this.#managementBusy.has(row.id)) vmFail("vm_capacity");
-    if (!row.bindingMac) vmFail("vm_identity_unproven");
+    if (!vmHasBinding(row)) vmFail("vm_identity_unproven");
     if (row.state !== "ready" || !row.networkIsolated) vmFail(row.reason ?? "vm_network_unproven");
     const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
     if (mode === "system" && !manager) vmFail("vm_recovery_unavailable", 423);
@@ -296,14 +296,14 @@ export class WorkingVmService implements WorkingVmPort {
   }
   private async checkManager(row: VmRegistration, manager: VmManagement): Promise<void> {
     const machine = await manager.inspect();
-    if (!row.bindingMac || machine.identity !== row.machineIdentity || machine.state === "running" && machine.nicMac !== row.bindingMac) vmFail("vm_identity_unproven");
+    if (!vmManagementMatches(row, machine)) vmFail("vm_identity_unproven");
   }
   /** Owner-only exact retirement; an active system session's snapshot is never eligible. */
   async retireSnapshot(actor: object, input: { vmId: string; snapshotId: string }): Promise<void> {
     if (!this.options.requireOwner) vmFail("vm_owner_required", 403);
     this.options.requireOwner(actor); vmId(input.vmId); const row = this.options.store.registration(input.vmId);
     const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-    if (!manager || !row.bindingMac) vmFail("vm_recovery_unavailable", 423);
+    if (!manager || !vmHasBinding(row)) vmFail("vm_recovery_unavailable", 423);
     if (this.#managementBusy.has(row.id)) vmFail("vm_capacity"); this.#managementBusy.add(row.id);
     try { await this.checkManager(row, manager); this.options.requireOwner(actor); await this.retireExact(row, manager, input.snapshotId); }
     finally { this.#managementBusy.delete(row.id); }
@@ -356,7 +356,7 @@ export class WorkingVmService implements WorkingVmPort {
     const stopped: string[] = [];
     for (const { id } of this.options.store.db.query<{ id: string }, []>("SELECT id FROM vm_registry ORDER BY id").all()) {
       const row = this.options.store.registration(id), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-      if (row.state !== "ready" || !manager?.start || !row.bindingMac || this.#managementBusy.has(id)) continue;
+      if (row.state !== "ready" || !manager?.start || !vmHasBinding(row) || this.#managementBusy.has(id)) continue;
       if (this.options.store.db.query("SELECT 1 FROM vm_sessions WHERE vm_id=? AND state<>'closed' LIMIT 1").get(id)) continue;
       if (this.options.screen?.idleBlocked(id)) continue;
       const last = this.lastActivity(id);
@@ -370,7 +370,7 @@ export class WorkingVmService implements WorkingVmPort {
   async sleepNow(actor: object, vm: string): Promise<void> {
     if (!this.options.requireOwner) vmFail("vm_owner_required", 403);
     this.options.requireOwner(actor); vmId(vm); const row = this.options.store.registration(vm), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-    if (!this.options.idle || !manager?.start || !row.bindingMac) vmFail("vm_management_unavailable");
+    if (!this.options.idle || !manager?.start || !vmHasBinding(row)) vmFail("vm_management_unavailable");
     if (row.state !== "ready") vmFail(row.reason ?? "vm_fenced");
     if (this.#managementBusy.has(vm)) vmFail("vm_capacity");
     await this.sleep(row, manager);
@@ -411,7 +411,7 @@ export class WorkingVmService implements WorkingVmPort {
     const running = this.#waking.get(row.id); if (running) return running;
     const promise = (async () => {
       const manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-      if (!manager?.start || !row.bindingMac) vmFail("vm_stopped", 423);
+      if (!manager?.start || !vmHasBinding(row)) vmFail("vm_stopped", 423);
       if (this.#managementBusy.has(row.id)) vmFail("vm_capacity"); this.#managementBusy.add(row.id);
       try {
         await this.checkManager(row, manager);
@@ -422,7 +422,7 @@ export class WorkingVmService implements WorkingVmPort {
         });
         try {
           await manager.start(); const machine = await manager.inspect();
-          if (machine.state !== "running" || machine.identity !== row.machineIdentity || machine.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
+          if (machine.state !== "running" || !vmManagementMatches(row, machine) || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
           if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
           this.options.store.transaction(() => {
             const current = this.options.store.registration(row.id); if (current.generation !== row.generation) vmFail("vm_fenced");
@@ -471,7 +471,7 @@ export class WorkingVmService implements WorkingVmPort {
     await this.checkManager(row, manager); requireOwner(actor);
     this.options.store.transaction(() => { requireOwner(actor); row.generation++; row.state = "uncertain"; row.reason = "vm_recovery_in_progress"; this.options.store.save(row); });
     await manager.start(); requireOwner(actor); const machine = await manager.inspect();
-    if (machine.identity !== row.machineIdentity || machine.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
+    if (!vmManagementMatches(row, machine) || !await vmIdentityMatches(this.transport(row), machine, row.endpoint)) vmFail("vm_identity_unproven");
     if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
     this.options.store.transaction(() => { requireOwner(actor); row.boot = machine.boot; row.state = "ready"; row.reason = null; row.networkIsolated = true; row.networkCheckedAt = this.#now(); this.options.store.save(row); });
     } finally { this.#managementBusy.delete(vm); }
@@ -490,7 +490,7 @@ export class WorkingVmService implements WorkingVmPort {
         for (const { id } of this.options.store.db.query<{ id: string }, []>("SELECT id FROM vm_registry ORDER BY id").all()) {
           if (signal?.aborted) return;
           const row = this.options.store.registration(id), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-          if (!manager?.resume || row.state !== "ready" || !row.bindingMac || this.#managementBusy.has(id)) continue;
+          if (!manager?.resume || row.state !== "ready" || !vmHasBinding(row) || this.#managementBusy.has(id)) continue;
           this.#managementBusy.add(id);
           try { await this.reattachOne(row, manager, signal); } catch { /* reattachOne fenced the VM; others still re-attach. */ }
           finally { this.#managementBusy.delete(id); }
@@ -512,7 +512,7 @@ export class WorkingVmService implements WorkingVmPort {
     try {
       if (!await manager.resume!(signal)) vmFail("vm_reconciliation_required");
       const started = await manager.inspect();
-      if (started.state !== "running" || started.identity !== row.machineIdentity || started.nicMac !== row.bindingMac || !await vmIdentityMatches(this.transport(row), started, row.endpoint)) vmFail("vm_identity_unproven");
+      if (started.state !== "running" || !vmManagementMatches(row, started) || !await vmIdentityMatches(this.transport(row), started, row.endpoint)) vmFail("vm_identity_unproven");
       if (started.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
       this.options.store.transaction(() => {
         const current = this.options.store.registration(row.id); if (current.generation !== row.generation) vmFail("vm_fenced");
@@ -524,7 +524,7 @@ export class WorkingVmService implements WorkingVmPort {
   async recover(actor: object, input: { vmId: string; snapshotId?: string }): Promise<void> {
     const requireOwner = this.options.requireOwner; if (!requireOwner) vmFail("vm_owner_required", 403);
     requireOwner(actor); vmId(input.vmId); const row = this.options.store.registration(input.vmId), manager = row.managerId ? this.options.managers.get(row.managerId) : null;
-    if (!manager || !row.bindingMac) vmFail("vm_recovery_unavailable", 423);
+    if (!manager || !vmHasBinding(row)) vmFail("vm_recovery_unavailable", 423);
     if (input.snapshotId && !this.options.store.db.query("SELECT id FROM vm_snapshots WHERE id=? AND vm_id=?").get(input.snapshotId, row.id)) vmFail("vm_snapshot_unknown");
     if (this.#managementBusy.has(row.id)) vmFail("vm_capacity"); this.#managementBusy.add(row.id);
     try {
