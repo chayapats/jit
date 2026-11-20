@@ -1,3 +1,4 @@
+import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
 import type { SearchItem, SearchKind, SearchLabelCommand, SearchLabelReceipt, SearchPage, SearchQuery, SearchTarget } from '../search/contracts';
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
@@ -659,7 +660,7 @@ export class JitClient {
   private computersView(data: unknown): data is ComputersView {
     if (!record(data) || data.contract !== "s16-client-computers/v1" || data.idleStopMs !== null && !count(data.idleStopMs) || !Array.isArray(data.computers) || data.computers.length > 64 || !Array.isArray(data.bots) || data.bots.length > 64 || !record(data.privateCreation)) return false;
     const states = ["running", "sleeping", "starting", "stopping", "stopped", "setting_up", "setup_failed", "attention"];
-    return data.computers.every(item => record(item) && identifier(item.id) && typeof item.isDefault === "boolean" && record(item.scope) && (item.scope.kind === "shared" || item.scope.kind === "private" && identifier(item.scope.botId)) && states.includes(item.state as string) && (item.reason === null || typeof item.reason === "string") && count(item.activeSessions) && count(item.capacity) && count(item.works) && (item.sleepsAt === null || count(item.sleepsAt)))
+    return data.computers.every(item => record(item) && identifier(item.id) && typeof item.isDefault === "boolean" && record(item.scope) && (item.scope.kind === "shared" || item.scope.kind === "private" && identifier(item.scope.botId)) && states.includes(item.state as string) && (item.reason === null || typeof item.reason === "string") && count(item.activeSessions) && count(item.capacity) && (item.backend === undefined || item.backend === null || isVmBackendDescriptor(item.backend, item.id as string)) && count(item.works) && (item.sleepsAt === null || count(item.sleepsAt)))
       && data.bots.every(bot => record(bot) && identifier(bot.id) && typeof bot.main === "boolean" && record(bot.computer) && (bot.computer.kind === "shared" || bot.computer.kind === "private" && identifier(bot.computer.vmId)));
   }
   /** Owner routines with derived display state. Reading never ticks, dispatches or marks anything seen. */

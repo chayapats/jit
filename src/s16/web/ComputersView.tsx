@@ -116,11 +116,17 @@ export function ComputersView({ client, t, locale, available, files, onFailure, 
       <ul className="computer-list" aria-label={t("s16.computers.list")}>{data.computers.map(item => <li key={item.id}><article className="computer-card" aria-labelledby={`computer-${item.id}`}>
         <header><h3 id={`computer-${item.id}`}>{title(item)}</h3><span className={`pill ${tones[item.state]}`}>{t(`s16.computers.state.${item.state}` as MessageKey)}</span>{item.retired && <span className="pill idle">{t("s16.computers.retired")}</span>}</header>
         <p className="meta">{item.capacity > 0 && t("s16.computers.sessions", { n: item.activeSessions, max: item.capacity })}{item.works > 0 && <> · {t("s16.computers.works", { n: item.works })}</>}</p>
+        {item.backend && <details><summary>{t("s16.computers.capabilities")}</summary>
+          <p>{item.backend.provider} · {item.backend.hypervisorVersion ?? t("s16.computers.versionUnknown")}</p>
+          <p>{t("s16.computers.capabilityBasis", { basis: item.backend.basis })}</p>
+          <ul>{Object.entries(item.backend.features).map(([name, state]) => <li key={name}>{t(`s16.computers.feature.${name}` as MessageKey)}: {t(`s16.computers.featureState.${state}` as MessageKey)}</li>)}</ul>
+          <p>{t("s16.computers.backendLimits", { cpus: item.backend.limits.cpuCount, memory: Math.floor(item.backend.limits.memoryBytes / 1048576), disk: Math.floor(item.backend.limits.diskBytes / 1048576), seconds: item.backend.limits.commandMs / 1000, bytes: item.backend.limits.fileBytes })}</p>
+        </details>}
         {status(item) && <p>{status(item)}</p>}
         {item.reason && <details><summary>{t("s16.common.details")}</summary><code>{item.reason}</code></details>}
         <div className="actions">
           {item.state === "running" && item.activeSessions === 0 && data.idleStopMs !== null && <button type="button" disabled={busy || watching === item.id} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "sleep", vmId: item.id })}>{t("s16.computers.sleepNow")}</button>}
-          {screen && item.state === "running" && watching !== item.id && <button type="button" ref={node => { if (node) watchButtons.current.set(item.id, node); else watchButtons.current.delete(item.id); }} onClick={() => setWatching(item.id)}>{t("s16.screen.watch")}</button>}
+          {screen && item.backend?.features.desktop !== "unavailable" && item.state === "running" && watching !== item.id && <button type="button" ref={node => { if (node) watchButtons.current.set(item.id, node); else watchButtons.current.delete(item.id); }} onClick={() => setWatching(item.id)}>{t("s16.screen.watch")}</button>}
           {item.state === "setup_failed" && !item.retired && <button type="button" disabled={busy} onClick={() => void send({ contract: "s16-computer-command/v1", requestId: uid(), kind: "retry_private", vmId: item.id })}>{t("s16.computers.retry")}</button>}
         </div>
         {screen && watching === item.id && <ComputerScreen client={client} t={t} vmId={item.id} title={title(item)} onFailure={onFailure} onClose={() => { setWatching(null); requestAnimationFrame(() => watchButtons.current.get(item.id)?.focus()); }} />}

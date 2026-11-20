@@ -13,6 +13,7 @@ export type ComputerState = "running" | "sleeping" | "starting" | "stopping" | "
 /** One computer row of `s16-client-computers/v1`. Ids are opaque; no endpoint, key or manager detail. */
 export interface ComputerView {
   id: string; isDefault: boolean; scope: ComputerScope; retired: boolean; local: boolean;
+  backend?: VmStatus['backend'];
   state: ComputerState; reason: string | null;
   activeSessions: number; capacity: number; works: number; drained: boolean;
   /** When idle release will stop it if nothing starts first; null while busy, stopped or without idle release. */
@@ -88,7 +89,7 @@ export class ComputerDirectory<Owner extends object> {
       const last = this.options.vm.lastActivity(member.id);
       const state: ComputerState = status.state === "ready" ? "running" : status.state === "stopped" ? (status.reason === vmIdleReason ? "sleeping" : "stopped")
         : status.reason === "vm_waking" ? "starting" : status.reason === "vm_idle_stopping" ? "stopping" : "attention";
-      return { id: member.id, isDefault: member.isDefault, scope, retired, local: this.options.local?.isLocal(member.id) ?? false, state,
+      return { id: member.id, isDefault: member.isDefault, scope, retired, backend: status.backend ?? null, local: this.options.local?.isLocal(member.id) ?? false, state,
         reason: state === "attention" || state === "stopped" ? status.reason : null, activeSessions: member.activeSessions, capacity: member.capacity, works: member.works, drained: member.drained,
         sleepsAt: state === "running" && stopAfter !== null && member.activeSessions === 0 && last !== null ? last + stopAfter : null, setup: null };
     });

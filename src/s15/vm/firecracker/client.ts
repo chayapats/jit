@@ -1,7 +1,7 @@
 import { AppError } from '../../../errors';
 import { registerSecretFingerprint } from '../../../security/secret-fingerprints';
 import { DurableJournal } from '../../durable-journal';
-import type { VmMachineState, VmManagement } from '../types';
+import type { VmBackendProfile, VmMachineState, VmManagement } from '../types';
 import { vmCanonical, vmInteger, vmRecord } from '../validation';
 import { firecrackerHostCommand, type FirecrackerHostCommand, type FirecrackerHostJob } from './jobs';
 import { firecrackerRpcReceipt, firecrackerRpcState, type FirecrackerRpcInput, type FirecrackerRpcScope, type FirecrackerRpcState } from './rpc';
@@ -34,6 +34,13 @@ export class FirecrackerVmManagement implements VmManagement {
   #closed = false;
   #busy = false;
   #recovering: Promise<Intent | null> | null = null;
+  /** The initial native relay and controller are on the same verified Linux host. Fixtures say so explicitly. */
+  get backend(): VmBackendProfile {
+    return { provider: 'firecracker', implementation: 'firecracker-offline-vsock/v1', apiVersion: '1.18.0', hypervisorVersion: '1.18.0',
+      platform: this.#scope.basis === 'protocol_fixture' ? null : { os: 'linux', architecture: process.arch === 'arm64' ? 'aarch64' : 'x86_64' },
+      basis: this.#scope.basis === 'protocol_fixture' ? 'protocol_fixture' : 'host_verified',
+      features: { shell: 'available', filesystem: 'available', sudo: 'available', externalNetwork: 'unavailable', browser: 'unavailable', desktop: 'unavailable', coldRecovery: 'available', strongStop: 'available' } };
+  }
   constructor(options: FirecrackerClientOptions) {
     if (!options.fixture && (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch) || !process.getuid?.() || !process.getgid?.())) fail('vm_host_unsupported');
     const url = new URL(options.origin);

@@ -1,8 +1,9 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { VmHostCommand, VmManagement, VmStatus, VmCapability, VmMachineFacts } from "./types";
+import { defaultVmLimits } from "./types";
+import type { VmHostCommand, VmManagement, VmStatus, VmCapability, VmMachineFacts, VmLimits } from "./types";
 import { vmHostCommand, vmQuote } from "./host";
-import { vmEndpoint, vmFail, vmId, vmInteger, vmRecord } from "./validation";
+import { vmEndpoint, vmFail, vmId, vmInteger, vmRecord, vmLimits } from "./validation";
 import { defaultVmRegistryHosts } from "./proxy";
 import { VmSshTransport } from "./transport";
 import { VmStore, type VmRegistration } from "./store";
@@ -26,11 +27,12 @@ export class VmEnrollment {
   readonly #checks = new Map<string, { input: Omit<VmEnrollmentInput, "id">; fingerprint: string; expiresAt: number }>();
   readonly #local = new Set<string>();
   constructor(readonly options: { store: VmStore; keyDirectory: string; requireOwner: (actor: object) => void;
-    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number;
+    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number; limits?: VmLimits;
     /** Bounded provisioning proxy lease for a Jit-created local VM (Docker install); never an account credential. */
     proxyLease?: (sessionId: string, expiresAt: number) => VmProxyLease }) {
     if (!options.keyDirectory.startsWith("/") || resolve(options.keyDirectory) !== options.keyDirectory) vmFail("vm_invalid_setup");
     mkdirSync(options.keyDirectory, { recursive: true, mode: 0o700 });
+    vmLimits(options.limits ?? { ...defaultVmLimits });
     const stat = lstatSync(options.keyDirectory); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
     options.store.db.exec("CREATE TABLE IF NOT EXISTS vm_settings (id TEXT PRIMARY KEY,data TEXT NOT NULL)");
   }
@@ -178,17 +180,23 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
       const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId : null,
         state: networkIsolated ? "ready" : "unproven", networkCheckedAt: (this.options.now ?? Date.now)(), networkIsolated, facts,
         ...(bound ? machine!.binding ? { binding: vmPhysicalBinding({ binding: machine!.binding })! } : { bindingMac: machine!.nicMac! } : {}),
+        ...(bound && manager?.backend ? { backend: { profile: manager.backend, cpuCount: machine!.cpuCount, memoryBytes: machine!.memoryBytes, diskBytes: machine!.diskBytes } } : {}),
         maxSessions: input.maxSessions, reason: networkIsolated ? null : machine && !bound ? "vm_identity_unproven" : "vm_network_unproven", machineIdentity: bound ? machine!.identity : null, boot: bound ? machine!.boot : null };
       this.options.store.save(row); saved?.();
-      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null, backend: this.descriptor(row) };
     });
+  }
+  private descriptor(row: VmRegistration): Exclude<VmStatus['backend'], undefined> {
+    const b = row.backend; if (!b) return null; const limits = this.options.limits ?? defaultVmLimits;
+    return { ...structuredClone(b.profile), contract: 's16-computer-backend/v1', computerId: row.id, generation: row.generation,
+      limits: { cpuCount: b.cpuCount, memoryBytes: b.memoryBytes, diskBytes: b.diskBytes, sessions: Math.min(row.maxSessions, limits.maxSessions), commandMs: limits.commandMs, fileBytes: limits.fileBytes } };
   }
   /** Owner-only status; this query starts no VM/session, returns no credentials or raw endpoints. */
   status(actor: object, id: string): VmStatus {
     this.options.requireOwner(actor); vmId(id); const row = this.options.store.registration(id);
     const count = this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_sessions WHERE vm_id=? AND state<>'closed'").get(id)!.n;
     return { id, generation: row.generation, state: row.state, networkIsolated: row.networkIsolated && row.state === "ready",
-      recoveryAvailable: vmHasBinding(row) && row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      recoveryAvailable: vmHasBinding(row) && row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null, backend: this.descriptor(row) };
   }
   /** Owner-only exact approved registry settings, persisted outside the guest and ordinary VM recovery. */
   registryHosts(actor: object): readonly string[] {

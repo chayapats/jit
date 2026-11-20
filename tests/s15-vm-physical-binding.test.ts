@@ -3,6 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { qemuBackend, isVmBackendDescriptor } from "../src/s15/vm/descriptor";
 import { vmHasBinding, vmIdentityMatches, vmManagementMatches } from "../src/s15/vm/binding";
 import { VmStore, type VmRegistration } from "../src/s15/vm/store";
 import { VmEnrollment } from "../src/s15/vm/enrollment";
@@ -85,10 +86,15 @@ test("actual enrollment retains a protected vsock binding without a fabricated M
     if (program.includes("nicMacs")) { nicReads++; throw new Error("no NIC"); }
     return { exitCode: 0, stdout: Buffer.from(program.includes("platform.machine") ? JSON.stringify({ architecture: "aarch64", os: "ubuntu:24.04", cpuCount: 2, memoryBytes: state.memoryBytes, diskBytes: state.diskBytes, sudo: true, docker: false, basis: "guest_reported" }) : program.includes("reachable") ? '{"reachable":[false,false,false,false,false,false]}' : "jit-vm-ready-v1\n") };
   };
-  const manager: VmManagement = { async inspect() { return state; }, async stop() {}, async snapshot() {}, async restore() {}, async retireSnapshot() {} };
+  const manager: VmManagement = { backend: { ...qemuBackend({ implementation: "fixture/v1", fixture: true }), provider: "firecracker", apiVersion: "1.18.0", hypervisorVersion: "1.18.0", features: { ...qemuBackend({ implementation: "fixture/v1", fixture: true }).features, externalNetwork: "unavailable", browser: "unavailable", desktop: "unavailable" } }, async inspect() { return state; }, async stop() {}, async snapshot() {}, async restore() {}, async retireSnapshot() {} };
   const enrollment = new VmEnrollment({ store: s, keyDirectory: keys, requireOwner: a => { if (a !== owner) throw new Error("owner"); }, managers: new Map([["manager", manager]]), run });
   const setup = await enrollment.begin(owner);
   const result = await enrollment.complete(owner, { ...endpoint, setupId: setup.setupId, id: "vm", managerId: "manager", hostPublicKey: publicKey });
+  expect(result.backend).toMatchObject({ contract: "s16-computer-backend/v1", computerId: "vm", generation: 1, provider: "firecracker", basis: "protocol_fixture", features: { externalNetwork: "unavailable", desktop: "unavailable" }, limits: { cpuCount: 2, memoryBytes: state.memoryBytes, sessions: 2 } });
+  expect(isVmBackendDescriptor(result.backend, "vm")).toBe(true);
+  expect(isVmBackendDescriptor({ ...result.backend, limits: { ...result.backend!.limits, fileBytes: Infinity } }, "vm")).toBe(false);
+  expect(isVmBackendDescriptor(result.backend, "other")).toBe(false);
+  expect(enrollment.status(owner, "vm").backend).toEqual(result.backend);
   expect(result.state).toBe("ready"); expect(result.recoveryAvailable).toBe(true); expect(nicReads).toBe(0);
   expect(result.capabilities.find(c => c.id === "hypervisor-stop")?.state).toBe("unproven");
   expect(s.registration("vm").binding).toEqual(binding()); expect(s.registration("vm").bindingMac).toBeUndefined();

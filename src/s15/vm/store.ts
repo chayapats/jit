@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, lstatSync, mkdirSync, openSync, readSync, closeSync } from "node:fs";
 import { dirname } from "node:path";
 import { vmFail } from "./validation";
-import type { VmEndpoint, VmEvidence, VmMachineFacts, VmPhysicalBinding } from "./types";
+import type { VmBackendProfile, VmEndpoint, VmEvidence, VmMachineFacts, VmPhysicalBinding } from "./types";
 import { vmPhysicalBinding } from "./binding";
 
 /** Credential-free protected VM registry row. Private keys live in dedicated mode-0600 files. */
@@ -10,6 +10,8 @@ export interface VmRegistration {
   id: string; generation: number; endpoint: VmEndpoint; managerId: string | null;
   state: "ready" | "unproven" | "uncertain" | "stopped"; networkCheckedAt: number;
   facts?: VmMachineFacts;
+  /** Last independently bound manager profile/resources; guest inventory never supplies these ceilings. */
+  backend?: { profile: VmBackendProfile; cpuCount: number; memoryBytes: number; diskBytes: number };
   /** Enrollment binding to the NIC observed independently through the management adapter. Missing is unproven. */
   bindingMac?: string;
   /** Format-2 physical binding; exclusive with legacy bindingMac. */

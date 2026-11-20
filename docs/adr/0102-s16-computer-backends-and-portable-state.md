@@ -58,8 +58,10 @@ There is no listening guest-to-controller vsock service, host mount, host disk
 device, shared filesystem, arbitrary API route or raw management handle in the
 guest/model. Existing local QEMU remains independently useful with its current
 network/browser/desktop contract. The additional backend's unavailable network,
-GUI and acquisition capabilities must be visible before task placement; it
-must not pretend to complete a task requiring them.
+GUI and guest network/software acquisition capabilities must be visible before task placement; it
+must not pretend to complete a task requiring them. Separately authorized controller
+artifact acquisition and claimed bounded file delivery retain their existing
+DATA15/policy path; those do not imply guest network access.
 
 A backend descriptor records provider/version, platform, capabilities, resource
 ceilings, enrollment identity/generation and evidence basis. A configured

@@ -47,6 +47,8 @@ export interface VmMachineState {
 }
 /** Protected, VM-scoped management. Credentials remain in this implementation, outside the guest. */
 export interface VmManagement {
+  /** Protected implementation facts; absent facts stay unknown rather than inferred from a display label. */
+  readonly backend?: VmBackendProfile;
   inspect(): Promise<VmMachineState>;
   /** Explicit protected start never replays an old work command. */
   start?(): Promise<void>;
@@ -139,4 +141,18 @@ export interface VmStatus {
   reason: string | null;
   capabilities: readonly VmCapability[];
   facts: VmMachineFacts | null;
+  /** Versioned placement facts. Configuration is never a live isolation/settlement certificate. */
+  backend?: VmBackendDescriptor | null;
+}
+/** Supported implementation profile; only the owning management adapter constructs it. */
+export interface VmBackendProfile {
+  provider: "qemu" | "firecracker"; implementation: string; apiVersion: string;
+  hypervisorVersion: string | null; platform: { os: string; architecture: string } | null;
+  basis: "configured" | "protocol_fixture" | "host_verified";
+  features: Record<"shell" | "filesystem" | "sudo" | "externalNetwork" | "browser" | "desktop" | "coldRecovery" | "strongStop", "available" | "unavailable" | "unproven">;
+}
+/** Credential-free finite capability projection used before choosing a computer. */
+export interface VmBackendDescriptor extends VmBackendProfile {
+  contract: "s16-computer-backend/v1"; computerId: string; generation: number;
+  limits: { cpuCount: number; memoryBytes: number; diskBytes: number; sessions: number; commandMs: number; fileBytes: number };
 }

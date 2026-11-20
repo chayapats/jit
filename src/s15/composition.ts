@@ -468,7 +468,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
     reconcileVm();
-    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
+    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers, ...(options.vm.limits ? { limits: options.vm.limits } : {}),
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       ...(localVm ? { proxyLease: (sessionId: string, expiresAt: number) => localVm.lease(sessionId, expiresAt), updateRegistryHosts: (hosts: readonly string[]) => localVm.setHosts(hosts) } : {}) });
     // SETUP15-01: the durable job that creates the default working computer on a KVM controller. Only the

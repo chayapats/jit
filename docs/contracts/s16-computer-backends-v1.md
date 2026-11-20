@@ -11,8 +11,12 @@ until the owning integration and its conformance are implemented.
 current generation and platform. It has an explicit capability set (shell,
 filesystem, sudo, external network, browser/desktop, cold recovery and strong
 stop), finite CPU/memory/disk/session/command/file ceilings and evidence basis
-(`configured`, `protocol_fixture`, or `host_verified`). No display label grants
-a capability. The owner sees unavailable capabilities before selection.
+(`configured`, `protocol_fixture`, or `host_verified`). `hypervisorVersion` stays null when an existing QEMU adapter has no protected
+version observation; its implementation/API contract is still explicit. Unknown
+remote host platforms stay null rather than borrowed from this controller or
+guest inventory. Profile features describe supported operations, not observed
+stop/restore success. Existing enrollment capability rows keep those separate.
+No display label grants a capability. The owner sees unavailable capabilities before selection.
 
 QEMU retains current enrollment/NIC/SSH binding. The selected Firecracker profile
 is `firecracker-offline-vsock/v1`, API v1.18.0 at immutable upstream commit
