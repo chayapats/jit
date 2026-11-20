@@ -25,12 +25,15 @@ boundary. Errors withhold results and expose a safe code in Details. Session
 loss removes the whole projection. Offline/hidden visibility withholds content;
 returning online/visible performs a fresh read. Refresh is explicit on the page.
 
-Edit labels opens a form under the selected result. A comma-separated list
+Edit labels opens a form under the selected result. A one-label-per-line field
 replaces at most eight labels against the exact current revision; empty removes
 them. The explanatory copy says labels organize and do not share or start work.
 Conflict requires refresh/review. A lost mutation response retains the original
 command and offers read-back; only a conclusive missing receipt offers retry of
-that same command. No automatic replacement mutation is generated.
+that same command. A comma inside a label remains part of the label. The exact
+pending command survives view remounts in App RAM while private results are
+withheld offline; reconnect with a different authenticated binding clears it.
+No automatic replacement mutation is generated.
 
 Source opening resolves the original object again, then enters its existing
 protected destination. Old history outside the 32-row thread is fetched with the

@@ -1,6 +1,53 @@
 # SPACE16-01 scoped search evidence
 
-Issue #428 / parent #392. Runtime implementation:
+Issue #428 / parent #392. Current reviewed runtime:
+`f64ceabcd7c896b0ccce70d34e52b6f8beb6abc1` (including service correction
+`588061787220d374056895c71f975c12e5b80c6c`).
+
+## Review corrections and current evidence
+
+All five initial review findings were reproduced and corrected. Bot-filtered
+memory requires the producer match as well as current transitive visibility.
+Clarification/steer dates come from each command's saved receipt while opening
+the original root. Structured one-press decisions are excluded from both
+history search and exact resolution; actual typed owner messages remain.
+
+Unresolved label commands survive offline/private-view remounts in App RAM.
+Private results are withheld offline. After reconnect, only the same authenticated
+binding retains the original command; lost authentication and binding changes
+clear it, including metadata refresh. The label editor uses one label per line,
+preserving a comma inside a label and its saved order.
+
+- **313 deterministic tests passed, zero failed, 4,724 assertions / 24 files**,
+  including **18 search scenarios**. New composed regressions cover producing
+  Bot counts/facets, a later clarification's exact receipt date across restart,
+  and real one-press email approval excluded from history while typed text stays.
+- **10/10 Chromium scenarios passed, 158 assertions / 4 files** across Search,
+  Memory, Routines and Models. The two Search cases cover English 1440px and
+  Thai 390px, committed mutation response loss, offline withholding, completed
+  service restart, same-session original receipt recovery without another POST,
+  comma-label editing/unchanged round trip, and a different authenticated service
+  binding withholding the old pending command without lookup or replay. Both
+  layouts have no overflow (including the label editor), external request,
+  page error or search localStorage. Label-editor screenshots were inspected.
+- Frozen installation, root typecheck, whitespace and upstream validation passed
+  (**2 inventoried upstream files / 6 licenses**); no dependency/source import added.
+- A fresh clean-source native desktop package was built and its complete seal
+  reverified at the current runtime: **130 files / 15,676,164 bytes**, release ID
+  `5e70b70549ee20fc3f9f94899ab2f3034bedf77b16ad75d5cdfca9f987583bdb`.
+  Bun 1.4.2, Playwright 1.64.1, lock SHA-256
+  `05901663c7a3f9c3fd8e75b26adb6cb147313f41ffdb5417f9531a21ebce3076`.
+  This is native package integrity, not a physical-device/account/cutover receipt.
+
+An initial new browser assertion incorrectly expected private controls to remain
+visible while offline. The final assertion requires the entire Search view to
+be withheld. The restart fixture also now completes composition while reads are
+held offline, before reconnect; its earlier `503 service_closed` was a teardown
+overlap. Final runs above passed without weakening recovery/privacy assertions.
+
+## Initial evidence retained for provenance
+
+Initial runtime implementation:
 `d4535a0e9f800fb4ea5f372831a6d8f418517eab`; test-only focus synchronization:
 `a6e579fe0156e0e35ccec29961c0c130f629ee40`. The latter waits for actual focus
 restoration after the existing animation-frame callback, retaining the same

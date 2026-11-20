@@ -14,8 +14,10 @@ requests as well as discussion, clarification replies and steers, beyond the 32-
 windows. Work means the distinct, separately assigned WORK responsibilities;
 their original IDs are not aliased with CHAT request IDs. Both remain searchable
 in All, without pretending a conversation request is an assigned responsibility.
-A clarification/steer retains its own command ID and opens its original root
-request; decisions without text do not become synthetic history messages.
+A clarification/steer retains its own command ID and saved receipt timestamp,
+and opens its original root request. Structured one-press decisions are not
+owner-authored history, even when their compatibility command contains generated
+text. Ordinary text actually typed by the owner remains history.
 
 Every read resolves current ownership, generation, original service guards,
 file/claim/source withdrawals and MEM history suppression before projecting
@@ -86,6 +88,11 @@ recovers that original command, checks current target visibility and returns no
 cached object content. A missing identity returns 404. Never convert an unknown
 label mutation into a new command automatically. Source withdrawal also blocks
 command recovery; it does not erase the owner's source or execute anything.
+The browser retains unresolved original commands only in App RAM across private
+view remounts, bound to the established authenticated continuity marker. Offline
+withholds all private results. Reconnect with the same binding permits read-back;
+lost authentication or a changed binding clears pending commands before exposure.
+No command or result is persisted in browser storage.
 
 Additive tables hold at most 10,000 object label sets and 10,000 command
 receipts; capacity refuses new admissions without evicting unknown receipts.
