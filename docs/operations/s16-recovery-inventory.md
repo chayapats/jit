@@ -2,11 +2,11 @@
 
 Status: implementation audit for [OPS16-01](https://github.com/chayapats/jit/issues/429),
 not an implemented backup protocol or release acceptance. Audited base:
-`eeda821a1e611e598f5dac829bfc386d5d00912c`. The additional computer backend
-and mobile delivery remain separately reviewed in PRs
-[473](https://github.com/chayapats/jit/pull/473) and
-[471](https://github.com/chayapats/jit/pull/471). Reconcile their final merged
-revisions before freezing the aggregate format contract.
+`95a958e99d5903c4804bba79b92e3cfa940e77d2`, including the additional computer
+backend merged in [PR 473](https://github.com/chayapats/jit/pull/473).
+Mobile delivery remains separately reviewed in
+[PR 471](https://github.com/chayapats/jit/pull/471). Reconcile its final merged
+revision before freezing the complete cross-client acceptance matrix.
 
 Scope: S16-AC21; FR-04/15/18/23/35/38; NFR-02/04/05/08/09/12.
 The [S16 spec](../specs/S16-rakazo-experience.md), retained
@@ -53,8 +53,20 @@ number. At this base, CHAT supports formats 1 through 5 only with the matching
 composition; FILE supports 1/2/3; TEAM and MEM additionally distinguish file and
 DATA15 ancestry. Record both the actual SQLite header and logical version after
 settlement. Restoring `composition.json` alone cannot undo an adopted reader
-fence. PR #473 additionally introduces VM physical/portable readers and
-separate helper/controller journals; their final formats must join this matrix.
+fence. VM readers 1/2/3 cover original, physical and portable custody. The root
+Firecracker helper separately uses formats 1/2; its controller's original
+intent journal uses format 1. Browser continuity is an important exception:
+its historical header has application/version zero, so the actual owning
+resource row and schema must be validated rather than inferring an identity
+from zero.
+
+The first implemented internal primitive is
+[`s16-ledger-image/v1`](../contracts/s16-ledger-image-v1.md): a bounded streamed
+header/hash observation that never opens SQLite or supplies admission
+authority. Owning-store tests show that closing a WAL connection alone need
+not remove its sidecars. The aggregate capturer therefore needs an explicit
+settled snapshot protocol; the observer refuses sidecars and never deletes
+them to make an image appear complete.
 
 ## State outside the composition manifest
 
