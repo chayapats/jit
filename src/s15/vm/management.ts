@@ -1,3 +1,4 @@
+import { qemuBackend } from "./descriptor";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -9,6 +10,7 @@ import { vmFail, vmInteger } from "./validation";
 export interface LimaVmOptions { instance: string; limaHome?: string; run?: VmHostCommand; env?: Readonly<Record<string, string>> }
 /** Protected Lima/QEMU lifecycle. Snapshots stop the VM and remain on the host disk; authority is never restored. */
 export class LimaVmManagement implements VmManagement {
+  get backend() { return qemuBackend({ implementation: "jit-lima-qemu/v1", fixture: !!this.options.run }); }
   readonly #run: VmHostCommand;
   #sshPort: number | null = null;
   constructor(readonly options: LimaVmOptions) {
@@ -89,6 +91,7 @@ export interface ProxmoxVmOptions {
 }
 /** Proxmox management adapter uses only the enrolled VM path and token-owned task status. TLS verification stays enabled. */
 export class ProxmoxVmManagement implements VmManagement {
+  get backend() { return qemuBackend({ implementation: "jit-proxmox-qemu/v1", fixture: !!this.options.fetch }); }
   readonly #fetch: typeof fetch;
   readonly #base: string;
   constructor(readonly options: ProxmoxVmOptions) {

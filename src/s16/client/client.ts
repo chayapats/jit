@@ -1,3 +1,5 @@
+import { workingStateManifest, workingStateImport, workingStateView, type WorkingStateManifest, type WorkingStateImport, type WorkingStateView } from "./working-state";
+import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
 import type { SearchItem, SearchKind, SearchLabelCommand, SearchLabelReceipt, SearchPage, SearchQuery, SearchTarget } from '../search/contracts';
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
@@ -599,6 +601,33 @@ export class JitClient {
     return record(value) && identifier(value.id) && count(value.revision) && ["mcp", "openapi", "graphql"].includes(value.kind as string) && typeof value.label === "string" && typeof value.endpoint === "string"
       && ["authorizing", "needs_review", "active", "reconnect_required", "unavailable"].includes(value.state as string) && Array.isArray(value.tools) && value.tools.length <= 128 && Array.isArray(value.bots);
   }
+  /** Protected recovery metadata. This read never opens a computer or transfers file bytes. */
+  async workingState(signal?: AbortSignal): Promise<WorkingStateView> {
+    const data = await this.call('/computers/working-state', 'GET', undefined, signal);
+    if (!await workingStateView(data)) throw new JitClientError('client_protocol_invalid', null, 'response'); return data as WorkingStateView;
+  }
+  /** Capture exact selected work files once. An unknown reply is checked through its original package id. */
+  async captureWorkingState(input: { requestId: string; workId: string; paths: string[] }, signal?: AbortSignal): Promise<WorkingStateManifest> {
+    if (!/^[a-f0-9]{32}$/.test(input.requestId) || !identifier(input.workId)) throw new JitClientError('invalid_body', null, 'not_sent', input.requestId);
+    const data = await this.call('/computers/working-state/capture', 'POST', input, signal, input.requestId);
+    if (!await workingStateManifest(data) || (data as WorkingStateManifest).id !== input.requestId) throw new JitClientError('client_protocol_invalid', null, 'unknown', input.requestId); return data as WorkingStateManifest;
+  }
+  /** Immutable original manifest read after response loss; capture is never resubmitted. */
+  async workingStatePackage(id: string, signal?: AbortSignal): Promise<WorkingStateManifest> {
+    if (!/^[a-f0-9]{32}$/.test(id)) throw new JitClientError('invalid_body', null, 'not_sent'); const data = await this.call('/computers/working-state/packages/' + id, 'GET', undefined, signal);
+    if (!await workingStateManifest(data) || (data as WorkingStateManifest).id !== id) throw new JitClientError('client_protocol_invalid', null, 'response'); return data as WorkingStateManifest;
+  }
+  /** Exact reviewed hash and destination, to a fresh current scope; never silently retried. */
+  async importWorkingState(input: { requestId: string; packageId: string; manifestSha256: string; vmId: string }, signal?: AbortSignal): Promise<WorkingStateImport> {
+    if (!/^[a-f0-9]{32}$/.test(input.requestId) || !/^[a-f0-9]{32}$/.test(input.packageId) || !sha256(input.manifestSha256) || !identifier(input.vmId)) throw new JitClientError('invalid_body', null, 'not_sent', input.requestId);
+    const data = await this.call('/computers/working-state/imports', 'POST', input, signal, input.requestId);
+    if (!workingStateImport(data) || data.id !== input.requestId || data.packageId !== input.packageId || data.manifestSha256 !== input.manifestSha256 || data.destination.vmId !== input.vmId) throw new JitClientError('client_protocol_invalid', null, 'unknown', input.requestId); return data;
+  }
+  /** Explicit read-back of the original final subtree. It sends no pending file/rename operation again. */
+  async inspectWorkingState(id: string, signal?: AbortSignal): Promise<WorkingStateImport> {
+    if (!/^[a-f0-9]{32}$/.test(id)) throw new JitClientError('invalid_body', null, 'not_sent'); const data = await this.call('/computers/working-state/receipts/' + id, 'POST', {}, signal, id);
+    if (!workingStateImport(data) || data.id !== id) throw new JitClientError('client_protocol_invalid', null, 'unknown', id); return data;
+  }
   /** TEAM16-01 working computers: shared/private computers, their observed state and each Bot's computer. Reading starts or stops nothing. */
   async computers(signal?: AbortSignal): Promise<ComputersView> {
     const data = await this.call("/computers", "GET", undefined, signal);
@@ -657,9 +686,9 @@ export class JitClient {
       && record(data.scope) && (data.scope.kind === "shared" || data.scope.kind === "private" && identifier(data.scope.botId));
   }
   private computersView(data: unknown): data is ComputersView {
-    if (!record(data) || data.contract !== "s16-client-computers/v1" || data.idleStopMs !== null && !count(data.idleStopMs) || !Array.isArray(data.computers) || data.computers.length > 64 || !Array.isArray(data.bots) || data.bots.length > 64 || !record(data.privateCreation)) return false;
+    if (!record(data) || data.contract !== "s16-client-computers/v1" || data.workingState !== undefined && typeof data.workingState !== "boolean" || data.idleStopMs !== null && !count(data.idleStopMs) || !Array.isArray(data.computers) || data.computers.length > 64 || !Array.isArray(data.bots) || data.bots.length > 64 || !record(data.privateCreation)) return false;
     const states = ["running", "sleeping", "starting", "stopping", "stopped", "setting_up", "setup_failed", "attention"];
-    return data.computers.every(item => record(item) && identifier(item.id) && typeof item.isDefault === "boolean" && record(item.scope) && (item.scope.kind === "shared" || item.scope.kind === "private" && identifier(item.scope.botId)) && states.includes(item.state as string) && (item.reason === null || typeof item.reason === "string") && count(item.activeSessions) && count(item.capacity) && count(item.works) && (item.sleepsAt === null || count(item.sleepsAt)))
+    return data.computers.every(item => record(item) && identifier(item.id) && typeof item.isDefault === "boolean" && record(item.scope) && (item.scope.kind === "shared" || item.scope.kind === "private" && identifier(item.scope.botId)) && states.includes(item.state as string) && (item.reason === null || typeof item.reason === "string") && count(item.activeSessions) && count(item.capacity) && (item.backend === undefined || item.backend === null || isVmBackendDescriptor(item.backend, item.id as string)) && count(item.works) && (item.sleepsAt === null || count(item.sleepsAt)))
       && data.bots.every(bot => record(bot) && identifier(bot.id) && typeof bot.main === "boolean" && record(bot.computer) && (bot.computer.kind === "shared" || bot.computer.kind === "private" && identifier(bot.computer.vmId)));
   }
   /** Owner routines with derived display state. Reading never ticks, dispatches or marks anything seen. */

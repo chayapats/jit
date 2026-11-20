@@ -105,3 +105,5 @@
 .search-pagination { display: flex; justify-content: space-between; padding-block: 20px; border-block-start: 1px solid var(--line); }
 .search-empty { padding: 32px 0; }
 @media (max-width: 650px) { .search-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); } .search-heading { gap: 12px; } .search-result { padding-block: 18px; } }
+
+.working-state{margin-top:24px;min-width:0}.working-state select,.working-state textarea{width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg);color:var(--text)}.working-state textarea{min-height:96px;font:14px/1.5 ui-monospace,monospace}.working-state label{display:block;font-weight:600}

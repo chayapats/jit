@@ -39,7 +39,9 @@ import type { NotificationLimits } from '../s16/notifications/types';
 import { committedArtifacts } from '../s16/artifacts';
 import { FileStore } from '../s16/files/store';
 import { createFileWorkflow } from '../s16/files/workflow';
-import type { FileLineagePort } from './file-lineage';
+import { filePins, type FileLineagePort } from './file-lineage';
+import { dataRefs } from './data-lineage';
+import { WorkingStateService } from '../s16/computers/working-state';
 import type { FileLimits } from '../s16/files/types';
 import { createHostCredentialLifecycle, type HostAuthFetch, type HostClock, type HostCredentialStore, type Model } from 'schway/host';
 import { AppError } from '../errors';
@@ -407,7 +409,8 @@ export async function composeS15(options: S15CompositionOptions) {
       // DESK16-01 (ADR 0091 decision 5): the desktop browser lease never reaches a sensitive-only site.
       ...(options.vm.local.desktop ? { desktopDeny: (host: string) => websiteSensitiveOnly(`https://${host}`) } : {}) }) : null;
     if (localVm) cleanup.push(() => localVm.close());
-    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
+    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, firecracker: { directory: join(root, 'vm-firecracker'), installationId: options.installationId }, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
+    if (managers instanceof VmManagers) cleanup.push(() => managers.close());
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     if (options.screen && !scopes) throw new AppError('invalid_s15_config');
     const screenDevices = new WeakMap<object, VmScreenDevice>();
@@ -449,7 +452,8 @@ export async function composeS15(options: S15CompositionOptions) {
         if (row.state !== 'ready' || previous && previous.generation !== row.generation) computerBrowser!.invalidate(row.id);
       }));
     }
-    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, ...(disclosure ? { disclosure } : {}), ...(screen ? { screen } : {}),
+    let workingState: WorkingStateService | null = null;
+    const vm = new WorkingVmService({ store: vmStore, policy: vmIntegration.bind(policy), managers, requireOwner, workingStateCurrent: (id, actor) => workingState?.current(id, actor), ...(disclosure ? { disclosure } : {}), ...(screen ? { screen } : {}),
       ...(options.vm.transport ? { transport: options.vm.transport } : {}), ...(options.vm.limits ? { limits: options.vm.limits } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       ...(localVm ? { proxyLease: localVm.lease } : {}), ...(options.computers ? { idle: { stopAfterMs: options.computers.idleStopMs } } : {}) });
     if (localVm) {
@@ -458,7 +462,8 @@ export async function composeS15(options: S15CompositionOptions) {
       cleanup.push(async () => { reattach.abort(); await reattaching; });
     }
     // Placement runs before the TEAM lease so the lease, its fence and its stop-proof link name the exact member.
-    const placedVm = placeWorkingVm(coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore, { partition: options.computers ? 'workspace' : 'member' }), pool,
+    const coordinatedVm = coordinateWorkingVm(vm, team, options.vm.resource.id, vmStore, { partition: options.computers ? 'workspace' : 'member' });
+    const placedVm = placeWorkingVm(coordinatedVm, pool,
       options.computers ? actor => policy.work.guard(actor as WorkActor).request.bot.id : undefined);
     const trackedVm = skillVmSessions(placedVm);
     currentSkillSession = trackedVm.session;
@@ -467,7 +472,7 @@ export async function composeS15(options: S15CompositionOptions) {
     // the VM journal's own stop proof. Runs at boot, after owner recovery/VM commands and on every drain.
     const reconcileVm = () => { try { reconcileVmLeases(team, vmStore); } catch { /* Unproven leases stay fenced. */ } };
     reconcileVm();
-    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers,
+    const enrollment = new VmEnrollment({ store: vmStore, keyDirectory: join(root, 'vm-keys'), requireOwner, managers, ...(options.vm.limits ? { limits: options.vm.limits } : {}),
       ...(options.vm.enrollmentRun ? { run: options.vm.enrollmentRun } : {}), ...(options.clock ? { now: options.clock.now } : {}),
       ...(localVm ? { proxyLease: (sessionId: string, expiresAt: number) => localVm.lease(sessionId, expiresAt), updateRegistryHosts: (hosts: readonly string[]) => localVm.setHosts(hosts) } : {}) });
     // SETUP15-01: the durable job that creates the default working computer on a KVM controller. Only the
@@ -478,7 +483,7 @@ export async function composeS15(options: S15CompositionOptions) {
     if (provisioning) cleanup.push(() => provisioning.close());
     // TEAM16-01: owner directory of shared/private working computers, private setup jobs and idle release.
     const localHostProbe = () => probeLocalVmHost(localVm!.host.directory, localVm!.host.probe);
-    const computers = scopes ? new ComputerDirectory<OwnerActor>({ store: vmStore, pool, scopes, vm, requireOwner, status: (owner, id) => enrollment.status(owner, id),
+    const computers = scopes ? new ComputerDirectory<OwnerActor>({ store: vmStore, pool, scopes, vm, requireOwner, workingState: () => workingState !== null, status: (owner, id) => enrollment.status(owner, id),
       bots: owner => { const current = policy.owner.current(owner); return (current?.bots ?? [options.conversation.bot]).map(bot => ({ id: bot.id, main: bot.id === options.conversation.bot.id })); },
       ...(localVm && managers instanceof VmManagers ? { local: {
         unavailable() { const host = localHostProbe(); if (host.state !== 'ready') return host.code; try { privateLocalVmResources(host.facts); return null; } catch (error) { return error instanceof AppError ? error.code : 'vm_host_too_small'; } },
@@ -492,6 +497,7 @@ export async function composeS15(options: S15CompositionOptions) {
     }
     const checkedManagers = new Map<string, string | null>();
     const unboundAdapter = (id: string) => { const manager = managers.get(id); return !!manager && !isVmLocalManagement(manager) && !enrolledManagers().has(id); };
+    const unboundManagerId = () => managers instanceof VmManagers ? managers.unbound(unboundAdapter) : [...managers.keys()].find(unboundAdapter) ?? null;
     const enrolledManagers = () => new Set(vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_registry').all().map(row => (JSON.parse(row.data) as { managerId: string | null }).managerId));
     const localHost = (owner: OwnerActor) => {
       requireOwner(owner); if (!localVm) return null;
@@ -535,6 +541,26 @@ export async function composeS15(options: S15CompositionOptions) {
         const current = policy.control.policyForWork(workId), used = policy.control.reservations(workId).reduce((n, row) => n + row.upperBound.calls, 0);
         return current.budget ? Math.max(0, current.budget.ceiling.calls - policy.control.usage().charged.calls) : options.subscriptionModels ? Math.max(0, options.subscriptionModels.perWork.calls - used) : null;
       }, ...(options.clock ? { now: options.clock.now } : {}) } satisfies WorkOptions); cleanup.push(() => work.close());
+    if (computers && disclosure) workingState = new WorkingStateService({ store: vmStore, policy, team, disclosure, pool, vm: coordinatedVm, ...(options.clock ? { now: options.clock.now } : {}),
+      label(owner, authority) { requireOwner(owner); const row = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY rowid LIMIT 1").get(authority.id); return row ? store.request(row.id).intent.instruction : authority.id; },
+      source(owner, authority) {
+        requireOwner(owner); const actor = policy.control.bindWork(authority.id), context = team.bind(actor);
+        const rows = store.db.query<{ id: string }, [string]>("SELECT id FROM requests WHERE json_extract(record_json,'$.authority.id')=? ORDER BY rowid LIMIT 65").all(authority.id);
+        if (!rows.length || rows.length > 64) throw new AppError('vm_portable_scope', 409);
+        let pins: import('./file-lineage').FileSourcePin[] = [], lineage: Ref[] = [], sourceIds: string[] = [], privateData = false;
+        for (const row of rows) {
+          const request = store.request(row.id); if (request.owner.generation !== authority.ownerGeneration) throw new AppError('lineage_withdrawn', 409);
+          if (request.memory) { const inherited = memory.contextLineage(context, request.receipt.rootRequestId); pins = filePins(pins, inherited.filePins); lineage = dataRefs(lineage, inherited.dataRefs); sourceIds.push(...inherited.sourceIds); privateData ||= inherited.private; }
+          if (request.fileInputs?.length) { if (!fileWorkflow) throw new AppError('file_memory_required', 503); pins = filePins(pins, fileWorkflow.memory.pins({ actor, authority }, request)); }
+          if (request.delegation?.sourceId) sourceIds.push(request.delegation.sourceId);
+        }
+        sourceIds = [...new Set(sourceIds)]; pins = filePins(pins, team.ancestry(context, sourceIds)); lineage = dataRefs(lineage, team.dataAncestry(context, sourceIds));
+        team.verifyFiles(context, pins); privateData ||= team.verifyData(context, lineage).private;
+        privateData ||= authority.request.resources.some(r => team.resource(context, r.id).scope.kind === 'bot') || disclosure!.lineage(actor).some(source => source.botIds != null);
+        const holder = pool.holder(authority.id); privateData ||= holder !== null && scopes?.privateBot(holder) != null;
+        const request = store.request(rows[0]!.id);
+        return { requestId: request.receipt.rootRequestId, conversationId: request.receipt.conversationId, responsibilityIds: work.search(owner).filter(item => item.workId === authority.id).map(item => item.id), sourceIds, filePins: pins, dataRefs: lineage, privateBotId: privateData ? authority.request.bot.id : null };
+      } });
     const modelDisclosure = disclosure && options.disclosure ? disclosure.model(options.disclosure.modelRoute) : undefined;
     const models = openModelService({ runtime: 's15', path: join(root, 'model.sqlite'), create: options.create, installationId: options.installationId, nativeDirectory: join(root, 'native-model'), policy, ...options.model, routeAuth, ...(modelDisclosure ? { disclosure: modelDisclosure } : {}),
       guardWork: workId => { activeGuards.get(workId)?.(); policy.work.guard(policy.control.bindWork(workId)); if (closing) throw new AppError('aborted'); }, ...(options.clock ? { clock: options.clock } : {}) }); cleanup.push(() => models.close());
@@ -772,11 +798,13 @@ export async function composeS15(options: S15CompositionOptions) {
       },
       computer: { vmId: options.vm.id,
         // An owner-supplied VM binds only a configured, still-unbound adapter; never the Jit-created local manager.
-        get managerId() { for (const [id] of managers) if (unboundAdapter(id)) return id; return null; }, hypervisor: null,
+        get managerId() { return unboundManagerId(); }, hypervisor: null,
         ...(provisioning ? { local: { host: localHost, job: (owner: OwnerActor) => { requireOwner(owner); return provisioning.view(); }, start: (owner: OwnerActor) => { requireOwner(owner); provisioning.start(); } } } : {}),
         pool: { members: (owner: OwnerActor) => { requireOwner(owner); return pool.members().map(member => ({ ...member, local: (() => { const row = vmStore.registration(member.id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); })(), status: enrollment.status(owner, member.id) })); },
           drain: (owner: OwnerActor, id: string, drained: boolean) => { requireOwner(owner); pool.setDrained(id, drained); },
-          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); } } : {}),
+          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); },
+            ...(managers.canPrepareFirecracker ? { preparedManager: (owner: OwnerActor) => { requireOwner(owner); const id = unboundManagerId(); return id && managers.isPreparedFirecracker(id) ? { id, pending: managers.pendingFirecracker(id) } : null; },
+              startPrepared: (owner: OwnerActor, id: string) => managers.startPrepared(owner, id) } : {}) } : {}),
           nextId: (owner: OwnerActor) => { requireOwner(owner); const job = provisioning?.view(); return pool.nextId(!!job && job.state !== 'enrolled'); } },
         begin: actor => enrollment.begin(actor),
         // POOL15-01: an added (non-default) computer is enrolled only with an unused, non-local management
@@ -861,7 +889,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return pins.every(pin => disclosure!.ownerAncestry(actor, pin).every(source => active('resource', source.resource) && (!botId || source.botIds == null || source.botIds.includes(botId))));
       } catch { return false; }
     }, ...(files ? { files } : {}), ...(routines ? { routines } : {}), ...(bots ? { bots } : {}) });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(workingState ? { workingState } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler, { origin: options.origin });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -879,7 +907,7 @@ export async function composeS15(options: S15CompositionOptions) {
       const dir = openSync(root, 'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
       added = [];
     }
-    const composed = { policy, conversation, team, memory, files, bots, connections, skills, voice, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
+    const composed = { policy, conversation, team, memory, files, bots, connections, skills, voice, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, workingState, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

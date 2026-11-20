@@ -21,6 +21,10 @@ export interface VmHostCommand {
   (argv: readonly string[], options: { input?: Uint8Array; timeoutMs: number; maxBytes: number; signal?: AbortSignal;
     env?: Readonly<Record<string, string>>; beforeStart?: () => void }): Promise<{ stdout: Uint8Array; exitCode: number }>;
 }
+/** Protected connection identity; a vsock selection is usable only through its verified host forwarder. */
+export type VmPhysicalBinding = { kind: "nic"; mac: string } | {
+  kind: "firecracker-vsock"; instanceId: string; guestCid: number; guestPort: number; selectionSha256: string;
+};
 /** Independently owned hypervisor observation. Guest output is never such an observation. */
 export interface VmMachineState {
   state: "running" | "stopped";
@@ -32,11 +36,19 @@ export interface VmMachineState {
   network: "isolated" | "proxy-only" | "unproven";
   /** NIC identity read from protected hypervisor configuration, never from a guest report. */
   nicMac?: string;
+  /**
+   * Alternative to nicMac. Only the protected manager may supply this after verifying its exact host
+   * process/jail/disk selection and guarded host-initiated vsock forwarder. API/guest metadata alone
+   * must never populate it. The forwarder's exact loopback endpoint is required in sshEndpoint.
+   */
+  binding?: VmPhysicalBinding;
   /** Lima/local QEMU protected host-forward binds the loopback SSH endpoint as well as the NIC. */
   sshEndpoint?: { host: string; port: number };
 }
 /** Protected, VM-scoped management. Credentials remain in this implementation, outside the guest. */
 export interface VmManagement {
+  /** Protected implementation facts; absent facts stay unknown rather than inferred from a display label. */
+  readonly backend?: VmBackendProfile;
   inspect(): Promise<VmMachineState>;
   /** Explicit protected start never replays an old work command. */
   start?(): Promise<void>;
@@ -107,6 +119,16 @@ export interface VmSession {
    * path component) within the work root. Neither is a model tool; the protected file workflow owns them.
    */
   readonly transfer?: VmTransfer;
+  /** Host-only reviewed state transfer, separately claimed under this exact session and TEAM lease. */
+  readonly portable?: VmPortableTransfer;
+}
+/** Original staged tree mutation. Unknown responses permit inspection only, never an automatic replay. */
+export interface VmPortableTransfer {
+  capture(paths: readonly string[]): Promise<import('./portable-protocol').PortableFileBytes[]>;
+  begin(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<void>;
+  put(id: string, files: readonly import('./portable-protocol').PortableFile[], file: import('./portable-protocol').PortableFileBytes): Promise<void>;
+  commit(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<string>;
+  inspect(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<string | null>;
 }
 /** Bounded protected byte transfer of one execution session; see `VmSession.transfer`. */
 export interface VmTransfer {
@@ -116,6 +138,8 @@ export interface VmTransfer {
 /** Conversation-facing port. A system session takes an exclusive VM lease and requires a protected snapshot. */
 export interface WorkingVmPort {
   openAttempt(actor: object, input: { vmId: string; workId: string; attemptId: string; signal?: AbortSignal;
+    /** Protected owning-source fence, retained through waits; never accepted from guest/model JSON. */
+    guard?: () => void;
     mode?: "work" | "system"; access?: "inspect" | "execute" }): Promise<VmSession>;
 }
 /** Owner-visible capability evidence. Configured adapters alone are unproven, never a live certification. */
@@ -129,4 +153,18 @@ export interface VmStatus {
   reason: string | null;
   capabilities: readonly VmCapability[];
   facts: VmMachineFacts | null;
+  /** Versioned placement facts. Configuration is never a live isolation/settlement certificate. */
+  backend?: VmBackendDescriptor | null;
+}
+/** Supported implementation profile; only the owning management adapter constructs it. */
+export interface VmBackendProfile {
+  provider: "qemu" | "firecracker"; implementation: string; apiVersion: string;
+  hypervisorVersion: string | null; platform: { os: string; architecture: string } | null;
+  basis: "configured" | "protocol_fixture" | "host_verified";
+  features: Record<"shell" | "filesystem" | "sudo" | "externalNetwork" | "browser" | "desktop" | "coldRecovery" | "strongStop", "available" | "restricted" | "unavailable" | "unproven">;
+}
+/** Credential-free finite capability projection used before choosing a computer. */
+export interface VmBackendDescriptor extends VmBackendProfile {
+  contract: "s16-computer-backend/v1"; computerId: string; generation: number;
+  limits: { cpuCount: number; memoryBytes: number; diskBytes: number; sessions: number; commandMs: number; fileBytes: number };
 }

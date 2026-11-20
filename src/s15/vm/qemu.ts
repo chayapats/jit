@@ -1,3 +1,4 @@
+import { qemuBackend } from "./descriptor";
 import { desktopCdpRelay, desktopCdpAttach, desktopSessionRevision } from "./desktop-programs";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -161,6 +162,7 @@ const wait = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((
  * VM stopped. Protected Jit state is outside the guest and is never part of a snapshot.
  */
 export class QemuVmManagement implements VmLocalManagement {
+  get backend() { return qemuBackend({ implementation: "jit-local-qemu/v1", fixture: !!(this.host.run || this.host.proc || this.host.qmp), platform: { os: "linux", architecture: this.identity.architecture }, desktop: !!this.host.desktop }); }
   readonly #run: VmHostCommand;
   readonly #qmp: QmpExchange;
   readonly #proc: QemuProc;

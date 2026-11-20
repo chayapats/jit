@@ -16,6 +16,9 @@ browserTest.each([1440, 390])("actual S16 computers page: scopes, sleep now and 
   const second: VmManagement = { async inspect() { return { state: "running", identity: "fixture2", boot: "boot", cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: "isolated", nicMac: "52:54:00:12:34:56" }; }, async stop() {}, async start() {}, async snapshot() {}, async restore() {}, async retireSnapshot() {} };
   const f = await composedFixture("default", false, undefined, o => ({ ...o, computers: { idleStopMs: 30 * 60_000, sweepMs: 0 }, vm: { ...o.vm, managers: new Map([...o.vm.managers, ["manager2", second]]) } }));
   f.service.vmStore.save({ ...f.service.vmStore.registration("vm"), id: "vm2", managerId: "manager2", machineIdentity: "fixture2" });
+  const offline = { provider: "firecracker" as const, implementation: "firecracker-offline-vsock/v1", apiVersion: "1.18.0", hypervisorVersion: "1.18.0", platform: null, basis: "protocol_fixture" as const,
+    features: { shell: "available" as const, filesystem: "available" as const, sudo: "available" as const, externalNetwork: "unavailable" as const, browser: "unavailable" as const, desktop: "unavailable" as const, coldRecovery: "available" as const, strongStop: "available" as const } };
+  f.service.vmStore.save({ ...f.service.vmStore.registration("vm2"), backend: { profile: offline, cpuCount: 2, memoryBytes: 512 * 1048576, diskBytes: 128 * 1048576 } });
   f.service.computerScopes!.assignPrivate("vm2", "specialist");
   const copy = width === 1440 ? en : th, locale = width === 1440 ? "en-US" : "th-TH";
   const context = await browser.newContext({ viewport: { width, height: 900 }, locale, timezoneId: "Asia/Bangkok" });
@@ -35,6 +38,11 @@ browserTest.each([1440, 390])("actual S16 computers page: scopes, sleep now and 
     const shared = page.getByRole("article", { name: copy["s16.computers.shared"] }), mine = page.getByRole("article", { name: copy["s16.computers.private"].replace("{bot}", "specialist") });
     await shared.getByText(copy["s16.computers.state.running"], { exact: true }).waitFor();
     await mine.waitFor();
+    await mine.getByText(copy["s16.computers.capabilities"], { exact: true }).click();
+    await mine.getByText("firecracker · 1.18.0", { exact: true }).waitFor();
+    await mine.getByText(copy["s16.computers.feature.externalNetwork"] + ": " + copy["s16.computers.featureState.unavailable"], { exact: true }).waitFor();
+    expect(await mine.getByRole("button", { name: copy["s16.screen.watch"], exact: true }).count()).toBe(0);
+
     const bots = page.locator(".computer-bots li");
     expect(await bots.count()).toBe(2);
     await bots.filter({ hasText: copy["s16.computers.mainBot"] }).getByText(copy["s16.computers.usesShared"], { exact: true }).waitFor();

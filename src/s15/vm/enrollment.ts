@@ -1,8 +1,10 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { VmHostCommand, VmManagement, VmStatus, VmCapability, VmMachineFacts } from "./types";
+import { defaultVmLimits } from "./types";
+import { vmBackendDescriptor } from './descriptor';
+import type { VmHostCommand, VmManagement, VmStatus, VmCapability, VmMachineFacts, VmLimits } from "./types";
 import { vmHostCommand, vmQuote } from "./host";
-import { vmEndpoint, vmFail, vmId, vmInteger, vmRecord } from "./validation";
+import { vmEndpoint, vmFail, vmId, vmInteger, vmRecord, vmLimits } from "./validation";
 import { defaultVmRegistryHosts } from "./proxy";
 import { VmSshTransport } from "./transport";
 import { VmStore, type VmRegistration } from "./store";
@@ -10,7 +12,7 @@ import { probeVmDirectEgress } from "./network";
 import { isIP } from "node:net";
 import { createHash } from "node:crypto";
 import { registerSecretFingerprint } from "../../security/secret-fingerprints";
-import { vmIdentityMatches } from "./binding";
+import { vmHasBinding, vmIdentityMatches, vmPhysicalBinding } from "./binding";
 import { isVmLocalManagement, type QemuProvisionStep } from "./qemu";
 import type { VmEndpoint } from "./types";
 import type { VmProxyLease } from "./proxy";
@@ -26,11 +28,12 @@ export class VmEnrollment {
   readonly #checks = new Map<string, { input: Omit<VmEnrollmentInput, "id">; fingerprint: string; expiresAt: number }>();
   readonly #local = new Set<string>();
   constructor(readonly options: { store: VmStore; keyDirectory: string; requireOwner: (actor: object) => void;
-    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number;
+    managers: ReadonlyMap<string, VmManagement>; updateRegistryHosts?: (hosts: readonly string[]) => void; run?: VmHostCommand; now?: () => number; limits?: VmLimits;
     /** Bounded provisioning proxy lease for a Jit-created local VM (Docker install); never an account credential. */
     proxyLease?: (sessionId: string, expiresAt: number) => VmProxyLease }) {
     if (!options.keyDirectory.startsWith("/") || resolve(options.keyDirectory) !== options.keyDirectory) vmFail("vm_invalid_setup");
     mkdirSync(options.keyDirectory, { recursive: true, mode: 0o700 });
+    vmLimits(options.limits ?? { ...defaultVmLimits });
     const stat = lstatSync(options.keyDirectory); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077)) vmFail("vm_key_directory_unsafe");
     options.store.db.exec("CREATE TABLE IF NOT EXISTS vm_settings (id TEXT PRIMARY KEY,data TEXT NOT NULL)");
   }
@@ -56,7 +59,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     return { architecture: r.architecture, os: r.os, cpuCount: Number(r.cpuCount), memoryBytes: Number(r.memoryBytes), diskBytes: Number(r.diskBytes), sudo: true, docker: r.docker, basis: "guest_reported" };
   }
   private capabilities(row: VmRegistration): readonly VmCapability[] {
-    const manager = !!row.bindingMac && row.managerId !== null && this.options.managers.has(row.managerId);
+    const manager = vmHasBinding(row) && row.managerId !== null && this.options.managers.has(row.managerId);
     const observed = (kind: string) => !!this.options.store.db.query("SELECT sequence FROM vm_events WHERE vm_id=? AND kind=? LIMIT 1").get(row.id, kind);
     return [{ id: "network-isolated", state: row.networkIsolated && row.state === "ready" ? "proven" : "unproven", reason: row.networkIsolated ? null : "vm_network_unproven" },
       { id: "snapshot-recovery", state: manager ? observed("restore") ? "proven" : "unproven" : "unavailable", reason: manager ? null : "vm_recovery_unavailable" },
@@ -165,28 +168,34 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     const ready = await transport.control(["sudo", "-n", "python3", "-I", "-c", "import os,subprocess;assert os.getuid()==0;subprocess.run(['systemctl','--version'],check=True,stdout=subprocess.DEVNULL);print('jit-vm-ready-v1')"]);
     if (ready.trim() !== "jit-vm-ready-v1") vmFail("vm_prerequisite_missing", 503);
     const manager = input.managerId ? this.options.managers.get(input.managerId)! : null;
-    const machine = manager ? await manager.inspect() : null;
+    const machine = manager ? structuredClone(await manager.inspect()) : null;
     const bound = !!machine && await vmIdentityMatches(transport, machine, endpoint);
     const directDenied = await probeVmDirectEgress(transport);
     check();
+    if (bound && machine?.binding) this.options.store.enableVsockBindings();
     return this.options.store.transaction(() => {
       check();
       if (this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(input.id)) vmFail("vm_already_enrolled");
+      if (bound && machine?.binding?.kind === "firecracker-vsock" && this.options.store.db.query<{ data: string }, []>("SELECT data FROM vm_registry").all().some(existing => JSON.parse(existing.data).machineIdentity === machine.identity)) vmFail("vm_already_enrolled");
       const networkIsolated = bound && directDenied && !!machine && machine.network !== "unproven";
       const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId : null,
         state: networkIsolated ? "ready" : "unproven", networkCheckedAt: (this.options.now ?? Date.now)(), networkIsolated, facts,
-        ...(bound ? { bindingMac: machine!.nicMac } : {}),
+        ...(bound ? machine!.binding ? { binding: vmPhysicalBinding({ binding: machine!.binding })! } : { bindingMac: machine!.nicMac! } : {}),
+        ...(bound && manager?.backend ? { backend: { profile: manager.backend, cpuCount: machine!.cpuCount, memoryBytes: machine!.memoryBytes, diskBytes: machine!.diskBytes } } : {}),
         maxSessions: input.maxSessions, reason: networkIsolated ? null : machine && !bound ? "vm_identity_unproven" : "vm_network_unproven", machineIdentity: bound ? machine!.identity : null, boot: bound ? machine!.boot : null };
       this.options.store.save(row); saved?.();
-      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      return { id: row.id, generation: row.generation, state: row.state, networkIsolated, recoveryAvailable: bound, activeSessions: 0, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null, backend: this.descriptor(row) };
     });
+  }
+  private descriptor(row: VmRegistration): Exclude<VmStatus['backend'], undefined> {
+    return vmBackendDescriptor(row, this.options.limits ?? defaultVmLimits);
   }
   /** Owner-only status; this query starts no VM/session, returns no credentials or raw endpoints. */
   status(actor: object, id: string): VmStatus {
     this.options.requireOwner(actor); vmId(id); const row = this.options.store.registration(id);
     const count = this.options.store.db.query<{ n: number }, [string]>("SELECT count(*) n FROM vm_sessions WHERE vm_id=? AND state<>'closed'").get(id)!.n;
     return { id, generation: row.generation, state: row.state, networkIsolated: row.networkIsolated && row.state === "ready",
-      recoveryAvailable: !!row.bindingMac && row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null };
+      recoveryAvailable: vmHasBinding(row) && row.managerId !== null && this.options.managers.has(row.managerId), activeSessions: count, maxSessions: row.maxSessions, reason: row.reason, capabilities: this.capabilities(row), facts: row.facts ?? null, backend: this.descriptor(row) };
   }
   /** Owner-only exact approved registry settings, persisted outside the guest and ordinary VM recovery. */
   registryHosts(actor: object): readonly string[] {

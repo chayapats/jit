@@ -1,3 +1,5 @@
+import { vmHasBinding } from "./binding";
+import type { VmPhysicalBinding } from "./types";
 import { randomBytes } from "node:crypto";
 import type { VmStore } from "./store";
 import type { VmSession, WorkingVmPort } from "./types";
@@ -23,7 +25,7 @@ export interface VmPoolOptions {
   /** TEAM16-01: members Jit stopped for idleness are placeable; the VM service starts them on demand. */
   wakeable?: boolean;
 }
-interface Candidate { id: string; state: string; networkIsolated: boolean; bindingMac?: string; maxSessions: number; reason: string | null }
+interface Candidate { id: string; state: string; networkIsolated: boolean; bindingMac?: string; binding?: VmPhysicalBinding; maxSessions: number; reason: string | null }
 /** Registry reason the VM service writes when it stopped an idle member itself (`vmIdleReason`). */
 const idleReason = "vm_idle";
 
@@ -82,7 +84,7 @@ export class VmPool {
     const scope = this.options.scope;
     if (scope && botId === undefined) vmFail("outside_scope", 403);
     // A member Jit stopped for idleness, or one it is starting right now, is placeable: the VM service starts or joins its start.
-    const sleeping = (row: Candidate) => !!this.options.wakeable && !!row.bindingMac && (row.state === "stopped" && row.reason === idleReason || row.state === "uncertain" && row.reason === "vm_waking");
+    const sleeping = (row: Candidate) => !!this.options.wakeable && vmHasBinding(row) && (row.state === "stopped" && row.reason === idleReason || row.state === "uncertain" && row.reason === "vm_waking");
     const bound = this.holder(workId);
     if (bound) {
       // A work's workspace never moves, and a private member never serves another Bot's work.
@@ -96,7 +98,7 @@ export class VmPool {
     const own = scope ? scope.assigned(botId!) : [];
     const rows = this.rows().filter(row => !scope || (own.length ? own.includes(row.id) && scope.privateBot(row.id) === botId : scope.privateBot(row.id) === null));
     if (own.length && !rows.length) vmFail("vm_private_preparing", 423);
-    const ready = rows.filter(row => row.state === "ready" && row.networkIsolated && !!row.bindingMac || sleeping(row));
+    const ready = rows.filter(row => row.state === "ready" && row.networkIsolated && vmHasBinding(row) || sleeping(row));
     const open = ready.filter(row => !this.drained(row.id));
     const scored = open.map(row => ({ row, active: this.active(row.id), capacity: this.capacity(row), asleep: sleeping(row) })).filter(item => !item.active.system && item.active.count < item.capacity);
     if (!scored.length) {
