@@ -90,7 +90,9 @@ current cuts, complete FILE/GitHub catalogs and separate
 and atomically publishes one independently receipted control-plane point. Device
 secure stores, credentials, profiles, live disks and root-helper state remain
 separately retained; their physical settlement is not inferred from the point.
-Forward activation, ordinary export and full lifecycle acceptance remain required.
+The separate [ordinary owner export](../contracts/s16-owner-export-v1.md) uses
+current owning projections. Forward activation and full lifecycle acceptance
+remain required.
 
 ## State outside the composition manifest
 

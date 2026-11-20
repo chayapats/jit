@@ -4,8 +4,9 @@ Status: OPS16-01 implementation in progress in
 [#429](https://github.com/chayapats/jit/issues/429). The available operator
 commands adopt/inspect protected operations metadata, capture a current protected
 control-plane point, abort an interrupted backup and explicitly retire receipted
-historical points or independently owned temporary staging. Ordinary
-export, forward restore and complete upgrade/uninstall remain in progress.
+historical points or independently owned temporary staging. The authenticated
+client additionally exports ordinary current content/settings. Forward restore
+and complete upgrade/uninstall remain in progress.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
 Run from the verified selected source package, with its pinned Bun and explicit
@@ -49,8 +50,41 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
-cutover; forward recovery still needs ordinary export, quarantine/activation,
+cutover; forward recovery still needs quarantine/activation,
 compatible release/client lifecycle selection.
+
+## Ordinary owner export
+
+The available **Export your data** entry in the S16 rail opens a current-scope
+dialog. Choose sections, optionally a conversation/creation dates, then download
+`jit-export.json`. English/Thai copy, keyboard focus and narrow-screen navigation
+use the same shared client. The server rechecks current ownership, publication,
+memory/resource/private scope and withdrawals before releasing the download.
+No operator filesystem credential or archive can produce this ordinary download.
+
+The [export contract](../contracts/s16-owner-export-v1.md) defines full current
+conversation/memory/work text, committed deliverables, sent text/sanitized image
+copies and inert Bot/routine/connection/skill settings. Unsent/untrusted uploads,
+raw binary originals, private skill bodies, credentials, grants and protected
+recovery state are outside this ordinary format. Connections require reconnect;
+settings do not install policies or enable execution.
+
+Select fewer sections or a narrower scope after capacity refusal (4,096 records,
+16 MiB complete JSON, 8 MiB encoded member). Changed sources require a fresh
+explicit download. Empty scopes show no available content; expired authentication
+clears the private UI. There is no automatic retry or private export cache.
+An already downloaded copy belongs to the owner; later withdrawal cannot recall it.
+
+The copied-package drill below requires a clean selected source checkout and a
+local Chrome executable (override with `JIT_BROWSER_EXECUTABLE`). It seals the
+package and dependencies, runs owning service/client conformance plus the actual
+English/Thai browser download at widths 1440/390, then verifies unchanged package
+bytes and writes a private fresh receipt. Fixtures and screenshots remain outside
+the immutable artifact; no live account/provider or native device is exercised.
+
+```sh
+bun ops/evidence/s16-owner-export.ts --receipt /absolute/private/fresh-export-receipt.json
+```
 
 ## Protected current control-plane backup
 

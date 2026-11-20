@@ -3,7 +3,8 @@
 Status: selected OPS16-01 aggregate source contract under
 [ADR 0104](../adr/0104-s16-forward-recovery-and-retained-admission.md).
 The [protected producer](s16-point-capture-v1.md) implements current control-plane
-backup and receipted publication. Forward restore, ordinary export and full
+backup and receipted publication. The separate [ordinary owner export](s16-owner-export-v1.md)
+uses current owning projections. Forward restore and full
 upgrade/client lifecycle acceptance remain incomplete. Component manifests alone
 are not aggregate points under this contract.
 The fixed [point file inventory and explicit retention](s16-point-files-v1.md)
@@ -161,7 +162,7 @@ are required. Rebuilding/reinstalling native packages retains current device
 secure storage and service binding or requires the existing owner reconnect;
 it cannot copy credentials or turn a stale notice into approval.
 
-Ordinary export is a distinct bounded owning projection, not this manifest or
+The implemented [ordinary export](s16-owner-export-v1.md) is a distinct bounded owning projection, not this manifest or
 raw ledgers. Export only configuration/user content/deliverables currently
 allowed to that owner, rechecking withdrawal/private scope at release. Exclude
 auth, credentials, protected native/profile state and authority-bearing rows.

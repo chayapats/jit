@@ -28,13 +28,17 @@ export function parseArtifactQuery(params: URLSearchParams): ClientArtifactQuery
  * whose producer still passes CHAT's publication guard, and whose every transitive source is current. This
  * is recomputed on every read, so a withdrawn or no-longer-published artifact disappears from all pages.
  */
-function committed<Actor, Work>(app: ConversationApplication<Actor, Work>, files: FileStore<Actor>, actor: Actor): { items: Committed[]; revisions: Map<string, number> } {
+function committed<Actor, Work>(app: ConversationApplication<Actor, Work>, files: FileStore<Actor>, actor: Actor, readOnly = false): { items: Committed[]; revisions: Map<string, number> } {
   const lineage = files.lineage(actor), views = new Map<string, ReturnType<ConversationApplication<Actor, Work>["view"]> | null>();
   const items = lineage.flatMap(entry => {
     if (!entry.current) return [];
     const { artifact } = entry;
     let row = views.get(artifact.requestId);
-    if (row === undefined) { try { row = app.view(actor, artifact.requestId); } catch { row = null; } views.set(artifact.requestId, row); }
+    if (row === undefined) {
+      if (readOnly) { const content = app.readContent(actor, artifact.requestId); row = content ? { ...content, evidence: [], slips: [] } : null; }
+      else try { row = app.view(actor, artifact.requestId); } catch { row = null; }
+      views.set(artifact.requestId, row);
+    }
     if (!row || row.state !== "completed" || row.result === null || row.authority?.id !== artifact.workId || row.receipt.rootRequestId !== artifact.requestId || row.receipt.conversationId !== artifact.conversationId) return [];
     if (!row.artifacts?.some(item => item.id === artifact.id && item.sha256 === artifact.sha256)) return [];
     return [{ entry, label: Array.from(row.command.text.replace(/\s+/g, " ").trim()).slice(0, 120).join("") }];
@@ -88,6 +92,6 @@ export function artifactDetail<Actor, Work>(app: ConversationApplication<Actor, 
 }
 
 /** Committed current artifacts with their revision parents, for protected watchers. Metadata only; no bytes. */
-export function committedArtifacts<Actor, Work>(app: ConversationApplication<Actor, Work>, files: FileStore<Actor>, actor: Actor): FileArtifactLineage[] {
-  return committed(app, files, actor).items.map(item => structuredClone(item.entry));
+export function committedArtifacts<Actor, Work>(app: ConversationApplication<Actor, Work>, files: FileStore<Actor>, actor: Actor, readOnly = false): FileArtifactLineage[] {
+  return committed(app, files, actor, readOnly).items.map(item => structuredClone(item.entry));
 }
