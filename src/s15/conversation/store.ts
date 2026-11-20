@@ -62,6 +62,9 @@ export class ConversationStore {
       this.db.exec(`CREATE TABLE IF NOT EXISTS computer_needs_you (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL REFERENCES requests(id), vm_id TEXT NOT NULL, owner_generation INTEGER NOT NULL, created_at INTEGER NOT NULL, record_json TEXT NOT NULL, delivered_by TEXT REFERENCES requests(id));
         CREATE INDEX IF NOT EXISTS computer_needs_you_pending ON computer_needs_you(conversation_id,owner_generation) WHERE delivered_by IS NULL AND json_extract(record_json,'$.voidedAt') IS NULL;
         CREATE INDEX IF NOT EXISTS computer_needs_you_recent ON computer_needs_you(conversation_id,owner_generation);`);
+      // SPACE16-01: organization is additive metadata, never a source scope or execution grant.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS search_labels (owner_id TEXT NOT NULL, owner_generation INTEGER NOT NULL, target TEXT NOT NULL, revision INTEGER NOT NULL, labels TEXT NOT NULL, PRIMARY KEY(owner_id,owner_generation,target));
+        CREATE TABLE IF NOT EXISTS search_label_commands (owner_id TEXT NOT NULL, owner_generation INTEGER NOT NULL, id TEXT NOT NULL, hash TEXT NOT NULL, target TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(owner_id,owner_generation,id));`);
     } catch (error) { this.db!?.close(); this.#lock.close(); throw error; }
   }
   /** Synchronous writer boundary; no model, tool or async callback is permitted inside it. */
@@ -111,7 +114,10 @@ export class ConversationStore {
       + (SELECT coalesce(sum(length(CAST(command_json AS BLOB))+length(CAST(receipt_json AS BLOB))),0) FROM commands)
       + (SELECT coalesce(sum(length(CAST(evidence_json AS BLOB))),0) FROM tool_calls) AS n`).get()!.n;
     const cards = this.db.query<{ n: number }, []>("SELECT coalesce(sum(length(CAST(record_json AS BLOB))),0) AS n FROM computer_needs_you").get()!.n;
-    if (count >= 10000 || bytes + cards + 262144 >= 64 * 1024 * 1024) throw new AppError("continuity_capacity", 409);
+    const organization = this.db.query<{ n: number }, []>(`SELECT
+      (SELECT coalesce(sum(length(CAST(labels AS BLOB))+length(target)+length(owner_id)+16),0) FROM search_labels)
+      + (SELECT coalesce(sum(length(id)+length(hash)+length(target)+length(owner_id)+16),0) FROM search_label_commands) AS n`).get()!.n;
+    if (count >= 10000 || bytes + cards + organization + 262144 >= 64 * 1024 * 1024) throw new AppError("continuity_capacity", 409);
   }
   /** Close only after application shutdown has awaited its active Schway/tool calls. */
   close(): void { if (!this.#closed) { this.#closed = true; this.db.close(); this.#lock.close(); } }

@@ -2,6 +2,7 @@
 export { JitClient, JitClientError } from "./client";
 export { beginConversation, emptyConversationState, receiveConversation, withholdConversation } from "./state";
 export type * from "./contracts";
+export type { SearchKind, SearchTarget, SearchQuery, SearchSource, SearchLabels, SearchItem, SearchPage, SearchLabelCommand, SearchLabelReceipt } from '../search/contracts';
 export type * from "../voice/contracts";
 export type * from '../voice/call-contracts';
 export type { ConversationClientState } from "./state";

@@ -1,4 +1,5 @@
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
+import type { SearchItem, SearchKind, SearchLabelCommand, SearchLabelReceipt, SearchPage, SearchQuery, SearchTarget } from '../search/contracts';
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
 import { captureWavInfo, VoiceAudioError } from "../voice/wav";
 import { voiceCallLimits, type VoiceCallBegin, type VoiceCallCapture, type VoiceCallConfirm, type VoiceCallControl, type VoiceCallPlayback, type VoiceCallView } from '../voice/call-contracts';
@@ -442,6 +443,45 @@ export class JitClient {
     return artifact.contract === "s16-file-artifact/v1" && identifier(artifact.id) && sha256(artifact.sha256) && identifier(artifact.requestId) && identifier(artifact.workId) && identifier(artifact.conversationId) && artifact.conversationId === value.conversationId
       && typeof artifact.name === "string" && !!artifact.name && ["text/plain", "text/markdown", "text/csv", "text/html"].includes(artifact.mime as string) && Number.isSafeInteger(artifact.bytes) && (artifact.bytes as number) > 0 && count(artifact.createdAt)
       && typeof value.label === "string" && Array.from(value.label).length <= 120 && Number.isSafeInteger(value.revision) && (value.revision as number) >= 1 && (value.parent === null || identifier(value.parent)) && Number.isSafeInteger(value.inputs) && (value.inputs as number) >= 1;
+  }
+  private searchItem(value: unknown): value is SearchItem {
+    if (!record(value) || !record(value.target) || !['history', 'work', 'routine', 'memory', 'artifact'].includes(value.target.kind as string) || !identifier(value.target.id) || typeof value.title !== 'string' || Array.from(value.title).length > 120 || typeof value.snippet !== 'string' || Array.from(value.snippet).length > 280 || typeof value.state !== 'string' || !/^[a-z_]{1,64}$/.test(value.state) || !count(value.at) || value.botId !== null && !identifier(value.botId) || !record(value.organization) || !count(value.organization.revision) || !this.searchLabelValues(value.organization.labels) || !record(value.source)) return false;
+    return ['history', 'work'].includes(value.target.kind as string) ? value.source.kind === 'chat' && identifier(value.source.conversationId) && identifier(value.source.requestId)
+      : value.source.kind === value.target.kind && value.source.id === value.target.id;
+  }
+  private searchLabelValues(value: unknown): value is string[] {
+    return Array.isArray(value) && value.length <= 8 && new Set(value).size === value.length && value.every(label => typeof label === 'string' && !!label && label.isWellFormed() && Array.from(label).length <= 48 && new TextEncoder().encode(label).length <= 192 && !/[\p{Cc}\p{Cf}]/u.test(label));
+  }
+  /** Cross-object live search. A page contains current owner projections, never an authority token. */
+  async search(query: SearchQuery, signal?: AbortSignal): Promise<SearchPage> {
+    const params = new URLSearchParams();
+    params.set('q', query.q); params.set('kind', query.kind);
+    if (query.bot !== null) params.set('bot', id(query.bot)); if (query.label !== null) params.set('label', query.label);
+    if (query.from !== null) params.set('from', String(query.from)); if (query.to !== null) params.set('to', String(query.to)); if (query.after !== null) params.set('after', query.after);
+    const data = await this.call('/search?' + params, 'GET', undefined, signal);
+    if (!record(data) || data.contract !== 's16-client-search/v1' || !record(data.query) || Object.keys(query).some(key => data.query && (data.query as Record<string, unknown>)[key] !== query[key as keyof SearchQuery]) || !count(data.total) || (data.total as number) > 10000 || data.limit !== 25 || !Array.isArray(data.items) || data.items.length > 25 || !data.items.every(item => this.searchItem(item)) || new Set(data.items.map(item => `${item.target.kind}:${item.target.id}`)).size !== data.items.length || data.next !== null && (typeof data.next !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(data.next) || data.next === query.after) || !Array.isArray(data.labels) || data.labels.length > 128 || !data.labels.every(label => record(label) && this.searchLabelValues([label.name]) && count(label.count) && (label.count as number) <= 10000)) return invalid();
+    return data as unknown as SearchPage;
+  }
+  /** Resolves a stale result freshly before the caller enters its ordinary owning destination. */
+  async searchObject(target: SearchTarget, signal?: AbortSignal): Promise<SearchItem> {
+    const kinds: SearchKind[] = ['history', 'work', 'routine', 'memory', 'artifact']; if (!kinds.includes(target.kind)) return invalid();
+    const data = await this.call(`/search/objects/${target.kind}/${id(target.id)}`, 'GET', undefined, signal);
+    if (!this.searchItem(data) || data.target.kind !== target.kind || data.target.id !== target.id) return invalid();
+    return data;
+  }
+  private searchReceipt(value: unknown, requestId: string): SearchLabelReceipt {
+    if (!record(value) || value.contract !== 's16-search-label-receipt/v1' || value.requestId !== requestId || !record(value.target) || !['history', 'work', 'routine', 'memory', 'artifact'].includes(value.target.kind as string) || !identifier(value.target.id) || !count(value.appliedRevision) || value.appliedRevision === 0 || !record(value.current) || !count(value.current.revision) || (value.current.revision as number) < (value.appliedRevision as number) || !this.searchLabelValues(value.current.labels)) return invalid();
+    return value as unknown as SearchLabelReceipt;
+  }
+  /** Exact label command. Unknown outcomes retain this request ID; no automatic replacement command. */
+  async setSearchLabels(command: SearchLabelCommand, signal?: AbortSignal): Promise<SearchLabelReceipt> {
+    const value = this.searchReceipt(await this.call('/search/labels', 'POST', command, signal, id(command.requestId)), command.requestId);
+    if (value.target.kind !== command.target.kind || value.target.id !== command.target.id) return invalid();
+    return value;
+  }
+  /** Original command read-back after response loss or reconnect. Never repeats a label mutation. */
+  async searchLabelReceipt(requestId: string, signal?: AbortSignal): Promise<SearchLabelReceipt> {
+    return this.searchReceipt(await this.call(`/search/commands/${id(requestId)}`, 'GET', undefined, signal), requestId);
   }
   /** Owner memory search; reading never changes retrieval, ranking or retention. */
   async memory(query: ClientMemoryQuery, signal?: AbortSignal): Promise<ClientMemoryList> {
