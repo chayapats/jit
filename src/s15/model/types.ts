@@ -130,6 +130,8 @@ export function steeringReportOf(error: unknown): HostSteeringReport | null {
 export interface ModelStepSteering { open(steer: (input: HostSteerInput) => HostSteerResult): void; settle(report: HostSteeringReport | null): void }
 /** Host-only step execution; Schway owns the loop/retries/compaction and Jit never refreshes credentials. */
 export interface ModelService {
+  /** Protected host maintenance only; never serialize this connection or expose it to a tool/client. */
+  maintenanceSource?(): import('bun:sqlite').Database;
   /** `hooks.beforeCall` is the caller's own durable per-model-call ceiling (for example CHAT's
    * `limits.modelCalls`), run before every physical send's POLICY reservation; the stricter limit always applies. */
   runStep(actor: WorkActor, input: ModelStepInput, signal?: AbortSignal, hooks?: ModelStepHooks): Promise<ModelSelectionRecord>;

@@ -262,6 +262,7 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       const mapped = options.registryRecipient?.(destination); if (!mapped || !equal(mapped, recipient)) fail('recipient_unknown');
       recipients([recipient]); if (!approved(work, recipient, sources(work))) fail('opaque_egress_unavailable');
     },
+    maintenanceSource: () => journal.db,
     close: () => journal.close(),
   };
   return result;

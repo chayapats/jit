@@ -1,4 +1,5 @@
 import { createSearchDirectory } from '../s16/search/owners';
+import { s16SelectedRuntimeSources } from '../s16/operations/runtime-readers';
 import { SkillDirectory } from "../s16/skills/service";
 import { VoiceService } from "../s16/voice/service";
 import { openLocalVoice, type LocalVoiceConfig, type LocalVoiceEngine } from "../s16/voice/local";
@@ -908,6 +909,17 @@ export async function composeS15(options: S15CompositionOptions) {
       added = [];
     }
     const composed = { policy, conversation, team, memory, files, bots, connections, skills, voice, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, workingState, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
+      /** Protected host maintenance only. No HTTP/tool route exposes handles or treats this runtime subset as a full backup. */
+      maintenanceSources(owner: OwnerActor) {
+        if (closing) throw new AppError('service_closed', 503); policy.owner.current(owner);
+        return s16SelectedRuntimeSources(storeNames, new Map<string, typeof store.db | undefined>([
+          ['conversation.sqlite', store.db], ['policy.sqlite', policy.control.maintenanceSource?.()], ['model.sqlite', models.maintenanceSource?.()],
+          ['work.sqlite', work.maintenanceSource?.()], ['vm.sqlite', vmStore.db], ['team.sqlite', team.store.db], ['memory.sqlite', memory.store.db],
+          ['disclosure.sqlite', disclosure?.maintenanceSource?.()], ['browser.sqlite', browser?.maintenanceSource?.()], ['github.sqlite', githubStore?.maintenanceSource()],
+          ['files.sqlite', files?.journal.db], ['routines.sqlite', routines?.journal.db], ['notifications.sqlite', notifications?.journal.db],
+          ['bots.sqlite', bots?.store.db], ['connections.sqlite', connections?.store.db], ['skills.sqlite', skills?.store.db], ['voice.sqlite', voice?.maintenanceSource()],
+        ]));
+      },
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

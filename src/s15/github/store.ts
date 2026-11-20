@@ -54,5 +54,7 @@ export class GithubStore {
     if (r && r.hash !== hash) fail("request_id_conflict"); return r ? JSON.parse(r.json) as T : null;
   }
   commitReceipt(id: string, hash: string, value: unknown): void { this.db.query("INSERT INTO receipts VALUES (?,?,?)").run(id, hash, canonical(value)); }
+  /** Protected host maintenance only; never a GitHub tool or ordinary client/export projection. */
+  maintenanceSource(): Database { return this.db; }
   close(): void { this.db.close(); this.lock.close(); }
 }
