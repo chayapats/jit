@@ -61,6 +61,25 @@ close, with an overall five-second preparation/connect/body/guard budget,
 the mutation's effect or authorizes a replacement. A mutation's durable intent
 and current authority must precede the API invocation.
 
+The exact-process primitive uses Linux `pidfd_open` (flags zero), nonblocking
+`poll` and one fixed `pidfd_send_signal(SIGKILL)` on the retained descriptor.
+The initial native host target is glibc Linux on x86_64/aarch64 (Ubuntu 24.04's
+glibc 2.39/Linux 6.8 or a separately evidenced compatible host). Host boot ID
+and kernel process start ticks must match the protected launch identity both
+before and after descriptor acquisition. There is no numeric-PID/process-group
+kill fallback. Opening a descriptor proves neither that this process is an
+approved VMM nor that it has an approved jail/image/device configuration.
+
+An explicit stop has a ten-second total preparation/exit/publication budget,
+current guards before signaling and publication, and at most one signal. Late
+guards, revocation, deadline, abort and signal failure cannot trigger a second
+signal. Once dispatch began, uncertainty retains the original descriptor for
+read-back. A confirmed `process_exited` observation is still weaker than
+`vm_stopped`: protected executable/jail/socket/configuration binding and disk/
+access settlement remain the owning manager's responsibility. Closing a lease
+only closes its descriptor. Injected protocol probes always produce
+`protocol_fixture`, never native host evidence; non-Linux production refuses.
+
 API profile inspection reads the exact version and closed configuration
 between matching instance states, within a separate 15-second total budget.
 It accepts one selected writeback/synchronous root disk, the selected kernel/

@@ -39,6 +39,12 @@ release published 2026-11-09. See its
 [getting-started requirements](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/docs/getting-started.md),
 [vsock protocol](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/docs/vsock.md)
 and [API schema](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/src/firecracker/swagger/firecracker.yaml).
+The [jailer contract](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/docs/jailer.md)
+requires the matching static musl Firecracker/jailer version. Jailer configuration
+must be interpreted in the jail's path namespace. The pinned getting-started
+contract states that `--config-file` also starts the microVM: that launch is a
+mutation and cannot precede its durable intent/current guard or be followed by
+an automatic duplicate `InstanceStart`.
 The upstream binary/image is not copied into Jit or fetched at model-selected
 URLs. Any selected host binary, kernel and disk require immutable hashes and
 their applicable licenses; no MIT-only redistribution claim is made.
@@ -70,6 +76,17 @@ instance terminated and retained disk access settled; uncertainty keeps the
 generation fenced and capacity held. Cold disk checkpoints contain guest
 working state only, never controller authority, native sessions or credentials.
 Portable state is separate from a hypervisor/RAM snapshot.
+
+Use a retained host pidfd rather than a later numeric-PID kill to avoid PID reuse
+redirecting a whole-machine stop. See Linux's [pidfd semantics](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
+and [signal identity contract](https://man7.org/linux/man-pages/man2/pidfd_send_signal.2.html).
+The native binding uses the selected system libc's public API, confirmed in
+[glibc 2.39 declarations](https://github.com/bminor/glibc/blob/glibc-2.39/sysdeps/unix/sysv/linux/sys/pidfd.h).
+No libc, Firecracker, jailer or kernel source/binary is imported or redistributed
+by this primitive. Its `process_exited` result is not complete VM settlement;
+approved executable/jail/device/socket binding and disk settlement must still be
+combined by the owning manager. Protocol fixtures and Mac refusals cannot stand
+in for the separate Linux/KVM receipt.
 
 ## Portable working state
 
