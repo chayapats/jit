@@ -117,3 +117,14 @@ test("an older service without creation lookup reports its limit without guessin
     expect(f.calls.length).toBe(before); expect(f.chip().uploadId).toBeNull(); expect(f.creations).toBe(1); expect(f.writes).toBe(0);
   } finally { await f.close(); }
 });
+
+test("a replaced service's late picker cannot restore its retired session and upload into the old service", async () => {
+  const f = await fixture();
+  try {
+    const sheet = f.intent, before = f.calls.length, credentials = [...f.records]; f.session.retire();
+    await expect(f.session.restore()).rejects.toMatchObject({ code: "mobile_response_stale" });
+    await expect(f.uploads.begin(sheet, file())).rejects.toMatchObject({ code: "mobile_binding_changed" });
+    expect(f.calls.length).toBe(before); expect([...f.records]).toEqual(credentials); expect(f.creations).toBe(0); expect(f.writes).toBe(0);
+    expect(f.session.projection).toMatchObject({ phase: "background", bootstrap: null, snapshot: null, conversationId: null });
+  } finally { await f.close(); }
+});

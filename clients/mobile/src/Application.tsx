@@ -59,7 +59,7 @@ export default function Application() {
   const lifecycle = useLifecycle(active), subscribe = useCallback((listener: () => void) => session ? session.subscribe(listener) : () => {}, [session]);
   const snapshot = useCallback(() => session?.projection ?? empty, [session]), frame = useSyncExternalStore(subscribe, snapshot, snapshot);
   const controls = useMemo(() => { if (!session) return null; const drafts = new MobileDrafts(); return { commands: new MobileCommands(session, nativeStore), drafts, files: new NativeFiles(session, drafts), notifications: new MobileNotifications(session, nativeStore, notificationOs("Jit")), voice: new MobileVoice(session, drafts, nativeStore, voiceOs) }; }, [session]);
-  const adopt = useCallback((next: MobileSession | null) => { active.current?.background(); active.current = next; instance.current++; setSession(next); setRoutineId(null); setPage("chats"); setError(null); }, []);
+  const adopt = useCallback((next: MobileSession | null) => { if (active.current !== next) active.current?.retire(); active.current = next; instance.current++; setSession(next); setRoutineId(null); setPage("chats"); setError(null); }, []);
   const save = useCallback(async (next: MobileConfiguration) => {
     config.current = next; setConfiguration(next);
     const operation = writes.current.catch(() => {}).then(() => nativeStore.set(configurationKey, JSON.stringify(next))); writes.current = operation; await operation;

@@ -14,6 +14,17 @@ async function conversations(m: Awaited<ReturnType<typeof mobileFixture>>) {
 // the selected conversation; loading/background assertions independently require bootstrap and snapshot to be null.
 const privateText = (m: Awaited<ReturnType<typeof mobileFixture>>) => JSON.stringify(m.session.projection.snapshot);
 
+test("a retired service handle cannot reconnect, sign in/out or select a target through a stale callback", async () => {
+  const m = await mobileFixture();
+  try {
+    await m.session.restore(); const credentials = [...m.records], before = m.session.selectionRevision; let requests = 0;
+    m.intercept = () => { requests++; return null; }; m.session.retire(); m.session.retire(); m.session.background();
+    expect(m.session.selectionRevision).toBe(before + 1);
+    for (const operation of [() => m.session.restore(), () => m.session.foreground(), () => m.session.selectConversation("old_target"), () => m.session.signIn("controlled obsolete input"), () => m.session.signOut()]) await expect(operation()).rejects.toMatchObject({ code: "mobile_response_stale" });
+    expect(requests).toBe(0); expect([...m.records]).toEqual(credentials); expect(m.session.projection).toMatchObject({ phase: "background", bootstrap: null, snapshot: null });
+  } finally { await m.close(); }
+});
+
 test("mobile background/foreground withholds all private projections until fresh owning reads finish", async () => {
   const m = await mobileFixture(), entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let hold = true;
   try {

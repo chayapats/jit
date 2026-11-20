@@ -32,6 +32,7 @@ export class MobileSession {
   #generation = 0;
   #target: string | null = null;
   #selectionRevision = 0;
+  #retired = false;
   #stop = new AbortController();
   #frame: MobileProjection;
   #poll: Promise<void> | null = null;
@@ -51,19 +52,24 @@ export class MobileSession {
   #fence(phase: MobileProjection["phase"], error: string | null = null): number {
     this.#generation++; this.#stop.abort(); this.#stop = new AbortController(); this.#client.clear(); this.#reader.clear(); this.transport.pause(); this.#publish(this.#empty(phase, error)); return this.#generation;
   }
-  #current(generation: number): void { if (generation !== this.#generation) throw new MobileProjectionError("mobile_response_stale"); }
+  #alive(): void { if (this.#retired) throw new MobileProjectionError("mobile_response_stale"); }
+  #current(generation: number): void { this.#alive(); if (generation !== this.#generation) throw new MobileProjectionError("mobile_response_stale"); }
   /** Inactive/background clears private views synchronously, independently of any outstanding provider response. */
-  background(): void { this.#fence("background"); }
+  background(): void { if (!this.#retired) this.#fence("background"); }
+  /** Permanently retire a replaced client handle. Keep its OS credential for a future fresh configured-service client. */
+  retire(): void { if (this.#retired) return; this.#retired = true; this.#selectionRevision++; this.#target = null; this.#fence("background"); }
   /** Discard client-local credential/state only. Does not revoke an account, policy or remote work. */
-  async signOut(): Promise<void> { this.#selectionRevision++; const generation = this.#fence("locked"); this.#target = null; try { await this.transport.forget(); } catch (error) { if (generation === this.#generation) this.#publish(this.#empty("locked", code(error))); throw error; } }
+  async signOut(): Promise<void> { this.#alive(); this.#selectionRevision++; const generation = this.#fence("locked"); this.#target = null; try { await this.transport.forget(); } catch (error) { if (generation === this.#generation) this.#publish(this.#empty("locked", code(error))); throw error; } }
   /** Restore native credentials, then reacquire bootstrap and the current target before private publication. */
   async restore(): Promise<void> {
+    this.#alive();
     const generation = this.#fence("loading"); this.transport.resume();
     try { if (!await this.transport.restore()) { this.#current(generation); this.#publish(this.#empty("locked")); return; } this.#current(generation); await this.#load(generation); }
     catch (error) { this.#failed(generation, error); throw error; }
   }
   /** One visible owner's password entry, through the existing service ingress; no stored password or retry. */
   async signIn(password: string): Promise<void> {
+    this.#alive();
     this.#selectionRevision++;
     const generation = this.#fence("loading"); this.#target = null; this.transport.resume();
     try { await this.transport.signIn(password); this.#current(generation); await this.#load(generation); }
@@ -71,12 +77,14 @@ export class MobileSession {
   }
   /** Foreground/reconnect always withholds old views before I/O; this method submits no work/decision. */
   async foreground(): Promise<void> {
+    this.#alive();
     const generation = this.#fence("loading"); this.transport.resume();
     if (!this.transport.authenticated) { this.#publish(this.#empty("locked")); return; }
     try { await this.#load(generation); } catch (error) { this.#failed(generation, error); throw error; }
   }
   /** Select only an opaque document identity. Old target responses cannot appear under the next target. */
   async selectConversation(conversationId: string | null): Promise<void> {
+    this.#alive();
     if (conversationId !== null && !identifier(conversationId)) throw new MobileProjectionError("mobile_target_invalid");
     this.#selectionRevision++; this.#target = conversationId; await this.foreground();
   }
