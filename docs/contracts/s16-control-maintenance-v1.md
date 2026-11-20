@@ -66,6 +66,13 @@ all source/process exclusion. An immutable observation revalidates against its
 original complete digest before aggregate publication/activation. It grants no
 physical settlement, root reconstruction or historical authority.
 
+`fileCustody()` supplies the [current FILE/parser cohort](s16-file-cohort-v1.md):
+owning-pinned ready/staged bytes and separately untrusted original fragments,
+unpublished bytes and parser snapshots. It keeps pending/withdrawn states and
+unobserved container/job/generation facts without boot recovery, parser reset or
+output promotion. Original absence/inodes/bytes remain guarded; host-only source
+paths never enter its metadata. This remains separate from physical settlement.
+
 `nativeSet(requestId, options)` supplies the [protected native-set coordinator](s16-native-set-v1.md)
 with this genuine lease, current namespace and original journal. The context
 retains exclusion while any returned session is unreleased. Await session close

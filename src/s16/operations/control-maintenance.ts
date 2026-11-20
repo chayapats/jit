@@ -19,6 +19,7 @@ import { openS16NativeSet, type S16NativeSetMaintenance, type S16NativeSetOption
 import { openFirecrackerControllerMaintenance, type FirecrackerControllerMaintenance } from '../../s15/vm/firecracker/maintenance';
 import { ConnectionVault } from '../../exec/connections';
 import { captureS16HelperCohort, type S16HelperObservation, type S16HelperCohortOptions } from './helper-cohort';
+import { captureS16FileCohort, type S16FileObservation } from '../files/custody';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -61,6 +62,8 @@ export interface S16ControlMaintenance {
   nativeSet(requestId: string, options: S16NativeSetOptions): S16NativeSetMaintenance;
   /** Authenticated read-only root-helper cut; private journals/disks and physical settlement stay separate. */
   helperCustody(options?: S16HelperCohortOptions): Promise<S16HelperObservation>;
+  /** Complete known FILE/parser byte custody, retaining pending and untrusted roles without boot recovery. */
+  fileCustody(): S16FileObservation;
   assertCurrent(): void;
   close(): void;
 }
@@ -194,13 +197,15 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const sources = Object.freeze([...outer, ...heldRuntime.sources, ...firecracker.sources]);
     if (sources.length > 256 || new Set(sources.map(source => source.name)).size !== sources.length || new Set(sources.map(source => source.database)).size !== sources.length) refuse('s16_ops_inventory_changed');
     const controllers = firecracker.controllers;
+    const fileCustody = () => captureS16FileCohort({ directory: root, installationId: config.installationId, lease,
+      source: heldRuntime.sources.find(source => source.name === 'files.sqlite'), configuredGeneration: typeof config.files === 'object' ? config.files.parserImage : null, guard: assertCurrent });
     const helperCustody = (helperOptions: S16HelperCohortOptions = {}) => {
       assertCurrent();
       return captureS16HelperCohort({ ...helperOptions, directory: root, lease, installationId: config.installationId, controllers,
         vault: new ConnectionVault(join(root, 'vault'), { forbidden: [ownerDirectory, join(root, 'runtime'), join(root, 'backups'), join(root, 'operations')] }), guard: assertCurrent,
         async retain<T>(operation: () => Promise<T>) { assertCurrent(); helperReads++; try { return await operation(); } finally { helperReads--; } } });
     };
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody });
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

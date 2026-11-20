@@ -93,6 +93,14 @@ state, `github-artifacts` and `native-github`. The composed runtime includes
 The selected runtime config and actual owning constructors, rather than a
 recursive copy of an assumed directory, must enumerate these roots.
 
+The protected [FILE/parser cohort](../contracts/s16-file-cohort-v1.md) now hashes
+all known receipt-pinned and untrusted leftover bytes without boot recovery.
+Original pending/withdrawn rows, partial parser trees and unobserved container
+generation/job/settlement remain explicit. No scratch output becomes a receipt
+or usable artifact merely by inclusion. Unknown/unsafe/missing custody refuses;
+the actual aggregate still needs owning forward reconciliation and physical
+retention rather than assuming that a successful component cut settled it.
+
 The current production composition routes CHAT interpretation to
 `runtime/native-chat/<rootRequestId>/interpretation_<attempt>` and work through
 MODEL to `runtime/native-model/<selectionId>`, each with `workspace`, `home` and
