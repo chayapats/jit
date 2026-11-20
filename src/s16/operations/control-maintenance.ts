@@ -14,6 +14,7 @@ import { bindS16OperationsLease, openS16InstallationLease } from './installation
 import { openS16RuntimeMaintenance, type S16RuntimeMaintenance } from './runtime-maintenance';
 import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS16OperationsControl, readS16OperationsFence, validateS16OperationsAdoptionFence, validateS16OperationsFence, type S16OperationsAdoptionFence, type S16OperationsFence } from './operations-state';
 import { openS16OperationsJournal, type S16OperationsJournal, type S16OperationsJournalOptions } from './operations-journal';
+import { resolveS16NativeNamespace, type S16NativeNamespace } from './native-namespace';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -46,6 +47,8 @@ export interface S16ControlMaintenance {
   completeAdoptionFence(): void;
   /** Opens current durable metadata under this exact owning exclusion; never an archive or actor API. */
   operations(options?: Pick<S16OperationsJournalOptions, 'now' | 'id' | 'after'>): S16OperationsJournal;
+  /** Resolves the complete fixed native namespace from current owning rows, preserving unresolved custody. */
+  nativeNamespace(): S16NativeNamespace;
   assertCurrent(): void;
   close(): void;
 }
@@ -163,7 +166,8 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
           unlinkSync(path); opsSyncDirectory(dirname(path)); expectedOperation = undefined; assertCurrent();
         } });
     };
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations });
+    const nativeNamespace = () => resolveS16NativeNamespace({ runtimeDirectory: join(root, 'runtime'), githubDirectory: join(root, 'native-github'), installationId: config.installationId, sources: heldRuntime.sources, guard: assertCurrent });
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

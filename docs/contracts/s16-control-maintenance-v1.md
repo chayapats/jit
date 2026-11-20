@@ -42,6 +42,12 @@ Only verified terminal metadata clears that original gate. Lost gates are
 rebuilt from current immutable fields, never by replaying an unknown effect.
 The capability performs no physical capture, activation or point deletion.
 
+`nativeNamespace()` resolves the fixed CHAT/MODEL/GitHub namespaces from the
+current runtime handles and original VM custody under both retained leases.
+Its [versioned inventory](s16-native-namespace-v1.md) preserves missing,
+uncorrelated, untracked and ambiguous ownership instead of shrinking the set.
+It grants no native execution/settlement and does not itself capture sessions.
+
 `assertCurrent` rechecks both retained leases, runtime/current configuration
 binding, outer inventory and observed owner/ledger inodes/permissions/attributes.
 Closing first releases only the raw outer handles, then runtime handles/CHAT

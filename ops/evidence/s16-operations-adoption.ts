@@ -48,8 +48,8 @@ export async function verifyS16OperationsPackageAdoption(input: { oldCommit: str
       requireOutcome(parseSuccess(await execute([join(old, 'src/main.ts'), 'credential', ...selected, '--key', 'compat_v2_before', '--secret-stdin'], old, 'fixture-only-package-probe\n')).state === 'credential_stored', 'old_control_positive_control_failed');
       protectedFiles.push('vault/' + s15CredentialKey(installationId, 'compat_v2_before'));
       preserved = protectedFiles.map(path => hash(readFileSync(join(directory, path))));
-      const setup = `import {readS15RuntimeConfig} from './src/s15/runtime-config.ts';import {openS16ControlMaintenance} from './src/s16/operations/control-maintenance.ts';const cap=openS16ControlMaintenance(readS15RuntimeConfig(${JSON.stringify(config)}));try{const journal=cap.operations();const row=journal.begin({requestId:'package_journal_probe',kind:'export',hash:'${'b'.repeat(64)}'},0);console.log(JSON.stringify({revision:row.revision,fresh:row.fresh}));}finally{cap.close();}`;
-      requireOutcome(parseSuccess(await execute(['-e', setup])).revision === 1, 'packaged_journal_write_failed');
+      const setup = `import {readS15RuntimeConfig} from './src/s15/runtime-config.ts';import {openS16ControlMaintenance} from './src/s16/operations/control-maintenance.ts';const cap=openS16ControlMaintenance(readS15RuntimeConfig(${JSON.stringify(config)}));try{const native=cap.nativeNamespace();native.assertCurrent();if(native.roots.length||native.pending.length||native.untracked.length)throw Error('unexpected_native_custody');const journal=cap.operations();const row=journal.begin({requestId:'package_journal_probe',kind:'export',hash:'${'b'.repeat(64)}'},0);console.log(JSON.stringify({revision:row.revision,fresh:row.fresh,nativeNamespace:'explicit_empty_preserved'}));}finally{cap.close();}`;
+      const setupResult = parseSuccess(await execute(['-e', setup])); requireOutcome(setupResult.revision === 1 && setupResult.nativeNamespace === 'explicit_empty_preserved', 'packaged_journal_write_failed');
       // Simulate lost admission metadata, proving the adopted reader itself still refuses old/current execution.
       unlinkSync(join(directory, 'owner/owner.sqlite.ops/fence.json'));
     }
@@ -79,10 +79,11 @@ try{live=await host.createSession();await live.submit({text:'public-native-fixtu
 const retired=await host.createSession(),deleted=await host.createSession();await retired.retire();await retired.close();await deleted.retire();await deleted.close();await host.deleteSession(deleted.reference);
 cap=await openS16NativeRoot({directory:root,installationId:'fixture',id:'${'a'.repeat(32)}',references:[live.reference,retired.reference,deleted.reference],guard(){}});let busy=false;try{await cap.capture();}catch(error){busy=error.code==='busy';}await live.close();
 const captured=await cap.capture();cap.verify(captured.bytes,captured.sha256);const value=JSON.parse(Buffer.from(captured.bytes).toString('utf8'));let invalidReceipt=false;try{cap.verify(captured.bytes,'${'0'.repeat(64)}');}catch{invalidReceipt=true;}
-console.log(JSON.stringify({busy,invalidReceipt,bytes:captured.bytes.byteLength,sha256:captured.sha256,states:value.inventory.map(row=>row.state).sort(),snapshots:value.snapshot.sessions.length,retired:value.snapshot.sessions.filter(row=>row.retired).length}));
+const quarantine=${JSON.stringify(join(parent, 'native-quarantine'))};mkdirSync(quarantine,{mode:0o700});await cap.verifyQuarantine(captured.bytes,captured.sha256,quarantine);const after=await cap.capture();if(JSON.stringify(JSON.parse(Buffer.from(after.bytes).toString('utf8')).snapshot.sessions)!==JSON.stringify(value.snapshot.sessions))throw Error('native_source_changed');
+console.log(JSON.stringify({busy,invalidReceipt,deepQuarantine:true,currentNativeBytes:'preserved',bytes:captured.bytes.byteLength,sha256:captured.sha256,states:value.inventory.map(row=>row.state).sort(),snapshots:value.snapshot.sessions.length,retired:value.snapshot.sessions.filter(row=>row.retired).length}));
 }finally{await cap?.close();await live?.close();await host.close();}`;
       const observed = parseSuccess(await execute(['-e', nativeCode]));
-      requireOutcome(observed.busy && observed.invalidReceipt && observed.bytes > 131072 && canonical(observed.states) === canonical(['active', 'deleted', 'retired']) && observed.snapshots === 2 && observed.retired === 1, 'packaged_native_custody_failed');
+      requireOutcome(observed.busy && observed.invalidReceipt && observed.deepQuarantine && observed.currentNativeBytes === 'preserved' && observed.bytes > 131072 && canonical(observed.states) === canonical(['active', 'deleted', 'retired']) && observed.snapshots === 2 && observed.retired === 1, 'packaged_native_custody_failed');
       nativeProbe = observed;
     }
     requireOutcome(!refused.stdout.includes('fixture-only-package-probe') && validateArtifact(artifact).ok && readDependencyRecord(artifact)?.dependencyHash === dependencies.dependencyHash, 'artifact_changed_during_drill');
@@ -90,7 +91,7 @@ console.log(JSON.stringify({busy,invalidReceipt,bytes:captured.bytes.byteLength,
       packageHash: manifest.contentHash, dependencyHash: dependencies.dependencyHash, dependencyFiles: dependencies.dependencyFiles, lockHash: manifest.lockHash, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
       oldCommit: input.oldCommit, oldFactorySha256: hash(readFileSync(join(old, 'src/s16/operations/installation-lease.ts'))), oldReaderSha256: hash(readFileSync(join(old, 'src/s16/operations/operations-state.ts'))),
       oldBeforeAdoption: 'credential_stored', oldAfterAdoption: journalProfile ? 'credential_stored' : 'refused', oldAfterJournalWrite: journalProfile ? 'refused_without_physical_fence' : 'not_exercised',
-      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound', nativeProbe };
+      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound', nativeNamespace: journalProfile ? 'explicit_empty_preserved' : 'not_exercised', nativeProbe };
     opsDirectory(dirname(input.receipt)); opsWrite(input.receipt, canonical(receipt)); return receipt;
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }

@@ -6,15 +6,15 @@ aggregate completeness, ordinary export or permission to resume a session.
 The owning coordinator supplies one existing current native root, installation
 and opaque component ID, exact saved session/branch references, and its current
 maintenance guard. Roots must come from actual CHAT/MODEL/GitHub/VM custody;
-candidate archives and client input never choose a host path. The complete
-namespace resolver remains separately required; this component cannot certify
+candidate archives and client input never choose a host path. The [complete
+namespace resolver](s16-native-namespace-v1.md) is separate; this component cannot certify
 that a caller selected every native root.
 
 The root and existing `workspace`, `home` and `sessions` directories must be
 canonical, private and same-owner. Missing roots are not initialized. A
 metadata-only host uses only `schway/host`, strict context, no tools, hosted
 lookup or auth selection. No model, session creation/open, credential lifecycle
-renewal, native schema parser or restore method is exposed.
+renewal, native schema parser or live-restore method is exposed.
 
 Inspection repeats complete public `listSessions` observations while the owning
 Jit creation fence is held. It preserves active, retired and deleted entries;
@@ -43,6 +43,18 @@ binding and public native-format validation. It never restores/opens sessions,
 copies leases/home/credentials or grants authority from historical bytes.
 Current native tombstones/custody remain authoritative during forward recovery;
 this envelope is not a portable substitute for missing current deletion state.
+
+Shape/hash validation does not prove native branch ancestry. Before aggregate
+acceptance, `verifyQuarantine` uses public `restoreSessionSnapshot` in a fresh
+private child of the owning coordinator's separate staging directory, with the
+same bound workspace but separate home/session storage. Only `restored` passes;
+partial/quarantined native state refuses. This invokes no model, session open,
+tool, credential selection or live activation. It never overwrites/reuses a
+quarantine child or deletes failed material. The coordinator supplies the stage
+path from current configuration, never archive contents. All owning native
+handles must close conclusively; unknown quarantine close remains retained by
+this capability for a later close retry. The aggregate must perform this check;
+the synchronous `verify` method remains only envelope/public-shape verification.
 
 Current guards run around every asynchronous boundary. Unknown host close stays
 explicit; an owning coordinator must retain remaining exclusion rather than

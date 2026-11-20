@@ -112,6 +112,10 @@ contents. Validate exact required inventory, bytes, readers, owning identities,
 native public contracts and package provenance in private quarantine, with no
 application boot, inference, guest command, network effect or automatic retry.
 Hash-matching SQLite/native bytes still require actual owning-format integrity.
+Native public shape validation alone can accept a nonexistent saved branch;
+verify actual native ancestry through public restore in a separate fresh
+quarantine before accepting that component. Preserve exact refs/retirement and
+current tombstones; quarantine verification never activates historical state.
 An unknown format or missing component does not produce an empty replacement.
 
 Build target control state from the **current cohort**, preserving its exact

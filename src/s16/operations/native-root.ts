@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, type BigIntStats } from 'node:fs';
-import { isAbsolute, join, normalize } from 'node:path';
+import { lstatSync, mkdirSync, type BigIntStats } from 'node:fs';
+import { isAbsolute, join, normalize, relative } from 'node:path';
 import { createHost, hostCapabilities, MAX_SNAPSHOT_SESSIONS, MAX_SNAPSHOT_TOTAL_BYTES, RELEASE_CONTRACT, SNAPSHOT_CONTRACT, SNAPSHOT_NATIVE_FORMAT_VERSION, type HostRuntime, type HostSessionInventoryEntry, type HostSessionReference, type HostSessionSnapshot } from 'schway/host';
 import { AppError } from '../../errors';
-import { opsPath } from '../../s14/ops-files';
+import { opsPath, opsSyncDirectory } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
 
 const encodedBound = Math.ceil(MAX_SNAPSHOT_TOTAL_BYTES / 3) * 4 + 1_048_576;
@@ -42,11 +42,13 @@ export interface S16NativeInspection {
 }
 /** Private opaque bytes; only the independent current receipt supplies verification provenance. */
 export interface S16NativeCapture { readonly bytes: Uint8Array; readonly sha256: string }
-/** No creation/open/run/restore methods or raw host escape from this protected inspection capability. */
+/** No creation/open/run/live-restore methods or raw host escape from this protected inspection capability. */
 export interface S16NativeRootMaintenance {
   inspect(): Promise<S16NativeInspection>;
   capture(): Promise<S16NativeCapture>;
   verify(bytes: Uint8Array, expectedSha256: string): void;
+  /** Deep public native-format/ancestry verification in an exclusive fresh quarantine, never live activation. */
+  verifyQuarantine(bytes: Uint8Array, expectedSha256: string, directory: string): Promise<void>;
   close(): Promise<void>;
 }
 /**
@@ -75,11 +77,17 @@ export async function openS16NativeRoot(options: S16NativeRootOptions): Promise<
   if (capabilities.releaseContract !== RELEASE_CONTRACT || capabilities.snapshotContract !== SNAPSHOT_CONTRACT || capabilities.sessionInventoryContract !== 'schway.host.session-inventory/v1') refuse('s16_ops_native_unsupported');
   const host: HostRuntime = await createHost({ ...paths, context: { policy: 'strict', systemPrompt: 'Protected metadata inspection only.', sections: [] },
     tools: { policy: 'exact', definitions: [], hostedLookup: 'off' }, limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 1024, deadlineMs: 1000 } });
+  const quarantines = new Set<HostRuntime>();
+  const release = async (target: HostRuntime) => {
+    try { await target.close(); quarantines.delete(target); }
+    catch { usable = false; return refuse('s16_ops_source_release_unknown'); }
+  };
   const close = async () => {
     if (closed) return; usable = false;
     // Public host disposal alone does not certify that our outstanding inventory/copy promise settled.
     // Keep the owning coordinator's exclusion until that exact operation completes and close is retried.
     if (inFlight) refuse('s16_ops_native_busy');
+    for (const target of quarantines) await release(target);
     try { await host.close(); } catch { return refuse('s16_ops_source_release_unknown'); } closed = true;
   };
   try { guard(); } catch (error) { await close(); throw error; }
@@ -111,6 +119,12 @@ export async function openS16NativeRoot(options: S16NativeRootOptions): Promise<
     }
   };
   const run = async <T>(work: () => Promise<T>): Promise<T> => { guard(); inFlight++; try { return await work(); } finally { inFlight--; } };
+  const verified = (bytes: Uint8Array, expectedSha256: string) => {
+    guard(); if (!(bytes instanceof Uint8Array) || bytes.byteLength > encodedBound || !/^[a-f0-9]{64}$/.test(expectedSha256)) refuse();
+    const retained = Buffer.from(bytes); if (hash(retained) !== expectedSha256) refuse();
+    let value: { snapshot: HostSessionSnapshot | null };
+    try { value = JSON.parse(retained.toString('utf8')); check(value); } catch { return refuse(); } guard(); return value;
+  };
   return Object.freeze<S16NativeRootMaintenance>({ inspect: () => run(inspect), capture: () => run(async () => {
     const current = await inspect(); if (current.missing.length || current.uncorrelated.length) refuse('s16_ops_native_reconciliation_required');
     const live = expected.filter(ref => current.inventory.find(row => row.reference.id === ref.id)!.state !== 'deleted');
@@ -120,8 +134,33 @@ export async function openS16NativeRoot(options: S16NativeRootOptions): Promise<
     const value = { contract: 's16-native-root/v1', id, installationId, capturedAt, workspaceRoot: paths.workspaceRoot, references: expected, inventory: current.inventory, snapshot }; check(value);
     const text = JSON.stringify(value); if (Buffer.byteLength(text) > encodedBound) refuse('s16_ops_native_bounds'); const bytes = Buffer.from(text); guard();
     return Object.freeze({ bytes, sha256: hash(bytes) });
-  }), verify(bytes, expectedSha256) {
-    guard(); if (!(bytes instanceof Uint8Array) || bytes.byteLength > encodedBound || !/^[a-f0-9]{64}$/.test(expectedSha256) || hash(bytes) !== expectedSha256) refuse();
-    try { check(JSON.parse(Buffer.from(bytes).toString('utf8'))); } catch { refuse(); } guard();
-  }, close });
+  }), verify(bytes, expectedSha256) { verified(bytes, expectedSha256); }, verifyQuarantine: (bytes, expectedSha256, parent) => run(async () => {
+    const value = verified(bytes, expectedSha256);
+    if (typeof parent !== 'string' || !isAbsolute(parent) || normalize(parent) !== parent) refuse('s16_ops_path_untrusted');
+    const within = (a: string, b: string) => { const path = relative(a, b); return path === '' || !path.startsWith('../') && path !== '..' && !isAbsolute(path); };
+    if (within(directory, parent) || within(parent, directory)) refuse('s16_ops_path_untrusted');
+    const parentEntry = entry(parent); if (!value.snapshot) { guard(); return; }
+    const target = join(parent, id); try { mkdirSync(target, { mode: 0o700 }); } catch { return refuse('s16_ops_point_unavailable'); }
+    opsSyncDirectory(parent); const targetEntry = entry(target);
+    const stageCurrent = () => {
+      guard(); for (const [path, before] of [[parent, parentEntry], [target, targetEntry]] as const) {
+        const current = entry(path); if (current.dev !== before.dev || current.ino !== before.ino || current.mode !== before.mode || current.uid !== before.uid) refuse('s16_ops_native_changed');
+      }
+    }; stageCurrent();
+    for (const part of ['home', 'sessions']) mkdirSync(join(target, part), { mode: 0o700 }); opsSyncDirectory(target);
+    const native = await createHost({ workspaceRoot: paths.workspaceRoot, homeDirectory: join(target, 'home'), sessionDirectory: join(target, 'sessions'),
+      context: { policy: 'strict', systemPrompt: 'Protected native quarantine verification only.', sections: [] }, tools: { policy: 'exact', definitions: [], hostedLookup: 'off' },
+      limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 1024, deadlineMs: 1000 } }); quarantines.add(native);
+    try {
+      stageCurrent(); const result = await native.restoreSessionSnapshot(value.snapshot, { excludeRetired: false }); stageCurrent();
+      const expectedRefs = value.snapshot.sessions.map(session => ({ id: session.id, branchId: session.branchId }));
+      if (result.status !== 'restored') refuse('s16_ops_native_quarantined'); references(result.sessions);
+      if (canonical([...result.sessions].sort((a, b) => a.id.localeCompare(b.id))) !== canonical(expectedRefs.sort((a, b) => a.id.localeCompare(b.id)))) refuse('s16_ops_native_quarantined');
+      const observed = await native.listSessions({ limit: MAX_SNAPSHOT_SESSIONS }); stageCurrent(); inventory(observed.sessions);
+      if (observed.next !== undefined || observed.sessions.length !== value.snapshot.sessions.length || observed.sessions.some(row => {
+        const expected = value.snapshot!.sessions.find(session => session.id === row.reference.id); return !expected || row.state !== (expected.retired ? 'retired' : 'active');
+      })) refuse('s16_ops_native_quarantined');
+    } finally { await release(native); }
+    stageCurrent();
+  }), close });
 }

@@ -84,7 +84,16 @@ The internal contracts are:
   host. Active/retired/deleted custody and exact saved branches remain distinct;
   missing correlations/orphans/busy owners refuse capture. Actual composed
   CHAT interpretation and MODEL work roots are covered. Complete owning
-  namespace discovery and aggregate native coordination remain required.
+  identity reconciliation and aggregate native coordination remain required.
+  Fresh public restore quarantine additionally checks actual native ancestry;
+  shape/hash validation alone can accept an invalid saved branch label.
+- [`s16-native-namespace/v1`](../contracts/s16-native-namespace-v1.md): fixed
+  CHAT/MODEL/GitHub root resolution from actual current ledgers and VM attempts,
+  retained optional-source presence, private namespace/inode guards, bounded
+  projections and explicit missing/sessionless/untracked/ambiguous custody.
+  GitHub discovery requirements preserve original VM/work/generation/uncertainty;
+  no native branch or physical settlement is invented. The protected current
+  control supplies the resolver's paths/handles; aggregate reconciliation remains.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version

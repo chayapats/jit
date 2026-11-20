@@ -77,9 +77,13 @@ The native profile also exercises the packaged
 [`s16-native-root/v1`](../contracts/s16-native-root-v1.md) component through the
 pinned public host. Disposable active/retired/deleted sessions, an actual busy
 owner, opaque data larger than command JSON limits and independent hash refusal
-are checked. The only model is scripted locally; no provider/account call runs.
-It certifies that component on the reported platform, not complete namespace
-discovery, aggregate recovery, native clients or owner-host acceptance.
+are checked. The actual owning capability also checks explicitly empty native
+namespace without initialization. Fresh public native quarantine validates
+actual ancestry/retirement and preserves original native bytes. The only model
+is scripted locally; no provider/account call runs. It certifies components on
+the reported platform, not populated aggregate recovery, native clients or
+owner-host acceptance. Populated namespace tests use actual composed CHAT/MODEL
+work; GitHub VM fixtures retain discovery requirements and original uncertainty.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all

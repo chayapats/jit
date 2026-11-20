@@ -28,6 +28,7 @@ test('actual selected CLI state exposes current outer/runtime control without ap
   const f = await fixture(), ownerBefore = readFileSync(f.ownerPath), context = maintenance(f);
   expect(context.ownerIdentity).not.toBe(f.config.installationId);
   expect(context.outer.map(source => source.name)).toContain('owner-lifecycle.sqlite'); expect(context.outer.map(source => source.name)).toContain('recipients.sqlite');
+  const native = context.nativeNamespace(); expect(native.roots).toEqual([]); expect(native.pending).toEqual([]); expect(native.untracked).toEqual([]); native.assertCurrent();
   context.assertCurrent();
   expect(() => openS16InstallationLease({ directory: f.directory, mode: 'shared' })).toThrow();
   const directory = join(f.parent, 'current-cohort'); mkdirSync(directory, { mode: 0o700 });

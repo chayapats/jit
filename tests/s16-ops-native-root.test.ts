@@ -112,6 +112,30 @@ test('public snapshot identity bounds refuse before a root is initialized or an 
   expect((await f.host.listSessions()).sessions).toHaveLength(MAX_SNAPSHOT_SESSIONS + 1);
 });
 
+test('deep public quarantine verifies exact native refs and retirement without changing live custody or overwriting a prior target', async () => {
+  const f = await fixture(), reference = await f.session('retired'), cap = await f.open({ references: [reference] }), captured = await cap.capture();
+  const parent = join(f.parent, 'quarantine'); mkdirSync(parent, { mode: 0o700 });
+  await expect(cap.verifyQuarantine(captured.bytes, '0'.repeat(64), parent)).rejects.toThrow(); expect(existsSync(join(parent, f.options.id))).toBe(false);
+  await cap.verifyQuarantine(captured.bytes, captured.sha256, parent); expect(existsSync(join(parent, f.options.id))).toBe(true);
+  await expect(cap.verifyQuarantine(captured.bytes, captured.sha256, parent)).rejects.toThrow(expect.objectContaining({ code: 's16_ops_point_unavailable' }));
+  expect((await f.host.listSessions()).sessions).toEqual((await cap.inspect()).inventory); expect((await f.host.listSessions()).sessions[0]!.state).toBe('retired');
+  const after = await cap.capture(); expect(JSON.parse(Buffer.from(after.bytes).toString()).snapshot.sessions).toEqual(JSON.parse(Buffer.from(captured.bytes).toString()).snapshot.sessions);
+});
+
+test('native quarantine refuses overlap with current storage and keeps explicit empty state free of fabricated artifacts', async () => {
+  const f = await fixture(), ref = await f.session(), cap = await f.open({ references: [ref] }), captured = await cap.capture();
+  for (const parent of [f.parent, f.directory, f.paths.sessionDirectory]) await expect(cap.verifyQuarantine(captured.bytes, captured.sha256, parent)).rejects.toThrow(expect.objectContaining({ code: 's16_ops_path_untrusted' }));
+  const empty = await fixture(), emptyCap = await empty.open(), bytes = await emptyCap.capture(), parent = join(empty.parent, 'quarantine'); mkdirSync(parent, { mode: 0o700 });
+  await emptyCap.verifyQuarantine(bytes.bytes, bytes.sha256, parent); expect(existsSync(join(parent, empty.options.id))).toBe(false);
+});
+
+test('an outstanding deep quarantine must settle and release its original native host before owning close reports success', async () => {
+  const f = await fixture(), ref = await f.session(), cap = await f.open({ references: [ref] }), captured = await cap.capture(), parent = join(f.parent, 'quarantine'); mkdirSync(parent, { mode: 0o700 });
+  const work = cap.verifyQuarantine(captured.bytes, captured.sha256, parent), observed = work.then(() => null, (error: unknown) => error), closing = cap.close();
+  await expect(closing).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_busy' })); expect(await observed).toMatchObject({ code: 's16_ops_native_closed' }); await cap.close();
+  expect((await f.host.listSessions()).sessions).toHaveLength(1);
+});
+
 test('a replaced native directory invalidates an existing capability before its new path can be inspected or captured', async () => {
   const f = await fixture(), ref = await f.session(), cap = await f.open({ references: [ref] });
   renameSync(f.paths.sessionDirectory, f.paths.sessionDirectory + '-original'); mkdirSync(f.paths.sessionDirectory, { mode: 0o700 });

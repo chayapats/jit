@@ -87,8 +87,13 @@ existing current rows remain part of enumeration. Do not assume every CHAT
 work phase has a `native-chat` work directory. GitHub's separate native attempt
 root must be correlated to current VM/work custody; it is not implied by a CHAT
 reference. The [native root component](../contracts/s16-native-root-v1.md)
-inspects/captures an explicitly selected existing root, but complete owning
-namespace resolution is still separately required.
+inspects/captures an explicitly selected existing root. The protected current
+control's [namespace resolver](../contracts/s16-native-namespace-v1.md) maps all
+three namespaces to current owning rows, preserving pending/untracked custody.
+GitHub native identity discovery and aggregate coordination remain required.
+Public snapshot shape/hash checks alone do not validate saved branch ancestry;
+the native component also provides fresh public restore quarantine, with no
+live activation or execution, for deep native verification before acceptance.
 
 The vault, provider credentials, owner setup capabilities, sensitive-site
 profiles, SSH identities and native client secure storage cannot enter an
