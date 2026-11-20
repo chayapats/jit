@@ -79,6 +79,12 @@ The internal contracts are:
   fence; normal selected execution refuses pending control even if that fence
   is lost. Status uses a distinct observation-only capability. Physical point
   retention and aggregate capture/recovery are still separate requirements.
+- [`s16-native-root/v1`](../contracts/s16-native-root-v1.md): existing private
+  root inspection and opaque snapshot/validation using only the public Schway
+  host. Active/retired/deleted custody and exact saved branches remain distinct;
+  missing correlations/orphans/busy owners refuse capture. Actual composed
+  CHAT interpretation and MODEL work roots are covered. Complete owning
+  namespace discovery and aggregate native coordination remain required.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version

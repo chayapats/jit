@@ -77,6 +77,19 @@ state, `github-artifacts` and `native-github`. The composed runtime includes
 The selected runtime config and actual owning constructors, rather than a
 recursive copy of an assumed directory, must enumerate these roots.
 
+The current production composition routes CHAT interpretation to
+`runtime/native-chat/<rootRequestId>/interpretation_<attempt>` and work through
+MODEL to `runtime/native-model/<selectionId>`, each with `workspace`, `home` and
+`sessions`. CHAT's `native_sessions` table supplies exact interpretation refs;
+MODEL's current selection `session` supplies the work ref. The conversation
+application's non-MODEL fallback can also retain a `native-chat/.../work` ref;
+existing current rows remain part of enumeration. Do not assume every CHAT
+work phase has a `native-chat` work directory. GitHub's separate native attempt
+root must be correlated to current VM/work custody; it is not implied by a CHAT
+reference. The [native root component](../contracts/s16-native-root-v1.md)
+inspects/captures an explicitly selected existing root, but complete owning
+namespace resolution is still separately required.
+
 The vault, provider credentials, owner setup capabilities, sensitive-site
 profiles, SSH identities and native client secure storage cannot enter an
 ordinary export. A protected recovery point is a separate custody class,

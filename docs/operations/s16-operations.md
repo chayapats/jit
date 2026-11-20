@@ -62,6 +62,7 @@ Dependency installation needs registry access or the installer's cache.
 ```sh
 bun ops/evidence/s16-operations-adoption.ts --old-commit d0c4c39f581994d5c10253110b6f5083c7777991 --receipt /absolute/private/fresh-receipt.json
 bun ops/evidence/s16-operations-adoption.ts --old-commit 1229c3c77c65fac900fb974dbfef4660541d00d9 --receipt /absolute/private/fresh-journal-receipt.json --profile journal
+bun ops/evidence/s16-operations-adoption.ts --old-commit 1229c3c77c65fac900fb974dbfef4660541d00d9 --receipt /absolute/private/fresh-native-receipt.json --profile native
 ```
 
 The journal profile uses a v2-lease-aware, v1-control-only source as its
@@ -71,6 +72,14 @@ pending execution, reads bounded status, restores only the original gate and
 settles the same disposable request without replay. Owner/lifecycle/vault bytes
 stay unchanged across refused commands and journal operations. This is a
 protected library drill; no incomplete backup/export command is exposed.
+
+The native profile also exercises the packaged
+[`s16-native-root/v1`](../contracts/s16-native-root-v1.md) component through the
+pinned public host. Disposable active/retired/deleted sessions, an actual busy
+owner, opaque data larger than command JSON limits and independent hash refusal
+are checked. The only model is scripted locally; no provider/account call runs.
+It certifies that component on the reported platform, not complete namespace
+discovery, aggregate recovery, native clients or owner-host acceptance.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all

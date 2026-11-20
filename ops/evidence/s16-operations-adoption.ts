@@ -13,9 +13,9 @@ import { s15StageConfig } from './s15-stage';
 const hash = (value: Uint8Array | string) => createHash('sha256').update(value).digest('hex');
 function requireOutcome(value: unknown, code: string): asserts value { if (!value) throw Error(code); }
 /** Reproducible packaged metadata/admission drill. All state/credentials are disposable fixtures; no host is installed. */
-export async function verifyS16OperationsPackageAdoption(input: { oldCommit: string; receipt: string; profile?: 'adoption' | 'journal' }): Promise<object> {
-  if (!/^[a-f0-9]{40}$/.test(input.oldCommit) || !isAbsolute(input.receipt) || input.profile !== undefined && !['adoption', 'journal'].includes(input.profile)) throw Error('invalid_evidence_input');
-  const journalProfile = input.profile === 'journal';
+export async function verifyS16OperationsPackageAdoption(input: { oldCommit: string; receipt: string; profile?: 'adoption' | 'journal' | 'native' }): Promise<object> {
+  if (!/^[a-f0-9]{40}$/.test(input.oldCommit) || !isAbsolute(input.receipt) || input.profile !== undefined && !['adoption', 'journal', 'native'].includes(input.profile)) throw Error('invalid_evidence_input');
+  const nativeProfile = input.profile === 'native', journalProfile = input.profile === 'journal' || nativeProfile;
   const source = resolve(import.meta.dir, '../..'), parent = realpathSync(mkdtempSync(join(tmpdir(), 'jit-ops-package-'))), artifact = join(parent, 'artifact');
   const runtimePath = dirname(process.execPath) + ':' + (process.env.PATH ?? '/usr/bin:/bin');
   const execute = (args: string[], cwd = artifact, stdin?: string) => spawnRunner([process.execPath, ...args], { cwd, ...(stdin === undefined ? {} : { stdin }), env: { PATH: runtimePath }, timeoutMs: 30_000 });
@@ -70,12 +70,27 @@ export async function verifyS16OperationsPackageAdoption(input: { oldCommit: str
     requireOutcome(parseSuccess(await execute(['src/main.ts', 'credential', ...selected, '--key', 'compat_after', '--secret-stdin'], artifact, 'fixture-only-package-probe\n')).state === 'credential_stored', 'current_cli_failed_after_adoption');
     const status = parseSuccess(await execute(['run', 's16:ops', 'status', ...selected]));
     requireOutcome(status.state === 'adopted' && status.id === adopted.id && status.active === null, 'packaged_final_status_failed');
+    let nativeProbe: object | null = null;
+    if (nativeProfile) {
+      const nativeCode = `import {mkdirSync} from 'node:fs';import {join} from 'node:path';import {createHost} from 'schway/host';import {openS16NativeRoot} from './src/s16/operations/native-root.ts';
+const root=${JSON.stringify(join(parent, 'native-probe'))};mkdirSync(root,{mode:0o700});for(const part of ['workspace','home','sessions'])mkdirSync(join(root,part),{mode:0o700});
+const host=await createHost({workspaceRoot:join(root,'workspace'),homeDirectory:join(root,'home'),sessionDirectory:join(root,'sessions'),context:{policy:'strict',systemPrompt:'Disposable native evidence.',sections:[]},tools:{policy:'exact',definitions:[],hostedLookup:'off'},limits:{maxTurns:1,maxConcurrentTools:1,maxAttempts:1,contextWindow:131072,maxInputChars:300000,deadlineMs:1000}});let cap,live;
+try{live=await host.createSession();await live.submit({text:'public-native-fixture '.repeat(10000)},{provider:'codex-subscription',id:'fixture',async *stream(){yield {type:'message_complete',message:{type:'assistant',id:crypto.randomUUID(),content:[{type:'text',text:'Recorded fixture input.'}]}};}});
+const retired=await host.createSession(),deleted=await host.createSession();await retired.retire();await retired.close();await deleted.retire();await deleted.close();await host.deleteSession(deleted.reference);
+cap=await openS16NativeRoot({directory:root,installationId:'fixture',id:'${'a'.repeat(32)}',references:[live.reference,retired.reference,deleted.reference],guard(){}});let busy=false;try{await cap.capture();}catch(error){busy=error.code==='busy';}await live.close();
+const captured=await cap.capture();cap.verify(captured.bytes,captured.sha256);const value=JSON.parse(Buffer.from(captured.bytes).toString('utf8'));let invalidReceipt=false;try{cap.verify(captured.bytes,'${'0'.repeat(64)}');}catch{invalidReceipt=true;}
+console.log(JSON.stringify({busy,invalidReceipt,bytes:captured.bytes.byteLength,sha256:captured.sha256,states:value.inventory.map(row=>row.state).sort(),snapshots:value.snapshot.sessions.length,retired:value.snapshot.sessions.filter(row=>row.retired).length}));
+}finally{await cap?.close();await live?.close();await host.close();}`;
+      const observed = parseSuccess(await execute(['-e', nativeCode]));
+      requireOutcome(observed.busy && observed.invalidReceipt && observed.bytes > 131072 && canonical(observed.states) === canonical(['active', 'deleted', 'retired']) && observed.snapshots === 2 && observed.retired === 1, 'packaged_native_custody_failed');
+      nativeProbe = observed;
+    }
     requireOutcome(!refused.stdout.includes('fixture-only-package-probe') && validateArtifact(artifact).ok && readDependencyRecord(artifact)?.dependencyHash === dependencies.dependencyHash, 'artifact_changed_during_drill');
-    const receipt = { contract: 's16-operations-package-evidence/v1', scope: journalProfile ? 'deterministic_disposable_current_journal' : 'deterministic_disposable_metadata_adoption', platform: process.platform, arch: process.arch, bunVersion: Bun.version,
+    const receipt = { contract: 's16-operations-package-evidence/v1', scope: nativeProfile ? 'deterministic_disposable_native_custody' : journalProfile ? 'deterministic_disposable_current_journal' : 'deterministic_disposable_metadata_adoption', platform: process.platform, arch: process.arch, bunVersion: Bun.version,
       packageHash: manifest.contentHash, dependencyHash: dependencies.dependencyHash, dependencyFiles: dependencies.dependencyFiles, lockHash: manifest.lockHash, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
       oldCommit: input.oldCommit, oldFactorySha256: hash(readFileSync(join(old, 'src/s16/operations/installation-lease.ts'))), oldReaderSha256: hash(readFileSync(join(old, 'src/s16/operations/operations-state.ts'))),
       oldBeforeAdoption: 'credential_stored', oldAfterAdoption: journalProfile ? 'credential_stored' : 'refused', oldAfterJournalWrite: journalProfile ? 'refused_without_physical_fence' : 'not_exercised',
-      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound' };
+      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound', nativeProbe };
     opsDirectory(dirname(input.receipt)); opsWrite(input.receipt, canonical(receipt)); return receipt;
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }
@@ -83,7 +98,7 @@ export async function verifyS16OperationsPackageAdoption(input: { oldCommit: str
 if (import.meta.main) {
   const args = process.argv.slice(2);
   try {
-    if (![4, 6].includes(args.length) || args[0] !== '--old-commit' || args[2] !== '--receipt' || args.length === 6 && (args[4] !== '--profile' || !['adoption', 'journal'].includes(args[5]!))) throw Error('invalid_evidence_input');
-    console.log(JSON.stringify(await verifyS16OperationsPackageAdoption({ oldCommit: args[1]!, receipt: args[3]!, ...(args.length === 6 ? { profile: args[5] as 'adoption' | 'journal' } : {}) })));
+    if (![4, 6].includes(args.length) || args[0] !== '--old-commit' || args[2] !== '--receipt' || args.length === 6 && (args[4] !== '--profile' || !['adoption', 'journal', 'native'].includes(args[5]!))) throw Error('invalid_evidence_input');
+    console.log(JSON.stringify(await verifyS16OperationsPackageAdoption({ oldCommit: args[1]!, receipt: args[3]!, ...(args.length === 6 ? { profile: args[5] as 'adoption' | 'journal' | 'native' } : {}) })));
   } catch (error) { console.error(JSON.stringify({ error: error instanceof Error && /^[a-z][a-z0-9_]{1,79}$/.test(error.message) ? error.message : 'operations_evidence_failed' })); process.exitCode = 1; }
 }
