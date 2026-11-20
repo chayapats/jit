@@ -213,6 +213,11 @@ The same profile now exercises actual copied-package SQL/FILE/native point-forma
 files, SIGKILL after an unlink, original-plan recovery, the shipped cleanup CLI
 and refusal of a reappeared directory. Its package/external references are
 explicit format fixtures, so this proves retention without aggregate acceptance.
+Its controller probe also retires every original data handle while retaining
+actual installation/CHAT/controller exclusion, verifies both SQL process locks
+from an independent process, then reopens unchanged current SQL/original pending
+intent. This [source-retirement seam](../adr/0115-s16-source-retirement-with-retained-exclusion.md)
+is not current-cohort activation or a restore command.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all

@@ -28,6 +28,10 @@ export interface FirecrackerControllerMaintenance {
   readonly sources: readonly S16LedgerSource[];
   readonly controllers: readonly FirecrackerControllerCustody[];
   assertCurrent(): void;
+  /** Closes data journals without releasing original controller process locks/reservations. */
+  retireSources(): void;
+  /** Original process exclusion only, after data retirement; no current-data/activation claim. */
+  assertExclusion(): void;
   close(): void;
 }
 /** Trusted current composition only. The parent retains installation/CHAT exclusion throughout. */
@@ -51,12 +55,16 @@ export function openFirecrackerControllerMaintenance(options: FirecrackerControl
   const { runtimeDirectory, installationId, vm } = options; identity(installationId);
   const directory = join(runtimeDirectory, 'vm-firecracker'), sources: S16LedgerSource[] = [], controllers: FirecrackerControllerCustody[] = [];
   const opened: Database[] = [], leases: Database[] = [], reservations: DurableJournalPathReservation[] = [], files = new Map<string, BigIntStats>();
-  let closed = false, usable = true, originalNames: string[] | null = null, directoryEntry: BigIntStats | null = null;
+  let closed = false, usable = true, retired = false, originalNames: string[] | null = null, directoryEntry: BigIntStats | null = null;
   const current = () => { if (closed || !usable) refuse('s16_ops_maintenance_closed'); if ((options.guard() as unknown) !== undefined) refuse('s16_ops_guard_invalid'); };
-  const close = () => {
-    if (closed) return; usable = false; let unknown = false;
+  const closeSources = () => {
+    usable = false; if (retired) return; let unknown = false;
     for (const db of [...opened].reverse()) try { db.close(true); } catch { unknown = true; }
     if (unknown) refuse('s16_ops_source_release_unknown');
+    retired = true;
+  };
+  const close = () => {
+    if (closed) return; closeSources(); let unknown = false;
     for (const db of [...leases].reverse()) try { db.close(true); } catch { unknown = true; }
     if (unknown) refuse('s16_ops_source_release_unknown');
     for (const reservation of reservations) reservation.release(); closed = true;
@@ -69,7 +77,15 @@ export function openFirecrackerControllerMaintenance(options: FirecrackerControl
     for (const [path, before] of files) if (!same(before, entry(path))) refuse('s16_ops_image_changed');
     if (leases.some(lease => !lease.inTransaction)) refuse('s16_ops_source_release_unknown');
   };
-  const capability = Object.freeze({ sources, controllers, assertCurrent, close });
+  const assertHeld = () => {
+    if (closed || leases.some(lease => !lease.inTransaction)) refuse('s16_ops_maintenance_closed');
+    if (directoryEntry) { const now = entry(directory, true); if (directoryEntry.dev !== now.dev || directoryEntry.ino !== now.ino || directoryEntry.uid !== now.uid || directoryEntry.mode !== now.mode) refuse('s16_ops_helper_inventory_changed'); }
+    else if (lstatSync(directory, { throwIfNoEntry: false })) refuse('s16_ops_helper_inventory_changed');
+    for (const [path, before] of files) if (path.endsWith('.process-lock') && !sameEntry(before, entry(path))) refuse('s16_ops_image_changed');
+  };
+  const retireSources = () => { assertHeld(); if (usable && opened.some(db => db.inTransaction)) refuse('s16_ops_sources_busy'); closeSources(); assertHeld(); };
+  const assertExclusion = () => { if (!retired) refuse('s16_ops_sources_not_retired'); assertHeld(); };
+  const capability = Object.freeze({ sources, controllers, assertCurrent, retireSources, assertExclusion, close });
   try {
     if ((options.retain?.(capability) as unknown) !== undefined) refuse('s16_ops_guard_invalid'); current();
     const attached = vm.query<{ name: string; file: string }, []>('PRAGMA database_list').all();

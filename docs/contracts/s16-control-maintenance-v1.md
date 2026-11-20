@@ -93,6 +93,22 @@ exclusion, then installation exclusion. Unknown close keeps the remaining
 process exclusion held; no file is unlinked to force release. Failure during
 open cannot release installation exclusion after an unknown runtime release.
 
+For the future forward activation coordinator, [ADR 0115](../adr/0115-s16-source-retirement-with-retained-exclusion.md)
+adds `retireSources()` and `assertExclusion()`. Retirement first requires current
+guards, released native/helper resources and no open SQL source transaction.
+It closes original controller/outer/runtime data handles while retaining every
+installation/CHAT/controller process lease. Full content/capture/journal methods
+refuse once retirement starts. Unknown data disposal retains all process locks,
+including controllers already retired earlier in the attempt; retry the same
+context or complete its original close. Successful retirement is idempotent.
+
+`assertExclusion()` requires completed retirement, the original live process
+transactions/lock and root identities, current configuration/composition and
+original fence. It intentionally makes no current-data, target or compatibility
+claim. The coordinator must separately bind and revalidate exact current cohort/
+prior/target hashes and durable per-component progress. A completed source close
+does not supply a restore intent, activate an archive or clear an admission gate.
+
 Byte/native/profile/vault/helper/device/package custody and durable aggregate
 fence/intent/activation are still separately required. This component does not
 certify physical/native settlement, independent receipt provenance, historical

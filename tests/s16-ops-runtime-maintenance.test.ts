@@ -93,3 +93,25 @@ test('absent state is never replaced with a fresh installation', async () => {
   mkdirSync(directory, { mode: 0o700 }); expect(() => openS16RuntimeMaintenance({ ...config(f), directory })).toThrow();
   expect(existsSync(join(directory, 'composition.json'))).toBe(false);
 });
+
+test('runtime retirement closes every source while the actual CHAT lock excludes another process and service boot', async () => {
+  const f = await fixture(); await f.service.close(); const context = openS16RuntimeMaintenance(config(f)); cleanup.push(() => context.close());
+  const before = context.sources.map(source => source.database.serialize()); expect(() => context.assertExclusion()).toThrow(expect.objectContaining({ code: 's16_ops_sources_not_retired' }));
+  context.retireSources(); context.retireSources(); context.assertExclusion(); expect(() => context.assertCurrent()).toThrow();
+  for (const [index, source] of context.sources.entries()) {
+    expect(() => source.database.query('SELECT 1').get()).toThrow();
+    const reader = new Database(join(f.directory, source.name), { readonly: true, create: false }); try { expect(reader.serialize()).toEqual(before[index]!); } finally { reader.close(true); }
+  }
+  const lock = join(f.directory, 'conversation.sqlite.runtime-lock.sqlite');
+  const child = Bun.spawnSync([process.execPath, '-e', `import {Database} from 'bun:sqlite';const db=new Database(${JSON.stringify(lock)},{readwrite:true,create:false});let blocked=false;try{db.exec('PRAGMA busy_timeout=10; BEGIN EXCLUSIVE');}catch{blocked=true;}finally{db.close(true);}console.log(JSON.stringify({blocked}));`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+  expect({ exit: child.exitCode, error: child.stderr.toString(), result: JSON.parse(child.stdout.toString()) }).toEqual({ exit: 0, error: '', result: { blocked: true } });
+  await expect(composeS15(f.options(false))).rejects.toThrow(); context.assertExclusion(); context.close(); await f.reopen(); expect(f.service.maintenanceSources(f.owner)).toHaveLength(17);
+});
+
+test('unknown runtime retirement retains its original lock and can finish only the same source disposal', async () => {
+  const f = await fixture(); await f.service.close(); const context = openS16RuntimeMaintenance(config(f)); cleanup.push(() => context.close());
+  const database = context.sources[0]!.database, close = database.close.bind(database); database.close = () => { throw Error('fixture_retirement_close_unknown'); };
+  try { expect(() => context.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); expect(() => context.assertExclusion()).toThrow(); await expect(composeS15(f.options(false))).rejects.toThrow(); }
+  finally { database.close = close; }
+  context.retireSources(); context.assertExclusion(); context.close(); await f.reopen();
+});

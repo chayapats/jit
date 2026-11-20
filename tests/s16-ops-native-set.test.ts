@@ -113,6 +113,7 @@ test('ordinary export and unadopted/pending phases cannot acquire native backup 
 test('the current context retains both exclusions while a native session is owned or its exact async operation is outstanding', async () => {
   const f = await fixture(), state = f.start(), session = state.session(); expect(() => state.ctx.nativeSet(requestId, { ...settings, attempt: 'other' })).toThrow(expect.objectContaining({ code: 's16_ops_native_busy' }));
   const pending = session.capture(); await expect(session.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_busy' }));
+  expect(() => state.ctx.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); state.ctx.assertCurrent();
   expect(() => state.ctx.close()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); expect(() => openS16InstallationLease({ directory: f.directory, mode: 'shared' })).toThrow();
   await expect(session.close()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_busy' })); await expect(pending).rejects.toThrow();
   await session.close(); state.ctx.close(); const ctx = f.open(); ctx.close();

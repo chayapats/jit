@@ -39,7 +39,7 @@ the capture/verification contracts perform actual SQLite/FK integrity checks.
 This is not a substitute for all owning semantic/current-authority validation.
 
 The returned protected capability contains `sources`, `selected`, `retained`,
-`assertCurrent()` and `close()`. Its handles never enter JSON, ordinary exports,
+`assertCurrent()`, `retireSources()`, `assertExclusion()` and `close()`. Its handles never enter JSON, ordinary exports,
 artifacts, prompts or the execution plane. Use `assertCurrent` as the outer
 guard of `captureS16LedgerSet`: it rechecks the retained process lease,
 composition bytes, source inventory/inodes/permissions and observed main-file
@@ -50,6 +50,18 @@ process lease. It is idempotent after success. If a connection cannot close
 conclusively, the lease remains held and release is explicitly unknown; an
 original close may be retried. Neither close nor process death certifies a VM,
 parser, native effect or backend driver as settled.
+
+[ADR 0115](../adr/0115-s16-source-retirement-with-retained-exclusion.md) adds
+irreversible data retirement without releasing the original live CHAT process
+transaction. `retireSources()` refuses an open source transaction, closes only
+data handles and can retry original unknown disposal. Full current-content
+methods then refuse. `assertExclusion()` checks the retained private runtime/
+CHAT-lock identities, unchanged composition and actual live transaction after
+retirement. Directory identity excludes incidental link counts that SQLite's
+WAL/SHM creation can change on macOS; lock files remain exact single-link inodes.
+This is exclusion only, never evidence of current SQL hashes, a prepared target,
+physical settlement or activation. Final `close()` releases the original lease;
+neither method unlinks or recreates a lock.
 
 Outer owner/auth/vault/recipient/site state, disabled native components,
 immutable file/skill payloads, client secure storage and separate backend/helper

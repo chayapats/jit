@@ -56,6 +56,16 @@ CHAT exclusion for original disposal retry. Failed open also retains its owned
 disposal capability before resources are acquired. No unknown command is
 reclassified from a successful file read or process-lease acquisition.
 
+`retireSources()` closes only the original data journals, refusing a pending
+source transaction while the sources are still usable. It keeps each genuine
+controller process transaction and local path reservation. After retirement,
+`assertExclusion()` checks those original live transactions, directory identity
+and private single-link lock inodes; ordinary `assertCurrent()` refuses. Unknown
+source close retains the whole process exclusion for original retry. The final
+`close()` releases process leases/reservations only after data disposal. These
+[ADR 0115](../adr/0115-s16-source-retirement-with-retained-exclusion.md) methods
+make no current-data/hash, helper-settlement or activation claim.
+
 Root helper journals/physical state remain current in their separate protected
 installation. Historical controller images cannot replace their commands,
 launch IDs, generations or unknown effects. Full aggregate coordination must

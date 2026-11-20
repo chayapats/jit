@@ -97,6 +97,7 @@ test('pending read retains both current exclusions until its original promise se
   const f = await fixture('idle'), started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
   const held = (async (input, init) => { started.resolve(); await gate.promise; return f.transport(input, init); }) as typeof fetch;
   const pending = f.context.helperCustody({ fixture: { basis: 'protocol_fixture', fetch: held } }); await started.promise;
+  expect(() => f.context.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); f.context.assertCurrent();
   expect(() => f.context.close()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); expect(() => openS16InstallationLease({ directory: f.directory, mode: 'shared' })).toThrow();
   gate.resolve(); await expect(pending).rejects.toThrow(); f.context.close(); const next = openS16ControlMaintenance(f.config); next.close(); expect(f.host.runtime().current().state).toBe('unverified');
 });

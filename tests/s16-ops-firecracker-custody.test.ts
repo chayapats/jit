@@ -148,3 +148,31 @@ test('actual owning RPC response loss stays original/unknown through cohort capt
   expect(operations).toEqual(calls); expect(hash(readFileSync(original.path))).toBe(before); expect(host.starts()).toBe(1);
   client = new FirecrackerVmManagement({ ...original.options, create: false }); expect((await client.inspect()).state).toBe('running'); expect(client.pending()).toBe(false); expect(host.starts()).toBe(1); expect(operations.filter(value => value === 'submit')).toHaveLength(1);
 });
+
+test('aggregate retirement closes controller data but retains its actual process lock and original unknown intent', async () => {
+  const f = await fixture(), original = f.add(), before = readFileSync(original.path), ctx = f.open(); ctx.retireSources(); ctx.assertExclusion();
+  expect(() => ctx.firecracker.sources[0]!.database.query('SELECT 1').get()).toThrow(); expect(readFileSync(original.path)).toEqual(before);
+  expect(() => new FirecrackerVmManagement({ ...original.options, create: false })).toThrow(expect.objectContaining({ code: 'runtime_already_open' }));
+  const command = { path: original.path, create: false, installationId: original.options.installationId, origin: original.options.origin, computerId: original.options.computerId, selectionSha256: original.options.selectionSha256, fixture: { basis: 'protocol_fixture' } };
+  const child = Bun.spawnSync([process.execPath, '-e', `import {FirecrackerVmManagement} from './src/s15/vm/firecracker/client';let code='unexpected';try{new FirecrackerVmManagement({...${JSON.stringify(command)},credential(){throw Error('unexpected_credential');}}).close();}catch(error){code=error.code;}console.log(JSON.stringify({code}));`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+  expect({ exit: child.exitCode, error: child.stderr.toString(), result: JSON.parse(child.stdout.toString()) }).toEqual({ exit: 0, error: '', result: { code: 'runtime_already_open' } });
+  ctx.assertExclusion(); ctx.close(); const next = f.open(); expect(next.firecracker.controllers[0]!.pending?.state).toBe('unknown');
+});
+
+test('unknown aggregate outer retirement does not release an already retired controller process lock', async () => {
+  const f = await fixture(), original = f.add(), ctx = f.open(), database = ctx.outer[0]!.database, close = database.close.bind(database);
+  database.close = () => { throw Error('fixture_outer_retirement_unknown'); };
+  try {
+    expect(() => ctx.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' }));
+    expect(() => new FirecrackerVmManagement({ ...original.options, create: false })).toThrow(expect.objectContaining({ code: 'runtime_already_open' }));
+    expect(() => ctx.close()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' }));
+    expect(() => new FirecrackerVmManagement({ ...original.options, create: false })).toThrow(expect.objectContaining({ code: 'runtime_already_open' }));
+  } finally { database.close = close; }
+  ctx.retireSources(); ctx.assertExclusion(); ctx.close(); const client = new FirecrackerVmManagement({ ...original.options, create: false }); client.close();
+});
+
+test('retired controller exclusion refuses a substituted original process-lock inode', async () => {
+  const f = await fixture(), original = f.add(), ctx = f.open(); ctx.retireSources(); const path = original.path + '.process-lock', bytes = readFileSync(path);
+  const { renameSync } = await import('node:fs'); renameSync(path, path + '.original'); writeFileSync(path, bytes, { mode: 0o600 });
+  expect(() => ctx.assertExclusion()).toThrow();
+});

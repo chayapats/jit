@@ -82,3 +82,49 @@ test.each(['config', 'inventory', 'source', 'fence'] as const)('changed current 
   if (kind === 'fence') { const directory = f.ownerPath + '.ops'; mkdirSync(directory, { mode: 0o700 }); writeFileSync(join(directory, 'capture.json'), '{}', { mode: 0o600 }); }
   expect(() => context.assertCurrent()).toThrow();
 });
+
+function competingLocks(directory: string) {
+  const runtimeLock = join(directory, 'runtime/conversation.sqlite.runtime-lock.sqlite');
+  const child = Bun.spawnSync([process.execPath, '-e', `import {Database} from 'bun:sqlite';import {openS16InstallationLease} from './src/s16/operations/installation-lease';let installation='unexpected',chat=false;try{openS16InstallationLease({directory:${JSON.stringify(directory)},mode:'shared'}).close();}catch(error){installation=error.code;}const db=new Database(${JSON.stringify(runtimeLock)},{readwrite:true,create:false});try{db.exec('PRAGMA busy_timeout=10; BEGIN EXCLUSIVE');}catch{chat=true;}finally{db.close(true);}console.log(JSON.stringify({installation,chat}));`], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe', timeout: 5000 });
+  expect({ exit: child.exitCode, error: child.stderr.toString() }).toEqual({ exit: 0, error: '' }); return JSON.parse(child.stdout.toString());
+}
+
+test('aggregate source retirement preserves actual independent installation and CHAT exclusion and all current SQL', async () => {
+  const f = await fixture(), context = maintenance(f), before = context.sources.map(source => source.database.serialize());
+  expect(() => context.assertExclusion()).toThrow(expect.objectContaining({ code: 's16_ops_sources_not_retired' })); context.retireSources(); context.retireSources(); context.assertExclusion();
+  expect(competingLocks(f.directory)).toEqual({ installation: 's16_ops_installation_busy', chat: true });
+  for (const source of context.sources) expect(() => source.database.query('SELECT 1').get()).toThrow();
+  for (const call of [context.assertCurrent, context.operations, context.nativeNamespace, context.fileCustody, context.githubArtifacts, context.externalCustody]) expect(() => call()).toThrow();
+  context.close(); const fresh = maintenance(f); expect(fresh.sources.map(source => source.database.serialize())).toEqual(before); fresh.assertCurrent(); expect(() => context.assertExclusion()).toThrow();
+});
+
+test('unknown aggregate retirement keeps all original exclusion until the same data handle can actually close', async () => {
+  const f = await fixture(), context = maintenance(f), database = context.outer[0]!.database, close = database.close.bind(database);
+  database.close = () => { throw Error('fixture_retirement_close_unknown'); };
+  try {
+    expect(() => context.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); expect(() => context.assertExclusion()).toThrow(); expect(() => context.assertCurrent()).toThrow();
+    expect(competingLocks(f.directory)).toEqual({ installation: 's16_ops_installation_busy', chat: true });
+  } finally { database.close = close; }
+  context.retireSources(); context.assertExclusion(); context.close(); maintenance(f).assertCurrent();
+});
+
+for (const changed of ['config', 'fence', 'chat_lock'] as const) test('retired aggregate refuses changed ' + changed + ' without presenting exclusion as current-data validation', async () => {
+  const f = await fixture(), context = maintenance(f); context.retireSources(); context.assertExclusion();
+  if (changed === 'config') f.config.installationId = 'changed';
+  if (changed === 'fence') { const path = f.ownerPath + '.ops'; mkdirSync(path, { mode: 0o700 }); writeFileSync(join(path, 'capture.json'), '{}', { mode: 0o600 }); }
+  if (changed === 'chat_lock') {
+    const path = join(f.directory, 'runtime/conversation.sqlite.runtime-lock.sqlite'), bytes = readFileSync(path);
+    const { renameSync } = await import('node:fs'); renameSync(path, path + '.original'); writeFileSync(path, bytes, { mode: 0o600 });
+  }
+  expect(() => context.assertExclusion()).toThrow();
+});
+
+test('aggregate retirement refuses an open source transaction before closing any current handle', async () => {
+  const f = await fixture(), context = maintenance(f), database = context.outer[0]!.database; database.exec('BEGIN IMMEDIATE');
+  try {
+    expect(() => context.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_sources_busy' })); context.assertCurrent();
+    for (const source of context.sources) expect(source.database.query('SELECT 1 AS live').get()).toEqual({ live: 1 });
+    expect(competingLocks(f.directory)).toEqual({ installation: 's16_ops_installation_busy', chat: true });
+  } finally { database.exec('ROLLBACK'); }
+  context.retireSources(); context.assertExclusion();
+});

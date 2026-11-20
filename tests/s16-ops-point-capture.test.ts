@@ -74,6 +74,7 @@ test('unsealed source execution refuses before creating an operation or staging 
   const f = await pointFormatFixture(); cleanup.push(f.dispose); const before = readFileSync(join(f.directory, 'operations/control.json')), capture = f.context.pointCapture('unsealed_original');
   await expect(capture.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_verified_package_required' }));
   expect(readFileSync(join(f.directory, 'operations/control.json'))).toEqual(before); expect(existsSync(join(f.directory, 'operations/point-staging'))).toBe(false);
+  expect(() => f.context.retireSources()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); f.context.assertCurrent();
   expect(() => f.context.close()).toThrow(expect.objectContaining({ code: 's16_ops_source_release_unknown' })); await capture.close(); f.context.close();
 });
 

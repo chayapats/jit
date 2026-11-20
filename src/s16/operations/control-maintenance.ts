@@ -85,6 +85,10 @@ export interface S16ControlMaintenance {
   /** Explicit retirement of one terminal backup's independently owned temporary namespaces. */
   retireStaging(requestId: string, options: S16StagingRetirementOptions): Readonly<S16StagingRetirementResult>;
   assertCurrent(): void;
+  /** Closes original SQL sources, keeping genuine installation/CHAT/controller process exclusion. */
+  retireSources(): void;
+  /** Exclusion only after retirement; current cohort/target validation remains with the activation coordinator. */
+  assertExclusion(): void;
   close(): void;
 }
 /** A protected operator may resume only its independently read exact current adoption intent. Never archive input. */
@@ -100,18 +104,28 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   const configurationSha256 = createHash('sha256').update(configIdentity).digest('hex');
   let expectedFence = options.adoptionFence ? Object.freeze({ ...options.adoptionFence }) : undefined;
   let expectedOperation = options.operationFence ? Object.freeze({ ...options.operationFence }) : undefined;
-  let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true;
+  let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true, retiring = false, retired = false;
   let firecracker: FirecrackerControllerMaintenance | undefined;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const nativeSets = new Set<S16NativeSetMaintenance>();
   const pointCaptures = new Set<S16PointCaptureMaintenance>();
   let helperReads = 0;
+  const retireDataSources = () => {
+    if (retired) return;
+    firecracker?.retireSources();
+    let failed = false;
+    for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
+    if (failed) refuse('s16_ops_source_release_unknown');
+    runtime?.retireSources(); retired = true;
+  };
   const close = () => {
     if (closed) return; usable = false;
     if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    // A retirement attempt never releases auxiliary process locks while any original source close is unknown.
+    if (retiring) retireDataSources();
     firecracker?.close();
     let failed = false;
-    for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
+    if (!retired) for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
     if (failed) refuse('s16_ops_source_release_unknown');
     runtime?.close(); lease.close(); closed = true;
   };
@@ -193,6 +207,20 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const assertCaptureReleased = () => {
       assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
     };
+    const assertExclusion = () => {
+      if (closed || !retired) refuse('s16_ops_sources_not_retired');
+      lease.assertCurrent(); heldRuntime.assertExclusion(); firecracker?.assertExclusion(); unfenced();
+      if (canonical(config) !== configIdentity || !same(rootEntry, entry(root, true)) || !same(ownerEntry, entry(ownerDirectory, true))) refuse('s16_ops_inventory_changed');
+    };
+    const retireSources = () => {
+      if (!retiring) {
+        assertCaptureReleased();
+        if (sources.some(source => source.database.inTransaction)) refuse('s16_ops_sources_busy');
+        retiring = true; usable = false;
+      }
+      else { if (closed) refuse('s16_ops_maintenance_closed'); lease.assertCurrent(); }
+      retireDataSources(); assertExclusion();
+    };
     const assertBackupAbortable = (request: Readonly<S16OperationsRequest>) => {
       assertCaptureReleased(); const control = readS16OperationsControl(root);
       if (request.pointId) opsPath(s16PointDirectory(root, request.pointId));
@@ -248,7 +276,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     };
     const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
     const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

@@ -12,6 +12,7 @@ function refuse(code: string): never { throw new AppError(code, 409); }
 const baseStores = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite'];
 const durable = new Set(['model.sqlite', 'work.sqlite', 'disclosure.sqlite', 'files.sqlite', 'routines.sqlite', 'notifications.sqlite', 'voice.sqlite']);
 function sameEntry(a: BigIntStats, b: BigIntStats) { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && a.nlink === b.nlink; }
+function sameDirectory(a: BigIntStats, b: BigIntStats) { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode; }
 const auxiliary = (name: string) => name.endsWith('.runtime-lock.sqlite') && Object.hasOwn(s16RuntimeReaders, name.slice(0, -'.runtime-lock.sqlite'.length));
 function metadataJson(db: Database, vm: boolean): void {
   const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 257").all();
@@ -37,6 +38,10 @@ export interface S16RuntimeMaintenance {
   readonly selected: readonly string[];
   readonly retained: readonly string[];
   assertCurrent(): void;
+  /** Irreversibly closes data connections while retaining the original CHAT process transaction. */
+  retireSources(): void;
+  /** Exclusion only after retirement, never a claim about current data/target hashes or restore readiness. */
+  assertExclusion(): void;
   close(): void;
 }
 
@@ -57,19 +62,23 @@ export function openS16RuntimeMaintenance(options: S16RuntimeMaintenanceOptions)
     if ((directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n) || stat.isSymbolicLink() || stat.uid !== BigInt(uid) || stat.mode & (directory ? 0o7077n : 0o7177n)) refuse('s16_ops_path_untrusted');
     return stat;
   };
-  let lease: Database | undefined, usable = true, closed = false;
+  let lease: Database | undefined, usable = true, closed = false, retired = false;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
-  const close = () => {
-    if (closed) return; usable = false;
+  const closeSources = () => {
+    usable = false; if (retired) return;
     let failed = false;
     for (const db of [...opened].reverse()) { try { db.close(true); } catch { failed = true; } }
     // Keep the process lease when a source did not close conclusively; a later close may retry it.
     if (failed) refuse('s16_ops_source_release_unknown');
+    retired = true;
+  };
+  const close = () => {
+    if (closed) return; closeSources();
     try { lease?.close(true); } catch { refuse('s16_ops_source_release_unknown'); }
     closed = true;
   };
   try {
-    privateEntry(root, true);
+    const rootEntry = privateEntry(root, true);
     const manifestPath = join(root, 'composition.json'); privateEntry(manifestPath);
     const manifestBytes = opsRead(manifestPath, 16_384), manifest: unknown = JSON.parse(manifestBytes.toString('utf8'));
     if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || Object.keys(manifest).sort().join(',') !== 'contract,installationId,stores') refuse('s16_ops_inventory_changed');
@@ -118,17 +127,22 @@ export function openS16RuntimeMaintenance(options: S16RuntimeMaintenanceOptions)
       const after = privateEntry(path); if (!sameEntry(before, after)) refuse('s16_ops_image_changed'); entries.set(path, after);
       return Object.freeze({ name, database: db, reader });
     });
+    const assertHeld = () => {
+      if (closed || !lease?.inTransaction) refuse('s16_ops_maintenance_closed');
+      if (!sameDirectory(rootEntry, privateEntry(root, true)) || !sameEntry(lockEntry, privateEntry(lockPath)) || !opsRead(manifestPath, 16_384).equals(manifestBytes)) refuse('s16_ops_inventory_changed');
+    };
     const assertCurrent = () => {
-      if (!usable || closed || !lease?.inTransaction) refuse('s16_ops_maintenance_closed');
-      if (!sameEntry(lockEntry, privateEntry(lockPath)) || !opsRead(manifestPath, 16_384).equals(manifestBytes)) refuse('s16_ops_inventory_changed');
+      if (!usable) refuse('s16_ops_maintenance_closed'); assertHeld();
       if (JSON.stringify(readdirSync(root).filter(name => name.endsWith('.sqlite') && !auxiliary(name)).sort()) !== JSON.stringify(all)) refuse('s16_ops_inventory_changed');
       for (const [path, entry] of entries) {
         const current = privateEntry(path);
         if (!sameEntry(entry, current) || entry.size !== current.size || entry.mtimeNs !== current.mtimeNs || entry.ctimeNs !== current.ctimeNs) refuse('s16_ops_image_changed');
       }
     };
+    const retireSources = () => { assertHeld(); if (usable && opened.some(db => db.inTransaction)) refuse('s16_ops_sources_busy'); closeSources(); assertHeld(); };
+    const assertExclusion = () => { if (!retired) refuse('s16_ops_sources_not_retired'); assertHeld(); };
     assertCurrent();
-    return Object.freeze({ sources: Object.freeze(sources), selected: Object.freeze(selected), retained: Object.freeze(retained), assertCurrent, close });
+    return Object.freeze({ sources: Object.freeze(sources), selected: Object.freeze(selected), retained: Object.freeze(retained), assertCurrent, retireSources, assertExclusion, close });
   } catch (error) {
     close();
     if (error instanceof AppError && error.code.startsWith('s16_ops_')) throw error;
