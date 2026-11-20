@@ -150,7 +150,7 @@ export class FirecrackerHostJournal {
    * original receipts escape; contexts are hashed in place and optionally checked by their driver.
    * A read transaction never calls application recovery, host I/O or an observation writer.
    */
-  custody(id: string, requestId: string | null = null, validateContext?: (job: FirecrackerHostJob, context: unknown) => void): FirecrackerJournalCustody {
+  custody(id: string, requestId: string | null = null, validateContext?: (job: FirecrackerHostJob, context: unknown) => void, validateInstance?: (record: unknown) => void): FirecrackerJournalCustody {
     if (!computerId(id) || requestId !== null && !uuid(requestId) || this.db.inTransaction) return fail();
     return this.db.transaction(() => {
       const format = this.db.query<{ user_version: number }, []>('PRAGMA main.user_version').get()!.user_version;
@@ -163,6 +163,8 @@ export class FirecrackerHostJournal {
         { name: 'fc_snapshots', key: 'computer_id,id', bound: 4096, fields: ['computer_id', 'id', 'sha256', 'bytes', 'retired'], text: ['computer_id', 'id', 'sha256'], json: [] as string[], nullable: [] as string[] },
         ...(format === 2 ? [{ name: 'fc_instances', key: 'computer_id', bound: 64, fields: ['computer_id', 'data'], text: ['computer_id', 'data'], json: ['data'], nullable: [] as string[] }] : []),
       ];
+      const schemaBounds = this.db.query<{ n: number; invalid: number }, []>("SELECT count(*) n,coalesce(sum(typeof(type)<>'text' OR length(CAST(type AS BLOB))>16 OR typeof(name)<>'text' OR length(CAST(name AS BLOB))>128 OR typeof(tbl_name)<>'text' OR length(CAST(tbl_name AS BLOB))>128 OR (sql IS NOT NULL AND (typeof(sql)<>'text' OR length(CAST(sql AS BLOB))>8192))),0) invalid FROM main.sqlite_schema").get();
+      if (!schemaBounds || schemaBounds.n > 32 || schemaBounds.invalid) return fail('vm_firecracker_custody_bounds');
       const schema = this.db.query<{ type: string; name: string; tbl_name: string; sql: string | null }, []>('SELECT type,name,tbl_name,sql FROM main.sqlite_schema ORDER BY type,name LIMIT 33').all();
       const allowed = new Set([...plans.flatMap(p => [p.name, 'sqlite_autoindex_' + p.name + '_1']), 'fc_one_active']);
       if (schema.length > 32 || schema.some(row => !allowed.has(row.name) || !['table', 'index'].includes(row.type) || row.sql !== null && Buffer.byteLength(row.sql) > 8192) || plans.some(plan => !schema.some(row => row.type === 'table' && row.name === plan.name))) return fail();
@@ -218,6 +220,7 @@ export class FirecrackerHostJournal {
               const launch = vmRecord(record.launch, ['requestId', 'invocationId', 'process']), process = vmRecord(launch.process, ['pid', 'startTicks', 'hostBootId']);
               if (!uuid(launch.requestId) || !uuid(launch.invocationId) || !Number.isSafeInteger(process.pid) || Number(process.pid) < 2 || Number(process.pid) > 0x7fffffff || typeof process.startTicks !== 'string' || !/^[1-9][0-9]{0,19}$/.test(process.startTicks) || typeof process.hostBootId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(process.hostBootId)) return fail();
             }
+            if (row.computer_id === id) validateInstance?.(record);
             instances++;
           }
         }

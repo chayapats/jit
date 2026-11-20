@@ -27,6 +27,9 @@ Root journal cuts bound the database and canonical streamed metadata to 1 GiB,
 64 computers/instances, 4096 original jobs and 4096 snapshot rows. Text fields
 are bounded before loading (64 KiB JSON, 128 bytes other text); malformed UTF-8,
 unknown tables/readers, missing original history or tombstones refuse. Runtime
+schema fields are bounded before loading (32 objects, 8 KiB SQL per object).
+The selected instance decoder runs inside that same bounded read transaction;
+no preliminary unbounded instance projection occurs. Runtime
 RPC requires owning format 2 and the selected native controller identity.
 The protected cohort has at most 64 helpers and 4 MiB metadata. Each authenticated
 request has a 10-second deadline, 4 KiB request and 16 KiB response bound; the

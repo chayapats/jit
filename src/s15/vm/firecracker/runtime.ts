@@ -255,9 +255,9 @@ export class FirecrackerHostRuntime {
   current() { this.#current(); return this.#journal.computer(this.computerId); }
   /** Current metadata cut only: no inspect/observe/reconcile, physical I/O or private context export. */
   custody(requestId: string | null = null) {
-    this.#current(); this.#instance();
-    const value = this.#journal.custody(this.computerId, requestId, (job, context) => { this.#context(job, context); });
-    this.#instance(); this.#current(); return { ...value, basis: this.basis, controller: this.controllerIdentity() };
+    this.#current(); this.#journal.assertInstances(); let bound = false;
+    const value = this.#journal.custody(this.computerId, requestId, (job, context) => { this.#context(job, context); }, record => { this.#record(record); bound = true; });
+    if (!bound) return fail(); this.#current(); return { ...value, basis: this.basis, controller: this.controllerIdentity() };
   }
   /** Protected IPC identity check only; this is not a guest/model selector or serialized permission. */
   controllerIdentity(): { uid: number; gid: number } { this.#current(); return { uid: this.#base.host.controllerUid, gid: this.#base.host.controllerGid }; }

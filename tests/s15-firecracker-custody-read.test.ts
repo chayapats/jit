@@ -74,6 +74,23 @@ test('authenticated custody RPC reads original committed/absent receipts while n
   f.authorize(false); const response = await fetch(relay.origin + '/v1/firecracker', { method: 'POST', headers: { Authorization: 'Bearer ' + credential, 'Content-Type': 'application/json' }, body: JSON.stringify({ contract: 's16-firecracker-management/v1', installationId, operation: 'custody', requestId: null }) }); expect(response.status).toBe(503);
 });
 
+test('oversized owning schema refuses before loading its text into the custody fingerprint', async () => {
+  const f = await fixture(), db = f.journal().db;
+  db.exec("DROP INDEX fc_one_active; CREATE UNIQUE INDEX fc_one_active /*" + 'x'.repeat(8193) + "*/ ON fc_jobs(computer_id) WHERE state IN ('accepted','dispatched','unknown')");
+  const original = db.query, query = original.bind(db); let loaded = false, error: unknown;
+  db.query = ((sql: string) => { if (sql.startsWith('SELECT type,name,tbl_name,sql')) loaded = true; return query(sql); }) as typeof db.query;
+  try { f.runtime().custody(); } catch (value) { error = value; } finally { db.query = original; }
+  expect(error).toMatchObject({ code: 'vm_firecracker_custody_bounds' }); expect(loaded).toBe(false); expect(f.commands).toEqual([]);
+});
+
+test('owning runtime applies instance byte bounds before its selected-instance decoder reads a row', async () => {
+  const f = await fixture(), db = f.journal().db; db.query('UPDATE fc_instances SET data=?').run(JSON.stringify({ invalid: 'x'.repeat(65536) }));
+  const original = db.query, query = original.bind(db); let loaded = false, error: unknown;
+  db.query = ((sql: string) => { if (sql.startsWith('SELECT data FROM fc_instances')) loaded = true; return query(sql); }) as typeof db.query;
+  try { f.runtime().custody(); } catch (value) { error = value; } finally { db.query = original; }
+  expect(error).toMatchObject({ code: 'vm_firecracker_custody_bounds' }); expect(loaded).toBe(false); expect(f.commands).toEqual([]);
+});
+
 test.each(['reader', 'table', 'hash', 'active', 'context', 'bounds', 'tombstone'] as const)('corrupt helper %s refuses a custody reference without executing recovery', async kind => {
   const f = await fixture(); await f.runtime().inspect(); f.lostLaunch(); const command = f.mutation(1, 'launch'); expect((await f.runtime().submit(command)).state).toBe('unknown');
   if (kind === 'reader') f.journal().db.exec('PRAGMA user_version=99');
