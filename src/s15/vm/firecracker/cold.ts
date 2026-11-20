@@ -173,6 +173,13 @@ export class FirecrackerColdStore {
       await this.#settled(control, context.replacement!, until); return { ...context.replacement! };
     });
   }
+  /** Verifies an exact immutable published snapshot after its source VM resumed; no mutable-disk/stop claim. */
+  async inspectSnapshot(expected: FirecrackerColdManifest, control: FirecrackerColdControl): Promise<FirecrackerColdManifest> {
+    return this.#run(control, async until => {
+      const value = this.#manifest(expected, expected.snapshotId), actual = await this.#snapshot(value.snapshotId, control, until);
+      if (vmCanonical(value) !== vmCanonical(actual)) return fail(); await this.#guard(control, until); return actual;
+    });
+  }
   /** Original read-back only. A prepared stage or missing output remains unknown; nothing is renamed/deleted. */
   readBack(value: unknown, control: FirecrackerColdControl): Promise<FirecrackerColdManifest | Disk | true | null> {
     return this.#run(control, async until => {

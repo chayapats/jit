@@ -135,6 +135,32 @@ claim about the mutable guest disk, and no observation supplies source ancestry.
 
 ## Portable working state
 
+### Protected manager composition
+
+The additional manager composes the existing bounded host primitives in one
+separately installed root helper, not in Jit's nonroot controller or Schway's
+execution loop. The helper retains original unit/invocation/process and current
+disk custody in its private journal before publishing a usable endpoint.
+Adopting these instance records explicitly checkpoints helper reader format 2
+before a VM mutation; format-1 helpers refuse the actual database header.
+Native startup holds the singleton before recovery. Original cleanup authority
+closes transports and stops only the recorded process; cold restart removes
+only its two verified stale sockets after independent settlement.
+
+Use a versioned, one-computer loopback RPC (`s16-firecracker-management/v1`)
+with the existing protected-relay credential approach. A root daemon keeps the
+fixed SSH/vsock forwarder alive across controller connections. Compared with
+per-command sudo, this avoids losing the SSH endpoint when a command exits.
+It accepts current-state reads, exact closed original commands, receipt reads
+and original read-back, never a host path, binary, argv, credential read or
+arbitrary VM selector. Requests are capped at 4 KiB, responses at 16 KiB and
+concurrency at four; mutations retain their durable per-computer reservation.
+Only loopback is supported initially; remote exposure/TLS/tunneling is not
+inferred. The daemon credential stays in protected host/controller storage and
+never in the working VM or VMM environment. Source implementation does not
+install an account, sudoers rule, credential or production service. Such host
+setup and native Linux/KVM evidence remain #431/#432.
+
 Existing work affinity never changes silently. Export captures an owner's exact
 reviewed regular files from a particular work root under current authority.
 Import targets a fresh destination workspace/attempt with its own current

@@ -66,6 +66,8 @@ export function firecrackerHostFixture(jailerBase = '/srv/jit') {
     syncDisk(path, expected) { syncs++; if (failSync || host.metadata(path).inode !== expected.inode) throw Error('uncertain sync'); },
   };
   return { selected, host, root, proc, cgroup, nodes, data, links, write, add,
-    counters: () => ({ syncs, signals, opens, closes }), exit: () => { alive = false; }, otherProcess: () => { otherUidProcess = true; }, failSync: () => { failSync = true; }, recoverSync: () => { failSync = false; },
+    counters: () => ({ syncs, signals, opens, closes }), alive: () => alive,
+    start: (ticks: string) => { alive = true; selected.process.startTicks = ticks; const fields = Array<string>(20).fill('0'); fields[0] = 'S'; fields[19] = ticks; write(`${proc}/stat`, `${selected.process.pid} (firecracker) ${fields.join(' ')}\n`); },
+    exit: () => { alive = false; }, otherProcess: () => { otherUidProcess = true; }, failSync: () => { failSync = true; }, recoverSync: () => { failSync = false; },
     open: (options: { guard?: () => void | Promise<void>; timeoutMs?: number; signal?: AbortSignal } = {}) => FirecrackerHostLease.open(selected, { ...options, guard: options.guard ?? (() => {}), fixture: host }) };
 }

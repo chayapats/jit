@@ -234,7 +234,7 @@ computer, selected-host digest, expected revision/launch identity and closed
 launch/stop/checkpoint/restore/retire operation. Recovery tags are exact
 `jit-<32hex>` values; paths, argv, environment and arbitrary systemd properties
 are not inputs. The private helper SQLite journal uses application ID
-`0x4a46484a`, reader format 1 and checks both the checkpointed header and live
+`0x4a46484a`, initial reader format 1 and checks both the checkpointed header and live
 WAL before writable initialization. Admission atomically advances the computer
 revision and reserves one original mutation before dispatch. Reusing a request
 with changed contents refuses; an exact duplicate returns its original receipt.
@@ -303,6 +303,63 @@ retirement does not report success or automatically continue deletion. None of
 these primitives launches/stops a VM or releases the owning journal reservation.
 Injected settlement/path remapping remains `protocol_fixture`; actual raw-file
 tests on a Mac prove copy/rename/recovery semantics, not Linux/KVM settlement.
+
+## Concrete host runtime
+
+`FirecrackerHostRuntime` owns one installed selection. It explicitly adopts
+helper reader format 2, checkpointing the actual header before `fc_instances`
+stores `s16-firecracker-instance/v1` disk and original unit/invocation/process
+custody. Registration and initial custody are atomic; missing used custody is
+never recreated as a fresh computer. Opening format 2 never downgrades it.
+`s16-firecracker-runtime-job/v1` retains the original instance, admitted running
+state, cold context and expected original launch before corresponding effects.
+The helper keeps no work actor or model/provider state.
+
+Lifecycle composition closes original transports before one retained-pidfd stop.
+Cold restart removes only the two verified stale sockets after original process,
+UID and disk settlement, then submits one new original systemd unit. The fixed
+launcher may still be initializing: bounded readiness acquisition can repeat
+read-only custody/API observations, with every final publication requiring all
+checks. It never repeats the launch or accepts an explicit invalid API profile.
+The fixed forwarder remains in the root helper; closing the controller connection
+does not lose it. Concurrent observation/opening is coalesced and stop waits for
+in-flight opening to close. Active stop/restore/checkpoint fences old channels.
+
+Running checkpoints stop, publish the immutable snapshot and restart with a new
+launch identity. Lost restart replies verify that exact snapshot separately
+from the now-running mutable disk, then bind the original new unit. Restore
+recovery verifies the exact prepared replacement inode and bytes before retaining
+its new protected disk custody. Unknown stop reads the original exit/UID/disk
+facts without another signal. A timed-out original read-back remains physically
+fenced until its driver settles, even after the logical observation deadline.
+Ordinary inspect cannot clear an active original mutation. A configured never-run
+computer can report stopped only after actual prepared empty-scope/disk checks;
+that is distinct from an executed whole-machine stop receipt.
+
+The private controller client uses a separate `DurableJournal` with application
+ID `0x4a46434a`, installation binding and an OS-backed process lease. Its origin,
+computer/digest and evidence basis are immutable across reopen. It retains up
+to 256 metadata/intent records within 64 MiB; exhaustion holds new admission
+instead of evicting an unknown or original receipt. The credential is read from
+protected setup/vault only and is absent from its records. Accepted-but-unsent
+client intents become `not_sent` on restart; dispatched intents become unknown.
+An authenticated idle server or missing receipt does not clear a dispatched
+intent: the original HTTP request might not have arrived yet. Only the exact
+original receipt and bounded read-back can settle it; the mutation is never sent
+again. A successful retry also rechecks current machine/launch facts before
+returning. Native clients reject a fixture evidence basis.
+
+`s16-firecracker-management/v1` pins one installation/computer to a loopback-only
+daemon and protected relay credential. It accepts only `state`, original
+`submit`, `receipt` and `reconcile`. The JSON body limit is 4 KiB, body acquisition
+deadline five seconds, response limit 16 KiB and active request limit four.
+Native ports are fixed positive values, never an occupied-port fallback.
+Credentials/installation mismatches and malformed/oversized inputs refuse before
+admission. Responses carry only closed computer/machine facts and original job
+receipts, never private context, host paths, arbitrary process selectors or
+diagnostics. The client validates complete command/revision/scope/basis and uses
+one deadline across headers/body. The trusted host/control-plane is outside the
+working execution boundary; this is not a public-network endpoint.
 
 ## Reviewed portable state
 

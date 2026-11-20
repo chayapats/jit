@@ -58,7 +58,9 @@ function observation(value: unknown, computer: FirecrackerJobComputer): Firecrac
  */
 export class FirecrackerHostJournal {
   readonly db: Database;
+  readonly #path: string;
   constructor(path: string, options: { create?: boolean } = {}) {
+    this.#path = path;
     let fresh = path === ':memory:';
     if (path !== ':memory:') {
       if (!path.startsWith('/') || normalize(path) !== path) fail();
@@ -66,21 +68,42 @@ export class FirecrackerHostJournal {
       if (existing) {
         if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1 || existing.mode & 0o077 || process.getuid && existing.uid !== process.getuid()) fail('vm_firecracker_journal_invalid');
         const fd = openSync(path, 'r'), header = Buffer.alloc(100);
-        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== 'SQLite format 3\0' || header.readUInt32BE(68) !== appId || header.readUInt32BE(60) !== 1) fail('vm_firecracker_journal_invalid'); }
+        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== 'SQLite format 3\0' || header.readUInt32BE(68) !== appId || ![1, 2].includes(header.readUInt32BE(60))) fail('vm_firecracker_journal_invalid'); }
         finally { closeSync(fd); }
       } else { if (!options.create) fail('vm_firecracker_journal_missing'); fresh = true; mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); }
     }
     this.db = new Database(path, { create: options.create ?? path === ':memory:', strict: true });
     const version = this.db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
     const application = this.db.query<{ application_id: number }, []>('PRAGMA application_id').get()!.application_id;
-    if (fresh ? version !== 0 || application !== 0 : version !== 1 || application !== appId) { this.db.close(); fail('vm_firecracker_journal_invalid'); }
-    this.db.exec(`PRAGMA application_id=${appId}; PRAGMA user_version=1; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
+    if (fresh ? version !== 0 || application !== 0 : ![1, 2].includes(version) || application !== appId) { this.db.close(); fail('vm_firecracker_journal_invalid'); }
+    if (fresh) this.db.exec('PRAGMA user_version=1');
+    this.db.exec(`PRAGMA application_id=${appId}; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS fc_computers (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS fc_jobs (request_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL, hash TEXT NOT NULL, command TEXT NOT NULL,
         revision INTEGER NOT NULL, before_state TEXT NOT NULL, state TEXT NOT NULL, observation TEXT, context TEXT);
       CREATE UNIQUE INDEX IF NOT EXISTS fc_one_active ON fc_jobs(computer_id) WHERE state IN ('accepted','dispatched','unknown');
       CREATE TABLE IF NOT EXISTS fc_snapshots (computer_id TEXT NOT NULL,id TEXT NOT NULL,sha256 TEXT NOT NULL,bytes INTEGER NOT NULL,retired INTEGER NOT NULL,PRIMARY KEY(computer_id,id));`);
     if (path !== ':memory:') chmodSync(path, 0o600);
+  }
+  /** Explicit monotonic helper reader transition before any instance record or VM effect. Never runs in a transaction. */
+  enableInstances(): void {
+    if (this.db.inTransaction) fail('vm_firecracker_journal_format');
+    const version = this.db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
+    if (![1, 2].includes(version)) fail('vm_firecracker_journal_invalid');
+    if (version === 1) this.db.exec('PRAGMA user_version=2');
+    if (this.#path !== ':memory:') {
+      const check = this.db.query<{ busy: number }, []>('PRAGMA wal_checkpoint(TRUNCATE)').get();
+      if (!check || check.busy !== 0) fail('vm_firecracker_journal_format');
+    }
+    this.assertInstances();
+    this.db.exec('CREATE TABLE IF NOT EXISTS fc_instances (computer_id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+  }
+  /** Checks both live WAL and actual database header before storing the new custody contract. */
+  assertInstances(): void {
+    if (this.db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version !== 2) fail('vm_firecracker_journal_format');
+    if (this.#path === ':memory:') return;
+    const fd = openSync(this.#path, 'r'), header = Buffer.alloc(100);
+    try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.readUInt32BE(60) !== 2) fail('vm_firecracker_journal_format'); } finally { closeSync(fd); }
   }
   #transaction<T>(run: () => T): T { return this.db.transaction(run).immediate(); }
   #save(value: FirecrackerJobComputer): void { this.db.query('UPDATE fc_computers SET data=? WHERE id=?').run(vmCanonical(value), value.id); }
@@ -139,6 +162,8 @@ export class FirecrackerHostJournal {
   }
   /** Existing receipt by both original computer and request, never an execute/replacement path. */
   receipt(computer: string, request: string): FirecrackerHostJob { return this.#view(this.#row(computer, request)); }
+  /** Original admitted state, independent of the now-busy current projection. Never grants authority. */
+  startState(computer: string, request: string): 'running' | 'stopped' { return this.#row(computer, request).before_state as 'running' | 'stopped'; }
   /** Mandatory actual-dispatch/publication fence. Read-only recovery has its separate current-owner guard. */
   current(job: Pick<FirecrackerHostJob, 'command' | 'revision'>): void {
     const row = this.#row(job.command.computerId, job.command.requestId), computer = this.computer(row.computer_id);
@@ -226,6 +251,7 @@ export class FirecrackerHostJobs {
   readonly #basis: FirecrackerJobObservation['basis'];
   readonly #owner: FirecrackerHostLock | undefined;
   readonly #running = new Set<string>();
+  readonly #reading = new Set<string>();
   constructor(readonly journal: FirecrackerHostJournal, driver: FirecrackerHostJobDriver, owner?: FirecrackerHostLock) {
     if (!['protected_host', 'protocol_fixture'].includes(driver.basis) || typeof driver.execute !== 'function' || typeof driver.readBack !== 'function') fail();
     if (driver.basis === 'protected_host' && (!(owner instanceof FirecrackerHostLock) || owner.basis !== 'protected_host')) fail('vm_firecracker_helper_locked', 503);
@@ -265,14 +291,19 @@ export class FirecrackerHostJobs {
   /** Existing unknown read-back only, under current read authority; an active local driver is never duplicated. */
   async reconcile(computer: string, request: string, authorize: () => void | Promise<void>, options: { timeoutMs?: number } = {}): Promise<FirecrackerHostJob> {
     const limit = deadline(options.timeoutMs ?? 15000, 15000);
+    let acquired = false, settled = false, released = false;
     try {
       this.#owner?.current();
       await limit.wait(authorize); const job = this.journal.receipt(computer, request);
-      if (job.state !== 'unknown' || this.#running.has(request)) return job;
+      if (job.state !== 'unknown' || this.#running.has(request) || this.#reading.has(request)) return job;
       if (this.journal.computer(computer).basis !== this.#basis) return fail('vm_firecracker_job_observation_invalid');
       const guard = async () => { this.#owner?.current(); this.journal.recovering(job); await limit.wait(authorize); this.#owner?.current(); this.journal.recovering(job); limit.check(); };
-      const observed = await limit.wait(() => this.#readBack(structuredClone(job), { guard, context: () => this.journal.context(computer, request) }));
+      this.#reading.add(request); acquired = true;
+      const reading = Promise.resolve().then(() => { limit.check(); return this.#readBack(structuredClone(job), { guard, context: () => this.journal.context(computer, request) }); });
+      const done = () => { settled = true; if (released) this.#reading.delete(request); };
+      void reading.then(done, done);
+      const observed = await limit.wait(() => reading);
       await guard(); return observed === null ? this.journal.receipt(computer, request) : this.journal.finish(computer, request, observed);
-    } finally { limit.close(); }
+    } finally { limit.close(); released = true; if (acquired && settled) this.#reading.delete(request); }
   }
 }

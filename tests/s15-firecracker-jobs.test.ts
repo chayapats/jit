@@ -144,10 +144,32 @@ test('non-owner/read refusal occurs before admission and old receipts remain ava
 test('owned private database refuses a symlink and a future WAL reader format without resetting it', () => {
   const path = location(), { j } = journal(path); install(j); const link = path + '.link'; symlinkSync(path, link);
   expect(() => new FirecrackerHostJournal(link)).toThrow(expect.objectContaining({ code: 'vm_firecracker_journal_invalid' }));
-  j.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=2');
+  j.db.exec('PRAGMA wal_checkpoint(TRUNCATE); PRAGMA user_version=3');
   expect(readFileSync(path).readUInt32BE(60)).toBe(1);
   expect(() => new FirecrackerHostJournal(path)).toThrow(expect.objectContaining({ code: 'vm_firecracker_journal_invalid' }));
-  expect(j.db.query('PRAGMA user_version').get()).toEqual({ user_version: 2 });
+  expect(j.db.query('PRAGMA user_version').get()).toEqual({ user_version: 3 });
   const other = path + '.other'; const db = new Database(other); db.exec('CREATE TABLE owner_data(value TEXT)'); db.close();
   expect(() => new FirecrackerHostJournal(other)).toThrow(expect.objectContaining({ code: 'vm_firecracker_journal_invalid' }));
+});
+
+test('instance adoption checkpoints the monotonic format into the actual header and reopening never downgrades it', () => {
+  const path = location(), first = journal(path); install(first.j);
+  expect(() => first.j.assertInstances()).toThrow(expect.objectContaining({ code: 'vm_firecracker_journal_format' }));
+  expect(readFileSync(path).readUInt32BE(60)).toBe(1); first.j.enableInstances(); expect(readFileSync(path).readUInt32BE(60)).toBe(2);
+  expect(() => first.j.db.transaction(() => first.j.enableInstances())()).toThrow(); first.close();
+  const next = journal(path, false); next.j.assertInstances(); expect(next.j.db.query('PRAGMA user_version').get()).toEqual({ user_version: 2 }); expect(readFileSync(path).readUInt32BE(60)).toBe(2);
+});
+
+test('timed-out original read-back retains its physical read fence until that exact driver settles', async () => {
+  const { j } = journal(); install(j); let reads = 0; const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), finished = Promise.withResolvers<void>();
+  const d = driver({ async execute() { throw Error('unknown effect'); }, async readBack(job, control) {
+    reads++; if (reads === 1) { entered.resolve(); try { await release.promise; await control.guard(); } finally { finished.resolve(); } }
+    return { state: 'running', launchId: job.command.requestId, basis: 'protocol_fixture' };
+  } });
+  const jobs = new FirecrackerHostJobs(j, d.port), request = command(j); expect((await jobs.run(request, () => {})).state).toBe('unknown');
+  const first = jobs.reconcile(request.computerId, request.requestId, () => {}, { timeoutMs: 20 }); await entered.promise;
+  await expect(first).rejects.toMatchObject({ code: 'vm_firecracker_job_timeout' });
+  expect((await jobs.reconcile(request.computerId, request.requestId, () => {})).state).toBe('unknown'); expect(reads).toBe(1);
+  release.resolve(); await finished.promise; await Promise.resolve(); await Promise.resolve();
+  expect((await jobs.reconcile(request.computerId, request.requestId, () => {})).state).toBe('committed'); expect(reads).toBe(2);
 });
