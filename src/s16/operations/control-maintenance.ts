@@ -21,6 +21,7 @@ import { ConnectionVault } from '../../exec/connections';
 import { captureS16HelperCohort, type S16HelperObservation, type S16HelperCohortOptions } from './helper-cohort';
 import { captureS16FileCohort, type S16FileObservation } from '../files/custody';
 import { captureS16GithubArtifacts, type S16GithubArtifactObservation } from '../../s15/github/maintenance';
+import { removeS16Point, type S16PointRemovalOptions, type S16PointRemovalResult } from './point-retention';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -67,6 +68,8 @@ export interface S16ControlMaintenance {
   fileCustody(): S16FileObservation;
   /** Complete current GitHub bundle bytes/references, without recovery, Git, credentials or publication. */
   githubArtifacts(): S16GithubArtifactObservation;
+  /** Explicit protected retention, confined to the original receipted historical point and durable plan. */
+  removePoint(requestId: string, options: S16PointRemovalOptions): Readonly<S16PointRemovalResult>;
   assertCurrent(): void;
   close(): void;
 }
@@ -209,7 +212,8 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
         vault: new ConnectionVault(join(root, 'vault'), { forbidden: [ownerDirectory, join(root, 'runtime'), join(root, 'backups'), join(root, 'operations')] }), guard: assertCurrent,
         async retain<T>(operation: () => Promise<T>) { assertCurrent(); helperReads++; try { return await operation(); } finally { helperReads--; } } });
     };
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts });
+    const removePoint = (requestId: string, removalOptions: S16PointRemovalOptions) => removeS16Point({ directory: root, installationId: config.installationId, ownerIdentity, configurationSha256, lease, journal: operations(), guard: assertCurrent }, requestId, removalOptions);
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, removePoint });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

@@ -4,6 +4,10 @@ Status: selected OPS16-01 aggregate source contract under
 [ADR 0104](../adr/0104-s16-forward-recovery-and-retained-admission.md).
 The aggregate is not implemented or advertised as available. Existing
 component manifests are not points under this contract.
+The fixed [point file inventory and explicit retention](s16-point-files-v1.md)
+are implemented components. Their disposable format fixtures and successful
+physical removal do not certify an aggregate producer, forward restore or
+compatible release/client lifecycle.
 
 ## Inputs and independent current custody
 

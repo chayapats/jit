@@ -92,7 +92,8 @@ ADR 0103 supplies bounded SQL/byte capture, receipt verification, runtime
 inspection and selected-CLI lease participation. Those components do not
 implement this aggregate. Outer current-state inspection and the
 [current v2 journal/gate](../contracts/s16-operations-control-v2.md) are implemented
-as components. Complete owning inventory, physical protected retention,
+as components. [Physical point retention](../contracts/s16-point-files-v1.md)
+now uses authenticated file inventory and original durable plans. Complete owning inventory,
 ordinary export, durable activation,
 compatible forward release selection and actual operator/client flows remain
 required. The protocol must refuse unsupported custody instead of silently

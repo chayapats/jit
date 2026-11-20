@@ -1,7 +1,8 @@
 # s16-operations-control/v2
 
 Status: selected OPS16-01 current-journal write/admission contract. Aggregate
-point creation, recovery and physical retention remain separate requirements.
+point creation and recovery remain separate requirements. Physical retention is
+implemented by the [point-files layer](s16-point-files-v1.md) under this journal.
 The v2 writer and maintenance gate implement the protocol below; source/test
 presence is not aggregate acceptance.
 

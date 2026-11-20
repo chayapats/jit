@@ -2,7 +2,8 @@
 
 Status: OPS16-01 implementation in progress in
 [#429](https://github.com/chayapats/jit/issues/429). The available operator
-commands below adopt/inspect protected operations metadata. Aggregate
+commands below adopt/inspect protected operations metadata and explicitly remove
+an independently receipted historical point. Aggregate
 backup/export/restore/upgrade/uninstall is not yet available through this entry.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
@@ -45,8 +46,33 @@ Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
-cutover; the remaining coordinator must cover full owning custody, ordinary
-export, retention, quarantine/activation and compatible release selection.
+cutover; the remaining coordinator must cover full owning custody, point
+publication, ordinary export, quarantine/activation and compatible release selection.
+
+## Explicit historical-point retention
+
+After the selected service and local commands release their shared leases,
+remove one independently receipted historical point with:
+
+```sh
+bun run s16:ops cleanup --s15 --config /absolute/s15-runtime.json --request-id original_cleanup_id --point-id receipted_point_id
+```
+
+The [point file contract](../contracts/s16-point-files-v1.md) authenticates the
+complete fixed inventory, journals the original remove intent and persists its
+hash-bound plan outside the point before unlinking. After interruption, repeat
+the same request/point/configuration. Already absent members can be original
+completed unlinks; substituted, extra or changed members refuse and retain the
+gate. Do not edit a plan, delete a gate or switch request IDs to force progress.
+An optional `--attempt` applies only after independent original not-applied
+readback; it cannot bypass unknown custody. This CLI never infers that outcome.
+
+Removal retains current application data/credentials, native stores, disks,
+process leases and original backup/cleanup/plan receipts. A repeated completed
+request returns its original result; a reappeared directory is refused and
+untouched. There is no automatic age/count eviction. This component is tested
+with disposable point-format fixtures; the aggregate backup producer remains
+unavailable and fixture metadata is not an operator recovery point.
 
 ## Copied-package adoption drill
 
@@ -84,6 +110,10 @@ is scripted locally; no provider/account call runs. It certifies components on
 the reported platform, not populated aggregate recovery, native clients or
 owner-host acceptance. Populated namespace tests use actual composed CHAT/MODEL
 work; GitHub VM fixtures retain discovery requirements and original uncertainty.
+The same profile now exercises actual copied-package SQL/FILE/native point-format
+files, SIGKILL after an unlink, original-plan recovery, the shipped cleanup CLI
+and refusal of a reappeared directory. Its package/external references are
+explicit format fixtures, so this proves retention without aggregate acceptance.
 
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all
