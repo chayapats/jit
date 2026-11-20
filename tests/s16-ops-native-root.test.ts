@@ -66,6 +66,43 @@ test('explicit empty and deleted-only inventory are retained as metadata rather 
   expect(JSON.parse(Buffer.from(second.bytes).toString())).toMatchObject({ inventory: [{ state: 'deleted' }], references: [ref], snapshot: null });
 });
 
+test('current intent custody preserves saved refs and additional managed identities without inventing execution correlations', async () => {
+  const f = await fixture(), known = await f.session(), orphan = await f.session('retired'), tombstone = await f.session('deleted');
+  const custody = { kind: 'chat' as const, ownerId: 'original_request', phase: 'interpretation_1', vm: null };
+  const cap = await f.open({ references: [known], custody }), captured = await cap.capture();
+  const value = JSON.parse(Buffer.from(captured.bytes).toString());
+  expect(value).toMatchObject({ contract: 's16-native-root/v2', referenceKind: 'current_custody', custody, savedReferences: [known] });
+  expect(value.references.map((ref: { id: string }) => ref.id).sort()).toEqual([known.id, orphan.id, tombstone.id].sort());
+  expect(value.snapshot.sessions).toHaveLength(2); cap.verify(captured.bytes, captured.sha256);
+  const parent = join(f.parent, 'quarantine-v2'); mkdirSync(parent, { mode: 0o700 }); await cap.verifyQuarantine(captured.bytes, captured.sha256, parent);
+  expect((await f.host.listSessions()).sessions).toEqual(value.inventory);
+  const old = await f.open({ references: [known] }); expect(() => old.verify(captured.bytes, captured.sha256)).toThrow();
+  const other = await f.open({ references: [known], custody: { ...custody, ownerId: 'another_request' } }); expect(() => other.verify(captured.bytes, captured.sha256)).toThrow();
+  value.savedReferences = [{ ...known, branchId: 'invented' }]; const corrupt = Buffer.from(JSON.stringify(value)); expect(() => cap.verify(corrupt, hash(corrupt))).toThrow();
+});
+
+test('management custody never turns a missing saved native identity into an empty successful capture', async () => {
+  const f = await fixture(), absent = { id: crypto.randomUUID(), branchId: 'main' };
+  const cap = await f.open({ references: [absent], custody: { kind: 'model', ownerId: 'original_selection', phase: null, vm: null } });
+  await expect(cap.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_reconciliation_required' }));
+});
+
+test('owning registration retains the original disposal capability before the final opener guard can reject', async () => {
+  const f = await fixture(); let current = true, retained: Awaited<ReturnType<typeof openS16NativeRoot>> | undefined;
+  await expect(openS16NativeRoot({ ...f.options, guard() { if (!current) throw Error('fixture-final-opener-guard'); }, retain(capability) { retained = capability; current = false; } })).rejects.toThrow('fixture-final-opener-guard');
+  expect(retained).toBeDefined(); await retained!.close(); await expect(retained!.capture()).rejects.toThrow(expect.objectContaining({ code: 's16_ops_native_closed' }));
+});
+
+test('GitHub management custody binds original VM identity while historical state/generation remains inert', async () => {
+  const f = await fixture(), ref = await f.session('retired'), attemptId = 'github_' + 'a'.repeat(32);
+  const vm = { sessionId: 'original_vm_session', vmId: 'original_vm', workId: 'original_work', attemptId, state: 'unknown', generation: 1 };
+  const custody = { kind: 'github' as const, ownerId: attemptId, phase: null, vm }, cap = await f.open({ custody });
+  const captured = await cap.capture(), value = JSON.parse(Buffer.from(captured.bytes).toString());
+  expect(value).toMatchObject({ savedReferences: [], references: [ref], custody });
+  const current = await f.open({ custody: { ...custody, vm: { ...vm, state: 'closed', generation: 2 } } }); current.verify(captured.bytes, captured.sha256);
+  const foreign = await f.open({ custody: { ...custody, vm: { ...vm, workId: 'another_work' } } }); expect(() => foreign.verify(captured.bytes, captured.sha256)).toThrow();
+});
+
 test.each(['missing', 'mode', 'symlink', 'not-directory'] as const)('unavailable existing native %s refuses before initialization or repair', async kind => {
   const f = await fixture(); await f.host.close(); const path = f.paths.sessionDirectory;
   if (kind === 'missing') rmSync(path, { recursive: true });

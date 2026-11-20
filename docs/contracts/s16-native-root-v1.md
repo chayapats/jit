@@ -2,6 +2,8 @@
 
 Status: protected OPS16-01 native custody component under ADR 0104. It is not
 aggregate completeness, ordinary export or permission to resume a session.
+Explicit current-intent management custody uses the distinct [v2 envelope](s16-native-root-v2.md);
+v1 behavior and reader refusal remain unchanged.
 
 The owning coordinator supplies one existing current native root, installation
 and opaque component ID, exact saved session/branch references, and its current
@@ -61,5 +63,8 @@ explicit; an owning coordinator must retain remaining exclusion rather than
 declare native release. Closing with an outstanding inventory/copy promise
 refuses busy, stops new observations and requires that original promise to
 settle before close is retried; host disposal alone cannot certify release.
+An owning `retain` hook can register the disposal capability before the final
+opener guard. The native-set coordinator uses it so even an unknown close while
+opening remains reachable for later disposal without releasing outer exclusion.
 Root inspection/capture and source presence do not
 complete aggregate backup/recovery or native host/account/device acceptance.

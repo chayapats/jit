@@ -15,6 +15,7 @@ import { openS16RuntimeMaintenance, type S16RuntimeMaintenance } from './runtime
 import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS16OperationsControl, readS16OperationsFence, validateS16OperationsAdoptionFence, validateS16OperationsFence, type S16OperationsAdoptionFence, type S16OperationsFence } from './operations-state';
 import { openS16OperationsJournal, type S16OperationsJournal, type S16OperationsJournalOptions } from './operations-journal';
 import { resolveS16NativeNamespace, type S16NativeNamespace } from './native-namespace';
+import { openS16NativeSet, type S16NativeSetMaintenance, type S16NativeSetOptions } from './native-set';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -49,6 +50,8 @@ export interface S16ControlMaintenance {
   operations(options?: Pick<S16OperationsJournalOptions, 'now' | 'id' | 'after'>): S16OperationsJournal;
   /** Resolves the complete fixed native namespace from current owning rows, preserving unresolved custody. */
   nativeNamespace(): S16NativeNamespace;
+  /** Captures protected native custody for an original operation; close this session before the context. */
+  nativeSet(requestId: string, options: S16NativeSetOptions): S16NativeSetMaintenance;
   assertCurrent(): void;
   close(): void;
 }
@@ -67,8 +70,10 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   let expectedOperation = options.operationFence ? Object.freeze({ ...options.operationFence }) : undefined;
   let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
+  const nativeSets = new Set<S16NativeSetMaintenance>();
   const close = () => {
     if (closed) return; usable = false;
+    if ([...nativeSets].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
     let failed = false;
     for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
     if (failed) refuse('s16_ops_source_release_unknown');
@@ -167,7 +172,11 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
         } });
     };
     const nativeNamespace = () => resolveS16NativeNamespace({ runtimeDirectory: join(root, 'runtime'), githubDirectory: join(root, 'native-github'), installationId: config.installationId, sources: heldRuntime.sources, guard: assertCurrent });
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace });
+    const nativeSet = (requestId: string, sessionOptions: S16NativeSetOptions) => {
+      assertCurrent(); for (const session of nativeSets) { if (!session.released) refuse('s16_ops_native_busy'); nativeSets.delete(session); }
+      const session = openS16NativeSet({ ...sessionOptions, directory: root, requestId, lease, journal: operations(), namespace: nativeNamespace, guard: assertCurrent }); nativeSets.add(session); return session;
+    };
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

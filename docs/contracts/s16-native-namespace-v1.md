@@ -14,6 +14,10 @@ CHAT `native_sessions` supplies saved references and exact `work` or
 uses MODEL, whose selection records supply `native-model/<selectionId>` and
 their saved `session`. Retained CHAT work references still count. Sessionless
 physical roots are explicit unresolved custody, not inferred empty sessions.
+A completed MODEL record without its saved session is corrupt and refuses;
+unsettled sessionless owning intents retain their pending correlation instead.
+They remain pending even before a physical root exists; absence does not settle
+the original MODEL intent or initialize a replacement native directory.
 
 GitHub roots match original `github_<attemptId>` entries in current VM sessions.
 VM session/work/computer/generation/state remain protected current metadata.
@@ -51,6 +55,11 @@ types/lengths and VM generations are checked before loading result rows.
 The result contains immutable `roots`, `pending` and `untracked` plus its
 current guard. A root has an opaque stable ID, owning kind/ID/phase, fixed private
 directory, saved references or explicit discovery requirement, availability and
-original VM custody when applicable. These descriptors never enter ordinary
+original VM custody when applicable. `nativeRequired` distinguishes saved refs
+or successful owning GitHub evidence from an unconfirmed attempt. `rootGuard(id)`
+checks only that original available root, ancestors and root-level inventory;
+the aggregate must call `assertCurrent` before and after the complete batch to
+detect sibling namespace changes without quadratic rescanning. These descriptors never enter ordinary
 exports, HTTP/model inputs or guest execution. Pending/untracked entries require
-owning reconciliation; ignoring them cannot certify a complete backup.
+owning reconciliation. The [native-set protocol](s16-native-set-v1.md) explicitly
+retains permitted current-intent unknowns; ignoring them cannot certify completeness.

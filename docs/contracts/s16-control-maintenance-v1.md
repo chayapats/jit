@@ -48,6 +48,13 @@ Its [versioned inventory](s16-native-namespace-v1.md) preserves missing,
 uncorrelated, untracked and ambiguous ownership instead of shrinking the set.
 It grants no native execution/settlement and does not itself capture sessions.
 
+`nativeSet(requestId, options)` supplies the [protected native-set coordinator](s16-native-set-v1.md)
+with this genuine lease, current namespace and original journal. The context
+retains exclusion while any returned session is unreleased. Await session close
+before synchronous context close; a premature/unknown close refuses before any
+outer database or process lease is released. No async capture becomes detached
+from the context's resource custody.
+
 `assertCurrent` rechecks both retained leases, runtime/current configuration
 binding, outer inventory and observed owner/ledger inodes/permissions/attributes.
 Closing first releases only the raw outer handles, then runtime handles/CHAT

@@ -40,6 +40,26 @@ test('an explicitly empty current owning namespace does not initialize any missi
   namespace.assertCurrent();
 });
 
+test('per-root guards retain original ancestry and root inventory without treating sibling discovery as current publication', async () => {
+  const f = await fixture(), namespace = f.resolve(), root = namespace.roots[0]!, guard = namespace.rootGuard(root.id); guard();
+  expect(() => namespace.rootGuard('f'.repeat(32))).toThrow();
+  const sibling = join(f.f.directory, 'native-model', 'untracked_new'); nativeDirectory(sibling);
+  guard(); expect(() => namespace.assertCurrent()).toThrow(expect.objectContaining({ code: 's16_ops_native_changed' })); rmSync(sibling, { recursive: true });
+  writeFileSync(join(root.directory, 'unexpected'), '', { mode: 0o600 }); expect(guard).toThrow(expect.objectContaining({ code: 's16_ops_native_changed' }));
+});
+
+test('a completed owning MODEL record cannot omit its saved native identity', async () => {
+  const f = await fixture(); f.database('model.sqlite').exec("UPDATE records SET json=json_set(json,'$.session',NULL,'$.state','completed')");
+  expect(() => resolveS16NativeNamespace({ ...f.options, guard() {} })).toThrow(expect.objectContaining({ code: 's16_ops_native_custody_invalid' }));
+});
+
+test('a sessionless current MODEL intent without a physical root remains explicitly pending without initializing native storage', async () => {
+  const f = await fixture(false), model = f.database('model.sqlite');
+  model.query('INSERT INTO records (id,json) VALUES (?,?)').run('original_selection', JSON.stringify({ contract: 's15-model-selection/v1', id: 'original_selection', state: 'reconcile_only', session: null }));
+  const namespace = resolveS16NativeNamespace({ ...f.options, guard() {} }); expect(namespace.roots).toEqual([]);
+  expect(namespace.pending).toEqual([{ kind: 'model', ownerId: 'original_selection', phase: null, reason: 'correlation_missing' }]); expect(existsSync(join(f.f.directory, 'native-model'))).toBe(false);
+});
+
 test('retained CHAT work roots from the non-MODEL path remain selectable through their real public native references', async () => {
   const f = await fixture(), chat = f.resolve().roots.find(root => root.kind === 'chat')!, directory = join(f.f.directory, 'native-chat', chat.ownerId, 'work'); nativeDirectory(directory);
   const host = await createHost({ workspaceRoot: join(directory, 'workspace'), homeDirectory: join(directory, 'home'), sessionDirectory: join(directory, 'sessions'), context: { policy: 'strict', systemPrompt: 'Retained native fixture.', sections: [] }, tools: { policy: 'exact', hostedLookup: 'off', definitions: [] }, limits: { maxTurns: 1, maxConcurrentTools: 1, contextWindow: 32768, maxInputChars: 1024 } }); cleanup.push(() => host.close());
@@ -148,7 +168,7 @@ test('ambiguous GitHub attempts never select the first VM owner as authoritative
 
 test('sessionless MODEL roots and an emptied known CHAT parent remain pending rather than an inferred complete empty namespace', async () => {
   const f = await fixture(), before = f.resolve(), chat = before.roots.find(root => root.kind === 'chat')!, model = before.roots.find(root => root.kind === 'model')!;
-  f.database('model.sqlite').exec("UPDATE records SET json=json_set(json,'$.session',NULL)");
+  f.database('model.sqlite').exec("UPDATE records SET json=json_set(json,'$.session',NULL,'$.state','reconcile_only')");
   f.database('conversation.sqlite').exec('DELETE FROM native_sessions'); rmSync(chat.directory, { recursive: true });
   const namespace = resolveS16NativeNamespace({ ...f.options, guard() {} });
   expect(namespace.roots.find(root => root.id === model.id)).toMatchObject({ references: [], correlation: 'discovery_required' });

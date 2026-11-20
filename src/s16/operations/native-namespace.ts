@@ -1,7 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, type BigIntStats } from 'node:fs';
-import { isAbsolute, join, normalize } from 'node:path';
+import { dirname, isAbsolute, join, normalize } from 'node:path';
 import type { HostSessionReference } from 'schway/host';
 import { AppError } from '../../errors';
 import { opsPath } from '../../s14/ops-files';
@@ -14,10 +14,14 @@ type Kind = 'chat' | 'model' | 'github';
 function refuse(code = 's16_ops_native_custody_invalid'): never { throw new AppError(code, 409); }
 /** Current original VM custody, never a restored physical/execution grant. */
 export interface S16NativeVmCustody { sessionId: string; vmId: string; workId: string; attemptId: string; state: string; generation: number }
+/** Known current owning intent, without claiming a saved native execution correlation. */
+export interface S16NativeManagementCustody { kind: Kind; ownerId: string; phase: string | null; vm: Readonly<S16NativeVmCustody> | null }
 /** Protected root selection from actual current owning metadata, not a client/archive path. */
 export interface S16NativeBinding {
   readonly id: string; readonly kind: Kind; readonly ownerId: string; readonly phase: string | null; readonly directory: string;
   readonly references: readonly HostSessionReference[]; readonly correlation: 'saved' | 'discovery_required'; readonly available: boolean;
+  /** Saved refs or successful owning GitHub evidence require actual committed native identity. */
+  readonly nativeRequired: boolean;
   readonly vm: Readonly<S16NativeVmCustody> | null;
 }
 /** Incomplete physical/correlation custody remains explicit until its actual owner reconciles it. */
@@ -26,6 +30,8 @@ export interface S16NativePending { readonly kind: Kind; readonly ownerId: strin
 export interface S16NativeNamespace {
   readonly roots: readonly S16NativeBinding[]; readonly pending: readonly S16NativePending[];
   readonly untracked: readonly Readonly<{ kind: Kind; alias: string }>[];
+  /** Checks only this original root and its ancestors; use assertCurrent at aggregate boundaries. */
+  rootGuard(id: string): () => void;
   assertCurrent(): void;
 }
 /** Only trusted current composition supplies these fixed roots and already-held current sources. */
@@ -88,7 +94,7 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
     return Object.freeze({ id, branchId });
   };
   const hold = (kind: Kind, ownerId: string, phase: string | null, reason: S16NativePending['reason']) => { reserve(); pending.push(Object.freeze({ kind, ownerId, phase, reason })); };
-  const add = (kind: Kind, ownerId: string, phase: string | null, path: string, refs: HostSessionReference[], vm: S16NativeVmCustody | null = null) => {
+  const add = (kind: Kind, ownerId: string, phase: string | null, path: string, refs: HostSessionReference[], vm: S16NativeVmCustody | null = null, nativeRequired = refs.length > 0) => {
     identity(ownerId); const present = directory(path); let available = present;
     if (!present) hold(kind, ownerId, phase, 'missing_root');
     else {
@@ -97,7 +103,7 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
       if (!available) hold(kind, ownerId, phase, 'partial_root');
     }
     reserve(); roots.push(Object.freeze({ id: createHash('sha256').update('s16-native-binding/v1\0' + kind + '\0' + ownerId + '\0' + (phase ?? '')).digest('hex').slice(0, 32), kind, ownerId, phase, directory: path,
-      references: Object.freeze([...refs]), correlation: refs.length ? 'saved' : 'discovery_required', available, vm: vm ? Object.freeze({ ...vm }) : null }));
+      references: Object.freeze([...refs]), correlation: refs.length ? 'saved' : 'discovery_required', available, nativeRequired, vm: vm ? Object.freeze({ ...vm }) : null }));
   };
   try {
     const chat = source('conversation.sqlite', 'id'), model = source('model.sqlite', 'installation'), vm = source('vm.sqlite');
@@ -127,10 +133,10 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
     }
     for (const [key, selected] of saved) if (!observedPhases.has(key)) { const [ownerId, phase] = key.split('/') as [string, string]; add('chat', ownerId, phase, join(chatRoot, ownerId, phase), [selected]); }
     jsonBounds(model, 'records');
-    const modelRows = model.query<{ id: string; record_id: string; contract: string; session: string | null; session_type: string }, []>("SELECT id,json_extract(json,'$.id') AS record_id,json_extract(json,'$.contract') AS contract,json_extract(json,'$.session') AS session,json_type(json,'$.session') AS session_type FROM main.records ORDER BY id LIMIT 20001").all();
+    const modelRows = model.query<{ id: string; record_id: string; contract: string; state: string; session: string | null; session_type: string }, []>("SELECT id,json_extract(json,'$.id') AS record_id,json_extract(json,'$.contract') AS contract,json_extract(json,'$.state') AS state,json_extract(json,'$.session') AS session,json_type(json,'$.session') AS session_type FROM main.records ORDER BY id LIMIT 20001").all();
     const knownModels = new Map<string, HostSessionReference | null>();
     for (const row of modelRows) {
-      identity(row.id); if (row.id !== row.record_id || row.contract !== 's15-model-selection/v1' || !['null', 'object'].includes(row.session_type)) refuse();
+      identity(row.id); if (row.id !== row.record_id || row.contract !== 's15-model-selection/v1' || !['selected', 'running', 'completed', 'held', 'failed', 'reconcile_only'].includes(row.state) || !['null', 'object'].includes(row.session_type) || row.state === 'completed' && row.session_type !== 'object') refuse();
       if (row.session_type === 'null') knownModels.set(row.id, null);
       else { const session = JSON.parse(row.session!); if (!session || Object.keys(session).sort().join(',') !== 'branchId,id') refuse(); knownModels.set(row.id, ref(session.id, session.branchId)); }
     }
@@ -140,7 +146,10 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
       const selected = knownModels.get(ownerId); observedModels.add(ownerId); add('model', ownerId, null, join(modelRoot, ownerId), selected ? [selected] : []);
       if (!selected) hold('model', ownerId, null, 'correlation_missing');
     }
-    for (const [ownerId, selected] of knownModels) if (selected && !observedModels.has(ownerId)) add('model', ownerId, null, join(modelRoot, ownerId), [selected]);
+    for (const [ownerId, selected] of knownModels) if (!observedModels.has(ownerId)) {
+      if (selected) add('model', ownerId, null, join(modelRoot, ownerId), [selected]);
+      else hold('model', ownerId, null, 'correlation_missing');
+    }
     rowBound(vm, 'vm_sessions'); const attempts = new Map<string, S16NativeVmCustody>(), ambiguous = new Set<string>();
     for (const row of vm.query<{ id: string; vm_id: string; work_id: string; attempt_id: string; state: string; mode: string; generation: number }, []>("SELECT id,vm_id,work_id,attempt_id,state,mode,generation FROM main.vm_sessions WHERE substr(attempt_id,1,7)='github_' ORDER BY id LIMIT 20001").all()) {
       for (const value of [row.id, row.vm_id, row.work_id]) identity(value);
@@ -162,21 +171,38 @@ export function resolveS16NativeNamespace(options: S16NativeNamespaceOptions): S
       const owner = attempts.get(ownerId);
       if (!owner) { unowned('github', ownerId); if (requiredAttempts.has(ownerId)) hold('github', ownerId, null, 'owner_unavailable'); continue; }
       if (ambiguous.has(ownerId)) { unowned('github', ownerId); hold('github', ownerId, null, 'ambiguous_owner'); continue; }
-      add('github', ownerId, null, join(githubDirectory, ownerId), [], owner); hold('github', ownerId, null, 'github_discovery_required');
+      add('github', ownerId, null, join(githubDirectory, ownerId), [], owner, requiredAttempts.has(ownerId)); hold('github', ownerId, null, 'github_discovery_required');
       if (!github) hold('github', ownerId, null, 'owner_unavailable');
       if (owner.state !== 'closed') hold('github', ownerId, null, 'github_attempt_unsettled');
       if (unsettledWorks.has(owner.workId)) hold('github', ownerId, null, 'github_work_unsettled');
     }
   } catch (error) { if (error instanceof AppError) throw error; return refuse(); }
   if (roots.length + pending.length + untracked.length > bound || [...inventories.values()].reduce((total, value) => total + value.length, 0) > bound) refuse('s16_ops_native_bounds');
-  const assertCurrent = () => {
-    current();
-    for (const [path, before] of entries) {
+  const unchanged = (path: string, before: BigIntStats) => {
       opsPath(path); const stat = lstatSync(path, { bigint: true, throwIfNoEntry: false });
       if (!stat?.isDirectory() || stat.isSymbolicLink() || stat.dev !== before.dev || stat.ino !== before.ino || stat.uid !== before.uid || stat.mode !== before.mode) refuse('s16_ops_native_changed');
-    }
+  };
+  const assertCurrent = () => {
+    current();
+    for (const [path, before] of entries) unchanged(path, before);
     for (const path of missing) if (lstatSync(path, { throwIfNoEntry: false })) refuse('s16_ops_native_changed');
     for (const [path, before] of inventories) if (JSON.stringify(readdirSync(path).sort()) !== JSON.stringify(before)) refuse('s16_ops_native_changed');
   }; assertCurrent();
-  return Object.freeze({ roots: Object.freeze(roots), pending: Object.freeze(pending), untracked: Object.freeze(untracked), assertCurrent });
+  const selected = new Map(roots.map(root => [root.id, root]));
+  const rootGuard = (id: string) => {
+    const root = selected.get(id); if (!root?.available) refuse('s16_ops_native_unavailable');
+    const scoped = new Map<string, BigIntStats>();
+    for (const child of ['', 'workspace', 'home', 'sessions']) {
+      const path = child ? join(root.directory, child) : root.directory, before = entries.get(path); if (!before) refuse(); scoped.set(path, before);
+    }
+    for (let path = dirname(root.directory); ; path = dirname(path)) {
+      const before = entries.get(path); if (before) scoped.set(path, before); if (dirname(path) === path) break;
+    }
+    const names = inventories.get(root.directory); if (!names) refuse();
+    return () => {
+      current(); for (const [path, before] of scoped) unchanged(path, before);
+      if (JSON.stringify(readdirSync(root.directory).sort()) !== JSON.stringify(names)) refuse('s16_ops_native_changed');
+    };
+  };
+  return Object.freeze({ roots: Object.freeze(roots), pending: Object.freeze(pending), untracked: Object.freeze(untracked), assertCurrent, rootGuard });
 }
