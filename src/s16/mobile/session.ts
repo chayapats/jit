@@ -122,4 +122,27 @@ export class MobileSession {
       throw error;
     }
   }
+  /**
+   * One read-only Work snapshot. A renderer's local cancellation aborts its actual request without fencing
+   * an otherwise current authenticated session. Parent lifecycle/authentication failures retain normal fences.
+   * No command client or mutation callback is exposed through this cancellation exception.
+   */
+  async readSnapshot(conversationId: string, local?: AbortSignal): Promise<ClientSnapshot> {
+    if (this.#frame.phase !== "ready") throw new MobileProjectionError("mobile_not_ready");
+    if (!identifier(conversationId)) throw new MobileProjectionError("mobile_target_invalid");
+    if (local?.aborted) throw new MobileProjectionError("mobile_response_stale");
+    const generation = this.#generation, parent = this.#stop.signal, stop = new AbortController(), cancel = () => stop.abort();
+    parent.addEventListener("abort", cancel, { once: true }); local?.addEventListener("abort", cancel, { once: true });
+    if (parent.aborted || local?.aborted) stop.abort();
+    try {
+      const result = await this.#client.snapshot(conversationId, stop.signal); this.#current(generation);
+      if (local?.aborted) throw new MobileProjectionError("mobile_response_stale");
+      return result;
+    } catch (error) {
+      this.#current(generation);
+      const authenticationFailed = !this.transport.authenticated || error instanceof JitClientError && [401, 403].includes(error.status ?? 0);
+      if (!local?.aborted || authenticationFailed) this.#failed(generation, error);
+      throw error;
+    } finally { parent.removeEventListener("abort", cancel); local?.removeEventListener("abort", cancel); }
+  }
 }

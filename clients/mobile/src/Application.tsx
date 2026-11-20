@@ -8,6 +8,7 @@ import { emptyMobileConfiguration, mobileConfiguration, mobileLink, type MobileC
 import { MobileDrafts } from "../../../src/s16/mobile/drafts";
 import { MobileNotifications } from "../../../src/s16/mobile/notifications";
 import { MobileVoice } from "../../../src/s16/mobile/voice";
+import { MobileWork, type MobileWorkItem } from "../../../src/s16/mobile/work";
 import { nativeNoticeTarget, type NativeNotice } from "../../../src/s16/mobile/notices";
 import type { MobileProjection, MobileSession } from "../../../src/s16/mobile/session";
 import { mobileOrigin, mobileServiceId } from "../../../src/s16/mobile/transport";
@@ -35,20 +36,14 @@ function Routine({ ui, session, id, open, onFailure }: { ui: Ui; session: Mobile
 
 /** Read-only recent work from protected snapshots. Navigation never resumes or resubmits work. */
 function Work({ ui, session, bootstrap, open, onFailure }: { ui: Ui; session: MobileSession; bootstrap: Omit<ClientBootstrap, "csrf">; open(id: string): void; onFailure(error: unknown): void }) {
-  const [items, setItems] = useState<{ conversationId: string; row: ClientSnapshot["conversation"]["rows"][number] }[] | null>(null);
+  const [items, setItems] = useState<readonly MobileWorkItem[] | null>(null), reader = useRef<MobileWork | null>(null), latest = useRef({ bootstrap, onFailure }); latest.current = { bootstrap, onFailure };
   useEffect(() => {
-    let live = true;
-    void session.perform(async (client, signal) => {
-      const found: NonNullable<typeof items> = [];
-      for (const conversation of bootstrap.conversations) {
-        const snapshot = await client.snapshot(conversation.conversationId, signal);
-        found.push(...snapshot.conversation.rows.slice().reverse().slice(0, 128 - found.length).map(row => ({ conversationId: conversation.conversationId, row })));
-        if (found.length >= 128) break;
-      }
-      return found;
-    }).then(found => { if (live) setItems(found); }, error => { if (live) { setItems(null); onFailure(error); } });
-    return () => { live = false; };
-  }, [session, bootstrap]);
+    let live = true; setItems(null);
+    const work = new MobileWork(session, { publish(value) { if (live) setItems(value); }, failure(error) { if (live) latest.current.onFailure(error); } }); reader.current = work;
+    void work.refresh(latest.current.bootstrap);
+    return () => { live = false; if (reader.current === work) reader.current = null; work.close(); };
+  }, [session]);
+  useEffect(() => { void reader.current?.refresh(bootstrap); }, [bootstrap]);
   return <><UiText ui={ui} accessibilityRole="header" style={ui.styles.title}>{ui.t("s16.mobile.work")}</UiText>
     {items === null ? <ActivityIndicator color={ui.colors.accent} accessibilityLabel={ui.t("s16.common.loading")} /> : items.length === 0 ? <UiText ui={ui}>{ui.t("s16.mobile.workEmpty")}</UiText> : items.map(({ conversationId, row }) => <Pressable key={row.requestId} style={ui.styles.card} accessibilityRole="button" accessibilityLabel={row.ownerMessage} onPress={() => open(conversationId)}><UiText ui={ui} style={ui.styles.message}>{row.ownerMessage}</UiText><UiText ui={ui}>{ui.t(statusKey(row.state))}</UiText></Pressable>)}
   </>;
