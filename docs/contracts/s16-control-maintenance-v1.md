@@ -58,6 +58,14 @@ The immutable `sources` collection combines outer, selected/retained runtime
 and auxiliary controller SQL sources with unique aliases/handles. Aggregate
 SQL capture must use it; it does not imply non-SQL installation completeness.
 
+`helperCustody()` reads the [complete current helper metadata cohort](s16-helper-cohort-v1.md)
+through the authenticated read-only custody operation and existing-only vault.
+It preserves every original controller intent and independently retained helper
+authority. Await original reads before closing; in-flight/unknown reads retain
+all source/process exclusion. An immutable observation revalidates against its
+original complete digest before aggregate publication/activation. It grants no
+physical settlement, root reconstruction or historical authority.
+
 `nativeSet(requestId, options)` supplies the [protected native-set coordinator](s16-native-set-v1.md)
 with this genuine lease, current namespace and original journal. The context
 retains exclusion while any returned session is unreleased. Await session close

@@ -67,6 +67,15 @@ original accepted/dispatched/unknown states are copied as SQL without adapter
 construction, credential access or helper RPC. Root-helper state and disks
 remain separate current custody; controller metadata is not physical proof.
 
+The protected [helper cohort](../contracts/s16-helper-cohort-v1.md) now binds
+authenticated current metadata cuts for every selected controller to its
+original relay and request. It fingerprints complete owning journal metadata,
+including private contexts/instance records and retained snapshot tombstones,
+without exporting those private rows or invoking inspect/reconcile. Original
+controller unknowns remain unchanged. Current helper/disks stay independently
+retained; missing continuity, older relays or changed cuts refuse, and this
+component cannot certify physical settlement or aggregate completeness.
+
 The first implemented internal primitive is
 [`s16-ledger-image/v1`](../contracts/s16-ledger-image-v1.md): a bounded streamed
 header/hash observation that never opens SQLite or supplies admission

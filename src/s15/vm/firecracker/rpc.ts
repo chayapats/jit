@@ -4,16 +4,19 @@ import { registerSecretFingerprint } from '../../../security/secret-fingerprints
 import { vmPhysicalBinding } from '../binding';
 import type { VmMachineState } from '../types';
 import { vmCanonical, vmInteger, vmRecord } from '../validation';
-import { firecrackerHostCommand, type FirecrackerHostCommand, type FirecrackerHostJob, type FirecrackerJobComputer } from './jobs';
+import { firecrackerHostCommand, firecrackerJobComputer, type FirecrackerHostCommand, type FirecrackerHostJob, type FirecrackerJobComputer, type FirecrackerJournalCustody } from './jobs';
 import type { FirecrackerHostRuntime } from './runtime';
 
 /** Protected one-computer RPC, not a model tool, public host service or authority-bearing export. */
-export type FirecrackerRpcInput = { contract: 's16-firecracker-management/v1'; installationId: string } & (
-  { operation: 'state' } | { operation: 'submit'; command: FirecrackerHostCommand } | { operation: 'receipt' | 'reconcile'; requestId: string }
-);
+export type FirecrackerRpcOperation =
+  { operation: 'state' } | { operation: 'submit'; command: FirecrackerHostCommand } | { operation: 'receipt' | 'reconcile'; requestId: string } | { operation: 'custody'; requestId: string | null }
+;
+export type FirecrackerRpcInput = { contract: 's16-firecracker-management/v1'; installationId: string } & FirecrackerRpcOperation;
 /** Credential-free authenticated host facts. A fixture cannot be accepted as a native installation. */
 export interface FirecrackerRpcState { computer: FirecrackerJobComputer; machine: VmMachineState | null; basis: 'protected_host' | 'protocol_fixture'; controller: { uid: number; gid: number } }
 export interface FirecrackerRpcScope { computerId: string; selectionSha256: string; basis: FirecrackerRpcState['basis'] }
+/** Metadata reference only; an authenticated digest is not physical settlement or archive authority. */
+export interface FirecrackerRpcCustody extends FirecrackerJournalCustody { basis: FirecrackerRpcState['basis']; controller: { uid: number; gid: number } }
 function fail(): never { throw new AppError('vm_firecracker_management_unavailable', 503); }
 const uuid = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v);
 const same = (a: unknown, b: unknown) => vmCanonical(a) === vmCanonical(b);
@@ -52,6 +55,26 @@ export function firecrackerRpcReceipt(value: unknown, scope: FirecrackerRpcScope
   return structuredClone(value) as FirecrackerHostJob;
 }
 
+/** Closed owning helper cut, bound to the exact current endpoint scope and original requested receipt. */
+export function firecrackerRpcCustody(value: unknown, scope: FirecrackerRpcScope, requestId: string | null): FirecrackerRpcCustody {
+  const r = vmRecord(value, ['contract', 'computer', 'reader', 'journal', 'active', 'requested', 'basis', 'controller']);
+  const c = firecrackerJobComputer(r.computer), reader = vmRecord(r.reader, ['applicationId', 'format']), journal = vmRecord(r.journal, ['sha256', 'bytes', 'rows']), rows = vmRecord(journal.rows, ['computers', 'jobs', 'snapshots', 'instances']), controller = vmRecord(r.controller, ['uid', 'gid']);
+  if (r.contract !== 's16-firecracker-custody/v1' || c.id !== scope.computerId || c.selectionSha256 !== scope.selectionSha256 || c.basis !== scope.basis || r.basis !== scope.basis || reader.applicationId !== 0x4a46484a || reader.format !== 2 || typeof journal.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(journal.sha256)) return fail();
+  vmInteger(journal.bytes, 1073741824); vmInteger(rows.computers, 64); vmInteger(rows.jobs, 4096, 0); vmInteger(rows.snapshots, 4096, 0); vmInteger(rows.instances, Number(rows.computers)); vmInteger(controller.uid, 0xffffffff - 1); vmInteger(controller.gid, 0xffffffff - 1);
+  if (scope.basis === 'protected_host' && (process.platform !== 'linux' || controller.uid !== process.getuid?.() || controller.gid !== process.getgid?.())) return fail();
+  const active = r.active === null ? null : firecrackerRpcReceipt(r.active, scope);
+  if ((active !== null) !== (c.activeRequestId !== null) || active && (!['accepted', 'dispatched', 'unknown'].includes(active.state) || active.command.requestId !== c.activeRequestId || active.revision !== c.revision || Number(rows.jobs) < 1 || c.state !== (active.state === 'unknown' ? 'uncertain' : 'busy'))) return fail();
+  if (requestId === null) { if (r.requested !== null) return fail(); }
+  else {
+    if (!uuid(requestId)) return fail(); const requested = vmRecord(r.requested, ['requestId', 'receipt']); if (requested.requestId !== requestId) return fail();
+    if (requested.receipt !== null) {
+      const receipt = firecrackerRpcReceipt(requested.receipt, scope);
+      if (receipt.command.requestId !== requestId || receipt.revision > c.revision || Number(rows.jobs) < 1 || ['accepted', 'dispatched', 'unknown'].includes(receipt.state) && (!active || !same(receipt, active)) || active?.command.requestId === requestId && !same(receipt, active)) return fail();
+    } else if (active?.command.requestId === requestId) return fail();
+  }
+  if (Buffer.byteLength(vmCanonical(value)) > 16384) return fail(); return structuredClone(value) as FirecrackerRpcCustody;
+}
+
 /**
  * Loopback-only authenticated root-helper listener. One installation and computer are fixed by source
  * composition. Four finite requests can observe one retained mutation; transport loss never cancels or
@@ -75,7 +98,9 @@ export function createFirecrackerManagementRelay(runtime: FirecrackerHostRuntime
       const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))), r = vmRecord(value, ['contract', 'installationId', 'operation'], ['command', 'requestId']);
       if (r.contract !== 's16-firecracker-management/v1' || r.installationId !== installationId) return fail();
       let result: unknown;
-      if (r.operation === 'state') {
+      if (r.operation === 'custody') {
+        if (r.command !== undefined || r.requestId !== null && !uuid(r.requestId)) return fail(); result = runtime.custody(r.requestId as string | null);
+      } else if (r.operation === 'state') {
         if (r.command !== undefined || r.requestId !== undefined) return fail();
         const machine = runtime.current().activeRequestId ? null : await runtime.inspect(); result = { computer: runtime.current(), machine, basis: runtime.basis, controller: runtime.controllerIdentity() };
       } else if (r.operation === 'submit') {

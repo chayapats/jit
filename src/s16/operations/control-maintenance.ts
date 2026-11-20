@@ -17,6 +17,8 @@ import { openS16OperationsJournal, type S16OperationsJournal, type S16Operations
 import { resolveS16NativeNamespace, type S16NativeNamespace } from './native-namespace';
 import { openS16NativeSet, type S16NativeSetMaintenance, type S16NativeSetOptions } from './native-set';
 import { openFirecrackerControllerMaintenance, type FirecrackerControllerMaintenance } from '../../s15/vm/firecracker/maintenance';
+import { ConnectionVault } from '../../exec/connections';
+import { captureS16HelperCohort, type S16HelperObservation, type S16HelperCohortOptions } from './helper-cohort';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -57,6 +59,8 @@ export interface S16ControlMaintenance {
   nativeNamespace(): S16NativeNamespace;
   /** Captures protected native custody for an original operation; close this session before the context. */
   nativeSet(requestId: string, options: S16NativeSetOptions): S16NativeSetMaintenance;
+  /** Authenticated read-only root-helper cut; private journals/disks and physical settlement stay separate. */
+  helperCustody(options?: S16HelperCohortOptions): Promise<S16HelperObservation>;
   assertCurrent(): void;
   close(): void;
 }
@@ -77,9 +81,10 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   let firecracker: FirecrackerControllerMaintenance | undefined;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const nativeSets = new Set<S16NativeSetMaintenance>();
+  let helperReads = 0;
   const close = () => {
     if (closed) return; usable = false;
-    if ([...nativeSets].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    if (helperReads || [...nativeSets].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
     firecracker?.close();
     let failed = false;
     for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
@@ -188,7 +193,14 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     firecracker = openFirecrackerControllerMaintenance({ runtimeDirectory: join(root, 'runtime'), installationId: config.installationId, vm, guard: assertBaseCurrent, retain(capability) { firecracker = capability; } });
     const sources = Object.freeze([...outer, ...heldRuntime.sources, ...firecracker.sources]);
     if (sources.length > 256 || new Set(sources.map(source => source.name)).size !== sources.length || new Set(sources.map(source => source.database)).size !== sources.length) refuse('s16_ops_inventory_changed');
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet });
+    const controllers = firecracker.controllers;
+    const helperCustody = (helperOptions: S16HelperCohortOptions = {}) => {
+      assertCurrent();
+      return captureS16HelperCohort({ ...helperOptions, directory: root, lease, installationId: config.installationId, controllers,
+        vault: new ConnectionVault(join(root, 'vault'), { forbidden: [ownerDirectory, join(root, 'runtime'), join(root, 'backups'), join(root, 'operations')] }), guard: assertCurrent,
+        async retain<T>(operation: () => Promise<T>) { assertCurrent(); helperReads++; try { return await operation(); } finally { helperReads--; } } });
+    };
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

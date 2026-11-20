@@ -26,11 +26,25 @@ export interface FirecrackerJobComputer {
   id: string; selectionSha256: string; diskBytes: number; basis: FirecrackerJobObservation['basis'];
   revision: number; state: 'unverified' | 'running' | 'stopped' | 'busy' | 'uncertain'; launchId: string | null; activeRequestId: string | null;
 }
+/** Consistent current metadata reference. Private contexts/disks stay with their owning helper. */
+export interface FirecrackerJournalCustody {
+  contract: 's16-firecracker-custody/v1'; computer: FirecrackerJobComputer;
+  reader: { applicationId: number; format: 1 | 2 };
+  journal: { sha256: string; bytes: number; rows: { computers: number; jobs: number; snapshots: number; instances: number } };
+  active: FirecrackerHostJob | null;
+  requested: { requestId: string; receipt: FirecrackerHostJob | null } | null;
+}
 interface JobRow { request_id: string; computer_id: string; hash: string; command: string; revision: number; before_state: string; state: FirecrackerHostJob['state']; observation: string | null; context: string | null }
 const appId = 0x4a46484a, uuid = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v);
 const digest = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
 function fail(code = 'vm_firecracker_job_invalid', status = 409): never { throw new AppError(code, status); }
 const computerId = (v: unknown): v is string => typeof v === 'string' && /^jit-work(?:-[a-z0-9-]{1,54})?$/.test(v);
+/** Closed owning computer metadata, without asserting current kernel/process/disk facts. */
+export function firecrackerJobComputer(value: unknown): FirecrackerJobComputer {
+  const c = vmRecord(value, ['id', 'selectionSha256', 'diskBytes', 'basis', 'revision', 'state', 'launchId', 'activeRequestId']);
+  if (!computerId(c.id) || !digest(c.selectionSha256) || !['protected_host', 'protocol_fixture'].includes(c.basis as string) || !['unverified', 'running', 'stopped', 'busy', 'uncertain'].includes(c.state as string) || c.launchId !== null && !uuid(c.launchId) || c.activeRequestId !== null && !uuid(c.activeRequestId) || (c.activeRequestId !== null) !== ['busy', 'uncertain'].includes(c.state as string) || c.state === 'running' && c.launchId === null || c.state === 'unverified' && (c.revision !== 1 || c.launchId !== null)) return fail();
+  vmInteger(c.revision); vmInteger(c.diskBytes, 64 * 1073741824, 128 * 1048576); return structuredClone(c) as unknown as FirecrackerJobComputer;
+}
 
 /** Copies and validates the complete versioned command before asynchronous work or durable admission. */
 export function firecrackerHostCommand(value: unknown): FirecrackerHostCommand {
@@ -129,7 +143,88 @@ export class FirecrackerHostJournal {
   /** Protected metadata projection only; readiness still requires fresh independent driver evidence. */
   computer(id: string): FirecrackerJobComputer {
     if (!computerId(id)) return fail(); const row = this.db.query<{ data: string }, [string]>('SELECT data FROM fc_computers WHERE id=?').get(id);
-    if (!row) return fail('vm_firecracker_computer_not_found', 404); return JSON.parse(row.data);
+    if (!row) return fail('vm_firecracker_computer_not_found', 404); const value = firecrackerJobComputer(JSON.parse(row.data)); if (value.id !== id) return fail(); return value;
+  }
+  /**
+   * Read-only bounded semantic cut of the entire owning journal. Only digests/counts and selected
+   * original receipts escape; contexts are hashed in place and optionally checked by their driver.
+   * A read transaction never calls application recovery, host I/O or an observation writer.
+   */
+  custody(id: string, requestId: string | null = null, validateContext?: (job: FirecrackerHostJob, context: unknown) => void): FirecrackerJournalCustody {
+    if (!computerId(id) || requestId !== null && !uuid(requestId) || this.db.inTransaction) return fail();
+    return this.db.transaction(() => {
+      const format = this.db.query<{ user_version: number }, []>('PRAGMA main.user_version').get()!.user_version;
+      if (![1, 2].includes(format) || this.db.query<{ application_id: number }, []>('PRAGMA main.application_id').get()?.application_id !== appId) return fail();
+      const bytes = this.db.query<{ page_size: number }, []>('PRAGMA main.page_size').get()!.page_size * this.db.query<{ page_count: number }, []>('PRAGMA main.page_count').get()!.page_count;
+      if (!Number.isSafeInteger(bytes) || bytes < 512 || bytes > 1073741824 || this.db.query<{ quick_check: string }, []>('PRAGMA quick_check(1)').get()?.quick_check !== 'ok' || this.db.query('PRAGMA foreign_key_check').get()) return fail('vm_firecracker_custody_bounds');
+      const plans = [
+        { name: 'fc_computers', key: 'id', bound: 64, fields: ['id', 'data'], text: ['id', 'data'], json: ['data'], nullable: [] as string[] },
+        { name: 'fc_jobs', key: 'computer_id,revision', bound: 4096, fields: ['request_id', 'computer_id', 'hash', 'command', 'revision', 'before_state', 'state', 'observation', 'context'], text: ['request_id', 'computer_id', 'hash', 'command', 'before_state', 'state', 'observation', 'context'], json: ['command', 'observation', 'context'], nullable: ['observation', 'context'] },
+        { name: 'fc_snapshots', key: 'computer_id,id', bound: 4096, fields: ['computer_id', 'id', 'sha256', 'bytes', 'retired'], text: ['computer_id', 'id', 'sha256'], json: [] as string[], nullable: [] as string[] },
+        ...(format === 2 ? [{ name: 'fc_instances', key: 'computer_id', bound: 64, fields: ['computer_id', 'data'], text: ['computer_id', 'data'], json: ['data'], nullable: [] as string[] }] : []),
+      ];
+      const schema = this.db.query<{ type: string; name: string; tbl_name: string; sql: string | null }, []>('SELECT type,name,tbl_name,sql FROM main.sqlite_schema ORDER BY type,name LIMIT 33').all();
+      const allowed = new Set([...plans.flatMap(p => [p.name, 'sqlite_autoindex_' + p.name + '_1']), 'fc_one_active']);
+      if (schema.length > 32 || schema.some(row => !allowed.has(row.name) || !['table', 'index'].includes(row.type) || row.sql !== null && Buffer.byteLength(row.sql) > 8192) || plans.some(plan => !schema.some(row => row.type === 'table' && row.name === plan.name))) return fail();
+      const h = createHash('sha256'); let encoded = 0;
+      const add = (value: unknown) => { const data = vmCanonical(value) + '\n'; encoded += Buffer.byteLength(data); if (encoded > 1073741824) fail('vm_firecracker_custody_bounds'); h.update(data); };
+      add({ contract: 's16-firecracker-journal-cut/v1', applicationId: appId, format }); add(schema);
+      const computers = new Map<string, FirecrackerJobComputer>(), checkpoints = new Map<string, { sha256: string; bytes: number }>(), retired = new Set<string>();
+      const revisions = new Map<string, Set<number>>();
+      const launches = new Map<string, string | null>();
+      const seenActive = new Set<string>(); let active: FirecrackerHostJob | null = null, requested: FirecrackerHostJob | null = null, snapshotRows = 0, instances = 0, jobs = 0;
+      for (const plan of plans) {
+        const columns = this.db.query<{ name: string; type: string }, []>('PRAGMA main.table_info(' + plan.name + ')').all();
+        if (columns.map(c => c.name).join(',') !== plan.fields.join(',') || columns.some(c => c.type.toUpperCase() !== (plan.text.includes(c.name) ? 'TEXT' : 'INTEGER'))) return fail();
+        const invalid = plan.fields.map(field => {
+          const check = plan.text.includes(field) ? `CASE WHEN typeof(${field})<>'text' OR length(CAST(${field} AS BLOB))>${plan.json.includes(field) ? 65536 : 128} THEN 1 ELSE ${plan.json.includes(field) ? `json_valid(${field})=0` : '0'} END` : `(typeof(${field})<>'integer' OR ${field}<0 OR ${field}>9007199254740991)`;
+          return plan.nullable.includes(field) ? `(${field} IS NOT NULL AND (${check}))` : `(${check})`;
+        }).join(' OR ');
+        const bound = this.db.query<{ n: number; invalid: number }, []>(`SELECT count(*) n,coalesce(sum(${invalid}),0) invalid FROM main.${plan.name}`).get();
+        if (!bound || bound.n > plan.bound || bound.invalid) return fail('vm_firecracker_custody_bounds'); add({ table: plan.name, rows: bound.n });
+        const projection = plan.fields.map(field => plan.text.includes(field) ? `CAST(${field} AS BLOB) AS ${field}` : field).join(',');
+        for (const raw of this.db.query<Record<string, Uint8Array | number | null>, []>(`SELECT ${projection} FROM main.${plan.name} ORDER BY ${plan.key}`).iterate()) {
+          const row = Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, value instanceof Uint8Array ? new TextDecoder('utf-8', { fatal: true }).decode(value) : value])); add(row);
+          if (plan.name === 'fc_computers') {
+            const c = firecrackerJobComputer(JSON.parse(row.data as string)); if (c.id !== row.id) return fail(); computers.set(c.id, c);
+          } else if (plan.name === 'fc_jobs') {
+            const command = firecrackerHostCommand(JSON.parse(row.command as string)), c = computers.get(command.computerId), state = row.state as FirecrackerHostJob['state'];
+            if (!c || command.requestId !== row.request_id || command.computerId !== row.computer_id || command.selectionSha256 !== c.selectionSha256 || row.hash !== createHash('sha256').update(vmCanonical(command)).digest('hex') || row.revision !== command.expectedRevision + 1 || Number(row.revision) > c.revision || !['running', 'stopped'].includes(row.before_state as string) || !['accepted', 'dispatched', 'unknown', 'committed', 'not_sent'].includes(state)) return fail();
+            const pending = ['accepted', 'dispatched', 'unknown'].includes(state);
+            if (pending !== (c.activeRequestId === command.requestId) || pending && (row.revision !== c.revision || c.state !== (state === 'unknown' ? 'uncertain' : 'busy')) || state !== 'committed' && row.observation !== null || state === 'committed' && row.observation === null || ['accepted', 'not_sent'].includes(state) && row.context !== null || command.kind === 'launch' && row.before_state !== 'stopped') return fail();
+            if (command.expectedLaunchId !== (launches.get(c.id) ?? null)) return fail();
+            if ('snapshotId' in command) {
+              const key = c.id + '/' + command.snapshotId;
+              if (command.kind === 'checkpoint' ? checkpoints.has(key) : !checkpoints.has(key) || retired.has(key)) return fail();
+            }
+            const facts = row.observation === null ? null : observation(JSON.parse(row.observation as string), c), resumed = command.kind === 'launch' || command.kind === 'checkpoint' && row.before_state === 'running';
+            if (facts && (facts.state !== (resumed ? 'running' : ['stop', 'restore'].includes(command.kind) ? 'stopped' : row.before_state) || facts.launchId !== (resumed ? command.requestId : command.expectedLaunchId) || (command.kind === 'checkpoint' ? facts.snapshot?.id !== command.snapshotId || facts.snapshot.bytes !== c.diskBytes : facts.snapshot !== undefined))) return fail();
+            const job: FirecrackerHostJob = { command, revision: Number(row.revision), state, observation: facts }; jobs++;
+            const history = revisions.get(c.id) ?? new Set<number>(); if (job.revision !== history.size + 2) return fail(); history.add(job.revision); revisions.set(c.id, history);
+            if (facts) launches.set(c.id, facts.launchId);
+            if (command.computerId === id && row.context !== null) validateContext?.(job, JSON.parse(row.context as string));
+            if (pending) { if (seenActive.has(c.id)) return fail(); seenActive.add(c.id); if (c.id === id) active = job; }
+            if (c.id === id && command.requestId === requestId) requested = job;
+            if (facts?.snapshot) { const key = c.id + '/' + facts.snapshot.id; if (checkpoints.has(key)) return fail(); checkpoints.set(key, { sha256: facts.snapshot.sha256, bytes: facts.snapshot.bytes }); }
+            if (state === 'committed' && command.kind === 'retire') retired.add(c.id + '/' + command.snapshotId);
+          } else if (plan.name === 'fc_snapshots') {
+            const key = row.computer_id + '/' + row.id, expected = checkpoints.get(key);
+            if (!expected || !/^jit-[a-f0-9]{32}$/.test(row.id as string) || expected.sha256 !== row.sha256 || expected.bytes !== row.bytes || ![0, 1].includes(Number(row.retired)) || (row.retired === 1) !== retired.has(key)) return fail(); snapshotRows++;
+          } else {
+            const c = computers.get(row.computer_id as string); if (!c) return fail();
+            const record = vmRecord(JSON.parse(row.data as string), ['contract', 'selectionSha256', 'disk', 'launch']), disk = vmRecord(record.disk, ['device', 'inode', 'bytes', 'initialSha256']);
+            if (record.contract !== 's16-firecracker-instance/v1' || record.selectionSha256 !== c.selectionSha256 || typeof disk.device !== 'string' || !/^(?:0|[1-9][0-9]{0,39})$/.test(disk.device) || typeof disk.inode !== 'string' || !/^[1-9][0-9]{0,39}$/.test(disk.inode) || disk.bytes !== c.diskBytes || !digest(disk.initialSha256)) return fail();
+            if (record.launch !== null) {
+              const launch = vmRecord(record.launch, ['requestId', 'invocationId', 'process']), process = vmRecord(launch.process, ['pid', 'startTicks', 'hostBootId']);
+              if (!uuid(launch.requestId) || !uuid(launch.invocationId) || !Number.isSafeInteger(process.pid) || Number(process.pid) < 2 || Number(process.pid) > 0x7fffffff || typeof process.startTicks !== 'string' || !/^[1-9][0-9]{0,19}$/.test(process.startTicks) || typeof process.hostBootId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(process.hostBootId)) return fail();
+            }
+            instances++;
+          }
+        }
+      }
+      const computer = computers.get(id); if (!computer || snapshotRows !== checkpoints.size || [...retired].some(key => !checkpoints.has(key)) || [...computers.values()].some(c => (c.activeRequestId !== null) !== seenActive.has(c.id) || c.revision !== (revisions.get(c.id)?.size ?? 0) + 1 || c.launchId !== (launches.get(c.id) ?? null))) return fail();
+      return { contract: 's16-firecracker-custody/v1' as const, computer, reader: { applicationId: appId, format: format as 1 | 2 }, journal: { sha256: h.digest('hex'), bytes: encoded, rows: { computers: computers.size, jobs, snapshots: snapshotRows, instances } }, active, requested: requestId === null ? null : { requestId, receipt: requested } };
+    })();
   }
   /** Stores fresh trusted read-back only when no original mutation is unsettled; it cannot clear a fence. */
   observe(id: string, value: FirecrackerJobObservation): FirecrackerJobComputer {

@@ -1,10 +1,10 @@
 import { AppError } from '../../../errors';
-import { registerSecretFingerprint } from '../../../security/secret-fingerprints';
 import { DurableJournal } from '../../durable-journal';
 import type { VmBackendProfile, VmMachineState, VmManagement } from '../types';
 import { vmCanonical, vmInteger, vmRecord } from '../validation';
 import { firecrackerHostCommand, type FirecrackerHostCommand, type FirecrackerHostJob } from './jobs';
-import { firecrackerRpcReceipt, firecrackerRpcState, type FirecrackerRpcInput, type FirecrackerRpcScope, type FirecrackerRpcState } from './rpc';
+import { firecrackerRpcReceipt, firecrackerRpcState, type FirecrackerRpcOperation, type FirecrackerRpcScope, type FirecrackerRpcState } from './rpc';
+import { requestFirecrackerManagement } from './request';
 
 /** Protected controller configuration. The credential is write-only setup data, never serialized here. */
 export interface FirecrackerClientOptions {
@@ -67,19 +67,8 @@ export class FirecrackerVmManagement implements VmManagement {
     if (r.contract !== 's16-firecracker-client-intent/v1' || command.requestId !== id || command.computerId !== this.#scope.computerId || command.selectionSha256 !== this.#scope.selectionSha256 || !['accepted', 'dispatched', 'unknown', 'committed', 'not_sent'].includes(r.state as string)) return fail();
     if (r.receipt !== null) firecrackerRpcReceipt(r.receipt, this.#scope, command); return structuredClone(r) as unknown as Intent;
   }
-  async #call(operation: Omit<FirecrackerRpcInput, 'contract' | 'installationId'> | { operation: 'submit'; command: FirecrackerHostCommand } | { operation: 'receipt' | 'reconcile'; requestId: string }): Promise<unknown> {
-    this.#current(); let credential: string; try { credential = this.#credential(); } catch { return fail(); } if (!/^[A-Za-z0-9_-]{32,256}$/.test(credential)) return fail(); registerSecretFingerprint(credential);
-    const controller = new AbortController(), expired = Promise.withResolvers<never>(), timer = setTimeout(() => { controller.abort(); expired.reject(new AppError('vm_firecracker_management_unavailable', 503)); }, this.#timeout);
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      const body = vmCanonical({ contract: 's16-firecracker-management/v1', installationId: this.#installation, ...operation }); if (Buffer.byteLength(body) > 4096) return fail();
-      const response = await Promise.race([this.#fetch(this.#origin + '/v1/firecracker', { method: 'POST', redirect: 'error', signal: controller.signal, headers: { Authorization: 'Bearer ' + credential, 'Content-Type': 'application/json' }, body }), expired.promise]);
-      if (!response.ok || response.headers.get('content-type')?.split(';')[0] !== 'application/json' || Number(response.headers.get('content-length') ?? 0) > 16384 || !response.body) return fail();
-      reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
-      for (;;) { const next = await Promise.race([reader.read(), expired.promise]); if (next.done) break; size += next.value.length; if (size > 16384) return fail(); chunks.push(next.value); }
-      this.#current(); const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))), r = vmRecord(value, ['contract', 'result']); if (r.contract !== 's16-firecracker-management/v1') return fail(); return r.result;
-    } catch { return fail(); }
-    finally { clearTimeout(timer); controller.abort(); if (reader) void reader.cancel().catch(() => {}); }
+  #call(operation: FirecrackerRpcOperation): Promise<unknown> {
+    return requestFirecrackerManagement({ origin: this.#origin, installationId: this.#installation, timeoutMs: this.#timeout, credential: this.#credential, fetch: this.#fetch, guard: () => this.#current() }, operation);
   }
   #finish(intent: Intent, receipt: FirecrackerHostJob): void {
     this.#journal.tx(() => {

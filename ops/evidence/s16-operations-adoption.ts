@@ -70,7 +70,7 @@ export async function verifyS16OperationsPackageAdoption(input: { oldCommit: str
     requireOutcome(parseSuccess(await execute(['src/main.ts', 'credential', ...selected, '--key', 'compat_after', '--secret-stdin'], artifact, 'fixture-only-package-probe\n')).state === 'credential_stored', 'current_cli_failed_after_adoption');
     const status = parseSuccess(await execute(['run', 's16:ops', 'status', ...selected]));
     requireOutcome(status.state === 'adopted' && status.id === adopted.id && status.active === null, 'packaged_final_status_failed');
-    let nativeProbe: object | null = null, nativeSetProbe: object | null = null, controllerProbe: object | null = null;
+    let nativeProbe: object | null = null, nativeSetProbe: object | null = null, controllerProbe: object | null = null, helperProbe: object | null = null;
     if (nativeProfile) {
       const nativeCode = `import {mkdirSync} from 'node:fs';import {join} from 'node:path';import {createHost} from 'schway/host';import {openS16NativeRoot} from './src/s16/operations/native-root.ts';
 const root=${JSON.stringify(join(parent, 'native-probe'))};mkdirSync(root,{mode:0o700});for(const part of ['workspace','home','sessions'])mkdirSync(join(root,part),{mode:0o700});
@@ -114,13 +114,23 @@ let duplicate=false;try{new FirecrackerVmManagement({...options,create:false});}
       const controllerObserved = parseSuccess(await execute(['-e', controllerCode]));
       requireOutcome(controllerObserved.controllers === 1 && controllerObserved.sourceCopied && controllerObserved.originalState === 'dispatched_preserved' && controllerObserved.credentialReads === 0 && controllerObserved.duplicateRefused && controllerObserved.unknownClose === 'exclusion_retained' && controllerObserved.sourceBytes === 'preserved' && controllerObserved.processLeasesCopied === false, 'packaged_controller_custody_failed');
       controllerProbe = controllerObserved;
+      // Keep fixture drivers outside the immutable artifact. Every production import resolves
+      // through this sidecar's src symlink to the actual verified copied package.
+      const harness = join(parent, 'helper-harness'), fixturePaths = ['ops/evidence/s16-helper-custody-probe.ts', 'tests/fixtures/s15-firecracker-runtime.ts', 'tests/fixtures/s15-firecracker-host.ts'];
+      const fixtureHashes = fixturePaths.map(path => { const bytes = readFileSync(join(source, path)); opsWrite(join(harness, path), bytes); return { path, sha256: hash(bytes) }; });
+      symlinkSync(join(artifact, 'src'), join(harness, 'src')); symlinkSync(join(artifact, 'node_modules'), join(harness, 'node_modules'));
+      const helperConfig = join(parent, 'helper-runtime.json'); opsWrite(helperConfig, canonical(s15StageConfig(join(parent, 'helper-state'), 'http://localhost:3041')));
+      requireOutcome(parseSuccess(await execute(['src/main.ts', 'init', '--s15', '--config', helperConfig])).state === 's15_initialized', 'packaged_helper_init_failed');
+      const helperObserved = parseSuccess(await execute([join(harness, 'ops/evidence/s16-helper-custody-probe.ts'), helperConfig]));
+      requireOutcome(helperObserved.basis === 'protocol_fixture' && helperObserved.helpers === 1 && helperObserved.helperContract === 's16-firecracker-custody/v1' && helperObserved.journalFormat === 2 && helperObserved.originalController === 'unknown_preserved' && helperObserved.originalHelper === 'committed_retained' && helperObserved.reads === 'authenticated_custody_only' && helperObserved.sourceBytes === 'preserved' && helperObserved.helperChangesDuringReads === 0 && helperObserved.hostCallsDuringReads === 0 && helperObserved.changedCut === 'refused' && helperObserved.privateContext === 'not_exported', 'packaged_helper_custody_failed');
+      helperProbe = { ...helperObserved, fixtureHashes };
     }
     requireOutcome(!refused.stdout.includes('fixture-only-package-probe') && validateArtifact(artifact).ok && readDependencyRecord(artifact)?.dependencyHash === dependencies.dependencyHash, 'artifact_changed_during_drill');
     const receipt = { contract: 's16-operations-package-evidence/v1', scope: nativeProfile ? 'deterministic_disposable_native_custody' : journalProfile ? 'deterministic_disposable_current_journal' : 'deterministic_disposable_metadata_adoption', platform: process.platform, arch: process.arch, bunVersion: Bun.version,
       packageHash: manifest.contentHash, dependencyHash: dependencies.dependencyHash, dependencyFiles: dependencies.dependencyFiles, lockHash: manifest.lockHash, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
       oldCommit: input.oldCommit, oldFactorySha256: hash(readFileSync(join(old, 'src/s16/operations/installation-lease.ts'))), oldReaderSha256: hash(readFileSync(join(old, 'src/s16/operations/operations-state.ts'))),
       oldBeforeAdoption: 'credential_stored', oldAfterAdoption: journalProfile ? 'credential_stored' : 'refused', oldAfterJournalWrite: journalProfile ? 'refused_without_physical_fence' : 'not_exercised',
-      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound', nativeNamespace: journalProfile ? 'explicit_empty_preserved' : 'not_exercised', nativeProbe, nativeSetProbe, controllerProbe };
+      currentAfterAdoption: 'credential_stored', currentPendingJournal: journalProfile ? 'refused_without_physical_fence' : 'not_exercised', originalJournalSettlement: journalProfile ? 'discarded_without_replay' : 'not_exercised', currentState: 'preserved', notices: 'present', admission: journalProfile ? 'control_v2_bound' : 'v2_bound', nativeNamespace: journalProfile ? 'explicit_empty_preserved' : 'not_exercised', nativeProbe, nativeSetProbe, controllerProbe, helperProbe };
     opsDirectory(dirname(input.receipt)); opsWrite(input.receipt, canonical(receipt)); return receipt;
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }

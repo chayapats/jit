@@ -18,6 +18,8 @@ interface Manager { id: string; origin: string; computerId: string; selectionSha
 /** Current original controller intent, never a report of root-helper/VM physical settlement. */
 export interface FirecrackerControllerCustody {
   readonly managerId: string; readonly source: string; readonly computerId: string; readonly selectionSha256: string;
+  /** Private original loopback recipient; never an archive/model-selected endpoint or ordinary export. */
+  readonly origin: string;
   readonly basis: FirecrackerRpcScope['basis'];
   readonly pending: Readonly<{ requestId: string; kind: FirecrackerHostCommand['kind']; state: 'accepted' | 'dispatched' | 'unknown'; commandSha256: string; expectedRevision: number; expectedLaunchId: string | null }> | null;
 }
@@ -128,7 +130,7 @@ export function openFirecrackerControllerMaintenance(options: FirecrackerControl
       }
       if ((active.requestId !== null) !== (pending !== null)) refuse();
       const source = 'fc_' + hash(manager.id).slice(0, 32) + '.sqlite';
-      sources.push(Object.freeze({ name: source, database: db, reader })); controllers.push(Object.freeze({ managerId: manager.id, source, computerId: manager.computerId, selectionSha256: manager.selectionSha256, basis: scope.basis, pending }));
+      sources.push(Object.freeze({ name: source, database: db, reader })); controllers.push(Object.freeze({ managerId: manager.id, source, origin: manager.origin, computerId: manager.computerId, selectionSha256: manager.selectionSha256, basis: scope.basis, pending }));
       files.set(path, entry(path)); files.set(lock, entry(lock));
     }
     if (directoryEntry) {

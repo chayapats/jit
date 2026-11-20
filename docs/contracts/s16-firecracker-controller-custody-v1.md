@@ -18,6 +18,9 @@ binding and active pointer, every original command/receipt and settlement/active
 consistency. An unknown or dispatched intent stays unchanged. A descriptor's
 pending command identity/hash/revision is metadata, never physical proof.
 The original `protected_host`/`protocol_fixture` basis remains explicit.
+The protected descriptor also pins the original validated loopback origin for
+the separate [read-only helper cohort](s16-helper-cohort-v1.md). It never enters
+ordinary exports or permits an archive to choose a credential recipient.
 
 Reserve canonical journal paths inside the process before any journal/header/
 lock descriptor is opened. Ordinary DurableJournal uses the same registry,
