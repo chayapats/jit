@@ -32,7 +32,22 @@ export interface FirecrackerHostFixture {
   list(path: string, maximum: number): readonly string[];
   syncDisk(path: string, expected: FirecrackerHostSelection['disk']): void;
 }
-type HostPort = Omit<FirecrackerHostFixture, 'basis' | 'process'>;
+/** Privileged bounded filesystem/proc port. It is not a working backend or serialized observation. */
+export type FirecrackerHostReadPort = Omit<FirecrackerHostFixture, 'basis' | 'process'>;
+type HostPort = FirecrackerHostReadPort;
+/** Closed pinned-jailer ARM public CPU facts; no arbitrary copied sysfs path is admitted. */
+export function firecrackerArmFacts(host: FirecrackerHostReadPort, root: string, uid: number, gid: number): void {
+  let count = 0;
+  const text = (path: string) => { const bytes = host.read(path, 4096); if (!bytes || bytes.length > 4096) return reject(); return new TextDecoder('utf-8', { fatal: true }).decode(bytes); };
+  const visit = (relative: string, depth: number) => {
+    if (++count > 128 || depth > 12) reject(); const path = join(root, relative), s = host.metadata(path);
+    if (s.uid !== uid || s.gid !== gid || s.mode & 0o7022) reject();
+    if (s.kind === 'directory') {
+      if (!['sys', 'sys/devices', 'sys/devices/system', 'sys/devices/system/cpu', 'sys/devices/system/cpu/cpu0', 'sys/devices/system/cpu/cpu0/cache', 'sys/devices/system/cpu/cpu0/regs', 'sys/devices/system/cpu/cpu0/regs/identification'].includes(relative) && !/^sys\/devices\/system\/cpu\/cpu0\/cache\/index[0-7]$/.test(relative)) reject();
+      for (const name of host.list(path, 16)) { if (!/^[A-Za-z0-9_]+$/.test(name)) reject(); visit(`${relative}/${name}`, depth + 1); }
+    } else if (s.kind !== 'file' || s.links !== 1 || !/^sys\/devices\/system\/cpu\/cpu0\/(?:cache\/index[0-7]\/(?:size|level|type|shared_cpu_map|coherency_line_size|number_of_sets)|regs\/identification\/midr_el1)$/.test(relative) || text(path) !== text(`/${relative}`)) reject();
+  }; visit('sys', 0);
+}
 /** Independent host observations only; the owning manager still combines the closed API profile and current authority. */
 export interface FirecrackerHostFacts {
   observation: 'process_bound' | 'process_and_disk_settled';
@@ -64,7 +79,8 @@ function budget(timeoutMs: number, maximum: number, signal?: AbortSignal) {
     async run<T>(start: () => T | Promise<T>): Promise<T> { check(); return Promise.race([Promise.resolve().then(() => { check(); return start(); }).then(value => { check(); return value; }), expired.promise]); },
     close() { clearTimeout(timer); signal?.removeEventListener('abort', abort); } };
 }
-function nativeHost(): HostPort {
+/** Native root-helper I/O only; missing Linux/root prerequisites refuse before opening host paths. */
+export function firecrackerNativeHost(): FirecrackerHostReadPort {
   // Only the installed privileged helper can inspect another UID's /proc root/exe/fd and settle its disk.
   // The controller must not run as root or as the VMM identity to gain this access.
   if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch) || process.getuid?.() !== 0) return reject();
@@ -137,7 +153,7 @@ export class FirecrackerHostLease {
     try {
       const { selected, plan } = selectedHost(selection), fixture = options.fixture, guard = options.guard, processFixture = fixture?.process;
       if (typeof guard !== 'function' || fixture && (fixture.basis !== 'protocol_fixture' || processFixture?.basis !== 'protocol_fixture')) reject();
-      const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : nativeHost();
+      const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : firecrackerNativeHost();
       await limit.run(guard);
       process = await limit.run(async () => {
         const acquired = await FirecrackerProcessLease.open(selected.process, processFixture);
@@ -159,7 +175,7 @@ export class FirecrackerHostLease {
     try {
       const { selected, plan } = selectedHost(selection), fixture = options.fixture, guard = options.guard;
       if (typeof guard !== 'function' || fixture && (fixture.basis !== 'protocol_fixture' || fixture.process?.basis !== 'protocol_fixture')) return reject();
-      const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : nativeHost();
+      const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : firecrackerNativeHost();
       const text = (path: string, maximum: number) => { const bytes = host.read(path, maximum); if (bytes === null) return null; if (bytes.length > maximum) return reject(); return new TextDecoder('utf-8', { fatal: true }).decode(bytes); };
       const process: Pick<FirecrackerProcessLease, 'exited' | 'stop' | 'close'> = {
         exited() {
@@ -223,20 +239,7 @@ export class FirecrackerHostLease {
     const rootEntries = this.#host.list(root, 9); const expected = rootEntries.includes('sys') ? [...fixed, 'sys'] : fixed;
     const sockets = this.#host.list(join(root, 'run'), 2).slice().sort();
     if ([...rootEntries].sort().join() !== expected.sort().join() || this.#host.list(join(root, 'dev'), 3).slice().sort().join() !== 'kvm,net,urandom' || this.#host.list(join(root, 'dev/net'), 1).join() !== 'tun' || sockets.some(name => !['api.sock', 'vsock.sock'].includes(name)) || running && sockets.join() !== 'api.sock,vsock.sock') reject();
-    if (rootEntries.includes('sys')) {
-      let count = 0;
-      const visit = (relative: string, depth: number) => {
-        if (++count > 128 || depth > 12) reject(); const path = join(root, relative), s = this.#host.metadata(path);
-        if (s.uid !== selected.host.uid || s.gid !== selected.host.gid || s.mode & 0o7022) reject();
-        if (s.kind === 'directory') {
-          if (!['sys', 'sys/devices', 'sys/devices/system', 'sys/devices/system/cpu', 'sys/devices/system/cpu/cpu0', 'sys/devices/system/cpu/cpu0/cache', 'sys/devices/system/cpu/cpu0/regs', 'sys/devices/system/cpu/cpu0/regs/identification'].includes(relative) && !/^sys\/devices\/system\/cpu\/cpu0\/cache\/index[0-7]$/.test(relative)) reject();
-          for (const name of this.#host.list(path, 16)) { if (!/^[A-Za-z0-9_]+$/.test(name)) reject(); visit(`${relative}/${name}`, depth + 1); }
-        }
-        else {
-          if (s.kind !== 'file' || s.links !== 1 || !/^sys\/devices\/system\/cpu\/cpu0\/(?:cache\/index[0-7]\/(?:size|level|type|shared_cpu_map|coherency_line_size|number_of_sets)|regs\/identification\/midr_el1)$/.test(relative) || this.#text(path, 4096) !== this.#text(`/${relative}`, 4096)) reject();
-        }
-      }; visit('sys', 0);
-    }
+    if (rootEntries.includes('sys')) firecrackerArmFacts(this.#host, root, selected.host.uid, selected.host.gid);
   }
   #sockets(): void {
     const root = this.#plan.rootDirectory;

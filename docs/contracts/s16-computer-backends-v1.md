@@ -266,6 +266,18 @@ launch. Native submission requires prepared Linux/root custody; injected
 commands always remain `protocol_fixture`. Root helper installation, concrete
 native preparation/recovery and complete manager registration remain pending.
 
+`FirecrackerHostPreparation` checks installed pinned binaries, guest-readable
+root-owned kernel/config/optional initrd, exact single-link disk custody, closed
+jail devices, current ARM CPU facts and the private empty inventory file. The
+dedicated UID must have no process, the socket scope must be empty and fsync
+must complete within the 15-second publication deadline. It runs again at
+systemd's actual `beforeStart` boundary. Missing/stale sockets refuse; this
+verifier does not delete them or install/configure anything. Installer-owned
+initial directories can be root-owned until the pinned jailer changes them;
+prepared guest inputs must remain readable after its UID drop. The result is
+`launch_prepared`, never readiness, strong stop or permission. Native use requires
+the original native singleton; injected I/O always remains a protocol fixture.
+
 `s16-firecracker-cold/v1` is an immutable same-computer cold disk manifest:
 computer, selected-host digest, original checkpoint request, exact snapshot tag,
 raw byte count and SHA-256. It is not portable state, a permission or a VM stop
