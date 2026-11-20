@@ -96,6 +96,20 @@ approved executable/jail/device/socket binding and disk settlement must still be
 combined by the owning manager. Protocol fixtures and Mac refusals cannot stand
 in for the separate Linux/KVM receipt.
 
+Durable protected-helper jobs retain exact original requests, a monotonically
+advanced computer fence and private recovery context before host effects.
+Restart distinguishes undispatched refusal from unknown dispatch; neither
+response loss nor a late timed-out driver permits replay. Root systemd retains
+the fixed foreground launch across helper restarts. Unit metadata is weaker
+than the independent process/jail/API/disk checks and never certifies readiness
+or settlement. The selected unit gives the unmodified jailer a private empty
+read-only `/proc/misc` view, preventing optional userfaultfd/Nitro imports
+without changing global host devices. This avoids excluding otherwise suitable
+Linux hosts merely because those optional kernel minors exist. It requires a
+root-owned immutable empty file and systemd mount support; missing preparation
+refuses. Native helper preparation/installation and Linux conformance remain
+required; the Mac command fixtures do not establish them.
+
 The protected-host composition now binds the original process/jail/executable,
 immutable kernel/config, dedicated UID, per-thread seccomp/capabilities, bounded
 no-swap cgroup and original disk descriptor before joining the closed API profile

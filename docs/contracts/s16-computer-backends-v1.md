@@ -136,7 +136,15 @@ launch or `InstanceStart`.
 
 The pinned jailer discovers optional `userfaultfd`/`nitro_enclaves` minors in
 `/proc/misc`; absence of a corresponding host `/dev` pathname is insufficient.
-Preflight must inspect that kernel inventory before launch. The jailer also
+The selected root systemd unit gives the unmodified jailer an effective empty
+inventory: `PrivateMounts=yes` and a read-only, nonrecursive bind of the
+installer-owned empty `<jailerBase>/.jit-proc-misc` file over `/proc/misc`.
+The launcher verifies that file and its ancestors are root-owned, not writable
+by another identity and not links before actual dispatch. This per-unit mount
+does not modify the host's `/proc` or device nodes. Missing mount support or
+failed unit preparation refuses launch; post-launch device checks remain
+required. See [systemd's documented private bind mounts](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html#BindPaths=).
+The jailer also
 changes its jail root, `/dev`, `/dev/net` and `/run` to the selected VMM identity
 with mode 0700. Controller access to those paths is not implied by the argv:
 the installed protected host helper must own verification and the separately
@@ -208,6 +216,45 @@ cold checkpoint/restore and restart reconciliation remain required before the
 additional backend is offered. The pre-launch `/proc/misc` device gate above
 cannot be replaced by post-launch inspection. Linux/KVM live receipts remain
 separate from the real Unix HTTP/TCP protocol composition tests.
+
+## Durable host commands and retained root units
+
+`s16-firecracker-host-command/v1` carries only the original 32-hex request,
+computer, selected-host digest, expected revision/launch identity and closed
+launch/stop/checkpoint/restore/retire operation. Recovery tags are exact
+`jit-<32hex>` values; paths, argv, environment and arbitrary systemd properties
+are not inputs. The private helper SQLite journal uses application ID
+`0x4a46484a`, reader format 1 and checks both the checkpointed header and live
+WAL before writable initialization. Admission atomically advances the computer
+revision and reserves one original mutation before dispatch. Reusing a request
+with changed contents refuses; an exact duplicate returns its original receipt.
+Bounds are 64 computers, 4,096 retained jobs and nine active cold snapshots per
+computer. Exhaustion refuses rather than evicting idempotency evidence.
+
+The installed helper holds `FirecrackerHostLock` on a protected empty
+`.jit-host.lock` file using nonblocking exclusive libc `flock`. It retains the
+close-on-exec descriptor, checks its original device/inode and private regular
+file on dispatch, never unlinks/steals a PID lock and refuses another helper.
+Native driver dispatch and native journal restart recovery require this exact
+native lease. See the [open-file-description lock contract](https://man7.org/linux/man-pages/man2/flock.2.html).
+Accepted but undispatched requests become `not_sent`; dispatched
+requests become `unknown`, retain capacity and are read back without replay.
+Protected recovery context is bounded to 64 KiB and never exported in receipts.
+The driver must record its original unit/disk context before the corresponding
+effect. Cancellation or a 360-second deadline cannot clear the fence while a
+late local driver still exists; reconciliation has a separate 15-second budget
+and current read authority. Neither metadata nor a driver label proves a VM.
+
+The fixed root systemd unit is `jit-firecracker-<original request>.service`,
+with Type=exec, Restart=no, RemainAfterExit=yes, null stdio, private mounts and
+`env -i PATH=/usr/bin:/bin LANG=C HOME=/nonexistent` before the exact jailer
+plan. Systemd retains the process independently of controller/helper lifetime.
+Submission is one mutation, not readiness. Bounded `systemctl show` reads check
+the exact original unit, invocation, PID and closed properties. Missing metadata,
+PID zero or active/exited never certifies disk settlement or authorizes a new
+launch. Native submission requires prepared Linux/root custody; injected
+commands always remain `protocol_fixture`. Root helper installation, concrete
+native preparation/recovery and complete manager registration remain pending.
 
 ## Reviewed portable state
 
