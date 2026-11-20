@@ -59,6 +59,11 @@ The internal contracts are:
 - [`s16-payload-set/v1`](../contracts/s16-payload-set-v1.md): streamed exact
   immutable bytes with independent receipts, plus an owning FILE resolver
   that reports pending/untracked custody instead of promoting or deleting it.
+- [`s16-installation-lease/v1`](../contracts/s16-installation-lease-v1.md):
+  retained shared leases over explicit selected CLI/service lifetime and
+  exclusive maintenance exclusion before owner/vault access. An independent
+  inode receipt prevents silent lock recreation; CHAT exclusion and older
+  bridge-build durable fences remain separately required.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version
