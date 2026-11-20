@@ -35,6 +35,7 @@ export class FirecrackerVmManagement implements VmManagement {
   #busy = false;
   #recovering: Promise<Intent | null> | null = null;
   constructor(options: FirecrackerClientOptions) {
+    if (!options.fixture && (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch) || !process.getuid?.() || !process.getgid?.())) fail('vm_host_unsupported');
     const url = new URL(options.origin);
     if (url.origin !== options.origin || url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || !/^jit-work(?:-[a-z0-9-]{1,54})?$/.test(options.computerId) || !/^[a-f0-9]{64}$/.test(options.selectionSha256) || options.fixture && options.fixture.basis !== 'protocol_fixture') fail();
     this.#origin = url.origin; this.#installation = options.installationId; this.#credential = options.credential; this.#fetch = options.fetch ?? fetch; this.#timeout = options.fixture?.timeoutMs ?? 360000; vmInteger(this.#timeout, 360000);

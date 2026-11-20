@@ -3,12 +3,13 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from '
 import { dirname, join, normalize } from 'node:path';
 import { AppError } from '../../../errors';
 import { vmInteger, vmRecord } from '../validation';
-import type { FirecrackerHostSelection } from './custody';
+import { firecrackerNativeHost, type FirecrackerHostSelection } from './custody';
 import { FirecrackerHostJournal } from './jobs';
 import { firecrackerLaunchPlan } from './launch';
 import { FirecrackerHostLock } from './lock';
 import { createFirecrackerManagementRelay } from './rpc';
 import { FirecrackerHostRuntime } from './runtime';
+import { FirecrackerProcessLease, firecrackerProcessStartTicks } from './process';
 
 /** Administrator-installed protected configuration. This API does not install it or change accounts/policy. */
 export interface FirecrackerDaemonConfig {
@@ -66,6 +67,14 @@ export async function startFirecrackerDaemon(configPath: string, options: { init
   if (lstatSync(jail, { bigint: true }).dev !== lstatSync(recoveryDirectory, { bigint: true }).dev) return fail();
   const database = join(config.stateDirectory, 'host.sqlite'), exists = !!lstatSync(database, { throwIfNoEntry: false });
   if (options.initialize ? exists : !exists) return fail();
+  // Resolve the actual pidfd/poll/signal ABI on this helper's own process before a VM could be
+  // launched. This opens/closes observation only; it never sends a signal or creates a KVM VM.
+  const host = firecrackerNativeHost(), stat = host.read(`/proc/${process.pid}/stat`, 65536), boot = host.read('/proc/sys/kernel/random/boot_id', 128);
+  if (!stat || !boot) return fail(); const text = new TextDecoder('utf-8', { fatal: true });
+  const self = await FirecrackerProcessLease.open({ pid: process.pid, startTicks: firecrackerProcessStartTicks(text.decode(stat), process.pid), hostBootId: text.decode(boot).trim() });
+  self.close();
+  const kvm = openSync('/dev/kvm', constants.O_RDWR | constants.O_NOFOLLOW);
+  try { const device = fstatSync(kvm, { bigint: true }); if (!device.isCharacterDevice() || device.rdev !== 2792n) return fail(); } finally { closeSync(kvm); }
   const owner = await FirecrackerHostLock.open(config.stateDirectory);
   let journal: FirecrackerHostJournal | undefined, runtime: FirecrackerHostRuntime | undefined, relay: ReturnType<typeof createFirecrackerManagementRelay> | undefined;
   const guard = () => { owner.current(); if (protectedFile(configPath, 32768).identity !== file.identity || protectedFile(config.credentialFile, 257).identity !== credentialFile.identity) fail(); };

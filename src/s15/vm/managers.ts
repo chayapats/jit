@@ -62,7 +62,7 @@ export class VmManagers extends Map<string, VmManagement> {
     this.set(id, manager); return manager;
   }
   private firecracker(id: string, input: FirecrackerManager, create: boolean): FirecrackerVmManagement {
-    const config = this.options.firecracker; if (!config || !isAbsolute(config.directory) || normalize(config.directory) !== config.directory) vmFail("vm_management_unavailable", 503); vmId(id);
+    const config = this.options.firecracker; if (!this.canPrepareFirecracker) vmFail("vm_host_unsupported", 422); if (!config || !isAbsolute(config.directory) || normalize(config.directory) !== config.directory) vmFail("vm_management_unavailable", 503); vmId(id);
     if (create) mkdirSync(config.directory, { recursive: true, mode: 0o700 });
     const directory = lstatSync(config.directory); if (!directory.isDirectory() || directory.isSymbolicLink() || directory.mode & 0o077 || process.getuid && directory.uid !== process.getuid()) vmFail("vm_management_unavailable", 503);
     return new FirecrackerVmManagement({ path: join(config.directory, `${id}.sqlite`), create, installationId: config.installationId, origin: input.origin, computerId: input.computerId, selectionSha256: input.selectionSha256,
@@ -97,6 +97,8 @@ export class VmManagers extends Map<string, VmManagement> {
   }
   /** Profile capability, not an isolation certificate or automatic root installation. */
   isPreparedFirecracker(managerId: string): boolean { return this.get(managerId) instanceof FirecrackerVmManagement; }
+  /** Initial same-host profile: a nonroot Linux x86_64/aarch64 controller, or an explicitly labelled fixture. */
+  get canPrepareFirecracker(): boolean { return !!this.options.firecracker && (!!this.options.firecracker.fixture || process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch) && !!process.getuid?.() && !!process.getgid?.()); }
   /** Whether the prepared adapter must check an original client intent before any new action. */
   pendingFirecracker(managerId: string): boolean { const manager = this.get(managerId); return manager instanceof FirecrackerVmManagement && manager.pending(); }
   /** Owner's last registered binding, used only while it remains unbound; never changes existing work affinity. */

@@ -8,7 +8,11 @@ to alter an owner host. Real host/image/device proof remains LIVE16-01 #431;
 owner-host activation remains CUT16-01 #432.
 
 The helper runs separately as root on a trusted glibc Linux x86_64/aarch64 host
-with KVM, cgroup v2 and systemd private bind mounts. Jit runs as its separate
+with KVM, cgroup v2 and systemd private bind mounts. The initial native ABI uses
+the Debian/Ubuntu multiarch libc paths on x86_64/aarch64. Before admitting any VM,
+startup resolves the pidfd/poll/signal ABI against its own process and opens the
+exact KVM character device; it sends no probe signal and creates no KVM VM.
+Jit runs as its separate
 nonroot controller identity, whose actual UID/GID must match the helper's
 authenticated declaration. The working microVM has its own dedicated UID/GID,
 no NIC or shared host mount, and no Jit, provider, vault, helper credential or

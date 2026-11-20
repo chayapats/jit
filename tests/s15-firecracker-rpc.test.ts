@@ -64,9 +64,11 @@ test('credentials, installation and body bounds reject real HTTP requests before
 });
 
 test('configured native client rejects fixture basis and changed host identity before acquiring mutation intent', async () => {
-  const f = await fixture(), { fixture: _fixture, ...native } = f.options; const client = new FirecrackerVmManagement({ ...native, path: native.path + '.native' }); cleanup.push(() => client.close());
-  await expect(client.start()).rejects.toBeInstanceOf(Error); expect(f.starts()).toBe(0);
-  client.close(); const changed = new FirecrackerVmManagement({ ...f.options, path: f.options.path + '.changed', selectionSha256: 'f'.repeat(64) }); cleanup.push(() => changed.close());
+  const f = await fixture(), { fixture: _fixture, ...native } = f.options;
+  if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch) || !process.getuid?.() || !process.getgid?.()) expect(() => new FirecrackerVmManagement({ ...native, path: native.path + '.native' })).toThrow(expect.objectContaining({ code: 'vm_host_unsupported' }));
+  else { const client = new FirecrackerVmManagement({ ...native, path: native.path + '.native' }); cleanup.push(() => client.close()); await expect(client.start()).rejects.toBeInstanceOf(Error); }
+  expect(f.starts()).toBe(0);
+  const changed = new FirecrackerVmManagement({ ...f.options, path: f.options.path + '.changed', selectionSha256: 'f'.repeat(64) }); cleanup.push(() => changed.close());
   await expect(changed.start()).rejects.toBeInstanceOf(Error); expect(f.starts()).toBe(0);
 });
 

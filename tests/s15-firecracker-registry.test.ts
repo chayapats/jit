@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { dirname, join } from 'node:path';
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { AppError } from '../src/errors';
 import { ConnectionVault } from '../src/exec/connections';
 import { VmManagers } from '../src/s15/vm/managers';
@@ -68,4 +68,10 @@ test('owner Web setup crosses the real registry/client/root RPC and keeps creden
   const after = await (await web.get('/resources/computer', { 'accept-language': 'en' })).text(); expect(after).toContain('/s15/forms/computer/manager/start'); expect(after).not.toContain(credential);
   const started = await web.post('/s15/forms/computer/manager/start', { managerId: managerId! }); expect(started.status).toBe(303); expect(f.starts()).toBe(1);
   expect((await m.get(managerId!)!.inspect()).state).toBe('running');
+});
+
+test.skipIf(process.platform === 'linux' && ['x64', 'arm64'].includes(process.arch) && !!process.getuid?.() && !!process.getgid?.())('unsupported controller refuses native registration before creating metadata or retaining its credential', async () => {
+  const f = await fixture(), { fixture: _fixture, ...native } = f.options.firecracker, managers = new VmManagers({ ...f.options, firecracker: native }); cleanup.push(() => managers.close());
+  expect(managers.canPrepareFirecracker).toBe(false); expect(() => managers.register(f.owner, f.input)).toThrow(expect.objectContaining({ code: 'vm_host_unsupported' }));
+  expect(existsSync(native.directory)).toBe(false); expect(f.store.db.query('SELECT * FROM vm_managers').all()).toHaveLength(0); expect(f.starts()).toBe(0);
 });

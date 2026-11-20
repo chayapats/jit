@@ -779,8 +779,8 @@ export async function composeS15(options: S15CompositionOptions) {
         pool: { members: (owner: OwnerActor) => { requireOwner(owner); return pool.members().map(member => ({ ...member, local: (() => { const row = vmStore.registration(member.id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); })(), status: enrollment.status(owner, member.id) })); },
           drain: (owner: OwnerActor, id: string, drained: boolean) => { requireOwner(owner); pool.setDrained(id, drained); },
           ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); },
-            preparedManager: (owner: OwnerActor) => { requireOwner(owner); const id = unboundManagerId(); return id && managers.isPreparedFirecracker(id) ? { id, pending: managers.pendingFirecracker(id) } : null; },
-            startPrepared: (owner: OwnerActor, id: string) => managers.startPrepared(owner, id) } : {}),
+            ...(managers.canPrepareFirecracker ? { preparedManager: (owner: OwnerActor) => { requireOwner(owner); const id = unboundManagerId(); return id && managers.isPreparedFirecracker(id) ? { id, pending: managers.pendingFirecracker(id) } : null; },
+              startPrepared: (owner: OwnerActor, id: string) => managers.startPrepared(owner, id) } : {}) } : {}),
           nextId: (owner: OwnerActor) => { requireOwner(owner); const job = provisioning?.view(); return pool.nextId(!!job && job.state !== 'enrolled'); } },
         begin: actor => enrollment.begin(actor),
         // POOL15-01: an added (non-default) computer is enrolled only with an unused, non-local management
