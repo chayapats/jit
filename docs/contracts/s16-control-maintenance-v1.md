@@ -73,6 +73,12 @@ unobserved container/job/generation facts without boot recovery, parser reset or
 output promotion. Original absence/inodes/bytes remain guarded; host-only source
 paths never enter its metadata. This remains separate from physical settlement.
 
+`githubArtifacts()` supplies the [current GitHub bundle cohort](s16-github-artifact-cohort-v1.md)
+from raw owning slots and the complete hash-addressed namespace. Older action/
+receipt references, DATA15 pre-publication lineage and unpublished bundles remain retained. It runs no store
+recovery, Git, credential read or gateway action, and does not infer publication
+or settlement. Original namespace/absence/inodes and metadata/bytes stay guarded.
+
 `nativeSet(requestId, options)` supplies the [protected native-set coordinator](s16-native-set-v1.md)
 with this genuine lease, current namespace and original journal. The context
 retains exclusion while any returned session is unreleased. Await session close

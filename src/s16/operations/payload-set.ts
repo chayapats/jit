@@ -90,6 +90,18 @@ function transfer(source: string, expected: S16PayloadIdentity, target?: string)
 }
 
 /**
+ * Verifies existing owning byte descriptors without creating output or a manifest. The protected
+ * caller supplies current scope/expected hashes and retains exclusion; this is not archive authority.
+ */
+export function verifyS16PayloadSources(sources: readonly S16PayloadSource[], guard: () => void): void {
+  if (!Array.isArray(sources) || sources.length > filesBound) refuse('s16_ops_payload_invalid');
+  const selected = sources.map(source => ({ ...source })); validateFiles(selected);
+  const current = () => { if ((guard() as unknown) !== undefined) refuse('s16_ops_payload_invalid'); }; current();
+  for (const source of selected) { current(); transfer(source.path, source); current(); }
+  current();
+}
+
+/**
  * Captures a protected resolver's exact immutable bytes into exclusive private files, verifies the
  * actual copied bytes, and publishes metadata last after current revalidation. Partial points remain
  * private/unpublished and are never overwritten or resumed. No file becomes an artifact or authority.

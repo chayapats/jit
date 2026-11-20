@@ -42,6 +42,12 @@ identities from verified owning metadata. It rejects changed/noncanonical
 metadata, missing/extra files and incorrect/untrusted bytes without repair.
 Candidate self-hashes are not independent provenance.
 
+`verifyS16PayloadSources` reuses the same finite streamed reader and exact owning
+hashes without creating a directory, copied file or manifest. The protected
+current guard runs around every read. This supplies the current
+[GitHub artifact cohort](s16-github-artifact-cohort-v1.md) with byte verification;
+it supplies no archive provenance, complete installation or publication grant.
+
 ## Owning file custody resolution
 
 `fileCustodyPayloads` is a host-only resolver over the current FILE journal and

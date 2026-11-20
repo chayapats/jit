@@ -93,6 +93,13 @@ state, `github-artifacts` and `native-github`. The composed runtime includes
 The selected runtime config and actual owning constructors, rather than a
 recursive copy of an assumed directory, must enumerate these roots.
 
+The protected [GitHub artifact cohort](../contracts/s16-github-artifact-cohort-v1.md)
+now retains the complete hash-addressed bundle namespace and exact current/older
+selection, action, coding-evidence, receipt and DATA15 pre-publication references. It hashes through the
+payload reader without store recovery, Git, credentials or gateway calls. Valid
+unpublished bundles remain unreferenced; missing/unsafe/changed custody refuses.
+Byte custody grants no Git ancestry, current scope, publication or settlement.
+
 The protected [FILE/parser cohort](../contracts/s16-file-cohort-v1.md) now hashes
 all known receipt-pinned and untrusted leftover bytes without boot recovery.
 Original pending/withdrawn rows, partial parser trees and unobserved container
