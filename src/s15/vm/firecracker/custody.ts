@@ -101,6 +101,16 @@ function nativeHost(): HostPort {
     },
   };
 }
+function selectedHost(selection: FirecrackerHostSelection): { selected: FirecrackerHostSelection; plan: FirecrackerLaunchPlan } {
+  const selected = structuredClone(selection);
+  closed(selected, ['profile', 'host', 'pins', 'disk', 'process']); closed(selected.process, ['pid', 'startTicks', 'hostBootId']);
+  if (!Number.isSafeInteger(selected.process.pid) || selected.process.pid < 2 || selected.process.pid > 0x7fffffff || typeof selected.process.startTicks !== 'string' || !/^[1-9][0-9]{0,19}$/.test(selected.process.startTicks) || typeof selected.process.hostBootId !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(selected.process.hostBootId)) return reject();
+  closed(selected.pins, selected.profile.initrdPath ? ['jailer', 'firecracker', 'kernel', 'initrd'] : ['jailer', 'firecracker', 'kernel']);
+  for (const pin of Object.values(selected.pins)) { closed(pin, ['bytes', 'sha256']); if (!integer(pin.bytes) || pin.bytes < 1 || pin.bytes > 64 * 1048576 || !hash(pin.sha256)) reject(); }
+  closed(selected.disk, ['device', 'inode', 'bytes', 'initialSha256']);
+  if (!identity(selected.disk.device) || !identity(selected.disk.inode) || !hash(selected.disk.initialSha256) || selected.disk.bytes !== selected.host.diskBytes) reject();
+  return { selected, plan: firecrackerLaunchPlan(selected.profile, selected.host) };
+}
 
 /**
  * Exact host custody around a retained pidfd. This is a privileged-helper component, never a working
@@ -111,12 +121,12 @@ export class FirecrackerHostLease {
   readonly #selection: FirecrackerHostSelection;
   readonly #plan: FirecrackerLaunchPlan;
   readonly #host: HostPort;
-  readonly #process: FirecrackerProcessLease;
+  readonly #process: Pick<FirecrackerProcessLease, 'exited' | 'stop' | 'close'>;
   readonly #basis: FirecrackerHostFacts['basis'];
   readonly #digest: string;
   #closed = false;
   #stopping = false;
-  private constructor(selected: FirecrackerHostSelection, plan: FirecrackerLaunchPlan, host: HostPort, process: FirecrackerProcessLease, fixture: boolean) {
+  private constructor(selected: FirecrackerHostSelection, plan: FirecrackerLaunchPlan, host: HostPort, process: Pick<FirecrackerProcessLease, 'exited' | 'stop' | 'close'>, fixture: boolean) {
     this.#selection = selected; this.#plan = plan; this.#host = host; this.#process = process; this.#basis = fixture ? 'protocol_fixture' : 'protected_host';
     this.#digest = createHash('sha256').update(vmCanonical({ contract: 's16-firecracker-host-selection/v1', profile: selected.profile, host: selected.host, pins: selected.pins, disk: { bytes: selected.disk.bytes, initialSha256: selected.disk.initialSha256 } })).digest('hex');
   }
@@ -125,14 +135,7 @@ export class FirecrackerHostLease {
     const limit = budget(options.timeoutMs ?? 15000, 15000, options.signal);
     let process: FirecrackerProcessLease | null = null;
     try {
-      const selected = structuredClone(selection), fixture = options.fixture, guard = options.guard, processFixture = fixture?.process;
-      closed(selected, ['profile', 'host', 'pins', 'disk', 'process']);
-      closed(selected.process, ['pid', 'startTicks', 'hostBootId']);
-      closed(selected.pins, selected.profile.initrdPath ? ['jailer', 'firecracker', 'kernel', 'initrd'] : ['jailer', 'firecracker', 'kernel']);
-      for (const pin of Object.values(selected.pins)) { closed(pin, ['bytes', 'sha256']); if (!integer(pin.bytes) || pin.bytes < 1 || pin.bytes > 64 * 1048576 || !hash(pin.sha256)) reject(); }
-      closed(selected.disk, ['device', 'inode', 'bytes', 'initialSha256']);
-      if (!identity(selected.disk.device) || !identity(selected.disk.inode) || !hash(selected.disk.initialSha256) || selected.disk.bytes !== selected.host.diskBytes) reject();
-      const plan = firecrackerLaunchPlan(selected.profile, selected.host);
+      const { selected, plan } = selectedHost(selection), fixture = options.fixture, guard = options.guard, processFixture = fixture?.process;
       if (typeof guard !== 'function' || fixture && (fixture.basis !== 'protocol_fixture' || processFixture?.basis !== 'protocol_fixture')) reject();
       const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : nativeHost();
       await limit.run(guard);
@@ -143,6 +146,34 @@ export class FirecrackerHostLease {
       const lease = new FirecrackerHostLease(selected, plan, host, process, !!fixture);
       lease.inspect(); limit.check(); await limit.run(guard); lease.inspect(); limit.check(); return lease;
     } catch { try { process?.close(); } catch { /* Closing is never a stop or capacity release. */ } return reject(); }
+    finally { limit.close(); }
+  }
+  /**
+   * Read-only restart recovery when the original pidfd belonged to a dead helper. A changed host boot,
+   * absent original PID or different start ticks can establish original exit, never permission to signal
+   * a reused PID. Dedicated-UID emptiness, exact closed jail/disk and fsync remain independently required.
+   * Returns only settlement facts, never a running lease, replacement process or execution authority.
+   */
+  static async recoverStopped(selection: FirecrackerHostSelection, options: { guard(): void | Promise<void>; fixture?: FirecrackerHostFixture; timeoutMs?: number; signal?: AbortSignal }): Promise<FirecrackerHostFacts> {
+    const limit = budget(options.timeoutMs ?? 10000, 10000, options.signal);
+    try {
+      const { selected, plan } = selectedHost(selection), fixture = options.fixture, guard = options.guard;
+      if (typeof guard !== 'function' || fixture && (fixture.basis !== 'protocol_fixture' || fixture.process?.basis !== 'protocol_fixture')) return reject();
+      const host: HostPort = fixture ? { metadata: fixture.metadata.bind(fixture), read: fixture.read.bind(fixture), file: fixture.file.bind(fixture), link: fixture.link.bind(fixture), list: fixture.list.bind(fixture), syncDisk: fixture.syncDisk.bind(fixture) } : nativeHost();
+      const text = (path: string, maximum: number) => { const bytes = host.read(path, maximum); if (bytes === null) return null; if (bytes.length > maximum) return reject(); return new TextDecoder('utf-8', { fatal: true }).decode(bytes); };
+      const process: Pick<FirecrackerProcessLease, 'exited' | 'stop' | 'close'> = {
+        exited() {
+          const boot = text('/proc/sys/kernel/random/boot_id', 128)?.trim();
+          if (!boot || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(boot)) return reject();
+          if (boot !== selected.process.hostBootId) return true;
+          const stat = text(`/proc/${selected.process.pid}/stat`, 65536);
+          return stat === null || firecrackerProcessStartTicks(stat, selected.process.pid) !== selected.process.startTicks;
+        },
+        async stop() { return reject(); }, close() {},
+      };
+      const lease = new FirecrackerHostLease(selected, plan, host, process, !!fixture);
+      return await lease.#settled(guard, limit);
+    } catch { return reject(); }
     finally { limit.close(); }
   }
   #text(path: string, maximum = 65536): string {

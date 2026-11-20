@@ -203,6 +203,16 @@ current publication guards. Stop plus settlement share ten seconds. Failure
 retains the original lease for bounded read-back; it never sends another signal.
 Closing observation neither stops a VM nor releases an unresolved owning claim.
 
+After helper restart, `FirecrackerHostLease.recoverStopped` can read back an
+original exit without its lost pidfd. A different valid host boot, missing
+original PID or different kernel start ticks establishes only that the original
+process is gone; a still-present original process refuses. It never acquires,
+signals or follows a reused PID. The dedicated-UID census must still be empty,
+the closed jail and exact private disk unchanged, and fsync must complete under
+current authority before `process_and_disk_settled` is published. Malformed or
+inaccessible `/proc` evidence refuses. This does not authorize a replacement
+launch or reconstruct working authority after restart.
+
 `BoundFirecrackerComputer` composes that host lease with the actual closed API
 profile and host-initiated SSH/vsock forwarder. It issues no launch/InstanceStart.
 Native helpers require an installed positive IPv4 loopback port; an occupied
