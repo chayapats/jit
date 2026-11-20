@@ -136,6 +136,19 @@ export function openDisclosureService(options: DisclosureOptions): DisclosureSer
       ref(derived); const record = journal.get<Record>(derivedKey(derived)); if (record.kind !== 'derived' || !equal(record.ref, derived)) fail('lineage_unknown');
       return record.sources.map(value => source(work, value));
     },
+    ownerAncestry(owner, derived) {
+      service().owner.current(owner); ref(derived);
+      const record = journal.get<Record>(derivedKey(derived));
+      if (record.kind !== 'derived' || !equal(record.ref, derived)) fail('lineage_unknown');
+      return record.sources.map(value => {
+        const current = options.catalogs.source(clone(value));
+        if (!current?.active || !equal(current.ref, value)) fail('lineage_withdrawn');
+        ref(current.resource);
+        if (!classes.includes(current.classification) || typeof current.ownerReleasable !== 'boolean') fail('classification_unknown');
+        if (current.botIds !== undefined && current.botIds !== null) { if (!Array.isArray(current.botIds) || current.botIds.length > 64) fail('invalid_shape'); current.botIds.forEach(id); }
+        return clone(current);
+      });
+    },
     derive(actor, derived, kind) { ref(derived); if (!['text', 'screenshot', 'artifact'].includes(kind)) fail('invalid_shape'); const work = service().work.guard(actor); journal.tx(() => {
       const value: Record = { kind: 'derived', id: derivedKey(derived), ref: clone(derived), workId: work.id, format: kind, sources: sources(work).map(s => s.ref) };
       const prior = journal.all<Record>().find(r => r.id === value.id); if (prior && !equal(prior, value)) fail('lineage_changed'); journal.put(value.id, value);

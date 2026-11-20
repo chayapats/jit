@@ -18,6 +18,8 @@ export interface ClientCapabilities {
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
   /** Additive field: owner memory search/detail/correct/forget over the existing MEM authority. */
   memory?: { available: false; code: "memory_unavailable" } | { available: true; contract: "s16-client-memory/v1" };
+  /** SPACE16-01: live guarded search; labels never grant authority. Missing on older services. */
+  search?: { available: true; contract: 's16-client-search/v1'; kinds: import('../search/contracts').SearchKind[] };
   /** Additive field: owner-confirmed routines (`s16-routines/v1`). Reactions list the source kinds this service composes. */
   routines?: { available: false; code: "routines_unavailable" } | { available: true; contract: "s16-client-routines/v1"; reactions: { signed: true; github: true; artifacts: boolean }; feed: true };
   /** Additive field: Web Push notices (`s16-notifications/v1`) and the fixed service worker/scope that receives them. */

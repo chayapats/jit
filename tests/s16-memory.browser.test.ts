@@ -48,6 +48,8 @@ browserTest.each([1440, 390])("actual S16 memory search, inspect, correct, forge
     expect(await dialog.getByText(`${copy["s16.memory.kindFact"]} · ${copy["s16.memory.confirmationOwner"]}`, { exact: true }).count()).toBe(1);
     expect(await noOverflow()).toBe(true);
     await page.keyboard.press("Escape"); await dialog.waitFor({ state: "detached" });
+    // Closing restores focus on the next animation frame; detachment can precede that frame.
+    await page.waitForFunction(element => element === document.activeElement, await row.elementHandle());
     expect(await row.evaluate(element => element === document.activeElement)).toBe(true);
 
     // Correct: a superseding owner-stated fact; the old item becomes a labelled, erased chain entry.

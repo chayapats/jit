@@ -39,5 +39,5 @@ export function buildDesktopPackage(input: { script: string; style: string; work
 
 /** Valid S16 document targets only: navigation never carries an action, arbitrary scheme or query command. */
 export function desktopDocument(path: string): boolean {
-  return /^\/s16(?:\/?|\/(?:memory|artifacts|routines|bots|computers|connections)|\/(?:chat|artifacts|routines|bots)\/[A-Za-z0-9_-]{1,128})$/.test(path);
+  return /^\/s16(?:\/?|\/(?:search|memory|artifacts|routines|bots|computers|connections)|\/(?:chat|artifacts|routines|bots)\/[A-Za-z0-9_-]{1,128})$/.test(path);
 }
