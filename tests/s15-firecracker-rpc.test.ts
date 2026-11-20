@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { FirecrackerVmManagement, type FirecrackerClientOptions } from '../src/s15/vm/firecracker/client';
-import { createFirecrackerManagementRelay } from '../src/s15/vm/firecracker/rpc';
+import { createFirecrackerManagementRelay, firecrackerRpcState } from '../src/s15/vm/firecracker/rpc';
 import { firecrackerRuntimeFixture } from './fixtures/s15-firecracker-runtime';
 
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -103,4 +103,15 @@ test('deadline includes an unfinished actual response body and preserves the com
   const client = f.reopen({ fixture: { basis: 'protocol_fixture', timeoutMs: 250 } });
   await expect(client.start()).rejects.toMatchObject({ code: 'vm_reconciliation_required' }); expect(f.starts()).toBe(1);
   expect((await client.inspect()).state).toBe('running'); expect(f.calls.filter(call => call === 'submit')).toHaveLength(1);
+});
+
+test.skipIf(process.platform !== 'linux' || process.getuid?.() === 0 || process.getgid?.() === 0)('native same-host schema refuses a declared controller identity different from the actual nonroot client', async () => {
+  const f = await fixture();
+  const response = await fetch(f.relay.origin + '/v1/firecracker', { method: 'POST', headers: { Authorization: `Bearer ${credential}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ contract: 's16-firecracker-management/v1', installationId, operation: 'state' }) });
+  const data = (await response.json() as any).result;
+  // Parser-only synthetic native metadata: this is not a Linux/KVM host attestation.
+  data.basis = data.computer.basis = 'protected_host'; data.controller = { uid: process.getuid!(), gid: process.getgid!() };
+  const scope = { computerId: f.runtime().computerId, selectionSha256: f.runtime().selectionSha256, basis: 'protected_host' as const };
+  expect(firecrackerRpcState(data, scope).machine?.state).toBe('stopped'); data.controller.uid++;
+  expect(() => firecrackerRpcState(data, scope)).toThrow(); expect(f.starts()).toBe(0);
 });

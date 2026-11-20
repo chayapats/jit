@@ -94,6 +94,9 @@ test("actual enrollment retains a protected vsock binding without a fabricated M
   expect(s.registration("vm").binding).toEqual(binding()); expect(s.registration("vm").bindingMac).toBeUndefined();
   expect(s.db.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
   expect(JSON.stringify(enrollment.status(owner, "vm"))).not.toContain("selectionSha256");
+  const alias = await enrollment.begin(owner);
+  await expect(enrollment.complete(owner, { ...endpoint, setupId: alias.setupId, id: "physical-alias", managerId: "manager", hostPublicKey: publicKey })).rejects.toMatchObject({ code: "vm_already_enrolled" });
+  expect(s.db.query("SELECT id FROM vm_registry").all()).toHaveLength(1);
 });
 
 function serviceFixture(kind: "nic" | "vsock" = "vsock") {

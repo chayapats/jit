@@ -253,6 +253,8 @@ export class FirecrackerHostRuntime {
   }
   /** Current protected metadata; no host paths, original process selector or private recovery context. */
   current() { this.#current(); return this.#journal.computer(this.computerId); }
+  /** Protected IPC identity check only; this is not a guest/model selector or serialized permission. */
+  controllerIdentity(): { uid: number; gid: number } { this.#current(); return { uid: this.#base.host.controllerUid, gid: this.#base.host.controllerGid }; }
   /** Original exact submission. Native admission/driver/publication remain under the current protected guard. */
   submit(command: FirecrackerHostCommand, options: { timeoutMs?: number } = {}): Promise<FirecrackerHostJob> {
     this.#current(); if (command.computerId !== this.computerId) return Promise.reject(new AppError('vm_firecracker_management_unavailable', 503)); return this.#jobs.run(command, () => this.#current(), options);

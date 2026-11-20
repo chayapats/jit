@@ -124,6 +124,8 @@ export class FirecrackerVmManagement implements VmManagement {
   async snapshot(name: string): Promise<void> { await this.#mutate('checkpoint', name); }
   async restore(name: string): Promise<void> { await this.#mutate('restore', name); }
   async retireSnapshot(name: string): Promise<void> { await this.#mutate('retire', name); }
+  /** Protected local uncertainty only, never evidence that the remote machine is running/stopped. */
+  pending(): boolean { this.#current(); return this.#active() !== null; }
   /** Closes controller metadata only. Root systemd/forwarding and unknown original receipts survive. */
   close(): void { if (this.#closed) return; this.#closed = true; this.#journal.close(); }
 }

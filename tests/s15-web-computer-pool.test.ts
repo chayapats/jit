@@ -204,3 +204,20 @@ test("every SETUP15-01 and POOL15-01 key exists in Thai and English", () => {
   for (const code of ["vm_host_unsupported", "vm_kvm_unavailable", "vm_kvm_denied", "vm_qemu_missing", "vm_host_too_small", "vm_disk_insufficient", "vm_image_unavailable", "vm_image_unverified", "vm_provisioning_failed", "vm_stopped", "vm_drained"])
     for (const locale of ["th", "en"] as const) expect(T(`s15.code.${code}`, locale)?.length).toBeGreaterThan(0);
 });
+
+for (const locale of ["th", "en"] as const) test(`prepared offline backend (${locale}): limits, write-only setup and original unknown start recovery`, async () => {
+  const c = computer({ members: members(), defaultStatus: members()[0]!.status }); let pending = false, fail = true; const registered: unknown[] = [];
+  c.port.pool!.registerManager = (_actor, value) => { registered.push(value); c.port.managerId = "prepared_backend"; };
+  c.port.pool!.preparedManager = () => c.port.managerId ? { id: c.port.managerId, pending } : null;
+  c.port.pool!.startPrepared = async (_actor, id) => { c.calls.push(`prepared:${id}`); if (fail) { pending = true; throw new AppError("vm_reconciliation_required", 503); } pending = false; };
+  const f = setup(c), headers = locale === "en" ? en : {}, before = await html(f, "/resources/computer", headers);
+  expect(before).toContain(escaped(T("s15.pool.manager_firecracker", locale))); expect(before).toContain(escaped(T("s15.pool.manager_firecracker_limits", locale)));
+  for (const name of ["origin", "computerId", "selectionSha256"]) expect(before).toContain(`name="${name}"`);
+  const secret = "private_fixture_" + "z".repeat(32), input = { kind: "firecracker", origin: "http://127.0.0.1:34567", computerId: "jit-work-extra", selectionSha256: "a".repeat(64), token: secret };
+  expect((await f.post("/s15/forms/computer/manager", input, headers)).status).toBe(303); expect(registered).toEqual([input]);
+  const after = await html(f, "/resources/computer", headers); expect(after).toContain(escaped(T("s15.pool.manager_firecracker_start", locale))); expect(after).not.toContain(secret);
+  const unknown = await f.post("/s15/forms/computer/manager/start", { managerId: "prepared_backend" }, headers); expect(unknown.status).toBe(409); const error = await unknown.text();
+  expect(error).toContain('role="alert"'); expect(error).toContain("vm_reconciliation_required"); expect(error).toContain(escaped(T("s15.pool.manager_firecracker_check", locale))); expect(error).not.toContain(secret);
+  fail = false; expect((await f.post("/s15/forms/computer/manager/start", { managerId: "prepared_backend" }, headers)).status).toBe(303);
+  f.expire(); expect((await f.post("/s15/forms/computer/manager/start", { managerId: "prepared_backend" }, headers)).status).toBe(401); expect(c.calls).toEqual(["prepared:prepared_backend", "prepared:prepared_backend"]);
+});

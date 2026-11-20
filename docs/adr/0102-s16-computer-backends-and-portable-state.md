@@ -128,14 +128,13 @@ and guarded SSH/vsock lane. Process exit remains distinct from independently
 flushed disk settlement. Original cleanup authority survives work revocation;
 unknown stops reconcile the original lease rather than signaling again. Native
 observation is restricted to the installed privileged helper and injected ports
-stay protocol fixtures. This is not a completed manager: protected durable launch
-jobs, helper installation/custody, cold checkpoint/restore and restart recovery
-still precede production registration. The host record's seed hash is not a hash
+stay protocol fixtures. These primitives alone are not a registered manager;
+the concrete runtime/client/helper composition below owns durable launch and
+cold/restart recovery. Real installation/custody acceptance remains separate.
+The host record's seed hash is not a hash
 claim about the mutable guest disk, and no observation supplies source ancestry.
 
-## Portable working state
-
-### Protected manager composition
+## Protected manager composition
 
 The additional manager composes the existing bounded host primitives in one
 separately installed root helper, not in Jit's nonroot controller or Schway's
@@ -160,6 +159,14 @@ inferred. The daemon credential stays in protected host/controller storage and
 never in the working VM or VMM environment. Source implementation does not
 install an account, sudoers rule, credential or production service. Such host
 setup and native Linux/KVM evidence remain #431/#432.
+
+The authenticated helper state also reports its selected controller UID/GID.
+The native same-host client must match them to its actual nonroot OS identity
+before accepting host facts. Declaring a different controller identity in a
+configuration file cannot make a reused VMM/controller UID safe. Fixture clients
+remain explicitly labelled and cannot supply native evidence.
+
+## Portable working state
 
 Existing work affinity never changes silently. Export captures an owner's exact
 reviewed regular files from a particular work root under current authority.

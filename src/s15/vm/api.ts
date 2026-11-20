@@ -17,6 +17,7 @@ export function createVmApi(enrollment: VmEnrollment, authenticate: (request: Re
       if (reader) try { for (;;) { const { value, done } = await reader.read(); if (done) break; if (body.length + value.length > 16384) throw new AppError("vm_invalid_setup", 413); body = Buffer.concat([body, value]); } } finally { await reader.cancel(); }
       let data: unknown; try { data = JSON.parse(body.toString("utf8")); } catch { throw new AppError("vm_invalid_setup", 400); }
       if (url.pathname === "/s15/vm/management" && options.managers) return Response.json(options.managers.register(actor, data as VmManagerInput));
+      if (url.pathname === "/s15/vm/management/start" && options.managers) { const input = vmRecord(data, ["managerId"]); await options.managers.startPrepared(actor, input.managerId as string); return Response.json({ state: "running" }); }
       if (url.pathname === "/s15/vm/resources" && options.managers) {
         const input = vmRecord(data, ["managerId", "cpus", "memoryMiB", "diskGiB"]), { managerId, ...resources } = input;
         return Response.json(options.managers.setResources(actor, managerId as string, resources));

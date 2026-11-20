@@ -242,11 +242,12 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
         const card = { csrf, unavailable: !ports.computer, status: status_, progress, hypervisor: ports.computer?.hypervisor ?? null, refused, address: progress.check?.host ?? "", return: "computer" as const };
         if (members?.length) {
           // POOL15-01: every enrolled computer, a not-yet-created default (job or fallback), and "add another".
-          const pending = status_ ? "" : (() => { const local = localView(); return local?.job && local.job.state !== "enrolled" ? `<section class="s-card" aria-labelledby="s15-computer-main-title"><h2 id="s15-computer-main-title">${tr("s15.pool.main")}</h2>${computerCard({ ...card, refused: null, local })}</section>` : ""; })();
-          const restores = members.map((member, index) => restoreSection({ csrf, status: member.status, snapshots: snapshotsOf(member.id), selected: (restore.vm ?? computer!.vmId) === member.id ? restore.restore : null, hypervisor: computer?.hypervisor ?? null,
+          const pending = () => status_ ? "" : (() => { const local = localView(); return local?.job && local.job.state !== "enrolled" ? `<section class="s-card" aria-labelledby="s15-computer-main-title"><h2 id="s15-computer-main-title">${tr("s15.pool.main")}</h2>${computerCard({ ...card, refused: null, local })}</section>` : ""; })();
+          const restores = () => members.map((member, index) => restoreSection({ csrf, status: member.status, snapshots: snapshotsOf(member.id), selected: (restore.vm ?? computer!.vmId) === member.id ? restore.restore : null, hypervisor: computer?.hypervisor ?? null,
             refused: (restore.vm ?? computer!.vmId) === member.id ? restore.refused ?? null : null, restored: restore.restored && (restore.vm ?? computer!.vmId) === member.id, ...(member.id === computer!.vmId ? {} : { member: { id: member.id, name: memberName(member, index) } }) })).join("");
+          const prepared = computer!.pool?.preparedManager?.(actor);
           return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${poolList({ members, csrf, hypervisor: computer?.hypervisor ?? null, saved: notice.saved ?? null, savedId: notice.vmId ?? null, refused: notice.refused ?? null, refusedId: notice.vmId ?? null })}</section>
-          ${pending}${addComputer({ flow: enrollmentFlow(card), managed: !!computer!.managerId, canRegister: !!computer!.pool?.registerManager, csrf, refused: notice.managerRefused ?? (computer!.managerId ? null : refused), saved: !!notice.managerSaved })}${restores}</div>`), status);
+          ${pending()}${addComputer({ flow: enrollmentFlow(card), managed: !!computer!.managerId, canRegister: !!computer!.pool?.registerManager, firecracker: !!computer!.pool?.startPrepared, preparedManagerId: prepared?.id ?? null, preparedPending: !!prepared?.pending, csrf, refused: notice.managerRefused ?? (computer!.managerId ? null : refused), saved: !!notice.managerSaved })}${restores()}</div>`), status);
         }
         const snapshots = snapshotsOf(computer?.vmId ?? "");
         return render(() => shell(nav("/resources/computer"), tr("s15.vm.title"), `<div class="s-col"><section class="s-card" aria-labelledby="s15-computer-title"><h2 id="s15-computer-title">${tr("s15.vm.title")}</h2>${computerCard({ ...card, ...(status_ ? {} : (() => { const local = localView(); return local ? { local } : {}; })()) })}</section>
@@ -545,10 +546,20 @@ export function createS15WebHandler<Actor extends object>(ports: S15WebPorts<Act
           const vmid = Number(fields.vmid), port = Number(fields.proxyPort);
           if (!/^[0-9]{1,9}$/.test(fields.vmid!) || !/^[0-9]{1,5}$/.test(fields.proxyPort!)) return refuse("vm_invalid_setup");
           input = { kind: "proxmox", baseUrl: fields.baseUrl!.trim(), node: fields.node!.trim(), vmid, token: fields.token!, proxy: { address: fields.proxyAddress!.trim(), port } };
+        } else if (fields.kind === "firecracker") {
+          only(fields, ["csrf", "requestId", "kind", "origin", "computerId", "selectionSha256", "token"]);
+          input = { kind: "firecracker", origin: fields.origin!.trim(), computerId: fields.computerId!.trim(), selectionSha256: fields.selectionSha256!.trim(), token: fields.token! };
         } else throw new AppError("invalid_body");
         try { pool.registerManager(actor, input); }
         catch (error) { if (codeOf(error) === "authentication_required") throw error; return refuse(codeOf(error)); }
+        progress.setup = null; progress.check = null;
         return redirect("/resources/computer?saved=manager#s15-computer-add");
+      }
+      if (url.pathname === "/s15/forms/computer/manager/start") {
+        only(fields, ["csrf", "requestId", "managerId"]); const pool = ports.computer?.pool; if (!pool?.startPrepared) throw new AppError("not_found", 404);
+        try { await pool.startPrepared(actor, fields.managerId!); }
+        catch (error) { if (codeOf(error) === "authentication_required") throw error; return computerPage(null, 409, undefined, { managerRefused: codeOf(error) }); }
+        return redirect("/resources/computer#s15-computer-add");
       }
       if (url.pathname === "/s15/forms/computer/drain") {
         only(fields, ["csrf", "requestId", "vmId", "drained"]);

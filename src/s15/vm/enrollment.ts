@@ -173,6 +173,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     return this.options.store.transaction(() => {
       check();
       if (this.options.store.db.query("SELECT id FROM vm_registry WHERE id=?").get(input.id)) vmFail("vm_already_enrolled");
+      if (bound && machine?.binding?.kind === "firecracker-vsock" && this.options.store.db.query<{ data: string }, []>("SELECT data FROM vm_registry").all().some(existing => JSON.parse(existing.data).machineIdentity === machine.identity)) vmFail("vm_already_enrolled");
       const networkIsolated = bound && directDenied && !!machine && machine.network !== "unproven";
       const row: VmRegistration = { id: input.id, generation: 1, endpoint, managerId: bound ? input.managerId : null,
         state: networkIsolated ? "ready" : "unproven", networkCheckedAt: (this.options.now ?? Date.now)(), networkIsolated, facts,

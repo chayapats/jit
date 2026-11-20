@@ -407,7 +407,8 @@ export async function composeS15(options: S15CompositionOptions) {
       // DESK16-01 (ADR 0091 decision 5): the desktop browser lease never reaches a sensitive-only site.
       ...(options.vm.local.desktop ? { desktopDeny: (host: string) => websiteSensitiveOnly(`https://${host}`) } : {}) }) : null;
     if (localVm) cleanup.push(() => localVm.close());
-    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
+    const managers = options.vm.managementVault ? new VmManagers({ store: vmStore, vault: options.vm.managementVault, requireOwner, firecracker: { directory: join(root, 'vm-firecracker'), installationId: options.installationId }, ...(localVm ? { local: localVm.host } : {}) }) : new Map(options.vm.managers);
+    if (managers instanceof VmManagers) cleanup.push(() => managers.close());
     for (const [id, manager] of options.vm.managers) managers.set(id, manager);
     if (options.screen && !scopes) throw new AppError('invalid_s15_config');
     const screenDevices = new WeakMap<object, VmScreenDevice>();
@@ -492,6 +493,7 @@ export async function composeS15(options: S15CompositionOptions) {
     }
     const checkedManagers = new Map<string, string | null>();
     const unboundAdapter = (id: string) => { const manager = managers.get(id); return !!manager && !isVmLocalManagement(manager) && !enrolledManagers().has(id); };
+    const unboundManagerId = () => managers instanceof VmManagers ? managers.unbound(unboundAdapter) : [...managers.keys()].find(unboundAdapter) ?? null;
     const enrolledManagers = () => new Set(vmStore.db.query<{ data: string }, []>('SELECT data FROM vm_registry').all().map(row => (JSON.parse(row.data) as { managerId: string | null }).managerId));
     const localHost = (owner: OwnerActor) => {
       requireOwner(owner); if (!localVm) return null;
@@ -772,11 +774,13 @@ export async function composeS15(options: S15CompositionOptions) {
       },
       computer: { vmId: options.vm.id,
         // An owner-supplied VM binds only a configured, still-unbound adapter; never the Jit-created local manager.
-        get managerId() { for (const [id] of managers) if (unboundAdapter(id)) return id; return null; }, hypervisor: null,
+        get managerId() { return unboundManagerId(); }, hypervisor: null,
         ...(provisioning ? { local: { host: localHost, job: (owner: OwnerActor) => { requireOwner(owner); return provisioning.view(); }, start: (owner: OwnerActor) => { requireOwner(owner); provisioning.start(); } } } : {}),
         pool: { members: (owner: OwnerActor) => { requireOwner(owner); return pool.members().map(member => ({ ...member, local: (() => { const row = vmStore.registration(member.id); return !!row.managerId && isVmLocalManagement(managers.get(row.managerId)); })(), status: enrollment.status(owner, member.id) })); },
           drain: (owner: OwnerActor, id: string, drained: boolean) => { requireOwner(owner); pool.setDrained(id, drained); },
-          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); } } : {}),
+          ...(managers instanceof VmManagers ? { registerManager: (owner: OwnerActor, input: import('./web').S15ManagerInput) => { requireOwner(owner); managers.register(owner, input); },
+            preparedManager: (owner: OwnerActor) => { requireOwner(owner); const id = unboundManagerId(); return id && managers.isPreparedFirecracker(id) ? { id, pending: managers.pendingFirecracker(id) } : null; },
+            startPrepared: (owner: OwnerActor, id: string) => managers.startPrepared(owner, id) } : {}),
           nextId: (owner: OwnerActor) => { requireOwner(owner); const job = provisioning?.view(); return pool.nextId(!!job && job.state !== 'enrolled'); } },
         begin: actor => enrollment.begin(actor),
         // POOL15-01: an added (non-default) computer is enrolled only with an unused, non-local management

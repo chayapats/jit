@@ -12,7 +12,7 @@ export type FirecrackerRpcInput = { contract: 's16-firecracker-management/v1'; i
   { operation: 'state' } | { operation: 'submit'; command: FirecrackerHostCommand } | { operation: 'receipt' | 'reconcile'; requestId: string }
 );
 /** Credential-free authenticated host facts. A fixture cannot be accepted as a native installation. */
-export interface FirecrackerRpcState { computer: FirecrackerJobComputer; machine: VmMachineState | null; basis: 'protected_host' | 'protocol_fixture' }
+export interface FirecrackerRpcState { computer: FirecrackerJobComputer; machine: VmMachineState | null; basis: 'protected_host' | 'protocol_fixture'; controller: { uid: number; gid: number } }
 export interface FirecrackerRpcScope { computerId: string; selectionSha256: string; basis: FirecrackerRpcState['basis'] }
 function fail(): never { throw new AppError('vm_firecracker_management_unavailable', 503); }
 const uuid = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v);
@@ -20,7 +20,9 @@ const same = (a: unknown, b: unknown) => vmCanonical(a) === vmCanonical(b);
 
 /** Closed response validation before the controller can publish an authenticated host observation. */
 export function firecrackerRpcState(value: unknown, scope: FirecrackerRpcScope): FirecrackerRpcState {
-  const r = vmRecord(value, ['computer', 'machine', 'basis']), c = vmRecord(r.computer, ['id', 'selectionSha256', 'diskBytes', 'basis', 'revision', 'state', 'launchId', 'activeRequestId']);
+  const r = vmRecord(value, ['computer', 'machine', 'basis', 'controller']), c = vmRecord(r.computer, ['id', 'selectionSha256', 'diskBytes', 'basis', 'revision', 'state', 'launchId', 'activeRequestId']), controller = vmRecord(r.controller, ['uid', 'gid']);
+  vmInteger(controller.uid, 0xffffffff - 1); vmInteger(controller.gid, 0xffffffff - 1);
+  if (scope.basis === 'protected_host' && (process.platform !== 'linux' || controller.uid !== process.getuid?.() || controller.gid !== process.getgid?.())) return fail();
   if (r.basis !== scope.basis || c.basis !== scope.basis || c.id !== scope.computerId || c.selectionSha256 !== scope.selectionSha256 || !['unverified', 'running', 'stopped', 'busy', 'uncertain'].includes(c.state as string) || c.launchId !== null && !uuid(c.launchId) || c.activeRequestId !== null && !uuid(c.activeRequestId)) return fail();
   vmInteger(c.revision); vmInteger(c.diskBytes, 64 * 1073741824, 128 * 1048576);
   if ((c.activeRequestId !== null) !== ['busy', 'uncertain'].includes(c.state as string) || r.machine === null && c.activeRequestId === null) return fail();
@@ -75,7 +77,7 @@ export function createFirecrackerManagementRelay(runtime: FirecrackerHostRuntime
       let result: unknown;
       if (r.operation === 'state') {
         if (r.command !== undefined || r.requestId !== undefined) return fail();
-        const machine = runtime.current().activeRequestId ? null : await runtime.inspect(); result = { computer: runtime.current(), machine, basis: runtime.basis };
+        const machine = runtime.current().activeRequestId ? null : await runtime.inspect(); result = { computer: runtime.current(), machine, basis: runtime.basis, controller: runtime.controllerIdentity() };
       } else if (r.operation === 'submit') {
         if (r.requestId !== undefined || r.command === undefined) return fail(); result = await runtime.submit(firecrackerHostCommand(r.command));
       } else if (r.operation === 'receipt' || r.operation === 'reconcile') {

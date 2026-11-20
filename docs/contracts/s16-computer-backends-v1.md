@@ -220,10 +220,10 @@ port refuses without selecting another. Work/enrollment revocation rejects new
 channels; separately held original-instance cleanup authority can still stop
 that exact VM. Before stopping, all original API/SSH transports are closed;
 unknown disk settlement keeps the endpoint fenced and uses original read-back.
-Fixture basis remains visible in evidence. This component is not a complete
-registered manager: durable protected launch jobs, installed helper custody,
-cold checkpoint/restore and restart reconciliation remain required before the
-additional backend is offered. The pre-launch `/proc/misc` device gate above
+Fixture basis remains visible in evidence. This component alone is not a
+registered manager; the concrete runtime/client/helper below composes durable
+launch, cold recovery and restart reconciliation. Real installed host custody
+remains separate. The pre-launch `/proc/misc` device gate above
 cannot be replaced by post-launch inspection. Linux/KVM live receipts remain
 separate from the real Unix HTTP/TCP protocol composition tests.
 
@@ -263,8 +263,8 @@ Submission is one mutation, not readiness. Bounded `systemctl show` reads check
 the exact original unit, invocation, PID and closed properties. Missing metadata,
 PID zero or active/exited never certifies disk settlement or authorizes a new
 launch. Native submission requires prepared Linux/root custody; injected
-commands always remain `protocol_fixture`. Root helper installation, concrete
-native preparation/recovery and complete manager registration remain pending.
+commands always remain `protocol_fixture`. The concrete composition is described
+below; real root-helper installation/acceptance remains pending.
 
 `FirecrackerHostPreparation` checks installed pinned binaries, guest-readable
 root-owned kernel/config/optional initrd, exact single-link disk custody, closed
@@ -360,6 +360,33 @@ receipts, never private context, host paths, arbitrary process selectors or
 diagnostics. The client validates complete command/revision/scope/basis and uses
 one deadline across headers/body. The trusted host/control-plane is outside the
 working execution boundary; this is not a public-network endpoint.
+
+The authenticated state includes the selected controller UID/GID. Native clients
+accept it only on the same Linux host under that actual nonroot identity; a
+configuration declaration cannot permit VMM/controller UID reuse. These private
+OS identity fields are not copied into public status or model-facing data.
+
+`s16-firecracker-host/v1` is a closed administrator-installed configuration for
+`src/firecracker-cli.ts`: separate private config/credential/state, fixed distinct
+ports and exact protected profile/host/pins/disk. Ordinary serving refuses missing
+state; explicit initialization refuses existing state, rechecked under the OS
+singleton. No account, payload, credential or production service is installed.
+Config/credential custody is pinned during serving. Shutdown fences new work,
+closes observation and drains original drivers before releasing journal/lock;
+it never infers that the systemd-owned microVM stopped.
+
+The actual `VmManagers` registry stores a pinned `firecracker` adapter and a
+write-only vault credential plus its separate original-intent journal. The same
+binding can update its credential under the authenticated owner without creating
+another physical alias; retargeting the computer/digest/origin refuses. The last
+owner-registered unbound manager is retained across controller reopen, so SSH
+checks use the selected backend, without changing existing work affinity.
+Pre-enrollment start is available only for this prepared adapter and refuses an
+already-enrolled manager. Its owner form is distinct from ordinary work admission;
+starting alone does not enroll or grant execution. Pending original starts show
+read-back instead of another start. Enrollment refuses a second physical identity
+alias. Owner-only setup, CSRF/expiry, write-only errors and English/Thai render
+states use the existing owning ingress and enrollment flow.
 
 ## Reviewed portable state
 
