@@ -125,6 +125,30 @@ test('already-exited read-back publishes no stronger receipt and sends no signal
   finally { lease.close(); }
 });
 
+test('already-exited read-back still requires the final current-authority guard', async () => {
+  const f = fixture(), lease = await FirecrackerProcessLease.open(identity(), f.port); f.original.exited = true; let guards = 0;
+  try { await expect(lease.stop({ guard() { if (++guards === 2) throw Error('revoked before publication'); } })).rejects.toMatchObject({ outcome: 'not_sent' }); expect(guards).toBe(2); expect(f.original.killed).toBe(0); }
+  finally { lease.close(); }
+});
+
+test('invalid stop options do not retain a busy lease or dispatch a signal', async () => {
+  const f = fixture(), lease = await FirecrackerProcessLease.open(identity(), f.port);
+  try {
+    for (const timeoutMs of [0, 10001, 1.5, NaN]) await expect(lease.stop({ guard() {}, timeoutMs })).rejects.toMatchObject({ code: 'vm_firecracker_process_invalid', outcome: 'not_sent' });
+    await expect(lease.stop({ guard() {}, signal: {} as AbortSignal })).rejects.toMatchObject({ code: 'vm_firecracker_process_invalid', outcome: 'not_sent' });
+    expect(f.original.killed).toBe(0); expect(await lease.stop({ guard() {} })).toMatchObject({ observation: 'process_exited' });
+  } finally { lease.close(); }
+});
+
+test('a late final guard times out as unknown and never issues a replacement signal', async () => {
+  const f = fixture(), lease = await FirecrackerProcessLease.open(identity(), f.port), release = Promise.withResolvers<void>(); let guards = 0;
+  try {
+    await expect(lease.stop({ timeoutMs: 10, guard() { if (++guards === 2) return release.promise; } })).rejects.toMatchObject({ code: 'vm_firecracker_stop_unconfirmed', outcome: 'unknown' });
+    release.resolve(); await Promise.resolve(); await Promise.resolve(); expect(f.original.killed).toBe(1); expect(lease.exited()).toBe(true);
+    await expect(lease.stop({ guard() {} })).rejects.toMatchObject({ code: 'vm_firecracker_stop_already_started', outcome: 'unknown' });
+  } finally { release.resolve(); lease.close(); }
+});
+
 test('invalid selections and untrusted basis labels perform no acquisition', async () => {
   const f = fixture();
   for (const patch of [{ pid: 0 }, { pid: 1 }, { pid: 1.5 }, { pid: 0x80000000 }, { startTicks: '0' }, { startTicks: '../1' }, { startTicks: '1'.repeat(21) }, { hostBootId: 'guest-id' }]) await expect(FirecrackerProcessLease.open({ ...identity(), ...patch }, f.port)).rejects.toMatchObject({ code: 'vm_firecracker_process_invalid' });

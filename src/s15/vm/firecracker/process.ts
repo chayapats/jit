@@ -125,7 +125,7 @@ export class FirecrackerProcessLease {
    */
   async stop(options: { guard(): void | Promise<void>; timeoutMs?: number; signal?: AbortSignal }): Promise<FirecrackerProcessExit> {
     const { guard, signal } = options, timeoutMs = options.timeoutMs ?? 10000;
-    if (typeof guard !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000) return invalid();
+    if (typeof guard !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000 || signal !== undefined && !(signal instanceof AbortSignal)) return invalid();
     if (this.#stopping || this.#signalSent) throw new FirecrackerProcessError('vm_firecracker_stop_already_started', this.#signalSent ? 'unknown' : 'not_sent');
     if (this.#closed) throw new FirecrackerProcessError('vm_firecracker_process_closed', 'not_sent');
     if (signal?.aborted) throw new FirecrackerProcessError('aborted', 'not_sent');
@@ -140,14 +140,15 @@ export class FirecrackerProcessLease {
     const check = () => { if (signal?.aborted) throw new FirecrackerProcessError('aborted', this.#signalSent ? 'unknown' : 'not_sent'); if (performance.now() >= deadline) throw new FirecrackerProcessError('vm_firecracker_stop_unconfirmed', this.#signalSent ? 'unknown' : 'not_sent'); };
     try {
       await Promise.race([Promise.resolve().then(guard), canceled.promise]); check();
-      if (this.exited()) return { observation: 'process_exited', basis: this.basis };
-      // Mark dispatch before entering the native boundary. Even a signal error cannot authorize replay.
-      this.#signalSent = true;
-      try { this.#port.kill(this.#fd); } catch { throw new FirecrackerProcessError('vm_firecracker_stop_unconfirmed', 'unknown'); }
-      for (;;) {
-        check();
-        if (this.exited()) break;
-        await Promise.race([new Promise<void>(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - performance.now())))), canceled.promise]);
+      if (!this.exited()) {
+        // Mark dispatch before entering the native boundary. Even a signal error cannot authorize replay.
+        this.#signalSent = true;
+        try { this.#port.kill(this.#fd); } catch { throw new FirecrackerProcessError('vm_firecracker_stop_unconfirmed', 'unknown'); }
+        for (;;) {
+          check();
+          if (this.exited()) break;
+          await Promise.race([new Promise<void>(resolve => setTimeout(resolve, Math.min(25, Math.max(1, deadline - performance.now())))), canceled.promise]);
+        }
       }
       // Current authority is required for publication too; a late guard never publishes a stop receipt.
       await Promise.race([Promise.resolve().then(guard), canceled.promise]); check();
