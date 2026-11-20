@@ -56,6 +56,9 @@ The internal contracts are:
   existing-state operator access behind the same retained process lease as the
   service, with selected plus retained ledgers, exact reader/identity checks
   and no application boot/replay or missing-state initialization.
+- [`s16-payload-set/v1`](../contracts/s16-payload-set-v1.md): streamed exact
+  immutable bytes with independent receipts, plus an owning FILE resolver
+  that reports pending/untracked custody instead of promoting or deleting it.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version
@@ -74,9 +77,9 @@ artifact, model or execution-plane paths.
 
 ## Remaining aggregate protocol
 
-The selected-runtime SQL set is a component. It deliberately does not claim
+The selected-runtime SQL and immutable-byte sets are components. They do not claim
 the outer owner/vault/site/recipient state, retained disabled stores, native
-contexts, immutable input/artifact/skill bytes, client secure storage or
+contexts, complete input/artifact/skill custody, client secure storage or
 separate root helper are covered. Their exact owning roots, point identities,
 consistency and recovery constraints must join the aggregate inventory before
 any complete-backup capability is advertised.
