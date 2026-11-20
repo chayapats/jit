@@ -61,7 +61,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
       ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
     return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
-      uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
+      uploads: files && app.options.files ? { available: true, creationLookup: "s16-upload-creation/v1", limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
@@ -139,6 +139,13 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
           }
         }
         throw new AppError('method_rejected', 405);
+      }
+      const uploadCreation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/uploads\/commands\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
+      if (uploadCreation) {
+        if (!options.files || !app.options.files) throw new AppError("upload_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method !== "GET") throw new AppError("method_rejected", 405);
+        return json(options.files.creation(currentOwner(), uploadCreation[1]!, uploadCreation[2]!));
       }
       const uploadCreate = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/uploads$/.exec(url.pathname);
       if (uploadCreate && request.method === "POST") {

@@ -356,6 +356,12 @@ export class JitClient {
     const input = structuredClone(command); id(input.requestId); id(input.conversationId);
     return this.uploadResponse(await this.call(`/conversations/${input.conversationId}/uploads`, "POST", input, signal, input.requestId), input.requestId);
   }
+  /** Read the original creation after response loss, scoped to the current conversation and request ID. */
+  async uploadCreation(conversationId: string, requestId: string, signal?: AbortSignal): Promise<FileUpload> {
+    const upload = this.uploadResponse(await this.call(`/conversations/${id(conversationId)}/uploads/commands/${id(requestId)}`, "GET", undefined, signal), requestId);
+    if (upload.conversationId !== conversationId) return invalid();
+    return upload;
+  }
   /** Stream exact bytes once; an uncertain reply is recovered with uploadStatus, never automatic replay. */
   async uploadBytes(uploadId: string, bytes: Uint8Array, signal?: AbortSignal): Promise<FileUpload> {
     const input = new Uint8Array(bytes);

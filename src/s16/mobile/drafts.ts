@@ -6,6 +6,7 @@ export interface MobileDraft { readonly text: string; readonly files: readonly M
 /** Original upload identity remains visible through a lost response; Check only reads this upload. */
 export interface MobileFileChip {
   readonly requestId: string; readonly name: string; readonly bytes: number;
+  readonly sha256: string;
   readonly uploadId: string | null; readonly phase: "uploading" | "validating" | "ready" | "failed";
   readonly receipt: FileReceipt | null; readonly code: string | null;
 }

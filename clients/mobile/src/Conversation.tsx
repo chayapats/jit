@@ -76,6 +76,7 @@ function NativePreview({ ui, session, artifact, html, onFailure }: { ui: Ui; ses
 /** Current protected conversation, real file receipts and immutable command recovery. */
 export function Conversation({ ui, session, snapshot, commands, drafts, files, voice, onFailure }: { ui: Ui; session: MobileSession; snapshot: ClientSnapshot; commands: MobileCommands; drafts: MobileDrafts; files: NativeFiles; voice: MobileVoice; onFailure(error: unknown): void }) {
   const intent = mobileIntent(session), conversation = intent.conversationId;
+  const uploadCapability = session.projection.bootstrap?.capabilities.uploads, creationLookup = uploadCapability?.available && uploadCapability.creationLookup === "s16-upload-creation/v1";
   const subscribe = useCallback((listener: () => void) => drafts.subscribe(listener), [drafts]);
   const read = useCallback(() => drafts.get(intent.scope, conversation), [drafts, intent.scope, conversation]);
   const voiceSubscribe = useCallback((listener: () => void) => voice.subscribe(listener), [voice]), voiceRead = useCallback(() => voice.projection, [voice]);
@@ -126,7 +127,9 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
       {draft.files.map(file => <View style={ui.styles.card} key={file.requestId}>
         <UiText ui={ui}>{file.name} · {file.bytes.toLocaleString(ui.locale)} bytes</UiText>
         <UiText ui={ui}>{ui.t(file.phase === "ready" ? "s16.files.ready" : file.phase === "validating" ? "s16.files.validating" : file.phase === "uploading" ? "s16.files.uploading" : "s16.files.failed", { name: file.name })}</UiText>
-        {file.phase !== "ready" && file.uploadId && <Button ui={ui} secondary label={ui.t("s16.files.recover")} disabled={busy} onPress={() => { void run(() => files.check(file)); }} />}
+        {file.phase !== "ready" && <Button ui={ui} secondary label={ui.t("s16.files.recover")} disabled={busy || !file.uploadId && !creationLookup} onPress={() => { void run(() => files.check(file)); }} />}
+        {!file.uploadId && !creationLookup && <UiText ui={ui}>{ui.t("s16.mobile.fileRecoveryUnavailable")}</UiText>}
+        {file.code === "mobile_upload_select_again" && <><UiText ui={ui}>{ui.t("s16.mobile.fileSelectAgainHint")}</UiText><Button ui={ui} secondary label={ui.t("s16.mobile.fileSelectAgain")} disabled={busy} onPress={() => { void run(() => files.resume(file)); }} /></>}
         <Button ui={ui} secondary label={ui.t("s16.files.removeFromMessage", { name: file.name })} disabled={busy || !!pending?.length} onPress={() => drafts.change(intent, current => ({ ...current, files: current.files.filter(chip => chip.requestId !== file.requestId) }))} />
       </View>)}
       <TextInput accessibilityLabel={ui.t("s16.chat.prompt")} placeholder={ui.t("s16.chat.prompt")} placeholderTextColor={ui.colors.muted}
