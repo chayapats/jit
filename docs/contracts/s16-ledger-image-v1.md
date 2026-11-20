@@ -42,6 +42,7 @@ The returned immutable object is exactly:
   validation: "header_and_hash";
   applicationId: number;
   readerVersion: number;
+  journalMode: "rollback" | "wal";
   bytes: number;
   sha256: string;
 }

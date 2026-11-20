@@ -27,7 +27,7 @@ test('actual owning journal is observed without changing bytes, returning rows o
   const f = journal(), before = readFileSync(f.path), names = readdirSync(f.root);
   const image = observeS16LedgerImage(f.path, reader);
   expect(image).toEqual({ contract: 's16-ledger-image/v1', validation: 'header_and_hash', applicationId: reader.applicationId,
-    readerVersion: 1, bytes: before.length, sha256: new Bun.CryptoHasher('sha256').update(before).digest('hex') });
+    readerVersion: 1, journalMode: 'rollback', bytes: before.length, sha256: new Bun.CryptoHasher('sha256').update(before).digest('hex') });
   expect(Object.isFrozen(image)).toBe(true); expect(JSON.stringify(image)).not.toContain('private'); expect(JSON.stringify(image)).not.toContain(f.root);
   expect(readFileSync(f.path)).toEqual(before); expect(readdirSync(f.root)).toEqual(names);
   const reopened = new DurableJournal(f.path, 'installation', false, reader.applicationId);

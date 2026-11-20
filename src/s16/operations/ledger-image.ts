@@ -19,10 +19,17 @@ export interface S16LedgerImage {
   readonly validation: 'header_and_hash';
   readonly applicationId: number;
   readonly readerVersion: number;
+  readonly journalMode: 'rollback' | 'wal';
   readonly bytes: number;
   readonly sha256: string;
 }
 const uint32 = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
+/** Validates a trusted reader description without touching a source or manufacturing an installation identity. */
+export function validateS16LedgerReader(expected: unknown): asserts expected is S16LedgerImageExpectation {
+  const value = expected as S16LedgerImageExpectation | null;
+  if (!value || typeof value !== 'object' || !uint32(value.applicationId) || !uint32(value.ownerUid) || !Array.isArray(value.formats) ||
+    value.formats.length < 1 || value.formats.length > 16 || !value.formats.every(uint32) || new Set(value.formats).size !== value.formats.length) refuse('s16_ops_reader_invalid');
+}
 function sameFile(a: BigIntStats, b: BigIntStats): boolean {
   return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.uid === b.uid && a.mode === b.mode &&
     a.nlink === b.nlink && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
@@ -37,8 +44,7 @@ function settled(path: string): void {
  * bounded observation alone must never authorize backup consistency, admission or state replacement.
  */
 export function observeS16LedgerImage(path: string, expected: S16LedgerImageExpectation): Readonly<S16LedgerImage> {
-  if (!expected || typeof expected !== 'object' || !uint32(expected.applicationId) || !uint32(expected.ownerUid) || !Array.isArray(expected.formats) ||
-    expected.formats.length < 1 || expected.formats.length > 16 || !expected.formats.every(uint32) || new Set(expected.formats).size !== expected.formats.length) refuse('s16_ops_reader_invalid');
+  validateS16LedgerReader(expected);
   if (typeof path !== 'string' || !isAbsolute(path) || normalize(path) !== path) refuse('s16_ops_path_untrusted');
   let fd: number | undefined;
   try {
@@ -58,6 +64,8 @@ export function observeS16LedgerImage(path: string, expected: S16LedgerImageExpe
       before.size !== BigInt(pageSize) * BigInt(header.readUInt32BE(28))) refuse('s16_ops_image_invalid');
     const applicationId = header.readUInt32BE(68), readerVersion = header.readUInt32BE(60);
     if (applicationId !== expected.applicationId || !expected.formats.includes(readerVersion)) refuse('s16_ops_reader_unsupported');
+    if (header[18] !== header[19] || ![1, 2].includes(header[18]!)) refuse('s16_ops_image_invalid');
+    const journalMode = header[18] === 1 ? 'rollback' as const : 'wal' as const;
     const bytes = Number(before.size), buffer = Buffer.alloc(Math.min(bytes, blockBytes)), digest = createHash('sha256');
     let position = 0;
     while (position < bytes) {
@@ -69,7 +77,7 @@ export function observeS16LedgerImage(path: string, expected: S16LedgerImageExpe
     settled(path);
     const after = lstatSync(path, { bigint: true, throwIfNoEntry: false });
     if (!after || !sameFile(before, after) || !sameFile(before, fstatSync(fd, { bigint: true }))) refuse('s16_ops_image_changed');
-    return Object.freeze({ contract: 's16-ledger-image/v1', validation: 'header_and_hash', applicationId, readerVersion, bytes, sha256: digest.digest('hex') });
+    return Object.freeze({ contract: 's16-ledger-image/v1', validation: 'header_and_hash', applicationId, readerVersion, journalMode, bytes, sha256: digest.digest('hex') });
   } catch (error) {
     if (error instanceof AppError && error.code.startsWith('s16_ops_')) throw error;
     return refuse('s16_ops_path_untrusted');
