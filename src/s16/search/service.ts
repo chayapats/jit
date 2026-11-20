@@ -25,7 +25,7 @@ export class SearchDirectory<Actor> {
   search(actor: Actor, params: URLSearchParams): SearchPage {
     const owner = this.options.owner(actor), query = parseSearchQuery(params), position = searchPosition(query), documents = this.options.documents(actor);
     if (documents.length > searchCapacity) throw new AppError('search_capacity', 413);
-    const eligible = documents.filter(doc => (query.kind === 'all' || query.kind === doc.target.kind) && (query.bot === null || (doc.visibleToBot ? doc.visibleToBot(query.bot) : doc.botId === query.bot)) && (query.from === null || doc.at >= query.from) && (query.to === null || doc.at <= query.to));
+    const eligible = documents.filter(doc => (query.kind === 'all' || query.kind === doc.target.kind) && (query.bot === null || doc.botId === query.bot && (!doc.visibleToBot || doc.visibleToBot(query.bot))) && (query.from === null || doc.at >= query.from) && (query.to === null || doc.at <= query.to));
     const labels = new Map<string, number>(), needle = searchNormalize(query.q), terms = lexicalTerms(needle);
     const ranked = eligible.flatMap(doc => {
       const organization = this.#labels(owner, doc.target);

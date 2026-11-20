@@ -47,10 +47,10 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
       return null;
     }
   }
-  const fromCommand = (current: ConversationRequest, id: string, text: string): SearchDocument => ({
+  const fromCommand = (current: ConversationRequest, id: string, text: string, at: number): SearchDocument => ({
     target: { kind: 'history', id }, title: text || id,
     text: `${text}\n${id === current.receipt.rootRequestId ? current.result ?? '' : ''}`.slice(0, 65536), state: current.state,
-    at: current.receipt.receivedAt, botId: current.delegation?.botId ?? bot(current.receipt.conversationId),
+    at, botId: current.delegation?.botId ?? bot(current.receipt.conversationId),
     source: { kind: 'chat', conversationId: current.receipt.conversationId, requestId: current.receipt.rootRequestId },
   });
   function memoryDocuments(actor: Actor): SearchDocument[] {
@@ -76,14 +76,14 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
   }
   function documents(actor: Actor): SearchDocument[] {
     const principal = owner(actor);
-    const ids = app.store.db.query<{ id: string; root_id: string; text: string }, [string, number]>(`SELECT c.id,c.root_id,json_extract(c.command_json,'$.text') AS text FROM commands c JOIN requests r ON r.id=c.root_id
-      WHERE json_extract(r.record_json,'$.owner.id')=? AND json_extract(r.record_json,'$.owner.generation')=? AND json_type(c.command_json,'$.text')='text' ORDER BY c.rowid LIMIT 10001`).all(principal.id, principal.generation);
+    const ids = app.store.db.query<{ id: string; root_id: string; text: string; at: number }, [string, number]>(`SELECT c.id,c.root_id,json_extract(c.command_json,'$.text') AS text,json_extract(c.receipt_json,'$.receivedAt') AS at FROM commands c JOIN requests r ON r.id=c.root_id
+      WHERE json_extract(r.record_json,'$.owner.id')=? AND json_extract(r.record_json,'$.owner.generation')=? AND json_type(c.command_json,'$.text')='text' AND json_type(r.record_json,'$.decisionCommandHash') IS NULL ORDER BY c.rowid LIMIT 10001`).all(principal.id, principal.generation);
     if (ids.length > searchCapacity) throw new AppError('search_capacity', 413);
     const roots = new Map<string, ConversationRequest | null>();
-    const items = ids.flatMap(({ id, root_id, text }) => {
+    const items = ids.flatMap(({ id, root_id, text, at }) => {
       if (!roots.has(root_id)) roots.set(root_id, request(actor, root_id));
       const row = roots.get(root_id);
-      return row && historySafe(id, text) && historySafe(root_id, text) ? [fromCommand(row, id, text)] : [];
+      return row && historySafe(id, text) && historySafe(root_id, text) ? [fromCommand(row, id, text, at)] : [];
     });
     for (const responsibility of options.work.search(actor)) {
       const origin = request(actor, responsibility.sourceRequestId);
@@ -111,10 +111,10 @@ export function createSearchDirectory<Actor, Work>(app: ConversationApplication<
     owner(actor);
     if (!searchId(target.id)) return null;
     if (target.kind === 'history') {
-      const command = app.store.db.query<{ root_id: string; text: string }, [string]>("SELECT root_id,json_extract(command_json,'$.text') AS text FROM commands WHERE id=? AND json_type(command_json,'$.text')='text'").get(target.id);
+      const command = app.store.db.query<{ root_id: string; text: string; at: number }, [string]>("SELECT c.root_id,json_extract(c.command_json,'$.text') AS text,json_extract(c.receipt_json,'$.receivedAt') AS at FROM commands c JOIN requests r ON r.id=c.root_id WHERE c.id=? AND json_type(c.command_json,'$.text')='text' AND json_type(r.record_json,'$.decisionCommandHash') IS NULL").get(target.id);
       if (!command) return null;
       const row = request(actor, command.root_id);
-      return row && historySafe(target.id, command.text) && historySafe(command.root_id, command.text) ? fromCommand(row, target.id, command.text) : null;
+      return row && historySafe(target.id, command.text) && historySafe(command.root_id, command.text) ? fromCommand(row, target.id, command.text, command.at) : null;
     }
     if (target.kind === 'memory') return memoryDocuments(actor).find(doc => doc.target.id === target.id) ?? null;
     if (target.kind === 'work') {

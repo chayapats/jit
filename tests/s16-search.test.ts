@@ -24,6 +24,41 @@ test('strict search filters refuse duplicate/unknown/bad cursors instead of wide
   expect(parseSearchQuery(new URLSearchParams('q=report&bot=alice&from=0&to=100'))).toMatchObject({ q: 'report', bot: 'alice', from: 0, to: 100, after: null });
 });
 
+test('a Bot filter requires the producing Bot as well as current shared-memory visibility', async () => {
+  const f = await composedFixture('default', false, undefined, options => ({ ...options, bots: {} })); all.push(f);
+  f.interpretation = { intent: 'answer', purposeId: 'purpose', resourceIds: ['computer'], access: 'read', subject: null }; f.script = [];
+  await f.chat('I prefer concise replies.', 'shared_producer');
+  const memory = await page(f, '?kind=memory&bot=bot'); expect(memory.total).toBe(1); expect(memory.items[0]!.botId).toBe('bot');
+  const target = memory.items[0]!.target;
+  expect((await f.request('/api/s16/client/search/labels', 'POST', { ...labels('producer_label', target.id), target, labels: ['Main Bot memory'] })).status).toBe(200);
+  const unrelated = await page(f, '?kind=memory&bot=specialist'); expect(unrelated.total).toBe(0); expect(unrelated.items).toEqual([]); expect(unrelated.labels).toEqual([]);
+  expect((await page(f, '?kind=memory&bot=bot')).labels).toEqual([{ name: 'Main Bot memory', count: 1 }]);
+});
+
+test('a clarification uses its own durable command receipt date while opening the original root', async () => {
+  const f = await fixture(); f.interpretation = { intent: 'ambiguous', purposeId: 'purpose', resourceIds: ['computer'], access: 'reversible_write', subject: 'issue:42' };
+  const root = await f.chat('Implement issue #42.', 'date_root'); expect(root).toMatchObject({ state: 'held', code: 'material_ambiguity' });
+  f.advance(1000); const replyAt = f.now; f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['computer'], access: 'reversible_write', subject: 'issue:42' };
+  const receipt = f.service.conversation.submit(f.owner, { contract: 's15-conversation/v1', requestId: 'date_reply', conversationId: 'conversation', text: 'Select issue #42.', continuation: { requestId: 'date_root', revision: root.revision } });
+  await f.service.conversation.drain(); expect(receipt.receivedAt).toBe(replyAt);
+  const recent = await page(f, '?kind=history&from=' + replyAt); expect(recent.items.map(item => item.target.id)).toEqual(['date_reply']); expect(recent.items[0]!.at).toBe(replyAt); expect(recent.items[0]!.source).toEqual({ kind: 'chat', conversationId: 'conversation', requestId: 'date_root' });
+  const exact = await (await f.request('/api/s16/client/search/objects/history/date_reply')).json() as any; expect(exact.at).toBe(replyAt);
+  await f.reopen(); expect((await page(f, '?kind=history&from=' + replyAt)).items.map(item => item.target.id)).toEqual(['date_reply']);
+});
+
+test('one-press decisions never manufacture searchable owner text, while an actual typed approval stays history', async () => {
+  const f = await fixture(); f.interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['account'], access: 'effect', subject: null };
+  const mail = (await import('./fixtures/s15-effects')).mail(); f.script = [{ type: 'tool_call', id: 'email', name: 'gmail_prepare_send', arguments: { ...mail } }];
+  const held = await f.chat('Send the prepared email to the recipient.', 'decision_origin'), slip = held.slips[0]!; expect(slip).toMatchObject({ state: 'pending', canApprove: true });
+  expect((await f.form('/s15/forms/action/decide', { requestId: 'structured_vote', conversationId: 'conversation', actionId: slip.action.id, revision: String(slip.action.revision), actionHash: slip.action.actionHash, decision: 'approve' })).status).toBe(303); await f.service.conversation.drain(); expect(f.google.sent.size).toBe(1);
+  f.interpretation = { intent: 'answer', purposeId: 'purpose', resourceIds: ['computer'], access: 'read', subject: null }; f.script = [];
+  await f.chat('approve is an ordinary word in this owner message.', 'typed_vote');
+  const history = await page(f, '?kind=history'); expect(history.total).toBe(2); expect(history.items.some(item => item.target.id === 'structured_vote')).toBe(false);
+  expect((await page(f, '?kind=history&q=approve')).items.map(item => item.target.id)).toEqual(['typed_vote']);
+  expect((await f.request('/api/s16/client/search/objects/history/structured_vote')).status).toBe(409);
+  await f.reopen(); expect((await page(f, '?kind=history')).total).toBe(2);
+});
+
 test('actual owning CHAT searches old history beyond the thread window and pages stably across restart', async () => {
   const f = await fixture();
   for (let i = 0; i < 36; i++) { f.advance(1); await f.chat(`Searchable telescope observation ${i}.`, `observation_${i}`); }
