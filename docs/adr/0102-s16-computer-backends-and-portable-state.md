@@ -96,6 +96,17 @@ approved executable/jail/device/socket binding and disk settlement must still be
 combined by the owning manager. Protocol fixtures and Mac refusals cannot stand
 in for the separate Linux/KVM receipt.
 
+Cold recovery uses bounded raw-file copies while the original computer is
+independently settled. A complete hash-bound snapshot and an exact prepared
+replacement are published through same-filesystem atomic renames with fsync.
+Private original context precedes each effect; read-back observes the original
+manifest/inode without completing a partial rename or retrying deletion.
+Retirement keeps an immutable tombstone and never recycles the original tag.
+This deliberately trades temporary disk space and copy time for simple cold
+recovery independent of hypervisor RAM/snapshot formats. The concrete helper
+must compose these disk primitives with original process/UID settlement and
+durable jobs before offering the backend; real-file Mac tests do not prove KVM.
+
 Durable protected-helper jobs retain exact original requests, a monotonically
 advanced computer fence and private recovery context before host effects.
 Restart distinguishes undispatched refusal from unknown dispatch; neither

@@ -256,6 +256,32 @@ launch. Native submission requires prepared Linux/root custody; injected
 commands always remain `protocol_fixture`. Root helper installation, concrete
 native preparation/recovery and complete manager registration remain pending.
 
+`s16-firecracker-cold/v1` is an immutable same-computer cold disk manifest:
+computer, selected-host digest, original checkpoint request, exact snapshot tag,
+raw byte count and SHA-256. It is not portable state, a permission or a VM stop
+certificate. `FirecrackerColdStore` derives native jail/recovery paths from the
+protected selection, requires same-filesystem private directories, a regular
+single-link original disk and independent original-process/UID/disk settlement.
+Raw disk bounds remain 128 MiB–64 GiB. Copy/hash uses at most 1 MiB at a time,
+current guards around actual I/O and a 360-second deadline. Snapshots stage
+privately, fsync their read-only disk/manifest and publish by one directory
+rename. Restores verify the entire immutable snapshot, copy into an exclusive
+private file, retain its new device/inode in protected context before one atomic
+replacement, fsync both directories and recheck settlement against that new
+disk. The seed hash remains an original selection fact, not a current-disk hash.
+
+`s16-firecracker-cold-job/v1` retains original operation/request/tag, selection,
+old disk, completed manifest and optional prepared replacement before effects.
+Incomplete stages remain private and unknown. Read-back hashes only the original
+published snapshot or exact replacement inode; it never performs the pending
+rename, deletes a partial copy or replays an operation. Retirement moves only
+the exact snapshot into its original private tombstone before deleting raw
+bytes; the immutable manifest survives, and its tag cannot be reused. Interrupted
+retirement does not report success or automatically continue deletion. None of
+these primitives launches/stops a VM or releases the owning journal reservation.
+Injected settlement/path remapping remains `protocol_fixture`; actual raw-file
+tests on a Mac prove copy/rename/recovery semantics, not Linux/KVM settlement.
+
 ## Reviewed portable state
 
 `s16-working-state/v1` is a same-installation immutable manifest of selected
