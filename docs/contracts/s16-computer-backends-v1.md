@@ -134,6 +134,16 @@ proof. Config-file execution is one `launch_and_start` mutation. Its durable
 intent/current guard precedes spawn; response loss never authorizes duplicate
 launch or `InstanceStart`.
 
+The pinned jailer discovers optional `userfaultfd`/`nitro_enclaves` minors in
+`/proc/misc`; absence of a corresponding host `/dev` pathname is insufficient.
+Preflight must inspect that kernel inventory before launch. The jailer also
+changes its jail root, `/dev`, `/dev/net` and `/run` to the selected VMM identity
+with mode 0700. Controller access to those paths is not implied by the argv:
+the installed protected host helper must own verification and the separately
+reviewed controller socket access. Neither changing owner host device nodes nor
+running the controller as the VMM identity supplies that contract. See the
+[pinned jailer implementation](https://github.com/firecracker-microvm/firecracker/blob/eaf83bb718a559d324613d566eaf776b31a62340/src/jailer/src/env.rs).
+
 Keep transport closure, cooperative `guest_scope_empty`, strong `vm_stopped`
 and unknown outcomes distinct. Scope cancellation cannot stop siblings or
 silently escalate to a whole-machine stop. A hypervisor stop requires independent
