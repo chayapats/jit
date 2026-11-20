@@ -37,12 +37,12 @@ export async function verifyS16OwnerExportPackage(input: { receipt: string; brow
     for (const path of suites) cpSync(join(source, path), join(harness, path));
     const fixtureHashes = files(join(harness, 'tests')).map(path => ({ path: 'tests/' + path, sha256: hash(readFileSync(join(harness, 'tests', path))) }));
     // Realpath resolution pins every production import to the immutable copied artifact, not the checkout.
-    symlinkSync(join(artifact, 'src'), join(harness, 'src')); symlinkSync(join(artifact, 'node_modules'), join(harness, 'node_modules'));
+    symlinkSync(join(artifact, 'src'), join(harness, 'src')); symlinkSync(join(artifact, 'ops'), join(harness, 'ops')); symlinkSync(join(artifact, 'node_modules'), join(harness, 'node_modules'));
     mkdirSync(join(harness, '.local/resolve-issues'), { recursive: true, mode: 0o700 });
     // The shared bounded runner discards stderr. Route this fixture child's test report to its stdout pipe.
     const command = [process.execPath, 'test', '--timeout', '30000', ...suites];
     const launcher = `const child=Bun.spawn(${JSON.stringify(command)},{stdin:'ignore',stdout:1,stderr:1});process.exit(await child.exited);`;
-    const tested = await spawnRunner([process.execPath, '-e', launcher], { cwd: harness, env: { ...env, JIT_S16_BROWSER_TESTS: '1', ...(input.browserExecutable ? { JIT_BROWSER_EXECUTABLE: input.browserExecutable } : {}) }, timeoutMs: 180_000 });
+    const tested = await spawnRunner([process.execPath, '-e', launcher], { cwd: harness, env: { ...env, JIT_S16_BROWSER_TESTS: '1', ...(process.env.JIT_TEST_PYTHON ? { JIT_TEST_PYTHON: process.env.JIT_TEST_PYTHON } : {}), ...(input.browserExecutable ? { JIT_BROWSER_EXECUTABLE: input.browserExecutable } : {}) }, timeoutMs: 180_000 });
     const log = tested.stdout; opsWrite(input.receipt + '.tests.log', log);
     const counts = /\n\s*(\d+) pass\n\s*(\d+) fail\n\s*(\d+) expect\(\) calls/.exec(log);
     requireOutcome(!tested.timedOut && tested.exitCode === 0 && counts && Number(counts[1]) >= 27 && Number(counts[2]) === 0, 'packaged_owner_export_cases_failed');
