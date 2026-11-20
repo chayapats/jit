@@ -156,7 +156,13 @@ export class VmPolicyIntegration {
       } else if (!(input.kind === "write" && ['write', 'portable_begin', 'portable_put', 'portable_commit'].includes(request.op as string) || ["shell", "system_admin"].includes(input.kind) && request.op === "spawn")) vmFail("vm_policy_denied", 403);
     }
     // Small exact requests stay inspectable; large file writes bind all bytes by hash without enlarging POLICY's command limit.
-    const projected = Buffer.byteLength(input.payload) <= 60_000 ? request : { op: request.op as string, ...(typeof request.path === "string" ? { path: request.path } : { cwd: request.cwd as string }), dataHash: vmHash(input.payload), bytes: Buffer.byteLength(input.payload) };
+    const projected = Buffer.byteLength(input.payload) <= 60_000 ? request : {
+      op: request.op as string,
+      ...(request.op === 'portable_put'
+        ? { importId: request.importId, relative: request.relative, treeSha256: request.treeSha256 }
+        : typeof request.path === "string" ? { path: request.path } : { cwd: request.cwd as string }),
+      dataHash: vmHash(input.payload), bytes: Buffer.byteLength(input.payload),
+    };
     const payload: JsonValue = { contract: "s15-working-vm-policy/v1", operationId: input.operationId, payloadHash: input.payloadHash,
       payloadBytes: Buffer.byteLength(input.payload), request: projected as JsonValue };
     const invocation = { operation: Object.freeze({ ...input }), request, payload, read, bound: this.options.upperBound(input), held: false };

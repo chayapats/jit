@@ -6,7 +6,8 @@ import { FirecrackerHostJournal, FirecrackerHostJobs } from '../src/s15/vm/firec
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-function location() { const dir = mkdtempSync(resolve('.local/resolve-issues/427-lock-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; }
+// The lock requires protected ancestors, so use the checkout rather than a world-writable OS temp root.
+function location() { const dir = mkdtempSync(resolve('.jit-firecracker-lock-')); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); return dir; }
 function fixture() {
   const active = new Set<string>(); const key = (fd: number) => { const s = fstatSync(fd, { bigint: true }); return `${s.dev}:${s.ino}`; };
   const port: FirecrackerLockFixture = { basis: 'protocol_fixture', acquire(fd) { const id = key(fd); if (active.has(id)) return false; active.add(id); return true; }, release(fd) { active.delete(key(fd)); } };

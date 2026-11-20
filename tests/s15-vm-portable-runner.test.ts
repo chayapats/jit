@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vmRunnerSource } from '../src/s15/vm/runner';
@@ -54,7 +54,7 @@ test.skipIf(process.platform !== 'linux')('actual Linux no-replace rename commit
   const f = await fixture(); expect((await f.run('portable_begin')).ok).toBe(true);
   for (const [relative, data] of [['result.txt', 'result'], ['src/note.md', 'note']]) expect((await f.run('portable_put', { relative, data: Buffer.from(data!).toString('base64') })).ok).toBe(true);
   const target = join(f.root, 'restored-' + f.importId); mkdirSync(target);
-  expect((await f.run('portable_commit')).code).toBe('EEXIST'); expect(existsSync(join(target, 'result.txt'))).toBe(false); rmSync(target);
+  expect((await f.run('portable_commit')).code).toBe('EEXIST'); expect(existsSync(join(target, 'result.txt'))).toBe(false); rmdirSync(target);
   expect((await f.run('portable_commit')).result?.path).toBe(target); expect(readFileSync(join(target, 'src/note.md'), 'utf8')).toBe('note');
   expect((await f.run('portable_inspect')).result?.path).toBe(target);
   writeFileSync(join(target, 'result.txt'), 'edited'); expect((await f.run('portable_inspect')).ok).toBe(false);

@@ -11,6 +11,17 @@ afterEach(async () => { for (const run of close.splice(0).reverse()) await run()
 const fixture = async () => { const f = await workingStateFixture(); close.push(() => f.f.close()); return f; };
 const id = (n: number) => n.toString(16).padStart(32, '0');
 
+test.each([65_536, 1_048_576])('owning client recovers a %i-byte file through the large portable_put policy projection', async bytes => {
+  const { f, client, source, setHook } = await fixture(), contents = Buffer.alloc(bytes, 0x52);
+  // The scripted guest task creates the source bytes; capture and import use the owning service/client.
+  setHook((request, phase) => { if (request.op === 'spawn' && phase === 'after') f.files.set(request.root + '/large.bin', contents); });
+  const workId = await source(); setHook(null);
+  const manifest = await client.captureWorkingState({ requestId: id(21), workId, paths: ['large.bin'] });
+  expect(manifest.files).toEqual([{ path: 'large.bin', bytes, sha256: vmHash(contents) }]);
+  const result = await client.importWorkingState({ requestId: id(22), packageId: manifest.id, manifestSha256: manifest.manifestSha256, vmId: 'vm2' });
+  expect(result.state).toBe('committed'); expect(f.files.get(result.path + '/large.bin')).toEqual(contents);
+});
+
 test('owning owner client captures exact public-tool result bytes, reviews hashes, and recovers to a fresh second-backend workspace', async () => {
   const { f, client, source } = await fixture(), workId = await source(), sourceHolder = f.service.vmPool.holder(workId);
   const before = f.vmCalls.length; const view = await client.workingState(); expect(view.sources.map(s => s.workId)).toContain(workId); expect(f.vmCalls.length).toBe(before);
