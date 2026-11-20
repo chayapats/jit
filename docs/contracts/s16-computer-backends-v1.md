@@ -119,7 +119,7 @@ The selected launch plan uses matching `jailer`/`firecracker` basenames, a
 separate non-root VMM UID/GID, fixed jailed `/kernel`, optional `/initrd`,
 `/rootfs.ext4`, `/config.json` and `/run/{api,vsock}.sock`. The raw disk ceiling
 is 128 MiB–64 GiB. Cgroup v2 narrows CPU to selected vCPUs, memory to selected
-guest RAM plus 256 MiB VMM overhead, and processes/threads to 128; file limits
+guest RAM plus 256 MiB VMM overhead with swap disabled, and processes/threads to 128; file limits
 are 256 descriptors and the selected disk's byte ceiling. No daemonization,
 new PID namespace, arbitrary flag or additional network namespace selection is
 accepted. The foreground jailer retains its PID when it execs the VMM. Its
@@ -149,6 +149,65 @@ and unknown outcomes distinct. Scope cancellation cannot stop siblings or
 silently escalate to a whole-machine stop. A hypervisor stop requires independent
 termination/access-settlement evidence for the exact process identity. Old
 generations and lost mutation claims remain fenced after restart.
+
+## Protected host custody composition
+
+The privileged-helper component `FirecrackerHostLease` consumes only an exact
+protected launch record: immutable binary/kernel/optional-initrd pins, the
+closed profile, original disk device/inode/size and initial seed hash, and the
+host boot/start-ticks/PID identity. Native observation requires Linux
+x86_64/aarch64 as the installed protected helper; the controller does not gain
+root or the VMM identity. Injected host/process ports always remain
+`protocol_fixture`. There is no guest/API-to-host attestation conversion.
+
+Before publishing `process_bound`, it verifies root-owned protected ancestors,
+the exact jailed executable and kernel/config pins, process root/exe identity,
+all threads' UID/GID/supplementary groups/capabilities/seccomp/NoNewPrivs and
+cgroup membership, exact CPU/memory/no-swap/pids limits, a dedicated-UID process
+census and the original disk FD. The jail admits only selected files, devices,
+sockets and the pinned jailer's bounded public ARM CPU facts. Open FDs admit
+the selected disk, read-only pinned boot files, reviewed KVM/event descriptors,
+null stdio and the particular API/vsock Unix listeners; an unknown host file,
+network socket, TUN FD or extra vCPU refuses. Linux 6.8's KVM vCPU descriptor
+names include the vCPU ID; see the
+[pinned kernel implementation](https://github.com/torvalds/linux/blob/v6.8/virt/kvm/kvm_main.c).
+The VMM environment is exactly `PATH=/usr/bin:/bin`, `LANG=C` and
+`HOME=/nonexistent`; the installed launcher must clear its inherited environment
+before jailer. No controller/provider/vault variable is inherited. The
+process census is capped at 8,192 entries / 16 MiB of status bytes, each
+status at 64 KiB; threads at 128, FDs at 256, Unix inventory at 128 KiB and each
+immutable input at 64 MiB. Complete acquisition/inspection has a 15-second
+publication deadline. Missing or raced evidence refuses rather than certifies.
+
+The stable `selectionSha256` is SHA-256 of canonical JSON under
+`s16-firecracker-host-selection/v1`: profile, host selection, immutable pins and
+disk `{bytes,initialSha256}`. Per-launch PID/start/boot and disk device/inode
+are checked independently; they are not part of that stable selection digest.
+A legitimate new cold launch can retain its logical binding while the current
+protected launch record still has to bind its exact new process/disk. The seed
+hash is an original installer/launch fact, not a claim about the mutable running
+disk's current contents. No digest grants execution authority or ancestry.
+
+An exact pidfd exit alone stays weaker than `process_and_disk_settled`. The
+latter additionally requires no process retaining the dedicated VMM UID,
+unchanged private original disk identity and a completed fsync, followed by
+current publication guards. Stop plus settlement share ten seconds. Failure
+retains the original lease for bounded read-back; it never sends another signal.
+Closing observation neither stops a VM nor releases an unresolved owning claim.
+
+`BoundFirecrackerComputer` composes that host lease with the actual closed API
+profile and host-initiated SSH/vsock forwarder. It issues no launch/InstanceStart.
+Native helpers require an installed positive IPv4 loopback port; an occupied
+port refuses without selecting another. Work/enrollment revocation rejects new
+channels; separately held original-instance cleanup authority can still stop
+that exact VM. Before stopping, all original API/SSH transports are closed;
+unknown disk settlement keeps the endpoint fenced and uses original read-back.
+Fixture basis remains visible in evidence. This component is not a complete
+registered manager: durable protected launch jobs, installed helper custody,
+cold checkpoint/restore and restart reconciliation remain required before the
+additional backend is offered. The pre-launch `/proc/misc` device gate above
+cannot be replaced by post-launch inspection. Linux/KVM live receipts remain
+separate from the real Unix HTTP/TCP protocol composition tests.
 
 ## Reviewed portable state
 

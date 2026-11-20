@@ -17,9 +17,11 @@ export interface FirecrackerSshForwarder {
  * shell, guest-to-host listener or management API is exposed. Capacity includes pending negotiations
  * and is retained until both original descriptors close. Pipe backpressure bounds opaque SSH buffers.
  */
-export async function openFirecrackerSshForwarder(options: FirecrackerVsockOptions & { maxConnections?: number }): Promise<FirecrackerSshForwarder> {
+export async function openFirecrackerSshForwarder(options: FirecrackerVsockOptions & { maxConnections?: number; listenPort?: number }): Promise<FirecrackerSshForwarder> {
   options = Object.freeze({ ...options });
   const maximum = options.maxConnections ?? 16;
+  const listenPort = options.listenPort ?? 0;
+  if (!Number.isSafeInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new AppError('vm_vsock_invalid');
   if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 16) throw new AppError('vm_vsock_invalid');
   const timeoutMs = validateFirecrackerVsock(options);
   if (options.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -81,7 +83,7 @@ export async function openFirecrackerSshForwarder(options: FirecrackerVsockOptio
       await new Promise<void>((resolve, reject) => {
         const error = () => reject(new AppError('vm_vsock_unavailable', 503));
         server.once('error', error);
-        server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, () => { server.removeListener('error', error); resolve(); });
+        server.listen({ host: '127.0.0.1', port: listenPort, exclusive: true }, () => { server.removeListener('error', error); resolve(); });
       });
       await options.guard();
       const address = server.address();

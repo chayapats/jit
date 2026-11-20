@@ -96,6 +96,18 @@ approved executable/jail/device/socket binding and disk settlement must still be
 combined by the owning manager. Protocol fixtures and Mac refusals cannot stand
 in for the separate Linux/KVM receipt.
 
+The protected-host composition now binds the original process/jail/executable,
+immutable kernel/config, dedicated UID, per-thread seccomp/capabilities, bounded
+no-swap cgroup and original disk descriptor before joining the closed API profile
+and guarded SSH/vsock lane. Process exit remains distinct from independently
+flushed disk settlement. Original cleanup authority survives work revocation;
+unknown stops reconcile the original lease rather than signaling again. Native
+observation is restricted to the installed privileged helper and injected ports
+stay protocol fixtures. This is not a completed manager: protected durable launch
+jobs, helper installation/custody, cold checkpoint/restore and restart recovery
+still precede production registration. The host record's seed hash is not a hash
+claim about the mutable guest disk, and no observation supplies source ancestry.
+
 ## Portable working state
 
 Existing work affinity never changes silently. Export captures an owner's exact

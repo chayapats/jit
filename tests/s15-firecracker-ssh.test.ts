@@ -30,12 +30,25 @@ async function fixture(reply: (socket: Socket) => void = socket => socket.write(
   await new Promise<void>(resolve => server.listen(path, resolve));
   const f = { server, directory, sockets, forwarders, clients }; fixtures.push(f);
   return { path, commands, entered: entered.promise, data: data.promise,
-    async start(guard: () => void | Promise<void> = () => {}, maxConnections = 16) { const forwarder = await openFirecrackerSshForwarder({ socketPath: path, guestPort: 2222, guard, maxConnections }); forwarders.push(forwarder); return forwarder; },
+    async start(guard: () => void | Promise<void> = () => {}, maxConnections = 16, listenPort = 0) { const forwarder = await openFirecrackerSshForwarder({ socketPath: path, guestPort: 2222, guard, maxConnections, listenPort }); forwarders.push(forwarder); return forwarder; },
     async connect(forwarder: FirecrackerSshForwarder) { const client = createConnection(forwarder.endpoint); client.on('error', () => {}); clients.push(client); await new Promise<void>((resolve, reject) => { client.once('connect', resolve); client.once('error', reject); }); return client; },
   };
 }
 const received = (socket: Socket) => new Promise<Buffer>(resolve => socket.once('data', chunk => resolve(Buffer.from(chunk))));
 const closed = (socket: Socket) => new Promise<void>(resolve => socket.closed ? resolve() : socket.once('close', () => resolve()));
+
+test('installed loopback selection is retained across restart and an occupied port never falls back', async () => {
+  const f = await fixture(), first = await f.start(), port = first.endpoint.port; await first.close();
+  const current = await f.start(() => {}, 16, port); expect(current.endpoint).toEqual({ host: '127.0.0.1', port });
+  await expect(f.start(() => {}, 16, port)).rejects.toMatchObject({ code: 'vm_vsock_unavailable' });
+  const client = await f.connect(current); expect((await received(client)).toString()).toBe('SSH-2.0-guest\r\n'); expect(f.commands).toEqual(['CONNECT 2222\n']);
+});
+
+test('invalid installed ports refuse before binding or checking a protected socket', async () => {
+  let checks = 0;
+  for (const listenPort of [-1, 65536, 1.5, NaN]) await expect(openFirecrackerSshForwarder({ socketPath: '/protected/vsock.sock', guestPort: 22, listenPort, guard() { checks++; } })).rejects.toMatchObject({ code: 'vm_vsock_invalid' });
+  expect(checks).toBe(0);
+});
 
 test('real loopback-to-vsock lane preserves opaque bidirectional SSH bytes over the original channel', async () => {
   const f = await fixture(), forwarder = await f.start(), client = await f.connect(forwarder);

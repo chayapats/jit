@@ -43,7 +43,7 @@ export function firecrackerLaunchPlan(profile: FirecrackerProfileSelection, host
   const argv = Object.freeze([host.jailerPath, '--id', profile.instanceId, '--exec-file', host.firecrackerPath,
     '--uid', String(host.uid), '--gid', String(host.gid), '--chroot-base-dir', host.jailerBase,
     '--cgroup-version', '2', '--parent-cgroup', 'jit/firecracker',
-    '--cgroup', `memory.max=${(profile.memoryMiB + 256) * 1048576}`, '--cgroup', 'pids.max=128',
+    '--cgroup', `memory.max=${(profile.memoryMiB + 256) * 1048576}`, '--cgroup', 'memory.swap.max=0', '--cgroup', 'pids.max=128',
     '--cgroup', `cpu.max=${profile.cpuCount * 100000} 100000`,
     '--resource-limit', 'no-file=256', '--resource-limit', `fsize=${host.diskBytes}`,
     '--', '--api-sock', '/run/api.sock', '--config-file', '/config.json']);
