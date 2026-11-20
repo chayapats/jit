@@ -10,6 +10,8 @@ import { vmBytes, vmCanonical, vmFail, vmHash, vmId, vmLimits, vmPath, vmInteger
 import { fetchVmArtifact, type VmArtifactRequest } from "./acquisition";
 import type { VmProxyLease } from "./proxy";
 import { vmHasBinding, vmIdentityMatches, vmManagementMatches } from "./binding";
+import { vmPortableTransfer } from './portable-transfer';
+import { vmBackendDescriptor } from './descriptor';
 
 /** Protected composition dependencies; the service is opt-in and never replaces the S14 computer/runtime. */
 export interface WorkingVmOptions {
@@ -21,6 +23,8 @@ export interface WorkingVmOptions {
   disclosure?: Pick<import('../disclosure').DisclosureService, 'registryLease' | 'vmInput' | 'vmOutput'>;
   artifactFetch?: typeof fetchVmArtifact;
   snapshotRetention?: number;
+  /** Independent imported ancestry remains current for the entire computer, including later sessions/restores. */
+  workingStateCurrent?: (vmId: string, actor: object) => void;
   expiryTimer?: (milliseconds: number, expire: () => void) => () => void;
   /**
    * TEAM16-01 idle release (explicit S16 computers only). A hypervisor-managed VM with no open session for
@@ -45,6 +49,7 @@ export function vmStagedName(name: string): string {
   return cleaned && cleaned !== "_" ? cleaned : "file";
 }
 interface LiveSession { id: string; vmId: string; workId: string; attemptId: string; generation: number; mode: "work" | "system";
+  sourceGuard: () => void;
   unit: string; root: string; temporary: string; deadline: number; calls: number; cancelled: boolean; closed: boolean;
   controller: AbortController; cleanupController: AbortController; tail: Promise<void>; pending: number; closing: Promise<void> | null; cancelExpiry: () => void; proxy: VmProxyLease | null; removeSignal: () => void; acquisitions: Map<string, VmPolicyOperation> }
 const uuid = () => crypto.randomUUID().replaceAll("-", "");
@@ -83,6 +88,7 @@ export class WorkingVmService implements WorkingVmPort {
     const row = this.options.store.registration(s.vmId);
     if (row.generation !== s.generation || row.state !== "ready" || !row.networkIsolated) vmFail(row.reason ?? "vm_fenced", 403);
     this.options.policy.assertCurrent(actor, { vmId: s.vmId, workId: s.workId, attemptId: s.attemptId, mode: s.mode });
+    s.sourceGuard(); this.options.workingStateCurrent?.(s.vmId, actor);
   }
   private async health(row: VmRegistration, force = false): Promise<void> {
     if (!force && this.#checked.has(row.id) && this.#clock() - this.#checked.get(row.id)! < this.#limits.networkProbeMs) return;
@@ -95,7 +101,9 @@ export class WorkingVmService implements WorkingVmPort {
         if (machine.network === "unproven" || !await probeVmDirectEgress(this.transport(row))) vmFail("vm_network_unproven");
         const current = this.options.store.registration(row.id);
         if (current.generation !== row.generation || current.state !== "ready") vmFail("vm_fenced");
-        current.networkCheckedAt = this.#now(); this.options.store.save(current); this.#checked.set(row.id, this.#clock());
+        current.networkCheckedAt = this.#now();
+        if (manager?.backend) current.backend = { profile: manager.backend, cpuCount: machine.cpuCount, memoryBytes: machine.memoryBytes, diskBytes: machine.diskBytes };
+        this.options.store.save(current); this.#checked.set(row.id, this.#clock());
       } catch (error) { this.uncertain(row.id, error instanceof AppError ? error.code : "vm_network_unproven", row.generation); throw error; }
     })().finally(() => { if (this.#health.get(row.id) === promise) this.#health.delete(row.id); });
     this.#health.set(row.id, promise); return promise;
@@ -112,6 +120,7 @@ export class WorkingVmService implements WorkingVmPort {
       await this.#waking.get(input.vmId)?.catch(() => {});
     }
     this.options.policy.assertCurrent(actor, { ...input, mode });
+    input.guard?.(); this.options.workingStateCurrent?.(input.vmId, actor);
     if (this.options.idle) {
       const before = this.options.store.registration(input.vmId);
       if (before.state === "stopped" && before.reason === vmIdleReason) { await this.wake(before); this.options.policy.assertCurrent(actor, { ...input, mode }); }
@@ -154,7 +163,7 @@ export class WorkingVmService implements WorkingVmPort {
       }
       await this.health(row, true);
       const root = `/var/lib/jit-work/${input.workId}/${input.attemptId}`, temporary = `${root}/.tmp-${id}`;
-      s = { id, vmId: row.id, workId: input.workId, attemptId: input.attemptId, generation: row.generation, mode, unit, root, temporary,
+      s = { id, vmId: row.id, workId: input.workId, attemptId: input.attemptId, generation: row.generation, mode, unit, root, temporary, sourceGuard: input.guard ?? (() => {}),
         deadline: this.#clock() + this.#limits.sessionMs, calls: 0, cancelled: false, closed: false, controller: new AbortController(), cleanupController: new AbortController(), tail: Promise.resolve(),
         pending: 0, closing: null, cancelExpiry: () => {}, removeSignal: () => {}, acquisitions: new Map(), proxy: this.options.proxyLease?.(id, Date.now() + this.#limits.sessionMs, this.options.disclosure ? host => this.options.disclosure!.registryLease(actor, host, row.id) : undefined) ?? null };
       this.#sessions.set(id, s);
@@ -186,10 +195,11 @@ export class WorkingVmService implements WorkingVmPort {
           guard(); return bytes;
         },
       }) : undefined;
-      const session: VmSession = Object.freeze({ id, backend, ...(transfer ? { transfer } : {}),
+      const descriptor = vmBackendDescriptor(this.options.store.registration(state.vmId), this.#limits);
+      const session: VmSession = Object.freeze({ id, backend, ...(transfer ? { transfer } : {}), portable: vmPortableTransfer(root, call, guard, access),
         definitions: Object.freeze(coreToolDefinitions(backend).filter(definition => access === "execute" || ["read", "grep", "find", "ls"].includes(definition.name)).map(definition => ({ ...definition, execute: async (value: unknown, context: Parameters<typeof definition.execute>[1]) => {
           guard(); const result = await definition.execute(value, context); guard(); return result;
-        } }))),
+        }, ...(descriptor ? { description: definition.description + '\nSelected computer capability facts (not authority): ' + vmCanonical(descriptor) } : {}) }))),
         evidence: () => Object.freeze(this.options.store.evidence(id).map(e => Object.freeze(e))),
         cancel: () => this.closeState(state), close: () => this.closeState(state) });
       this.#live.set(session, state);
@@ -223,7 +233,9 @@ export class WorkingVmService implements WorkingVmPort {
     return this.enqueue(actor, s, signal, async () => {
       const ticket = this.options.screen?.agentInput(s.vmId);
       try {
-      const current = () => { this.current(actor, s); ticket?.current(); };
+      const current = () => { this.current(actor, s); ticket?.current();
+        if (kind === 'write' && typeof operation.op === 'string' && operation.op.startsWith('portable_')) this.options.store.assertPortableImport(operation.importId as string, s, operation.treeSha256);
+      };
       await this.health(this.options.store.registration(s.vmId)); current();
       const id = uuid(), request: Record<string, unknown> = { v: 1, id, root: s.root, tmp: s.temporary, cap: kind === "shell" ? this.#limits.outputBytes : this.#limits.fileBytes, ...structuredClone(operation) };
       const payload = vmCanonical(request), operationId = id, payloadHash = vmHash(payload);
@@ -233,6 +245,7 @@ export class WorkingVmService implements WorkingVmPort {
         timeoutMs: Math.max(1, Math.floor(Math.min(typeof operation.timeoutMs === "number" ? operation.timeoutMs + 5000 : this.#limits.commandMs, s.deadline - this.#clock()))), outputBytes: this.#limits.outputBytes };
       const claim = await this.options.policy.claim(actor, Object.freeze(action));
       try {
+      const beforeStart = () => { current(); claim.guard?.(); };
       const evidence: VmEvidence = { id, vmId: s.vmId, sessionId: s.id, operationId, payloadHash, outcome: "not_dispatched", responseHash: null,
         outputBytes: null, transport: "pending", execution: "unsettled", published: false };
       this.options.store.saveEvidence(evidence);
@@ -247,7 +260,7 @@ export class WorkingVmService implements WorkingVmPort {
             if (operation.op === "init") await transport.openScope(s.unit, Math.max(1, s.deadline - this.#clock()), () => current(), s.controller.signal);
             current();
             return transport.invoke(transportRequest, { unit: s.unit, timeoutMs: Math.max(1, Math.floor(action.timeoutMs - (this.#clock() - began))),
-            maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart: () => current() });
+            maxBytes: Math.max(this.#limits.fileBytes, this.#limits.outputBytes) * 3 + 65536, signal: s.controller.signal, beforeStart });
           };
           return invoke();
         });

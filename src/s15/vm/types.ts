@@ -119,6 +119,16 @@ export interface VmSession {
    * path component) within the work root. Neither is a model tool; the protected file workflow owns them.
    */
   readonly transfer?: VmTransfer;
+  /** Host-only reviewed state transfer, separately claimed under this exact session and TEAM lease. */
+  readonly portable?: VmPortableTransfer;
+}
+/** Original staged tree mutation. Unknown responses permit inspection only, never an automatic replay. */
+export interface VmPortableTransfer {
+  capture(paths: readonly string[]): Promise<import('./portable-protocol').PortableFileBytes[]>;
+  begin(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<void>;
+  put(id: string, files: readonly import('./portable-protocol').PortableFile[], file: import('./portable-protocol').PortableFileBytes): Promise<void>;
+  commit(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<string>;
+  inspect(id: string, files: readonly import('./portable-protocol').PortableFile[]): Promise<string | null>;
 }
 /** Bounded protected byte transfer of one execution session; see `VmSession.transfer`. */
 export interface VmTransfer {
@@ -128,6 +138,8 @@ export interface VmTransfer {
 /** Conversation-facing port. A system session takes an exclusive VM lease and requires a protected snapshot. */
 export interface WorkingVmPort {
   openAttempt(actor: object, input: { vmId: string; workId: string; attemptId: string; signal?: AbortSignal;
+    /** Protected owning-source fence, retained through waits; never accepted from guest/model JSON. */
+    guard?: () => void;
     mode?: "work" | "system"; access?: "inspect" | "execute" }): Promise<VmSession>;
 }
 /** Owner-visible capability evidence. Configured adapters alone are unproven, never a live certification. */
@@ -149,7 +161,7 @@ export interface VmBackendProfile {
   provider: "qemu" | "firecracker"; implementation: string; apiVersion: string;
   hypervisorVersion: string | null; platform: { os: string; architecture: string } | null;
   basis: "configured" | "protocol_fixture" | "host_verified";
-  features: Record<"shell" | "filesystem" | "sudo" | "externalNetwork" | "browser" | "desktop" | "coldRecovery" | "strongStop", "available" | "unavailable" | "unproven">;
+  features: Record<"shell" | "filesystem" | "sudo" | "externalNetwork" | "browser" | "desktop" | "coldRecovery" | "strongStop", "available" | "restricted" | "unavailable" | "unproven">;
 }
 /** Credential-free finite capability projection used before choosing a computer. */
 export interface VmBackendDescriptor extends VmBackendProfile {

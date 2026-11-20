@@ -4,6 +4,7 @@ import type { ActionAdapter, ActionDraft, ActionRef, AdapterResult, BudgetVector
 import type { VmStore } from "./store";
 import type { VmEvidence, VmPolicyClaim, VmPolicyOperation, VmPolicyPort } from "./types";
 import { vmCanonical, vmFail, vmHash, vmId, vmInteger, vmPath, vmRecord } from "./validation";
+import { portableFiles, portableId, portablePath, portableTreeHash } from './portable-protocol';
 
 const unknownUsage = (): Usage => ({ attempts: null, steps: null, calls: null, reads: null, outputBytes: null, activeMs: null, spendMinor: null });
 const same = (a: unknown, b: unknown) => vmCanonical(a) === vmCanonical(b);
@@ -131,7 +132,9 @@ export class VmPolicyIntegration {
       const base = ["v", "id", "root", "tmp", "cap", "op"];
       const fields: Record<string, string[]> = { init: [], realpath: ["path"], stat: ["path"], read: ["path"], observe: ["path", "content"],
         list: ["path", "recursive"], search: ["path", "cwd", "pattern", "limit", "ignoreCase", "glob", "timeoutMs"],
-        write: ["path", "data", "createParents"], spawn: ["cwd", "command", "env", "timeoutMs"] };
+        write: ["path", "data", "createParents"], spawn: ["cwd", "command", "env", "timeoutMs"], portable_read: ['path'],
+        portable_begin: ['importId', 'files', 'treeSha256'], portable_put: ['importId', 'files', 'treeSha256', 'relative', 'data'],
+        portable_commit: ['importId', 'files', 'treeSha256'], portable_inspect: ['importId', 'files', 'treeSha256'] };
       const keys = typeof request.op === "string" ? fields[request.op] : null;
       if (!keys) vmFail("vm_policy_denied", 403);
       vmRecord(request, [...base, ...keys], request.op === "write" ? ["observed"] : []);
@@ -139,13 +142,18 @@ export class VmPolicyIntegration {
       vmInteger(request.cap, 8_388_608);
       if (request.path !== undefined) vmPath(request.path as string, [root, temporary]);
       if (request.cwd !== undefined) vmPath(request.cwd as string, [root]);
+      if (request.op === 'portable_read') portablePath((request.path as string).slice(root.length + 1));
+      else if (typeof request.op === 'string' && request.op.startsWith('portable_')) {
+        portableId(request.importId); const files = portableFiles(request.files); if (portableTreeHash(files) !== request.treeSha256 || !same(files, request.files)) vmFail('vm_policy_denied', 403);
+        if (request.op === 'portable_put' && !files.some(file => file.path === portablePath(request.relative))) vmFail('vm_policy_denied', 403);
+      }
       if (input.kind === "setup" && request.op === "init") read = "workspace_setup";
       else if (input.kind === "read") {
-        if (["realpath", "stat", "read", "observe"].includes(request.op as string)) read = "read";
+        if (["realpath", "stat", "read", "observe", 'portable_read', 'portable_inspect'].includes(request.op as string)) read = "read";
         else if (request.op === "list") read = request.recursive ? "find" : "ls";
         else if (request.op === "search") read = "grep";
         else vmFail("vm_policy_denied", 403);
-      } else if (!(input.kind === "write" && request.op === "write" || ["shell", "system_admin"].includes(input.kind) && request.op === "spawn")) vmFail("vm_policy_denied", 403);
+      } else if (!(input.kind === "write" && ['write', 'portable_begin', 'portable_put', 'portable_commit'].includes(request.op as string) || ["shell", "system_admin"].includes(input.kind) && request.op === "spawn")) vmFail("vm_policy_denied", 403);
     }
     // Small exact requests stay inspectable; large file writes bind all bytes by hash without enlarging POLICY's command limit.
     const projected = Buffer.byteLength(input.payload) <= 60_000 ? request : { op: request.op as string, ...(typeof request.path === "string" ? { path: request.path } : { cwd: request.cwd as string }), dataHash: vmHash(input.payload), bytes: Buffer.byteLength(input.payload) };

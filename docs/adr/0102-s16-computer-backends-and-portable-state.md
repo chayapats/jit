@@ -199,6 +199,35 @@ format fence before any guest receives bytes. An earlier binary must refuse
 adopted state even if an old composition manifest is restored. No historical
 S14/private/legacy conversion, policy widening or owner-host activation occurs.
 
+The owning recovery service now uses VM reader format **3**, checkpointed into
+the actual SQLite header before capturing or releasing state. It retains at
+most 32 immutable packages (64 files / 1 MiB each / 16 MiB total per package)
+and 64 original import identities. Package bytes stay in the protected store;
+only reviewed paths/sizes/hashes and provenance enter the authenticated client.
+Incomplete captures become failed on restart and publish no retained files.
+
+An owner recovery command admits a fresh, finite file-recovery work under current
+standing policy and the original purpose/Bot/resource/selection references.
+No recipient, approval, native session, action, running work or old grant is
+restored. Original work/task/responsibility and capture generation are immutable
+provenance. A complete archive can be recovered after the original computer
+sleeps or the old work expires; this does not revive that work. Current original
+file, TEAM and DATA15 source references still govern the new release and every
+later use of the destination computer. Missing/withdrawn sources and private
+computer boundaries refuse. Source generation and work authority fence capture;
+destination generation and the new copy authority fence import/publication.
+
+Independent protected import ancestry and DATA15 VM input stamps precede the
+first destination dispatch, including staging metadata. Claimed one-shot guest
+operations create an exclusive staging tree, write exact original files, verify
+all bytes and publish using Linux `renameat2(RENAME_NOREPLACE)`. No partial tree
+is published and no existing workspace is replaced. A lost response or controller
+restart permits only inspection of that original final tree; pending puts and
+commit are never resumed/replayed. Unknown, failed and undispatched imports
+retain their protected ancestry. Whole-VM restore cannot erase that store.
+Guest tree receipts remain guest observations, not hypervisor stop/isolation
+proof. Linux rename conformance and KVM/host installation evidence are distinct.
+
 ## Delivery and evidence
 
 The [backend/working-state contract](../contracts/s16-computer-backends-v1.md)

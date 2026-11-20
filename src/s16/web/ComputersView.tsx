@@ -3,6 +3,7 @@ import type { Locale, MessageKey } from "../../i18n";
 import { JitClientError, type JitClient } from "../client";
 import type { ComputerBotView, ComputerCommand, ComputersView as ComputersData, ComputerView } from "../computers/service";
 import { ComputerScreen } from "./ComputerScreen";
+import { WorkingStatePanel } from './WorkingStatePanel';
 import type { Copy } from "./copy";
 
 /** Props for the owner computers surface (TEAM16-01). Data comes only from the protected client. */
@@ -131,6 +132,7 @@ export function ComputersView({ client, t, locale, available, files, onFailure, 
         </div>
         {screen && watching === item.id && <ComputerScreen client={client} t={t} vmId={item.id} title={title(item)} onFailure={onFailure} onClose={() => { setWatching(null); requestAnimationFrame(() => watchButtons.current.get(item.id)?.focus()); }} />}
       </article></li>)}</ul>
+      {data.workingState && <WorkingStatePanel client={client} computers={data.computers} t={t} onFailure={onFailure} />}
     </>}
   </section>;
 }

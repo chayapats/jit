@@ -25,7 +25,7 @@ export class VmSshTransport {
     if (vmCanonical(response) !== raw || response.v !== 1 || response.id !== request.id || typeof response.ok !== "boolean" ||
       (response.ok ? !Object.hasOwn(response, "result") || Object.hasOwn(response, "code") : !Object.hasOwn(response, "code") || Object.hasOwn(response, "result"))) vmFail("vm_protocol_invalid");
     if (!response.ok) {
-      if (typeof response.code !== "string" || !["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "ETIMEDOUT", "EIO", "ELOOP"].includes(response.code)) vmFail("vm_protocol_invalid");
+      if (typeof response.code !== "string" || !["ENOENT", "ENOTDIR", "EISDIR", "EACCES", "EPERM", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "ETIMEDOUT", "EIO", "ELOOP", "EEXIST", "ENOTEMPTY", "ENOSYS"].includes(response.code)) vmFail("vm_protocol_invalid");
       throw Object.assign(new Error(response.code), { code: response.code });
     }
     if (!response.result || typeof response.result !== "object" || Array.isArray(response.result)) vmFail("vm_protocol_invalid");

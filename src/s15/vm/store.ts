@@ -36,13 +36,13 @@ export class VmStore {
         existingFile = true;
         if (!existing.isFile() || existing.isSymbolicLink()) vmFail("vm_store_invalid");
         const fd = openSync(path, "r"), header = Buffer.alloc(100);
-        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== "SQLite format 3\0" || header.readUInt32BE(68) !== 0x4a495456 || ![1, 2].includes(header.readUInt32BE(60))) vmFail("vm_store_invalid"); }
+        try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.subarray(0, 16).toString() !== "SQLite format 3\0" || header.readUInt32BE(68) !== 0x4a495456 || ![1, 2, 3].includes(header.readUInt32BE(60))) vmFail("vm_store_invalid"); }
         finally { closeSync(fd); }
       }
     }
     this.db = new Database(path, { create: true, strict: true });
     const format = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
-    if (![1, 2].includes(format) && (format !== 0 || existingFile)) { this.db.close(); vmFail("vm_store_invalid"); }
+    if (![1, 2, 3].includes(format) && (format !== 0 || existingFile)) { this.db.close(); vmFail("vm_store_invalid"); }
     if (format === 0) this.db.exec("PRAGMA user_version=1");
     if (path !== ":memory:") chmodSync(path, 0o600);
     this.db.exec(`PRAGMA application_id=1246319702; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;
@@ -65,7 +65,7 @@ export class VmStore {
   enableVsockBindings(): void {
     if (this.db.inTransaction) vmFail("vm_store_format_required");
     const format = this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
-    if (![1, 2].includes(format)) vmFail("vm_store_invalid");
+    if (![1, 2, 3].includes(format)) vmFail("vm_store_invalid");
     if (format === 1) this.db.exec("PRAGMA user_version=2");
     if (this.#path !== ":memory:") {
       const result = this.db.query<{ busy: number; log: number; checkpointed: number }, []>("PRAGMA wal_checkpoint(TRUNCATE)").get();
@@ -74,11 +74,33 @@ export class VmStore {
     this.assertVsockFormat();
   }
   private assertVsockFormat(): void {
-    if (this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version !== 2) vmFail("vm_store_format_required");
+    if (![2, 3].includes(this.db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version)) vmFail("vm_store_format_required");
     if (this.#path === ":memory:") return;
     const fd = openSync(this.#path, "r"), header = Buffer.alloc(100);
-    try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.readUInt32BE(60) !== 2) vmFail("vm_store_format_required"); }
+    try { if (readSync(fd, header, 0, 100, 0) !== 100 || ![2, 3].includes(header.readUInt32BE(60))) vmFail("vm_store_format_required"); }
     finally { closeSync(fd); }
+  }
+  /** Explicit monotonic portable-state adoption. The checkpointed header precedes ancestry and guest bytes. */
+  enablePortableState(): void {
+    if (this.db.inTransaction) vmFail('vm_store_format_required');
+    const format = this.db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version;
+    if (![1, 2, 3].includes(format)) vmFail('vm_store_invalid'); if (format < 3) this.db.exec('PRAGMA user_version=3');
+    if (this.#path !== ':memory:') { const r = this.db.query<{ busy: number }, []>('PRAGMA wal_checkpoint(TRUNCATE)').get(); if (!r || r.busy) vmFail('vm_store_format_required'); }
+    this.assertPortableState();
+  }
+  /** Actual on-disk reader fence, checked again at every portable guest mutation dispatch. */
+  assertPortableState(): void {
+    if (this.db.query<{ user_version: number }, []>('PRAGMA user_version').get()!.user_version !== 3) vmFail('vm_store_format_required');
+    if (this.#path === ':memory:') return; const fd = openSync(this.#path, 'r'), header = Buffer.alloc(100);
+    try { if (readSync(fd, header, 0, 100, 0) !== 100 || header.readUInt32BE(60) !== 3) vmFail('vm_store_format_required'); } finally { closeSync(fd); }
+  }
+  /** A protected import stamp must pre-exist every guest write. Guest/model receipts cannot create it. */
+  assertPortableImport(id: string, scope: { vmId: string; workId: string; attemptId: string; generation: number }, treeSha256: unknown): void {
+    this.assertPortableState();
+    const row = this.db.query<{ data: string; state: string }, [string]>('SELECT data,state FROM vm_working_imports WHERE id=?').get(id);
+    if (!row || row.state !== 'dispatched') vmFail('vm_portable_unknown', 409);
+    const saved = JSON.parse(row.data) as { treeSha256: string; destination: { vmId: string; workId: string; attemptId: string; generation: number } }, d = saved.destination;
+    if (saved.treeSha256 !== treeSha256 || d.vmId !== scope.vmId || d.workId !== scope.workId || d.attemptId !== scope.attemptId || d.generation !== scope.generation) vmFail('vm_portable_scope', 403);
   }
   /** Reads only this protected registry, never a guest-supplied registration. */
   registration(id: string): VmRegistration {

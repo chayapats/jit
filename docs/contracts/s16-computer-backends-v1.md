@@ -16,7 +16,11 @@ version observation; its implementation/API contract is still explicit. Unknown
 remote host platforms stay null rather than borrowed from this controller or
 guest inventory. Profile features describe supported operations, not observed
 stop/restore success. Existing enrollment capability rows keep those separate.
-No display label grants a capability. The owner sees unavailable capabilities before selection.
+No display label grants a capability. The owner sees unavailable capabilities before selection. The protected session
+also includes the selected credential-free descriptor in its public Schway
+tool descriptions before tool use. QEMU guest egress is marked `restricted`
+by approved proxy routes; Firecracker guest egress is `unavailable`. Neither
+profile metadata nor tool descriptions supply work/dispatch authority.
 
 QEMU retains current enrollment/NIC/SSH binding. The selected Firecracker profile
 is `firecracker-offline-vsock/v1`, API v1.18.0 at immutable upstream commit
@@ -429,7 +433,73 @@ Compatibility is explicit same-installation working files, not general host,
 RAM/disk, browser login, legacy/S14 or provider-session relocation. First
 adopted portable ancestry stamps a monotonic reader format before guest writes;
 older code refuses even after manifest rollback. Exact migration/reader and
-transport commands are added alongside their owning implementation and tests.
+transport commands follow below.
+
+### Owning recovery protocol and reader 3
+
+VM reader format **3** extends formats 1/2 without downgrading physical bindings.
+`enablePortableState()` runs outside transactions and checkpoints the actual
+database header before captured or transferred bytes. Busy/WAL-only adoption
+refuses. Empty dormant tables alone do not adopt the format. Format-1/2 binaries
+refuse adopted stores even after a composition-manifest rollback.
+
+The manifest contains `capturedAt`, source owner/computer generation,
+work/attempt/CHAT/task/responsibility references, original authority digest,
+purpose/Bot/resource/selection references, complete file pins/TEAM sources and
+DATA15 descendants. `compatibility` is `s16-working-files/v1`, explicitly
+`same_installation` with execution compatibility `unverified`; nullable source
+backend and guest-reported platform are observations, not a binary portability
+promise. Files normalize to private mode 0600 and directories 0700. No ownership,
+executable mode, credential, callback, actor or historical grant is restored.
+
+The protected VM store retains at most 32 complete-or-failed capture identities
+(at most 512 MiB of file bytes) and 64 original import identities. No background
+eviction, unknown cleanup or ancestry reset frees these bounds. A complete
+package survives ordinary source sleep/expiry. An exact owner recovery admits a
+new finite file-recovery work under current policy and the original pinned
+purpose/Bot/resources/selection; the old work never resumes. Every actual file,
+TEAM and DATA15 source remains current before transfer and later destination
+use. Private source computers never become shared through recovery.
+
+The authenticated client API is under `/api/s16/client/computers/working-state`:
+
+- GET root: finite current source-work labels, complete manifests and original
+  import metadata. Reads start no guest session or transfer.
+- POST `capture`: exact `{requestId,workId,paths}`; returns only the complete
+  immutable manifest. A repeated original ID never starts capture again.
+- GET `packages/<id>`: original complete manifest after response loss.
+- POST `imports`: exact `{requestId,packageId,manifestSha256,vmId}`. Admission
+  binds the reviewed hash and a fresh workspace/attempt/current generation.
+- GET `receipts/<id>`: stored original receipt without guest I/O.
+- POST `receipts/<id>` with `{}`: explicit bounded read-back of that original
+  final subtree, never a pending write/commit replay.
+
+Cookie/Origin/CSRF and owner policy checks precede commands. Browser/native SDK
+metadata validation verifies the manifest's canonical SHA-256 using Web Crypto.
+No raw package byte download/upload, external archive URL or model tool exposes
+this protected API. Capture failures retain their identity and no complete file
+rows. `accepted` imports become `not_sent` on restart; `dispatched` imports become
+`unknown`. Both preserve their independent protected ancestry.
+
+Before the first destination dispatch, including staging metadata, reader 3,
+the immutable package reference, destination work/attempt/generation and tree
+hash are durable in `vm_working_imports`; DATA15 descendant/work/VM input stamps
+are durable separately. The VM service rechecks that exact `dispatched` stamp
+and current sources at actual transport start and publication. All later VM
+sessions inherit the recorded restrictions, including after cold restore.
+
+Host-only session operations `portable_read`, `portable_begin`, `portable_put`,
+`portable_commit` and `portable_inspect` use existing claimed POLICY/SSH runner
+paths. One fixed original import ID selects an exclusive staging directory.
+Each file is independently bounded and verified; publication rechecks the exact
+complete tree and calls Linux `renameat2(RENAME_NOREPLACE)` once. See the selected
+[glibc 2.39 ABI](https://github.com/bminor/glibc/blob/glibc-2.39/sysdeps/unix/sysv/linux/renameat2.c)
+and [Linux 6.8 flag contract](https://github.com/torvalds/linux/blob/v6.8/include/uapi/linux/fs.h).
+Missing ABI/filesystem support refuses without an overwrite fallback. Partial
+stages remain unconfirmed; original inspection only verifies a final tree and
+never completes it. Guest responses stay guest observations. Protocol fixtures,
+actual temporary-file/Python tests, Linux rename conformance and live KVM
+installation receipts are separately labelled.
 
 ## Required conformance
 

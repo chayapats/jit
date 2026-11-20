@@ -26,6 +26,7 @@ export interface ComputerBotView { id: string; main: boolean; computer: { kind: 
 /** Authenticated owner projection (`s16-client-computers/v1`). */
 export interface ComputersView {
   contract: "s16-client-computers/v1"; idleStopMs: number | null; computers: ComputerView[]; bots: ComputerBotView[];
+  workingState?: boolean;
   /** Whether "give a Bot its own computer" can create one on this controller now, else the stable reason. */
   privateCreation: { available: true } | { available: false; code: string };
 }
@@ -40,6 +41,7 @@ export interface ComputerDirectoryOptions<Owner extends object> {
   store: VmStore; pool: VmPool; scopes: ComputerScopes; vm: WorkingVmService;
   requireOwner(actor: Owner): void;
   status(actor: Owner, vmId: string): VmStatus;
+  workingState?: () => boolean;
   /** Bots of the current standing policy; `main` is the conversation Bot. */
   bots(actor: Owner): { id: string; main: boolean }[];
   /** Jit-created private computers on this KVM controller; absent when this controller creates no local VMs. */
@@ -105,7 +107,7 @@ export class ComputerDirectory<Owner extends object> {
       return { id: bot.id, main: bot.main, computer: own ? { kind: "private" as const, vmId: own } : { kind: "shared" as const } };
     });
     const unavailable = this.options.local ? this.options.local.unavailable() : "computer_local_unavailable";
-    return { contract: "s16-client-computers/v1", idleStopMs: stopAfter, computers, bots, privateCreation: unavailable === null ? { available: true } : { available: false, code: unavailable } };
+    return { contract: "s16-client-computers/v1", idleStopMs: stopAfter, computers, bots, workingState: this.options.workingState?.() ?? false, privateCreation: unavailable === null ? { available: true } : { available: false, code: unavailable } };
   }
   /**
    * One exact authenticated owner command. Its `requestId` is reserved before anything acts: a different body

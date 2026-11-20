@@ -1,6 +1,7 @@
 import { chmodSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { defaultVmLimits } from "./types";
+import { vmBackendDescriptor } from './descriptor';
 import type { VmHostCommand, VmManagement, VmStatus, VmCapability, VmMachineFacts, VmLimits } from "./types";
 import { vmHostCommand, vmQuote } from "./host";
 import { vmEndpoint, vmFail, vmId, vmInteger, vmRecord, vmLimits } from "./validation";
@@ -187,9 +188,7 @@ print(json.dumps({'architecture':platform.machine(),'os':f.get('ID','linux')+':'
     });
   }
   private descriptor(row: VmRegistration): Exclude<VmStatus['backend'], undefined> {
-    const b = row.backend; if (!b) return null; const limits = this.options.limits ?? defaultVmLimits;
-    return { ...structuredClone(b.profile), contract: 's16-computer-backend/v1', computerId: row.id, generation: row.generation,
-      limits: { cpuCount: b.cpuCount, memoryBytes: b.memoryBytes, diskBytes: b.diskBytes, sessions: Math.min(row.maxSessions, limits.maxSessions), commandMs: limits.commandMs, fileBytes: limits.fileBytes } };
+    return vmBackendDescriptor(row, this.options.limits ?? defaultVmLimits);
   }
   /** Owner-only status; this query starts no VM/session, returns no credentials or raw endpoints. */
   status(actor: object, id: string): VmStatus {
