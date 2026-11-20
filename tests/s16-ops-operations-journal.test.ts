@@ -72,6 +72,18 @@ test.each(['fence', 'write', 'clear'] as const)('interruption after durable %s r
   expect(existsSync(f.fence)).toBe(false); f.unchanged();
 });
 
+test('a lost response after the terminal journal write clears only its original retained gate without allocating a replacement or repeating work', async () => {
+  const f = await fixture(), ctx = context(f);
+  const journal = ctx.operations({ id: () => 'e'.repeat(32), now: () => 20, after(boundary) {
+    if (boundary === 'write' && journal.read().requests[0]?.status === 'complete') throw Error('fixture-terminal-response-loss');
+  } });
+  journal.begin(command, 0); expect(() => finishBackup(journal, command.requestId)).toThrow('fixture-terminal-response-loss');
+  expect(existsSync(f.fence)).toBe(true); const receipt = readFileSync(f.control); ctx.close();
+  const resumed = context(f).operations({ id() { throw Error('must not allocate'); }, now() { throw Error('must not change terminal time'); } });
+  expect(resumed.begin(command, 0)).toMatchObject({ fresh: false, request: { id: 'e'.repeat(32), status: 'complete' } });
+  expect(existsSync(f.fence)).toBe(false); expect(readFileSync(f.control)).toEqual(receipt); f.unchanged();
+});
+
 test('pending current metadata still blocks execution if its physical fence is lost; observational status cannot become writable-owner authority', async () => {
   const f = await fixture(), ctx = context(f), journal = ctx.operations({ id: () => 'e'.repeat(32) });
   journal.begin(command, 0); ctx.close(); unlinkSync(f.fence);
