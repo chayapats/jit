@@ -8,6 +8,15 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 async function fixture() { const f = await firecrackerRuntimeFixture(); cleanup.push(() => f.close()); return f; }
 function prefix(path: string) { const fd = openSync(path, 'r'), bytes = Buffer.alloc(22); try { readSync(fd, bytes); return bytes.toString(); } finally { closeSync(fd); } }
 
+test('never-launched checkpoint refuses before durable admission; first start and later stopped cold recovery remain usable', async () => {
+  const f = await fixture(), r = f.runtime(), tag = `jit-${'e'.repeat(32)}`; await r.inspect(); const before = r.current();
+  await expect(r.submit(f.mutation(1, 'checkpoint', tag))).rejects.toMatchObject({ code: 'vm_firecracker_snapshot_requires_launch' });
+  expect(r.current()).toEqual(before); expect(f.journal().db.query('SELECT request_id FROM fc_jobs').all()).toHaveLength(0); expect(f.starts()).toBe(0); expect(f.counters().signals).toBe(0);
+  expect((await r.submit(f.mutation(2, 'launch'))).state).toBe('committed'); expect((await r.submit(f.mutation(3, 'stop'))).state).toBe('committed');
+  const checkpoint = await r.submit(f.mutation(4, 'checkpoint', tag)); expect(checkpoint.state).toBe('committed'); expect(checkpoint.observation).toMatchObject({ state: 'stopped', snapshot: { id: tag, bytes: 128 * 1048576 } });
+  expect(f.starts()).toBe(1); expect(f.counters().signals).toBe(1); expect(prefix(f.disk)).toBe('original working bytes');
+});
+
 test('owning manager launches, binds real API/SSH and cold-restarts one original computer without duplicate effects', async () => {
   const f = await fixture(), r = f.runtime(); expect((await r.inspect()).state).toBe('stopped');
   const first = f.mutation(1, 'launch'), receipt = await r.submit(first); expect(receipt.state).toBe('committed'); expect(receipt.observation).toMatchObject({ state: 'running', basis: 'protocol_fixture' });

@@ -343,6 +343,11 @@ fenced until its driver settles, even after the logical observation deadline.
 Ordinary inspect cannot clear an active original mutation. A configured never-run
 computer can report stopped only after actual prepared empty-scope/disk checks;
 that is distinct from an executed whole-machine stop receipt.
+Checkpointing requires a recorded prior launch so its exact original process
+and disk can be independently settled. The client and native runtime reject a
+never-launched checkpoint before either intent/admission marker; the first
+start remains usable. A previously launched, now-stopped computer still supports
+cold checkpoint without another start or stop signal.
 
 The private controller client uses a separate `DurableJournal` with application
 ID `0x4a46434a`, installation binding and an OS-backed process lease. Its origin,

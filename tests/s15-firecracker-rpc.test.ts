@@ -18,6 +18,16 @@ async function fixture(custom?: (real: typeof fetch) => typeof fetch) {
     reopen(extra: Partial<FirecrackerClientOptions> = {}) { client.close(); client = new FirecrackerVmManagement({ ...options, create: false, ...extra }); return client; } };
 }
 
+test('owning client and direct RPC refuse initial checkpoint without an intent/job, including after client reopen', async () => {
+  const f = await fixture(), client = f.client(), tag = `jit-${'e'.repeat(32)}`; await client.inspect();
+  await expect(client.snapshot(tag)).rejects.toMatchObject({ code: 'vm_firecracker_snapshot_requires_launch' });
+  expect(client.pending()).toBe(false); expect(f.calls.filter(operation => operation === 'submit')).toHaveLength(0);
+  const command = f.mutation(1, 'checkpoint', tag), response = await fetch(f.relay.origin + '/v1/firecracker', { method: 'POST', headers: { Authorization: 'Bearer ' + credential, 'Content-Type': 'application/json' }, body: JSON.stringify({ contract: 's16-firecracker-management/v1', installationId, operation: 'submit', command }) });
+  expect(response.status).toBe(503); expect(f.runtime().current().activeRequestId).toBeNull(); expect(f.journal().db.query('SELECT request_id FROM fc_jobs').all()).toHaveLength(0);
+  const reopened = f.reopen(); expect(reopened.pending()).toBe(false); await reopened.start(); await reopened.stop(); await reopened.snapshot(tag);
+  expect((await reopened.inspect()).state).toBe('stopped'); expect(f.starts()).toBe(1); expect(f.counters().signals).toBe(1);
+});
+
 test('actual VmManagement client crosses authenticated RPC into launch/work endpoint/checkpoint/restore/retire', async () => {
   const f = await fixture(), client = f.client(), tag = `jit-${'d'.repeat(32)}`;
   expect((await client.inspect()).state).toBe('stopped'); await client.start(); const first = await client.inspect(); expect(first.state).toBe('running'); expect(first.sshEndpoint).toBeDefined();

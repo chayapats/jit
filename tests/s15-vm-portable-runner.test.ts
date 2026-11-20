@@ -26,7 +26,7 @@ async function fixture() {
 
 test('portable manifest bounds and closed paths exclude aliases, caches, homes, control/credential state', () => {
   for (const path of ['../a', 'a%2fb', '/a', 'a//b', 'a/./b', '.env', '.ssh/key', 'node_modules/a', 'browser/data', 'result.sqlite', 'a.pem', 'a\\b', 'a b', 'x/'.repeat(16) + 'a']) expect(() => portablePath(path)).toThrow();
-  expect(portablePath('src/ผลลัพธ์.txt')).toBe('src/ผลลัพธ์.txt');
+  const unicode = 'src/\u0e1c\u0e25\u0e25\u0e31\u0e1e\u0e18\u0e4c.txt'; expect(portablePath(unicode)).toBe(unicode);
   const file = (path: string, bytes = 0) => ({ path, bytes, sha256: 'a'.repeat(64) });
   for (const files of [[file('A'), file('a')], [file('a'), file('a/b')], [file('a', 1048577)], Array.from({ length: 65 }, (_, i) => file('a' + i)), Array.from({ length: 17 }, (_, i) => file('a' + i, 1048576))]) expect(() => portableFiles(files)).toThrow();
 });

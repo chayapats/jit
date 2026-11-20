@@ -113,6 +113,9 @@ export class FirecrackerVmManagement implements VmManagement {
       }
       const state = await this.#state(), c = state.computer;
       if (kind === 'launch' && state.machine!.state === 'running' || kind === 'stop' && state.machine!.state === 'stopped') return;
+      // Prepared-but-never-launched disks have no original process settlement to checkpoint.
+      // Refuse before retaining an intent; this must not fence the computer's first start.
+      if (kind === 'checkpoint' && c.launchId === null) throw new AppError('vm_firecracker_snapshot_requires_launch', 409);
       const common = { contract: 's16-firecracker-host-command/v1' as const, requestId: crypto.randomUUID().replaceAll('-', ''), computerId: c.id, selectionSha256: c.selectionSha256, expectedRevision: c.revision, expectedLaunchId: c.launchId };
       const command = firecrackerHostCommand(kind === 'launch' || kind === 'stop' ? { ...common, kind } : { ...common, kind, snapshotId });
       const intent: Intent = { contract: 's16-firecracker-client-intent/v1', command, state: 'accepted', receipt: null };

@@ -257,7 +257,9 @@ export class FirecrackerHostRuntime {
   controllerIdentity(): { uid: number; gid: number } { this.#current(); return { uid: this.#base.host.controllerUid, gid: this.#base.host.controllerGid }; }
   /** Original exact submission. Native admission/driver/publication remain under the current protected guard. */
   submit(command: FirecrackerHostCommand, options: { timeoutMs?: number } = {}): Promise<FirecrackerHostJob> {
-    this.#current(); if (command.computerId !== this.computerId) return Promise.reject(new AppError('vm_firecracker_management_unavailable', 503)); return this.#jobs.run(command, () => this.#current(), options);
+    this.#current(); if (command.computerId !== this.computerId) return Promise.reject(new AppError('vm_firecracker_management_unavailable', 503));
+    if (command.kind === 'checkpoint' && this.#instance().launch === null) return Promise.reject(new AppError('vm_firecracker_snapshot_requires_launch', 409));
+    return this.#jobs.run(command, () => this.#current(), options);
   }
   /** Existing original receipt only; no execution or replacement command is accepted. */
   receipt(requestId: string): FirecrackerHostJob { this.#current(); return this.#journal.receipt(this.computerId, requestId); }
