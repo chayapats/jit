@@ -16,6 +16,7 @@ import { assertS16OperationsFenceCurrent, readS16OperationsAdoptionFence, readS1
 import { openS16OperationsJournal, type S16OperationsJournal, type S16OperationsJournalOptions } from './operations-journal';
 import { resolveS16NativeNamespace, type S16NativeNamespace } from './native-namespace';
 import { openS16NativeSet, type S16NativeSetMaintenance, type S16NativeSetOptions } from './native-set';
+import { openFirecrackerControllerMaintenance, type FirecrackerControllerMaintenance } from '../../s15/vm/firecracker/maintenance';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -39,7 +40,11 @@ function integrity(db: Database): void {
 export interface S16ControlMaintenance {
   readonly runtime: S16RuntimeMaintenance;
   readonly outer: readonly S16LedgerSource[];
+  /** Complete selected/retained current SQL cohort, including auxiliary controller journals. Non-SQL custody is separate. */
+  readonly sources: readonly S16LedgerSource[];
   readonly ownerIdentity: string;
+  /** Current controller original intents, separate from root-helper/working-disk settlement. */
+  readonly firecracker: FirecrackerControllerMaintenance;
   /** Retains only this exact current-owner/config bootstrap fence; it grants no application/effect authority. */
   retainAdoptionFence(fence: S16OperationsAdoptionFence): void;
   /** Binds the verified original fenced operations journal without releasing either process lease. */
@@ -69,11 +74,13 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   let expectedFence = options.adoptionFence ? Object.freeze({ ...options.adoptionFence }) : undefined;
   let expectedOperation = options.operationFence ? Object.freeze({ ...options.operationFence }) : undefined;
   let runtime: S16RuntimeMaintenance | undefined, closed = false, usable = true;
+  let firecracker: FirecrackerControllerMaintenance | undefined;
   const opened: Database[] = [], entries = new Map<string, BigIntStats>();
   const nativeSets = new Set<S16NativeSetMaintenance>();
   const close = () => {
     if (closed) return; usable = false;
     if ([...nativeSets].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    firecracker?.close();
     let failed = false;
     for (const db of [...opened].reverse()) try { db.close(true); } catch { failed = true; }
     if (failed) refuse('s16_ops_source_release_unknown');
@@ -129,11 +136,12 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       if (!value || value.kind !== 'meta' || typeof value.epoch !== 'string' || !/^[a-f0-9]{16}$/.test(value.epoch) || source.database.query<{ total: number }, []>("SELECT count(*) AS total FROM records WHERE json_extract(json,'$.kind')='meta'").get()?.total !== 1) refuse();
     }
     const heldRuntime = runtime;
-    const assertCurrent = () => {
+    const assertBaseCurrent = () => {
       if (closed || !usable) refuse('s16_ops_maintenance_closed'); lease.assertCurrent(); heldRuntime.assertCurrent(); unfenced();
       if (canonical(config) !== configIdentity || !same(rootEntry, entry(root, true)) || !same(ownerEntry, entry(ownerDirectory, true)) || canonical(inventory()) !== canonical(expectedInventory)) refuse('s16_ops_inventory_changed');
       for (const [path, before] of entries) { const current = entry(path); if (!same(before, current) || before.size !== current.size || before.mtimeNs !== current.mtimeNs || before.ctimeNs !== current.ctimeNs) refuse('s16_ops_image_changed'); }
     };
+    const assertCurrent = () => { assertBaseCurrent(); firecracker?.assertCurrent(); };
     const retainAdoptionFence = (fence: S16OperationsAdoptionFence) => {
       assertCurrent(); validateS16OperationsAdoptionFence(fence);
       if (expectedOperation) refuse();
@@ -176,7 +184,11 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       assertCurrent(); for (const session of nativeSets) { if (!session.released) refuse('s16_ops_native_busy'); nativeSets.delete(session); }
       const session = openS16NativeSet({ ...sessionOptions, directory: root, requestId, lease, journal: operations(), namespace: nativeNamespace, guard: assertCurrent }); nativeSets.add(session); return session;
     };
-    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), ownerIdentity, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet });
+    const vm = heldRuntime.sources.find(source => source.name === 'vm.sqlite')!.database;
+    firecracker = openFirecrackerControllerMaintenance({ runtimeDirectory: join(root, 'runtime'), installationId: config.installationId, vm, guard: assertBaseCurrent, retain(capability) { firecracker = capability; } });
+    const sources = Object.freeze([...outer, ...heldRuntime.sources, ...firecracker.sources]);
+    if (sources.length > 256 || new Set(sources.map(source => source.name)).size !== sources.length || new Set(sources.map(source => source.database)).size !== sources.length) refuse('s16_ops_inventory_changed');
+    assertCurrent(); return Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet });
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

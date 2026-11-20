@@ -60,6 +60,13 @@ its historical header has application/version zero, so the actual owning
 resource row and schema must be validated rather than inferring an identity
 from zero.
 
+The current control capability now binds the separate
+[`vm-firecracker` controller journals](../contracts/s16-firecracker-controller-custody-v1.md)
+to actual VM manager rows and retains their existing process leases. Their
+original accepted/dispatched/unknown states are copied as SQL without adapter
+construction, credential access or helper RPC. Root-helper state and disks
+remain separate current custody; controller metadata is not physical proof.
+
 The first implemented internal primitive is
 [`s16-ledger-image/v1`](../contracts/s16-ledger-image-v1.md): a bounded streamed
 header/hash observation that never opens SQLite or supplies admission
@@ -90,7 +97,11 @@ reference. The [native root component](../contracts/s16-native-root-v1.md)
 inspects/captures an explicitly selected existing root. The protected current
 control's [namespace resolver](../contracts/s16-native-namespace-v1.md) maps all
 three namespaces to current owning rows, preserving pending/untracked custody.
-GitHub native identity discovery and aggregate coordination remain required.
+The [native-set coordinator](../contracts/s16-native-set-v1.md) now retains
+complete public identities and exact saved subsets under current-intent
+management custody, including GitHub attempts without execution correlations.
+It uses one original action, deep quarantine and a private producer receipt.
+Full aggregate publication and forward activation remain required.
 Public snapshot shape/hash checks alone do not validate saved branch ancestry;
 the native component also provides fresh public restore quarantine, with no
 live activation or execution, for deep native verification before acceptance.

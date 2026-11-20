@@ -32,6 +32,7 @@ export class FirecrackerVmManagement implements VmManagement {
   readonly #fetch: typeof fetch;
   readonly #timeout: number;
   #closed = false;
+  #released = false;
   #busy = false;
   #recovering: Promise<Intent | null> | null = null;
   /** The initial native relay and controller are on the same verified Linux host. Fixtures say so explicitly. */
@@ -138,5 +139,5 @@ export class FirecrackerVmManagement implements VmManagement {
   /** Protected local uncertainty only, never evidence that the remote machine is running/stopped. */
   pending(): boolean { this.#current(); return this.#active() !== null; }
   /** Closes controller metadata only. Root systemd/forwarding and unknown original receipts survive. */
-  close(): void { if (this.#closed) return; this.#closed = true; this.#journal.close(); }
+  close(): void { if (this.#released) return; this.#closed = true; this.#journal.close(); this.#released = true; }
 }

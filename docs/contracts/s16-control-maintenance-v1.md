@@ -48,6 +48,16 @@ Its [versioned inventory](s16-native-namespace-v1.md) preserves missing,
 uncorrelated, untracked and ambiguous ownership instead of shrinking the set.
 It grants no native execution/settlement and does not itself capture sessions.
 
+`firecracker` holds the separately registered current controller intent journals
+under their original process leases. Its [owning custody protocol](s16-firecracker-controller-custody-v1.md)
+supplies additional SQL sources while preserving original accepted/dispatched/
+unknown facts without adapter construction, credential access or helper calls.
+The parent closes these sources before outer/runtime handles; unknown disposal
+retains installation/CHAT exclusion. Root-helper physical state is separate.
+The immutable `sources` collection combines outer, selected/retained runtime
+and auxiliary controller SQL sources with unique aliases/handles. Aggregate
+SQL capture must use it; it does not imply non-SQL installation completeness.
+
 `nativeSet(requestId, options)` supplies the [protected native-set coordinator](s16-native-set-v1.md)
 with this genuine lease, current namespace and original journal. The context
 retains exclusion while any returned session is unreleased. Await session close
