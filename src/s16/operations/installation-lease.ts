@@ -2,33 +2,52 @@ import { Database } from 'bun:sqlite';
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, type BigIntStats } from 'node:fs';
 import { isAbsolute, join, normalize } from 'node:path';
 import { AppError } from '../../errors';
-import { opsPath, opsRead, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
+import { opsAtomic, opsPath, opsRead, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
 import { canonical } from '../../s15/conversation/validation';
+import { readS16OperationsAdoptionFence, readS16OperationsControl, validateS16OperationsBinding, type S16OperationsBinding } from './operations-state';
 
 const applicationId = 0x4a4f3136;
 function refuse(code = 's16_ops_installation_lease_invalid'): never { throw new AppError(code, 409); }
 interface ProcessLease {
-  mode: 'shared' | 'exclusive'; references: number;
+  mode: 'shared' | 'exclusive'; references: number; processKey: string; readonly operations: Readonly<S16OperationsBinding> | null;
   assertCurrent(): void; release(): void;
+  bind(value: S16OperationsBinding): void;
 }
 const processLeases = new Map<string, ProcessLease>(), opening = new Set<string>();
+const capabilities = new WeakMap<object, ProcessLease>();
 function reference(lease: ProcessLease): S16InstallationLease {
   lease.references++; let closed = false;
-  return Object.freeze({ mode: lease.mode, assertCurrent() {
+  const capability = Object.freeze({ mode: lease.mode, get operations() { return lease.operations; }, assertCurrent() {
     if (closed) refuse('s16_ops_installation_lease_closed'); lease.assertCurrent();
   }, close() {
     if (closed) return;
     if (lease.references === 1) lease.release(); // An unknown close must retain the original reference.
     lease.references--; closed = true;
-  } });
+  } }); capabilities.set(capability, lease); return capability;
 }
 /** Protected process lifetime only. A lease is never serialized, copied into an image or used as actor authority. */
 export interface S16InstallationLease {
   readonly mode: 'shared' | 'exclusive';
+  readonly operations: Readonly<S16OperationsBinding> | null;
   /** Requires the same private retained inode and the original live SQLite transaction. */
   assertCurrent(): void;
   /** Releases only this connection; failure stays unknown and may be retried without unlinking the file. */
   close(): void;
+}
+/** Requires an actual live capability over this root; caller-supplied structural lookalikes refuse. */
+export function assertS16InstallationLease(lease: S16InstallationLease, directory: string): void {
+  const held = capabilities.get(lease), root = entry(directory, true);
+  if (!held || held.processKey !== `${root.dev}:${root.ino}`) refuse('s16_ops_installation_busy');
+  lease.assertCurrent();
+}
+/** Requires the genuine exclusive form before any protected current-journal mutation. */
+export function assertS16ExclusiveInstallationLease(lease: S16InstallationLease, directory: string): void {
+  assertS16InstallationLease(lease, directory);
+  if (capabilities.get(lease)!.mode !== 'exclusive') refuse('s16_ops_installation_busy');
+}
+/** Publishes only the original fenced current journal's v2 binding, without releasing the retained SQLite transaction. */
+export function bindS16OperationsLease(lease: S16InstallationLease, directory: string, binding: S16OperationsBinding): void {
+  assertS16ExclusiveInstallationLease(lease, directory); capabilities.get(lease)!.bind(binding);
 }
 /** Trusted explicit installation root. Only selected CLI first adoption may create a new lease. */
 export interface S16InstallationLeaseOptions { directory: string; mode: 'shared' | 'exclusive'; create?: boolean }
@@ -64,8 +83,15 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') refuse(); }
     }
     const original = entry(path);
-    const expectedReceipt = canonical({ contract: 's16-installation-lease/v1', dev: original.dev.toString(), ino: original.ino.toString() });
-    if (!fresh) { entry(receipt); if (opsRead(receipt, 1024).toString('utf8') !== expectedReceipt) refuse(); }
+    if (options.mode === 'exclusive' && !(original.mode & 0o200n)) refuse('s16_ops_installation_not_writable');
+    let expectedReceipt = canonical({ contract: 's16-installation-lease/v1', dev: original.dev.toString(), ino: original.ino.toString() }), operations: Readonly<S16OperationsBinding> | null = null;
+    if (!fresh) {
+      entry(receipt); const text = opsRead(receipt, 1024).toString('utf8'), value = JSON.parse(text);
+      if (text !== expectedReceipt) {
+        if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).sort().join(',') !== 'contract,dev,ino,operations' || value.contract !== 's16-installation-lease/v2' || value.dev !== original.dev.toString() || value.ino !== original.ino.toString() || canonical(value) !== text) refuse();
+        validateS16OperationsBinding(value.operations); operations = Object.freeze({ ...value.operations }); expectedReceipt = text;
+      }
+    }
     if (original.size > 1_048_576n) refuse();
     if (!fresh) {
       if (original.size < 100n) refuse();
@@ -84,7 +110,7 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       // Retain independent inode binding so a missing lock cannot be silently initialized on a later boot.
       opsWrite(receipt, expectedReceipt);
     }
-    const receiptEntry = entry(receipt);
+    let receiptEntry = entry(receipt);
     if (!same(original, entry(path)) || !same(parent, entry(root, true))) refuse();
     if (database.query<{ application_id: number }, []>('PRAGMA application_id').get()?.application_id !== applicationId || database.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version !== 1 || database.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()?.journal_mode !== 'delete') refuse();
     try {
@@ -96,14 +122,37 @@ export function openS16InstallationLease(options: S16InstallationLeaseOptions): 
       if (error instanceof AppError) throw error;
       refuse('s16_ops_installation_busy');
     }
+    if (options.mode === 'exclusive') {
+      try { database.exec('DELETE FROM lease WHERE 0'); } catch { refuse('s16_ops_installation_not_writable'); }
+    }
+    const verifyOperations = (binding: S16OperationsBinding) => {
+      const control = readS16OperationsControl(root);
+      if (control.id !== binding.id || control.installationId !== binding.installationId || control.ownerIdentity !== binding.ownerIdentity) refuse('s16_ops_control_invalid');
+      return control;
+    };
+    if (operations) verifyOperations(operations);
+    const controlPath = join(root, 'operations/control.json'), controlEntry = operations ? entry(controlPath) : undefined;
     const owned = database, retained = entry(path);
     const assertCurrent = () => {
       if (closed || !owned.inTransaction) refuse('s16_ops_installation_lease_closed');
       const current = entry(path);
       if (!same(original, current) || retained.size !== current.size || retained.mtimeNs !== current.mtimeNs || retained.ctimeNs !== current.ctimeNs || !same(parent, entry(root, true)) || !same(receiptEntry, entry(receipt)) || opsRead(receipt, 1024).toString('utf8') !== expectedReceipt) refuse('s16_ops_installation_lease_changed');
+      if (operations) {
+        if (options.mode === 'exclusive') verifyOperations(operations);
+        else { const currentControl = entry(controlPath); if (!controlEntry || !same(controlEntry, currentControl) || controlEntry.size !== currentControl.size || controlEntry.mtimeNs !== currentControl.mtimeNs || controlEntry.ctimeNs !== currentControl.ctimeNs) refuse('s16_ops_control_invalid'); }
+      }
     };
     assertCurrent();
-    const shared: ProcessLease = { mode: options.mode, references: 0, assertCurrent, release() {
+    const shared: ProcessLease = { mode: options.mode, references: 0, processKey, get operations() { return operations; }, assertCurrent, bind(value) {
+      if (options.mode !== 'exclusive') refuse('s16_ops_installation_busy'); assertCurrent(); validateS16OperationsBinding(value);
+      const control = verifyOperations(value), fence = readS16OperationsAdoptionFence(root);
+      if (fence.id !== value.id || fence.installationId !== value.installationId || fence.ownerIdentity !== value.ownerIdentity || fence.requestId !== control.adoption.requestId || fence.configurationSha256 !== control.adoption.configurationSha256 || fence.createdAt !== control.adoption.createdAt) refuse('s16_ops_control_invalid');
+      if (operations) { if (canonical(operations) !== canonical(value)) refuse('s16_ops_control_invalid'); return; }
+      const text = canonical({ contract: 's16-installation-lease/v2', dev: original.dev.toString(), ino: original.ino.toString(), operations: value });
+      opsAtomic(receipt, JSON.parse(text)); const nextEntry = entry(receipt);
+      if (opsRead(receipt, 1024).toString('utf8') !== text) refuse('s16_ops_adoption_unknown');
+      expectedReceipt = text; receiptEntry = nextEntry; operations = Object.freeze({ ...value }); assertCurrent();
+    }, release() {
       try { owned.close(true); } catch { return refuse('s16_ops_source_release_unknown'); }
       closed = true; processLeases.delete(processKey);
     } };

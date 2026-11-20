@@ -16,6 +16,9 @@ Protected installation maintenance opens the existing installation lease with
 an exclusive transaction. Any running selected service/local command refuses
 maintenance, and maintenance refuses new selected commands before owner/vault
 state opens. Shared/exclusive contention is finite and never steals a lock.
+Exclusive maintenance requires owner-write permission and a zero-row write
+probe on the actual lease singleton. Accepting `BEGIN EXCLUSIVE` on a silently
+read-only connection is not proof of exclusive writer exclusion.
 SQLite releases OS locks on process death; that does not certify application,
 parser, native-provider, notification or computer settlement.
 

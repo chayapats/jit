@@ -13,6 +13,7 @@
     "host:evidence": "bun src/evidence-cli.ts",
     "host:probe": "bun src/probe-cli.ts",
     "ops:drill": "bun src/ops-cli.ts",
+    "s16:ops": "bun src/s16/operations-cli.ts",
     "ops:package": "bun ops/package/bun-build.ts",
     "ops:desktop": "bun ops/desktop/main.ts",
     "ops:service": "bun src/main.ts service",

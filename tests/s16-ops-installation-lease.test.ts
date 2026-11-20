@@ -83,6 +83,12 @@ test.each(['missing', 'empty', 'reader', 'foreign', 'wal', 'singleton', 'symlink
   if (before) expect(readFileSync(f.path)).toEqual(before); else expect(existsSync(f.path)).toBe(false);
 });
 
+test('read-only lease custody may be observed by a shared reader but cannot certify exclusive maintenance', () => {
+  const f = fixture(); open(f.directory, 'shared', true).close(); chmodSync(f.path, 0o400);
+  const reader = open(f.directory); reader.assertCurrent(); reader.close();
+  expect(() => open(f.directory, 'exclusive')).toThrow(expect.objectContaining({ code: 's16_ops_installation_not_writable' }));
+});
+
 test('retained inode and closed capabilities cannot silently become another installation lease', () => {
   const f = fixture(), lease = open(f.directory, 'shared', true); renameSync(f.path, f.path + '-retained');
   expect(() => lease.assertCurrent()).toThrow(); expect(() => open(f.directory, 'exclusive')).toThrow();

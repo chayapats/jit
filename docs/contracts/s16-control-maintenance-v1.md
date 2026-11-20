@@ -23,8 +23,17 @@ exact owner memory/lifecycle identity, configured recipient/site installation,
 meta epoch, JSON syntax and actual SQLite/FK integrity are required. Current
 owner identity is distinct from the configured S15 identity. Known retained
 website state is included even when a later config disables that browser.
-Unknown outer SQLite files, missing mandatory state and any existing
-outer maintenance/capture fence refuse.
+Unknown outer SQLite files, missing mandatory state and existing outer
+maintenance/capture fences refuse. The sole bounded exception is the exact
+current `s16-operations-adoption/v1` intent supplied by protected operator code,
+matched to the actual owner, configuration and installation. Foreign/torn/
+changed fences still refuse; candidate archives never supply that expectation.
+
+Protected adoption methods retain that original fence, bind the independently
+verified initial current journal and clear only completed initialization.
+They hold both process leases continuously, do not mutate application ledgers,
+and grant no effect, policy, restore or worker-admission authority. Only the
+known atomic receipt transition refreshes its owning exclusive lease guard.
 
 `assertCurrent` rechecks both retained leases, runtime/current configuration
 binding, outer inventory and observed owner/ledger inodes/permissions/attributes.

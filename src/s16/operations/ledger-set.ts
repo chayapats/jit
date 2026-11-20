@@ -69,7 +69,17 @@ export function captureS16LedgerSet(options: S16LedgerSetOptions): Readonly<S16L
     for (const source of sources) {
       if (source.database.inTransaction) refuse('s16_ops_source_busy');
       if (source.database.query<{ name: string }, []>('PRAGMA database_list').all().some(row => !['main', 'temp'].includes(row.name))) refuse('s16_ops_attached_unsupported');
+      if (source.database.query<{ query_only: number }, []>('PRAGMA query_only').get()?.query_only !== 0) refuse('s16_ops_source_not_writable');
       try { source.database.exec('BEGIN IMMEDIATE'); held.push(source.database); } catch { refuse('s16_ops_source_busy'); }
+      const db = source.database, applicationId = db.query<{ application_id: number }, []>('PRAGMA application_id').get()?.application_id,
+        version = db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version;
+      if (applicationId === undefined || version === undefined || (applicationId >>> 0) !== source.reader.applicationId || !source.reader.formats.includes(version >>> 0)) refuse('s16_ops_reader_unsupported');
+      // Read-only/query-only SQLite accepts BEGIN IMMEDIATE without the promised write reservation.
+      // A zero-row DML probe requires the actual main writer transaction without changing any row,
+      // dirtying a header page, firing row triggers or relying on a temporary database's writability.
+      const table = db.query<{ name: string }, []>("SELECT name FROM main.sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 1").get();
+      if (!table) refuse('s16_ops_source_not_writable');
+      try { db.exec(`DELETE FROM main."${table.name.replaceAll('"', '""')}" WHERE 0`); } catch { refuse('s16_ops_source_not_writable'); }
     }
     current();
     let planned = 0;

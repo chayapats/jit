@@ -67,6 +67,11 @@ The internal contracts are:
 - [`s16-control-maintenance/v1`](../contracts/s16-control-maintenance-v1.md):
   current outer owner/lifecycle/recipient/site inspection combined with both
   process leases. Current outer custody is distinct from historical archives.
+- [`s16-operations-control/v1`](../contracts/s16-operations-control-v1.md) and
+  [`s16-installation-lease/v2`](../contracts/s16-installation-lease-v2.md):
+  bounded current metadata, explicit crash-resumable adoption and independent
+  missing-journal refusal before selected owner/vault access. Operator
+  adopt/status works; request transitions/retention/aggregate actions remain.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version

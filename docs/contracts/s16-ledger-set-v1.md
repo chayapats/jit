@@ -20,6 +20,13 @@ or mutate/close a source. Source rows are never rewritten. Holding all SQLite
 writer reservations establishes one cut for this selected set; it does not
 prove another unlisted store, guest, helper driver or parser is settled.
 
+`BEGIN IMMEDIATE` alone is insufficient for a read-only or query-only handle.
+After checking the actual main reader, a zero-row main-table DML probe must
+succeed inside each reservation. It changes no row, fires no row trigger and
+does not dirty a header page; a temporary database is not an acceptable probe.
+Read-only/query-only handles refuse before creating a point. An independent
+process test proves both owning main writers remain excluded during the cut.
+
 Before allocating serialized images or creating a point, SQLite page metadata
 checks the per-image/total ceiling and exact reader. `quick_check(1)` and
 `foreign_key_check` reject structural/referential corruption on the held owning

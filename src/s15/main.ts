@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { readComputerNeedsYouMinutes } from '../config';
 import { s16ComputerIdleStopMs } from '../s16/computers/defaults';
 import { openS16InstallationLease } from '../s16/operations/installation-lease';
+import { assertS16OperationsOwnerBinding } from '../s16/operations/operations-owner';
 import { AppError } from '../errors';
 import { readHiddenPassword } from '../terminal-password';
 import { ConnectionVault } from '../exec/connections';
@@ -53,20 +54,23 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
   const state = lstatSync(config.directory);
   if (!state.isDirectory() || state.isSymbolicLink() || state.mode & 0o077) throw new AppError('unprotected_ledger');
   const installationLease = openS16InstallationLease({ directory: config.directory, mode: 'shared', create: true });
-  let retained = false, closeOwnerStore = () => {}, closeRecipients = () => {};
+  let retained = false, releaseLease = true, closeOwnerStore = () => {}, closeRecipients = () => {};
   let service: Awaited<ReturnType<typeof composeS15>> | undefined;
   let provisioned: ProvisionedBrowser | null = null;
   let availabilityTimer: ReturnType<typeof setInterval> | undefined;
   let closeOwnerApp: (() => Promise<void>) | undefined;
   try {
+    if (installationLease.operations && installationLease.operations.installationId !== config.installationId) throw new AppError('s16_ops_control_invalid', 409);
     const ownerDirectory = join(config.directory, 'owner');
     if (initialize) mkdirSync(ownerDirectory, { mode: 0o700 });
     const ownerState = lstatSync(ownerDirectory);
     if (!ownerState.isDirectory() || ownerState.isSymbolicLink() || ownerState.mode & 0o077) throw new AppError('unprotected_ledger');
     const ownerPath = join(ownerDirectory, 'owner.sqlite');
     if (!initialize && !lstatSync(ownerPath).isFile()) throw new AppError('continuity_unavailable');
+    assertS16OperationsOwnerBinding(installationLease, config.directory);
     const ownerStore = new S14Store(ownerPath);
     closeOwnerStore = () => ownerStore.close();
+    if (installationLease.operations && ownerStore.read(tx => tx.get<{ id: string }>('SELECT id FROM memory_identity')?.id) !== installationLease.operations.ownerIdentity) throw new AppError('s16_ops_control_invalid', 409);
     // Same API and separation as S14: broker secrets are outside state, backups and execution roots.
     const vault = new ConnectionVault(join(config.directory, 'vault'), { forbidden: [ownerDirectory, join(config.directory, 'runtime'), join(config.directory, 'backups')] });
     const ownerApp = new S14Application(ownerStore, { policy: s14Policy({}), chat: { async reply() { throw new AppError('s15_conversation_required'); } }, personal: { vault: new PersonalVault(vault) } });
@@ -192,8 +196,11 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
     process.once('SIGINT', () => { void shutdown().catch(() => { process.exitCode = 1; }); });
     retained = true;
     console.log(JSON.stringify({ state: 's15_listening', origin: config.origin, contract: 's15-composition/v1', readiness: 'configured_unverified' }));
+  } catch (error) {
+    if (error instanceof AppError && error.code === 's16_ops_source_release_unknown') releaseLease = false;
+    throw error;
   } finally {
-    if (!retained) { clearInterval(availabilityTimer); await service?.close(); await provisioned?.close(); await closeOwnerApp?.(); closeRecipients(); closeOwnerStore(); installationLease.close(); }
+    if (!retained) { clearInterval(availabilityTimer); await service?.close(); await provisioned?.close(); await closeOwnerApp?.(); closeRecipients(); closeOwnerStore(); if (releaseLease) installationLease.close(); }
   }
 }
 

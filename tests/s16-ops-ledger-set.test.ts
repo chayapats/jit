@@ -84,6 +84,25 @@ test('a pre-existing owning transaction is refused without rolling it back or cl
   } finally { f.vm.db.exec('ROLLBACK'); }
 });
 
+test.each(['read-only', 'query-only'] as const)('a %s handle cannot claim the simultaneous writer cut merely by accepting BEGIN IMMEDIATE', mode => {
+  const f = fixture(), readonly = new Database(join(f.root, 'model.sqlite'), { readonly: mode === 'read-only', readwrite: mode === 'query-only', create: false }); cleanup.push(() => readonly.close(true));
+  if (mode === 'query-only') readonly.exec('PRAGMA query_only=ON');
+  const sources = f.options.sources.map(source => source.name === 'model.sqlite' ? { ...source, database: readonly } : source);
+  expect(() => captureS16LedgerSet({ ...f.options, sources })).toThrow(expect.objectContaining({ code: 's16_ops_source_not_writable' })); expect(existsSync(join(f.target, 'manifest.json'))).toBe(false);
+  expect(readonly.inTransaction).toBe(false); expect(f.journal.get('original')).toMatchObject({ state: 'unknown', usage: 7, privateScope: 'bot' });
+});
+
+test('an independent process cannot acquire either actual main writer while the simultaneous owning cut is held', () => {
+  const f = fixture(); let observed = false;
+  f.options.guard = () => {
+    if (observed || !f.vm.db.inTransaction || !f.journal.db.inTransaction) return; observed = true;
+    const code = `import {Database} from 'bun:sqlite'; for(const path of JSON.parse(process.env.JIT_OPS_PROBE_PATHS!)){const db=new Database(path,{readwrite:true,create:false}); try{db.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE'); console.log('incorrectly_acquired'); db.exec('ROLLBACK');}catch{console.log('busy');}finally{db.close(true);}}`;
+    const child = Bun.spawnSync([process.execPath, '-e', code], { env: { ...process.env, JIT_OPS_PROBE_PATHS: JSON.stringify([join(f.root, 'model.sqlite'), join(f.root, 'vm.sqlite')]) }, stdout: 'pipe', stderr: 'pipe' });
+    expect({ exit: child.exitCode, out: child.stdout.toString(), error: child.stderr.toString() }).toEqual({ exit: 0, out: 'busy\nbusy\n', error: '' });
+  };
+  expect(captureS16LedgerSet(f.options).images).toHaveLength(2); expect(observed).toBe(true); expect(f.journal.get('original')).toMatchObject({ state: 'unknown', usage: 7, privateScope: 'bot' });
+});
+
 test('attached persisted databases cannot disappear from the selected cut', () => {
   const f = fixture(); f.vm.db.exec(`ATTACH DATABASE '${join(f.root, 'additional.sqlite').replaceAll("'", "''")}' AS additional`);
   expect(() => captureS16LedgerSet(f.options)).toThrow(expect.objectContaining({ code: 's16_ops_attached_unsupported' }));
