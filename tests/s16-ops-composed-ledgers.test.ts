@@ -2,24 +2,17 @@ import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ConnectionVault } from '../src/exec/connections';
 import { JitClient } from '../src/s16/client';
 import { captureS16LedgerSet } from '../src/s16/operations/ledger-set';
 import { s16SelectedRuntimeSources } from '../src/s16/operations/runtime-readers';
 import { s16LedgerSetManifestHash, verifyS16LedgerSet } from '../src/s16/operations/verify-ledger-set';
-import type { LocalVoiceConfig, LocalVoiceEngine } from '../src/s16/voice/local';
-import { composedFixture } from './fixtures/s15-composition';
+import { operationsFixture } from './fixtures/s16-ops';
 
-type Fixture = Awaited<ReturnType<typeof composedFixture>>;
+type Fixture = Awaited<ReturnType<typeof operationsFixture>>;
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture() {
-  const artifact = { path: '/fixture/local-speech', sha256: 'f'.repeat(64) };
-  const local: LocalVoiceConfig = { transcription: { executable: artifact, model: artifact, language: 'auto' }, synthesis: { kind: 'espeak', executable: artifact, voice: 'en' }, timeoutMs: 5000 };
-  const engine: LocalVoiceEngine = { async available() { return true; }, async transcribe() { throw Error('unexpected speech'); }, async synthesize() { throw Error('unexpected speech'); }, async close() {} };
-  const f = await composedFixture('default', false, undefined, options => ({ ...options, files: { memory: true }, bots: {}, routines: {}, notifications: {}, computers: { idleStopMs: 1800000, sweepMs: 0 },
-    connections: { vault: new ConnectionVault(join(options.directory, '..', 'connections-vault'), { forbidden: [options.directory] }) }, skills: {},
-    voice: { local, quota: { dailyMs: 120000, captureMs: 30000 }, engine: async () => engine } }));
+  const f = await operationsFixture();
   cleanup.push(() => f.close()); return f;
 }
 function point(f: Fixture, id = 'a'.repeat(32)) {

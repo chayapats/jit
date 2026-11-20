@@ -33,6 +33,7 @@ test('owning model/VM handles produce exact private images of one SQLite cut wit
   const saved = image(join(f.target, 'model.sqlite')).query<{ json: string }, []>("SELECT json FROM records WHERE id='original'").get(); expect(JSON.parse(saved!.json)).toEqual(before);
   expect(image(join(f.target, 'vm.sqlite')).query('PRAGMA user_version').get()).toEqual({ user_version: 3 });
   expect(readFileSync(join(f.target, 'vm.sqlite'))[18]).toBe(1); expect(readFileSync(join(f.root, 'vm.sqlite'))[18]).toBe(2);
+  expect(f.vm.db.query('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
   expect(f.journal.get('original')).toEqual(before); expect(f.vm.db.inTransaction).toBe(false); expect(f.journal.db.inTransaction).toBe(false);
   const text = readFileSync(join(f.target, 'manifest.json'), 'utf8'); expect(JSON.parse(text)).toEqual(manifest); expect(text).not.toContain(f.root); expect(text).not.toContain('fixture-private-control');
 });

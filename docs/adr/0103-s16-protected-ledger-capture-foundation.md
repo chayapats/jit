@@ -52,6 +52,10 @@ The internal contracts are:
   writer reservations, checks reader/page bounds and SQLite/foreign-key
   integrity, writes private images, releases every reservation and rechecks the
   current outer guard before publishing the manifest.
+- [`s16-runtime-maintenance/v1`](../contracts/s16-runtime-maintenance-v1.md):
+  existing-state operator access behind the same retained process lease as the
+  service, with selected plus retained ledgers, exact reader/identity checks
+  and no application boot/replay or missing-state initialization.
 
 A serialized WAL image is converted to rollback journal mode only in the new
 image's documented journal-mode header bytes. The source and reader version
