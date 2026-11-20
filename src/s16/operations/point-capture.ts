@@ -17,6 +17,8 @@ import { captureS16PayloadSet, s16PayloadSetManifestHash, s16PayloadSetManifestT
 import { inspectS16PointFiles, s16PointDirectory, s16PointEntry, s16PointEntryIdentity, s16PointLimits, s16PointReconnection, s16RecoveryPointText, type S16PointPackage, type S16PointRole, type S16RecoveryPoint } from './point-files';
 import { s16LedgerSetManifestHash, verifyS16LedgerSet } from './verify-ledger-set';
 
+import { ownS16Staging } from './owned-staging';
+
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const stageBytes = 12884901888, stageNodes = 250000, metadataBound = 4194304;
 function refuse(code = 's16_ops_point_capture_invalid'): never { throw new AppError(code, 409); }
@@ -56,7 +58,8 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
   const { config, requestId, context, journal } = owner, attempt = owner.attempt ?? 'original'; identity(requestId);
   if (!/^[a-z0-9][a-z0-9_]{0,23}$/.test(attempt)) refuse();
   let released = false, usable = true, busy = false, native: S16NativeSetMaintenance | undefined;
-  const guard = () => { if (released || !usable) refuse('s16_ops_point_capture_closed'); assertS16ExclusiveInstallationLease(owner.lease, config.directory); context.assertCurrent(); };
+  let stagingGuard: (() => void) | undefined;
+  const guard = () => { if (released || !usable) refuse('s16_ops_point_capture_closed'); assertS16ExclusiveInstallationLease(owner.lease, config.directory); context.assertCurrent(); stagingGuard?.(); };
   const after = (boundary: Boundary) => { guard(); if ((owner.after?.(boundary) as unknown) !== undefined) refuse('s16_ops_guard_invalid'); guard(); };
   const current = () => { guard(); const control = journal.read(), request = control.requests.find(row => row.requestId === requestId); if (!request || request.kind !== 'backup' || !request.pointId || request.configurationSha256 !== hash(canonical(config))) return refuse(); return { control, request }; };
   const resumeSettled = () => { const state = current(); if (!['running', 'complete', 'discarded'].includes(state.request.status) && state.request.actions.every(row => ['confirmed', 'not_applied'].includes(row.state))) journal.resume(requestId, state.control.revision); };
@@ -91,7 +94,7 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
       if (hash(fileCatalog) !== files.sha256 || hash(githubCatalog) !== github.sha256) refuse();
       await cutsCurrent(); const ordinaryBytes = [...files.sources, ...github.sources].reduce((n, row) => n + row.bytes, 0) + Buffer.byteLength(fileCatalog) + Buffer.byteLength(githubCatalog);
       if (ordinaryBytes > s16PointLimits.payload) refuse('s16_ops_capture_bounds');
-      native = context.nativeSet(requestId, { attempt, maxBytes: s16PointLimits.payload - ordinaryBytes, verifyCurrent: true });
+      native = context.nativeSet(requestId, { attempt, maxBytes: s16PointLimits.payload - ordinaryBytes, verifyCurrent: true, ownedStaging: true });
       const nativeResult = await native.capture(); await native.close(); after('native'); resumeSettled(); state = current();
       const nativePlan = read(join(nativeResult.directory, 'plan.json')), nativeManifestBytes = read(join(nativeResult.directory, 'manifest.json')), nativeManifest = JSON.parse(nativeManifestBytes.toString('utf8'));
       if (hash(nativeManifestBytes) !== nativeResult.manifestSha256 || nativeManifest.planSha256 !== hash(nativePlan)) refuse();
@@ -110,6 +113,9 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
       const verifyOnly = published || state.request.phase === 'verifying'; data = published ? point : stagedData;
       const totalUsage = usage(staging), ownUsage = usage(stage);
       if (totalUsage.bytes - ownUsage.bytes + s16PointLimits.bytes + metadataBound * 3 > stageBytes || totalUsage.nodes - ownUsage.nodes + 20280 > stageNodes) refuse('s16_ops_capture_bounds');
+      const owned = ownS16Staging(config.directory, journal, requestId, 'point', captureAction, guard, verifyOnly, published ? point : undefined);
+      const rootIdentity = s16PointEntryIdentity(s16PointEntry(owned.root, true), true), dataIdentity = s16PointEntryIdentity(s16PointEntry(data, true), true);
+      stagingGuard = () => { if (!data || s16PointEntryIdentity(s16PointEntry(owned.root, true), true) !== rootIdentity || s16PointEntryIdentity(s16PointEntry(data, true), true) !== dataIdentity) refuse('s16_ops_image_changed'); };
       if (verifyOnly) { s16PointEntry(stage, true); ensure(join(stage, 'plan.json'), planText, guard, true); s16PointEntry(data, true); }
       else { opsDirectory(stage); ensure(join(stage, 'plan.json'), planText, guard, false); opsDirectory(data); } after('plan');
       const catalogs = [{ name: 'file_cohort.json', path: join(stage, 'file-cohort.json'), bytes: Buffer.byteLength(fileCatalog), sha256: files.sha256 }, { name: 'github_cohort.json', path: join(stage, 'github-cohort.json'), bytes: Buffer.byteLength(githubCatalog), sha256: github.sha256 }];
@@ -159,6 +165,6 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
         const latest = id ? state.request.actions.find(row => row.id === id) : undefined; journal.block(requestId, state.control.revision, 's16_ops_point_capture_incomplete', latest && !['confirmed', 'not_applied'].includes(latest.state) ? latest.id : undefined);
       } } catch { /* Unknown source/journal/disposal retains the original gate and original handles. */ }
       throw error;
-    } finally { busy = false; }
+    } finally { busy = false; stagingGuard = undefined; }
   } });
 }

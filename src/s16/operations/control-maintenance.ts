@@ -23,6 +23,10 @@ import { captureS16FileCohort, type S16FileObservation } from '../files/custody'
 import { captureS16GithubArtifacts, type S16GithubArtifactObservation } from '../../s15/github/maintenance';
 import { removeS16Point, type S16PointRemovalOptions, type S16PointRemovalResult } from './point-retention';
 import { captureS16ExternalCustody, type S16ExternalObservation } from './external-custody';
+import { s16PointDirectory } from './point-files';
+import { retireS16Staging, type S16StagingRetirementOptions, type S16StagingRetirementResult } from './staging-retention';
+import { abortS16Backup, type S16BackupAbortOptions, type S16BackupAbortResult } from './backup-abort';
+import type { S16OperationsRequest } from './operations-state';
 import { openS16PointCapture, type S16PointCaptureMaintenance, type S16PointCaptureOptions } from './point-capture';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
@@ -76,6 +80,10 @@ export interface S16ControlMaintenance {
   pointCapture(requestId: string, options?: S16PointCaptureOptions): S16PointCaptureMaintenance;
   /** Explicit protected retention, confined to the original receipted historical point and durable plan. */
   removePoint(requestId: string, options: S16PointRemovalOptions): Readonly<S16PointRemovalResult>;
+  /** Explicit logical backup abort; temporary bytes require separate retirement. */
+  abortBackup(requestId: string, options?: S16BackupAbortOptions): Readonly<S16BackupAbortResult>;
+  /** Explicit retirement of one terminal backup's independently owned temporary namespaces. */
+  retireStaging(requestId: string, options: S16StagingRetirementOptions): Readonly<S16StagingRetirementResult>;
   assertCurrent(): void;
   close(): void;
 }
@@ -182,9 +190,18 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       // assertCurrent just re-read the exact private original fence; only this owning bootstrap may remove it.
       unlinkSync(path); opsSyncDirectory(dirname(path)); expectedFence = undefined; assertCurrent();
     };
+    const assertCaptureReleased = () => {
+      assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    };
+    const assertBackupAbortable = (request: Readonly<S16OperationsRequest>) => {
+      assertCaptureReleased(); const control = readS16OperationsControl(root);
+      if (request.pointId) opsPath(s16PointDirectory(root, request.pointId));
+      if (request.kind !== 'backup' || !request.pointId || request.configurationSha256 !== configurationSha256 || control.ownerIdentity !== ownerIdentity || control.installationId !== config.installationId ||
+        control.points.some(row => row.id === request.pointId) || lstatSync(s16PointDirectory(root, request.pointId), { throwIfNoEntry: false })) refuse('s16_ops_backup_abort_refused');
+    };
     const operations = (journalOptions: Pick<S16OperationsJournalOptions, 'now' | 'id' | 'after'> = {}) => {
       assertCurrent(); if (expectedFence || !lease.operations) refuse('s16_ops_adoption_required');
-      return openS16OperationsJournal({ ...journalOptions, directory: root, lease, configurationSha256, guard: assertCurrent,
+      return openS16OperationsJournal({ ...journalOptions, directory: root, lease, configurationSha256, guard: assertCurrent, assertBackupAbortable,
         retainFence(fence) {
           assertCurrent(); validateS16OperationsFence(fence);
           if (fence.id !== lease.operations!.id || fence.installationId !== config.installationId || fence.ownerIdentity !== ownerIdentity || fence.configurationSha256 !== configurationSha256) refuse();
@@ -195,7 +212,9 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
           assertCurrent(); if (!expectedOperation || canonical(expectedOperation) !== canonical(fence)) refuse();
           const control = readS16OperationsControl(root); assertS16OperationsFenceCurrent(control, fence);
           const request = control.requests.find(row => row.id === fence.operationId);
-          if (!request || !['complete', 'discarded'].includes(request.status) || request.actions.some(action => !['confirmed', 'not_applied'].includes(action.state))) refuse();
+          if (!request || !['complete', 'discarded'].includes(request.status)) refuse();
+          if (request.abort) assertBackupAbortable(request);
+          else if (request.actions.some(action => !['confirmed', 'not_applied'].includes(action.state))) refuse();
           const path = join(ownerPath + '.ops', 'fence.json');
           unlinkSync(path); opsSyncDirectory(dirname(path)); expectedOperation = undefined; assertCurrent();
         } });
@@ -227,7 +246,9 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       assertCurrent(); for (const session of pointCaptures) { if (!session.released) refuse('s16_ops_point_capture_busy'); pointCaptures.delete(session); }
       const session = openS16PointCapture({ ...captureOptions, config, requestId, lease, context, journal: operations() }); pointCaptures.add(session); return session;
     };
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint }); return context;
+    const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
+    const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

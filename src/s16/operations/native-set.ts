@@ -9,6 +9,7 @@ import type { S16NativeBinding, S16NativeManagementCustody, S16NativeNamespace, 
 import { openS16NativeRoot, s16NativeRootByteLimit, type S16NativeRootMaintenance } from './native-root';
 import type { S16OperationsJournal } from './operations-journal';
 import type { S16OperationsRequest } from './operations-state';
+import { ownS16Staging, s16StagingOwnershipId } from './owned-staging';
 
 const metadataBound = 4_194_304, payloadBound = 4_294_967_296, stagingBound = 8_589_934_592, nodeBound = 100_000;
 const hash = (value: Uint8Array | string) => createHash('sha256').update(value).digest('hex');
@@ -36,6 +37,8 @@ export interface S16NativeSetOptions {
   attempt: string; maxBytes: number;
   /** Recheck complete current public native bytes and deep quarantine even with an independent producer receipt. */
   verifyCurrent?: true;
+  /** Independently journal empty root/data identities before child writes for explicit retirement. */
+  ownedStaging?: true;
   after?(boundary: 'intent' | 'plan' | 'root' | 'manifest' | 'receipt' | 'observed', rootId?: string): void;
 }
 /** Owned by the current control context; close it before releasing installation/CHAT exclusion. */
@@ -95,7 +98,7 @@ const roots = (namespace: S16NativeNamespace): Root[] => namespace.roots.map(({ 
 export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintenance {
   const { directory, requestId, attempt, maxBytes, journal } = owner;
   identity(requestId);
-  if (!/^[a-z0-9][a-z0-9_]{0,23}$/.test(attempt) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > payloadBound || owner.verifyCurrent !== undefined && owner.verifyCurrent !== true) refuse();
+  if (!/^[a-z0-9][a-z0-9_]{0,23}$/.test(attempt) || !Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > payloadBound || owner.verifyCurrent !== undefined && owner.verifyCurrent !== true || owner.ownedStaging !== undefined && owner.ownedStaging !== true) refuse();
   let released = false, usable = true, busy = false;
   const held = new Set<S16NativeRootMaintenance>();
   const guard = () => {
@@ -137,6 +140,7 @@ export function openS16NativeSet(owner: S16NativeSetOwner): S16NativeSetMaintena
         if (initial.request.status !== 'running') refuse('s16_ops_reconciliation_required');
         journal.recordIntent(requestId, initial.control.revision, { id: actionId, kind: 'capture_native', priorSha256: null, targetSha256: null }); after('intent');
       }
+      if (owner.ownedStaging || initial.request.actions.some(row => row.id === s16StagingOwnershipId('native', actionId!))) ownS16Staging(directory, journal, requestId, 'native', actionId, guard, initial.request.phase === 'verifying');
       // A recorded action never silently switches its namespace, budget, timestamp or source plan.
       if (initial.request.phase === 'verifying' && (!action || action.state !== 'confirmed' || !lstatSync(planPath, { throwIfNoEntry: false }))) refuse('s16_ops_phase_invalid');
       let planText = proposedText;

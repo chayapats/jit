@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { AppError } from '../../errors';
 import { opsAtomic } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
 import { assertS16ExclusiveInstallationLease, type S16InstallationLease } from './installation-lease';
-import { assertS16OperationsFenceCurrent, canonicalS16OperationsControl, readS16OperationsControl, readS16OperationsFence, s16OperationsLimits, s16OperationsPhases, validateS16OperationsControl, type S16OperationsAction, type S16OperationsControl, type S16OperationsFence, type S16OperationsRequest } from './operations-state';
+import { assertS16OperationsFenceCurrent, canonicalS16OperationsControl, readS16OperationsControl, readS16OperationsFence, s16OperationsLimits, s16OperationsPhases, s16BackupAbortScope, s16BackupAbortActions, validateS16OperationsControl, type S16OperationsAction, type S16OperationsControl, type S16OperationsFence, type S16OperationsRequest } from './operations-state';
 
 function refuse(code = 's16_ops_request_conflict'): never { throw new AppError(code, 409); }
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -20,6 +21,7 @@ export interface S16OperationsMutation { readonly revision: number; readonly req
 export interface S16OperationsJournalOptions {
   directory: string; lease: S16InstallationLease; configurationSha256: string; guard(): void;
   retainFence(fence: S16OperationsFence): void; clearFence(fence: S16OperationsFence): void;
+  assertBackupAbortable?(request: Readonly<S16OperationsRequest>): void;
   now?(): number; id?(): string; after?(boundary: 'fence' | 'write' | 'clear'): void;
 }
 /** Durable current metadata only. Physical capture/verification/deletion remain with the owning coordinator. */
@@ -34,6 +36,8 @@ export interface S16OperationsJournal {
   retainPoint(requestId: string, expectedRevision: number, point: { sha256: string; bytes: number }): S16OperationsMutation;
   planPointRemoval(requestId: string, expectedRevision: number, actionId?: string): S16OperationsMutation;
   recordPointRemoved(requestId: string, expectedRevision: number): S16OperationsMutation;
+  /** Logical original backup disposition, preserving local unknown capture facts. */
+  abortBackup(requestId: string, expectedRevision: number): S16OperationsMutation;
 }
 /**
  * Opens the fixed existing bound current journal under actual exclusive exclusion. It never initializes
@@ -75,7 +79,7 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
   };
   const save = (control: S16OperationsControl, request: S16OperationsRequest, expected: number) => {
     writable(control); if (control.revision !== expected || !Number.isSafeInteger(expected) || expected >= Number.MAX_SAFE_INTEGER) refuse('s16_ops_revision_conflict');
-    control.contract = 's16-operations-control/v2'; control.revision++; request.revision = control.revision; request.updatedAt = clock(request.updatedAt);
+    if (control.contract !== 's16-operations-control/v3') control.contract = 's16-operations-control/v2'; control.revision++; request.revision = control.revision; request.updatedAt = clock(request.updatedAt);
     validateS16OperationsControl(control); guard();
     if (readS16OperationsControl(root).revision !== expected) refuse('s16_ops_revision_conflict');
     try {
@@ -83,6 +87,9 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
       if (canonicalS16OperationsControl(readS16OperationsControl(root)) !== canonicalS16OperationsControl(control)) refuse('s16_ops_write_unknown');
     } catch { refuse('s16_ops_write_unknown'); }
     guard(); after('write'); clearIfOwn(control, request); return result(control, request, true);
+  };
+  const promote = (control: S16OperationsControl) => {
+    control.contract = 's16-operations-control/v3'; for (const request of control.requests) request.abort ??= null;
   };
   const find = (control: S16OperationsControl, requestId: string) => {
     identity(requestId); const request = control.requests.find(row => row.requestId === requestId); if (!request) refuse('s16_ops_request_missing'); return request;
@@ -118,11 +125,12 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
     if (command.kind === 'backup' && (!opaque(fence.pointId) || control.requests.some(row => row.kind === 'backup' && row.pointId === fence.pointId) || control.points.length >= s16OperationsLimits.points)) refuse('s16_ops_capacity');
     const request: S16OperationsRequest = { id: fence.operationId, requestId: fence.requestId, kind: fence.kind, hash: fence.hash, phase: 'pending', status: 'running', pointId: fence.pointId, cohortSha256: null, targetSha256: null,
       createdAt: fence.createdAt, updatedAt: fence.createdAt, revision: control.revision + 1, admittedRevision: control.revision + 1, configurationSha256: fence.configurationSha256, reason: null, actions: [] };
-    const next = JSON.parse(canonicalS16OperationsControl(control)) as S16OperationsControl; next.requests.push(request); next.contract = 's16-operations-control/v2'; next.revision++;
+    if (control.contract === 's16-operations-control/v3' || command.kind === 'retire') { promote(control); request.abort = null; }
+    const next = JSON.parse(canonicalS16OperationsControl(control)) as S16OperationsControl; next.requests.push(request); if (next.contract !== 's16-operations-control/v3') next.contract = 's16-operations-control/v2'; next.revision++;
     validateS16OperationsControl(next);
     const reserved = Buffer.byteLength(canonicalS16OperationsControl(next)) - Buffer.byteLength(canonical(request)) + s16OperationsLimits.requestBytes + (s16OperationsLimits.points - control.points.length) * 512 + 8192;
     if (reserved > s16OperationsLimits.bytes) refuse('s16_ops_capacity');
-    ensureFence(control, request); control.contract = 's16-operations-control/v2'; control.requests.push(request); return save(control, request, expectedRevision);
+    ensureFence(control, request); if (control.contract !== 's16-operations-control/v3') control.contract = 's16-operations-control/v2'; control.requests.push(request); return save(control, request, expectedRevision);
   }, advance(requestId, expectedRevision, phase, binding = {}) {
     const control = read(), request = find(control, requestId); writable(control);
     if (binding.cohortSha256 !== undefined && !sha(binding.cohortSha256) || binding.targetSha256 !== undefined && !sha(binding.targetSha256)) refuse();
@@ -141,7 +149,10 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
     return save(control, request, expectedRevision);
   }, recordIntent(requestId, expectedRevision, action) {
     const control = read(), request = find(control, requestId); writable(control); identity(action.id);
-    if (terminal(request) || request.status !== 'running') refuse('s16_ops_reconciliation_required');
+    const capture = request.actions.find(row => row.kind === (action.id.startsWith('stage_own_native_') ? 'capture_native' : 'capture_backend') && action.id === 'stage_own_' + (row.kind === 'capture_native' ? 'native' : 'point') + '_' + createHash('sha256').update(row.id).digest('hex'));
+    const ownership = action.kind === 'own_staging' && request.kind === 'backup' && request.phase === 'capturing' && capture && sha(action.priorSha256) && sha(action.targetSha256);
+    const quarantine = action.kind === 'quarantine_point' && request.kind === 'backup' && request.phase === 'verifying' && request.actions.some(row => row.kind === 'own_staging' && row.id.startsWith('stage_own_point_') && row.state === 'confirmed' && row.targetSha256 === action.priorSha256) && action.id === 'point_quarantine_' + action.priorSha256 && sha(action.targetSha256) && !control.points.some(row => row.id === request.pointId);
+    if (terminal(request) || request.status !== 'running' && !ownership && !quarantine) refuse('s16_ops_reconciliation_required');
     const old = request.actions.find(row => row.id === action.id);
     if (old) {
       if (canonical({ id: old.id, kind: old.kind, priorSha256: old.priorSha256, targetSha256: old.targetSha256 }) !== canonical(action)) refuse();
@@ -151,14 +162,16 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
     if (request.actions.length >= s16OperationsLimits.actions) refuse('s16_ops_capacity');
     if (action.kind === 'remove_point') refuse('s16_ops_phase_invalid'); // Only planPointRemoval may change point custody.
     const pointPublication = request.kind === 'backup' && request.phase === 'verifying' && action.kind === 'replace' && action.priorSha256 === null && sha(request.targetSha256) && action.targetSha256 === request.targetSha256 && action.id === 'point_publish_' + request.targetSha256 && request.actions.some(row => row.kind === 'capture_backend' && row.state === 'confirmed' && row.observedSha256 === request.targetSha256);
-    if (action.kind.startsWith('capture_') ? request.phase !== 'capturing' : !['prepared', 'activating'].includes(request.phase) && !pointPublication) refuse('s16_ops_phase_invalid');
+    const retirement = action.kind === 'remove_staging' && request.kind === 'retire' && request.phase === 'activating' && sha(request.targetSha256) && action.priorSha256 === request.targetSha256 && action.targetSha256 === null && action.id === 'staging_remove_' + request.targetSha256;
+    if (action.kind === 'own_staging' ? !ownership : action.kind === 'quarantine_point' ? !quarantine : action.kind === 'remove_staging' ? !retirement : action.kind.startsWith('capture_') ? request.phase !== 'capturing' : !['prepared', 'activating'].includes(request.phase) && !pointPublication) refuse('s16_ops_phase_invalid');
+    if (ownership || quarantine || retirement) promote(control);
     request.actions.push({ ...clone(action), state: 'intent', observedSha256: null }); return save(control, request, expectedRevision);
   }, observeAction(requestId, expectedRevision, actionId, outcome, observedSha256) {
     if (!['applied', 'not_applied'].includes(outcome) || observedSha256 !== null && !sha(observedSha256)) refuse();
     const control = read(), request = find(control, requestId); writable(control); identity(actionId);
     const action = request.actions.find(row => row.id === actionId); if (!action) refuse('s16_ops_action_missing');
     const expected = outcome === 'applied' ? action.targetSha256 : action.priorSha256, state = outcome === 'applied' ? 'confirmed' : 'not_applied';
-    if (expected !== null && observedSha256 !== expected || outcome === 'not_applied' && observedSha256 !== expected || outcome === 'applied' && (action.kind === 'remove_point' ? observedSha256 !== null : observedSha256 === null)) refuse('s16_ops_observation_mismatch');
+    if (expected !== null && observedSha256 !== expected || outcome === 'not_applied' && observedSha256 !== expected || outcome === 'applied' && (['remove_point', 'remove_staging'].includes(action.kind) ? observedSha256 !== null : observedSha256 === null)) refuse('s16_ops_observation_mismatch');
     if (settled(action)) { if (action.state !== state || action.observedSha256 !== observedSha256) refuse(); return result(control, request, false); }
     if (terminal(request) || control.revision !== expectedRevision) refuse('s16_ops_revision_conflict'); ensureFence(control, request);
     if (action.kind === 'remove_point') {
@@ -215,5 +228,21 @@ export function openS16OperationsJournal(options: S16OperationsJournalOptions): 
     if (point.state !== 'removing' || point.sha256 !== action.priorSha256) refuse();
     if (control.revision !== expectedRevision) refuse('s16_ops_revision_conflict'); ensureFence(control, request);
     control.points = control.points.filter(row => row.id !== point.id); return save(control, request, expectedRevision);
+  }, abortBackup(requestId, expectedRevision) {
+    const control = read(), request = find(control, requestId); writable(control);
+    if (!options.assertBackupAbortable || request.kind !== 'backup' || control.points.some(row => row.id === request.pointId)) refuse('s16_ops_backup_abort_refused');
+    if ((options.assertBackupAbortable(clone(request)) as unknown) !== undefined) refuse('s16_ops_guard_invalid');
+    if (terminal(request)) {
+      if (request.status !== 'discarded' || !request.abort) refuse('s16_ops_backup_abort_refused');
+      clearIfOwn(control, request); return result(control, request, false);
+    }
+    if (!['pending', 'capturing', 'verifying'].includes(request.phase) || control.revision !== expectedRevision) refuse('s16_ops_revision_conflict');
+    ensureFence(control, request); promote(control);
+    const priorPhase = request.phase as 'pending' | 'capturing' | 'verifying';
+    request.abort = { contract: 's16-backup-abort/v1', priorPhase, scopeSha256: s16BackupAbortScope(control, request, priorPhase), actionsSha256: s16BackupAbortActions(request), observedAt: clock(request.updatedAt), point: 'absent', captureResources: 'released' };
+    request.updatedAt = request.abort.observedAt; request.phase = 'discarded'; request.status = 'discarded'; request.reason = null;
+    validateS16OperationsControl(control);
+    if ((options.assertBackupAbortable(clone(request)) as unknown) !== undefined) refuse('s16_ops_guard_invalid');
+    return save(control, request, expectedRevision);
   } });
 }

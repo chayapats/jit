@@ -12,21 +12,23 @@ import { openS16ControlMaintenance } from './operations/control-maintenance';
 /** Protected operator entry for current metadata, verified control-plane backup and point retention; forward restore remains separate. */
 export async function runS16OperationsCli(args: readonly string[]): Promise<object> {
   const command = args[0], values = new Map<string, string>(); let selected = false;
-  if (!['adopt', 'status', 'cleanup', 'backup'].includes(command ?? '')) throw new AppError('s16_ops_command_invalid');
-  const allowed = command === 'cleanup' ? ['--config', '--request-id', '--point-id', '--attempt'] : command === 'backup' ? ['--config', '--request-id', '--attempt'] : ['--config', '--request-id'];
+  if (!['adopt', 'status', 'cleanup', 'backup', 'abort-backup', 'retire-staging'].includes(command ?? '')) throw new AppError('s16_ops_command_invalid');
+  const allowed = command === 'retire-staging' ? ['--config', '--request-id', '--source-request-id'] : command === 'cleanup' ? ['--config', '--request-id', '--point-id', '--attempt'] : command === 'backup' ? ['--config', '--request-id', '--attempt'] : ['--config', '--request-id'];
   for (let index = 1; index < args.length; index++) {
     const name = args[index]!;
     if (name === '--s15' && !selected) { selected = true; continue; }
     if (!allowed.includes(name) || values.has(name) || !args[index + 1] || args[index + 1]!.startsWith('--')) throw new AppError('s16_ops_command_invalid');
     values.set(name, args[++index]!);
   }
-  if (!selected || !values.get('--config') || (command !== 'status') !== values.has('--request-id') || command === 'cleanup' && !values.has('--point-id')) throw new AppError('explicit_s15_config_required');
+  if (!selected || !values.get('--config') || (command !== 'status') !== values.has('--request-id') || command === 'cleanup' && !values.has('--point-id') || command === 'retire-staging' && !values.has('--source-request-id')) throw new AppError('explicit_s15_config_required');
   const config = readS15RuntimeConfig(values.get('--config')!);
   if (command === 'adopt') return adoptS16Operations(config, values.get('--request-id')!);
-  if (command === 'cleanup' || command === 'backup') {
+  if (['cleanup', 'backup', 'abort-backup', 'retire-staging'].includes(command!)) {
     const fence = join(config.directory, 'owner/owner.sqlite.ops/fence.json');
     const ctx = openS16ControlMaintenance(config, lstatSync(fence, { throwIfNoEntry: false }) ? { operationFence: readS16OperationsFence(config.directory) } : {});
     try {
+      if (command === 'abort-backup') return ctx.abortBackup(values.get('--request-id')!);
+      if (command === 'retire-staging') return ctx.retireStaging(values.get('--request-id')!, { sourceRequestId: values.get('--source-request-id')! });
       if (command === 'cleanup') return ctx.removePoint(values.get('--request-id')!, { pointId: values.get('--point-id')!, ...(values.has('--attempt') ? { attempt: values.get('--attempt')! } : {}) });
       const capture = ctx.pointCapture(values.get('--request-id')!, values.has('--attempt') ? { attempt: values.get('--attempt')! } : {});
       try { return await capture.capture(); } finally { await capture.close(); }

@@ -65,3 +65,10 @@ point IDs, manifest hash, bytes and terminal receipt revision. It returns no hos
 path, credential or restore admission. Backend physical state stays unobserved/
 independently retained. This is not disk/device recovery or complete cross-client
 upgrade/restore/uninstall acceptance.
+
+
+New aggregate captures additionally use independently journaled temporary root/
+data inode ownership before child writes, under [control v3](s16-operations-control-v3.md).
+This does not change the historical point/component formats. Explicit logical
+abort preserves original local uncertainty; explicit staging retirement is a
+separate operation and never removes retained points or original receipts.

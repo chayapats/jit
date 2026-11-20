@@ -11,7 +11,9 @@ V1 adoption remains readable. Its supported writer produced only revision-zero
 metadata with empty requests/points. The first real journal write promotes that
 empty current state atomically to v2. A nonempty v1 prototype stays readable and
 fenced; unsupported historical conversion is never guessed or initialized empty.
-Every subsequent write retains v2. Older v1-only readers refuse before owner/
+Ordinary writes retain v2 until the explicit
+[v3 staging/disposition contract](s16-operations-control-v3.md) is used; v3 is
+never downgraded. Older v1-only readers refuse before owner/
 vault access, including builds that understood the v2 *lease receipt* but not
 current pending-operation enforcement.
 

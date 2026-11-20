@@ -3,7 +3,8 @@
 Status: OPS16-01 implementation in progress in
 [#429](https://github.com/chayapats/jit/issues/429). The available operator
 commands adopt/inspect protected operations metadata, capture a current protected
-control-plane point and explicitly remove a receipted historical point. Ordinary
+control-plane point, abort an interrupted backup and explicitly retire receipted
+historical points or independently owned temporary staging. Ordinary
 export, forward restore and complete upgrade/uninstall remain in progress.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
@@ -43,12 +44,13 @@ They are excluded from historical points and ordinary exports.
 
 Contracts: [aggregate forward recovery](../contracts/s16-recovery-point-v1.md),
 [initial operations control](../contracts/s16-operations-control-v1.md),
-[current journal writes](../contracts/s16-operations-control-v2.md),
+[v2 journal writes](../contracts/s16-operations-control-v2.md),
+[v3 staging/disposition](../contracts/s16-operations-control-v3.md),
 [v2 installation binding](../contracts/s16-installation-lease-v2.md) and
 [current-control maintenance](../contracts/s16-control-maintenance-v1.md).
 These metadata operations do not complete aggregate acceptance or owner-host
 cutover; forward recovery still needs ordinary export, quarantine/activation,
-staging retirement and compatible release/client lifecycle selection.
+compatible release/client lifecycle selection.
 
 ## Protected current control-plane backup
 
@@ -95,9 +97,47 @@ readback; it cannot bypass unknown custody. This CLI never infers that outcome.
 Removal retains current application data/credentials, native stores, disks,
 process leases and original backup/cleanup/plan receipts. A repeated completed
 request returns its original result; a reappeared directory is refused and
-untouched. There is no automatic age/count eviction. This component is tested
-with disposable point-format fixtures; the aggregate backup producer remains
-unavailable and fixture metadata is not an operator recovery point.
+untouched. There is no automatic age/count eviction. Tests cover both disposable point-format fixtures and the actual copied-package
+producer. Format-fixture metadata alone is not an operator recovery point.
+
+## Interrupted backup disposition and staging retirement
+
+New aggregate captures promote the current journal to v3 and journal the private
+root/data inode identities before child writes. Original identities, actions and
+finite history limits remain. Earlier v1/v2 readers refuse v3 before writable
+owner/vault admission. The separate installation lease format is unchanged.
+
+If the original backup cannot continue because its partial metadata or bytes are
+corrupt, explicitly dispose of that backup under the same current configuration:
+
+```sh
+bun run s16:ops abort-backup --s15 --config /absolute/s15-runtime.json --request-id original_backup_id
+bun run s16:ops retire-staging --s15 --config /absolute/s15-runtime.json --request-id original_staging_retirement_id --source-request-id original_backup_id
+```
+
+Abort requires all original native/point/helper resources to be conclusively
+released. It preserves confirmed and unknown capture/publication facts. It does
+not call them failed, settle VM/provider work or retry execution. A separately
+bound receipt records logical disposition and absence of the canonical point.
+An unregistered published point can move back only to its original private stage,
+using its original journaled data inode and an explicit quarantine intent.
+A retained point, substituted inode or occupied destination refuses. An unknown
+quarantine remains fenced; retry the same request to read back that movement.
+
+Retirement is a separate original operation. Its immutable removal plan lives
+outside the deleted namespace, pins every current known-role file hash/inode and
+directory identity, and precedes every unlink/rmdir. Partial/corrupt capture
+metadata is inert local backup custody, not deletion authority. Missing members
+may be original completed unlinks; changed/extra members, links and special nodes
+refuse. Retry the same retirement/source/configuration after interruption. The
+original backup/ownership/abort/removal receipts survive, as do retained points,
+current SQL/native roots, credentials, disks and process leases. A completed retry
+refuses reappeared directories untouched. No automatic eviction is introduced.
+
+Successful backups may also explicitly retire their temporary staging without
+removing their retained point. Legacy unowned corrupt staging refuses retirement;
+a path or self-hashed failed metadata cannot supply provenance. Logical abort of
+an absent point can retain such legacy bytes without inventing ownership.
 
 ## Copied-package adoption drill
 
@@ -144,3 +184,17 @@ This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all
 earlier packages support fallback. Actual aggregate recovery, native/account/
 device acceptance and compatible package selection remain separate evidence.
+
+
+The [v3 staging drill](../../ops/evidence/s16-staging-lifecycle.ts) uses the actual
+copied package and an exact v2-aware preceding source build. The old command first
+works against v2, then refuses v3 with no physical gate and unchanged owner/vault
+bytes. Actual SIGKILL during capture and after a staging unlink exercises original
+abort/retirement receipts and immutable plan recovery on disposable data:
+
+```sh
+bun ops/evidence/s16-staging-lifecycle.ts --old-commit fe48fe6caf2d6f7b9e48f58cb5d18cceb69d1a27 --receipt /absolute/private/fresh-staging-receipt.json
+```
+
+This proves the reported platform's source/package lifecycle component, not
+forward restoration, populated native clients, physical settlement or cutover.
