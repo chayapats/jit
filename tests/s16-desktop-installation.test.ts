@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activeNativeDesktop, desktopCurrent, desktopInstallation, installNativeDesktop, rollbackNativeDesktop, sealNativeDesktop, selectDesktopService, verifyNativeDesktop } from "../src/s16/desktop/installation";
@@ -17,6 +17,15 @@ function fixture() {
   };
   return { parent, root, artifact, runtime: { bun: process.execPath, browser: process.execPath, locale: "en" as const, service: "https://jit.example.test" }, close: () => rmSync(parent, { recursive: true, force: true }) };
 }
+
+test.each([0o022, 0o077])('native package seal keeps its required public manifest mode under producer umask %i', mask => {
+  const f = fixture(), previous = process.umask(mask);
+  try {
+    const artifact = f.artifact('umask-' + mask);
+    expect(statSync(join(artifact.directory, 'manifest.json')).mode & 0o7777).toBe(0o644);
+    expect(verifyNativeDesktop(artifact.directory)).toEqual(artifact.manifest);
+  } finally { process.umask(previous); f.close(); }
+});
 
 test("local native install, update and rollback select complete code without changing service/profile identity", () => {
   const f = fixture(); try {
