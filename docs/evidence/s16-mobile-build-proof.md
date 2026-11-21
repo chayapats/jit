@@ -1,21 +1,21 @@
 # MOBILE16-01 native build and owning-fixture evidence
 
-Date: 2026-11-20. Runtime/tooling source: `ed9904f6ae5fd579fe7135dc0bf58458682d5517`, clean at both builds. Scope: #426, S16-AC17; FR-10/11/18/24/25/28/35/37/38; NFR-05/07/09/11/13. [ADR 0100](../adr/0100-s16-packaged-native-mobile-client.md), [s16-mobile/v1](../contracts/s16-mobile-v1.md), [build runbook](../../clients/mobile/README.md), [separate native/device checklist](../operations/s16-mobile-acceptance.md).
+Date: 2026-11-21. Runtime/tooling source: `bebedd8e997dcae6438b3a9ebfc3889265c4a81c`, clean at both builds. Scope: #426, S16-AC17; FR-10/11/18/24/25/28/35/37/38; NFR-05/07/09/11/13. [ADR 0100](../adr/0100-s16-packaged-native-mobile-client.md), [s16-mobile/v1](../contracts/s16-mobile-v1.md), [build runbook](../../clients/mobile/README.md), [separate native/device checklist](../operations/s16-mobile-acceptance.md).
 
-**This is build/fixture evidence, not completed #426 acceptance.** Packaged native UI workflows remain pending because the environment's Agent device access is disabled. Its requested enablement is separate from these local builds. Do not merge/close #426 on this record alone. Physical devices, real APNs/FCM, signing/account setup and owner-host cutover remain #431/#432; no live credential, account, private recording, payment, production deployment or owner-host activation was used.
+**This is build/fixture evidence, not completed #426 acceptance.** Agent device access is now enabled, but packaged native UI workflows remain pending. The device tool's install/screenshot capabilities failed, and its refreshed inventory no longer contained the task simulator; reopening failed after following its advice. Android discovery also failed to enumerate an emulator. No successful latest-build install, native interaction or screenshot is claimed. Do not merge/close #426 on this record alone. Physical devices, real APNs/FCM, signing/account setup and owner-host cutover remain #431/#432; no live credential, account, private recording, payment, production deployment or owner-host activation was used.
 
 ## Immutable local distributions
 
 Both were built by the actual local `ops/mobile/main.ts` builder from clean source, frozen root/client installations, CNG regeneration and reviewed native input pins. Both complete seals were reverified without installing or executing their payloads. Full native logs/selections and installation-specific paths remain in ignored local records. Source is retained in Git; native binaries remain local build artifacts.
 
-Each build extracted and verified the same immutable Git archive into a separate fresh private source tree: SHA-256 `fc210382a762ab21adfcd4f5af358e0c73c45f82d45b55dce999c740a3843ef8`, 1,639 files / 44,286,692 bytes. Every extracted file's Git blob identity, size and mode matched the selected commit before frozen installation and `expo prebuild --clean`. Existing ignored native projects were excluded and preserved. Each distribution includes sealed `build-source.json` provenance under `s16-mobile-build-source/v1`.
+Each build extracted and verified the same immutable Git archive into a separate fresh private source tree: SHA-256 `94ed30a3999bbd887cd3d80205a0e0130772b3620e16180ab69538d4499e7850`, 1,693 files / 44,894,014 bytes. Every extracted file's Git blob identity, size and mode matched the selected commit before frozen installation and `expo prebuild --clean`. Existing ignored native projects were excluded and preserved. Each distribution includes sealed `build-source.json` provenance under `s16-mobile-build-source/v1`.
 
 | Payload | Build facts | SHA-256 / seal |
 | --- | --- | --- |
-| Android Release arm64, unsigned APK | 26,322,901 bytes; 23 files in the complete distribution; minimum API 24, target 36, compile 37 | APK `a81c39f45a4a3e8d8dd3a698346c7dae88250e3cd5cc47c902738c06f9b9ceb7`; seal `1b95b60d20ac977704791adad0834ae265d51e67dc6bd82a134a70fdf667ef0a` |
-| iOS Release arm64 simulator distribution | 216 files; deployment target 16.4; Xcode's normal simulator entitlement pipeline; `codesign --verify --deep --strict` passed | Seal `b3bc716fd7ba909f3177226f4c8dd2a5d00cb3929d6b8c366dc0b77dc15aab8f` |
-| iOS app executable | 2,988,864 bytes | `032f1de19f84de4e8544a5ebd11b672b17ca9739238762c4d76a6a39ccabca3a` |
-| iOS bundled Hermes JS | 6,164,912 bytes, including the actual original notice inventory | `fb31c2a4846eaed7301f4b905de9c491daacf84b82db22bfaf54538d65a95702` |
+| Android Release arm64, unsigned APK | 26,347,689 bytes; 23 files in the complete distribution; minimum API 24, target 36, compile 37 | APK `1a694dbb78e098c03258ade6eb6799621db030c49215ce39cfbb9d8f150695b4`; seal `bcc08be82220adac3b99132a6e87351fd800483fd8715434c8a3406673307162` |
+| iOS Release arm64 simulator distribution | 216 files; deployment target 16.4; Xcode's normal simulator entitlement pipeline; `codesign --verify --deep --strict` passed | Seal `fdf1e9df1f866002580b8208b7ac21b977998377a736cfc666f652baebe8f7ee` |
+| iOS app executable | 2,988,864 bytes | `f36055c43476be8a30b3e5f0e02c5fd9ed33290dc4be3db977f3dde020739c80` |
+| iOS bundled Hermes JS | 6,192,948 bytes, including the actual original notice inventory | `15ce5ecd391c67fc11a226fa67c3dc18c1ea9923412e2305e48354789ff7ee74` |
 
 The manifest labels each distribution `acceptance: build-only`. Node 24.22.3 executable hash is `ba7073582822078d8c90bca3facacc46690bc5366fab4b815aeef9148cd6e854`; Bun is 1.4.2. iOS used Xcode 27.2 build 27B52, simulator SDK 27.2 and CocoaPods 1.16.2. Android used Temurin 21.0.13.1+2, build tools 37.0.0 and NDK 27.1.12297006; the manifest also hashes the Java launcher, SDK package and NDK properties. Root/client locks, CocoaPods lock, Apple/Android inputs, Gradle verification and notice index hashes are in each complete manifest.
 
@@ -58,3 +58,36 @@ bun ops/mobile/main.ts verify <complete-local-distribution>
 ```
 
 The merged-source browser regression passed four tests/62 assertions. The native builder invoked actual Release Xcode/Gradle compilation, not Metro-only previews. Public commands intentionally omit machine/device/account addresses and credential locations. GitHub required checks/latest-head primary review and the pending packaged native UI checklist remain merge gates; this record does not certify either.
+
+
+## Current main integration and native graph regression
+
+The current source merges main `95a958e99d5903c4804bba79b92e3cfa940e77d2`,
+preserving native notification composition alongside current working-state recovery.
+The first actual Release build caught an unresolved host-path validator import in
+Metro. The pure computer-backend DTO validator now lives in the shared client;
+the host descriptor module re-exports it. No host watch root was added to Metro.
+
+Frozen root/client installs and root/native typechecks pass. The selected mobile,
+native notification, shared-client, working-state and computer regression passed
+127 tests / 1,042 assertions across 21 files. The subsequent actual pinned Metro
+exports for iOS/Android, client and VM physical-binding regression passed 34 tests /
+228 assertions across three files. Both fresh native builds above then completed
+and their complete seals reverified. Current APK inspection confirms API 24/36,
+backup disabled, advertising/overlay/broad-storage permissions absent and all six
+Firebase/analytics initialization controls still disabled; the distribution remains
+unsigned. These are build/fixture outcomes, not packaged native UI acceptance.
+
+The actual loopback fixture additionally prepared sources through authenticated
+upload, `file_read`, `file_create` and committed publication, on two distinct full
+origins. All data/passwords/models/VM/effects were controlled fixtures, without
+real accounts. It was stopped after the device tools could not proceed; seeding
+is not evidence that the native picker or viewer ran.
+
+The tool failure remains explicit: installation reported `Uninstall Application`
+unsupported, its diagnostic also reported `Stream Application List` unsupported,
+and screenshot failed at the device hub. The advised inventory refresh/reopen was
+attempted; the task simulator was absent. Android reported an incomplete virtual
+device enumeration (`emulator -list-avds`, exit 127). UI attempts stopped after
+the advised recovery failed. No raw simulator/ADB/XCTest/SSH UI fallback was used.
+The native checklist therefore remains a merge gate; #431/#432 remain separate.
