@@ -79,11 +79,12 @@ function passingInputs(): S16ProfileEvidence[] {
     suites: profile.suites.map(suite => ({ suite, state: 'passed', exitCode: 0, observations: { pass: profile.requiredObservations, fail: 0, skip: 0, assertions: profile.requiredObservations, testNameSha256: Array(profile.requiredObservations).fill('a'.repeat(64)) }, logSha256: 'b'.repeat(64), logBytes: 250 })) }));
 }
 
-test('even every passing input preserves unsupported journeys, unrecorded artifacts and independent live/device gaps', () => {
+test('even every passing integrated input preserves unrecorded artifacts and independent live/device gaps', () => {
   const result = assessS16MatrixEvidence(matrix(), passingInputs());
   expect(result.deterministicInputs).toBe('passed'); expect(result.deterministicAcceptance).toBe('blocked'); expect(result.productAcceptance).toBe('blocked');
-  expect(result.scenarios.find(row => row.id === 'ac21')!.state).toBe('driver_gap');
-  expect(result.scenarios.find(row => row.id === 'ac22')!.driverGaps).toEqual(['voice/mobile continuity at the same selected service']);
+  expect(result.scenarios.find(row => row.id === 'ac21')!.state).toBe('source_inputs_passed');
+  expect(result.scenarios.find(row => row.id === 'ac22')!.driverGaps).toEqual([]);
+  expect(result.scenarios.find(row => row.id === 'ac22')!.profiles).toContainEqual({ id: 'voice_mobile', state: 'passed' });
   expect(result.additionalBlockers).toContain('native_ui'); expect(result.additionalBlockers).toContain('profile_specific_artifact_digests_unrecorded');
 });
 

@@ -51,9 +51,11 @@ and original guarded commands. Product acceptance follows the current AGENTS.md
 and S16-D06–D11/ADRs 0084–0085; obsolete personal-only GitHub or Telegram behavior
 is historical baseline evidence, never the current S16 default.
 
-The initial executor reports `source_inputs_passed` only after observed Bun
-assertions. Package/client/parser artifact import and full composed journey
-drivers remain explicit gaps; `deterministicAcceptance` and `productAcceptance`
-stay blocked. This is an executable input inventory, not completed #430 acceptance.
+The executor reports `source_inputs_passed` only after observed Bun assertions.
+Integrated owning inputs now include the selected operations lifecycle and a
+same-service native dictation/mobile Send/web read/restart journey. Scripted
+native ports do not establish native UI. Package/client/parser artifact import
+and final exact-build execution remain explicit gaps; `deterministicAcceptance`
+and `productAcceptance` stay blocked. This is not completed #430 acceptance.
 The [runbook](../runbooks/s16-cross-client-evidence.md) records commands, finite
 bounds, private receipt meaning and the remaining work.

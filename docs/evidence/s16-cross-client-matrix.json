@@ -493,9 +493,17 @@
       "suites": [
         "tests/s16-ops-forward-service.test.ts",
         "tests/s16-ops-recovery-retention.test.ts",
-        "tests/s16-owner-export.test.ts"
+        "tests/s16-owner-export.test.ts",
+        "tests/s16-ops-service-release.test.ts",
+        "tests/s16-ops-first-setup.test.ts",
+        "tests/s16-ops-installed-upgrade.test.ts",
+        "tests/s16-ops-installed-wiring.test.ts",
+        "tests/s16-ops-installed-service.test.ts",
+        "tests/s16-ops-guarded-selection.test.ts",
+        "tests/s16-ops-root-selector.test.ts",
+        "tests/s16-ops-package-reader-probe.test.ts"
       ],
-      "timeoutMs": 180000,
+      "timeoutMs": 600000,
       "requiredObservations": 1,
       "artifactEvidence": "profile_specific_receipts_required"
     },
@@ -714,6 +722,18 @@
       ],
       "timeoutMs": 300000,
       "requiredObservations": 2,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "voice_mobile",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": false,
+      "suites": [
+        "tests/s16-cross-client-voice-mobile.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
       "artifactEvidence": "profile_specific_receipts_required"
     }
   ],
@@ -1603,9 +1623,7 @@
         "desktop"
       ],
       "evidenceStatus": "not_executed_at_matrix_revision",
-      "requiredDriverGaps": [
-        "compatible service/client install-upgrade-interrupted-fallback-uninstall at #429"
-      ]
+      "requiredDriverGaps": []
     },
     {
       "id": "ac22",
@@ -1692,12 +1710,11 @@
         "connections_web",
         "voice_web",
         "mobile",
-        "journeys"
+        "journeys",
+        "voice_mobile"
       ],
       "evidenceStatus": "not_executed_at_matrix_revision",
-      "requiredDriverGaps": [
-        "voice/mobile continuity at the same selected service"
-      ]
+      "requiredDriverGaps": []
     },
     {
       "id": "inherited_repository_readiness",
@@ -1814,7 +1831,7 @@
     }
   ],
   "authorityAmendments": [
-    "S16-D06–D11 and ADR 0084 amend retained S15 default approval/GitHub behavior.",
+    "S16-D06\u2013D11 and ADR 0084 amend retained S15 default approval/GitHub behavior.",
     "S16-D10 and ADR 0085 remove Telegram; notifications use Web Push.",
     "The 2026-11-03 S15 single-host decision retires the Raspberry Pi reference; Linux KVM is the default and owner-supplied VMs remain optional.",
     "Current AGENTS.md assigns design and implementation to the primary agent."

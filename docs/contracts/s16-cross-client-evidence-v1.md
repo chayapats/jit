@@ -2,8 +2,8 @@
 
 Status: selected evidence contract under
 [ADR 0121](../adr/0121-s16-executable-cross-client-evidence-matrix.md).
-The source-input validator/executor is implemented. Complete exact-build
-acceptance, artifact-digest import and the missing composed journeys remain pending.
+The source-input validator/executor and integrated owning journey inputs are
+implemented. Complete exact-build execution and artifact-digest import remain pending.
 
 The reviewed matrix retains all S16-AC01–AC22, FR-01–FR-42 and NFR-01–NFR-14
 identifiers. Each required scenario lists acceptance/requirement IDs, issue
@@ -37,6 +37,10 @@ issue count is insufficient. Reusing a historical receipt requires the same exac
 source/matrix/dependency/artifact pins; no automatic promotion across revisions.
 Partial profiles produce partial receipts, retaining all omitted required rows.
 Missing linked owning delivery, browser or composite journey blocks acceptance.
+The integrated inputs include the selected service lifecycle and a native
+dictation-to-mobile-Send journey that reads the original work from the web client
+and recovers it after owning service restart. Native microphone, secure storage,
+speech/model and VM ports are explicitly scripted; native UI stays independent.
 
 Physical native clients, real Linux VM/isolation, subscription/provider/account
 and owner-host acceptance retain independent owners/statuses. Their absence never

@@ -57,9 +57,22 @@ with scripted provider/VM transports: one reviewed routine delegates to a peer,
 retains parent/child results through service restart, and runs only the next due
 occurrence. A smaller finite read budget visibly holds before the VM byte read;
 pause prevents the next model call. This is source-client evidence, not a rendered
-browser or physical native-device claim. Artifact import for
-service/web/desktop/mobile/parser digests and same-service voice/mobile continuity
-are still required. #429's full compatible service/client lifecycle remains a gap.
+browser or physical native-device claim. The integrated `voice_mobile` profile
+uses actual native controllers, shared clients and one HTTP owning service:
+dictation stays an editable draft until explicit Send; a lost accepted Send
+recovers the same work after restart without another POST, microphone start,
+transcription, model call or effect. Speech, keystore and microphone ports are
+scripted. The integrated operations profile also drives actual sealed earlier/
+current services through first setup, upgrade, fallback and uninstall/reinstall,
+with separate manager/account/VM fixture ports and interrupted root jobs.
+
+Mobile source is retained from `5c13d7ac1c7f99bd73dff3c922c730f34c75634a`;
+the operations integration starts at
+`d3cc8326dda17ba7857afbfa8eb4fc101acfda0b` and includes the Linux bootstrap
+dependency/provenance fix. Shared-client merge resolution retains owner export,
+native notification capability and original upload-creation recovery together.
+This source integration never promotes the independent native-device gate.
+Artifact import for service/web/desktop/mobile/parser digests remains required.
 `deterministicAcceptance` and `productAcceptance` therefore stay blocked in this
 initial executor. Real devices, Linux isolation, configured local speech,
 subscriptions/accounts and owner-host cutover retain independent pending rows.
