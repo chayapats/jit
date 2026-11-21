@@ -1,4 +1,4 @@
-import { ownerExportLimits, ownerExportSections, parseOwnerExportRequest, validateOwnerExport, type OwnerExport, type OwnerExportRequest } from '../export/contracts';
+import { ownerExportLimits, ownerExportSections, parseOwnerExportRequest, validateOwnerExport, type OwnerExport, type OwnerExportRequest } from './owner-export';
 import { workingStateManifest, workingStateImport, workingStateView, type WorkingStateManifest, type WorkingStateImport, type WorkingStateView } from "./working-state";
 import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";

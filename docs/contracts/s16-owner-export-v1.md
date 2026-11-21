@@ -19,6 +19,12 @@ persisted cached artifact. Explicit retries reacquire current state.
 The shared client validates the capability; unavailable owning ports do not
 become placeholder choices.
 
+The shared schema and DTO checks live in `src/s16/client/owner-export.ts`, inside
+the browser/native graph. They import no protected service error/runtime module.
+The protected export boundary maps their finite validation failures to its
+existing `AppError` codes/statuses; moving the schema changes no scope, limits,
+DTO, current-source check or HTTP behavior. Metro does not gain host watch roots.
+
 `POST /api/s16/client/export` takes only this JSON shape, without query fields:
 
 ```json
