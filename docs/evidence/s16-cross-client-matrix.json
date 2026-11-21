@@ -1,0 +1,1808 @@
+{
+  "contract": "s16-cross-client-evidence-matrix/v1",
+  "ownerIssue": 430,
+  "parentIssue": 392,
+  "meaning": "Required acceptance plans and reused test inputs; no implementation, execution, live or product acceptance is inferred.",
+  "governingDocuments": [
+    "AGENTS.md",
+    "CONTEXT.md",
+    "docs/product/02-prd.md",
+    "docs/specs/S16-rakazo-experience.md",
+    "docs/specs/S15-conversational-autonomy.md",
+    "docs/adr/0064-conversational-authority-and-protected-control-plane.md",
+    "docs/adr/0074-rakazo-reuse-and-product-convergence.md",
+    "docs/adr/0084-s16-grok-style-default-autonomy.md",
+    "docs/adr/0085-remove-telegram-web-push-notifications.md"
+  ],
+  "sourceBaseline": "95a958e99d5903c4804bba79b92e3cfa940e77d2",
+  "historicalOwnership": "docs/tickets/S16-rakazo-experience-coverage.json",
+  "requirements": [
+    {
+      "id": "FR-01",
+      "title": "Bot-first conversations and ownership"
+    },
+    {
+      "id": "FR-02",
+      "title": "Bot participation"
+    },
+    {
+      "id": "FR-03",
+      "title": "Coordinator and decisions"
+    },
+    {
+      "id": "FR-04",
+      "title": "Work continuity"
+    },
+    {
+      "id": "FR-05",
+      "title": "Sourced private and shared memory"
+    },
+    {
+      "id": "FR-06",
+      "title": "Acceptance and execution authority"
+    },
+    {
+      "id": "FR-07",
+      "title": "Evidence-based completion"
+    },
+    {
+      "id": "FR-08",
+      "title": "Repository monitoring and review"
+    },
+    {
+      "id": "FR-09",
+      "title": "Findings and notifications"
+    },
+    {
+      "id": "FR-10",
+      "title": "Owner Web controls"
+    },
+    {
+      "id": "FR-11",
+      "title": "Companion channels"
+    },
+    {
+      "id": "FR-12",
+      "title": "Authorized routines"
+    },
+    {
+      "id": "FR-13",
+      "title": "Explicit route and billing selection"
+    },
+    {
+      "id": "FR-14",
+      "title": "Priority, budgets and concurrency"
+    },
+    {
+      "id": "FR-15",
+      "title": "Recovery and idempotency"
+    },
+    {
+      "id": "FR-16",
+      "title": "Correction, forget and deletion"
+    },
+    {
+      "id": "FR-17",
+      "title": "Authority and untrusted input"
+    },
+    {
+      "id": "FR-18",
+      "title": "Inspection, stop and export"
+    },
+    {
+      "id": "FR-19",
+      "title": "Jit replies"
+    },
+    {
+      "id": "FR-20",
+      "title": "Permanent Bot proposals"
+    },
+    {
+      "id": "FR-21",
+      "title": "Delegation allowance"
+    },
+    {
+      "id": "FR-22",
+      "title": "Project-free intake and resource binding"
+    },
+    {
+      "id": "FR-23",
+      "title": "First-run setup"
+    },
+    {
+      "id": "FR-24",
+      "title": "Conversational Web experience"
+    },
+    {
+      "id": "FR-25",
+      "title": "Thai and English"
+    },
+    {
+      "id": "FR-26",
+      "title": "Quiet routines"
+    },
+    {
+      "id": "FR-27",
+      "title": "Visible routing"
+    },
+    {
+      "id": "FR-28",
+      "title": "Attention and grouped delivery"
+    },
+    {
+      "id": "FR-29",
+      "title": "Bot result contract"
+    },
+    {
+      "id": "FR-30",
+      "title": "Communication policy"
+    },
+    {
+      "id": "FR-31",
+      "title": "Context packet"
+    },
+    {
+      "id": "FR-32",
+      "title": "Owner local API/CLI"
+    },
+    {
+      "id": "FR-33",
+      "title": "Webhook triggers"
+    },
+    {
+      "id": "FR-34",
+      "title": "Schedule feed"
+    },
+    {
+      "id": "FR-35",
+      "title": "Bot/resource permissions and kill switch"
+    },
+    {
+      "id": "FR-36",
+      "title": "Persistent isolated computers"
+    },
+    {
+      "id": "FR-37",
+      "title": "Exact external-effect approvals"
+    },
+    {
+      "id": "FR-38",
+      "title": "Connections and sensitive sessions"
+    },
+    {
+      "id": "FR-39",
+      "title": "Governed MCP"
+    },
+    {
+      "id": "FR-40",
+      "title": "Browser/desktop input and takeover"
+    },
+    {
+      "id": "FR-41",
+      "title": "Public-web research"
+    },
+    {
+      "id": "FR-42",
+      "title": "Report artifacts"
+    },
+    {
+      "id": "NFR-01",
+      "title": "General model/shell/browser/repository work stays within standing purpose, current work authority and the dedicated working boundary. No protected-service host-shell fallback or per-task ceremony used as a substitute for actual enforcement."
+    },
+    {
+      "id": "NFR-02",
+      "title": "Schway owns loops, providers, retries, sessions and compaction; production imports only supported public exports."
+    },
+    {
+      "id": "NFR-03",
+      "title": "Headless imports do not load TUI/unselected providers; verify packed-consumer boundaries."
+    },
+    {
+      "id": "NFR-04",
+      "title": "Linux x64/arm64 service boot, persistence and selected-route renewal, with separately labelled physical evidence under the retained single-host topology."
+    },
+    {
+      "id": "NFR-05",
+      "title": "Durable local transitions/receipts/outbox are atomic; cross-store/remote effects reconcile without distributed exactly-once claims."
+    },
+    {
+      "id": "NFR-06",
+      "title": "All resource/queue/active-time/retry/output/retention/spend limits are finite; numeric profiles and stall criteria need measured evidence and configuration. Durable waiting does not imply unbounded active execution. Unknown usage is not zero."
+    },
+    {
+      "id": "NFR-07",
+      "title": "Authenticate/authorize every command/resource use and bind actual requests/actions to current standing policy. Separate protected authority from working agents, sanitize output and redact secrets. Scope is owner/purpose/team/work/resource, not Project."
+    },
+    {
+      "id": "NFR-08",
+      "title": "Versioned backup/restore covers state/artifacts/native snapshots/lifecycle ledger; reconcile before workers start."
+    },
+    {
+      "id": "NFR-09",
+      "title": "No default telemetry. Document inference, Parallel, enabled channels/connector recipients and external retention limits."
+    },
+    {
+      "id": "NFR-10",
+      "title": "Scripted models, protocol fixtures/barriers and fake clocks are deterministic checks; paid/live/host tests are opt-in."
+    },
+    {
+      "id": "NFR-11",
+      "title": "Thai/English Unicode, accessible responsive UI and textual states. Render/real-device/screen-reader evidence is labelled honestly."
+    },
+    {
+      "id": "NFR-12",
+      "title": "S15 needs an explicit versioned policy/data transition and rollback; preserve existing S14/legacy bytes and private scopes until authorized conversion. S14's prior fresh-state permission is not blanket S15 deletion/import authority. Never rewrite Schway's native format."
+    },
+    {
+      "id": "NFR-13",
+      "title": "Product UI values use reviewed design tokens and token lint; standalone design prototypes are not production CSS precedent."
+    },
+    {
+      "id": "NFR-14",
+      "title": "Prove working-VM versus protected-control-plane/session/effect isolation under guest administration. Shared team defaults retain explicit restrictions; existing private data is not silently declassified. No credential/state/socket leakage or alternate effect/disclosure path. Real VM/browser/Linux evidence is separate from fake-runtime tests."
+    }
+  ],
+  "profiles": [
+    {
+      "id": "bots",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-bots.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "conversation",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-client.test.ts",
+        "tests/s16-steering.test.ts",
+        "tests/s16-action-card.test.ts",
+        "tests/s16-autonomy-policy.test.ts",
+        "tests/s16-autonomy-sends.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "files",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-files-composed.test.ts",
+        "tests/s16-binary-composed.test.ts",
+        "tests/s16-file-memory.test.ts",
+        "tests/s16-upload-protocol.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "artifacts",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-artifacts.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "computers",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-computers.test.ts",
+        "tests/s16-computer-screen.test.ts",
+        "tests/s16-needs-you-composition.test.ts",
+        "tests/s16-computer-continuation.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "browser",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-browser-conformance.test.ts",
+        "tests/s16-browser-crash.test.ts",
+        "tests/s16-browser-input-history.test.ts",
+        "tests/s16-protected-browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "routines",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-routines.test.ts",
+        "tests/s16-routine-events.test.ts",
+        "tests/s16-routine-schedule.test.ts",
+        "tests/s15-work-resume.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "memory",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-memory-client.test.ts",
+        "tests/s16-file-memory.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "connections",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-connections.test.ts",
+        "tests/s16-connections-import.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "skills",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-skills-composition.test.ts",
+        "tests/s16-skills-disclosure.test.ts",
+        "tests/s16-skills-continuity.test.ts",
+        "tests/s16-skills-package.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "models",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-models.test.ts",
+        "tests/s15-model-packed-consumer.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "voice",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-voice-client.test.ts",
+        "tests/s16-voice-service.test.ts",
+        "tests/s16-voice-call.test.ts",
+        "tests/s16-voice-local.test.ts",
+        "tests/s16-voice-audio.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "desktop",
+      "kind": "deterministic",
+      "basis": "inherited_contract_and_package_checks",
+      "reused": true,
+      "suites": [
+        "tests/s16-desktop-installation.test.ts",
+        "tests/s16-desktop-package.test.ts",
+        "tests/s16-desktop-storage.test.ts",
+        "tests/s16-desktop-boundary.test.ts",
+        "tests/s16-desktop-distribution.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "mobile",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-mobile-commands.test.ts",
+        "tests/s16-mobile-work.test.ts",
+        "tests/s16-mobile-uploads.test.ts",
+        "tests/s16-mobile-session.test.ts",
+        "tests/s16-mobile-notifications.test.ts",
+        "tests/s16-mobile-voice.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "notifications",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-notifications-composed.test.ts",
+        "tests/s16-notifications-worker.test.ts",
+        "tests/s16-notifications-crypto.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "portable",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-working-state.test.ts",
+        "tests/s16-computer-files.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "search",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-search.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "operations",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": true,
+      "suites": [
+        "tests/s16-ops-forward-service.test.ts",
+        "tests/s16-ops-recovery-retention.test.ts",
+        "tests/s16-owner-export.test.ts"
+      ],
+      "timeoutMs": 180000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "baseline",
+      "kind": "deterministic",
+      "basis": "inherited_contract_and_package_checks",
+      "reused": true,
+      "suites": [
+        "tests/s15-composition.test.ts",
+        "tests/s15-adoption.test.ts",
+        "tests/s15-adoption-journals.test.ts",
+        "tests/runtime-selection.test.ts",
+        "tests/web-token-lint.test.ts",
+        "tests/s16-upstream.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "bots_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-bots.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "conversation_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-steering.browser.test.ts",
+        "tests/s16-approval.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "files_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-files.browser.test.ts",
+        "tests/s16-file-memory.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "artifacts_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-artifacts.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "computers_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-computers.browser.test.ts",
+        "tests/s16-computer-screen.browser.test.ts",
+        "tests/s16-needs-you.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "browser_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-protected-browser.browser.test.ts",
+        "tests/s16-computer-browser-native.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "routines_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-routines.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "memory_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-memory.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "connections_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-connections.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "skills_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-skills.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "models_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-models.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "voice_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-voice.browser.test.ts",
+        "tests/s16-voice-call.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "desktop_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-desktop-workflow.browser.test.ts",
+        "tests/s16-desktop-lifecycle.browser.test.ts",
+        "tests/s16-desktop-connections.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "portable_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-working-state.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "search_web",
+      "kind": "browser",
+      "basis": "actual_browser_with_scripted_service_ports",
+      "reused": true,
+      "suites": [
+        "tests/s16-search.browser.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 1,
+      "artifactEvidence": "profile_specific_receipts_required"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "ac01",
+      "acceptance": [
+        "S16-AC01"
+      ],
+      "title": "Persistent Bots",
+      "requirements": [
+        "FR-01",
+        "FR-02",
+        "FR-04",
+        "FR-20",
+        "FR-35",
+        "NFR-05",
+        "NFR-08",
+        "NFR-12"
+      ],
+      "owners": [
+        411,
+        412,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Create an accepted Bot, give it a responsibility, change its reviewed configuration and return to its continuous history/memory/work after restart. Archive, restore, duplicate and export configuration without copying private credentials or silently widening resources."
+      ],
+      "negativeCases": [
+        "changed proposal",
+        "archive during active work",
+        "stale policy"
+      ],
+      "profiles": [
+        "bots",
+        "bots_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac02",
+      "acceptance": [
+        "S16-AC02"
+      ],
+      "title": "Fluid conversation",
+      "requirements": [
+        "FR-06",
+        "FR-14",
+        "FR-15",
+        "FR-19",
+        "FR-24",
+        "FR-29",
+        "NFR-05",
+        "NFR-06",
+        "NFR-11"
+      ],
+      "owners": [
+        395,
+        406,
+        430,
+        431,
+        442
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Send further messages while work or an approval is pending. The owner can steer, stop and continue another authorized task. A held action is approved or declined from its card in the conversation (S16-D08). Provisional progress, final text, evidence and unknown outcomes stay distinct; reload/retry does not duplicate work."
+      ],
+      "negativeCases": [
+        "lost response",
+        "stale generation",
+        "stop one concurrent request",
+        "typed approval"
+      ],
+      "profiles": [
+        "conversation",
+        "conversation_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac03",
+      "acceptance": [
+        "S16-AC03"
+      ],
+      "title": "Files into work",
+      "requirements": [
+        "FR-07",
+        "FR-17",
+        "FR-18",
+        "FR-22",
+        "FR-31",
+        "FR-38",
+        "FR-42",
+        "NFR-06",
+        "NFR-07",
+        "NFR-10",
+        "NFR-12",
+        "NFR-14"
+      ],
+      "owners": [
+        396,
+        400,
+        401,
+        402,
+        430,
+        431,
+        433
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Attach supported files/images from Web, with identical server limits exposed to clients. Scan/sanitize outside protected authority, retain immutable identity and lineage, use bounded content through Schway's supported text/image seams or the working computer, and produce a grounded result. Invalid files and cancelled uploads leave no runnable work or leaked partial file."
+      ],
+      "negativeCases": [
+        "invalid or cancelled upload",
+        "withdrawal during model wait",
+        "lost owner generation"
+      ],
+      "profiles": [
+        "files",
+        "files_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac04",
+      "acceptance": [
+        "S16-AC04"
+      ],
+      "title": "Delivered artifacts",
+      "requirements": [
+        "FR-04",
+        "FR-07",
+        "FR-16",
+        "FR-18",
+        "FR-42",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-08"
+      ],
+      "owners": [
+        396,
+        400,
+        401,
+        402,
+        407,
+        430,
+        431,
+        433
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "A Bot-created file is explicitly collected and committed as an artifact, previewable/downloadable from chat and a searchable library. Type/size/hash/producer/source lineage are real. HTML and active documents render in an isolated viewer; edits create revisions and revocation reaches previews/downloads."
+      ],
+      "negativeCases": [
+        "uncommitted candidate",
+        "withdrawn ancestor",
+        "active HTML escape"
+      ],
+      "profiles": [
+        "artifacts",
+        "artifacts_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac05",
+      "acceptance": [
+        "S16-AC05"
+      ],
+      "title": "Useful shared/private computers",
+      "requirements": [
+        "FR-02",
+        "FR-14",
+        "FR-15",
+        "FR-21",
+        "FR-35",
+        "FR-36",
+        "FR-38",
+        "FR-40",
+        "NFR-01",
+        "NFR-06",
+        "NFR-12",
+        "NFR-14"
+      ],
+      "owners": [
+        410,
+        411,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Team work shares approved files/tools and mediated browser identity without repeated per-Bot setup. Explicit private work remains isolated. Computers start when needed, release idle resources, retain working state and support evidenced stop/update/recovery. Concurrent work has independent input/workspace ownership."
+      ],
+      "negativeCases": [
+        "private promotion",
+        "stale computer generation",
+        "unknown settlement"
+      ],
+      "profiles": [
+        "computers",
+        "computers_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac06",
+      "acceptance": [
+        "S16-AC06"
+      ],
+      "title": "General browser work",
+      "requirements": [
+        "FR-07",
+        "FR-17",
+        "FR-37",
+        "FR-38",
+        "FR-40",
+        "FR-41",
+        "NFR-07",
+        "NFR-10",
+        "NFR-14"
+      ],
+      "owners": [
+        397,
+        408,
+        409,
+        430,
+        431,
+        442
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Complete a representative task on a public website that is not a custom business integration, including modern page interaction. Login/2FA has a usable owner handoff and team account reuse. Trusted sites run in the working VM browser with their session there; sensitive sites stay in the protected browser, where effect/disclosure gates cover actual requests and cannot be bypassed through guest shell or raw browser protocols (S16-D09). Static GET-only navigation is not completion."
+      ],
+      "negativeCases": [
+        "substituted recipient/body",
+        "unverified effect response",
+        "trusted/sensitive tier mismatch"
+      ],
+      "profiles": [
+        "browser",
+        "browser_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac07",
+      "acceptance": [
+        "S16-AC07"
+      ],
+      "title": "Live computer and takeover",
+      "requirements": [
+        "FR-10",
+        "FR-18",
+        "FR-35",
+        "FR-36",
+        "FR-38",
+        "FR-40",
+        "NFR-07",
+        "NFR-11",
+        "NFR-14"
+      ],
+      "owners": [
+        408,
+        410,
+        430,
+        431,
+        442
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Watch the working screen, take exclusive control, complete a protected-input step and return control with fresh generations. Agent input is fenced throughout takeover and old frames/handles cannot regain authority. A graphical desktop does not place sensitive-site credentials inside a root-controlled guest; trusted-site sessions are the S16-D09 exception."
+      ],
+      "negativeCases": [
+        "late frame/input",
+        "takeover race",
+        "expired owner lease"
+      ],
+      "profiles": [
+        "computers",
+        "computers_web",
+        "browser_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac08",
+      "acceptance": [
+        "S16-AC08"
+      ],
+      "title": "Peer and temporary delegation",
+      "requirements": [
+        "FR-02",
+        "FR-03",
+        "FR-14",
+        "FR-20",
+        "FR-21",
+        "FR-27",
+        "FR-29",
+        "FR-31",
+        "FR-35",
+        "NFR-02",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07"
+      ],
+      "owners": [
+        402,
+        413,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "A Bot delegates a bounded assignment to an enabled peer or temporary worker, using approved team resources and narrowed context. Results return to the originating responsibility; worker failure/cancellation preserves successful sibling evidence. Delegation does not create a permanent Bot or a new provider/account/purpose."
+      ],
+      "negativeCases": [
+        "cancelled child",
+        "private peer context",
+        "charged slice exhausted"
+      ],
+      "profiles": [
+        "bots",
+        "bots_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac09",
+      "acceptance": [
+        "S16-AC09"
+      ],
+      "title": "Routines and reactions",
+      "requirements": [
+        "FR-04",
+        "FR-09",
+        "FR-11",
+        "FR-12",
+        "FR-15",
+        "FR-26",
+        "FR-28",
+        "FR-33",
+        "FR-34",
+        "NFR-05",
+        "NFR-06",
+        "NFR-10"
+      ],
+      "owners": [
+        414,
+        415,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Configure a conversational scheduled responsibility and a signed event/file reaction. Timezone, misfire/coalescing, finite budget, review waits, notifications and stop survive restart. Quiet runs avoid noise; failures/needs-me remain visible. Outside content cannot install a routine or broaden its purpose."
+      ],
+      "negativeCases": [
+        "duplicate signed event",
+        "misfire across restart",
+        "quiet failure visibility"
+      ],
+      "profiles": [
+        "routines",
+        "routines_web",
+        "notifications"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac10",
+      "acceptance": [
+        "S16-AC10"
+      ],
+      "title": "Memory that remains useful",
+      "requirements": [
+        "FR-04",
+        "FR-05",
+        "FR-16",
+        "FR-17",
+        "FR-31",
+        "NFR-07",
+        "NFR-08",
+        "NFR-09",
+        "NFR-12"
+      ],
+      "owners": [
+        402,
+        416,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Relevant facts/preferences/working knowledge retain sources and fact/inference status, are inspectable and searchable, and survive model/computer changes. Correction wins; forget withdraws derived retrieval/context without silently deleting unrelated originals. Private scope precedes relevance."
+      ],
+      "negativeCases": [
+        "forget or corrected source",
+        "private source before ranking",
+        "late withdrawn context"
+      ],
+      "profiles": [
+        "memory",
+        "memory_web",
+        "files"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac11",
+      "acceptance": [
+        "S16-AC11"
+      ],
+      "title": "App connections",
+      "requirements": [
+        "FR-10",
+        "FR-22",
+        "FR-23",
+        "FR-35",
+        "FR-37",
+        "FR-38",
+        "NFR-05",
+        "NFR-07",
+        "NFR-09",
+        "NFR-14"
+      ],
+      "owners": [
+        417,
+        430,
+        431,
+        442
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Connect a real app from a conversational or settings entry point, reuse it across authorized Bots, and reconnect/revoke without configuration-file edits. Catalog services are optional; the self-hosted core works with directly configured sources. Credential entry and OAuth state remain protected."
+      ],
+      "negativeCases": [
+        "OAuth state/session change",
+        "credential replay",
+        "removed connection"
+      ],
+      "profiles": [
+        "connections",
+        "connections_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac12",
+      "acceptance": [
+        "S16-AC12"
+      ],
+      "title": "MCP and API sources",
+      "requirements": [
+        "FR-15",
+        "FR-17",
+        "FR-21",
+        "FR-35",
+        "FR-37",
+        "FR-38",
+        "FR-39",
+        "NFR-02",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-14"
+      ],
+      "owners": [
+        418,
+        419,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Add an HTTPS MCP source and an OpenAPI/GraphQL or gateway source with versioned schemas. Verify, discover and use a supported tool under current purpose, recipient and action policy. Session continuity is scoped per run; remote uncertainty reconciles. Discovery/hints do not grant effect authority."
+      ],
+      "negativeCases": [
+        "changed catalog",
+        "unreviewed effect hint",
+        "unknown remote outcome"
+      ],
+      "profiles": [
+        "connections",
+        "connections_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac13",
+      "acceptance": [
+        "S16-AC13"
+      ],
+      "title": "Skills and plugins",
+      "requirements": [
+        "FR-17",
+        "FR-20",
+        "FR-21",
+        "FR-31",
+        "FR-35",
+        "FR-38",
+        "FR-39",
+        "NFR-01",
+        "NFR-02",
+        "NFR-07",
+        "NFR-09",
+        "NFR-14"
+      ],
+      "owners": [
+        420,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Import a pinned plugin/skill, disclose which parts are supported, select its availability and invoke it from chat. An app connection does not load unrelated playbooks. Instructions are untrusted know-how; executable parts have an explicit working-boundary contract, never protected-host execution."
+      ],
+      "negativeCases": [
+        "changed pin",
+        "revocation during staging",
+        "unknown VM script result"
+      ],
+      "profiles": [
+        "skills",
+        "skills_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac14",
+      "acceptance": [
+        "S16-AC14"
+      ],
+      "title": "Provider and model choice",
+      "requirements": [
+        "FR-02",
+        "FR-13",
+        "FR-14",
+        "FR-27",
+        "FR-31",
+        "FR-38",
+        "NFR-02",
+        "NFR-03",
+        "NFR-06",
+        "NFR-09"
+      ],
+      "owners": [
+        395,
+        421,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Configure an approved supported route, choose Bot model/effort, honor pins and report actual routing/usage. Switching model retains product continuity. Providers remain Schway-owned and optional; a new account, billing route or private-data recipient uses its applicable owner boundary."
+      ],
+      "negativeCases": [
+        "withdrawn model pin",
+        "unavailable route",
+        "unknown usage after restart"
+      ],
+      "profiles": [
+        "models",
+        "models_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac15",
+      "acceptance": [
+        "S16-AC15"
+      ],
+      "title": "Voice",
+      "requirements": [
+        "FR-06",
+        "FR-11",
+        "FR-13",
+        "FR-14",
+        "FR-19",
+        "FR-24",
+        "FR-25",
+        "FR-37",
+        "FR-38",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-09",
+        "NFR-11"
+      ],
+      "owners": [
+        422,
+        423,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Dictate a message, listen to a reply and hold a voice conversation with visible recording/transcription state, interruption and finite usage. Text remains usable if voice is unavailable. No microphone capture or metered voice provider begins without configured owner intent and scope. Audio is not silently treated as an approval."
+      ],
+      "negativeCases": [
+        "unconfirmed transcript",
+        "microphone/session loss",
+        "replayed speech after restart"
+      ],
+      "profiles": [
+        "voice",
+        "voice_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac16",
+      "acceptance": [
+        "S16-AC16"
+      ],
+      "title": "Desktop client",
+      "requirements": [
+        "FR-04",
+        "FR-10",
+        "FR-18",
+        "FR-23",
+        "FR-24",
+        "FR-32",
+        "FR-35",
+        "FR-38",
+        "FR-40",
+        "NFR-05",
+        "NFR-07",
+        "NFR-08",
+        "NFR-11",
+        "NFR-12",
+        "NFR-14"
+      ],
+      "owners": [
+        425,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "A desktop client connects to an existing Jit service and uses the same Bots/work/memory/files/approvals/computer contracts. Self-hosted installation/update is recoverable. Native privileges are explicit, and the owner's everyday desktop is not silently enrolled by installing a client."
+      ],
+      "negativeCases": [
+        "changed package",
+        "service-origin switch",
+        "private profile/cache leakage"
+      ],
+      "profiles": [
+        "desktop",
+        "desktop_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac17",
+      "acceptance": [
+        "S16-AC17"
+      ],
+      "title": "Mobile client",
+      "requirements": [
+        "FR-10",
+        "FR-11",
+        "FR-18",
+        "FR-24",
+        "FR-25",
+        "FR-28",
+        "FR-35",
+        "FR-37",
+        "FR-38",
+        "NFR-05",
+        "NFR-07",
+        "NFR-09",
+        "NFR-11"
+      ],
+      "owners": [
+        426,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "A mobile client connects to that same service and can converse, send supported files, receive needs-me/results, inspect artifacts and perform exact approvals through the protected ingress. Native notifications, microphone, background reconnect and secure credential storage have labelled device evidence."
+      ],
+      "negativeCases": [
+        "background/foreground stale response",
+        "changed card",
+        "lost original Send response"
+      ],
+      "profiles": [
+        "mobile",
+        "conversation"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac18",
+      "acceptance": [
+        "S16-AC18"
+      ],
+      "title": "Notifications",
+      "requirements": [
+        "FR-04",
+        "FR-09",
+        "FR-11",
+        "FR-15",
+        "FR-28",
+        "FR-30",
+        "FR-35",
+        "FR-37",
+        "FR-38",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-09"
+      ],
+      "owners": [
+        430,
+        431,
+        441
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Rewritten 2026-11-06 (S16-D10; formerly messaging surfaces). An enabled device receives Web Push for needs-you, non-quiet routine outcomes and finished work, with a generic payload and an opaque link that opens the authenticated conversation. Durable notice identities prevent duplicates across retry/restart; a notification never approves or starts work. No messaging channel exists."
+      ],
+      "negativeCases": [
+        "duplicate notice",
+        "quiet routine",
+        "private payload or notification approval"
+      ],
+      "profiles": [
+        "notifications"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac19",
+      "acceptance": [
+        "S16-AC19"
+      ],
+      "title": "Portable computer backends",
+      "requirements": [
+        "FR-14",
+        "FR-15",
+        "FR-18",
+        "FR-23",
+        "FR-35",
+        "FR-36",
+        "FR-40",
+        "NFR-01",
+        "NFR-04",
+        "NFR-06",
+        "NFR-08",
+        "NFR-14"
+      ],
+      "owners": [
+        427,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Enroll another supported computer backend using a provider-neutral contract and its actual capability/settlement evidence. Default local compute remains useful without a hosted sandbox vendor. State export/recovery is bounded, and a backend cannot claim stronger isolation or cancellation than it proves."
+      ],
+      "negativeCases": [
+        "changed review manifest",
+        "unknown commit",
+        "private ancestry to shared destination"
+      ],
+      "profiles": [
+        "portable",
+        "portable_web",
+        "computers"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac20",
+      "acceptance": [
+        "S16-AC20"
+      ],
+      "title": "Organization and search",
+      "requirements": [
+        "FR-01",
+        "FR-04",
+        "FR-05",
+        "FR-10",
+        "FR-16",
+        "FR-18",
+        "FR-22",
+        "FR-24",
+        "FR-35",
+        "NFR-07",
+        "NFR-08",
+        "NFR-11",
+        "NFR-12"
+      ],
+      "owners": [
+        402,
+        407,
+        412,
+        416,
+        428,
+        430,
+        431
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Find Bot history, work, routines, memory and artifacts; organize them without inventing authorization from labels. Optional owner-controlled spaces have explicit isolation and availability semantics before introduction. Account/resource defaults avoid repeated per-Bot configuration while private scopes remain intact."
+      ],
+      "negativeCases": [
+        "withdrawal before counts",
+        "stale cursor",
+        "label as authority"
+      ],
+      "profiles": [
+        "search",
+        "search_web"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "ac21",
+      "acceptance": [
+        "S16-AC21"
+      ],
+      "title": "Installation and operations",
+      "requirements": [
+        "FR-04",
+        "FR-15",
+        "FR-18",
+        "FR-23",
+        "FR-35",
+        "FR-38",
+        "NFR-02",
+        "NFR-04",
+        "NFR-05",
+        "NFR-08",
+        "NFR-09",
+        "NFR-12"
+      ],
+      "owners": [
+        395,
+        405,
+        429,
+        430,
+        431,
+        432
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Install, connect existing clients, upgrade, back up, export, recover and uninstall through documented paths. Preserve current stores/policies/withdrawals/unknown effects and offer explicit tested adoption/rollback. No hosted service, telemetry, billing system or upstream model runtime becomes a hidden requirement."
+      ],
+      "negativeCases": [
+        "missing/corrupt current ledger",
+        "withdrawal after point",
+        "unknown original effect",
+        "interrupted compatible release"
+      ],
+      "profiles": [
+        "operations",
+        "baseline",
+        "desktop"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": [
+        "compatible service/client install-upgrade-interrupted-fallback-uninstall at #429"
+      ]
+    },
+    {
+      "id": "ac22",
+      "acceptance": [
+        "S16-AC22"
+      ],
+      "title": "Complete experience evidence",
+      "requirements": [
+        "FR-01",
+        "FR-02",
+        "FR-03",
+        "FR-04",
+        "FR-05",
+        "FR-06",
+        "FR-07",
+        "FR-08",
+        "FR-09",
+        "FR-10",
+        "FR-11",
+        "FR-12",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "FR-18",
+        "FR-19",
+        "FR-20",
+        "FR-21",
+        "FR-22",
+        "FR-23",
+        "FR-24",
+        "FR-25",
+        "FR-26",
+        "FR-27",
+        "FR-28",
+        "FR-29",
+        "FR-30",
+        "FR-31",
+        "FR-32",
+        "FR-33",
+        "FR-34",
+        "FR-35",
+        "FR-36",
+        "FR-37",
+        "FR-38",
+        "FR-39",
+        "FR-40",
+        "FR-41",
+        "FR-42",
+        "NFR-01",
+        "NFR-02",
+        "NFR-03",
+        "NFR-04",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-08",
+        "NFR-09",
+        "NFR-10",
+        "NFR-11",
+        "NFR-12",
+        "NFR-13",
+        "NFR-14"
+      ],
+      "owners": [
+        405,
+        430,
+        431,
+        432
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Demonstrate multiple real end-to-end tasks through actual clients: file-to-artifact, website task with owner login, delegated routine across restart, connected-app action with a held approval, and voice/mobile continuity. Record exact builds, evidence and honest pending inputs. Passing isolated modules or copying upstream source does not complete parity."
+      ],
+      "negativeCases": [
+        "each complete journey must retain its own cancellation/withdrawal/auth/restart/unknown assertions"
+      ],
+      "profiles": [
+        "files_web",
+        "browser_web",
+        "bots_web",
+        "routines_web",
+        "connections_web",
+        "voice_web",
+        "mobile"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": [
+        "delegated routine across restart as one actual-client journey",
+        "voice/mobile continuity at the same selected service"
+      ]
+    },
+    {
+      "id": "inherited_repository_readiness",
+      "acceptance": [
+        "S16-AC22"
+      ],
+      "title": "Retained repository readiness and review authority",
+      "requirements": [
+        "FR-08"
+      ],
+      "owners": [
+        340,
+        430
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Inspect readiness and existing ownership/branches before selected work; duplicate ingress starts one intent; current S16 default GitHub policy remains independently checked."
+      ],
+      "negativeCases": [
+        "inspection is not an unrequested start",
+        "changed required checks or scope"
+      ],
+      "profiles": [
+        "baseline",
+        "conversation"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    },
+    {
+      "id": "inherited_design_tokens",
+      "acceptance": [
+        "S16-AC22"
+      ],
+      "title": "Retained reviewed production design tokens",
+      "requirements": [
+        "NFR-13"
+      ],
+      "owners": [
+        394,
+        430
+      ],
+      "required": true,
+      "expectedOutcomes": [
+        "Production token lint detects planted literal/style violations and validates reviewed semantic tokens."
+      ],
+      "negativeCases": [
+        "raw color/size/duration literals",
+        "hover/focus/long motion violations"
+      ],
+      "profiles": [
+        "baseline"
+      ],
+      "evidenceStatus": "not_executed_at_matrix_revision",
+      "requiredDriverGaps": []
+    }
+  ],
+  "externalEvidence": [
+    {
+      "id": "native_ui",
+      "owners": [
+        426,
+        431
+      ],
+      "basis": "actual_simulator_or_physical_native_client",
+      "requiredFor": "product",
+      "status": "pending",
+      "outcome": "Observe actual native interaction, background/reconnect, secure credential storage, notifications and microphone with exact native/client/service digests."
+    },
+    {
+      "id": "linux_isolation",
+      "owners": [
+        340,
+        431
+      ],
+      "basis": "actual_linux_vm_and_protected_boundary",
+      "requiredFor": "product",
+      "status": "pending",
+      "outcome": "Observe x64/arm64 selected-service boot and guest administration/isolation/settlement under the supported host contract."
+    },
+    {
+      "id": "live_accounts",
+      "owners": [
+        340,
+        341,
+        431
+      ],
+      "basis": "opt_in_subscription_provider_and_connected_account",
+      "requiredFor": "product",
+      "status": "pending",
+      "outcome": "Observe exact approved route/renewal, real account handoff and actual vision/speech/recipient effects without relabelling fixtures."
+    },
+    {
+      "id": "owner_host_cutover",
+      "owners": [
+        432
+      ],
+      "basis": "owner_exact_build_policy_and_host_acceptance",
+      "requiredFor": "product",
+      "status": "pending",
+      "outcome": "Keep the separate exact host/build/policy/data acceptance and current-state preservation receipt."
+    },
+    {
+      "id": "configured_local_speech",
+      "owners": [
+        422,
+        423,
+        431
+      ],
+      "basis": "actual_supplied_local_speech_binary_and_model",
+      "requiredFor": "product",
+      "status": "pending",
+      "outcome": "Run known synthetic public audio through the actual configured local engine with exact binary/model digests; microphone/device and Thai accuracy evidence remain separately labelled."
+    }
+  ],
+  "authorityAmendments": [
+    "S16-D06–D11 and ADR 0084 amend retained S15 default approval/GitHub behavior.",
+    "S16-D10 and ADR 0085 remove Telegram; notifications use Web Push.",
+    "The 2026-11-03 S15 single-host decision retires the Raspberry Pi reference; Linux KVM is the default and owner-supplied VMs remain optional.",
+    "Current AGENTS.md assigns design and implementation to the primary agent."
+  ]
+}
