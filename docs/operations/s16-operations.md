@@ -10,6 +10,13 @@ repair restores only exact missing current immutable bytes. Complete selected
 service/client upgrade/fallback/uninstall acceptance remains in progress.
 Existing S14/legacy commands and S15 installation paths keep their contracts.
 
+The Linux source bootstrap copies the complete reviewed package inputs, including
+licenses, notices and immutable upstream provenance. Before loading the installer,
+it installs missing frozen production dependencies in its root-owned temporary
+snapshot with lifecycle scripts disabled, a private cache and a clean environment.
+It never imports the invoking checkout's dependencies or configuration. Shipped
+dependency trees remain untouched for their ordinary artifact validation.
+
 Run from the verified selected source package, with its pinned Bun and explicit
 credential-free S15 configuration:
 
