@@ -91,8 +91,8 @@ The S15 dry-run simulator refuses this path; use the guarded installer suites.
 original root jobs and current control, proves controller/working-VM stop and
 removes only the root-owned controller/journal/proxy units. It retains current
 SQL/native/payloads, accounts, config, credential-service unit/keyring, packages,
-receipts and disks. The credential service's original enablement and active
-state are privately receipted and restored separately. Missing/unknown original
+receipts and disks. The credential service's original enablement stays unchanged;
+its active state is privately receipted, stopped and restored separately. Missing/unknown original
 identity, manager state or custody refuses before deleting wiring. An earlier
 selected package without the helper must first use the compatible upgrade;
 uninstall never upgrades code silently.

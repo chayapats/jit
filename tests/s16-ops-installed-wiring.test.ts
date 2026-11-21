@@ -65,7 +65,7 @@ async function fixture() {
   const rootInput: S16RootWiringJobInput = { requestId: 'root_wiring_remove', direction: 'remove', originalRemovalRequestId: null, bunPath: join(layout.prefix, 'bin/bun'), service: { user: 'jit-fixture', uid: process.getuid!(), gid: process.getgid!(), home: layout.home } };
   const rootOptions: S16RootWiringJobOptions = { supervisor, run, pathPolicy, layoutRoot: sandbox };
   const rootJob = (command = rootInput, after?: S16RootWiringJobOptions['after']) => openS16RootWiringJob(command, { ...rootOptions, ...(after ? { after } : {}) });
-  const installedEffects = { starts: 0, stops: 0, vmStops: 0, managerMutations: 0 }; let pid = 900, controllerEnabled = true, keyringEnabled = true, keyringActive = true;
+  const installedEffects = { starts: 0, stops: 0, vmStops: 0, managerMutations: 0, keyringEnablementWrites: 0 }; let pid = 900, controllerEnabled = true, keyringEnabled = true, keyringActive = true;
   const installedRun: NonNullable<S16RootWiringJobOptions['run']> = async (argv, options) => {
     const result = (stdout = '', exitCode = 0) => ({ exitCode, timedOut: false, stdout });
     if (argv[0] === '/usr/bin/getent') return result(`jit-fixture:x:${process.getuid!()}:${process.getgid!()}::${layout.home}:/usr/sbin/nologin\n`);
@@ -74,8 +74,8 @@ async function fixture() {
       const operation = argv[12];
       if (operation === 'is-enabled') return result(keyringEnabled ? 'enabled\n' : 'disabled\n', keyringEnabled ? 0 : 1);
       if (operation === 'is-active') return result(keyringActive ? 'active\n' : 'inactive\n', keyringActive ? 0 : 3);
-      if (operation === 'enable') keyringEnabled = true;
-      else if (operation === 'disable') { keyringEnabled = false; if (argv.includes('--now')) keyringActive = false; }
+      if (operation === 'enable') { installedEffects.keyringEnablementWrites++; keyringEnabled = true; }
+      else if (operation === 'disable') { installedEffects.keyringEnablementWrites++; keyringEnabled = false; if (argv.includes('--now')) keyringActive = false; }
       else if (operation === 'start') keyringActive = true;
       else if (operation === 'stop') keyringActive = false;
       else if (operation !== 'daemon-reload') throw Error('fixture_unexpected_user_manager_command');
@@ -165,6 +165,7 @@ test('installed dispatcher removes and reinstalls original wiring/activation the
   const restore = f.installed('restore');
   try { expect(await restore.run()).toMatchObject({ state: 'restored', health: 'healthy' }); } finally { restore.close(); }
   expect(readS16Wiring(f.layout, process.getuid!(), f.pathPolicy)).toEqual(f.original); expect(f.installedEffects.starts).toBe(1); expect(existsSync(f.fence)).toBe(false); f.retained();
+  expect(f.installedEffects.keyringEnablementWrites).toBe(0);
   const before = { ...f.installedEffects }, control = readFileSync(f.controlPath), retry = f.installed('restore');
   try { expect(await retry.run()).toMatchObject({ state: 'restored', health: 'healthy' }); } finally { retry.close(); }
   expect(f.installedEffects).toEqual(before); expect(readFileSync(f.controlPath)).toEqual(control); f.retained();

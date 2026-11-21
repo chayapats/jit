@@ -90,14 +90,20 @@ export function openS16InstalledWiring(direction: 'remove' | 'restore', bunPath:
             }
             validateActivation(original);
             const done = files().read('deactivated.json');
-            if (done !== undefined) { if (canonical(done) !== canonical({ activationSha256: digest(original), state: 'disabled' })) refuse('s16_installed_wiring_activation_changed'); return; }
+            // Older completed jobs disabled local keyring enablement. Preserve
+            // their original receipt; new jobs leave both local/global links alone.
+            if (done !== undefined && canonical(done) === canonical({ activationSha256: digest(original), state: 'disabled' })) return;
+            const stopped = { activationSha256: digest(original), state: 'controller_disabled_keyring_stopped' };
+            if (done !== undefined && canonical(done) !== canonical(stopped)) refuse('s16_installed_wiring_activation_changed');
             if (await enabled(false)) await call(['/usr/bin/systemctl', 'disable', 'jit-s15.service']);
             if (await enabled(false)) refuse('s16_installed_wiring_activation_unknown');
             if (original.keyring !== null) {
-              await call(asUser(['disable', '--now', 'gnome-keyring-daemon.service'])); if (await enabled(true)) refuse('s16_installed_wiring_activation_unknown');
+              if (await enabled(true) !== original.keyring) refuse('s16_installed_wiring_activation_changed');
+              await call(asUser(['stop', 'gnome-keyring-daemon.service']));
+              if (await enabled(true) !== original.keyring) refuse('s16_installed_wiring_activation_changed');
               const active = await call(asUser(['is-active', 'gnome-keyring-daemon.service']), [0, 3]); if (!['inactive', 'failed'].includes(active)) refuse('s16_installed_wiring_activation_unknown');
             }
-            files().publish('deactivated.json', { activationSha256: digest(original), state: 'disabled' });
+            files().publish('deactivated.json', stopped);
           },
           async reload() { await call(['/usr/bin/systemctl', 'daemon-reload']); },
           async restoreActivation() {
@@ -106,7 +112,10 @@ export function openS16InstalledWiring(direction: 'remove' | 'restore', bunPath:
             if (await enabled(false) !== original.controller) refuse('s16_installed_wiring_activation_unknown');
             if (original.keyring !== null) {
               await call(asUser(['daemon-reload']));
-              if (await enabled(true) !== original.keyring) await call(asUser([original.keyring ? 'enable' : 'disable', 'gnome-keyring-daemon.service']));
+              const old = jobFiles(command.originalRemovalRequestId!).read('deactivated.json');
+              const legacy = canonical(old) === canonical({ activationSha256: digest(original), state: 'disabled' });
+              if (!legacy && canonical(old) !== canonical({ activationSha256: digest(original), state: 'controller_disabled_keyring_stopped' })) refuse('s16_installed_wiring_activation_changed');
+              if (legacy && await enabled(true) !== original.keyring) await call(asUser([original.keyring ? 'enable' : 'disable', 'gnome-keyring-daemon.service']));
               if (await enabled(true) !== original.keyring) refuse('s16_installed_wiring_activation_unknown');
               await call(asUser([original.keyringActive ? 'start' : 'stop', 'gnome-keyring-daemon.service']));
               const active = await call(asUser(['is-active', 'gnome-keyring-daemon.service']), [0, 3]); if (original.keyringActive ? active !== 'active' : !['inactive', 'failed'].includes(active)) refuse('s16_installed_wiring_activation_unknown');

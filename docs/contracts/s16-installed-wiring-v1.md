@@ -8,7 +8,9 @@ This protocol removes/restores only the fixed root-owned S15 controller unit,
 journald namespace and proxy socket unit. The protected credential-service unit
 under its original user's home is retained unchanged, like accounts, linger,
 credentials and disks. Root never unlinks or rewrites that service-owned path.
-Fixed user-manager commands disable/restore its original activation separately.
+Fixed user-manager commands stop/restore its original active state separately,
+leaving local and global enablement unchanged. Ubuntu may retain global keyring
+enablement after a user disable; that is not proof of a failed process stop.
 No host path comes from a client, archive, model or ordinary export.
 
 `openS16WiringMaintenance` returns before current resources open. Input binds an
@@ -56,8 +58,9 @@ under genuine installer exclusion. Staged crash temporaries are bounded to 16
 per parent and never become restoration sources.
 
 The supervisor must conclusively stop the controller and named working VMs,
-disable original activation before removal, reload after physical wiring and
-restore original activation before completion. It never reports a VM stop as
+disable controller activation and stop the keyring before removal, reload after
+physical wiring and restore original controller enablement/keyring active state
+before completion. Keyring enablement stays unchanged. It never reports a VM stop as
 settlement/refund of unknown work/effects. Root job results certify historical
 wiring only, separately from current service health.
 
