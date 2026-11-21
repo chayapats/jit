@@ -52,9 +52,14 @@ names; receipts hash names and contain no host paths or raw test output.
 
 `source_inputs_passed` means the declared source profiles actually passed at that
 receipt's revision. It does not certify each broad product outcome or packaged
-parity. Artifact import for service/web/desktop/mobile/parser digests and the
-delegated-scheduled-restart and same-service voice/mobile journey drivers are
-still required. #429's full compatible service/client lifecycle remains a gap.
+parity. The `journeys` profile uses the actual shared JitClient and owning service
+with scripted provider/VM transports: one reviewed routine delegates to a peer,
+retains parent/child results through service restart, and runs only the next due
+occurrence. A smaller finite read budget visibly holds before the VM byte read;
+pause prevents the next model call. This is source-client evidence, not a rendered
+browser or physical native-device claim. Artifact import for
+service/web/desktop/mobile/parser digests and same-service voice/mobile continuity
+are still required. #429's full compatible service/client lifecycle remains a gap.
 `deterministicAcceptance` and `productAcceptance` therefore stay blocked in this
 initial executor. Real devices, Linux isolation, configured local speech,
 subscriptions/accounts and owner-host cutover retain independent pending rows.
