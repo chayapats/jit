@@ -1,5 +1,5 @@
 import { workingStateManifest, workingStateImport, workingStateView, type WorkingStateManifest, type WorkingStateImport, type WorkingStateView } from "./working-state";
-import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
+import { isVmBackendDescriptor } from "./computer-backend";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
 import type { SearchItem, SearchKind, SearchLabelCommand, SearchLabelReceipt, SearchPage, SearchQuery, SearchTarget } from '../search/contracts';
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";

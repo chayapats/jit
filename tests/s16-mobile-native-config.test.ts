@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -20,3 +20,17 @@ const node = process.env.JIT_MOBILE_NODE, native = process.env.JIT_MOBILE_NATIVE
     for (const permission of ["android.permission.SYSTEM_ALERT_WINDOW", "android.permission.READ_EXTERNAL_STORAGE", "android.permission.WRITE_EXTERNAL_STORAGE"]) expect(publicConfig.android.blockedPermissions).toContain(permission);
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 30000);
+
+(native ? test : test.skip).each(['ios', 'android'] as const)('actual Metro %s release graph resolves shared computer validation without host runtime imports', async platform => {
+  const directory = mkdtempSync(join(tmpdir(), 'jit-mobile-metro-')), project = resolve('clients/mobile');
+  const child = Bun.spawn([node!, 'node_modules/expo/bin/cli', 'export', '--platform', platform, '--output-dir', directory], {
+    cwd: project, env: { PATH: process.env.PATH, EXPO_NO_TELEMETRY: '1', EXPO_NO_DOTENV: '1', EXPO_OFFLINE: '1', CI: '1', NODE_ENV: 'production' }, stdout: 'pipe', stderr: 'pipe',
+  });
+  const timer = setTimeout(() => child.kill('SIGKILL'), 60000);
+  try {
+    const [exit, output, error] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect({ exit, error: exit === 0 ? null : (output + error).slice(-2000) }).toEqual({ exit: 0, error: null });
+    const metadata = JSON.parse(readFileSync(join(directory, 'metadata.json'), 'utf8')), bundle = metadata.fileMetadata[platform].bundle;
+    expect(bundle).toMatch(/\.hbc$/); expect(statSync(join(directory, bundle)).size).toBeGreaterThan(1024);
+  } finally { clearTimeout(timer); child.kill('SIGKILL'); await child.exited; rmSync(directory, { recursive: true, force: true }); }
+}, 90000);
