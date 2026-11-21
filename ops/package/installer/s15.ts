@@ -300,7 +300,8 @@ const codeCopy = (code: string) => {
  * a `kvm` group gets the controller alone and the owner-supplied VM fallback. Re-runs repair idempotently and
  * preserve config and state; uninstall removes units only after a proven working-VM stop. Upgrades stop the controller (the VM keeps running), switch the release atomically and roll back to
  * the previous release and unit when the new one fails to start or answer health. A failed fresh install
- * removes the new unit and anything it initialized, leaving a cleanly re-runnable host. Other installations
+ * removes the new service wiring and retains initialized state for an in-place retry. Missing current
+ * state or composition is refused rather than replaced by empty state. Other installations
  * (`jit`, `jit-s14`) are never read or changed.
  */
 export async function runS15Installer(options: S15InstallerOptions): Promise<S15InstallerResult> {
@@ -366,9 +367,23 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
   const asUser = (args: string[]) => ["runuser", "-u", p.user, "--", "env", `HOME=${p.home}`, `XDG_RUNTIME_DIR=/run/user/${uid}`, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus`, ...args];
   const vmmOptions = () => ({ user: p.vmmUser, uid: vmmUid, directory: p.vmmRoot, launcher: p.launcher });
   let ownedStaging: string | null = null, frozenContainer: string | null = null, ownerTerminal: ReturnType<typeof operatorTerminal> | undefined, pendingOwner: PendingOwnerLink | undefined;
-  let release: string | null = null, config: S15RuntimeConfig | null = null, createdState = false, armed = false, committed = false;
+  let release: string | null = null, config: S15RuntimeConfig | null = null, armed = false, committed = false;
   let previous: { release: string | null; unit: string | null; journald: string | null; socket: string | null; active: boolean; manifest: string | null } | null = null;
   const manifestPath = join(paths.state, "runtime/composition.json");
+  const stateFailure = () => new InstallerFailure(currentStep, `preserve ${p.state} and ${p.config} in place and diagnose missing or changed current state; automatic re-initialization is refused`);
+  const stateIdentity = () => { safe(paths.state); return lstatSync(paths.state, { throwIfNoEntry: false }); };
+  let originalState: ReturnType<typeof stateIdentity>;
+  const requireComposition = () => {
+    safe(manifestPath);
+    const marker = lstatSync(manifestPath, { throwIfNoEntry: false });
+    if (!marker?.isFile()) throw stateFailure();
+  };
+  const assertOriginalState = () => {
+    const current = stateIdentity();
+    if (originalState ? !current?.isDirectory() || current.dev !== originalState.dev || current.ino !== originalState.ino : current !== undefined) throw stateFailure();
+    if (current) requireComposition();
+    return current;
+  };
   const currentTarget = () => { try { return lstatSync(paths.current).isSymbolicLink() ? resolve(dirname(paths.current), readlinkSync(paths.current)) : null; } catch { return null; } };
   // The active-release link is the one symlink the installer manages; its parent must not be a link.
   const link = (path: string) => { safe(dirname(path)); const stat = lstatSync(path, { throwIfNoEntry: false }); if (stat && !stat.isSymbolicLink()) throw new InstallerFailure("paths", `move the non-link ${path.slice(root === "/" ? 0 : root.length)} aside, then re-run install.sh --s15`); };
@@ -430,6 +445,11 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       try { preserved = parseS15RuntimeConfig(JSON.parse(existing)); } catch { throw new InstallerFailure(currentStep, next); }
       if (preserved.directory !== p.state || preserved.vm.local === true && !preserved.vm.vmm) throw new InstallerFailure(currentStep, next);
     }
+    originalState = stateIdentity();
+    if (originalState) {
+      if (!originalState.isDirectory() || !preserved) throw stateFailure();
+      requireComposition();
+    } else if ([paths.unit, paths.current, paths.installerState].some(path => lstatSync(path, { throwIfNoEntry: false }) !== undefined)) throw stateFailure();
     // Local VM support: kept once installed; added when the host gains a kvm group (QEMU/KVM packages).
     let local = preserved?.vm.local === true;
 
@@ -595,13 +615,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     step("state-initialize", `repair ${p.state} ownership and re-run install.sh --s15; existing state is never re-initialized`);
     const marker = manifestPath;
-    if (existsSync(paths.state) && !existsSync(marker)) {
-      // An initialization interrupted before it finished has no owner and no work; keep it aside, never delete it.
-      const aside = `${paths.state}.interrupted-${Date.now()}`; safe(aside); renameSync(paths.state, aside);
-      out(`Moved an unfinished, owner-less initialization aside to ${aside.slice(root === "/" ? 0 : root.length)}.`);
-    }
-    if (!existsSync(paths.state)) {
-      createdState = true;
+    if (!assertOriginalState()) {
       if (dry) { own(join(paths.state, "runtime"), 0o700); write(marker, JSON.stringify({ contract: "s15-composition/v1" })); }
       else {
         const initialized = await must(asUser([options.bunPath, join(release!, "src/main.ts"), "init", "--s15", "--config", p.config]), 300_000);
@@ -684,6 +698,8 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       try {
         if (!dry) await call(["systemctl", "stop", p.service], 120_000);
         if (previous?.release) {
+          // A missing/replaced current directory or marker is not reconstructed by fallback either.
+          assertOriginalState();
           switchCurrent(previous.release);
           // The stopped release's own manifest, byte for byte; stores a newer release added stay on disk unlisted.
           if (previous.manifest !== null && read(manifestPath) !== previous.manifest) write(manifestPath, previous.manifest, 0o600, { uid, gid });
@@ -701,14 +717,12 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
           restored = true;
         }
       } catch { restored = false; }
-      if (!previous?.release && createdState) { safe(paths.state); rmSync(paths.state, { recursive: true, force: true }); }
       const failure = error instanceof InstallerFailure ? error : new InstallerFailure(currentStep, next);
       const state = previous?.release ? restored ? `The previous release ${previous.release.slice(root === "/" ? 0 : root.length)} is active again${previous.active ? " and healthy" : ""}.`
         : `Restoring the previous release did not finish: point ${p.prefix}/current at ${previous.release.slice(root === "/" ? 0 : root.length)}, run systemctl daemon-reload and start ${p.service}.`
-        : restored ? "No S15 service was left installed and nothing this run initialized was kept; the host is ready for a clean re-run." : `Remove ${p.unit} and run systemctl daemon-reload before re-running.`;
+        : restored ? "No S15 service was left installed. Configuration and any initialized state were retained in place; re-run after fixing the cause. Incomplete current state refuses automatic re-initialization." : `Remove ${p.unit} and run systemctl daemon-reload before re-running. Configuration and any initialized state were retained in place.`;
       throw new InstallerFailure(failure.step, `${failure.nextAction}. ${state}`);
     }
-    if (!committed && createdState && !armed) { safe(paths.state); rmSync(paths.state, { recursive: true, force: true }); }
     if (error instanceof InstallerFailure) throw error;
     throw new InstallerFailure(currentStep, next);
   } finally {
