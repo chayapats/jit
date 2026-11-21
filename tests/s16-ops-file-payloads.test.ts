@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { composedFixture } from './fixtures/s15-composition';
 import { binaryRuntime, launchPdf } from './fixtures/s16-binary';
 import { JitClient } from '../src/s16/client';
-import { fileCustodyPayloads } from '../src/s16/files/maintenance';
+import { fileCustodyPayloads, fileExpectedPayloads } from '../src/s16/files/maintenance';
 import { captureS16PayloadSet, s16PayloadSetManifestHash, verifyS16PayloadSet } from '../src/s16/operations/payload-set';
 
 type Fixture = Awaited<ReturnType<typeof composedFixture>>;
@@ -19,6 +19,7 @@ async function fixture(binary = false) {
   } }); await client.bootstrap(); return { f, client };
 }
 const inventory = (f: Fixture) => fileCustodyPayloads(f.service.files!.journal.db, f.service.files!.directory, 'fixture', () => { f.service.policy.owner.current(f.owner); });
+const expected = (f: Fixture) => fileExpectedPayloads(f.service.files!.journal.db, 'fixture', () => { f.service.policy.owner.current(f.owner); });
 async function upload(client: JitClient, text: string, requestId: string) {
   const bytes = new TextEncoder().encode(text), pending = await client.createUpload({ requestId, conversationId: 'conversation', name: 'notes.txt', bytes: bytes.length, sha256: hash(bytes) });
   const ready = await client.uploadBytes(pending.id, bytes); expect(ready.state).toBe('ready'); return ready;
@@ -65,4 +66,33 @@ test.each(['foreign', 'reader', 'receipt', 'bounds', 'owner'] as const)('invalid
   if (kind === 'bounds') journal.db.query('UPDATE records SET json=? WHERE id=?').run(JSON.stringify({ ...journal.get<Record<string, unknown>>(ready.id), extra: 'x'.repeat(131072) }), ready.id);
   if (kind === 'owner') f.generation = 2;
   expect(() => inventory(f)).toThrow(); expect(readFileSync(join(f.service.files!.directory, ready.id + '.blob'), 'utf8')).toBe('bound source\n');
+  expect(() => expected(f)).toThrow();
+});
+
+test('current FILE references remain readable after payload loss without creating missing paths or making capture complete', async () => {
+  const { f, client } = await fixture(), ready = await upload(client, 'exact current source\n', 'missing_bytes');
+  const directory = f.service.files!.directory, before = f.service.files!.journal.db.serialize(), refs = expected(f);
+  expect(refs.files).toEqual([{ name: ready.id + '.blob', rowId: ready.id, role: 'original', bytes: ready.bytes, sha256: ready.receipt!.sha256 }]);
+  renameSync(directory, directory + '.retained');
+  expect(expected(f)).toEqual(refs); expect(existsSync(directory)).toBe(false); expect(() => inventory(f)).toThrow();
+  expect(f.service.files!.journal.db.serialize()).toEqual(before); expect(f.modelPrompts).toHaveLength(0); expect(f.vmCalls).toHaveLength(0);
+  expect(Object.isFrozen(refs)).toBe(true); expect(Object.isFrozen(refs.files[0])).toBe(true); expect(JSON.stringify(refs)).not.toContain(f.directory);
+});
+
+test('current FILE metadata keeps staged artifact pins inert and excludes current withdrawn input from recovery references', async () => {
+  const { f, client } = await fixture(), ready = await upload(client, 'withdraw current source\n', 'current_source');
+  const artifact = f.service.files!.stageArtifact(f.owner, { id: 'current_staged', requestId: 'still_unpublished', workId: 'work', conversationId: 'conversation', name: 'draft.md', text: '# Inert staged bytes\n', inputs: [{ id: ready.id, sha256: ready.receipt!.sha256 }] });
+  expect(expected(f).files).toHaveLength(2); await client.withdrawUpload(ready.id);
+  const before = f.service.files!.journal.db.serialize(), refs = expected(f);
+  expect(refs.files).toEqual([{ name: artifact.id + '.blob', rowId: artifact.id, role: 'artifact', bytes: artifact.bytes, sha256: artifact.sha256 }]);
+  expect((await f.request(`/api/s16/client/requests/still_unpublished/artifacts/${artifact.id}`)).status).not.toBe(200); expect(f.service.files!.journal.db.serialize()).toEqual(before);
+});
+
+test('current FILE references include validated representations and preserve original pending uncertainty without byte reads', async () => {
+  const { f, client } = await fixture(true), bytes = launchPdf(), created = await client.createUpload({ requestId: 'current_pdf', conversationId: 'conversation', name: 'notes.pdf', bytes: bytes.length, sha256: hash(bytes) });
+  const ready = await client.uploadBytes(created.id, bytes), refs = expected(f);
+  expect(refs.files.map(row => row.role)).toEqual(['original', 'representation']);
+  const journal = f.service.files!.journal, row = journal.get<Record<string, unknown>>(ready.id); journal.tx(() => journal.put(ready.id, { ...row, state: 'validating', receipt: null }));
+  const before = journal.db.serialize(); renameSync(f.service.files!.directory, f.service.files!.directory + '.retained');
+  expect(expected(f)).toMatchObject({ files: [], pending: [{ id: ready.id, state: 'validating' }] }); expect(journal.db.serialize()).toEqual(before); expect(f.modelPrompts).toHaveLength(0);
 });

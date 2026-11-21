@@ -28,6 +28,7 @@ import { retireS16Staging, type S16StagingRetirementOptions, type S16StagingReti
 import { abortS16Backup, type S16BackupAbortOptions, type S16BackupAbortResult } from './backup-abort';
 import type { S16OperationsRequest } from './operations-state';
 import { openS16PointCapture, type S16PointCaptureMaintenance, type S16PointCaptureOptions } from './point-capture';
+import { captureS16CurrentPayloadReferences, type S16CurrentPayloadReferenceObservation } from './current-payload-references';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -72,6 +73,8 @@ export interface S16ControlMaintenance {
   helperCustody(options?: S16HelperCohortOptions): Promise<S16HelperObservation>;
   /** Complete known FILE/parser byte custody, retaining pending and untrusted roles without boot recovery. */
   fileCustody(): S16FileObservation;
+  /** Current SQL pins even when payload bytes are missing; no complete cohort or restore authority. */
+  currentPayloadReferences(): S16CurrentPayloadReferenceObservation;
   /** Complete current GitHub bundle bytes/references, without recovery, Git, credentials or publication. */
   githubArtifacts(): S16GithubArtifactObservation;
   /** Current backend/client/credential metadata; no secret/profile/disk copy or physical settlement. */
@@ -260,6 +263,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const githubArtifacts = () => captureS16GithubArtifacts({ directory: root, installationId: config.installationId, lease, source: heldRuntime.sources.find(source => source.name === 'github.sqlite'), disclosure: heldRuntime.sources.find(source => source.name === 'disclosure.sqlite'), guard: assertCurrent });
     const fileCustody = () => captureS16FileCohort({ directory: root, installationId: config.installationId, lease,
       source: heldRuntime.sources.find(source => source.name === 'files.sqlite'), configuredGeneration: typeof config.files === 'object' ? config.files.parserImage : null, guard: assertCurrent });
+    const currentPayloadReferences = () => captureS16CurrentPayloadReferences({ directory: root, installationId: config.installationId, lease, sources: heldRuntime.sources, guard: assertCurrent });
     const helperCustody = (helperOptions: S16HelperCohortOptions = {}) => {
       assertCurrent();
       return captureS16HelperCohort({ ...helperOptions, directory: root, lease, installationId: config.installationId, controllers,
@@ -276,7 +280,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     };
     const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
     const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

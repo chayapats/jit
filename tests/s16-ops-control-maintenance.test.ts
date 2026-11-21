@@ -94,7 +94,7 @@ test('aggregate source retirement preserves actual independent installation and 
   expect(() => context.assertExclusion()).toThrow(expect.objectContaining({ code: 's16_ops_sources_not_retired' })); context.retireSources(); context.retireSources(); context.assertExclusion();
   expect(competingLocks(f.directory)).toEqual({ installation: 's16_ops_installation_busy', chat: true });
   for (const source of context.sources) expect(() => source.database.query('SELECT 1').get()).toThrow();
-  for (const call of [context.assertCurrent, context.operations, context.nativeNamespace, context.fileCustody, context.githubArtifacts, context.externalCustody]) expect(() => call()).toThrow();
+  for (const call of [context.assertCurrent, context.operations, context.nativeNamespace, context.fileCustody, context.currentPayloadReferences, context.githubArtifacts, context.externalCustody]) expect(() => call()).toThrow();
   context.close(); const fresh = maintenance(f); expect(fresh.sources.map(source => source.database.serialize())).toEqual(before); fresh.assertCurrent(); expect(() => context.assertExclusion()).toThrow();
 });
 

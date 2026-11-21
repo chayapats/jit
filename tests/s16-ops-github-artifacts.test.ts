@@ -83,6 +83,7 @@ test.each(['missing', 'hash', 'symlink', 'hardlink', 'mode', 'name', 'size', 'id
   if (kind === 'row-bounds') f.db.query("UPDATE records SET json=? WHERE kind='report'").run(JSON.stringify({ content: 'x'.repeat(1048576) }));
   if (kind === 'utf8') f.db.query("UPDATE records SET json=CAST(? AS TEXT) WHERE kind='report'").run(Buffer.concat([Buffer.from('{"content":"'), Buffer.from([255]), Buffer.from('"}')]));
   expect(() => f.context.githubArtifacts()).toThrow(); expect(JSON.parse(f.db.query<{ json: string }, []>("SELECT json FROM records WHERE kind='babysit'").get()!.json).state).toBe('remediating');
+  if (['identity', 'reader', 'kind', 'slot', 'row-bounds', 'utf8'].includes(kind)) expect(() => f.context.currentPayloadReferences()).toThrow();
 });
 
 test('unused namespace stays absent or empty and unowned bytes/forged exclusion cannot certify custody', () => {
@@ -136,4 +137,36 @@ test.each(['reader', 'identity', 'key', 'ref'] as const)('invalid current DATA15
   if (kind === 'key') db.exec("UPDATE records SET id='changed'");
   if (kind === 'ref') db.exec("UPDATE records SET json=json_set(json,'$.ref.generation',2)");
   expect(() => f.context.githubArtifacts()).toThrow(); expect(existsSync(join(f.root, f.bundles[0]!.ref.id))).toBe(true);
+  expect(() => f.context.currentPayloadReferences()).toThrow();
+});
+
+test('current GitHub references survive missing namespace without claiming unreferenced or historical bytes as current', async () => {
+  const f = await fixture(true), before = f.db.serialize(), references = f.context.currentPayloadReferences();
+  expect(references.value.github.bundles).toHaveLength(2);
+  for (const bundle of references.value.github.bundles) expect(bundle).toEqual({ id: bundle.id, sha256: bundle.id.slice(7), references: bundle.references });
+  expect(references.value.github.bundles.find(row => row.id === f.bundles[1]!.ref.id)!.references.map(row => row.slot)).toEqual(['action.selection.evidence', 'action.evidence', 'action.effect', 'receipt.evidence']);
+  renameSync(f.root, f.root + '.retained'); references.assertCurrent(); expect(f.context.currentPayloadReferences().sha256).toBe(references.sha256);
+  expect(() => f.context.githubArtifacts()).toThrow(); expect(existsSync(f.root)).toBe(false); expect(f.db.serialize()).toEqual(before);
+  expect(JSON.stringify(references.value)).not.toContain(f.directory); expect(JSON.stringify(references.value)).not.toContain('private_source_marker');
+  expect(Object.isFrozen(references.value.github.bundles[0]!.references[0])).toBe(true);
+  expect(JSON.parse(f.db.query<{ json: string }, []>("SELECT json FROM records WHERE kind='remote_result'").get()!.json).outcome).toBe('unknown');
+  f.context.close(); expect(() => references.assertCurrent()).toThrow();
+});
+
+test('current DATA15 alone keeps its original pre-publication bundle pin when bytes disappear', async () => {
+  const f = await fixture(false, true), before = f.context.currentPayloadReferences();
+  expect(before.value.github.bundles[0]!.references[0]!.slot).toBe('disclosure.derived.ref');
+  unlinkSync(join(f.root, f.bundles[0]!.ref.id)); before.assertCurrent(); expect(f.context.currentPayloadReferences().value).toEqual(before.value);
+  expect(() => f.context.githubArtifacts()).toThrow('s16_ops_github_missing');
+});
+
+test('original current reference observation rereads a WAL-only change and never retains a stale SQL snapshot', async () => {
+  const f = await fixture(); f.db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0'); f.reopen();
+  const mode = f.db.query<{ journal_mode: string }, []>('PRAGMA journal_mode').get()!.journal_mode;
+  expect(mode).toBe('wal'); const cut = f.context.currentPayloadReferences(), mainBefore = readFileSync(f.path);
+  f.db.exec("UPDATE records SET json=json_set(json,'$.state','reconcile_only') WHERE kind='selection'");
+  expect(readFileSync(f.path)).toEqual(mainBefore); f.context.assertCurrent(); expect(() => cut.assertCurrent()).toThrow('s16_ops_references_changed');
+  const current = f.context.currentPayloadReferences(); expect(current.value.github.bundles[0]!.references.find(row => row.slot === 'selection.evidence')!.state).toBe('reconcile_only');
+  f.db.exec('BEGIN'); try { expect(() => current.assertCurrent()).toThrow('s16_ops_sources_busy'); expect(() => f.context.currentPayloadReferences()).toThrow('s16_ops_sources_busy'); } finally { f.db.exec('ROLLBACK'); }
+  current.assertCurrent();
 });

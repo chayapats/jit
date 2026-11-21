@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -54,6 +55,31 @@ test.each(['uploading', 'validating'] as const)('actual SIGKILL retains %s origi
 
 test('absent unselected FILE remains absent and original observations fail after context close', async () => {
   const f = await fixture('none'), ctx = f.context(), cut = ctx.fileCustody(); expect(cut.value.present).toBe(false); expect(cut.sources).toEqual([]); cut.assertCurrent(); expect(existsSync(f.data)).toBe(false); expect(existsSync(f.parser)).toBe(false); ctx.close(); expect(() => cut.assertCurrent()).toThrow();
+});
+
+test('current protected references retain exact FILE pins after directory loss without completing a backup or rewriting current SQL', async () => {
+  const f = await fixture(), id = await ready(f), ctx = f.context(), before = ctx.sources.map(row => row.database.serialize()), cut = ctx.currentPayloadReferences();
+  expect(cut.value.file!.files).toEqual([{ name: id + '.blob', rowId: id, role: 'original', bytes: 22, sha256: hash('current private input\n') }]);
+  renameSync(f.data, f.data + '.retained'); cut.assertCurrent(); expect(ctx.currentPayloadReferences().value).toEqual(cut.value);
+  expect(() => ctx.fileCustody()).toThrow(); expect(existsSync(f.data)).toBe(false); expect(ctx.sources.map(row => row.database.serialize())).toEqual(before);
+  expect(JSON.stringify(cut.value)).not.toContain(f.directory); expect(Object.isFrozen(cut.value.file!.files[0])).toBe(true);
+});
+
+test('current FILE withdrawal in a WAL invalidates old recovery references while preserving pending and other current authority', async () => {
+  const f = await fixture(), id = await ready(f), path = join(f.directory, 'runtime/files.sqlite'), setup = new Database(path, { readwrite: true, create: false });
+  try { setup.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0'); } finally { setup.close(true); }
+  const ctx = f.context(), cut = ctx.currentPayloadReferences(), journal = db(ctx), before = readFileSync(path);
+  journal.exec("UPDATE records SET json=json_set(json,'$.state','withdrawn') WHERE json_extract(json,'$.kind')='upload'");
+  expect(readFileSync(path)).toEqual(before); ctx.assertCurrent(); expect(() => cut.assertCurrent()).toThrow('s16_ops_references_changed');
+  const fresh = ctx.currentPayloadReferences(); expect(fresh.value.file!.files).toEqual([]); expect(fresh.value.file!.pending).toEqual([]); fresh.assertCurrent();
+  expect(JSON.parse(journal.query<{ json: string }, [string]>('SELECT json FROM records WHERE id=?').get(id)!.json).state).toBe('withdrawn');
+  journal.exec('BEGIN'); try { expect(() => fresh.assertCurrent()).toThrow('s16_ops_sources_busy'); } finally { journal.exec('ROLLBACK'); }
+});
+
+test('absent FILE reference source stays absent and stale current-reference capabilities refuse after retirement', async () => {
+  const f = await fixture('none'), ctx = f.context(), cut = ctx.currentPayloadReferences();
+  expect(cut.value.file).toBeNull(); expect(cut.value.github.bundles).toEqual([]); cut.assertCurrent(); expect(existsSync(f.data)).toBe(false);
+  ctx.retireSources(); ctx.assertExclusion(); expect(() => cut.assertCurrent()).toThrow(); expect(() => ctx.currentPayloadReferences()).toThrow();
 });
 
 test('owning withdrawal and staged artifact metadata remain distinct from untrusted terminal leftovers', async () => {

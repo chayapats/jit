@@ -97,7 +97,9 @@ now uses authenticated file inventory and original durable plans. The
 [current producer](../contracts/s16-point-capture-v1.md) binds complete control
 cuts and separate external/client references before receipted publication.
 The separate [ordinary owner export](../contracts/s16-owner-export-v1.md) uses
-current owning projections. Durable forward activation,
+current owning projections. [Current payload references](../contracts/s16-current-payload-references-v1.md)
+can now read current metadata before missing immutable bytes are repaired; the
+catalog is not full-cohort or activation authority. Durable forward activation,
 compatible forward release selection and actual operator/client flows remain
 required. The protocol must refuse unsupported custody instead of silently
 shrinking the selected installation.
