@@ -75,8 +75,8 @@ unchanged. All 12 operations suites completed in this run, including the full
 The receipt intentionally retains `productAcceptance: blocked` and five pending
 external rows: actual native UI, Linux VM/protected-boundary acceptance, live
 provider/connected accounts, exact owner-host cutover, and configured local
-speech. The separately published [Linux parser proof](s16-linux-parser-proof.md)
-is scoped to its own earlier source and does not automatically satisfy these rows.
+speech. The original [Linux parser proof](s16-linux-parser-proof.md) retains its
+earlier source; a later same-source supplement is recorded separately below.
 Physical signing/push, native secure-storage/background/microphone behavior,
 Thai speech accuracy and owner adoption are not inferred from builds or fixtures.
 The native UI merge gate on #426 remains in force.
@@ -117,3 +117,15 @@ separate from the 885 matrix case executions and does not rewrite the immutable
 delivery receipt's external rows. Physical microphone/device behavior, Thai
 recognition, live accounts, other host qualification and owner adoption remain
 unaccepted. Only public synthetic audio was used; no training was performed.
+
+## Later same-source rootless Linux parser supplement
+
+The [current-source Linux parser proof](s16-linux-parser-proof.md#current-convergence-source-supplement)
+repeated the actual opt-in PDF/PNG/JPEG/encryption test at `beab27ae`:
+1 pass, 7 assertions, 1.499 seconds. The pinned existing generation-3 image's
+build context was unchanged; no image was rebuilt or pulled. Actual kernel
+controls were observed for all three jobs, with zero missed observations.
+Source inputs matched afterwards, container inventory was empty, and the
+task-owned VM's shutdown was read back. This is separate from the 885 matrix
+executions and the immutable delivery receipt; nested working-VM, account,
+device and owner-host acceptance remain independent.
