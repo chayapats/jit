@@ -21,13 +21,22 @@ import { createFixturePaymentAdapter, FixturePaymentPort } from '../../src/s15/p
 export const ref = (id: string): Ref => ({ id, revision: 1, generation: 1 });
 const uid = () => crypto.randomUUID().replaceAll('-', '');
 export const bound = () => ({ ...zero(), attempts: 1, steps: 1, calls: 1, reads: 0, outputBytes: 32768, activeMs: 10000 });
-/** Boots the production composition in-process. Every model and VM transport is scripted; no inference or live account is used. */
-export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption'], tune?: (options: S15CompositionOptions) => S15CompositionOptions, registerTeam = true) {
-  const parent = realpathSync(mkdtempSync(join(tmpdir(), 'jit-composed-'))), directory = join(parent, 'protected');
+/** Explicit test-host custody across package processes; attach never seeds current authority or VM rows. */
+export interface ComposedFixtureLifecycle {
+  mode: 'seed' | 'attach'; parent: string;
+  files?: Map<string, Uint8Array>; manager?: VmManagement; payment?: FixturePaymentPort;
+  /** Independent external fixture implementation retained across controller package versions. */
+  recordServiceFactory?: typeof openFixtureRecordService;
+  observe?(kind: 'model' | 'interpreter' | 'vm'): void;
+}
+/** Boots production composition with scripted model/VM transports. Optional ownerProof binds real fixture login across reopen. */
+export async function composedFixture(profile: 'default' | 'personal' = 'default', workspaceReadOnly = false, adoption?: S15CompositionOptions['adoption'], tune?: (options: S15CompositionOptions) => S15CompositionOptions, registerTeam = true, ownerProof?: () => unknown, lifecycle?: ComposedFixtureLifecycle) {
+  if (lifecycle && !['seed', 'attach'].includes(lifecycle.mode)) throw Error('fixture_lifecycle_invalid');
+  const parent = lifecycle ? realpathSync(lifecycle.parent) : realpathSync(mkdtempSync(join(tmpdir(), 'jit-composed-'))), directory = join(parent, 'protected');
   let now = 1000, generation = 1, sourceLive = true, service!: Awaited<ReturnType<typeof composeS15>>, turn = 0;
   const google = googleFixture(), engine = recordEngine();
-  const recordService = openFixtureRecordService({ runtime: 's15', path: join(parent, 'records.sqlite'), create: true, resource: ref('account'), rule: () => ref('business_rule'), recipients: () => [{ id: 'new_recipient', ref: ref('new_recipient') }] });
-  for (const record of [documentRecord(), taskRecord(), businessRecord()]) recordService.seed(record);
+  const recordService = (lifecycle?.recordServiceFactory ?? openFixtureRecordService)({ runtime: 's15', path: join(parent, 'records.sqlite'), create: lifecycle?.mode !== 'attach', resource: ref('account'), rule: () => ref('business_rule'), recipients: () => [{ id: 'new_recipient', ref: ref('new_recipient') }] });
+  if (lifecycle?.mode !== 'attach') for (const record of [documentRecord(), taskRecord(), businessRecord()]) recordService.seed(record);
   const proof = {}, secretSession = uid(), csrf = uid(), protocol = new GithubProtocolFixture();
   let interpretation = { intent: 'execute', purposeId: 'purpose', resourceIds: ['computer'], access: 'reversible_write', subject: null as string | null };
   let script: ({ type: 'tool_call'; id: string; name: string; arguments: Record<string, unknown> } | { type: 'text'; text: string })[] = [{ type: 'tool_call', id: uid(), name: 'bash', arguments: { command: 'printf composed' } }];
@@ -44,16 +53,16 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
   for (const id of ['github_service', 'google_service', 'browser_service', 'other', 'self']) records.set('recipient:' + id, { ref: ref(id), active: true });
   let uploads = 0;
   const recipientApprovals: RecipientApproval[] = [...['provider', 'github_service', 'google_service', 'browser_service'].map(id => ({ recipient: ref(id), purpose: ref('purpose'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 })), { recipient: ref('provider'), purpose: ref('interpret'), resources: policy.resources, dataClasses: ['private' as const], sources: null, expiresAt: 900000 }];
-  const files = new Map<string, Uint8Array>(), vmCalls: string[] = []; let liveVm = 0, implementations = 0, snapshots = 0;
+  const files = lifecycle?.files ?? new Map<string, Uint8Array>(), vmCalls: string[] = []; let liveVm = 0, implementations = 0, snapshots = 0;
   let managementState: 'running' | 'stopped' = 'running', cleanupConfirmed = true;
-  const manager: VmManagement = { async inspect() { return { state: managementState, identity: 'fixture', boot: 'boot', cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() { managementState = 'stopped'; }, async start() { managementState = 'running'; }, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
+  const manager: VmManagement = lifecycle?.manager ?? { async inspect() { return { state: managementState, identity: 'fixture', boot: 'boot', cpuCount: 2, memoryBytes: 1e9, diskBytes: 1e9, network: 'isolated', nicMac: '52:54:00:12:34:56' }; }, async stop() { managementState = 'stopped'; }, async start() { managementState = 'running'; }, async snapshot() { snapshots++; }, async restore() {}, async retireSnapshot() {} };
   const endpoint = { host: 'fixture.invalid', port: 22, user: 'jit', identityFile: '/protected/key', knownHostsFile: '/protected/known' };
   class Transport extends VmSshTransport {
     override async control(argv: readonly string[]) { return argv.some(a => a.includes('nicMacs')) ? '{"nicMacs":["52:54:00:12:34:56"]}' : '{"reachable":[false,false,false,false,false,false]}'; }
     override async openScope(_unit: string, _ms: number, guard: () => void) { guard(); liveVm++; }
     override async closeScope() { liveVm--; return cleanupConfirmed; }
     override async invoke(request: Record<string, unknown>, input: Parameters<VmSshTransport['invoke']>[1]) {
-      input.beforeStart(); vmCalls.push(String(request.op));
+      input.beforeStart(); vmCalls.push(String(request.op)); lifecycle?.observe?.('vm');
       if (request.op === 'init') return {};
       if (request.op === 'spawn') return { stdout: Buffer.from('composed').toString('base64'), stderr: '', exitCode: 0, timedOut: false, truncated: false, totalBytes: 8 };
       if (request.op === 'realpath') return { path: request.path };
@@ -66,14 +75,14 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
       throw Error('unsupported fixture operation');
     }
   }
-  const payment = new FixturePaymentPort([{ id: 'invoice', version: 'v1', purpose: ref('purpose'), account: ref('account'), payee: ref('payee'), currency: 'USD', amount: '5.00', memo: 'Controlled fixture only', expiresAt: 800000 }]);
+  const payment = lifecycle?.payment ?? new FixturePaymentPort([{ id: 'invoice', version: 'v1', purpose: ref('purpose'), account: ref('account'), payee: ref('payee'), currency: 'USD', amount: '5.00', memo: 'Controlled fixture only', expiresAt: 800000 }]);
   const modelPrompts: string[] = [], interpreterPrompts: string[] = [];
   const model: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) {
-    modelPrompts.push(JSON.stringify(request));
+    modelPrompts.push(JSON.stringify(request)); lifecycle?.observe?.('model');
     const parts = turn++ === 0 ? script : [{ type: 'text' as const, text: 'Completed with observed tool evidence.' }];
     yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: parts } };
   } };
-  const interpreter: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) { interpreterPrompts.push(JSON.stringify(request)); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
+  const interpreter: Model = { provider: 'codex-subscription', id: 'fixture-model', async *stream(request) { interpreterPrompts.push(JSON.stringify(request)); lifecycle?.observe?.('interpreter'); turn = 0; yield { type: 'message_complete', message: { type: 'assistant', id: uid(), content: [{ type: 'text', text: JSON.stringify(interpretation) }] } }; } };
   const options = (create: boolean): S15CompositionOptions => tune ? tune(baseOptions(create)) : baseOptions(create);
   const baseOptions = (create: boolean): S15CompositionOptions => ({ runtime: 's15', directory, create, installationId: 'fixture', origin: 'http://localhost:3099',
     ...(adoption ? { adoption } : {}),
@@ -102,10 +111,12 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     adapters: [createFixturePaymentAdapter({ port: payment, currencies: [{ currency: 'USD', minorUnit: 2 }], upperBound: { ...zero(), calls: 1 } })],
   });
   const route: import('../../src/s15/model').ApprovedModelRoute = { selection: choice, provider: 'codex', modelId: 'fixture-model', account: ref('provider_account'), billing: ref('subscription'), recipient: ref('provider'), charge: 'subscription', availability: 'available', efforts: ['low'], effortEvidence: 'requested_only', upperBound: bound(), rank: { ordinary: 0, difficult: 0 } };
-  service = await composeS15(options(true)); let owner = service.policy.owner.authenticate(proof);
-  service.policy.owner.install(owner, 'install', 0, policy);
-  if (registerTeam) for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: workspaceReadOnly && resource.id === 'computer' ? ['read'] : ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
-  service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
+  service = await composeS15(options(lifecycle?.mode !== 'attach')); let owner = service.policy.owner.authenticate(ownerProof ? ownerProof() : proof);
+  if (lifecycle?.mode !== 'attach') {
+    service.policy.owner.install(owner, 'install', 0, policy);
+    if (registerTeam) for (const resource of policy.resources) service.team.register(owner, 'resource_' + resource.id, 0, { ...resource, contract: 's15-team-resource/v1', label: resource.id, kind: resource.id === 'computer' ? 'workspace' : 'account', scope: { kind: 'team' }, purposes: ['purpose'], allowedBots: null, deniedBots: [], operations: workspaceReadOnly && resource.id === 'computer' ? ['read'] : ['read', 'write', 'input'], active: true, coordinationKey: resource.id });
+    service.vmStore.save({ id: 'vm', generation: 1, endpoint, managerId: 'manager', state: 'ready', networkCheckedAt: 1000, networkIsolated: true, maxSessions: 2, reason: null, machineIdentity: 'fixture', boot: 'boot', bindingMac: '52:54:00:12:34:56' });
+  }
   const headers = { cookie: `jit_s14=${secretSession}`, origin: 'http://localhost:3099', 'x-csrf-token': csrf, 'content-type': 'application/json' };
   return { parent, directory, options, modelPrompts, interpreterPrompts, recipientApprovals, google, engine, recordService, policyInput: policy, route, protocol, payment, files, vmCalls, records, choice,
     /** Controlled fixture credential for actual loopback HTTP/browser tests. Never emitted in evidence. */
@@ -117,7 +128,7 @@ export async function composedFixture(profile: 'default' | 'personal' = 'default
     async raw(path: string, body: BodyInit, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/octet-stream', ...supplied }, body })); },
     async form(path: string, fields: Record<string, string>, supplied: Record<string, string> = {}) { return service.fetch(new Request('http://localhost:3099' + path, { method: 'POST', headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded', ...supplied }, body: new URLSearchParams({ csrf, requestId: uid(), ...fields }) })); },
     async chat(text: string, commandId = uid()) { const command = { contract: 's15-conversation/v1' as const, requestId: commandId, conversationId: 'conversation', text, continuation: null }; const response = await this.request('/api/s15/conversations/conversation/messages', 'POST', command); if (response.status !== 202) throw Error(await response.text()); await service.conversation.drain(); return service.conversation.view(owner, commandId); },
-    async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(proof); },
-    async close() { await service.close(); protocol.close(); google.f.cleanup(); recordService.close(); rmSync(parent, { recursive: true, force: true }); },
+    async reopen() { await service.close(); service = await composeS15(options(false)); owner = service.policy.owner.authenticate(ownerProof ? ownerProof() : proof); },
+    async close() { await service.close(); protocol.close(); google.f.cleanup(); recordService.close(); if (!lifecycle) rmSync(parent, { recursive: true, force: true }); },
   };
 }

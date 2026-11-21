@@ -1,11 +1,26 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { recordFixture, documentRecord, taskRecord, businessRecord } from './fixtures/s15-effect-browser';
 import { ref } from './fixtures/s15-policy';
 import type { BrowserOperation } from '../src/s15/browser';
-import type { FixtureRecordEdit } from '../src/s15/effects';
+import { openFixtureRecordService, type FixtureRecordEdit } from '../src/s15/effects';
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function setup(mode: 'static' | 'general' = 'static', record = documentRecord()) { const f = await recordFixture(mode, record); cleanup.push(() => f.cleanup()); return f; }
+
+test('external fixture attachment retains current/history and refuses an absent store instead of initializing it', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'jit-record-attachment-')), path = join(directory, 'records.sqlite');
+  const options = { runtime: 's15' as const, path, resource: ref('account'), rule: () => ref('business_rule'), recipients: () => [] };
+  let server: ReturnType<typeof openFixtureRecordService> | undefined;
+  try {
+    server = openFixtureRecordService({ ...options, create: true }); server.seed(documentRecord()); server.change('document', { fields: { title: 'Plan', body: 'Retained external current fact' } });
+    const current = server.record('document'), original = server.record('document', 1); server.close(); server = undefined;
+    server = openFixtureRecordService({ ...options, create: false }); expect(server.record('document')).toEqual(current); expect(server.record('document', 1)).toEqual(original); expect(server.mutationCount).toBe(0);
+    const absent = join(directory, 'missing.sqlite'); expect(() => openFixtureRecordService({ ...options, path: absent, create: false })).toThrow(); expect(existsSync(absent)).toBe(false);
+  } finally { server?.close(); rmSync(directory, { recursive: true, force: true }); }
+});
 
 describe.each(['static', 'general'] as const)('controlled records through protected browser %s', mode => {
   test.each(['document', 'task'] as const)('%s reversible edit executes without another approval and publishes actual observed content', async kind => {

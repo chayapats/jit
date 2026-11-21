@@ -1,4 +1,6 @@
+import { createOwnerExport } from '../s16/export/owners';
 import { createSearchDirectory } from '../s16/search/owners';
+import { s16SelectedRuntimeSources } from '../s16/operations/runtime-readers';
 import { SkillDirectory } from "../s16/skills/service";
 import { VoiceService } from "../s16/voice/service";
 import { openLocalVoice, type LocalVoiceConfig, type LocalVoiceEngine } from "../s16/voice/local";
@@ -889,7 +891,8 @@ export async function composeS15(options: S15CompositionOptions) {
         return pins.every(pin => disclosure!.ownerAncestry(actor, pin).every(source => active('resource', source.resource) && (!botId || source.botIds == null || source.botIds.includes(botId))));
       } catch { return false; }
     }, ...(files ? { files } : {}), ...(routines ? { routines } : {}), ...(bots ? { bots } : {}) });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(workingState ? { workingState } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const ownerExport = createOwnerExport(conversation, { search, memory, now: clockNow, ...(files ? { files } : {}), ...(bots ? { bots } : {}), ...(routines ? { routines } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { ownerExport, origin: options.origin, cookieName, authentication, memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(workingState ? { workingState } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler, { origin: options.origin });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -908,6 +911,17 @@ export async function composeS15(options: S15CompositionOptions) {
       added = [];
     }
     const composed = { policy, conversation, team, memory, files, bots, connections, skills, voice, sources: sourceRuntime, disclosure, adoptionStatus, githubConnections, vm, workingVm, vmStore, enrollment, vmManagers: managers, vmPool: pool, provisioning, computers, workingState, computerScopes: scopes, screen, models, work, github, browser, authentication, resumes, routines, computerContinuations,
+      /** Protected host maintenance only. No HTTP/tool route exposes handles or treats this runtime subset as a full backup. */
+      maintenanceSources(owner: OwnerActor) {
+        if (closing) throw new AppError('service_closed', 503); policy.owner.current(owner);
+        return s16SelectedRuntimeSources(storeNames, new Map<string, typeof store.db | undefined>([
+          ['conversation.sqlite', store.db], ['policy.sqlite', policy.control.maintenanceSource?.()], ['model.sqlite', models.maintenanceSource?.()],
+          ['work.sqlite', work.maintenanceSource?.()], ['vm.sqlite', vmStore.db], ['team.sqlite', team.store.db], ['memory.sqlite', memory.store.db],
+          ['disclosure.sqlite', disclosure?.maintenanceSource?.()], ['browser.sqlite', browser?.maintenanceSource?.()], ['github.sqlite', githubStore?.maintenanceSource()],
+          ['files.sqlite', files?.journal.db], ['routines.sqlite', routines?.journal.db], ['notifications.sqlite', notifications?.journal.db],
+          ['bots.sqlite', bots?.store.db], ['connections.sqlite', connections?.store.db], ['skills.sqlite', skills?.store.db], ['voice.sqlite', voice?.maintenanceSource()],
+        ]));
+      },
       /** One protected scheduler wake; waiting records alone hold no VM/native session. Stall-reply resumes
        * settle after CHAT. */
       drain(): Promise<void> { if (closing) return Promise.resolve(); try { computerContinuations?.pump(); } catch (error) { return Promise.reject(error); } return draining ??= (async () => { try { reconcileVm(); try { routines?.tick(); routines?.dispatch(); } catch { /* Committed occurrences retry next wake. */ } await conversation.drain(); computerContinuations?.pump(); await conversation.drain(); computerContinuations?.pump(); try { routines?.observe(); } catch { /* Observed next wake. */ } try { resumes.settle(); } catch { /* Pending bindings stay pending. */ } await github?.drain(); } finally { draining = null; } })(); },

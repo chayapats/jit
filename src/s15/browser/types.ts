@@ -57,7 +57,11 @@ export interface BrowserWork { state(): { generation: number; login: LoginState;
 /** Owner-only live view/input. A takeover generation is checked on each frame/input; no secret bytes enter work results. */
 export interface BrowserOwner { state(actor: OwnerActor): BrowserOwnerState; takeover(actor: OwnerActor, expected?: number): Promise<{ generation: number }>; controls(actor: OwnerActor, generation: number): Promise<BrowserOwnerControl[]>; frame(actor: OwnerActor, generation: number): Promise<Uint8Array>; input(actor: OwnerActor, generation: number, input: OwnerBrowserInput): Promise<void>; handBack(actor: OwnerActor, generation: number, cancel?: boolean): { generation: number; login: LoginState }; checkSession(actor: OwnerActor): Promise<LoginState>; /** Charged read-only reconciliation; clear uncertainty only on conclusive service evidence. */ reconcile(actor: OwnerActor, action: ActionRef, requestId: string): Promise<Observation> }
 /** Explicit host composition hooks for the existing real policy service. Create before opening that service. */
-export interface BrowserRegistration { adapter: ActionAdapter; readHandler: ReadHandler; attach(policy: S15PolicyService): void; open(actor: WorkActor): BrowserWork; owner: BrowserOwner; close(): Promise<void> }
+export interface BrowserRegistration {
+  /** Protected host maintenance only; profiles, credentials and owner/work authority stay separate. */
+  maintenanceSource?(): import('bun:sqlite').Database;
+  adapter: ActionAdapter; readHandler: ReadHandler; attach(policy: S15PolicyService): void; open(actor: WorkActor): BrowserWork; owner: BrowserOwner; close(): Promise<void>;
+}
 /** Internal protected transport. No engine object or raw request resolver is an agent API. */
 export interface BrokerResponse { status: number; headers: Record<string, string>; setCookies: string[]; body: Uint8Array }
 /** The exact policy projection excludes injected session credentials. */
