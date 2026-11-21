@@ -83,3 +83,37 @@ The native UI merge gate on #426 remains in force.
 
 No default-runtime cutover, installed-policy migration, production deployment,
 credential disclosure or owner approval follows from this evidence.
+
+## Later same-source local speech supplement
+
+At `2026-11-21T17:08:43.305Z`, the existing opt-in
+`tests/s16-voice.native.test.ts` completed on the same clean `beab27ae` source:
+**2 pass, 0 fail, 37 assertions, 8.12 seconds**. Full source/dependency/tool
+fingerprints and the actual supplied speech artifacts matched before and after.
+The actual whisper.cpp 1.9.2 `tiny.en` CPU adapter and installed macOS
+`say`/`Samantha` synthesized and transcribed the fixture's public sentence.
+Artifact provenance and language limits remain as described in the
+[original local speech proof](s16-local-voice-proof.md).
+
+The standalone path retained an editable transcript and zero model/work requests
+until ordinary Send, then synthesized the guarded reply. The actual call path
+completed two transcriptions, two syntheses and exactly two CHAT/steer requests,
+including accepted-response loss/original-receipt recovery, same-call duplex and
+mute/resume fences. Both ended with zero reserved or conservative audio charge.
+These actual local STT/TTS paths still use scripted model/VM ports.
+
+| Supplemental record/artifact | SHA-256 |
+| --- | --- |
+| Source/artifact before-after receipt | `c00f5e2703e2147e8bbfe8d7c3404b2bd53fef5c08a474dbaac014ff5dd34d64` |
+| Standalone native speech receipt | `ecbe717d15b29826e9dd98afaedaabcfb8e07b3eb715a877340925ffdd813ace` |
+| Native call receipt | `8a034e029c34fd09802f849664a7bd953b8d9ea8e76a4a86a0e7155d0da15231` |
+| Test result log | `69c4b267d01ccbfb3aef468f7922c76dfbee87e80d023414f2c9a1b547b826ba` |
+| STT executable | `40bca494d49af736058eb3f33cbcebaa020eacf6d0087b623f334946e1ab2128` |
+| English STT model | `921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f` |
+| Synthesis executable | `29f947458332d87ae788ba874728bfbe5fc39a30b6249522569ddbd11bd2bb5c` |
+
+This supplies current-source configured local speech evidence on macOS. It is
+separate from the 885 matrix case executions and does not rewrite the immutable
+delivery receipt's external rows. Physical microphone/device behavior, Thai
+recognition, live accounts, other host qualification and owner adoption remain
+unaccepted. Only public synthetic audio was used; no training was performed.
