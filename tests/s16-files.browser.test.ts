@@ -117,7 +117,7 @@ browserTest("an identity-only missing send needs an explicit empty replacement a
   } finally { await context.close(); await f.close(); }
 }, 30000);
 
-browserTest.each([{ width: 1440, status: 401, kind: "download" }, { width: 390, status: 403, kind: "preview" }])("artifact auth failure clears private navigation, search and every draft: %j", async scenario => {
+browserTest.each([{ width: 1440, status: 401, kind: "download" }, { width: 390, status: 403, kind: "preview" }])("artifact auth failure clears private navigation and every draft: %j", async scenario => {
   const f = await composedFixture("default", false, undefined, options => { options.proposedPolicy!.rules[0]!.adapters.push("s16_files"); options.proposedPolicy!.rules[0]!.operations.push("artifact_create"); return { ...options, files: {} }; });
   const text = "Launch: Friday.\n", sha256 = new Bun.CryptoHasher("sha256").update(text).digest("hex");
   const pending = await (await f.request("/api/s16/client/conversations/conversation/uploads", "POST", { requestId: "seed", conversationId: "conversation", name: "notes.txt", bytes: Buffer.byteLength(text), sha256 })).json() as FileUpload;
@@ -139,16 +139,37 @@ browserTest.each([{ width: 1440, status: 401, kind: "download" }, { width: 390, 
     if (scenario.width === 390) await page.getByRole("button", { name: en["s16.common.menu"], exact: true }).click();
     await page.getByRole("button", { name: "＋ " + en["s16.chat.new"], exact: true }).click();
     await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).fill("Private second draft"); await page.goBack(); await artifact.waitFor();
-    if (scenario.width === 390) await page.getByRole("button", { name: en["s16.common.menu"], exact: true }).click();
-    await page.getByRole("textbox", { name: en["s16.nav.search"] }).fill("Private search");
-    if (scenario.width === 390) await page.keyboard.press("Escape");
     reject = true; await artifact.click(); await page.getByText(en["s16.common.authenticationRequired"], { exact: true }).waitFor();
     expect(await page.locator(".recent button,.exchange,.upload-chip,.inspector").count()).toBe(0);
-    expect(await page.locator(".search input").inputValue()).toBe("");
     expect(await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).inputValue()).toBe("");
     expect(await page.getByRole("button", { name: en["s16.chat.send"], exact: true }).isDisabled()).toBe(true);
     reject = false; await page.getByRole("button", { name: en["s16.common.refresh"], exact: true }).click(); await artifact.waitFor();
     await page.goForward(); expect(await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).inputValue()).toBe("");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  } finally { await context.close(); await f.close(); }
+}, 30000);
+
+browserTest.each([{ width: 1440, status: 401 }, { width: 390, status: 403 }])("installation search auth failure clears its private query and the retained chat draft: %j", async scenario => {
+  const f = await composedFixture(), context = await browser.newContext({ locale: "en-US", viewport: { width: scenario.width, height: 1000 } }); let reject = false;
+  context.setDefaultTimeout(10000);
+  await context.route("**/*", async route => {
+    const req = route.request(), url = new URL(req.url()); if (url.origin !== "http://localhost:3099") { await route.abort(); return; }
+    const failed = reject && url.pathname === "/api/s16/client/search", headers = { ...req.headers(), host: failed && scenario.status === 403 ? "evil.invalid" : "localhost:3099", ...(failed && scenario.status === 401 ? { cookie: "" } : {}) };
+    const response = await f.request(url.pathname + url.search, req.method(), req.method() === "POST" ? req.postDataJSON() : undefined, headers);
+    await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) });
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto("http://localhost:3099/s16/chat/conversation");
+    await page.getByRole("textbox", { name: en["s16.chat.prompt"] }).fill("Private retained draft");
+    await page.keyboard.press("Control+k"); const query = page.getByRole("searchbox", { name: en["s16.search.query"] }); await query.fill("Private search");
+    reject = true; await query.press("Enter"); await page.getByText(en["s16.common.authenticationRequired"], { exact: true }).waitFor();
+    expect(await page.locator(".search-page,.search-result,.recent button,.exchange,.upload-chip,.inspector").count()).toBe(0);
+    expect(await page.locator("body").innerText()).not.toContain("Private search");
+    reject = false; await page.locator(".chat-header").getByRole("button", { name: en["s16.common.refresh"], exact: true }).click(); await query.waitFor();
+    expect(await query.inputValue()).toBe(""); await query.press("Escape");
+    const prompt = page.getByRole("textbox", { name: en["s16.chat.prompt"] }); await prompt.waitFor(); expect(await prompt.inputValue()).toBe("");
+    expect(await page.getByRole("button", { name: en["s16.chat.send"], exact: true }).isDisabled()).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   } finally { await context.close(); await f.close(); }
 }, 30000);
