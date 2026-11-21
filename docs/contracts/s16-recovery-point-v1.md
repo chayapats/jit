@@ -26,6 +26,15 @@ receipt; changed payloads for an existing request refuse. Operation metadata
 contains hashes/outcomes/opaque IDs, not secrets, native payloads or host paths.
 Installation-specific private custody details stay in the private journal.
 
+[ADR 0123](../adr/0123-completed-operations-survive-compatible-repackaging.md)
+defines a terminal-response exception to command recomputation: an actually
+verified compatible package can return the original complete backup/restore
+receipt for the same owner/configuration/kind/request and restore point, using
+the independently stored original hash. It cannot continue unfinished work
+under a different package. Completed restore never reopens retired staging or
+resurrects later withdrawal; completed backup still verifies its retained point
+inventory and refuses missing/corrupt bytes. Another operation's fence remains.
+
 The current cohort is independently retained protected state, not a component
 of the candidate historical point. It includes all selected and retained
 runtime ledgers; outer owner/auth plus its separately bound lifecycle ledger;

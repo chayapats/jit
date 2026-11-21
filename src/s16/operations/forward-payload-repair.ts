@@ -85,10 +85,14 @@ export function openS16ForwardPayloadRepair(owner: S16ForwardRepairOwner, option
   return Object.freeze<S16ForwardRepairMaintenance>({ get released() { return released; }, get resourcesReleased() { return (!cut || cut.released) && (!candidate || candidate.resourcesReleased) && (!cohort || cohort.resourcesReleased) && (!native || native.resourcesReleased); },
     async close() { if (released) return; usable = false; if (busy) refuse('s16_ops_forward_repair_busy'); releaseCut(); await cohort?.close(); await native?.close(); await candidate?.close(); released = true; },
     async repair() {
-      guard(); if (busy) refuse('s16_ops_forward_repair_busy'); busy = true; let pendingActionId: string | undefined;
+      guard(); if (busy) refuse('s16_ops_forward_repair_busy'); busy = true; let pendingActionId: string | undefined, commandBinding: string | undefined;
       try {
         const binary = inspectS16ExecutingPackage(context.sources), configurationSha256 = hash(canonical(config)), command = hash(canonical({ contract: 's16-forward-payload-repair-command/v1', pointId, configurationSha256, package: binary }));
-        journal.begin({ requestId, kind: 'restore', hash: command, pointId }, journal.read().revision); let state = read();
+        const control = journal.read(), originalRequest = control.requests.find(row => row.requestId === requestId);
+        // A terminal response retains its original binding; unfinished activation still requires its original package.
+        const binding = originalRequest?.kind === 'restore' && originalRequest.phase === 'complete' && originalRequest.status === 'complete' && originalRequest.pointId === pointId && originalRequest.configurationSha256 === configurationSha256 ? originalRequest.hash : command;
+        commandBinding = binding;
+        journal.begin({ requestId, kind: 'restore', hash: binding, pointId }, control.revision); let state = read();
         if (state.request.phase === 'complete') return result(); if (state.request.phase === 'discarded') refuse('s16_ops_repair_discarded'); after('admitted');
         if (state.request.phase === 'pending') { resumeSettled(); journal.advance(requestId, read().control.revision, 'capturing'); }
         candidate = context.candidateQuarantine(requestId); const observed = await candidate.verify(); after('candidate');
@@ -183,7 +187,7 @@ export function openS16ForwardPayloadRepair(owner: S16ForwardRepairOwner, option
         resumeSettled(); journal.advance(requestId, read().control.revision, 'complete'); after('complete'); return result();
       } catch (error) {
         const failure = error instanceof AppError && error.code.startsWith('s16_ops_') ? error : new AppError('s16_ops_forward_repair_invalid', 409);
-        try { const state = read(), action = state.request.actions.find(row => row.id === pendingActionId); if (!['complete', 'discarded'].includes(state.request.status)) journal.block(requestId, state.control.revision, failure.code, action && !['confirmed', 'not_applied'].includes(action.state) ? action.id : undefined); } catch { /* Lost current guards cannot authorize metadata writes or discard original unknown resources. */ }
+        try { const state = read(), action = state.request.actions.find(row => row.id === pendingActionId); if (state.request.hash === commandBinding && !['complete', 'discarded'].includes(state.request.status)) journal.block(requestId, state.control.revision, failure.code, action && !['confirmed', 'not_applied'].includes(action.state) ? action.id : undefined); } catch { /* Lost current guards cannot authorize metadata writes or discard original unknown resources. */ }
         throw failure;
       } finally { busy = false; }
     } });

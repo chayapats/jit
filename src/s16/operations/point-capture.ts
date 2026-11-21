@@ -58,11 +58,15 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
   guard();
   return Object.freeze<S16PointCaptureMaintenance>({ get released() { return released; }, async close() { if (released) return; usable = false; if (busy) refuse('s16_ops_point_capture_busy'); await native?.close(); released = true; }, async capture() {
     guard(); if (busy) refuse('s16_ops_point_capture_busy'); if (native && !native.released) refuse('s16_ops_source_release_unknown'); busy = true;
-    let captureAction: string | undefined, publicationAction: string | undefined, data: string | undefined, point: string | undefined;
+    let captureAction: string | undefined, publicationAction: string | undefined, data: string | undefined, point: string | undefined, commandBinding: string | undefined;
     try {
       const binary = inspectS16ExecutingPackage(context.sources), configurationSha256 = hash(canonical(config)), command = hash(canonical({ contract: 's16-point-capture-command/v1', configurationSha256, package: binary }));
       assertS16SelectedStores(config, context.runtime.sources);
-      journal.begin({ requestId, kind: 'backup', hash: command }, journal.read().revision); let state = current(); point = s16PointDirectory(config.directory, state.request.pointId!);
+      const control = journal.read(), prior = control.requests.find(row => row.requestId === requestId);
+      // Repackaging cannot replace an unfinished capture, or make a completed response allocate another point.
+      const binding = prior?.kind === 'backup' && prior.phase === 'complete' && prior.status === 'complete' && prior.configurationSha256 === configurationSha256 ? prior.hash : command;
+      commandBinding = binding;
+      journal.begin({ requestId, kind: 'backup', hash: binding }, control.revision); let state = current(); point = s16PointDirectory(config.directory, state.request.pointId!);
       const publications = state.request.actions.filter(row => row.kind === 'replace');
       if (publications.length > 1 || publications[0] && (publications[0].id !== 'point_publish_' + state.request.targetSha256 || publications[0].targetSha256 !== state.request.targetSha256 || publications[0].priorSha256 !== null)) refuse();
       publicationAction = publications[0]?.id;
@@ -147,7 +151,7 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
       state = current(); journal.observeAction(requestId, state.control.revision, publicationAction, 'applied', manifestSha256); after('publication_observed'); resumeSettled(); state = current();
       journal.retainPoint(requestId, state.control.revision, { sha256: manifestSha256, bytes: inventory.bytes }); after('receipt'); state = current(); journal.advance(requestId, state.control.revision, 'complete'); after('complete'); return result();
     } catch (error) {
-      try { let state = current(); if (!['complete', 'discarded'].includes(state.request.status)) {
+      try { let state = current(); if (state.request.hash === commandBinding && !['complete', 'discarded'].includes(state.request.status)) {
         const id = publicationAction ?? captureAction ?? state.request.actions.findLast(row => !['confirmed', 'not_applied'].includes(row.state))?.id, action = id ? state.request.actions.find(row => row.id === id) : undefined;
         const absent = action?.kind === 'capture_backend' && (!native || native.released) && !(error instanceof AppError && error.code === 's16_ops_source_release_unknown') && data !== undefined && point !== undefined && !lstatSync(join(data, 'manifest.json'), { throwIfNoEntry: false }) && !lstatSync(point, { throwIfNoEntry: false }) && !state.request.actions.some(row => row.kind === 'replace');
         if (action && !['confirmed', 'not_applied'].includes(action.state) && absent) { journal.observeAction(requestId, state.control.revision, action.id, 'not_applied', null); state = current(); }

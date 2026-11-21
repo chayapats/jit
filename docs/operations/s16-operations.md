@@ -214,6 +214,13 @@ A complete response contains only original operation/request/point IDs, cohort/
 plan hashes and receipt revision. It clears admission only after current readback
 and original resource disposal. Repeating a completed request returns that stored
 receipt before reading old staging: even a later withdrawal cannot be resurrected.
+After compatible repackaging, the same complete backup/restore request can use
+its original stored command binding to read that receipt. The executing package,
+owner, exact configuration and current stores must still validate. Backup also
+rechecks the original retained point's full inventory. Unfinished work remains
+bound to its original package; a different point, kind or configuration refuses.
+Another operation's admission fence is never cleared by terminal readback. See
+[ADR 0123](../adr/0123-completed-operations-survive-compatible-repackaging.md).
 Current CHAT/artifact/lineage/expiry/recipient/private guards still decide release.
 No work, unknown effect, charge, speech, notification or native session is replayed
 or refunded by copying bytes. Credentials, client sessions and working disks are
