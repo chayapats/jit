@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, opendirSync, readdirSync, renameSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { RELEASE_CONTRACT } from 'schway/host';
-import { readDependencyRecord, validateArtifact } from '../../../ops/package/bun-build';
+import { dirname, join } from 'node:path';
 import { AppError } from '../../errors';
 import { opsDirectory, opsRead, opsSyncDirectory, opsWrite } from '../../s14/ops-files';
 import { canonical, identity } from '../../s15/conversation/validation';
@@ -14,10 +12,11 @@ import { captureS16LedgerSet } from './ledger-set';
 import type { S16NativeSetMaintenance } from './native-set';
 import type { S16OperationsJournal } from './operations-journal';
 import { captureS16PayloadSet, s16PayloadSetManifestHash, s16PayloadSetManifestText, verifyS16PayloadSet, verifyS16PayloadSources, type S16PayloadSource } from './payload-set';
-import { inspectS16PointFiles, s16PointDirectory, s16PointEntry, s16PointEntryIdentity, s16PointLimits, s16PointReconnection, s16RecoveryPointText, type S16PointPackage, type S16PointRole, type S16RecoveryPoint } from './point-files';
+import { inspectS16PointFiles, s16PointDirectory, s16PointEntry, s16PointEntryIdentity, s16PointLimits, s16PointReconnection, s16RecoveryPointText, type S16PointRole, type S16RecoveryPoint } from './point-files';
 import { s16LedgerSetManifestHash, verifyS16LedgerSet } from './verify-ledger-set';
 
 import { ownS16Staging } from './owned-staging';
+import { inspectS16ExecutingPackage } from './package-custody';
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const stageBytes = 12884901888, stageNodes = 250000, metadataBound = 4194304;
@@ -32,14 +31,6 @@ export interface S16PointCaptureMaintenance { readonly released: boolean; captur
 /** Trusted current composition only; candidate files cannot manufacture this capability. */
 export interface S16PointCaptureOwner extends S16PointCaptureOptions { config: S15RuntimeConfig; requestId: string; lease: S16InstallationLease; context: S16ControlMaintenance; journal: S16OperationsJournal }
 
-function packageIdentity(context: S16ControlMaintenance): S16PointPackage {
-  // Derive the actual executing artifact, never an operator/archive-selected package root.
-  const root = resolve(import.meta.dir, '../../..'), checked = validateArtifact(root, { runtime: true }), dependencies = readDependencyRecord(root), manifest = checked.manifest;
-  if (!checked.ok || !manifest || !dependencies || manifest.engineContract !== RELEASE_CONTRACT) refuse('s16_ops_verified_package_required');
-  const readers = context.sources.map(source => ({ name: source.name, reader: source.reader }));
-  return Object.freeze({ contentHash: manifest.contentHash, dependencyHash: dependencies.dependencyHash, lockHash: manifest.lockHash, engineContract: manifest.engineContract, engineRevision: manifest.engineRevision,
-    readersSha256: hash(canonical(readers)), noticesSha256: hash(Buffer.concat([opsRead(join(root, 'LICENSE'), metadataBound), Buffer.from('\0'), opsRead(join(root, 'NOTICE'), metadataBound)])) });
-}
 function usage(root: string): { bytes: number; nodes: number } {
   if (!lstatSync(root, { throwIfNoEntry: false })) return { bytes: 0, nodes: 0 };
   let bytes = 0, nodes = 0;
@@ -68,7 +59,7 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
     guard(); if (busy) refuse('s16_ops_point_capture_busy'); if (native && !native.released) refuse('s16_ops_source_release_unknown'); busy = true;
     let captureAction: string | undefined, publicationAction: string | undefined, data: string | undefined, point: string | undefined;
     try {
-      const binary = packageIdentity(context), configurationSha256 = hash(canonical(config)), command = hash(canonical({ contract: 's16-point-capture-command/v1', configurationSha256, package: binary }));
+      const binary = inspectS16ExecutingPackage(context.sources), configurationSha256 = hash(canonical(config)), command = hash(canonical({ contract: 's16-point-capture-command/v1', configurationSha256, package: binary }));
       const required = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite'];
       for (const feature of ['files', 'routines', 'notifications', 'bots', 'connections', 'skills', 'voice'] as const) if (config[feature]) required.push(feature + '.sqlite');
       if (config.disclosure) required.push('disclosure.sqlite'); if (config.browser || config.disclosure) required.push('browser.sqlite'); if (config.github || config.disclosure) required.push('github.sqlite');
@@ -144,17 +135,17 @@ export function openS16PointCapture(owner: S16PointCaptureOwner): S16PointCaptur
       if (action?.state === 'confirmed' && action.observedSha256 !== manifestSha256) refuse('s16_ops_point_plan_changed');
       const expected = { id: pointId, installationId: config.installationId, ownerIdentity: context.ownerIdentity, operationId: state.request.id, requestId, configurationSha256, cohortSha256, manifestSha256, capturedAt };
       const inventory = inspectS16PointFiles(data, expected, guard); if (inventory.catalogs !== 'present') refuse('s16_ops_point_incomplete'); await cutsCurrent();
-      if (canonical(packageIdentity(context)) !== canonical(binary)) refuse('s16_ops_package_changed');
+      if (canonical(inspectS16ExecutingPackage(context.sources)) !== canonical(binary)) refuse('s16_ops_package_changed');
       state = current(); journal.observeAction(requestId, state.control.revision, captureAction, 'applied', manifestSha256); after('observed'); resumeSettled(); state = current();
       if (state.request.phase === 'capturing') { journal.advance(requestId, state.control.revision, 'verifying', { cohortSha256, targetSha256: manifestSha256 }); after('verifying'); state = current(); }
       if (state.request.targetSha256 !== manifestSha256 || state.request.cohortSha256 !== cohortSha256) refuse('s16_ops_point_plan_changed');
       publicationAction = 'point_publish_' + manifestSha256;
       if (!state.request.actions.some(row => row.id === publicationAction)) { journal.recordIntent(requestId, state.control.revision, { id: publicationAction, kind: 'replace', priorSha256: null, targetSha256: manifestSha256 }); after('publish_intent'); }
       await cutsCurrent();
-      if (canonical(packageIdentity(context)) !== canonical(binary)) refuse('s16_ops_package_changed');
+      if (canonical(inspectS16ExecutingPackage(context.sources)) !== canonical(binary)) refuse('s16_ops_package_changed');
       if (!published) { opsDirectory(dirname(point)); if (lstatSync(point, { throwIfNoEntry: false })) refuse('s16_ops_point_unavailable'); guard(); renameSync(data, point); opsSyncDirectory(stage); opsSyncDirectory(dirname(point)); data = point; after('published'); }
       inspectS16PointFiles(point, { ...expected, bytes: inventory.bytes }, guard); await cutsCurrent();
-      if (canonical(packageIdentity(context)) !== canonical(binary)) refuse('s16_ops_package_changed');
+      if (canonical(inspectS16ExecutingPackage(context.sources)) !== canonical(binary)) refuse('s16_ops_package_changed');
       state = current(); journal.observeAction(requestId, state.control.revision, publicationAction, 'applied', manifestSha256); after('publication_observed'); resumeSettled(); state = current();
       journal.retainPoint(requestId, state.control.revision, { sha256: manifestSha256, bytes: inventory.bytes }); after('receipt'); state = current(); journal.advance(requestId, state.control.revision, 'complete'); after('complete'); return result();
     } catch (error) {

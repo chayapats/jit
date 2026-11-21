@@ -30,6 +30,8 @@ import type { S16OperationsRequest } from './operations-state';
 import { openS16PointCapture, type S16PointCaptureMaintenance, type S16PointCaptureOptions } from './point-capture';
 import { captureS16CurrentPayloadReferences, type S16CurrentPayloadReferenceObservation } from './current-payload-references';
 import { assertS16LedgerWriteCutFor, openS16LedgerWriteCut, type S16LedgerWriteCut } from './ledger-write-cut';
+import { ownS16RecoveryStage, type S16RecoveryStage, type S16RecoveryStageOptions } from './recovery-staging';
+import { openS16CandidateQuarantine, type S16CandidateMaintenance, type S16CandidateOptions } from './candidate-quarantine';
 
 function refuse(code = 's16_ops_outer_continuity_invalid'): never { throw new AppError(code, 409); }
 function entry(path: string, directory = false): BigIntStats {
@@ -78,6 +80,10 @@ export interface S16ControlMaintenance {
   currentPayloadReferences(cut?: S16LedgerWriteCut): S16CurrentPayloadReferenceObservation;
   /** Actual writer reservations for the complete current SQL set; no actor or activation authority. */
   currentLedgerCut(): S16LedgerWriteCut;
+  /** Independently pins original empty restore staging; no child metadata or archive grants ownership. */
+  recoveryStage(requestId: string, options?: S16RecoveryStageOptions): S16RecoveryStage;
+  /** Authenticates a retained point and its public native ancestry in original private quarantine. */
+  candidateQuarantine(requestId: string, options?: S16CandidateOptions): S16CandidateMaintenance;
   /** Complete current GitHub bundle bytes/references, without recovery, Git, credentials or publication. */
   githubArtifacts(): S16GithubArtifactObservation;
   /** Current backend/client/credential metadata; no secret/profile/disk copy or physical settlement. */
@@ -116,6 +122,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   const nativeSets = new Set<S16NativeSetMaintenance>();
   const pointCaptures = new Set<S16PointCaptureMaintenance>();
   const ledgerCuts = new Set<S16LedgerWriteCut>();
+  const candidates = new Set<S16CandidateMaintenance>();
   let helperReads = 0;
   const retireDataSources = () => {
     if (retired) return;
@@ -127,7 +134,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
   };
   const close = () => {
     if (closed) return; usable = false;
-    if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
+    if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released) || [...candidates].some(session => !session.released)) refuse('s16_ops_source_release_unknown');
     for (const cut of ledgerCuts) cut.close();
     // A retirement attempt never releases auxiliary process locks while any original source close is unknown.
     if (retiring) retireDataSources();
@@ -213,7 +220,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       unlinkSync(path); opsSyncDirectory(dirname(path)); expectedFence = undefined; assertCurrent();
     };
     const assertCaptureReleased = () => {
-      assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released) || [...ledgerCuts].some(cut => !cut.released)) refuse('s16_ops_source_release_unknown');
+      assertCurrent(); if (helperReads || [...nativeSets].some(session => !session.released) || [...pointCaptures].some(session => !session.released) || [...ledgerCuts].some(cut => !cut.released) || [...candidates].some(session => !session.resourcesReleased)) refuse('s16_ops_source_release_unknown');
     };
     const assertExclusion = () => {
       if (closed || !retired) refuse('s16_ops_sources_not_retired');
@@ -276,6 +283,7 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
       assertCaptureReleased(); for (const cut of ledgerCuts) ledgerCuts.delete(cut);
       return openS16LedgerWriteCut({ sources, guard: assertCurrent, retain(cut) { ledgerCuts.add(cut); } });
     };
+    const recoveryStage = (requestId: string, stageOptions: S16RecoveryStageOptions = {}) => ownS16RecoveryStage({ directory: root, installationId: config.installationId, ownerIdentity, configurationSha256, lease, journal: operations(), guard: assertCurrent }, requestId, stageOptions);
     const helperCustody = (helperOptions: S16HelperCohortOptions = {}) => {
       assertCurrent();
       return captureS16HelperCohort({ ...helperOptions, directory: root, lease, installationId: config.installationId, controllers,
@@ -286,13 +294,17 @@ export function openS16ControlMaintenance(config: S15RuntimeConfig, options: S16
     const externalCustody = () => { const notifications = heldRuntime.sources.find(source => source.name === 'notifications.sqlite')?.database;
       return captureS16ExternalCustody({ config, ownerIdentity, owner: outer[0]!.database, vm, ...(notifications ? { notifications } : {}), lease, guard: assertCurrent }); };
     let context: S16ControlMaintenance;
+    const candidateQuarantine = (requestId: string, candidateOptions: S16CandidateOptions = {}) => {
+      assertCaptureReleased(); for (const session of candidates) { if (!session.released) refuse('s16_ops_candidate_busy'); candidates.delete(session); }
+      const session = openS16CandidateQuarantine({ config, requestId, lease, context, journal: operations() }, candidateOptions); candidates.add(session); return session;
+    };
     const pointCapture = (requestId: string, captureOptions: S16PointCaptureOptions = {}) => {
       assertCurrent(); for (const session of pointCaptures) { if (!session.released) refuse('s16_ops_point_capture_busy'); pointCaptures.delete(session); }
       const session = openS16PointCapture({ ...captureOptions, config, requestId, lease, context, journal: operations() }); pointCaptures.add(session); return session;
     };
     const abortBackup = (requestId: string, abortOptions: S16BackupAbortOptions = {}) => abortS16Backup({ directory: root, journal: operations(), guard: assertCurrent, assertReleased: assertCaptureReleased }, requestId, abortOptions);
     const retireStaging = (requestId: string, retirementOptions: S16StagingRetirementOptions) => retireS16Staging({ directory: root, configurationSha256, journal: operations(), guard: assertCaptureReleased }, requestId, retirementOptions);
-    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, currentLedgerCut, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
+    assertCurrent(); context = Object.freeze({ runtime: heldRuntime, outer: Object.freeze(outer), sources, ownerIdentity, firecracker, assertCurrent, retireSources, assertExclusion, close, retainAdoptionFence, publishOperationsBinding, completeAdoptionFence, operations, nativeNamespace, nativeSet, helperCustody, fileCustody, currentPayloadReferences, currentLedgerCut, recoveryStage, candidateQuarantine, githubArtifacts, externalCustody, pointCapture, removePoint, abortBackup, retireStaging }); return context;
   } catch (error) {
     // An opener's unknown runtime release retains its CHAT lease; do not free installation exclusion.
     if (!(error instanceof AppError && error.code === 's16_ops_source_release_unknown')) close();

@@ -1,5 +1,5 @@
 ---
-status: selected recovery contract; writer-cut seam implemented; activation and aggregate acceptance pending
+status: selected recovery contract; writer-cut, original-staging and candidate-quarantine seams implemented; activation and aggregate acceptance pending
 date: 2026-11-21
 scope: OPS16-01; S16-AC21; FR-04/15/18/23/35/38; NFR-02/04/05/08/09/12
 ---
@@ -36,7 +36,8 @@ Preparation must bind the complete current SQL images, current FILE/GitHub pins,
 native lifecycle/custody, helper/external facts and actual compatible package.
 Operations revision alone is insufficient. Authenticate the entire candidate
 against current retained-point and completed-backup receipts before decoding
-its bounded catalogs, verify actual SQL integrity/readers and public native
+its bounded catalogs; the [candidate component](../contracts/s16-candidate-quarantine-v1.md)
+verifies actual SQL integrity/readers and public native
 ancestry in private quarantine, and recheck current custody after asynchronous
 work. Archive paths never choose live or scratch destinations. Unsupported or
 missing required current/native continuity refuses; an old native session is
@@ -53,7 +54,8 @@ checks still decide release; copying bytes never changes those owning facts.
 
 Before activation, persist the original operation/fence, independent current
 cohort receipt and immutable repair plan. Bind exact prior/target bytes and
-identities, independently owned staging and per-member progress outside targets.
+identities, [independently owned staging](../contracts/s16-recovery-staging-v1.md)
+and per-member progress outside targets.
 Use only enumerated atomic file replacement and parent fsync; do not replace
 directories with locks, overwrite changed/unowned targets, guess deletion from
 a suffix or copy archive SQL. Retry recognizes only the original plan and
