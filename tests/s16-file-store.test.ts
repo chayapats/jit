@@ -28,6 +28,17 @@ function fixture(limits: Partial<FileLimits> = {}) {
   return { root, actor, foreign, command, upload, get store() { return store; }, advance: (ms: number) => { now += ms; }, resetOwner: () => { generation++; },
     async reopen() { await store.close(); store = new FileStore({ ...options, create: false }); } };
 }
+
+test("original creation lookup is bound to current owner generation and conversation without admitting another command", async () => {
+  const f = fixture(), command = f.command("Original upload lookup."), created = f.store.create(f.actor, command);
+  expect(f.store.creation(f.actor, command.conversationId, command.requestId)).toEqual(created);
+  expect(() => f.store.creation(f.actor, "other", command.requestId)).toThrow("file_not_found");
+  expect(() => f.store.creation(f.foreign, command.conversationId, command.requestId)).toThrow("authentication_required");
+  await f.reopen(); expect(f.store.creation(f.actor, command.conversationId, command.requestId).id).toBe(created.id);
+  const count = f.store.journal.db.query<{ count: number }, []>("SELECT count(*) AS count FROM commands").get()!.count;
+  f.resetOwner(); expect(() => f.store.creation(f.actor, command.conversationId, command.requestId)).toThrow("file_not_found");
+  expect(f.store.journal.db.query<{ count: number }, []>("SELECT count(*) AS count FROM commands").get()!.count).toBe(count);
+});
 test("open reservations consume capacity, expiry reclaims them, and count/aggregate checks do not omit files", async () => {
   const f = fixture({ fileBytes: 16, messageFiles: 2, messageBytes: 24, totalBytes: 32 });
   const first = await f.upload("a".repeat(16)), second = await f.upload("b".repeat(16));

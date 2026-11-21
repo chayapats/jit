@@ -11,9 +11,11 @@ export interface ClientCapabilities {
   textMessages: true;
   progress: "control_events";
   exactDecisions: boolean;
+  /** Additive native delivery composition. Availability describes setup, never proof of physical delivery. */
+  nativeNotifications?: { available: true; contract: "s16-native-notifications/v1"; providers: import("../native-notifications/types").NativeProviderStatus[] };
   /** CHAT16-02: true when an unfinished request accepts `s16-conversation-steer/v1` and requests of different conversations run concurrently. */
   liveSteering: boolean;
-  uploads: { available: false; code: "upload_unavailable" } | { available: true; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: boolean; memoryContract?: "s16-file-memory/v1"; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
+  uploads: { available: false; code: "upload_unavailable" } | { available: true; creationLookup?: "s16-upload-creation/v1"; limits: FileLimits; extensions: string[]; formats?: { extension: string; mime: string; bytes: number }[]; textBytes?: number; unavailableBinary?: "sanitizer_unavailable" | "images_unsupported"; memory: boolean; memoryContract?: "s16-file-memory/v1"; binary?: { limits: typeof import("../files/parser").binaryLimits; images: boolean } };
   /** `library`/`revisions`/`html` are additive: absent on older services, which keep conversation cards only. */
   artifacts: { available: false; code: "artifact_unavailable" } | { available: true; preview: "escaped_text"; library?: "s16-client-artifacts/v1"; revisions?: boolean; html?: "sandboxed_static" };
   /** Additive field: owner memory search/detail/correct/forget over the existing MEM authority. */

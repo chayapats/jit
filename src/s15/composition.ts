@@ -34,6 +34,8 @@ import { delegationLimits } from '../s16/bots/types';
 import { createS16WebHandler } from '../s16/web/handler';
 import { RoutineService, routineQuietDecision } from '../s16/routines/service';
 import { NotificationService } from '../s16/notifications/service';
+import { NativeNotificationService, nativeNotificationSetup } from '../s16/native-notifications/service';
+import type { NativePushProvider, NativeNotificationLimits } from '../s16/native-notifications/types';
 import { conversationNotices, routineNotices } from '../s16/notifications/producers';
 import type { NotificationLimits } from '../s16/notifications/types';
 import { committedArtifacts } from '../s16/artifacts';
@@ -96,6 +98,8 @@ export interface S15CompositionOptions {
    * created on first use, and changes no installed standing policy. `fetch` is the push transport (tests inject a fake
    * push service); `resultAfterMs` is how long a request must take before its finished result is announced. */
   notifications?: { fetch?: (request: Request) => Promise<Response>; limits?: Partial<NotificationLimits>; resultAfterMs?: number };
+  /** Explicit direct platform push. Providers and this additive journal are owned by this composition only. */
+  nativeNotifications?: { providers: readonly NativePushProvider[]; limits?: Partial<NativeNotificationLimits>; resultAfterMs?: number };
   /** Explicit S16 working computers (`s16-computers/v1`, TEAM16-01): per-work workspace leases, owner-chosen private
    * computers for a Bot, and idle release after `idleStopMs` (on-demand start). Opt-in; it changes no installed policy.
    * `sweepMs` is the idle-check period (0: only explicit `computers.sweep()` calls, for deterministic tests). */
@@ -171,6 +175,7 @@ export function composeS15ReadHandlers(handlers: readonly ReadHandler[]): ReadHa
  */
 export async function composeS15(options: S15CompositionOptions) {
   if (options.runtime !== 's15' || !isAbsolute(options.directory) || resolve(options.directory) !== options.directory) throw new AppError('s15_opt_in_required');
+  if (options.nativeNotifications) nativeNotificationSetup({ origin: options.origin, providers: options.nativeNotifications.providers, ...(options.nativeNotifications.limits ? { limits: options.nativeNotifications.limits } : {}) });
   if ((options.files || options.skills) && !options.disclosure) throw new AppError('classification_unknown');
   const webGithubEnabled = !options.github && !!options.githubWeb;
   if (!options.disclosure && (options.browser || options.google || options.github || webGithubEnabled || options.connections)) throw new AppError('classification_unknown');
@@ -186,7 +191,7 @@ export async function composeS15(options: S15CompositionOptions) {
   let skillCopyCurrent: (vmId: string, resource: Ref) => boolean = () => false;
   if (options.skills && options.disclosure) options = { ...options, disclosure: skillDisclosure(options.disclosure, { directory: () => skills, ownerGeneration: options.owner.generation, computer: (work, vmId) => skillComputer(work, vmId), copyCurrent: (vmId, resource) => skillCopyCurrent(vmId, resource), work: { ...s15DefaultRefs.work }, interpretation: { ...s15DefaultRefs.interpretation }, now: options.clock?.now ?? Date.now }) };
   const root = options.directory, manifestPath = join(root, 'composition.json');
-  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
+  const storeNames = ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', ...(options.disclosure ? ['disclosure.sqlite'] : []), ...(options.browser ? ['browser.sqlite'] : []), ...(options.github || webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.nativeNotifications ? ['native-notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
   const manifest = { contract: 's15-composition/v1', installationId: options.installationId, stores: storeNames };
   if (options.create) {
     // mkdir without recursive prevents accidentally accepting an existing S14/legacy/partial directory.
@@ -199,7 +204,7 @@ export async function composeS15(options: S15CompositionOptions) {
   // earlier manifest, which an earlier release needs to start) and may hold an armed effect, or a complete fresh
   // store (creation is atomic). Only a store this boot created is removed if the boot fails. A store the manifest
   // already lists must still exist; a missing listed ledger always refuses.
-  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
+  const additive = [...(options.browser?.approved ? ['browser.sqlite'] : []), ...(webGithubEnabled ? ['github.sqlite'] : []), ...(options.files ? ['files.sqlite'] : []), ...(options.routines ? ['routines.sqlite'] : []), ...(options.notifications ? ['notifications.sqlite'] : []), ...(options.nativeNotifications ? ['native-notifications.sqlite'] : []), ...(options.bots ? ['bots.sqlite'] : []), ...(options.connections ? ['connections.sqlite'] : []), ...(options.skills ? ['skills.sqlite'] : []), ...(options.voice ? ['voice.sqlite'] : [])];
   let added: string[] = [];
   const created: string[] = [];
   if (!options.create) {
@@ -666,8 +671,13 @@ export async function composeS15(options: S15CompositionOptions) {
       producers: [conversationNotices({ db: store.db, row: (owner, requestId) => { const actor = channelOwner(owner, () => true); return actor ? conversationRequestView(conversation, actor, requestId) : null; } }, { resultAfterMs: options.notifications.resultAfterMs ?? 30_000 }),
         ...(routines ? [routineNotices(routines.journal.db, clockNow)] : [])] }) : undefined;
     if (notifications) { cleanup.push(() => notifications.close()); try { notifications.observe(); } catch { /* Observed next wake. */ } }
+    const nativeNotifications = options.nativeNotifications ? new NativeNotificationService<OwnerActor>({ path: join(root, 'native-notifications.sqlite'), installationId: options.installationId, create: options.create || created.includes('native-notifications.sqlite'), origin: options.origin,
+      providers: options.nativeNotifications.providers, now: clockNow, ...(options.nativeNotifications.limits ? { limits: options.nativeNotifications.limits } : {}),
+      principal: principalOf, ownerCurrent: owner => owner.ownerId === options.conversation.ownerId && owner.generation === options.owner.generation(),
+      producers: [conversationNotices({ db: store.db, row: (owner, requestId) => { const actor = channelOwner(owner, () => true); return actor ? conversationRequestView(conversation, actor, requestId) : null; } }, { resultAfterMs: options.nativeNotifications.resultAfterMs ?? 30_000 }), ...(routines ? [routineNotices(routines.journal.db, clockNow)] : [])] }) : undefined;
+    if (nativeNotifications) { cleanup.push(() => nativeNotifications.close()); try { nativeNotifications.observe(); } catch { /* Observed next wake. */ } }
     /** Derive new notices and start a delivery pass without waiting for it; a pass already running is joined. */
-    const pumpNotifications = () => { if (!notifications || closing) return; try { notifications.observe(); } catch { /* Observed next wake. */ } void notifications.deliver().catch(() => {}); };
+    const pumpNotifications = () => { if (closing) return; for (const delivery of [notifications, nativeNotifications]) { if (!delivery) continue; try { delivery.observe(); } catch { /* Observed next wake. */ } void delivery.deliver().catch(() => {}); } };
     const githubCatalogActor = (owner: OwnerActor) => {
       const current = policy.owner.current(owner), purpose = gh?.catalogPurpose;
       if (!current || !purpose || !github) throw new AppError('outside_scope');
@@ -889,7 +899,7 @@ export async function composeS15(options: S15CompositionOptions) {
         return pins.every(pin => disclosure!.ownerAncestry(actor, pin).every(source => active('resource', source.resource) && (!botId || source.botIds == null || source.botIds.includes(botId))));
       } catch { return false; }
     }, ...(files ? { files } : {}), ...(routines ? { routines } : {}), ...(bots ? { bots } : {}) });
-    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(workingState ? { workingState } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
+    const clientHandler = createS16ClientHandler(conversation, { origin: options.origin, cookieName, authentication, ...(nativeNotifications ? { nativeNotifications } : {}), memory, policyUpdate, search, ...(voice ? { voice } : {}), models: createS16ModelsPort(models, options.model.registry, policy), ...(routines ? { routines } : {}), ...((routines || computerContinuations) ? { wake: () => { void composed.drain().catch(() => {}); } } : {}), ...(notifications ? { notifications } : {}), ...(computers ? { computers } : {}), ...(workingState ? { workingState } : {}), ...(screen ? { screen } : {}), ...(browser ? { protectedBrowser: createProtectedBrowserPort({ browser, signIn: !!options.browser!.site.loginDocuments.length, owner: (actor: OwnerActor) => { requireOwner(actor); return actor; } }) } : {}), ...(browserCards ? { browserCards } : {}), ...(needsYou ? { needsYou } : {}), ...(bots ? { bots } : {}), ...(connections ? { connections } : {}), ...(skills ? { skills } : {}), ...(files ? { files, imageAvailable: () => { const route = options.model.registry.current(options.conversation.selection); return !!route && route.availability === "available" && !!options.files?.imageProbes?.some(probe => probe.verdict === "pass" && probe.route === route.provider && probe.model === route.modelId); } } : {}) });
     const s16Web = await createS16WebHandler(clientHandler, { origin: options.origin });
     const vmHandler = createVmApi(enrollment, async request => authenticate(request), { service: vm, ...(managers instanceof VmManagers ? { managers } : {}) });
     const modelHandler = createModelProjectionHandler(models, authenticate), workHandler = createResponsibilityProjectionHandler(work, authenticate);
@@ -953,8 +963,10 @@ export async function composeS15(options: S15CompositionOptions) {
       async close() { if (closing) return; closing = true; await conversation.shutdown(); await draining; await files?.close(); for (const close of cleanup.reverse()) await close(); },
       /** S16 Web Push (`s16-notifications/v1`), when composed. */
       notifications,
+      /** Additive native notice journal; no credential/token is part of a public owner projection. */
+      nativeNotifications,
     };
-    if (notifications) {
+    if (notifications || nativeNotifications) {
       // Notices are derived on every wake, also while a long CHAT run holds the shared drain, and again once a drain
       // settles. Delivery runs beside the drain and never delays it.
       const drain = composed.drain;

@@ -1,4 +1,5 @@
 import { lstatSync, mkdirSync } from 'node:fs';
+import { nativePushProviders } from '../s16/native-notifications/providers';
 import { dirname, join } from 'node:path';
 import { readComputerNeedsYouMinutes } from '../config';
 import { s16ComputerIdleStopMs } from '../s16/computers/defaults';
@@ -124,6 +125,7 @@ export async function runS15(args: string[], env: NodeJS.ProcessEnv = process.en
       ...protectedPorts,
       ...(config.routines ? { routines: {} } : {}),
       ...(config.notifications ? { notifications: {} } : {}),
+      ...(config.nativeNotifications ? { nativeNotifications: { providers: nativePushProviders(config.nativeNotifications) } } : {}),
       // TEAM16-01: owner decision 2026-11-07, a working computer with no open session sleeps after 30 minutes.
       ...(config.computers ? { computers: { idleStopMs: s16ComputerIdleStopMs } } : {}),
       // DESK16-01: watch and take over a desktop working computer.
