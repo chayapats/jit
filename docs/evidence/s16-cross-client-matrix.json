@@ -703,6 +703,18 @@
       "timeoutMs": 300000,
       "requiredObservations": 1,
       "artifactEvidence": "profile_specific_receipts_required"
+    },
+    {
+      "id": "journeys",
+      "kind": "deterministic",
+      "basis": "owning_services_with_scripted_transports",
+      "reused": false,
+      "suites": [
+        "tests/s16-cross-client-journeys.test.ts"
+      ],
+      "timeoutMs": 300000,
+      "requiredObservations": 2,
+      "artifactEvidence": "profile_specific_receipts_required"
     }
   ],
   "scenarios": [
@@ -1035,7 +1047,8 @@
       ],
       "profiles": [
         "bots",
-        "bots_web"
+        "bots_web",
+        "journeys"
       ],
       "evidenceStatus": "not_executed_at_matrix_revision",
       "requiredDriverGaps": []
@@ -1078,7 +1091,8 @@
       "profiles": [
         "routines",
         "routines_web",
-        "notifications"
+        "notifications",
+        "journeys"
       ],
       "evidenceStatus": "not_executed_at_matrix_revision",
       "requiredDriverGaps": []
@@ -1677,11 +1691,11 @@
         "routines_web",
         "connections_web",
         "voice_web",
-        "mobile"
+        "mobile",
+        "journeys"
       ],
       "evidenceStatus": "not_executed_at_matrix_revision",
       "requiredDriverGaps": [
-        "delegated routine across restart as one actual-client journey",
         "voice/mobile continuity at the same selected service"
       ]
     },

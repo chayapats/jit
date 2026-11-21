@@ -76,14 +76,14 @@ test('zero assertions, duplicate summaries and truncated logs cannot become obse
 /** Explicit result fixtures test accounting only; they are never stored as product evidence. */
 function passingInputs(): S16ProfileEvidence[] {
   return matrix().profiles.map(profile => ({ id: profile.id, state: 'passed', basis: profile.basis, reused: profile.reused,
-    suites: profile.suites.map(suite => ({ suite, state: 'passed', exitCode: 0, observations: { pass: 1, fail: 0, skip: 0, assertions: 1, testNameSha256: ['a'.repeat(64)] }, logSha256: 'b'.repeat(64), logBytes: 250 })) }));
+    suites: profile.suites.map(suite => ({ suite, state: 'passed', exitCode: 0, observations: { pass: profile.requiredObservations, fail: 0, skip: 0, assertions: profile.requiredObservations, testNameSha256: Array(profile.requiredObservations).fill('a'.repeat(64)) }, logSha256: 'b'.repeat(64), logBytes: 250 })) }));
 }
 
 test('even every passing input preserves unsupported journeys, unrecorded artifacts and independent live/device gaps', () => {
   const result = assessS16MatrixEvidence(matrix(), passingInputs());
   expect(result.deterministicInputs).toBe('passed'); expect(result.deterministicAcceptance).toBe('blocked'); expect(result.productAcceptance).toBe('blocked');
   expect(result.scenarios.find(row => row.id === 'ac21')!.state).toBe('driver_gap');
-  expect(result.scenarios.find(row => row.id === 'ac22')!.driverGaps).toHaveLength(2);
+  expect(result.scenarios.find(row => row.id === 'ac22')!.driverGaps).toEqual(['voice/mobile continuity at the same selected service']);
   expect(result.additionalBlockers).toContain('native_ui'); expect(result.additionalBlockers).toContain('profile_specific_artifact_digests_unrecorded');
 });
 
