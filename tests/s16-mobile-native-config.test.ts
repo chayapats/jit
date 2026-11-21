@@ -21,7 +21,7 @@ const node = process.env.JIT_MOBILE_NODE, native = process.env.JIT_MOBILE_NATIVE
   } finally { rmSync(parent, { recursive: true, force: true }); }
 }, 30000);
 
-(native ? test : test.skip).each(['ios', 'android'] as const)('actual Metro %s release graph resolves shared computer validation without host runtime imports', async platform => {
+(native ? test : test.skip).each(['ios', 'android'] as const)('actual Metro %s release graph resolves shared client validation without host runtime imports', async platform => {
   const directory = mkdtempSync(join(tmpdir(), 'jit-mobile-metro-')), project = resolve('clients/mobile');
   const child = Bun.spawn([node!, 'node_modules/expo/bin/cli', 'export', '--platform', platform, '--output-dir', directory], {
     cwd: project, env: { PATH: process.env.PATH, EXPO_NO_TELEMETRY: '1', EXPO_NO_DOTENV: '1', EXPO_OFFLINE: '1', CI: '1', NODE_ENV: 'production' }, stdout: 'pipe', stderr: 'pipe',
