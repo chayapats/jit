@@ -2,7 +2,7 @@ import { AppError } from '../../errors';
 import { lexicalScore, lexicalTerms } from '../../memory/lexical';
 import type { ConversationStore } from '../../s15/conversation/store';
 import type { ConversationOwner } from '../../s15/conversation/types';
-import type { SearchDocument, SearchItem, SearchLabelCommand, SearchLabelReceipt, SearchLabels, SearchPage, SearchQuery, SearchTarget } from './contracts';
+import type { SearchDocument, SearchItem, SearchLabelCommand, SearchLabelReceipt, SearchLabels, SearchPage, SearchQuery, SearchTarget, SearchKind } from './contracts';
 import { parseSearchQuery, searchCapacity, searchFilter, searchHash, searchId, searchKey, searchLabel, searchNormalize, searchPosition, searchTarget } from './query';
 
 interface OrganizationRow { revision: number; labels: string }
@@ -13,7 +13,13 @@ const clip = (text: string, length: number) => { const chars = Array.from(text.r
  * returning a document. `resolve` does the same for one old result independently of search windows.
  */
 export class SearchDirectory<Actor> {
-  constructor(readonly options: { store: ConversationStore; owner(actor: Actor): ConversationOwner; documents(actor: Actor): SearchDocument[]; resolve(actor: Actor, target: SearchTarget): SearchDocument | null }) {}
+  constructor(readonly options: { store: ConversationStore; owner(actor: Actor): ConversationOwner; documents(actor: Actor): SearchDocument[]; resolve(actor: Actor, target: SearchTarget): SearchDocument | null; /** Protected full current content iterator; ordinary search still emits bounded snippets. */ content?(actor: Actor, kinds?: readonly SearchKind[]): Iterable<SearchDocument> }) {}
+  /** Protected current owning content, independently guarded per item; never a cached search page. */
+  content(actor: Actor, kinds?: readonly SearchKind[]): Iterable<SearchDocument> {
+    this.options.owner(actor);
+    if (!this.options.content) throw new AppError('owner_export_unavailable', 503);
+    return this.options.content(actor, kinds);
+  }
   #labels(owner: ConversationOwner, target: SearchTarget): SearchLabels {
     const row = this.options.store.db.query<OrganizationRow, [string, number, string]>('SELECT revision,labels FROM search_labels WHERE owner_id=? AND owner_generation=? AND target=?').get(owner.id, owner.generation, searchKey(target));
     return row ? { revision: row.revision, labels: JSON.parse(row.labels) as string[] } : { revision: 0, labels: [] };

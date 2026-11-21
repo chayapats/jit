@@ -487,6 +487,28 @@ export class ConversationApplication<OwnerActor, WorkContext> {
     this.owner(actor, this.store.request(command.root_id));
     return JSON.parse(command.receipt_json) as ConversationReceipt;
   }
+  /**
+   * Protected current content read without action presentation, receipt refresh or journal writes.
+   * Expected current withdrawal returns null; corrupt/missing continuity and authentication still throw.
+   * Callers must allowlist ordinary content fields rather than export this protected request object.
+   */
+  readContent(actor: OwnerActor, requestId: string): ConversationRequest | null {
+    const request = this.store.request(requestId); this.owner(actor, request); canonical(request);
+    if (request.receipt?.contract !== 's15-conversation-receipt/v1' || request.receipt.rootRequestId !== requestId ||
+      typeof request.command?.text !== 'string' || request.result !== null && typeof request.result !== 'string' ||
+      !['queued', 'running', 'held', 'proposed', 'accepted', 'completed', 'reconcile_only', 'stopped', 'blocked'].includes(request.state)) throw new AppError('conversation_content_invalid', 409);
+    try {
+      if (request.result !== null) this.publication(request);
+      if (request.delegation) {
+        if (!request.authority) throw new AppError('outside_scope');
+        this.options.policy.guard(this.options.policy.open(request.authority), 'publication');
+      }
+    } catch (error) {
+      if ((error instanceof AppError || error instanceof PolicyError) && ['authority_revoked', 'stale_authority', 'expired', 'outside_scope', 'lineage_withdrawn', 'payload_withdrawn', 'private_context', 'memory_context_stale', 'file_unavailable', 'computer_continuation_unavailable', 'bot_archived', 'parent_unavailable', 'disclosure_changed', 'disclosure_nonreleasable', 'recipient_unapproved', 'recipient_unknown', 'classification_unknown', 'policy_required', 'result_unavailable', 'skill_unavailable', 'skill_review_required', 'skill_dependency_unavailable', 'skill_dependency_outside_scope', 'skill_resource_unavailable', 'skill_private_computer_required', 'computer_needs_you', 'vm_fenced'].includes(error.code)) return null;
+      throw error;
+    }
+    return structuredClone(request);
+  }
   /** Read-only current request projection; a stale/revoked authority withholds result and evidence bodies. */
   view(actor: OwnerActor, requestId: string): ConversationRequest & { evidence: ReturnType<ConversationStore["evidence"]>; slips: ActionSlip[] } {
     const request = this.store.request(requestId); this.owner(actor, request);

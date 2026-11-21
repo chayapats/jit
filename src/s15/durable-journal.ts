@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { canonical, fail, id, nat } from './policy/validation';
+import { reserveDurableJournalPath, type DurableJournalPathReservation } from './durable-ownership';
 
 const recordBytes = 131072;
 const maximumCapacity = { records: 10000, bytes: 64 * 1024 * 1024 };
@@ -10,8 +11,10 @@ const maximumCapacity = { records: 10000, bytes: 64 * 1024 * 1024 };
  * migration or an ordinary snapshot. Lost claims survive SIGKILL; opening never recreates missing state. */
 export class DurableJournal {
   readonly db!: Database;
-  #lease: Database;
+  #lease!: Database;
+  #ownership: DurableJournalPathReservation;
   #closed = false;
+  #released = false;
   #capacity: { records: number; bytes: number };
   constructor(path: string, installation: string, create: boolean, applicationId: number, capacity = maximumCapacity, formats: readonly number[] = [1]) {
     if (!formats.includes(1) || !formats.length || formats.some(v => !Number.isSafeInteger(v) || v < 1 || v > 32)) fail('invalid_shape');
@@ -22,21 +25,23 @@ export class DurableJournal {
     const existed = existsSync(path);
     if (create && existed) fail('journal_exists');
     if (!create && !existed) fail('continuity_unavailable');
-    if (existed) {
-      const stat = lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) fail('unprotected_ledger');
-      const bytes = Buffer.alloc(100), fd = openSync(path, 'r'); let size: number;
-      try { size = readSync(fd, bytes, 0, 100, 0); } finally { closeSync(fd); }
-      if (size !== 100 || bytes.toString('ascii', 0, 16) !== 'SQLite format 3\0' || bytes.readUInt32BE(68) !== applicationId || !formats.includes(bytes.readUInt32BE(60))) fail('continuity_unavailable');
-    }
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const lock = path + '.process-lock';
-    if (existsSync(lock) && (lstatSync(lock).isSymbolicLink() || (lstatSync(lock).mode & 0o077))) fail('unprotected_ledger');
-    try { closeSync(openSync(lock, 'wx', 0o600)); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
-    this.#lease = new Database(lock, { create: false, strict: true });
-    try { this.#lease.exec('PRAGMA busy_timeout=10; BEGIN EXCLUSIVE'); }
-    catch { this.#lease.close(); fail('runtime_already_open'); }
+    this.#ownership = reserveDurableJournalPath(path);
     try {
+      if (existed) {
+        const stat = lstatSync(path); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) fail('unprotected_ledger');
+        const bytes = Buffer.alloc(100), fd = openSync(path, 'r'); let size: number;
+        try { size = readSync(fd, bytes, 0, 100, 0); } finally { closeSync(fd); }
+        if (size !== 100 || bytes.toString('ascii', 0, 16) !== 'SQLite format 3\0' || bytes.readUInt32BE(68) !== applicationId || !formats.includes(bytes.readUInt32BE(60))) fail('continuity_unavailable');
+      }
+      const lock = path + '.process-lock';
+      if (existsSync(lock) && (lstatSync(lock).isSymbolicLink() || (lstatSync(lock).mode & 0o077))) fail('unprotected_ledger');
+      try { closeSync(openSync(lock, 'wx', 0o600)); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+      this.#lease = new Database(lock, { create: false, strict: true });
+      try { this.#lease.exec('PRAGMA busy_timeout=10; BEGIN EXCLUSIVE'); }
+      catch { fail('runtime_already_open'); }
       if (create) closeSync(openSync(path, 'wx', 0o600));
+      this.#ownership.bind();
       this.db = new Database(path, { create: false, strict: true });
       this.db.exec('PRAGMA synchronous=FULL; PRAGMA busy_timeout=2000; PRAGMA secure_delete=ON');
       if (create) this.db.transaction(() => {
@@ -47,7 +52,14 @@ export class DurableJournal {
         this.db.query('INSERT INTO identity VALUES (?)').run(installation);
       }).immediate();
       if (this.db.query<{ installation: string }, []>('SELECT installation FROM identity').get()?.installation !== installation) fail('continuity_unavailable');
-    } catch (error) { this.db!?.close(); this.#lease.close(); throw error; }
+    } catch (error) {
+      let unknown = false;
+      try { this.db?.close(true); } catch { unknown = true; }
+      if (unknown) fail('runtime_release_unknown');
+      try { this.#lease?.close(true); } catch { unknown = true; }
+      if (unknown) fail('runtime_release_unknown');
+      this.#ownership.release(); throw error;
+    }
   }
   /** Every mutation rechecks authority inside this synchronous writer boundary. */
   tx<T>(fn: () => T): T { if (this.#closed) fail('service_closed'); return this.db.transaction(fn).immediate(); }
@@ -84,5 +96,9 @@ export class DurableJournal {
     this.db.query('INSERT INTO commands VALUES (?,?,?)').run(key, hash, json); return result;
   }
   /** Active callers must settle or become reconcile-only before shutdown; close never releases their facts. */
-  close(): void { if (!this.#closed) { this.#closed = true; this.db.close(); this.#lease.close(); } }
+  close(): void {
+    if (this.#released) return; this.#closed = true;
+    try { this.db.close(true); this.#lease.close(true); } catch { fail('runtime_release_unknown'); }
+    this.#ownership.release(); this.#released = true;
+  }
 }

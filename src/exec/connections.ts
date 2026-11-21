@@ -278,9 +278,27 @@ export class ConnectionVault {
 
   /** Reads one value for {@link releaseConnection} (`connection_unavailable` when missing, `connection_vault_unsafe` when unsafe). */
   read(id: string): string {
-    const path = this.#path(id);
+    return this.#readFile(this.#path(id));
+  }
+
+  /** Protected existing-state read: never mkdir, repair, initialize or follow a substituted credential. */
+  readExisting(id: string): string {
+    requireId(id); this.#refuseCollision();
+    let directory: Stats, before: Stats; const path = join(this.directory, id);
+    try {
+      directory = lstatSync(this.directory);
+      if (realpathSync(this.directory) !== this.directory || !directory.isDirectory() || directory.isSymbolicLink() || directory.mode & 0o7000 || (directory.mode & 0o777) !== 0o700 || this.#uid !== undefined && directory.uid !== this.#uid) throw new AppError('connection_vault_unsafe', 503);
+      before = lstatSync(path);
+    } catch (error) { if (error instanceof AppError) throw error; throw new AppError('connection_unavailable', 409); }
+    if (!this.#safe(before) || before.nlink !== 1) throw new AppError('connection_vault_unsafe', 503);
+    const value = this.#readFile(path, before), after = lstatSync(path), current = lstatSync(this.directory);
+    if (!this.#safe(after) || ['dev', 'ino', 'uid', 'mode', 'size', 'mtimeMs', 'ctimeMs', 'nlink'].some(key => before[key as keyof Stats] !== after[key as keyof Stats]) || !current.isDirectory() || current.isSymbolicLink() || ['dev', 'ino', 'uid', 'mode'].some(key => directory[key as keyof Stats] !== current[key as keyof Stats])) throw new AppError('connection_vault_unsafe', 503);
+    return value;
+  }
+
+  #readFile(path: string, expected?: Stats): string {
     let before: Stats;
-    try { before = lstatSync(path); } catch { throw new AppError("connection_unavailable", 409); }
+    try { before = expected ?? lstatSync(path); } catch { throw new AppError("connection_unavailable", 409); }
     if (!this.#safe(before)) throw new AppError("connection_vault_unsafe", 503);
     let fd: number;
     try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { throw new AppError("connection_vault_unsafe", 503); }

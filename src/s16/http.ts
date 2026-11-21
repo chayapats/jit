@@ -1,3 +1,5 @@
+import type { OwnerExportService } from './export/service';
+import { ownerExportLimits } from './export/contracts';
 import type { SkillDirectory } from "./skills/service";
 import type { SearchDirectory } from './search/service';
 import type { VoiceService } from "./voice/service";
@@ -18,6 +20,7 @@ import { memoryDetail, parseMemoryQuery, searchMemory, type S16MemoryPort } from
 import { artifactDetail, listArtifacts, parseArtifactQuery } from "./artifacts";
 import type { RoutineService } from "./routines/service";
 import type { NotificationService } from "./notifications/service";
+import type { NativeNotificationService } from "./native-notifications/service";
 import type { BrowserActionCards } from "./computers/browser-cards";
 import type { ComputerNeedsYou } from "./computers/needs-you";
 import type { ScreenControl } from "./computers/screen";
@@ -38,7 +41,7 @@ import type { ProtectedBrowserPort } from './protected-browser';
 export const artifactPreviewPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
 
 /** Protected shared client adapter. It adds no engine, database, approval authority or automatic retry. */
-export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; workingState?: WorkingStateService; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor> }): (request: Request) => Promise<Response> {
+export function createS16ClientHandler<Actor, Work>(app: ConversationApplication<Actor, Work>, options: { origin: string; cookieName: string; /** AUTH16-01 banner: true while a newer default proposal awaits the owner. */ policyUpdate?: (actor: Actor) => boolean; authentication: ConversationHttpAuthentication<Actor>; nativeNotifications?: NativeNotificationService<Actor>; models?: S16ModelsPort<Actor>; files?: FileStore<Actor>; imageAvailable?: () => boolean; memory?: S16MemoryPort<Actor>; routines?: RoutineService<Actor>; wake?: () => void; notifications?: NotificationService<Actor>; computers?: ComputerDirectory<Actor & object>; workingState?: WorkingStateService; /** DESK16-01 watch and take over a working computer's screen (`s16-computer-screen/v1`). */ screen?: ScreenControl<Actor>; protectedBrowser?: ProtectedBrowserPort<Actor>; browserCards?: BrowserActionCards<Actor>; needsYou?: ComputerNeedsYou<Actor>; /** BOT16-01 persistent Bots (`s16-client-bots/v1`). */ bots?: BotDirectory<Actor>; /** CONN16-01 connections (`s16-client-connections/v1`). */ connections?: ConnectionDirectory<Actor>; /** SKILL16-01 inert owner review and pin/receipt recovery. */ skills?: SkillDirectory<Actor>; /** Local speech; explicit call confirmation uses existing CHAT/steer authority. */ voice?: VoiceService<Actor>; search?: SearchDirectory<Actor>; ownerExport?: OwnerExportService<Actor> }): (request: Request) => Promise<Response> {
   const origin = new URL(options.origin);
   if (origin.origin !== options.origin || !/^[A-Za-z0-9_-]+$/.test(options.cookieName)) throw new AppError("invalid_configuration");
   const json = (value: unknown, status = 200): Response => {
@@ -62,8 +65,8 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
     const formats = [ ...["txt", "md", "markdown", "csv", "tsv"].map(extension => ({ extension, mime: "text/plain", bytes: textBytes })),
       ...(binary ? [{ extension: "pdf", mime: "application/pdf", bytes: files!.limits.fileBytes }] : []),
       ...(images ? ["png", "jpg", "jpeg"].map(extension => ({ extension, mime: extension === "png" ? "image/png" : "image/jpeg", bytes: files!.limits.fileBytes })) : []) ];
-    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
-      uploads: files && app.options.files ? { available: true, limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
+    return { contract: "s16-client-capabilities/v1", revision: app.options.memory?.fileContract ? 2 : 1, textMessages: true, ...(options.models ? { models: { available: true as const, contract: "s16-client-models/v1" as const } } : {}), progress: "control_events", ...(options.ownerExport ? { dataExport: { available: true as const, contract: 's16-owner-export/v1' as const, sections: [...options.ownerExport.source.sections], limits: { ...ownerExportLimits } } } : {}), exactDecisions: !!(app.options.policy.actionSlips && app.options.policy.decideAction && app.options.policy.decidePending && app.options.policy.dispatchAction), liveSteering: true,
+      uploads: files && app.options.files ? { available: true, creationLookup: "s16-upload-creation/v1", limits: { ...files.limits }, extensions: formats.map(format => format.extension), formats, textBytes, memory: !!app.options.memory?.fileContract, ...(app.options.memory?.fileContract ? { memoryContract: app.options.memory.fileContract } : {}),
         ...(files.parser && !images ? { unavailableBinary: binary ? "images_unsupported" as const : "sanitizer_unavailable" as const } : {}),
         ...(binary ? { binary: { limits: { ...binaryLimits, originalBytes: Math.min(binaryLimits.originalBytes, files.limits.fileBytes) }, images } } : {}) } : { available: false, code: "upload_unavailable" },
       artifacts: files && app.options.files ? { available: true, preview: "escaped_text", library: "s16-client-artifacts/v1", revisions: true, html: "sandboxed_static" } : { available: false, code: "artifact_unavailable" },
@@ -71,6 +74,7 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
       memory: options.memory ? { available: true, contract: "s16-client-memory/v1" } : { available: false, code: "memory_unavailable" },
       routines: options.routines ? { available: true, contract: "s16-client-routines/v1", reactions: { signed: true, github: true, artifacts: !!options.routines.options.files }, feed: true } : { available: false, code: "routines_unavailable" },
       notifications: options.notifications ? { available: true, contract: "s16-notifications/v1", transport: "web_push", serviceWorker: "/s16/sw.js", scope: "/s16/" } : { available: false, code: "notifications_unavailable" },
+      ...(options.nativeNotifications ? { nativeNotifications: { available: true as const, contract: "s16-native-notifications/v1" as const, providers: options.nativeNotifications.providerStatus() } } : {}),
       computers: options.computers ? { available: true, contract: "s16-client-computers/v1", idleStopMs: options.computers.options.vm.idleStopAfterMs, files: !!(files && app.options.files), ...(options.screen ? { screen: true } : {}) } : { available: false, code: "computers_unavailable" },
       ...(options.protectedBrowser ? { protectedBrowser: { available: true as const, contract: 's16-protected-browser/v1' as const } } : {}),
       bots: options.bots ? { available: true, contract: "s16-client-bots/v1", delegation: true } : { available: false, code: "bots_unavailable" },
@@ -96,6 +100,19 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         if (request.method === "POST") options.authentication.verifyCsrf(current.csrf, request.headers.get("x-csrf-token"));
         return current.actor;
       };
+      if (url.pathname === '/api/s16/client/export') {
+        if (request.method !== 'POST') throw new AppError('method_rejected', 405);
+        if (!options.ownerExport) throw new AppError('owner_export_unavailable', 503);
+        if (url.search) throw new AppError('invalid_body');
+        const input = await body(request);
+        // A streamed request cannot adopt a later owner generation after its initial authentication.
+        const exportOwner = () => { app.options.policy.requireOwner(authenticated.actor); return currentOwner(); };
+        return options.ownerExport.publish(exportOwner, input, ({ bytes, sha256, filename }) => new Response(new Uint8Array(bytes), { headers: {
+          'Content-Type': 'application/json; charset=utf-8', 'Content-Length': String(bytes.length), 'Content-Disposition': `attachment; filename="${filename}"`,
+          'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox; frame-ancestors 'none'",
+          'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin', 'X-Content-SHA256': sha256, Vary: 'Cookie',
+        } }));
+      }
       const callList = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/voice\/calls$/.exec(url.pathname);
       const call = /^\/api\/s16\/client\/voice\/calls\/([A-Za-z0-9_-]{1,128})(?:\/(control|turns|captures|playback))?$/.exec(url.pathname);
       if (callList || call) {
@@ -141,6 +158,13 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
           }
         }
         throw new AppError('method_rejected', 405);
+      }
+      const uploadCreation = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/uploads\/commands\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
+      if (uploadCreation) {
+        if (!options.files || !app.options.files) throw new AppError("upload_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method !== "GET") throw new AppError("method_rejected", 405);
+        return json(options.files.creation(currentOwner(), uploadCreation[1]!, uploadCreation[2]!));
       }
       const uploadCreate = /^\/api\/s16\/client\/conversations\/([A-Za-z0-9_-]{1,128})\/uploads$/.exec(url.pathname);
       if (uploadCreate && request.method === "POST") {
@@ -215,6 +239,17 @@ export function createS16ClientHandler<Actor, Work>(app: ConversationApplication
         // Body streaming is an async boundary: owner/session and CSRF are checked again after it.
         if (request.method === "POST" && routine[1] === "proposals") { const input = await body(request); return json(options.routines.propose(currentOwner(), input)); }
         if (request.method === "POST" && routine[1] === "commands") { const input = await body(request); const receipt = options.routines.command(currentOwner(), input); options.wake?.(); return json(receipt); }
+        throw new AppError("method_rejected", 405);
+      }
+      const nativeNotify = /^\/api\/s16\/client\/native-notifications(?:\/(subscribe|unsubscribe|devices\/([a-f0-9]{64})))?$/.exec(url.pathname);
+      if (nativeNotify) {
+        const native = options.nativeNotifications; if (!native) throw new AppError("native_notifications_unavailable", 503);
+        if (url.search) throw new AppError("invalid_body");
+        if (request.method === "GET" && !nativeNotify[1]) return json(native.settings(currentOwner()));
+        if (request.method === "GET" && nativeNotify[2]) return json(native.device(currentOwner(), nativeNotify[2]));
+        // Streaming can outlive an authentication or owner generation: reacquire it before each subscription write.
+        if (request.method === "POST" && nativeNotify[1] === "subscribe") { const input = await body(request); return json(native.subscribe(currentOwner(), input)); }
+        if (request.method === "POST" && nativeNotify[1] === "unsubscribe") { const input = await body(request); return json(native.unsubscribe(currentOwner(), input)); }
         throw new AppError("method_rejected", 405);
       }
       const notify = /^\/api\/s16\/client\/notifications(?:\/(subscribe|unsubscribe|devices\/([a-f0-9]{64})))?$/.exec(url.pathname);

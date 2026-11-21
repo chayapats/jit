@@ -1,0 +1,10 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+group = 'io.jit.nativegate'
+version = '0.1.0'
+android {
+  namespace 'io.jit.nativegate'
+  defaultConfig { minSdk 24 }
+}

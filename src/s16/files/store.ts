@@ -32,6 +32,7 @@ export interface FileStoreOptions<Actor> {
 }
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const sha = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const uploadCreationKey = (requestId: string) => { const key = `create_${requestId}`; return key.length <= 128 ? key : `create_${digest(key)}`; };
 const textExtensions = new Set(["txt", "md", "markdown", "csv", "tsv"]);
 
 /**
@@ -154,8 +155,7 @@ export class FileStore<Actor> {
     if (!textExtensions.has(name.split(".").at(-1)!.toLowerCase()) && !(this.parser && /\.(pdf|png|jpe?g)$/i.test(name))) throw new AppError("file_type_unavailable", 415);
     return this.journal.tx(() => {
       const owner = this.current(actor), fingerprint = digest(canonical({ owner, input }));
-      const commandId = `create_${input.requestId}`;
-      const created = this.journal.once(commandId.length <= 128 ? commandId : `create_${digest(commandId)}`, fingerprint, () => {
+      const created = this.journal.once(uploadCreationKey(input.requestId), fingerprint, () => {
         this.capacity(input.bytes);
         // Fence old text-only file readers even before the first binary CHAT ingress.
         if (/\.(pdf|png|jpe?g)$/i.test(name)) this.stamp(2);
@@ -165,6 +165,15 @@ export class FileStore<Actor> {
       });
       return this.status(actor, created.id);
     });
+  }
+  /** Read the original create command in this current owner/conversation; never creates or retries an upload. */
+  creation(actor: Actor, conversationId: string, requestId: string): FileUpload {
+    const owner = this.current(actor); identity(conversationId); identity(requestId);
+    const saved = this.journal.db.query<{ json: string }, [string]>("SELECT json FROM commands WHERE id=?").get(uploadCreationKey(requestId));
+    if (!saved) throw new AppError("file_not_found", 404);
+    const receipt = JSON.parse(saved.json) as { id: string }, row = this.upload(receipt.id);
+    if (row.owner.id !== owner.id || row.owner.generation !== owner.generation || row.conversationId !== conversationId || row.requestId !== requestId) throw new AppError("file_not_found", 404);
+    return this.status(actor, row.id);
   }
   /** Current owner-scoped lifecycle. Expiry narrows availability; it never creates or restarts work. */
   status(actor: Actor, id: string): FileUpload {

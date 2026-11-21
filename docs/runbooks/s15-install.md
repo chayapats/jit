@@ -103,16 +103,17 @@ Re-running the newer `install.sh --s15` moves forward again; the newer release a
 | Failed step | What is left | Next |
 | --- | --- | --- |
 | `arguments` | nothing written | use one runtime flag; no `--computer-slots` with `--s15` |
-| `preflight` | nothing changed | move the foreign file at `/etc/jit-s15/s15-runtime.json` aside |
+| `preflight` | nothing changed | fix the named config problem; for missing current config/state/composition, preserve original data in place and diagnose it before retrying |
 | `disk-reserve` … `configuration` | identities, directories, launcher, rule or release only; no unit, no active link | fix the named cause and re-run; re-runs repair in place |
 | `owner-terminal` | nothing stopped | re-run from a terminal (`ssh -t`) |
-| `state-initialize` (fresh) | the state directory this run created is removed | re-run |
-| `service-stop` … `health` (fresh) | the new unit, socket unit, journald file, release link and new state are removed | re-run after fixing the cause |
+| `state-initialize` (fresh) | any partial state and config are retained in place | diagnose partial initialization; missing composition refuses automatic re-initialization |
+| `owner-link-prepare` (fresh) | initialized state and config are retained; no service wiring installed | fix private owner-link preparation and re-run in place |
+| `service-install` … `health` (fresh) | the new unit, socket unit, journald file and release link are removed; state and config are retained | fix the cause and re-run against the same complete state |
 | `service-stop` … `health` (upgrade) | the previous release, units and state are active again | inspect `journalctl --namespace=jit-s15 -u jit-s15.service`, fix, re-run |
 | `working-computer` | the controller is installed and healthy; the owner link was already shown | follow the printed reason; **Try again** in **Resources → Computer** |
 | `uninstall` (VM still running) | controller stopped and disabled; no unit file removed | run the printed `systemctl --user stop` as `jit-s15-vmm`, then re-run `--uninstall` |
 
-An interrupted `init --s15` (no `state/runtime/composition.json`) is moved aside to `state.interrupted-<time>`, never deleted, and initialization runs again.
+Missing `state/runtime/composition.json` does not prove that a directory has no owner or work. The installer refuses that directory before host/configuration changes and keeps it in place. It also refuses existing state without its original valid config, or missing state when service wiring/release selection/installer evidence indicates a previous installation. It never renames state aside or initializes an empty replacement. A state directory that changes identity or appears/disappears during preflight is refused again before initialization. Failed fresh installs retain any state they initialized, including writes made before a failed health check. Complete retained state supports an in-place rerun; partial state needs diagnosis against current independent authority. See [ADR 0122](../adr/0122-installer-failure-preserves-current-state.md). These installer checks do not replace the owning runtime's full store validation or certify compatible S16 release fallback.
 
 ## Uninstall
 

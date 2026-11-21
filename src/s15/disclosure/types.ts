@@ -56,6 +56,8 @@ export interface ModelDisclosurePort {
 }
 /** Host-only service. No tool receives these mutation/catalog/adapter registration ports. */
 export interface DisclosureService {
+  /** Protected host maintenance only; a raw connection never becomes a recipient release or export. */
+  maintenanceSource?(): import('bun:sqlite').Database;
   adapter: ActionAdapter;
   attach(policy: S15PolicyService): void;
   /** Stamp before releasing an actual read. All subsequent output, including uncited derived text,
