@@ -501,7 +501,8 @@
         "tests/s16-ops-installed-service.test.ts",
         "tests/s16-ops-guarded-selection.test.ts",
         "tests/s16-ops-root-selector.test.ts",
-        "tests/s16-ops-package-reader-probe.test.ts"
+        "tests/s16-ops-package-reader-probe.test.ts",
+        "tests/s16-ops-native-notifications.test.ts"
       ],
       "timeoutMs": 600000,
       "requiredObservations": 1,

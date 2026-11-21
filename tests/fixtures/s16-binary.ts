@@ -6,7 +6,7 @@ import type { AttachmentSanitizerRuntime } from "../../src/attachments/sanitizer
 /** Only known repository fixtures execute locally; production never uses this runtime. */
 export function binaryRuntime(): AttachmentSanitizerRuntime {
   return { s16: { contract: "s16-isolated-file/v1", generation: "controlled-fixture-only" }, async available() { return true; }, async reset() {}, async run(job, signal) {
-    const process = Bun.spawn([globalThis.process.env.JIT_TEST_PYTHON ?? "python3", join(import.meta.dir, "../../ops/box/sanitize"), job.kind, String(job.pixels), "30", "--s16", join(job.input, "input"), job.output], { env: { PATH: globalThis.process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" }, stdout: "ignore", stderr: "ignore" });
+    const process = Bun.spawn([globalThis.process.env.JIT_TEST_PYTHON ?? "python3", "-I", "-B", join(import.meta.dir, "../../ops/box/sanitize"), job.kind, String(job.pixels), "30", "--s16", join(job.input, "input"), job.output], { env: { PATH: globalThis.process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" }, stdout: "ignore", stderr: "ignore" });
     const abort = () => process.kill("SIGKILL"); signal?.addEventListener("abort", abort, { once: true });
     try { if (signal?.aborted) abort(); if (await process.exited !== 0) throw Error("fixture_parser_failed"); } finally { signal?.removeEventListener("abort", abort); }
   } };

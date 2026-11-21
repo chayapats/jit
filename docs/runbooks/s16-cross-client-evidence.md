@@ -50,6 +50,15 @@ The engine revision remains `unverified` unless independently established.
 Before/after source and dependency pins must agree. Private logs preserve test
 names; receipts hash names and contain no host paths or raw test output.
 
+Binary fixture inputs also need installed Python/Pillow and Poppler. The runner
+uses the fixed Homebrew bin directory on macOS (`/opt/homebrew/bin` on arm64,
+`/usr/local/bin` on x64) and `/usr/bin` on Linux; it never inherits the operator's
+PATH or arbitrary `JIT_TEST_PYTHON`. Receipts pin those actual executables,
+Python/Pillow versions, complete Pillow package bytes and the sanitizer script
+before/after. Fixture Python uses `-I -B`; no user import path or bytecode write
+is needed. These are explicitly host fixture tools, separate from a shipped
+parser-image digest and #431's isolation proof. The runner downloads nothing.
+
 `source_inputs_passed` means the declared source profiles actually passed at that
 receipt's revision. It does not certify each broad product outcome or packaged
 parity. The `journeys` profile uses the actual shared JitClient and owning service
@@ -73,6 +82,8 @@ dependency/provenance fix. Shared-client merge resolution retains owner export,
 native notification capability and original upload-creation recovery together.
 This source integration never promotes the independent native-device gate.
 Artifact import for service/web/desktop/mobile/parser digests remains required.
+The integrated operations inputs additionally retain the eighteenth native
+notification journal through protected capture without dispatching APNs/FCM.
 `deterministicAcceptance` and `productAcceptance` therefore stay blocked in this
 initial executor. Real devices, Linux isolation, configured local speech,
 subscriptions/accounts and owner-host cutover retain independent pending rows.

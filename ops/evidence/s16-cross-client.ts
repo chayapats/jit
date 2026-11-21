@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { RELEASE_CONTRACT } from 'schway/host';
 import { spawnRunner } from '../../src/ops/supervisor';
 import { readS16EvidenceMatrix, s16EvidencePath, type S16EvidenceMatrix, type S16EvidenceProfile } from './s16-matrix';
+import { s16FixtureParserTools, s16FixturePath } from './s16-fixture-tools';
 
 const hash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
 const root = realpathSync(resolve(import.meta.dir, '../..'));
@@ -75,7 +76,7 @@ function dependencies(checkout: string) {
   };
   walk(directory, 'node_modules', 0); return { basis: 'source_dependency_tree_with_internal_file_links/v1', sha256: digest.digest('hex'), files };
 }
-function fingerprint(matrix: S16EvidenceMatrix) {
+async function fingerprint(matrix: S16EvidenceMatrix) {
   const commit = git(root, ['rev-parse', 'HEAD']); if (!/^[a-f0-9]{40}$/.test(commit)) throw Error('s16_matrix_source_invalid');
   const status = git(root, ['status', '--porcelain', '--untracked-files=normal']);
   return { commit, state: status === '' ? 'clean' : 'changed', matrixSha256: hash(readFileSync(join(root, matrixName))),
@@ -83,7 +84,7 @@ function fingerprint(matrix: S16EvidenceMatrix) {
     lockSha256: hash(readFileSync(join(root, 'bun.lock'))), dependencies: dependencies(root),
     engine: { contract: RELEASE_CONTRACT, revision: 'unverified', basis: 'executing_public_host_contract_and_vendored_archive' },
     vendor: readdirSync(join(root, 'vendor')).sort().map(name => ({ name, sha256: hash(readFileSync(s16EvidencePath(root, 'vendor/' + name)!)) })),
-    platform: process.platform, arch: process.arch, bunVersion: Bun.version, bunSha256: hash(readFileSync(process.execPath)) };
+    platform: process.platform, arch: process.arch, bunVersion: Bun.version, bunSha256: hash(readFileSync(process.execPath)), fixtureParserTools: await s16FixtureParserTools() };
 }
 function freshOutput(path: string): string {
   if (!isAbsolute(path) || resolve(path) !== path || !path.startsWith(join(root, '.local') + '/') || existsSync(path)) throw Error('s16_matrix_output_invalid');
@@ -98,7 +99,7 @@ function freshOutput(path: string): string {
 async function executeProfile(profile: S16EvidenceProfile, out: string): Promise<S16ProfileEvidence> {
   const suites: S16SuiteEvidence[] = [], privateRoot = join(out, profile.id); mkdirSync(privateRoot, { mode: 0o700 });
   for (const directory of ['home', 'tmp', 'cache']) mkdirSync(join(privateRoot, directory), { mode: 0o700 });
-  const env: Record<string, string> = { PATH: dirname(process.execPath) + ':/usr/bin:/bin:/usr/sbin:/sbin', HOME: join(privateRoot, 'home'), TMPDIR: join(privateRoot, 'tmp'), XDG_CACHE_HOME: join(privateRoot, 'cache'), NO_COLOR: '1', TZ: 'UTC' };
+  const env: Record<string, string> = { PATH: s16FixturePath(), HOME: join(privateRoot, 'home'), TMPDIR: join(privateRoot, 'tmp'), XDG_CACHE_HOME: join(privateRoot, 'cache'), NO_COLOR: '1', TZ: 'UTC' };
   const browserPath = process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : '/usr/bin/chromium';
   if (profile.kind === 'browser') Object.assign(env, { JIT_S16_BROWSER_TESTS: '1', JIT_S16_DESKTOP_TESTS: '1', JIT_BROWSER_LIVE: '1', JIT_BROWSER_EXECUTABLE: browserPath });
   for (const [index, suite] of profile.suites.entries()) {
@@ -123,11 +124,11 @@ async function executeProfile(profile: S16EvidenceProfile, out: string): Promise
 export async function runS16CrossClientEvidence(profiles: readonly string[], output: string) {
   const matrix = readS16EvidenceMatrix(root);
   if (!profiles.length || new Set(profiles).size !== profiles.length || profiles.some(id => !matrix.profiles.some(profile => profile.id === id))) throw Error('s16_matrix_profile_invalid');
-  const before = fingerprint(matrix); if (before.state !== 'clean') throw Error('s16_matrix_clean_source_required');
+  const before = await fingerprint(matrix); if (before.state !== 'clean') throw Error('s16_matrix_clean_source_required');
   const out = freshOutput(output), results: S16ProfileEvidence[] = [];
   for (const name of profiles) results.push(await executeProfile(matrix.profiles.find(profile => profile.id === name)!, out));
-  let after: ReturnType<typeof fingerprint> | null = null;
-  try { after = fingerprint(matrix); } catch { /* A removed/corrupt source or dependency cannot certify the earlier input. */ }
+  let after: Awaited<ReturnType<typeof fingerprint>> | null = null;
+  try { after = await fingerprint(matrix); } catch { /* A removed/corrupt source or dependency cannot certify the earlier input. */ }
   const unchanged = JSON.stringify(before) === JSON.stringify(after), assessment = assessS16MatrixEvidence(matrix, results);
   const receipt = { contract: 's16-cross-client-evidence/v1', basis: 'executed_source_profiles_with_scripted_ports', source: before, sourceAfter: unchanged ? 'verified_unchanged' : 'changed',
     execution: { profiles: [...profiles], argv: 'bun test --timeout 30000 ./<reviewed-suite>', outputBoundBytes: outputLimit, timeoutScope: 'per_suite_process_group', profileResults: results },

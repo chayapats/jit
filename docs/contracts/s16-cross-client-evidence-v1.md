@@ -30,6 +30,14 @@ pass/fail/skip/timeout/unavailable outcomes and bounded private log hashes.
 Public records contain metadata only; installation-specific
 paths, credentials, private content and raw logs are excluded from repository data.
 
+Host parser fixture execution uses fixed OS tool directories rather than the
+operator's PATH. Before/after fingerprints additionally record actual Python,
+Poppler executable hashes, Python/Pillow versions, the complete Pillow package
+(including readable bytecode), and the sanitizer script hash. Python runs with
+isolated imports and bytecode writes disabled. Missing tools are explicitly
+unavailable; these host fixture pins never establish a shipped parser container,
+Linux isolation or a live image-provider result.
+
 Complete deterministic acceptance requires every required scenario's actual
 observable driver to execute successfully with its declared assertions and no
 required skip/unavailable/unknown case. A process exit alone, source presence or
