@@ -12,6 +12,8 @@ import type { S15CompositionOptions } from './composition';
 import { validateBinaryFileConfig, type BinaryFileConfig } from '../s16/files/config';
 import { validateLocalVoiceConfig, type LocalVoiceConfig } from '../s16/voice/local';
 import { validateVoiceQuota } from '../s16/voice/service';
+import { validateNativeProviders } from '../s16/native-notifications/providers';
+import type { NativeProvidersConfig } from '../s16/native-notifications/types';
 import type { VoiceQuotaConfig } from '../s16/voice/contracts';
 
 /** Credential-free explicit source/disposable-service configuration; never an existing omitted-runtime service file. */
@@ -32,6 +34,8 @@ export interface S15RuntimeConfig {
   routines?: boolean;
   /** Explicit S16 Web Push (`s16-notifications/v1`); omission keeps an installation without push subscriptions or notices. */
   notifications?: boolean;
+  /** Explicit native provider selection uses protected signing-file references, never embedded credentials. */
+  nativeNotifications?: NativeProvidersConfig;
   /** Explicit S16 working computers (`s16-computers/v1`, TEAM16-01): per-work leases, private computers and 30-minute
    * idle release with on-demand start. Omission keeps S15 working-computer behavior. */
   computers?: boolean;
@@ -91,6 +95,7 @@ export function parseS15RuntimeConfig(raw: unknown): S15RuntimeConfig {
   if (value.fileMemory !== undefined && typeof value.fileMemory !== 'boolean' || value.fileMemory && !value.files) throw new AppError('invalid_s15_config');
   if (value.routines !== undefined && typeof value.routines !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.notifications !== undefined && typeof value.notifications !== 'boolean') throw new AppError('invalid_s15_config');
+  if (value.nativeNotifications !== undefined) validateNativeProviders(value.nativeNotifications);
   if (value.computers !== undefined && typeof value.computers !== 'boolean') throw new AppError('invalid_s15_config');
   if (value.desktop !== undefined && (typeof value.desktop !== 'boolean' || value.desktop && value.computers !== true)) throw new AppError('invalid_s15_config');
   if (value.bots !== undefined && typeof value.bots !== 'boolean') throw new AppError('invalid_s15_config');

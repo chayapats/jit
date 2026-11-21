@@ -1,0 +1,6 @@
+# Reviewed generated dependency, notice and corresponding-source inventories.
+clients/mobile/native-inputs/*.json linguist-generated=true
+clients/mobile/native-inputs/Podfile.lock linguist-generated=true
+clients/mobile/native-inputs/gradle-verification-metadata.xml linguist-generated=true
+clients/mobile/native-inputs/public-suffix-list.txt linguist-generated=true
+clients/mobile/notices/*.json linguist-generated=true

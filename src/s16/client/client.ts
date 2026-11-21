@@ -1,6 +1,6 @@
 import { ownerExportLimits, ownerExportSections, parseOwnerExportRequest, validateOwnerExport, type OwnerExport, type OwnerExportRequest } from '../export/contracts';
 import { workingStateManifest, workingStateImport, workingStateView, type WorkingStateManifest, type WorkingStateImport, type WorkingStateView } from "./working-state";
-import { isVmBackendDescriptor } from "../../s15/vm/descriptor";
+import { isVmBackendDescriptor } from "./computer-backend";
 import type { SkillCommand, SkillCommandStatus, SkillDependencyBinding, SkillFile, SkillReceipt } from "../skills/types";
 import type { SearchItem, SearchKind, SearchLabelCommand, SearchLabelReceipt, SearchPage, SearchQuery, SearchTarget } from '../search/contracts';
 import { voiceRequestId, type VoiceCapture, type VoiceCaptureCommand, type VoicePlayback, type VoicePlaybackCommand, type VoiceStatus, type VoiceTranscript } from "../voice/contracts";
@@ -16,6 +16,8 @@ import type { ScreenCommand, ScreenCommandResult, ScreenView } from "../computer
 import type { ComputerCommand, ComputerCommandResult, ComputersView } from "../computers/service";
 import type { BrowserOwnerControl } from '../../s15/browser';
 import type { ProtectedBrowserCommand, ProtectedBrowserResult, ProtectedBrowserView } from '../protected-browser';
+import type { NativeNotificationSettings, NativeNotificationDevice, NativeProviderKind } from "../native-notifications/types";
+import { nativeToken } from "../mobile/notices";
 
 /** Safe transport failure. An unknown mutation outcome is recovered by its original request identity. */
 export class JitClientError extends Error {
@@ -23,16 +25,21 @@ export class JitClientError extends Error {
 }
 /** Fetch injection supports native session adapters and deterministic tests. Native adapters add the
  * authenticated cookie and exact configured Origin on POST; browsers supply Origin themselves. */
-export interface JitClientOptions { origin: string; fetch?: (request: Request) => Promise<Response> }
+export interface JitClientOptions {
+  origin: string;
+  fetch?: (request: Request) => Promise<Response>;
+  /** Native ArrayBuffer-safe binary POST port. Same request/session/redirect guards; bytes are an immutable snapshot. */
+  fetchBytes?: (request: Request, bytes: Uint8Array<ArrayBuffer>) => Promise<Response>;
+}
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const identifier = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const identifier = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 128 && !/[^A-Za-z0-9_-]/.test(value);
 const safeCode = (value: unknown) => typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : "client_unavailable";
 const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 const nullableCount = (value: unknown) => value === null || count(value);
 const modelRef = (value: unknown) => record(value) && identifier(value.id) && count(value.revision) && count(value.generation);
 const modelChoice = (value: unknown) => record(value) && modelRef(value.route) && modelRef(value.model) && typeof value.effort === "string";
 const quantity = (value: unknown) => nullableCount(value) || typeof value === "string" && /^[0-9]+$/.test(value);
-const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const sha256 = (value: unknown) => typeof value === "string" && value.length === 64 && !/[^a-f0-9]/.test(value);
 const invalid = (): never => { throw new JitClientError("client_protocol_invalid", null, "response"); };
 const id = (value: string) => { if (!identifier(value)) throw new JitClientError("invalid_identity", null, "not_sent"); return value; };
 const callLimits = (value: unknown): boolean => record(value) && Object.keys(value).length === Object.keys(voiceCallLimits).length && Object.entries(voiceCallLimits).every(([key, bound]) => value[key] === bound);
@@ -56,6 +63,7 @@ const callView = (value: unknown): value is VoiceCallView => {
 export class JitClient {
   readonly origin: string;
   readonly #fetch: (request: Request) => Promise<Response>;
+  readonly #fetchBytes: JitClientOptions["fetchBytes"];
   #csrf: string | null = null;
   #sessionGeneration = 0;
   #authenticatedBefore = false;
@@ -64,7 +72,7 @@ export class JitClient {
   constructor(options: JitClientOptions) {
     const url = new URL(options.origin);
     if (!["https:", "http:"].includes(url.protocol) || url.origin !== options.origin || url.username || url.password) throw new JitClientError("client_origin_invalid", null, "not_sent");
-    this.origin = url.origin; this.#fetch = options.fetch ?? (request => fetch(request));
+    this.origin = url.origin; this.#fetch = options.fetch ?? (request => fetch(request)); this.#fetchBytes = options.fetchBytes;
   }
   /** Read current capabilities/navigation and establish CSRF for explicit subsequent commands. */
   async bootstrap(signal?: AbortSignal): Promise<Omit<ClientBootstrap, "csrf">> {
@@ -338,6 +346,28 @@ export class JitClient {
     if (data.cursor !== cursor) return invalid();
     return data as unknown as ClientEvents;
   }
+  /** Protected native setup only; configuration and OS subscription are not proof of physical delivery. */
+  async nativeNotificationSettings(signal?: AbortSignal): Promise<NativeNotificationSettings> {
+    const data = await this.call("/native-notifications", "GET", undefined, signal);
+    if (!record(data) || data.contract !== "s16-native-notifications/v1" || !sha256(data.service) || !count(data.devices) || (data.devices as number) > 20 || data.limit !== 20 || !Array.isArray(data.providers) || data.providers.length < 1 || data.providers.length > 2 || new Set(data.providers.map(provider => record(provider) ? provider.provider : null)).size !== data.providers.length || data.providers.some(provider => !record(provider) || !["apns", "fcm"].includes(String(provider.provider)) || typeof provider.available !== "boolean" || (provider.available ? provider.code !== null : provider.code !== "native_push_credentials_unavailable"))) return invalid();
+    if (typeof data.service !== "string" || data.service.length !== 64) return invalid();
+    return { contract: "s16-native-notifications/v1", service: data.service, devices: data.devices as number, limit: 20, providers: data.providers.map(provider => ({ provider: provider.provider, available: provider.available, code: provider.code })) };
+  }
+  /** Original OS token hash lookup. No registration or work starts from a settings restoration. */
+  async nativeNotificationDevice(hash: string, signal?: AbortSignal): Promise<NativeNotificationDevice> {
+    if (!sha256(hash) || hash.length !== 64) throw new JitClientError("native_push_token_invalid", null, "not_sent");
+    return this.nativeDevice(await this.call(`/native-notifications/devices/${hash}`, "GET", undefined, signal));
+  }
+  /** One explicit notification opt-in or disable; uncertain replies are recovered by read-only device lookup. */
+  async nativeNotificationSubscription(kind: "subscribe" | "unsubscribe", command: { provider: NativeProviderKind; token: string; locale?: "en" | "th" }, signal?: AbortSignal): Promise<NativeNotificationDevice> {
+    const input = structuredClone(command); nativeToken(input.provider, input.token);
+    if (!["subscribe", "unsubscribe"].includes(kind) || kind === "subscribe" && !["en", "th"].includes(String(input.locale))) throw new JitClientError("invalid_native_notification_command", null, "not_sent");
+    return this.nativeDevice(await this.call(`/native-notifications/${kind}`, "POST", kind === "subscribe" ? { provider: input.provider, token: input.token, locale: input.locale } : { provider: input.provider, token: input.token }, signal));
+  }
+  private nativeDevice(data: unknown): NativeNotificationDevice {
+    if (!record(data) || data.contract !== "s16-native-notification-device/v1" || typeof data.subscribed !== "boolean" || Object.keys(data).sort().join() !== "contract,subscribed") return invalid();
+    return data as unknown as NativeNotificationDevice;
+  }
   /** Stops only the named work. The acknowledgement does not certify external process/effect settlement. */
   async stop(requestId: string, signal?: AbortSignal): Promise<void> {
     const data = await this.call(`/requests/${id(requestId)}/stop`, "POST", {}, signal, requestId);
@@ -365,6 +395,12 @@ export class JitClient {
   async createUpload(command: FileUploadCommand, signal?: AbortSignal): Promise<FileUpload> {
     const input = structuredClone(command); id(input.requestId); id(input.conversationId);
     return this.uploadResponse(await this.call(`/conversations/${input.conversationId}/uploads`, "POST", input, signal, input.requestId), input.requestId);
+  }
+  /** Read the original creation after response loss, scoped to the current conversation and request ID. */
+  async uploadCreation(conversationId: string, requestId: string, signal?: AbortSignal): Promise<FileUpload> {
+    const upload = this.uploadResponse(await this.call(`/conversations/${id(conversationId)}/uploads/commands/${id(requestId)}`, "GET", undefined, signal), requestId);
+    if (upload.conversationId !== conversationId) return invalid();
+    return upload;
   }
   /** Stream exact bytes once; an uncertain reply is recovered with uploadStatus, never automatic replay. */
   async uploadBytes(uploadId: string, bytes: Uint8Array, signal?: AbortSignal): Promise<FileUpload> {
@@ -819,9 +855,10 @@ export class JitClient {
     if (signal?.aborted) throw new JitClientError("aborted", null, "not_sent", requestId);
     const headers: Record<string, string> = { accept: "application/json" };
     if (method === "POST") { headers["content-type"] = raw ? "application/octet-stream" : "application/json"; headers["x-csrf-token"] = this.#csrf!; }
-    const request = new Request(`${this.origin}/api/s16/client${path}`, { method, headers, credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}), ...(raw ? { body: new Uint8Array(raw).buffer } : body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const nativeBytes = raw && this.#fetchBytes ? new Uint8Array(raw) : undefined;
+    const request = new Request(`${this.origin}/api/s16/client${path}`, { method, headers, credentials: "same-origin", mode: "same-origin", cache: "no-store", redirect: "error", referrerPolicy: "no-referrer", ...(signal ? { signal } : {}), ...(nativeBytes ? {} : raw ? { body: new Uint8Array(raw).buffer } : body === undefined ? {} : { body: JSON.stringify(body) }) });
     let response: Response;
-    try { response = await this.#fetch(request); }
+    try { response = nativeBytes ? await this.#fetchBytes!(request, nativeBytes) : await this.#fetch(request); }
     catch { throw new JitClientError(signal?.aborted ? "aborted" : "connection_lost", null, method === "POST" ? "unknown" : "not_sent", requestId); }
     if (generation !== this.#sessionGeneration) { await response.body?.cancel().catch(() => {}); throw new JitClientError("client_response_stale", response.status, method === "POST" ? "unknown" : "response", requestId); }
     if (response.status === 401 || response.status === 403) this.clear();
