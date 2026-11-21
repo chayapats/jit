@@ -1,5 +1,5 @@
 ---
-status: selected recovery contract; writer-cut, original-staging and candidate-quarantine seams implemented; activation and aggregate acceptance pending
+status: selected recovery contract; writer-cut, staging, candidate, current-byte/native and complete current-preparation components implemented; activation and aggregate acceptance pending
 date: 2026-11-21
 scope: OPS16-01; S16-AC21; FR-04/15/18/23/35/38; NFR-02/04/05/08/09/12
 ---
@@ -34,6 +34,12 @@ not a second weaker approximation. No source row, header or schema is written.
 
 Preparation must bind the complete current SQL images, current FILE/GitHub pins,
 native lifecycle/custody, helper/external facts and actual compatible package.
+The protected [current preparation component](../contracts/s16-forward-current-cohort-v1.md)
+retains that complete independent cut and revalidates it before observing its
+original receipt under a genuine complete SQL writer reservation. It preserves
+current SQL source inodes and logical images across actual WAL checkpointing.
+Its original disposal retains unknown native/SQL resources and process exclusion.
+It does not activate missing bytes or complete the service/client lifecycle.
 Operations revision alone is insufficient. Authenticate the entire candidate
 against current retained-point and completed-backup receipts before decoding
 its bounded catalogs; the [candidate component](../contracts/s16-candidate-quarantine-v1.md)

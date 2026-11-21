@@ -219,6 +219,19 @@ from an independent process, then reopens unchanged current SQL/original pending
 intent. This [source-retirement seam](../adr/0115-s16-source-retirement-with-retained-exclusion.md)
 is not current-cohort activation or a restore command.
 
+Protected forward preparation now combines
+[current byte custody](../contracts/s16-current-byte-custody-v1.md),
+[actual current native custody](../contracts/s16-current-native-custody-v1.md) and
+[complete current SQL/helper/external preparation](../contracts/s16-forward-current-cohort-v1.md).
+The original restore owns these host-only capabilities and immutable stage plans;
+the current journal independently pins their hashes and physical identities.
+Actual SQL writer reservations remain held through the final current receipt,
+after asynchronous public-native/helper verification has completed. Missing or
+changed prepared state refuses; an unknown close retains the exact original
+resources and installation/CHAT leases. Current SQL/native state stays in place.
+These are preparation components, not a shipped forward-restore command, payload
+activation, admission clearance or complete service/client lifecycle acceptance.
+
 This checks metadata adoption/admission on the reported platform/architecture.
 The old revision is a v1-aware admission profile, not a certificate that all
 earlier packages support fallback. Actual aggregate recovery, native/account/
