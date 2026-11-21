@@ -17,6 +17,7 @@ export const s16RuntimeReaders: Readonly<Record<string, Readonly<{ applicationId
   'files.sqlite': { applicationId: 0x4a495446, formats: [1, 2, 3] },
   'routines.sqlite': { applicationId: 0x52543136, formats: [1] },
   'notifications.sqlite': { applicationId: 0x4e543136, formats: [1] },
+  'native-notifications.sqlite': { applicationId: 0x4e503136, formats: [1] },
   'bots.sqlite': { applicationId: 0x4a494236, formats: [1] },
   'connections.sqlite': { applicationId: 0x4a494337, formats: [1] },
   'skills.sqlite': { applicationId: 0x4a49534b, formats: [1] },

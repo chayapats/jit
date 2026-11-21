@@ -38,6 +38,15 @@ column. Bounded JSON-metadata syntax checks supplement identity checks, while
 the capture/verification contracts perform actual SQLite/FK integrity checks.
 This is not a substitute for all owning semantic/current-authority validation.
 
+[ADR 0131](../adr/0131-s16-native-notification-operations-custody.md) adds the
+eighteenth reviewed runtime format, `native-notifications.sqlite` (application
+ID `0x4e503136`, format 1). Its DurableJournal identity and the owning four-table
+schema probe are read without constructing its service or reconciling/sending a
+delivery. Current subscriptions, cursors and uncertain attempts remain protected
+current custody, including when the optional feature is disabled. Missing state
+and unsupported readers refuse; no smaller inventory or empty replacement is
+inferred. Signing credentials and physical delivery remain separate boundaries.
+
 The returned protected capability contains `sources`, `selected`, `retained`,
 `assertCurrent()`, `retireSources()`, `assertExclusion()` and `close()`. Its handles never enter JSON, ordinary exports,
 artifacts, prompts or the execution plane. Use `assertCurrent` as the outer

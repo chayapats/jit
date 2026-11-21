@@ -4,7 +4,7 @@ Status: implemented first-setup coordinator/routing with scoped copied-package
 and owning-service/client conformance. Real host/account acceptance remains
 separate. See [ADR 0130](../adr/0130-s16-first-selected-setup-with-original-intent.md).
 
-This is a first explicit file/file-memory/routine/voice installation, including
+This is a first explicit file/file-memory/routine/voice/native-notification installation, including
 explicit disabled flags that may retain selected formats. It is not a fallback
 for missing current authority or an invented prior uninstall. Default S14,
 unconfigured/default S15 and explicit legacy contracts remain separate.

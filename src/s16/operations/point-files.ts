@@ -7,6 +7,7 @@ import { canonical, identity } from '../../s15/conversation/validation';
 import type { S16LedgerSet } from './ledger-set';
 import { s16LedgerSetManifestHash } from './verify-ledger-set';
 import { s16PayloadSetManifestHash, verifyS16PayloadSources, type S16PayloadSet } from './payload-set';
+import { s16RuntimeReaders } from './runtime-readers';
 
 export const s16PointLimits = Object.freeze({ metadata: 4194304, sql: 2147483648, payload: 4294967296, bytes: 6442450944, payloadFiles: 20000, sqlFiles: 256 });
 const roles = { ledgers: ['s16-ledger-set/v1', 'protected_copy'], payloads: ['s16-payload-set/v1', 'inert_copy'], references: ['s16-current-references/v1', 'independent_current_required'], capture: ['s16-point-capture/v1', 'capture_evidence'] } as const;
@@ -94,7 +95,7 @@ function validateManifest(value: unknown): asserts value is S16RecoveryPoint {
   if (typeof value.package.engineContract !== 'string' || !/^[a-z][a-z0-9_./-]{0,119}$/.test(value.package.engineContract) || typeof value.package.engineRevision !== 'string' || !/^[A-Za-z0-9._-]{1,120}$/.test(value.package.engineRevision)) refuse();
   fields(value.configuration, 'sha256,ownerIdentity,sources,runtime'); fields(value.configuration.runtime, 'selected,retained');
   if (!hex(value.configuration.sha256) || typeof value.configuration.ownerIdentity !== 'string' || !value.configuration.ownerIdentity || value.configuration.ownerIdentity.length > 128 || value.configuration.ownerIdentity.includes('\0')) refuse();
-  strings(value.configuration.sources, 256); strings(value.configuration.runtime.selected, 17); strings(value.configuration.runtime.retained, 17);
+  strings(value.configuration.sources, 256); strings(value.configuration.runtime.selected, Object.keys(s16RuntimeReaders).length); strings(value.configuration.runtime.retained, Object.keys(s16RuntimeReaders).length);
   const sourceNames = value.configuration.sources, current = [...value.configuration.runtime.selected, ...value.configuration.runtime.retained]; if (new Set(current).size !== current.length || current.some(name => !sourceNames.includes(name))) refuse();
   for (const required of ['conversation.sqlite', 'policy.sqlite', 'model.sqlite', 'work.sqlite', 'vm.sqlite', 'team.sqlite', 'memory.sqlite', 'owner.sqlite', 'owner-lifecycle.sqlite', 'recipients.sqlite']) if (!value.configuration.sources.includes(required)) refuse();
   if (!Array.isArray(value.components) || value.components.length !== 4 || new Set(value.components.map(row => object(row).role)).size !== 4) refuse();

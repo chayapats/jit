@@ -929,6 +929,7 @@ export async function composeS15(options: S15CompositionOptions) {
           ['work.sqlite', work.maintenanceSource?.()], ['vm.sqlite', vmStore.db], ['team.sqlite', team.store.db], ['memory.sqlite', memory.store.db],
           ['disclosure.sqlite', disclosure?.maintenanceSource?.()], ['browser.sqlite', browser?.maintenanceSource?.()], ['github.sqlite', githubStore?.maintenanceSource()],
           ['files.sqlite', files?.journal.db], ['routines.sqlite', routines?.journal.db], ['notifications.sqlite', notifications?.journal.db],
+          ['native-notifications.sqlite', nativeNotifications?.journal.db],
           ['bots.sqlite', bots?.store.db], ['connections.sqlite', connections?.store.db], ['skills.sqlite', skills?.store.db], ['voice.sqlite', voice?.maintenanceSource()],
         ]));
       },
