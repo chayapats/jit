@@ -161,6 +161,7 @@ test('per-set byte bound fails before publication and leaves original saved nati
   expect(state.journal.read().requests[0]).toMatchObject({ status: 'blocked', actions: [{ state: 'not_applied' }] });
 });
 
+// This case performs 300 actual native-root observations, rather than one ordinary fixture.
 test('more than 256 actual known native roots remain one action/component with an independently bounded manifest', async () => {
   const f = await fixture(false), database = new Database(join(f.runtimeDirectory, 'model.sqlite'), { readwrite: true, create: false });
   // Protocol fixture over the real owning schema, not 300 completed application jobs.
@@ -171,7 +172,7 @@ test('more than 256 actual known native roots remain one action/component with a
   } database.close(true);
   const state = f.start(), result = await state.session().capture(); expect(result).toMatchObject({ roots: 300, pending: 300 }); expect(state.journal.read().requests[0]!.actions).toHaveLength(1);
   expect(JSON.parse(readFileSync(join(result.directory, 'manifest.json'), 'utf8')).roots).toHaveLength(300);
-});
+}, 120000);
 
 test('a shape-valid nonexistent saved branch refuses deep native-set publication without clearing its original fence', async () => {
   const f = await fixture(), database = new Database(join(f.runtimeDirectory, 'model.sqlite'), { readwrite: true, create: false });

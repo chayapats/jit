@@ -84,6 +84,7 @@ async function fixture() {
   return { input, invoke, selector, control, controlPath, fencePath, prepare, readers, marker, laterFile, directory };
 }
 
+// Multiple independent sealed-package readers exceed 30 s on both Linux runner architectures.
 test('actual sealed packages arm original controller intent before root selection and complete without replacing current state', async () => {
   const f = await fixture(), plan = await f.prepare(), before = readFileSync(f.controlPath), original = f.control().requests.find((row: { requestId: string }) => row.requestId === f.input.requestId);
   expect(original).toMatchObject({ phase: 'capturing', status: 'running', actions: [{ kind: 'capture_backend', state: 'intent' }] }); expect(existsSync(f.fencePath)).toBe(true);
@@ -94,14 +95,14 @@ test('actual sealed packages arm original controller intent before root selectio
   const completed = await f.invoke('complete', plan); expect({ exit: completed.exit, error: completed.error }).toEqual({ exit: 0, error: '' });
   expect(JSON.parse(completed.out)).toMatchObject({ state: 'selected', operationId: original.id }); expect(existsSync(f.fencePath)).toBe(false); expect(f.control().points).toHaveLength(1);
   const done = readFileSync(f.controlPath); expect(await f.invoke('complete', plan)).toEqual(completed); expect(readFileSync(f.controlPath)).toEqual(done);
-}, 30000);
+}, 60000);
 
 test('completion before root effect refuses and leaves the original intent and fence available for retry', async () => {
   const f = await fixture(), plan = await f.prepare(), observations = await f.readers(plan); expect((await f.invoke('arm', plan, observations)).exit).toBe(0);
   const before = readFileSync(f.controlPath), fence = readFileSync(f.fencePath), refused = await f.invoke('complete', plan);
   expect(refused).toMatchObject({ exit: 1, error: 's16_release_selection_target_changed\n' }); expect(readFileSync(f.controlPath)).toEqual(before); expect(readFileSync(f.fencePath)).toEqual(fence);
   f.selector.select(f.selector.read().sha256, f.input.targetDirectory, f.input.targetSha256); expect((await f.invoke('complete', plan)).exit).toBe(0);
-}, 30000);
+}, 60000);
 
 test.each(['plan', 'reader', 'terminal', 'missing_reader'] as const)('changed %s refuses before arming or changing root selection', async mode => {
   const f = await fixture(), plan = await f.prepare(), observations = await f.readers(plan), before = readFileSync(f.controlPath), value = f.selector.read();
