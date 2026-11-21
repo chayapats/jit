@@ -83,6 +83,7 @@ export function openS16CurrentNativeCustody(owner: S16CurrentNativeOwner, option
         } else {
           if (prepared) refuse('s16_ops_current_native_plan_missing');
           const occupied = usage(globalStage); if (occupied.nodes + namespace.roots.length * 3 + 4 > s16RecoveryLimits.nodes) refuse('s16_ops_recovery_bounds');
+          if (savedAction) { for (const path of [root, data, scratch, ...namespace.roots.flatMap(({ id }) => [join(scratch, id), join(scratch, id, 'home'), join(scratch, id, 'sessions')])]) s16PointEntry(path, true); }
           opsDirectory(root); if (names(root, 3).some(name => !['data', 'scratch'].includes(name))) refuse();
           opsDirectory(data); opsDirectory(scratch); if (names(data, 1).length) refuse('s16_ops_current_native_plan_missing');
           const ids = new Set(namespace.roots.map(row => row.id)); if (names(scratch, 20000).some(id => !ids.has(id))) refuse();

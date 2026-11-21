@@ -115,7 +115,9 @@ export function openS16CandidateQuarantine(owner: S16CandidateOwner, options: S1
         } else {
           const occupied = usage(globalStage); if (occupied.nodes + nativePlan.roots.length * 3 + 2 > nodeBound) refuse('s16_ops_recovery_bounds');
           for (const { id } of nativePlan.roots) {
-            const root = join(quarantine, id); opsDirectory(root);
+            const root = join(quarantine, id);
+            if (existing) { s16PointEntry(root, true); for (const part of ['home', 'sessions']) s16PointEntry(join(root, part), true); }
+            opsDirectory(root);
             if (names(root, 3).some(name => !['home', 'sessions'].includes(name))) refuse();
             for (const part of ['home', 'sessions']) { opsDirectory(join(root, part)); if (names(join(root, part), 1).length) refuse('s16_ops_candidate_plan_missing'); }
           }
