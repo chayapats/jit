@@ -384,6 +384,12 @@ if [ ! -d "$source_dir/node_modules" ]; then
   next='restore access to the frozen public dependency inputs, then re-run the same trusted release'
   mkdir -m 700 "$scratch/bun-cache"
   (umask 022; timeout 600 env -i PATH="$PATH" HOME=/root BUN_INSTALL_CACHE_DIR="$scratch/bun-cache" "$bun" install --cwd "$source_dir" --frozen-lockfile --production --ignore-scripts --linker=hoisted </dev/null >/dev/null 2>&1) || failed
+  # Bin links are unused by the installer and cannot enter a trusted code tree.
+  # Normalize only this newly installed snapshot, never a supplied dependency seal.
+  rm -rf -- "$source_dir/node_modules/.bin"
+  find "$source_dir/node_modules" -type d -exec chmod 755 {} +
+  find "$source_dir/node_modules" -type f -perm /111 -exec chmod 755 {} +
+  find "$source_dir/node_modules" -type f ! -perm /111 -exec chmod 644 {} +
 fi
 set -- apply --root / --source "$source_dir" --uninstall "$uninstall" "$selector" "$selected"
 if [ "$s15" = false ]; then set -- "$@" --computer-slots "$computer_slots"; fi
