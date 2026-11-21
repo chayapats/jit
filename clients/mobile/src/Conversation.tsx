@@ -8,6 +8,7 @@ import type { FileArtifact } from "../../../src/s16/files/types";
 import type { MobileSession } from "../../../src/s16/mobile/session";
 import { MobileCommands, type MobilePending } from "../../../src/s16/mobile/commands";
 import { checkMobileIntent, mobileIntent, MobileDrafts } from "../../../src/s16/mobile/drafts";
+import { recoverMobileCommand } from "../../../src/s16/mobile/recovery";
 import { NativeFiles } from "./files";
 import type { MobileVoice } from "../../../src/s16/mobile/voice";
 import { VoiceControls } from "./Voice";
@@ -93,7 +94,7 @@ export function Conversation({ ui, session, snapshot, commands, drafts, files, v
   }
   const capability = session.projection.bootstrap!.capabilities;
   async function recover(entry: MobilePending) {
-    try { await commands.recover(entry); checkMobileIntent(intent); drafts.change(intent, () => ({ text: "", files: [] })); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }
+    try { await recoverMobileCommand(commands, drafts, intent, entry); setPending((await commands.pending()).filter(item => item.conversationId === conversation)); setAbsent(null); await session.poll(); }
     catch (error) { if (error instanceof JitClientError && error.status === 404) setAbsent(entry.requestId); else throw error; }
   }
   return <>

@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { MobileCommands } from "../src/s16/mobile/commands";
+import { MobileDrafts, mobileIntent } from "../src/s16/mobile/drafts";
+import { recoverMobileCommand } from "../src/s16/mobile/recovery";
 import { MobileSession } from "../src/s16/mobile/session";
 import { MobileTransport, type MobileSecureStore } from "../src/s16/mobile/transport";
 import { mobileAppFixture } from "./fixtures/s16-mobile-app";
@@ -7,11 +9,13 @@ import { mail } from "./fixtures/s15-effects";
 
 async function fixture() {
   const m = await mobileAppFixture(), records = new Map<string, string>();
-  let dropReply = false, failStorage = false, posts = 0, refuseBeforeSend = false;
+  let dropReply = false, dropDecisionReply = false, failStorage = false, posts = 0, decisionPosts = 0, refuseBeforeSend = false;
   const requestIds: string[] = [];
   const store: MobileSecureStore = { async get(key) { return records.get(key) ?? null; }, async set(key, value) { if (failStorage && key.includes("pending")) throw Error("Controlled native storage failure"); records.set(key, value); }, async delete(key) { records.delete(key); } };
   const transport = new MobileTransport({ origin: m.origin, store, async fetch(url, init) {
     const message = url.endsWith("/messages") && init.method === "POST";
+    const decision = url.endsWith("/decisions") && init.method === "POST";
+    if (decision) decisionPosts++;
     if (message) {
       posts++; const body = init.body;
       const text = typeof body === "string" ? body : body instanceof ArrayBuffer ? new TextDecoder().decode(body) : body && ArrayBuffer.isView(body) ? new TextDecoder().decode(new Uint8Array(body.buffer, body.byteOffset, body.byteLength)) : null;
@@ -21,11 +25,12 @@ async function fixture() {
     }
     const result = await fetch(url, init);
     if (message && dropReply) { dropReply = false; await result.body?.cancel(); throw Error("Controlled lost accepted reply"); }
+    if (decision && dropDecisionReply) { dropDecisionReply = false; await result.body?.cancel(); throw Error("Controlled lost accepted decision reply"); }
     return result;
   } });
   const session = new MobileSession(transport), commands = new MobileCommands(session, store);
   await session.signIn(m.password); await session.selectConversation("native_commands");
-  return { m, records, store, session, commands, transport, requestIds, get posts() { return posts; }, set refuseBeforeSend(value: boolean) { refuseBeforeSend = value; }, set dropReply(value: boolean) { dropReply = value; }, set failStorage(value: boolean) { failStorage = value; } };
+  return { m, records, store, session, commands, transport, requestIds, get posts() { return posts; }, get decisionPosts() { return decisionPosts; }, set refuseBeforeSend(value: boolean) { refuseBeforeSend = value; }, set dropReply(value: boolean) { dropReply = value; }, set dropDecisionReply(value: boolean) { dropDecisionReply = value; }, set failStorage(value: boolean) { failStorage = value; } };
 }
 
 test("native current-card decisions refuse a changed reference and one fresh press dispatches the owning effect once", async () => {
@@ -68,13 +73,33 @@ test("an authenticated absent original permits only an explicit identical RAM re
   } finally { await f.m.close(); }
 });
 
+test("recovering an accepted decision preserves unrelated composer text and attachments without another effect", async () => {
+  const f = await fixture(), drafts = new MobileDrafts();
+  try {
+    f.m.f.interpretation = { intent: "execute", purposeId: "purpose", resourceIds: ["account"], access: "effect", subject: null };
+    f.m.f.script = [{ type: "tool_call", id: "native_draft_decision", name: "gmail_prepare_send", arguments: { ...mail() } }];
+    await f.commands.send("native_commands", "Send the prepared email to the recipient"); await f.m.f.service.conversation.drain(); await f.session.poll();
+    const slip = f.session.projection.snapshot!.conversation.rows.flatMap(row => row.slips).find(value => value.state === "pending")!;
+    const intent = mobileIntent(f.session);
+    drafts.change(intent, () => ({ text: "Unsent unrelated message", files: [{ requestId: "unsent_attachment", name: "draft.md", bytes: 5, sha256: "b".repeat(64), uploadId: null, phase: "uploading", receipt: null, code: null }] }));
+    const retained = drafts.get(intent.scope, intent.conversationId);
+    f.dropDecisionReply = true; await expect(f.commands.decide("native_commands", slip, "approve")).rejects.toBeDefined(); await f.m.f.service.conversation.drain();
+    expect(f.m.f.google.sent.size).toBe(1); expect(f.decisionPosts).toBe(1); await f.session.restore();
+    const restarted = new MobileCommands(f.session, f.store), entry = (await restarted.pending())[0]!; expect(entry.kind).toBe("decision");
+    await recoverMobileCommand(restarted, drafts, mobileIntent(f.session), entry);
+    expect(drafts.get(intent.scope, intent.conversationId)).toBe(retained); expect(retained.text).toBe("Unsent unrelated message"); expect(retained.files).toHaveLength(1);
+    expect(await restarted.pending()).toEqual([]); expect(f.decisionPosts).toBe(1); expect(f.m.f.google.sent.size).toBe(1);
+  } finally { await f.m.close(); }
+});
+
 test("native duplicate Send and process-loss recovery retain one owning admission without persisted command bytes", async () => {
-  const f = await fixture();
+  const f = await fixture(), drafts = new MobileDrafts();
   try {
     const bytes = new TextEncoder().encode("Controlled attached source"), sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
     const upload = await f.session.perform((client, signal) => client.createUpload({ requestId: "native_input_once", conversationId: "native_commands", name: "input.txt", bytes: bytes.length, sha256 }, signal));
     await f.session.perform((client, signal) => client.uploadBytes(upload.id, bytes, signal));
     f.m.f.script = [{ type: "tool_call", id: "native_read_once", name: "file_read", arguments: { id: upload.id, offset: 0 } }, { type: "tool_call", id: "native_artifact_once", name: "file_create", arguments: { name: "native-proof.txt", text: "Committed native artifact bytes" } }];
+    drafts.change(mobileIntent(f.session), () => ({ text: "Summarize these notes and create a downloadable Markdown brief.", files: [] }));
     f.dropReply = true;
     const first = f.commands.send("native_commands", "Summarize these notes and create a downloadable Markdown brief.", [{ id: upload.id, sha256 }]);
     await expect(f.commands.send("native_commands", "A duplicate gesture must never become another command")).rejects.toMatchObject({ code: "mobile_command_busy" });
@@ -86,7 +111,8 @@ test("native duplicate Send and process-loss recovery retain one owning admissio
     const restarted = new MobileCommands(f.session, f.store), pending = await restarted.pending(); expect(pending).toHaveLength(1);
     await expect(restarted.retry(pending[0]!.requestId)).rejects.toMatchObject({ code: "mobile_command_unavailable" });
     const calls = [...f.m.f.vmCalls], modelCalls = f.m.f.modelPrompts.length;
-    const recovered = await restarted.recover(pending[0]!);
+    const intent = mobileIntent(f.session), recovered = await recoverMobileCommand(restarted, drafts, intent, pending[0]!);
+    expect(drafts.get(intent.scope, intent.conversationId)).toEqual({ text: "", files: [] });
     expect(recovered.row.ownerMessage).toBe("Summarize these notes and create a downloadable Markdown brief.");
     expect(recovered.row.files?.artifacts).toHaveLength(1);
     const artifact = recovered.row.files!.artifacts[0]!;

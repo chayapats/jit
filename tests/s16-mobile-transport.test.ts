@@ -123,6 +123,38 @@ test("late SecureStore completion cannot overwrite a newer service-generation de
   expect([...store.records.values()][0]).toBe(retained); native.resume(); expect(await native.restore()).toBe(true);
 });
 
+test("queued sign-out survives background and reconnect before a later restore", async () => {
+  const store = secureStore(); await seed(store, origin);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let held = false, deletes = 0;
+  const port: MobileSecureStore = { ...store.port, async get(key) { if (!held) { held = true; entered.resolve(); await release.promise; } return store.port.get(key); }, async delete(key) { deletes++; await store.port.delete(key); } };
+  const native = new MobileTransport({ origin, store: port, fetch: async () => { throw Error("Local sign-out must not contact the service"); } });
+  const earlier = native.restore().catch(error => error); await entered.promise;
+  const forgotten = native.forget(); native.pause(); native.resume(); const restored = native.restore(); release.resolve();
+  expect(await earlier).toMatchObject({ code: "mobile_response_stale" }); await forgotten;
+  expect(await restored).toBe(false); expect(deletes).toBe(1); expect(store.records.size).toBe(0); expect(native.authenticated).toBe(false);
+});
+
+test("queued sign-out precedes a later explicit login without deleting its fresh credential", async () => {
+  const store = secureStore(); await seed(store, origin);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(); let held = false, deletes = 0;
+  const fresh = "fixture_replacement_session_1234567890";
+  const port: MobileSecureStore = { ...store.port, async get(key) { if (!held) { held = true; entered.resolve(); await release.promise; } return store.port.get(key); }, async delete(key) { deletes++; await store.port.delete(key); } };
+  const native = new MobileTransport({ origin, store: port, fetch: async url => login(url, { "Set-Cookie": "__Host-jit_s14=" + fresh + "; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400; Secure" }) });
+  const earlier = native.restore().catch(error => error); await entered.promise;
+  const forgotten = native.forget(); native.pause(); native.resume(); const replacement = native.signIn(password); release.resolve();
+  expect(await earlier).toMatchObject({ code: "mobile_response_stale" }); await forgotten; await replacement;
+  expect(deletes).toBe(1); expect(native.authenticated).toBe(true); expect(JSON.parse([...store.records.values()][0]!).token).toBe(fresh);
+  const restored = new MobileTransport({ origin, store: port, fetch: async () => { throw Error("Restore must only read the fresh credential"); } });
+  expect(await restored.restore()).toBe(true);
+});
+
+test("sign-out reports a queued storage deletion failure even after backgrounding", async () => {
+  const store = secureStore(); await seed(store, origin);
+  const native = new MobileTransport({ origin, store: { ...store.port, async delete() { throw Error("Controlled SecureStore deletion failure"); } }, fetch: async () => { throw Error("Sign-out must not contact the service"); } });
+  await native.restore(); const forgotten = native.forget(); native.pause();
+  await expect(forgotten).rejects.toMatchObject({ code: "mobile_storage_unavailable" }); expect(native.authenticated).toBe(false); expect(store.records.size).toBe(1);
+});
+
 test("actual protected HTTP and shared client recover the one original command without native retries", async () => {
   let f: Awaited<ReturnType<typeof composedFixture>> | undefined;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: request => f ? f.service.fetch(request) : new Response(null, { status: 503 }) }), serviceOrigin = "http://127.0.0.1:" + server.port;
