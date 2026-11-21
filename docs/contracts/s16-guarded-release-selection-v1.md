@@ -1,7 +1,7 @@
 # s16-guarded-release-selection/v1
 
-Status: protected protocol/root coordinator component. Installer routing, owning
-service/client lifecycle and actual Linux adoption remain separate conformance.
+Status: protected protocol/root coordinator component. Installer routing,
+installed lifecycle and actual Linux adoption remain separate conformance.
 See [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md).
 
 The root installer owns immutable packages, units, private job metadata and the
@@ -82,3 +82,9 @@ SIGKILL boundaries span controller preparation and root stop/plan/intent/effect/
 completion/trial/result. Supervisor and UID transition remain labelled fixture
 ports. These tests do not establish actual owning service dispatch, native UI,
 live accounts, Linux isolation or owner-host cutover.
+
+The separate [owning lifecycle proof](../evidence/s16-service-release-proof.md)
+uses actual earlier/current service processes and a sealed shared client with
+persistent scripted external ports. It covers current trial policy/withdrawal/
+private/unknown state and fresh work after compatible fallback. Installed systemd
+routing, rendered clients and real-host/device acceptance remain separate.

@@ -1,5 +1,5 @@
 ---
-status: implemented protected protocol/root component; final conformance and owning lifecycle pending
+status: implemented guarded protocol and scoped owning lifecycle; installer/host acceptance pending
 date: 2026-11-21
 scope: OPS16-01; S16-AC21; FR-04/15/18/23/35/38; NFR-02/04/05/08/09/12
 ---
@@ -38,7 +38,13 @@ withdrawal, charge, unknown-effect receipt or native state with the first backup
 Unsupported current formats retain their gate and require a verified forward
 operator; a legacy composition manifest is not a fallback authority.
 
-First implement and exercise the protected protocol and disposable root/service
-composition. Installer routing, actual owning service/client journeys, failure
-fallback and uninstall preservation remain required aggregate outcomes. Real
-Linux identity enforcement and host adoption remain separate acceptance.
+The protected protocol and disposable root/service composition are implemented.
+Installer routing and uninstall preservation remain required aggregate outcomes.
+Real Linux identity enforcement and host adoption remain separate acceptance.
+
+The [scoped owning lifecycle proof](../evidence/s16-service-release-proof.md) now
+uses actual earlier/current service processes and one sealed shared client, with
+persistent scripted external ports. It preserves current trial policy fencing,
+withdrawal, private retirement, owner-stopped VM and unknown-effect charges across
+fallback, then executes fresh work under the current policy. Installer/systemd
+routing, uninstall and real-host acceptance remain separate.

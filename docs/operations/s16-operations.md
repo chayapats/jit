@@ -58,8 +58,11 @@ cutover; compatible release/client lifecycle acceptance remains separate.
 The [guarded selection protocol](../contracts/s16-guarded-release-selection-v1.md)
 and [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) implement the
 protected service/root component. The installer/supervisor adapter and actual
-owning service/client lifecycle remain in progress; there is no new standalone
-public upgrade command in this component.
+installed lifecycle remain in progress; there is no new standalone public
+upgrade command in this component. The [scoped service/client proof](../evidence/s16-service-release-proof.md)
+exercises actual copied earlier/current service processes and the same sealed
+shared client with persistent scripted external ports, including fresh work
+after a policy-preserving fallback.
 
 The trusted root coordinator keeps a retained sealed operator, original private
 job plans and root process exclusion. It stops the controller conclusively,
