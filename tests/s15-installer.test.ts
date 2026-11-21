@@ -37,19 +37,27 @@ const s15Trees = ["var/lib/jit-s15", "var/lib/jit-s15-vm", "var/lib/jit-s15-vmm"
 const otherTrees = (name: "jit" | "jit-s14") => [`var/lib/${name}`, `opt/${name}`, `etc/${name}`, `etc/systemd/system/${name}.service`, `etc/systemd/journald@${name}.conf`];
 const stateMarker = (f: ReturnType<typeof fixture>) => f.at("var/lib/jit-s15/state/runtime/composition.json");
 
-test.each(['selected_files', 'retained_operations', 'selected_routines'] as const)('existing %s refuses the legacy installer path before host/config changes', async mode => {
+test.each(['selected_files', 'retained_operations', 'selected_routines', 'retained_disabled_routines'] as const)('existing %s refuses the legacy installer path before host/config changes', async mode => {
   const f = fixture(); await install(f, { release: 'release-a' });
   const path = f.at(s15Installation.config), configured = JSON.parse(readFileSync(path, 'utf8'));
   if (mode === 'selected_files') configured.files = true;
   // Retained operations routes by directory presence even after a missing ledger.
   if (mode === 'retained_operations') mkdirSync(f.at('var/lib/jit-s15/state/operations'));
   if (mode === 'selected_routines') configured.routines = true;
+  if (mode === 'retained_disabled_routines') configured.routines = false;
   writeFileSync(path, JSON.stringify(configured), { mode: 0o640 });
   const before = tree(f, s15Trees);
   await expect(install(f, { release: 'release-b' })).rejects.toMatchObject({ step: 's16-guarded-upgrade' });
   expect(tree(f, s15Trees)).toEqual(before); expect(f.lines.at(-1)).toBe('Step: s16-guarded-upgrade');
   await expect(install(f, {}, { uninstall: true })).rejects.toMatchObject({ step: 's16-guarded-uninstall' });
   expect(tree(f, s15Trees)).toEqual(before);
+});
+
+test('a first explicitly selected configuration refuses dummy setup before rewriting its explicit VM choice', async () => {
+  const f = fixture(), path = f.at(s15Installation.config), configured = { ...s15InstallerConfig({ installationId: 'selected_first', vmm: null }), files: true };
+  mkdirSync(f.at(s15Installation.configDir), { recursive: true }); const raw = JSON.stringify(configured); writeFileSync(path, raw, { mode: 0o640 }); const before = tree(f, s15Trees);
+  await expect(install(f, { kvmGroup: true })).rejects.toMatchObject({ step: 's16-first-setup' });
+  expect(readFileSync(path, 'utf8')).toBe(raw); expect(tree(f, s15Trees)).toEqual(before);
 });
 
 test('unknown VMM manager state is not proof that working VMs stopped', async () => {

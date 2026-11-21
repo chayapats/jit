@@ -5,8 +5,9 @@ NFR-02/04/05/08/09/12. This extends
 [ADR 0127](../adr/0127-s16-guarded-release-selection-protocol.md) and the
 [guarded selection contract](../contracts/s16-guarded-release-selection-v1.md).
 It also exercises [ADR 0129's installed wiring dispatcher](../adr/0129-s16-retained-installed-wiring.md)
-over actual service processes. Fresh-selected setup, final aggregate and actual
-Linux/owner-host acceptance remain separate requirements.
+and [ADR 0130's first selected setup](../adr/0130-s16-first-selected-setup-with-original-intent.md)
+over actual service processes. Final aggregate and actual Linux/owner-host
+acceptance remain separate requirements.
 
 `tests/s16-ops-service-release.test.ts` builds sealed immutable earlier
 `23cfb85d` and current packages with their actual locked dependencies. Each
@@ -25,6 +26,16 @@ process PIDs and wait for actual close/exit/start. The readiness transport check
 the actual client bootstrap; this is not rendered-login or real HTTP evidence.
 No credential-service unit is created in this owning fixture; its separate
 presence/activation path is covered by installed-wiring adapter conformance.
+
+A separate first-selected journey starts with no current path, units or app
+state. The sealed current package's first-setup coordinator executes its actual
+initializer, operations adoption and current readers, publishes real generated
+unit bytes, and starts an actual owning service process. The same sealed client
+performs native file-to-artifact work and creates one conservative unknown
+payment. Historical setup-response retry leaves the actual running PID, original
+client receipt, usage/session and external counters untouched. Private owner-link
+delivery is an explicit fixture port; the service's actual owner provisioning/
+login occurs once in its original seed mode. This is not rendered signup proof.
 
 Initial state comes from the shipped earlier CLI and owning owner/policy/TEAM/VM
 writers. Actual file-to-artifact work uses scripted providers, genuine service

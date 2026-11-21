@@ -99,9 +99,34 @@ Missing receipts or different occupied units refuse without reconstruction or
 overwrite. Historical points/ordinary exports cannot grant root unit authority.
 The [owning lifecycle proof](../evidence/s16-service-release-proof.md) couples this
 dispatcher to actual sealed owning service/client processes and current facts,
-with explicit manager/VM/readiness fixture ports. Fresh-selected installation
-and final aggregate acceptance remain pending; these tests are not Linux/device/
-live proof.
+with explicit manager/VM/readiness fixture ports. Final aggregate acceptance
+remains pending; these tests are not Linux/device/live proof.
+
+## First selected installation
+
+[ADR 0130](../adr/0130-s16-first-selected-setup-with-original-intent.md) and the
+[first-setup contract](../contracts/s16-first-selected-setup-v1.md) retain an
+original private root intent for a fresh explicit selected configuration. The
+installer preserves its exact bytes/VM choice, qualifies the original account/
+Bun/release, publishes disabled generated wiring and runs the actual initializer
+once, followed by original operations adoption/readers before normal boot.
+Root receipts never contain a plaintext owner link.
+
+After failed first health, retain current package/wiring/config and all current
+state. Re-run the installer to finish the original first setup before any newly
+requested source. Existing state is never passed to the initializer. Missing
+state after an issued initialization intent, missing/corrupt stores, changed
+config/identity/package or different occupied units refuse in place. Preserve
+the original `.s16-selector/first-setup` records for diagnosis; deleting them is
+not permission for an empty replacement. A configured local VMM must already
+match its canonical original UID/paths. An explicit owner-supplied VM choice is
+not changed merely because KVM is available.
+
+Private initial owner delivery uses the current operator terminal. A known
+first installation can recover lost delivery when rerun interactively; an
+existing owner keeps the same account/sign-in. First login/provider/device and
+actual host acceptance remain separate; dummy dry-run releases cannot certify
+this route.
 
 The trusted root coordinator keeps a retained sealed operator, original private
 job plans and root process exclusion. It stops the controller conclusively,

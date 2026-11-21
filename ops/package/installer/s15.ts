@@ -16,9 +16,12 @@ import { personalServiceBinding } from "../../../src/s14/personal-origin";
 import { zero } from "../../../src/s15/policy/validation";
 import { en } from "../../../src/i18n/en";
 import { th } from "../../../src/i18n/th";
+import { canonical } from "../../../src/s15/conversation/validation";
 import { RELEASE_CONTRACT } from "schway/host";
 import { openS16InstalledUpgrade } from "./s16-installed-upgrade";
 import { openS16InstalledWiring } from "./s16-installed-wiring";
+import { openS16FirstSetup, type S16FirstSetupInput } from "./s16-first-setup";
+import { readS16Wiring, s16WiringLayout } from "./s16-wiring-value";
 
 const MiB = 1024 ** 2;
 
@@ -410,7 +413,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     return false;
   };
   const selectedS16 = (configured: S15RuntimeConfig | null) => lstatSync(join(paths.state, "operations"), { throwIfNoEntry: false }) !== undefined ||
-    configured?.files !== undefined || configured?.fileMemory !== undefined || configured?.routines === true || configured?.voice !== undefined;
+    configured?.files !== undefined || configured?.fileMemory !== undefined || configured?.routines !== undefined || configured?.voice !== undefined;
   const stopSelectedWorkingVms = async (configured: S15RuntimeConfig) => {
     const result = await call(["/usr/bin/getent", "passwd", p.vmmUser], 30_000);
     if (result.exitCode === 2 && !configured.vm.local && !result.timedOut) return;
@@ -418,6 +421,14 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     if (result.exitCode !== 0 || result.timedOut || fields.length !== 7 || fields[0] !== p.vmmUser || fields[5] !== p.vmmHome || !["/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false"].includes(fields[6]!) || !Number.isSafeInteger(id) || id < 1 || configured.vm.local && id !== configured.vm.vmm?.uid) throw new InstallerFailure(currentStep, "preserve original VMM identity and config; unknown identity/stop state refuses wiring removal");
     const stopped = await stopS15WorkingVms({ vmmUid: id, call });
     if (!stopped.stopped) throw new InstallerFailure(currentStep, "prove every Jit-managed working VM stopped through its original manager/kernel identity, then resume the same uninstall; all wiring and retained data stay in place until proof");
+  };
+  const prepareFirstOwnerLink = async (original: Readonly<Pick<S16FirstSetupInput, "release" | "bunPath" | "service">>) => {
+    uid = original.service.uid; gid = original.service.gid;
+    step("owner-terminal", "resume first setup from an operator terminal for private owner-link delivery; an existing owner is never reset");
+    try { ownerTerminal ??= operatorTerminal(); } catch { throw new InstallerFailure(currentStep, next); }
+    const terminal = ownerTerminal; ownerTerminal = undefined;
+    pendingOwner = await prepareS14OwnerLink(asUser([original.bunPath, join(original.release, "src/main.ts"), ...s15OwnerLinkArguments(p.config)]),
+      { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, readS15RuntimeConfig(p.config).origin, { capture: captureOwnerPipe, terminal: () => terminal });
   };
   try {
     if (options.uninstall) {
@@ -471,6 +482,16 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       try { preserved = parseS15RuntimeConfig(JSON.parse(existing)); } catch { throw new InstallerFailure(currentStep, next); }
       if (preserved.directory !== p.state || preserved.vm.local === true && !preserved.vm.vmm) throw new InstallerFailure(currentStep, next);
     }
+    const firstSetupDirectory = join(paths.prefix, ".s16-selector/first-setup");
+    if (lstatSync(join(firstSetupDirectory, "input.json"), { throwIfNoEntry: false }) && !lstatSync(join(firstSetupDirectory, "result.json"), { throwIfNoEntry: false })) {
+      step("s16-first-setup-resume", "preserve the original first-setup intent/config/package and current state; unknown initialization is never repeated");
+      if (dry) throw new InstallerFailure(currentStep, "dummy dry-run markers cannot certify first-selected continuation");
+      const first = openS16FirstSetup(undefined, { run, prepareOwnerLink: prepareFirstOwnerLink, ...(options.sleep ? { sleep: options.sleep } : {}) });
+      try { await first.run(); } finally { first.close(); }
+      pendingOwner?.deliver(); pendingOwner?.close(); pendingOwner = undefined;
+      // Finish the original source before considering a newly requested source.
+      const continued = await runS15Installer(options); return { ...continued, events: [...events, ...continued.events] };
+    }
     originalState = stateIdentity();
     if (originalState) {
       if (!originalState.isDirectory() || !preserved) throw stateFailure();
@@ -489,8 +510,27 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
         const result = await upgrade.run();
         out(result.outcome === "fallback_healthy" ? "The target failed its trial. A compatible prior executable is healthy over current state; no historical data was restored." : result.outcome === "unchanged" ? "The selected code is unchanged; no new operation or health receipt was produced." : "The guarded S16 upgrade completed with current state preserved.");
         if (result.outcome === "fallback_healthy") throw new InstallerFailure(currentStep, "the target trial failed; the compatible prior executable is healthy over current state. Fix the target and re-run; no historical data was restored");
+        if (lstatSync(join(firstSetupDirectory, "input.json"), { throwIfNoEntry: false }) && lstatSync(join(firstSetupDirectory, "result.json"), { throwIfNoEntry: false })) {
+          // An interactive original installer can recover a lost first link.
+          // Already configured owners receive no new capability; unattended
+          // updates never issue one into an absent terminal.
+          try { ownerTerminal = operatorTerminal(); } catch { /* No private delivery channel. */ }
+          if (ownerTerminal) {
+            const state = lstatSync(paths.state);
+            await prepareFirstOwnerLink({ release: result.release, bunPath: options.bunPath, service: { user: p.user, uid: state.uid, gid: state.gid, home: p.home } });
+            pendingOwner?.deliver(); pendingOwner?.close(); pendingOwner = undefined;
+          }
+        }
         return { events, config: preserved, computer: null, release: result.release, rolledBack: false };
       } finally { upgrade.close(); }
+    }
+    const firstSelected = !originalState && preserved !== null && selectedS16(preserved);
+    if (firstSelected && dry) throw new InstallerFailure("s16-first-setup", "dummy dry-run releases cannot certify first-selected installation; use the copied-package first-setup conformance suite");
+    if (firstSelected && preserved!.vm.local) {
+      const original = preserved!.vm.vmm;
+      if (!original || original.user !== p.vmmUser || original.directory !== p.vmmRoot || original.launcher !== p.launcher) throw new InstallerFailure("preflight", "preserve the selected local VMM's canonical identity/UID/paths; do not refresh the selected configuration");
+      const account = await call(["/usr/bin/getent", "passwd", p.vmmUser]), fields = account.stdout.trim().split(":");
+      if (account.exitCode !== 0 || account.timedOut || fields[2] !== String(original.uid) || fields[5] !== p.vmmHome || !["/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false"].includes(fields[6]!)) throw new InstallerFailure("preflight", "the selected VMM must retain its original installed identity/UID before first-selected setup");
     }
     // Local VM support: kept once installed; added when the host gains a kvm group (QEMU/KVM packages).
     let local = preserved?.vm.local === true;
@@ -508,7 +548,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       const kvm = await group("kvm");
       if (kvm && !valid(kvm.gid)) throw new InstallerFailure(currentStep, next);
       // No kvm group (no QEMU/KVM packages or virtualization): install the controller alone; the owner enrolls a VM.
-      local ||= !!kvm;
+      if (!firstSelected) local ||= !!kvm;
       if (!await passwd(p.user)) await must(["useradd", "--system", "--create-home", "--home-dir", p.home, "--shell", "/usr/sbin/nologin", "--user-group", p.user]);
       const ctl = await passwd(p.user);
       if (!ctl || ctl.name !== p.user || !valid(ctl.uid) || !valid(ctl.gid) || ctl.home !== p.home || !/\/(nologin|false)$/.test(ctl.shell)) throw new InstallerFailure(currentStep, next);
@@ -525,6 +565,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
         const vmm = await passwd(p.vmmUser);
         if (!vmm || vmm.name !== p.vmmUser || !valid(vmm.uid) || vmm.gid !== shared.gid || vmm.home !== p.vmmHome || !/\/(nologin|false)$/.test(vmm.shell) || vmm.uid === ctl.uid) throw new InstallerFailure(currentStep, next);
         vmmUid = vmm.uid; sharedGid = shared.gid; kvmGid = kvm?.gid ?? -1;
+        if (firstSelected && vmmUid !== preserved!.vm.vmm?.uid) throw new InstallerFailure(currentStep, "preserve the exact selected VMM UID; identity replacement is not first setup");
         const vmmGroups = await groupsOf(p.vmmUser);
         if (kvm && !vmmGroups.includes("kvm")) await must(["usermod", "-a", "-G", "kvm", p.vmmUser]);
         if (!ctlGroups.includes(p.group)) await must(["usermod", "-a", "-G", p.group, p.user]);
@@ -623,77 +664,91 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     step("configuration", `repair ${p.config} (root:${p.user} 0640), then re-run install.sh --s15`);
     if (read(paths.config) !== existing) throw new InstallerFailure(currentStep, "another process changed the S15 config during installation; re-run install.sh --s15");
     // The QEMU identity's uid is installer-owned; it is refreshed if the identity was recreated. Everything else is preserved.
-    if (preserved) {
+    if (firstSelected) config = preserved!;
+    else if (preserved) {
       // Only the installer-owned `local`/`vmm` change, in place, so an unchanged config stays byte-identical.
       const vm: Record<string, unknown> = {}, placeLocal = () => { vm.local = local; if (local) vm.vmm = vmmOptions(); };
       for (const [key, value] of Object.entries(preserved.vm)) { if (key === "local") placeLocal(); else if (key !== "vmm") vm[key] = value; }
       if (!("local" in vm)) placeLocal();
       config = parseS15RuntimeConfig({ ...preserved, vm });
     } else config = s15InstallerConfig({ installationId: `s15_${randomBytes(8).toString("hex")}`, vmm: local ? vmmOptions() : null });
-    const configText = JSON.stringify(config, null, 2) + "\n";
+    const configText = firstSelected ? existing! : JSON.stringify(config, null, 2) + "\n";
     if (configText !== existing) write(paths.config, configText, 0o640, { uid: 0, gid });
     else if (!dry) { chownSync(paths.config, 0, gid); chmodSync(paths.config, 0o640); }
 
-    step("owner-terminal", "re-run install.sh --s15 from an operator terminal (for SSH use ssh -t); nothing has been stopped or changed in the running service");
-    if (!dry) { try { ownerTerminal = operatorTerminal(); } catch { throw new InstallerFailure(currentStep, next); } }
+    if (firstSelected) {
+      step("s16-first-setup", "resume the original first-selected package/configuration; preserve all initialized state and original root receipts");
+      const checked = validateArtifact(release!, { runtime: true }); if (!checked.ok || !checked.manifest) throw new InstallerFailure(currentStep, next);
+      const wiring = readS16Wiring(s16WiringLayout(), uid);
+      const unit = (text: string) => ({ bytes: Buffer.from(text).toString("base64"), uid: 0, gid: 0, mode: 0o644 });
+      wiring.files.controller = unit(renderS15Unit({ uid, vmmUid: local ? vmmUid : null, memoryMaxBytes: defaults.memoryMaxBytes })); wiring.files.journal = unit(renderS15Journald(defaults.logBytes)); wiring.files.proxy = local ? unit(renderS15ProxySocket()) : null;
+      const hash = (value: string) => new Bun.CryptoHasher("sha256").update(value).digest("hex");
+      const first = openS16FirstSetup({ contract: "s16-first-selected-setup/v1", release: release!, packageSha256: checked.manifest.contentHash, configurationSha256: hash(canonical(config!)), rawConfigurationSha256: hash(configText), bunPath: options.bunPath, service: { user: p.user, uid, gid, home: p.home }, wiring }, { run, prepareOwnerLink: prepareFirstOwnerLink, ...(options.sleep ? { sleep: options.sleep } : {}) });
+      try { await first.run(); } finally { first.close(); }
+      committed = true;
+      write(paths.installerState, JSON.stringify({ contract: "ops.installer/v1", runtime: "s15", release: release!, hardware: options.facts, defaults }, null, 2) + "\n", 0o640, { uid: 0, gid });
+    } else {
+      step("owner-terminal", "re-run install.sh --s15 from an operator terminal (for SSH use ssh -t); nothing has been stopped or changed in the running service");
+      if (!dry) { try { ownerTerminal = operatorTerminal(); } catch { throw new InstallerFailure(currentStep, next); } }
 
-    // An upgrade or repair stops the controller (and, through PartOf, its proxy socket) before anything else changes.
-    if (existsSync(paths.unit)) {
-      step("service-stop", `inspect journalctl --namespace=${p.journal} -u ${p.service}, then re-run install.sh --s15; the working VM keeps running`);
-      const active = dry ? options.simulation?.serviceActive !== false : ["active", "activating", "reloading"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim());
-      previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), socket: read(paths.socket), active, manifest: null };
+      // An upgrade or repair stops the controller (and, through PartOf, its proxy socket) before anything else changes.
+      if (existsSync(paths.unit)) {
+        step("service-stop", `inspect journalctl --namespace=${p.journal} -u ${p.service}, then re-run install.sh --s15; the working VM keeps running`);
+        const active = dry ? options.simulation?.serviceActive !== false : ["active", "activating", "reloading"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim());
+        previous = { release: currentTarget(), unit: read(paths.unit), journald: read(paths.journald), socket: read(paths.socket), active, manifest: null };
+        armed = true;
+        if (!dry && active) {
+          await must(["systemctl", "stop", p.service], 120_000);
+          if (["active", "activating", "deactivating"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim())) throw new InstallerFailure(currentStep, next);
+        }
+        // A newer release may add a store to the runtime's composition manifest (BROW15-02 `browser.sqlite`), and an
+        // earlier release refuses a manifest it does not know. Keep the stopped release's manifest so a rollback here
+        // restores it, and a copy per release for the documented rollback by hand (s15-install.md).
+        previous.manifest = read(manifestPath);
+        const releaseId = previous.release ? basename(previous.release) : null;
+        if (previous.manifest !== null && releaseId && /^[A-Za-z0-9._-]{1,128}$/.test(releaseId)) write(join(paths.configDir, `composition.${releaseId}.json`), previous.manifest, 0o640, { uid: 0, gid });
+      }
+
+      step("state-initialize", `repair ${p.state} ownership and re-run install.sh --s15; existing state is never re-initialized`);
+      const marker = manifestPath;
+      if (!assertOriginalState()) {
+        if (dry) { own(join(paths.state, "runtime"), 0o700); write(marker, JSON.stringify({ contract: "s15-composition/v1" })); }
+        else {
+          const initialized = await must(asUser([options.bunPath, join(release!, "src/main.ts"), "init", "--s15", "--config", p.config]), 300_000);
+          if (!initialized.includes('"state":"s15_initialized"')) throw new InstallerFailure(currentStep, next);
+        }
+      }
+
+      step("owner-link-prepare", "repair the S15 owner store and the private fd 3 delivery, then re-run install.sh --s15 from the operator terminal; no link is printed before health");
+      if (dry && options.ownerLink) pendingOwner = await options.ownerLink();
+      if (!dry) {
+        const terminal = ownerTerminal!; ownerTerminal = undefined;
+        pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(release!, "src/main.ts"), ...s15OwnerLinkArguments(p.config)]),
+          { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, config.origin, { capture: captureOwnerPipe, terminal: () => terminal });
+      }
+
       armed = true;
-      if (!dry && active) {
-        await must(["systemctl", "stop", p.service], 120_000);
-        if (["active", "activating", "deactivating"].includes((await call(["systemctl", "is-active", p.service])).stdout.trim())) throw new InstallerFailure(currentStep, next);
+      step("service-install", `inspect ${p.unit} and the journald namespace, then re-run install.sh --s15`);
+      write(paths.unit, renderS15Unit({ uid, vmmUid: local ? vmmUid : null, memoryMaxBytes: defaults.memoryMaxBytes }), 0o644, { uid: 0, gid: 0 });
+      write(paths.journald, renderS15Journald(defaults.logBytes), 0o644, { uid: 0, gid: 0 });
+      if (local) {
+        write(paths.socket, renderS15ProxySocket(), 0o644, { uid: 0, gid: 0 });
+        // The socket unit binds the path itself; a socket file left by `init --s15` (or a crash) is removed first.
+        const stale = lstatSync(layout.proxySocket, { throwIfNoEntry: false });
+        if (stale?.isSocket() && (dry || (await call(["systemctl", "is-active", p.proxySocket])).stdout.trim() !== "active")) rmSync(layout.proxySocket, { force: true });
       }
-      // A newer release may add a store to the runtime's composition manifest (BROW15-02 `browser.sqlite`), and an
-      // earlier release refuses a manifest it does not know. Keep the stopped release's manifest so a rollback here
-      // restores it, and a copy per release for the documented rollback by hand (s15-install.md).
-      previous.manifest = read(manifestPath);
-      const releaseId = previous.release ? basename(previous.release) : null;
-      if (previous.manifest !== null && releaseId && /^[A-Za-z0-9._-]{1,128}$/.test(releaseId)) write(join(paths.configDir, `composition.${releaseId}.json`), previous.manifest, 0o640, { uid: 0, gid });
+      switchCurrent(release!);
+      if (!dry) { await must(["systemctl", "daemon-reload"]); await must(["systemctl", "enable", p.service]); }
+
+      step("service-start", `inspect journalctl --namespace=${p.journal} -u ${p.service}, fix the named gate and re-run install.sh --s15`);
+      if (!dry) await must(["systemctl", "start", p.service], 180_000);
+      else options.simulation?.started?.();
+
+      step("health", `inspect journalctl --namespace=${p.journal} -u ${p.service}; the login page did not answer on ${config.origin}`);
+      if (!await healthy()) throw new InstallerFailure(currentStep, next);
+      committed = true;
+      write(paths.installerState, JSON.stringify({ contract: "ops.installer/v1", runtime: "s15", release: release!.slice(root === "/" ? 0 : root.length), hardware: options.facts, defaults }, null, 2) + "\n", 0o640, { uid: 0, gid });
     }
-
-    step("state-initialize", `repair ${p.state} ownership and re-run install.sh --s15; existing state is never re-initialized`);
-    const marker = manifestPath;
-    if (!assertOriginalState()) {
-      if (dry) { own(join(paths.state, "runtime"), 0o700); write(marker, JSON.stringify({ contract: "s15-composition/v1" })); }
-      else {
-        const initialized = await must(asUser([options.bunPath, join(release!, "src/main.ts"), "init", "--s15", "--config", p.config]), 300_000);
-        if (!initialized.includes('"state":"s15_initialized"')) throw new InstallerFailure(currentStep, next);
-      }
-    }
-
-    step("owner-link-prepare", "repair the S15 owner store and the private fd 3 delivery, then re-run install.sh --s15 from the operator terminal; no link is printed before health");
-    if (dry && options.ownerLink) pendingOwner = await options.ownerLink();
-    if (!dry) {
-      const terminal = ownerTerminal!; ownerTerminal = undefined;
-      pendingOwner = await prepareS14OwnerLink(asUser([options.bunPath, join(release!, "src/main.ts"), ...s15OwnerLinkArguments(p.config)]),
-        { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" }, config.origin, { capture: captureOwnerPipe, terminal: () => terminal });
-    }
-
-    armed = true;
-    step("service-install", `inspect ${p.unit} and the journald namespace, then re-run install.sh --s15`);
-    write(paths.unit, renderS15Unit({ uid, vmmUid: local ? vmmUid : null, memoryMaxBytes: defaults.memoryMaxBytes }), 0o644, { uid: 0, gid: 0 });
-    write(paths.journald, renderS15Journald(defaults.logBytes), 0o644, { uid: 0, gid: 0 });
-    if (local) {
-      write(paths.socket, renderS15ProxySocket(), 0o644, { uid: 0, gid: 0 });
-      // The socket unit binds the path itself; a socket file left by `init --s15` (or a crash) is removed first.
-      const stale = lstatSync(layout.proxySocket, { throwIfNoEntry: false });
-      if (stale?.isSocket() && (dry || (await call(["systemctl", "is-active", p.proxySocket])).stdout.trim() !== "active")) rmSync(layout.proxySocket, { force: true });
-    }
-    switchCurrent(release!);
-    if (!dry) { await must(["systemctl", "daemon-reload"]); await must(["systemctl", "enable", p.service]); }
-
-    step("service-start", `inspect journalctl --namespace=${p.journal} -u ${p.service}, fix the named gate and re-run install.sh --s15`);
-    if (!dry) await must(["systemctl", "start", p.service], 180_000);
-    else options.simulation?.started?.();
-
-    step("health", `inspect journalctl --namespace=${p.journal} -u ${p.service}; the login page did not answer on ${config.origin}`);
-    if (!await healthy()) throw new InstallerFailure(currentStep, next);
-    committed = true;
-    write(paths.installerState, JSON.stringify({ contract: "ops.installer/v1", runtime: "s15", release: release!.slice(root === "/" ? 0 : root.length), hardware: options.facts, defaults }, null, 2) + "\n", 0o640, { uid: 0, gid });
 
     // The single-use link lives 15 minutes from preparation, so it is shown as soon as the controller is healthy,
     // never after the working computer's setup, which can take much longer (image download, first boot, Docker).
@@ -702,7 +757,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     // The controller owns the automatic job (SETUP15-01); the installer only reads its durable progress.
     step("working-computer", "open Resources → Computer in the Web UI for the stated reason; the controller stays installed");
-    let computer: S15ComputerProgress | null = local ? null : { state: "none", host: "vm_kvm_unavailable" };
+    let computer: S15ComputerProgress | null = local ? null : { state: "none", host: firstSelected ? "vm_owner_supplied" : "vm_kvm_unavailable" };
     // Polls every 2 s: up to 90 s for the controller's boot pass to start the job, then up to 90 minutes overall.
     const printed = new Set<string>();
     for (let poll = 0; local; poll++) {
@@ -719,6 +774,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     }
     if (computer?.state === "enrolled") out(`Working computer: ${stepCopy("enrolled")}`);
     else if (computer?.state === "failed") out(`Working computer failed at ${computer.step} (${computer.code}). ${codeCopy(computer.code)} The controller is installed and healthy.`);
+    else if (computer?.state === "none" && !local && firstSelected) out("Working computer: your selected owner-supplied VM choice is preserved. Enroll it in Resources → Computer in the Web UI.");
     else if (computer?.state === "none" && !local) out("Working computer: this host has no kvm group (no QEMU/KVM packages or virtualization), so S15 was installed without a Jit-managed VM and without its QEMU identity. Enroll your own VM in Resources → Computer in the Web UI. After installing the QEMU/KVM packages, re-run install.sh --s15 to add the Jit-managed VM.");
     else if (computer?.state === "none") out(computer.host === "ready" ? "Working computer: not started yet. Open Resources → Computer in the Web UI and press Start." : `Working computer unavailable on this host (${computer.host}). ${codeCopy(computer.host)}`);
     else out("Working computer: setup continues in the background. Follow it in Resources → Computer in the Web UI.");

@@ -79,6 +79,54 @@ async function host(pkg: typeof packages[number], input: { mode: 'seed' | 'attac
   } };
 }
 
+test('actual owning client/service starts from original first-selected setup and keeps new work untouched by setup response retry', async () => {
+  const layout = s16WiringLayout(root), state = realpathSync(mkdtempSync(join(root, 'first-service-'))), externalDirectory = join(state, 'external'), authPath = join(state, 'owner.fixture.json'); mkdirSync(externalDirectory, { mode: 0o700 }); mkdirSync(dirname(layout.config), { recursive: true });
+  const base = s15StageConfig(layout.state, 'http://localhost:3099'), config = { ...base, installationId: 'fixture', files: true, computers: true, vm: { ...base.vm, id: 'vm', local: false } }, raw = JSON.stringify(config); writeFileSync(layout.config, raw, { mode: 0o600 });
+  writeFileSync(join(externalDirectory, 'external.fixture.json'), JSON.stringify({ contract: 's16-service-release-external-fixture/v1', counts: { model: 0, interpreter: 0, vm: 0, payment: 0, reconcile: 0, vmManagement: 0 }, files: {}, payment: {}, selectedManagerId: null, managers: { manager: { state: 'running', identity: 'fixture' } } }), { mode: 0o600 });
+  const input = { configPath: layout.config, externalDirectory, authPath, externalBackendModule: join(packages[1]!.path, 'src/s15/effects/index.ts') }; let current: Awaited<ReturnType<typeof host>> | undefined, starts = 0, stops = 0;
+  cleanup.push(async () => { await current?.close(); rmSync(state, { recursive: true, force: true }); rmSync(layout.home, { recursive: true, force: true }); rmSync(dirname(layout.config), { recursive: true, force: true }); for (const path of [layout.files.controller, layout.files.journal, layout.files.proxy]) rmSync(path, { force: true }); });
+  const ActualClient = await import(pathToFileURL(join(packages[1]!.path, 'src/s16/client/index.ts')).href) as typeof import('../src/s16/client');
+  const client: JitClient = new ActualClient.JitClient({ origin: config.origin, fetch: async request => {
+    if (!current) throw Error('fixture_service_stopped'); const headers = new Headers(request.headers); headers.set('cookie', 'jit_s14=' + JSON.parse(readFileSync(authPath, 'utf8')).token); headers.set('origin', config.origin);
+    const reply = await current.call('fetch', { url: request.url, method: request.method, headers: [...headers], body: request.body ? Buffer.from(await request.arrayBuffer()).toString('base64') : null }); return new Response([204, 205, 304].includes(reply.status) ? null : Buffer.from(reply.body, 'base64'), { status: reply.status, headers: reply.headers });
+  } });
+  const manager: CommandRunner = async (argv, settings) => {
+    const response = (stdout = '', exitCode = 0) => ({ stdout, exitCode, timedOut: false });
+    if (argv[0] === '/usr/bin/getent') return response(`jit-fixture:x:${process.getuid!()}:${process.getgid!()}::${layout.home}:/usr/sbin/nologin\n`);
+    if (argv[0] === '/usr/bin/systemctl') {
+      if (argv[1] === 'show') {
+        const running = current?.child.exitCode === null, fields: Record<string, string> = { LoadState: 'loaded', ActiveState: running ? 'active' : 'inactive', SubState: running ? 'running' : 'dead', MainPID: running ? String(current!.child.pid) : '0', ControlPID: '0', Job: '', FragmentPath: layout.files.controller, DropInPaths: '', NeedDaemonReload: 'no', User: 'jit-fixture', Group: 'jit-fixture', KillMode: 'mixed', SendSIGKILL: 'yes' };
+        return response(argv[3]!.slice('--property='.length).split(',').map(key => `${key}=${fields[key]}\n`).join(''));
+      }
+      if (argv[1] === 'stop') { stops++; await current?.close(); current = undefined; }
+      else if (argv[1] === 'start') { starts++; current = await host(packages[1]!, { ...input, mode: existsSync(authPath) ? 'attach' : 'seed' }); }
+      else if (!['daemon-reload', 'enable'].includes(argv[1]!)) throw Error('fixture_unexpected_first_manager_command'); return response();
+    }
+    if (JSON.stringify(argv.slice(0, 6)) !== JSON.stringify(['/usr/sbin/runuser', '-u', 'jit-fixture', '--', '/usr/bin/env', '-i'])) throw Error('fixture_unexpected_first_identity');
+    const at = argv.indexOf(bun), entry = argv[at + 1]!; if (at < 0) throw Error('fixture_first_bun_missing');
+    if (entry.endsWith('/s16-package-probe.ts')) {
+      const args = argv.slice(at + 2); return spawnRunner([bun, '-e', `import{openS16PackageReaderProbe}from${JSON.stringify(entry)};const cap=await openS16PackageReaderProbe({targetDirectory:${JSON.stringify(args[1])},packageSha256:${JSON.stringify(args[3])},configPath:${JSON.stringify(args[5])},configurationSha256:${JSON.stringify(args[7])}},{pathPolicy:${JSON.stringify({ root, uid: process.getuid!() })}});try{const value=await cap.observe();cap.close();console.log(JSON.stringify(value));}finally{cap.close();}`], { ...settings, env });
+    }
+    return spawnRunner([bun, ...argv.slice(at + 1)], { ...settings, env });
+  };
+  const unit = `[Service]\nUser=jit-fixture\nGroup=jit-fixture\nExecStart=${bun} ${prefix}/current/src/main.ts serve --s15 --config ${layout.config}\nKillMode=mixed\n\n[Install]\nWantedBy=multi-user.target\n`;
+  const ActualFirst = await import(pathToFileURL(join(packages[1]!.path, 'ops/package/installer/s16-first-setup.ts')).href) as typeof import('../ops/package/installer/s16-first-setup');
+  const firstInput = { contract: 's16-first-selected-setup/v1' as const, release: packages[1]!.path, packageSha256: packages[1]!.hash, configurationSha256: hash(canonical(config)), rawConfigurationSha256: hash(raw), bunPath: bun, service: { user: 'jit-fixture', uid: process.getuid!(), gid: process.getgid!(), home: layout.home }, wiring: { contract: 's16-installed-wiring-value/v1' as const, files: { controller: { bytes: Buffer.from(unit).toString('base64'), uid: process.getuid!(), gid: process.getgid!(), mode: 0o644 }, journal: null, proxy: null, keyring: null } } };
+  const options = { run: manager, layoutRoot: root, pathPolicy: { root, uid: process.getuid!() }, sleep: async () => {}, fetch: async () => { await client.bootstrap(); return new Response('', { status: 200 }); }, async prepareOwnerLink() { /* Private owner delivery is a separate labelled fixture port. */ } };
+  const first = ActualFirst.openS16FirstSetup(firstInput, options); let result;
+  try { result = await first.run(); } finally { first.close(); }
+  expect(result.state).toBe('healthy'); expect(starts).toBe(1); expect(readFileSync(layout.config, 'utf8')).toBe(raw); await client.bootstrap(); await current!.call('assign_private', { id: 'private_vm_1' });
+  const bytes = Buffer.from('First selected service input.\n'), pending = await client.createUpload({ requestId: 'first_input', conversationId: 'first_conversation', name: 'first.txt', bytes: bytes.length, sha256: hash(bytes) }), uploaded = await client.uploadBytes(pending.id, bytes);
+  await current!.call('script', [{ type: 'tool_call', id: 'read_first', name: 'file_read', arguments: { id: uploaded.id, offset: 0 } }, { type: 'tool_call', id: 'create_first', name: 'file_create', arguments: { name: 'first.md', text: '# First selected output\n' } }]);
+  const receipt = await client.send({ ...client.prepareMessage('first_conversation', 'Read these notes and create a Markdown brief.', [{ id: uploaded.id, sha256: uploaded.receipt!.sha256 }]), requestId: 'first_work' }); await current!.call('drain'); const view = await client.request('first_work'); expect(view.row.state).toBe('done');
+  expect(Buffer.from(await client.artifactBytes(view.row.files!.artifacts[0]!)).toString()).toBe('# First selected output\n');
+  const payment = await current!.call('unknown_payment'), before = await current!.call('facts', payment), auth = readFileSync(authPath), pid = current!.child.pid, supervisor = { starts, stops };
+  const retry = ActualFirst.openS16FirstSetup(undefined, options); try { expect(await retry.run()).toEqual(result); } finally { retry.close(); }
+  expect({ starts, stops }).toEqual(supervisor); expect(current!.child.pid).toBe(pid); expect(readFileSync(authPath)).toEqual(auth); expect((await client.request('first_work')).receipt).toEqual(receipt);
+  expect(await current!.call('duplicate_payment', payment)).toEqual({ refused: true }); await current!.call('drain'); const after = await current!.call('facts', payment); expect(after.counts).toEqual(before.counts); expect(after.usage).toEqual(before.usage); expect(after.slip.state).toBe('unknown'); expect(after.counts.payment).toBe(1);
+  observations.push({ outcome: 'first_selected_healthy', ownerGeneration: after.ownerGeneration, policyRevision: after.policy.revision, originalPaymentCalls: before.counts.payment, currentPaymentCalls: after.counts.payment, originalCounters: before.counts, trialWithheld: false, freshWork: true });
+}, 180000);
+
 for (const scenario of ['upgrade', 'fallback', 'installed'] as const) test('actual owning client/service ' + (scenario === 'fallback' ? 'retains trial withdrawals, private retirement, policy and unknown effect through compatible fallback' : scenario === 'installed' ? 'retains current work, authority and unknown effects through installed uninstall and reinstall' : 'retains original work and credentials through compatible package upgrade'), async () => {
   const fallback = scenario === 'fallback', installed = scenario === 'installed', layout = s16WiringLayout(root);
   const state = realpathSync(mkdtempSync(join(root, 'state-'))), directory = installed ? layout.state : join(state, 'installation'), configPath = installed ? layout.config : join(state, 'config.json'), externalDirectory = join(state, 'external'), authPath = join(state, 'owner.fixture.json'); mkdirSync(externalDirectory, { mode: 0o700 }); mkdirSync(dirname(configPath), { recursive: true });
