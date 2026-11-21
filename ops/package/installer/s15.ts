@@ -17,10 +17,7 @@ import { zero } from "../../../src/s15/policy/validation";
 import { en } from "../../../src/i18n/en";
 import { th } from "../../../src/i18n/th";
 import { canonical } from "../../../src/s15/conversation/validation";
-import { RELEASE_CONTRACT } from "schway/host";
-import { openS16InstalledUpgrade } from "./s16-installed-upgrade";
-import { openS16InstalledWiring } from "./s16-installed-wiring";
-import { openS16FirstSetup, type S16FirstSetupInput } from "./s16-first-setup";
+import type { S16FirstSetupInput } from "./s16-first-setup";
 import { readS16Wiring, s16WiringLayout } from "./s16-wiring-value";
 
 const MiB = 1024 ** 2;
@@ -438,6 +435,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       if (selectedS16(configured)) {
         step("s16-guarded-uninstall", "preserve original config/state/identity and root wiring receipts; reconcile the same selected uninstall before retrying");
         if (dry) throw new InstallerFailure(currentStep, "the dry-run S15 simulator cannot certify adopted S16 uninstall; use disposable installed-wiring conformance");
+        const { openS16InstalledWiring } = await import("./s16-installed-wiring");
         const wiring = openS16InstalledWiring("remove", options.bunPath, { run, stopWorkingVms: stopSelectedWorkingVms, ...(options.sleep ? { sleep: options.sleep } : {}) });
         try {
           const result = await wiring.run(); out("Removed the selected controller wiring. Current state, configuration, identities, credential-service unit/keyring, packages, receipts and working disks remain in place.");
@@ -486,6 +484,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     if (lstatSync(join(firstSetupDirectory, "input.json"), { throwIfNoEntry: false }) && !lstatSync(join(firstSetupDirectory, "result.json"), { throwIfNoEntry: false })) {
       step("s16-first-setup-resume", "preserve the original first-setup intent/config/package and current state; unknown initialization is never repeated");
       if (dry) throw new InstallerFailure(currentStep, "dummy dry-run markers cannot certify first-selected continuation");
+      const { openS16FirstSetup } = await import("./s16-first-setup");
       const first = openS16FirstSetup(undefined, { run, prepareOwnerLink: prepareFirstOwnerLink, ...(options.sleep ? { sleep: options.sleep } : {}) });
       try { await first.run(); } finally { first.close(); }
       pendingOwner?.deliver(); pendingOwner?.close(); pendingOwner = undefined;
@@ -503,6 +502,8 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
     if (guarded) {
       step("s16-guarded-upgrade", "preserve the original config, state, service identity and unit; finish explicit operations adoption if missing, then resume this installer with its retained job. Do not restore an old composition manifest");
       if (dry) throw new InstallerFailure(currentStep, "the dry-run S15 simulator cannot certify an adopted S16 upgrade; use the disposable guarded installer conformance suite");
+      const { openS16InstalledWiring } = await import("./s16-installed-wiring");
+      const { openS16InstalledUpgrade } = await import("./s16-installed-upgrade");
       const wiring = openS16InstalledWiring("restore", options.bunPath, { run, stopWorkingVms: stopSelectedWorkingVms, ...(options.sleep ? { sleep: options.sleep } : {}) });
       try { await wiring.run(); } finally { wiring.close(); }
       const upgrade = openS16InstalledUpgrade({ source: resolve(options.source), installation: { configPath: p.config, state: p.state, unitPath: p.unit, unit: p.service, prefix: p.prefix, home: p.home, user: p.user, bunPath: options.bunPath } }, { run, ...(options.sleep ? { sleep: options.sleep } : {}) });
@@ -640,7 +641,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
       let artifact = resolve(options.source);
       const staging = join(paths.prefix, `staging-${randomBytes(8).toString("hex")}`); ownedStaging = staging;
       if (existsSync(join(artifact, "manifest.json"))) cpSync(artifact, staging, { recursive: true });
-      else buildPackage({ srcDir: artifact, outDir: staging, engineContract: RELEASE_CONTRACT, engineRevision: null });
+      else buildPackage({ srcDir: artifact, outDir: staging, engineContract: (await import("schway/host")).RELEASE_CONTRACT, engineRevision: null });
       artifact = staging;
       const expected = validateArtifact(artifact);
       if (!expected.ok || !expected.manifest) throw new InstallerFailure(currentStep, next);
@@ -678,6 +679,7 @@ export async function runS15Installer(options: S15InstallerOptions): Promise<S15
 
     if (firstSelected) {
       step("s16-first-setup", "resume the original first-selected package/configuration; preserve all initialized state and original root receipts");
+      const { openS16FirstSetup } = await import("./s16-first-setup");
       const checked = validateArtifact(release!, { runtime: true }); if (!checked.ok || !checked.manifest) throw new InstallerFailure(currentStep, next);
       const wiring = readS16Wiring(s16WiringLayout(), uid);
       const unit = (text: string) => ({ bytes: Buffer.from(text).toString("base64"), uid: 0, gid: 0, mode: 0o644 });
