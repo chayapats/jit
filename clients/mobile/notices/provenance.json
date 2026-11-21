@@ -229,6 +229,15 @@
       ]
     },
     {
+      "component": "Public Suffix List",
+      "license": "MPL-2.0",
+      "coordinate": "com.squareup.okhttp3:okhttp:4.9.2",
+      "jarSha256": "3b2ee1b768c1df28c30d2fe6b38dda4d2c519210e30ca3d27950618c563c92de",
+      "compressedSha256": "a1ef3d0e4ec2cbce14c1884ab0f3a4fef46e258de83530dc562ebb805bdb12fd",
+      "source": "public-suffix-list.txt",
+      "sourceSha256": "8472133139ef5736a6ae4d88c7a5597f0f31fe452d5fdde11c07e19d286025da"
+    },
+    {
       "sourceMapSha256": "8a6d46cf358d65e722e3d26a81b265c3e7bdc7a7f2299c9fa44c84d016f644df",
       "platform": "ios",
       "purpose": "runtime component discovery, not device acceptance"

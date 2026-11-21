@@ -89,6 +89,8 @@ The builder requires clean source, frozen root/client locks, the selected Bun/No
 
 Each release starts from a fresh private snapshot of the exact committed Git tree, checked before installation/compilation: at most 4,096 regular files, 64 MiB per file and 128 MiB total. Source links, submodules, tracked generated native/node_modules paths, missing/extra files and archive-attribute byte substitutions refuse. Original ignored native projects are preserved and excluded. Frozen installs, locale generation and `expo prebuild --clean` operate only in that snapshot. Apple inventory is read from its actual new Pods tree. The sealed `build-source.json` (`s16-mobile-build-source/v1`) records commit, source archive SHA-256, file/byte counts and fresh CNG/clean facts without installation paths. Build integrity remains distinct from packaged UI acceptance.
 
+Public Suffix List corresponding source must match the OkHttp Maven coordinate and JAR SHA-256 selected by the frozen Android runtime inventory. The pinned compressed-member/source hashes and prominent reconstruction header identify the exact representation; notice generation and release preflight also require its matching shipped notice text and public provenance. A valid hash for another OkHttp version refuses. Both platforms carry the same reviewed notice set; existing runtime/dependency discovery provenance is not relabelled as a new observation.
+
 Required proof includes:
 
 1. Actual packaged simulator/emulator native UI against the protected owning service: file upload -> guarded work -> committed artifact -> current preview/export; zero install-induced host enrollment.

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { mobilePublicSuffixProvenance, mobilePublicSuffixSource } from "../../../ops/mobile/notices";
 
 interface Notice { path: string; text: string; sha256: string; url?: string }
 interface Supplement { name: string; license: string; files: Notice[]; commit: string; repo: string; tag: string; licenseReferenceOnly?: boolean }
@@ -22,8 +23,9 @@ for (const value of native.ndk.files) { if (sha(value.text) !== value.sha256) th
 if (sha(native.androidSdkTerms.text) !== native.androidSdkTerms.sha256) throw Error("mobile_notice_hash_invalid");
 const sdkTerms = text(native.androidSdkTerms.text), apache = file(join(root, "third_party/rakazo/LICENSE")), mpl = file(join(project, "node_modules/lightningcss/LICENSE"));
 component("Jit", "MIT and retained Apache-2.0 adaptations", [file(join(root, "LICENSE")), file(join(root, "NOTICE")), apache]);
-component("Public Suffix List in OkHttp 4.12.0", "MPL-2.0", [mpl, text("Original notice: https://publicsuffix.org/list/public_suffix_list.dat\nMPL-2.0: https://mozilla.org/MPL/2.0/\nThe exact reconstructed rule source is included below and in native-inputs/public-suffix-list.txt. Modified by Jit as stated in that source.")]);
-const suffix = read(join(input, native.publicSuffix.source)); if (sha(suffix) !== native.publicSuffix.sourceSha256) throw Error("mobile_notice_hash_invalid"); component("Public Suffix List / corresponding source", "MPL-2.0", [text(suffix)]);
+const suffix = mobilePublicSuffixSource(project);
+component("Public Suffix List in OkHttp " + suffix.version, "MPL-2.0", [mpl, text("Original notice: https://publicsuffix.org/list/public_suffix_list.dat\nMPL-2.0: https://mozilla.org/MPL/2.0/\nThe exact reconstructed rule source is included below and in native-inputs/public-suffix-list.txt. Modified by Jit as stated in that source.")]);
+component("Public Suffix List / corresponding source", "MPL-2.0", [text(suffix.sourceText)]); provenance.push(mobilePublicSuffixProvenance(suffix));
 const npm = new Map<string, { directory: string; name: string; version: string; license: string }>();
 function packageAt(start: string): void {
   let directory = start;
