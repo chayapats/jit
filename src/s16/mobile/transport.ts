@@ -86,10 +86,10 @@ export class MobileTransport {
       this.#credential = { token: data.token, expiresAt: Number(data.expiresAt) }; return true;
     });
   }
-  /** Local sign-out only: delete this origin's device credential and abort old responses; no server/account change. */
+  /** Local sign-out only. Queued deletion survives lifecycle generations and precedes later serialized login writes. */
   async forget(): Promise<void> {
-    const generation = this.#advance(); this.#credential = null;
-    await this.#storage(async key => { if (generation === this.#generation) await this.#store.delete(key); });
+    this.#advance(); this.#credential = null;
+    await this.#storage(key => this.#store.delete(key));
   }
   #cookieName(): string { return this.origin.startsWith("https:") ? "__Host-jit_s14" : "jit_s14"; }
   /** One explicit password login through the existing owning ingress; no redirect, stored password or automatic retry. */
