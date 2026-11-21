@@ -263,11 +263,11 @@
     "notice": "Copyright 2015 Google Inc. All Rights Reserved. Distributed under MIT license. See file LICENSE for detail or copy at https://opensource.org/licenses/MIT"
   },
   "publicSuffix": {
-    "coordinate": "com.squareup.okhttp3:okhttp:4.12.0",
-    "jarSha256": "b1050081b14bb7a3a7e55a4d3ef01b5dcfabc453b4573a4fc019767191d5f4e0",
-    "compressedSha256": "9af43e9995ec749e7a30eec4e5a87770d7e2027847084a07cca82060eff0c791",
+    "coordinate": "com.squareup.okhttp3:okhttp:4.9.2",
+    "jarSha256": "3b2ee1b768c1df28c30d2fe6b38dda4d2c519210e30ca3d27950618c563c92de",
+    "compressedSha256": "a1ef3d0e4ec2cbce14c1884ab0f3a4fef46e258de83530dc562ebb805bdb12fd",
     "source": "public-suffix-list.txt",
-    "sourceSha256": "643a824cc9cbaa04b81c34e03fad19f32e6d0c10f680b5f8711295e9482180f6",
+    "sourceSha256": "8472133139ef5736a6ae4d88c7a5597f0f31fe452d5fdde11c07e19d286025da",
     "license": "MPL-2.0"
   }
 }

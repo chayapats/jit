@@ -67,6 +67,8 @@ An original upload-create lookup is additive and capability-advertised (`s16-upl
 
 Release compilation uses a new snapshot of the exact committed Git tree, with every ordinary file byte/mode checked before frozen installs and clean CNG. It excludes and preserves original ignored native projects rather than trusting their contents. The complete artifact seal includes a path-free build-source receipt; Apple input checks inspect the snapshot's actual Pods. This is a build-integrity correction, not native UI/device acceptance.
 
+Corresponding-source refinement: the bundled Public Suffix List is reconstructed from the exact OkHttp JAR selected by the frozen Android runtime inventory. Notice generation and release preflight require matching Maven coordinate/JAR hash, source hash, modified-file header, shipped text and public provenance. A different cached OkHttp version cannot qualify merely because its own source hash matches. Existing dependency discovery records remain separately attributed; no runtime dependency or permission changes.
+
 Review recovery refinement, 2026-11-22: explicit local sign-out deletion is a serialized per-origin storage intent, not a request-generation publication. Background/reconnect cannot silently cancel it; later explicit login writes retain their queue order and deletion failure remains visible. The renderer uses a native-safe receipt/composer coordinator under current service/session/target pins: only confirmed message recovery clears its draft. A decision receipt preserves unrelated text/upload chips and performs no repeated POST. Owning-service lost-reply/effect assertions and held SecureStore races cover these paths; they do not replace packaged native UI acceptance.
 
 ## Platforms, packaging and acceptance

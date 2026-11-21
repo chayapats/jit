@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sealMobileArtifact, type MobileArtifact } from "./artifact";
 import { appleNativeInputs } from "./apple-inputs";
 import { prepareMobileBuildSource } from "./source";
+import { verifyMobilePublicSuffixNotices } from "./notices";
 
 /** Local release compilation only. No signing key, device, credential, endpoint, executable command or deployment. */
 export interface MobileBuildSelection { contract: "s16-mobile-build/v1"; platform: "ios-simulator" | "android"; output: string; node: string; android?: { javaHome: string; sdk: string; gradleHome: string } }
@@ -29,6 +30,7 @@ export async function buildMobileArtifact(raw: MobileBuildSelection): Promise<Mo
   if (git(["status", "--porcelain"])) throw Error("mobile_source_dirty");
   const commit = git(["rev-parse", "HEAD"]), privateRoot = join(source, ".local/mobile-builds", randomUUID()); mkdirSync(privateRoot, { recursive: true, mode: 0o700 });
   const snapshot = prepareMobileBuildSource(source, privateRoot, commit), project = join(snapshot.directory, "clients/mobile");
+  verifyMobilePublicSuffixNotices(project);
   const node = realpathSync(selection.node), env: Record<string, string | undefined> = { ...process.env, PATH: dirname(node) + ":" + process.env.PATH, NODE_BINARY: node, EXPO_NO_TELEMETRY: "1", EXPO_NO_DOTENV: "1", CI: "1" }; delete env.NODE_OPTIONS; delete env.JIT_MOBILE_CONFIG_STAGE;
   let step = 0;
   const run = async (args: string[], cwd = project): Promise<string> => {
@@ -70,6 +72,7 @@ export async function buildMobileArtifact(raw: MobileBuildSelection): Promise<Mo
     if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error("mobile_native_inputs_changed");
     payload = join(project, "android/app/build/outputs/apk/release/app-release-unsigned.apk");
   }
+  verifyMobilePublicSuffixNotices(project);
   if (!existsSync(payload) || git(["rev-parse", "HEAD"]) !== commit || git(["status", "--porcelain"])) throw Error("mobile_source_changed_during_build");
   mkdirSync(output, { recursive: false, mode: 0o755 });
   cpSync(payload, join(output, selection.platform === "android" ? "Jit-arm64-unsigned.apk" : "Jit.app"), { recursive: true, dereference: false });
