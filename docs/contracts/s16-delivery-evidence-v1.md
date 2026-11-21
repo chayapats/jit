@@ -15,6 +15,12 @@ hard links, special nodes, noncanonical/outside paths, depth over 32, more than
 verification follows. These are locally observed build-only artifacts, not
 external builder attestations, device UI or installation/signing authority.
 
+Native qualification reads the shipped Public Suffix List source, runtime inventory,
+notice index and provenance. Their validated coordinate/JAR/source binding must
+equal the same-head client source. Declared manifest pins or a recomputed integrity
+seal cannot qualify different corresponding-source bytes, including a separate
+self-consistent artifact binding.
+
 The pipeline builds desktop and independently rebuilds its seal before passing
 it to existing installed browser fixtures via `JIT_S16_DESKTOP_ARTIFACT`. Only
 the lifecycle suite receives private capture destinations. It preserves the

@@ -8,6 +8,7 @@ import { verifyNativeDesktop } from '../../src/s16/desktop/installation';
 import { artifactContentHash, buildPackage, manifestMetadata, readDependencyRecord, validateArtifact } from '../package/bun-build';
 import { verifyMobileArtifact, type MobileArtifact } from '../mobile/artifact';
 import { prepareMobileBuildSource } from '../mobile/source';
+import { verifyMobilePublicSuffixNotices } from '../mobile/notices';
 import { assessS16MatrixEvidence, createS16EvidenceOutput, observeS16BunTests, observeS16EvidenceSource, runS16CrossClientEvidence } from './s16-cross-client';
 import { readS16EvidenceMatrix, type S16EvidenceMatrix } from './s16-matrix';
 
@@ -73,6 +74,8 @@ export function qualifyS16MobileSource(checkout: string, directory: string, plat
   for (const [key, path] of Object.entries(mobilePins)) require(artifact.source[key as keyof typeof mobilePins] === fileHash(join(checkout, path)));
   require(equal(json(join(directory, 'build-source.json')), { contract: 's16-mobile-build-source/v1', commit, ...archive, nativeProject: 'fresh-cng', prebuildClean: true }));
   require(platform === 'android' ? artifact.files.some(row => row.path === 'Jit-arm64-unsigned.apk' && row.bytes > 0) : artifact.files.some(row => row.path === 'Jit.app/Jit' && row.bytes > 0 && row.executable));
+  const expectedNotices = verifyMobilePublicSuffixNotices(join(checkout, 'clients/mobile')), shippedNotices = verifyMobilePublicSuffixNotices(directory);
+  require(Object.entries(expectedNotices.pin).every(([key, value]) => shippedNotices.pin[key as keyof typeof shippedNotices.pin] === value) && shippedNotices.sourceText === expectedNotices.sourceText);
   return artifact;
 }
 
